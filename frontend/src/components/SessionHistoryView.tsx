@@ -1,0 +1,165 @@
+import { useEffect, useState } from 'react';
+import { fetchServerHistoryTranscript, type HistoryTranscript } from '../api/sessionsd';
+import { getActiveServer, useServers } from '../lib/servers';
+import { sessionLabel, useTabLabel } from '../lib/tabLabels';
+import { useSessions } from '../store/sessions';
+import type { SessionInfo } from '../types';
+import { ProviderBadge, normalizeProvider } from './ProviderBadge';
+import { SessionDetails } from './SessionDetails';
+import { canContinueSession, endedAtLabel, endedSummary } from '../lib/sessionStatus';
+import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
+import { SessionPopOutButton } from './SessionPopOutButton';
+import { ContinueElsewhereButton } from './ContinueElsewhereButton';
+
+interface Props {
+  session: SessionInfo;
+  onResume?: (session: SessionInfo) => void;
+  onCloseView?: (sessionId: string) => void;
+  onOpenSession?: (sessionId: string) => void;
+  onBack?: () => void;
+}
+
+export function SessionHistoryView({ session, onResume, onCloseView, onOpenSession, onBack }: Props): JSX.Element {
+  const activeServerId = useServers((state) => state.activeId);
+  const allSessions = useSessions((state) => state.sessions);
+  const archiveSessions = useSessions((state) => state.archive);
+  const label = useTabLabel(session.id, session.cwd) ?? sessionLabel(session);
+  const supportsConversation = session.tool !== 'terminal';
+  const [detailsOpen, setDetailsOpen] = useState(!supportsConversation);
+  const [transcript, setTranscript] = useState<HistoryTranscript | null>(null);
+  const [loading, setLoading] = useState(supportsConversation);
+  const [error, setError] = useState<string | null>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const displayParentID = session.displayParentSessionId !== undefined
+    ? session.displayParentSessionId
+    : session.parentSessionId;
+  const parent = displayParentID ? allSessions.find((item) => item.id === displayParentID) : null;
+  const provider = normalizeProvider(session.tool);
+  const end = endedSummary(session, allSessions);
+  const endInitiator = session.endedByKind === 'session' && session.endedById
+    ? allSessions.find((item) => item.id === session.endedById)
+    : null;
+  const archiveFromInbox = async (): Promise<void> => {
+    if (archiveBusy) return;
+    setArchiveBusy(true);
+    setArchiveError(null);
+    try {
+      const result = await archiveSessions([session.id]);
+      const item = result.items[0];
+      if (item?.status === 'skipped') {
+        setArchiveError(item.reason ?? 'This session could not be archived.');
+        return;
+      }
+      onCloseView?.(session.id);
+    } catch (reason) {
+      setArchiveError(reason instanceof Error ? reason.message : 'This session could not be archived.');
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!supportsConversation) return;
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    setTranscript(null);
+    void fetchServerHistoryTranscript(getActiveServer(), session.id, controller.signal, { preview: true })
+      .then((value) => {
+        if (!controller.signal.aborted) setTranscript(value);
+      })
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Could not load the conversation.');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [activeServerId, session.id, supportsConversation]);
+
+  return (
+    <div className={`session-view view-history${detailsOpen ? ' view-details' : ''}`}>
+      <header className="session-active-header">
+        {onBack ? <button type="button" className="mobile-session-back" onClick={onBack} aria-label="Back to sessions">‹</button> : null}
+        <div className="session-active-copy">
+          <span className="session-parent-breadcrumb">{parent ? `${sessionLabel(parent)} / ${session.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}` : 'Manager session'} · saved history</span>
+          <div className="session-active-title-row"><h1>{label}</h1><span className="session-live-pill is-finished">Ended</span><span className={`session-runtime-badge${sessionMode(session) === 'terminal' ? ' is-terminal' : ''}`} title={sessionModeName(session)}>{sessionModeShort(session)}</span></div>
+          <div className="session-active-meta">
+            {provider ? <ProviderBadge provider={provider} compact /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}
+            <span>{session.profile || 'Default profile'}</span><span>{getActiveServer().name}</span><span title={session.cwd}>{session.cwd}</span>
+          </div>
+        </div>
+        <div className="session-active-actions">
+          <SessionPopOutButton sessionId={session.id} label={label} />
+          {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(session.id)} title="Close this view. The saved conversation remains available."><span aria-hidden>×</span> Close</button> : null}
+        </div>
+      </header>
+      <div className="session-toolbar">
+        {supportsConversation ? <div className="view-toggle is-content-switch"><button type="button" className="view-toggle-btn is-active">Conversation</button></div> : <span className="history-shell-label">Shell session</span>}
+        <span className="status-text">Ended {endedAtLabel(session)} · read-only history</span>
+        <button type="button" className={`details-inspector-button${detailsOpen ? ' is-active' : ''}`} onClick={() => setDetailsOpen((current) => !current)}>{detailsOpen ? 'Close details' : 'Details'}</button>
+      </div>
+      <div className="session-history-body">
+        {detailsOpen ? (
+          <SessionDetails session={session} allSessions={allSessions} onEnd={async () => undefined} onResume={onResume} />
+        ) : (
+          <div className="session-history-transcript">
+            <div className={`session-ended-summary is-${end.tone}`}>
+              <div>
+                {endInitiator && onOpenSession ? (
+                  <button type="button" className="session-ended-actor" onClick={() => onOpenSession(endInitiator.id)}>{end.label}</button>
+                ) : <strong>{end.label}</strong>}
+                <span>{endedAtLabel(session)}</span>
+              </div>
+              <p>{end.detail}</p>
+              <p className="session-ended-read-only">Viewing does not resume or send anything.</p>
+              <div className="session-ended-actions">
+                {canContinueSession(session) ? (
+                  <button type="button" className="btn btn-primary" onClick={() => onResume?.(session)}>Continue conversation <span aria-hidden>→</span></button>
+                ) : (
+                  <span>{supportsConversation
+                    ? 'This runtime ended before Sessions recorded an agent conversation ID.'
+                    : 'Shell sessions do not have an agent conversation to resume.'}</span>
+                )}
+                {canContinueSession(session) ? <ContinueElsewhereButton sessionId={session.id} label={label} /> : null}
+                <button type="button" className="btn btn-secondary" disabled={archiveBusy} onClick={() => void archiveFromInbox()}>{archiveBusy ? 'Archiving…' : 'Archive from list'}</button>
+              </div>
+            </div>
+            {archiveError ? <div className="session-history-action-error" role="alert">{archiveError}</div> : null}
+            {loading ? <div className="usage-empty">Loading the conversation…</div> : null}
+            {error ? <div className="search-errors">{error}</div> : null}
+            {transcript?.truncated ? <div className="search-preview-notice">Showing {transcript.messages.length} recent messages from a bounded preview (up to 400).</div> : null}
+            {transcript?.messages.map((message, index) => {
+              const continuation = message.role === 'assistant' && transcript.messages[index - 1]?.role === 'assistant';
+              return (
+              <article className={`session-history-message is-${message.role}${continuation ? ' is-continuation' : ''}`} key={`${message.timestamp ?? 'none'}:${index}`}>
+                {message.role === 'assistant' && !continuation ? (
+                  <header>
+                    {provider ? <ProviderBadge provider={provider} compact /> : <span>Agent</span>}
+                    <time>{message.timestamp ? formatDate(message.timestamp) : ''}</time>
+                  </header>
+                ) : null}
+                <p>{message.text}</p>
+                {message.role === 'user' ? (
+                  <footer>
+                    <span>{message.author ? `${message.author.name} · via Sessions` : 'You'}</span>
+                    <time>{message.timestamp ? formatDate(message.timestamp) : ''}</time>
+                  </footer>
+                ) : null}
+              </article>
+              );
+            })}
+            {!loading && !error && transcript?.messages.length === 0 ? <div className="usage-empty">This session has no normalized conversation messages.</div> : null}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}

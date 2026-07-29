@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sessions — connect to your Mac</title>
+<meta name="description" content="Open a shipped #endpoint connect link without exposing its fragment. This static page checks your Mac directly, then opens the daemon-served app.">
+<script>
+  // Capture the #endpoint compatibility payload, then scrub it before any font
+  // or other request begins. URL fragments are never included in HTTP requests.
+  (function () {
+    var hash = window.location.hash;
+    window.__prettyConnectFragment = hash.length > 1 ? hash.slice(1) : '';
+    if (hash) history.replaceState(null, '', location.pathname + location.search);
+  })();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&amp;family=Instrument+Serif:ital@0;1&amp;display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0b0f0d;
+    --ink-2: #101612;
+    --ink-3: #161e19;
+    --line: #223028;
+    --line-2: #2f4136;
+    --cream: #ece7da;
+    --cream-dim: #a8a496;
+    --cream-faint: #6b6a5f;
+    --phos: #7ef0a6;
+    --phos-dim: #3d7a54;
+    --amber: #f0c674;
+    --rose: #e88b7d;
+    --mono: 'IBM Plex Mono', ui-monospace, monospace;
+    --serif: 'Instrument Serif', georgia, serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    min-height: 100vh; background: var(--ink); color: var(--cream); font-family: var(--mono);
+    font-size: 15px; line-height: 1.65; -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  body::before {
+    content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      repeating-linear-gradient(0deg, transparent 0 2px, rgba(0,0,0,.14) 2px 4px),
+      radial-gradient(ellipse 120% 90% at 50% -10%, rgba(126,240,166,.05), transparent 55%),
+      radial-gradient(ellipse 100% 100% at 50% 115%, rgba(0,0,0,.5), transparent 60%);
+  }
+  a { color: inherit; text-decoration: none; }
+  ::selection { background: var(--phos); color: var(--ink); }
+  .wrap { position: relative; z-index: 1; max-width: 760px; min-height: 100vh; margin: 0 auto; padding: 0 28px; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; padding: 28px 0 0; }
+  .brand { font-family: var(--serif); font-style: italic; font-size: 28px; color: var(--cream); }
+  .brand .tld { color: var(--phos-dim); font-size: 18px; }
+  nav { display: flex; align-items: center; gap: 22px; }
+  nav a { color: var(--cream-dim); font-size: 13px; white-space: nowrap; }
+  nav a:hover, nav a[aria-current="page"] { color: var(--phos); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--phos); outline-offset: 4px; }
+
+  .hero { padding: 88px 0 36px; }
+  .kicker { font-size: 12px; letter-spacing: .22em; text-transform: uppercase; color: var(--phos-dim); margin-bottom: 18px; }
+  .kicker::before { content: '// '; }
+  h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(44px, 8vw, 72px); line-height: 1.02; }
+  h1 em { color: var(--phos); font-style: italic; }
+  .lede { margin-top: 22px; max-width: 55ch; color: var(--cream-dim); font-size: 15.5px; }
+  .lede strong { color: var(--cream); font-weight: 500; }
+
+  .privacy {
+    display: flex; gap: 12px; align-items: flex-start; margin: 24px 0 0; padding: 15px 17px;
+    border-left: 2px solid var(--phos-dim); background: rgba(126,240,166,.035);
+    color: var(--cream-dim); font-size: 13px;
+  }
+  .privacy .lock { color: var(--phos); }
+  .privacy strong { color: var(--cream); font-weight: 500; }
+
+  .shell {
+    margin: 34px 0 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--ink-2); box-shadow: 0 30px 80px -30px rgba(0,0,0,.8), 0 0 60px -20px rgba(126,240,166,.12);
+  }
+  .shell.connected { border-color: var(--phos-dim); box-shadow: 0 30px 80px -30px rgba(0,0,0,.8), 0 0 60px -18px rgba(126,240,166,.24); }
+  .shell.blocked { border-color: rgba(232,139,125,.45); }
+  .shell-bar {
+    display: flex; align-items: center; gap: 8px; padding: 12px 15px; border-bottom: 1px solid var(--line);
+    background: var(--ink-3); color: var(--cream-faint); font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+  }
+  .led { width: 10px; height: 10px; border-radius: 50%; background: var(--cream-faint); transition: .25s; }
+  .checking .led { background: var(--amber); box-shadow: 0 0 12px var(--amber); animation: pulse 1s infinite; }
+  .connected .led { background: var(--phos); box-shadow: 0 0 14px var(--phos); }
+  .blocked .led { background: var(--rose); box-shadow: 0 0 12px var(--rose); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .shell-body { padding: 30px 28px 32px; }
+  .verdict-mark { font-family: var(--serif); font-style: italic; font-size: 34px; line-height: 1.1; color: var(--cream); }
+  .connected .verdict-mark { color: var(--phos); }
+  .blocked .verdict-mark { color: var(--rose); }
+  .status-copy { margin-top: 12px; color: var(--cream-dim); max-width: 56ch; }
+  .endpoint { margin-top: 16px; color: var(--cream-faint); font-size: 12.5px; overflow-wrap: anywhere; }
+  .endpoint code { color: var(--cream-dim); }
+  .open {
+    display: none; width: 100%; margin-top: 28px; padding: 16px 20px; border-radius: 7px;
+    background: var(--phos); color: var(--ink); font-weight: 600; text-align: center; transition: .18s;
+  }
+  .open.visible { display: block; }
+  .open:hover { background: #9df7bd; transform: translateY(-1px); }
+  .instructions { margin-top: 22px; border-top: 1px dashed var(--line); padding-top: 20px; }
+  .instructions p { color: var(--cream-faint); font-size: 13.5px; }
+  .command {
+    margin: 13px 0; padding: 13px 15px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--ink); color: var(--cream); font-size: 14px;
+  }
+  .command::before { content: '$ '; color: var(--phos-dim); }
+  .safe { margin-top: 18px; color: var(--cream-faint); font-size: 12px; }
+  .safe code { color: var(--cream-dim); }
+
+  footer {
+    margin-top: 84px; padding: 30px 0 44px; border-top: 1px solid var(--line); display: flex;
+    justify-content: space-between; align-items: baseline; color: var(--cream-faint); font-size: 12px;
+  }
+  footer a { color: var(--cream-dim); }
+  footer a:hover { color: var(--phos); }
+
+  @media (max-width: 720px) { nav { gap: 14px; } }
+  @media (max-width: 560px) {
+    header { align-items: flex-start; }
+    .brand .tld { display: none; }
+    nav { max-width: 230px; justify-content: flex-end; flex-wrap: wrap; row-gap: 4px; }
+    .hero { padding-top: 64px; }
+    .shell-body { padding: 24px 20px 26px; }
+    footer { align-items: flex-start; gap: 12px; flex-direction: column; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a class="brand" href="index.html">Sessions<span class="tld"> by somewhere</span></a>
+    <nav aria-label="Primary navigation">
+      <a href="index.html#what">what it is</a>
+      <a href="setup.html">get set up</a>
+      <a href="connect.html" aria-current="page">connect</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="kicker">endpoint handoff</p>
+      <h1>Back to your <em>sessions</em>.</h1>
+      <p class="lede">This compatibility page handles the <strong><code>#endpoint=…</code></strong> link printed by <code>sessions remote enable</code>. It checks that address directly, then sends this browser to the app served by your own daemon.</p>
+      <p class="privacy"><span class="lock">◆</span><span><strong>the fragment never touches our servers.</strong> The current command puts no master token in this link. For zero-typing, per-device credentials, use <code>sessions pair</code>.</span></p>
+
+      <div class="shell" id="shell">
+        <div class="shell-bar"><span class="led"></span><span id="stateLabel">waiting for a connect link</span></div>
+        <div class="shell-body">
+          <div class="verdict-mark" id="verdictMark">No address yet.</div>
+          <p class="status-copy" id="statusCopy" aria-live="polite">Run the remote command on your Mac, then open its endpoint link. For the recommended one-scan sign-in, run sessions pair after remote access is enabled.</p>
+          <p class="endpoint" id="endpointLine" hidden>checking <code id="endpointText"></code></p>
+          <a class="open" id="openButton" href="setup.html" target="_top">Open your Mac →</a>
+          <div class="instructions" id="instructions">
+            <p>On the Mac where sessions is installed:</p>
+            <div class="command">sessions remote enable</div>
+            <p>Keep Tailscale connected on both devices. The endpoint link carries the verified address here in the fragment; the current flow does not put the master token in it.</p>
+            <div class="command">sessions pair --name "my phone"</div>
+            <p>That newer QR opens the daemon-served app directly and exchanges a five-minute, single-use ticket for a revocable device credential.</p>
+          </div>
+          <p class="safe">Saved only in this browser under <code>sessions:hosted-connect</code>. The handoff fragment is scrubbed before fonts or other resources load. A legacy optional <code>token</code> field is still forwarded for compatibility, but new QR pairing never shares the master token. No analytics. No terminal relay. Flow source: <code>runtime/cmd/sessions/remote.go</code> and <code>frontend/src/lib/hostedBootstrap.ts</code>.</p>
+          <noscript><p class="status-copy">JavaScript is required to read and immediately scrub the endpoint fragment.</p></noscript>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>sessions — direct from this browser to your Mac.</span>
+    <span><a href="docs.html">docs</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="https://github.com/somewhere-tech/sessions">source</a>&nbsp;&nbsp;·&nbsp;&nbsp;macOS · MIT</span>
+  </footer>
+</div>
+
+<script>
+  (function () {
+    var fragment = window.__prettyConnectFragment || '';
+    window.__prettyConnectFragment = '';
+
+    var shell = document.getElementById('shell');
+    var stateLabel = document.getElementById('stateLabel');
+    var verdictMark = document.getElementById('verdictMark');
+    var statusCopy = document.getElementById('statusCopy');
+    var endpointLine = document.getElementById('endpointLine');
+    var endpointText = document.getElementById('endpointText');
+    var openButton = document.getElementById('openButton');
+    var instructions = document.getElementById('instructions');
+
+    function setState(state, label, verdict, copy) {
+      shell.classList.remove('checking', 'connected', 'blocked');
+      if (state) shell.classList.add(state);
+      stateLabel.textContent = label;
+      verdictMark.textContent = verdict;
+      statusCopy.textContent = copy;
+    }
+
+    function validEndpoint(raw) {
+      try {
+        var url = new URL(raw);
+        var localHost = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+        var local = url.protocol === 'http:' && localHost;
+        if (url.protocol !== 'https:' && !local) return null;
+        if (url.username || url.password) return null;
+        url.hash = '';
+        url.search = '';
+        return url.href.replace(/\/+$/, '');
+      } catch (error) {
+        return null;
+      }
+    }
+
+    async function requestHealth(url, token) {
+      var controller = new AbortController();
+      var timeout = setTimeout(function () { controller.abort(); }, 8000);
+      var options = { cache: 'no-store', signal: controller.signal };
+      if (token) options.headers = { Authorization: 'Bearer ' + token };
+      try {
+        return await fetch(url + '/api/health', options);
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    async function connect(endpoint, token) {
+      setState('checking', 'checking your Mac', 'Reaching your daemon…', 'This browser is calling the public health route at the endpoint in the fragment.');
+      endpointLine.hidden = false;
+      endpointText.textContent = endpoint;
+      instructions.hidden = true;
+
+      try {
+        var remembered = { endpoint: endpoint };
+        if (token) remembered.token = token;
+        localStorage.setItem('sessions:hosted-connect', JSON.stringify(remembered));
+      } catch (error) {
+        // Storage can be disabled; the one-time connection check still works.
+      }
+
+      var response = null;
+      var usedFallback = false;
+      try {
+        response = await requestHealth(endpoint, token);
+      } catch (error) {
+        response = null;
+      }
+
+      if (token && (!response || !response.ok)) {
+        try {
+          usedFallback = true;
+          response = await requestHealth(endpoint, '');
+        } catch (error) {
+          response = null;
+        }
+      }
+
+      if (response && response.ok) {
+        var health = {};
+        try { health = await response.json(); } catch (error) {}
+        var sessionNote = typeof health.sessionsLoaded === 'number'
+          ? ' ' + health.sessionsLoaded + ' session' + (health.sessionsLoaded === 1 ? '' : 's') + ' loaded.'
+          : '';
+        var fallbackNote = usedFallback ? ' The public health check answered without the token.' : '';
+        var authNote = token ? ' The legacy credential will be handed to the daemon-served app in a scrubbed fragment.' : ' The app may ask for a credential; use sessions pair for a revocable per-device one.';
+        setState('connected', 'connected', 'Your Mac answered.', 'The private endpoint is live. Open your Mac\'s own app to use the sessions.' + sessionNote + fallbackNote + authNote);
+        openButton.href = endpoint + '/#endpoint=' + encodeURIComponent(endpoint) + (token ? '&token=' + encodeURIComponent(token) : '');
+        openButton.classList.add('visible');
+      } else {
+        var detail = response ? 'The daemon answered HTTP ' + response.status + '.' : 'The endpoint did not answer within 8 seconds.';
+        setState('blocked', 'connection blocked', 'Couldn’t connect.', detail + ' Check Tailscale on both devices, then run sessions doctor and sessions remote status on your Mac.');
+      }
+    }
+
+    if (!fragment) return;
+
+    var params = new URLSearchParams(fragment);
+    var endpoint = validEndpoint(params.get('endpoint') || '');
+    var token = params.get('token') || '';
+
+    if (!endpoint) {
+      instructions.hidden = false;
+      setState('blocked', 'invalid connect link', 'Link rejected.', 'The endpoint must use https://, or loopback HTTP for the Mac you are sitting at. Run sessions remote enable again for a fresh link.');
+      return;
+    }
+
+    connect(endpoint, token);
+  })();
+</script>
+</body>
+</html>

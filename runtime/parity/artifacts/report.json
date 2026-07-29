@@ -1,0 +1,528 @@
+{
+  "generatedAt": "2026-07-16T23:16:59.235Z",
+  "isolation": {
+    "ts": {
+      "port": 61208,
+      "home": "runtime/parity/.r/ts/h",
+      "state": "runtime/parity/.r/ts/r"
+    },
+    "go": {
+      "port": 61209,
+      "home": "runtime/parity/.r/go/h",
+      "state": "runtime/parity/.r/go/r"
+    },
+    "launchctl": "parity-owned shim; no LaunchAgent registration"
+  },
+  "http": {
+    "marker": "HTTP_PARITY_MARKER",
+    "markerFound": true,
+    "comparisons": {
+      "POST /api/sessions": {
+        "identical": true,
+        "ts": {
+          "status": 201,
+          "contentType": "application/json",
+          "body": {
+            "type": "object",
+            "fields": {
+              "args": {
+                "type": "array",
+                "items": [
+                  "string"
+                ]
+              },
+              "cmd": "string",
+              "cols": "number",
+              "createdAt": "number",
+              "cwd": "string",
+              "exitCode": "null",
+              "exitSignal": "null",
+              "exited": "boolean",
+              "exitedAt": "null",
+              "id": "string",
+              "lastDataAt": "number",
+              "lastUserMessageAt": "null",
+              "pid": "number",
+              "rows": "number",
+              "tool": "string",
+              "working": "boolean"
+            }
+          }
+        },
+        "go": {
+          "status": 201,
+          "contentType": "application/json",
+          "body": {
+            "type": "object",
+            "fields": {
+              "args": {
+                "type": "array",
+                "items": [
+                  "string"
+                ]
+              },
+              "cmd": "string",
+              "cols": "number",
+              "createdAt": "number",
+              "cwd": "string",
+              "exitCode": "null",
+              "exitSignal": "null",
+              "exited": "boolean",
+              "exitedAt": "null",
+              "id": "string",
+              "lastDataAt": "number",
+              "lastUserMessageAt": "null",
+              "pid": "number",
+              "rows": "number",
+              "tool": "string",
+              "working": "boolean"
+            }
+          }
+        }
+      },
+      "GET /api/sessions": {
+        "identical": true,
+        "ts": {
+          "status": 200,
+          "contentType": "application/json",
+          "body": {
+            "type": "object",
+            "fields": {
+              "sessions": {
+                "type": "array",
+                "items": [
+                  {
+                    "type": "object",
+                    "fields": {
+                      "args": {
+                        "type": "array",
+                        "items": [
+                          "string"
+                        ]
+                      },
+                      "cmd": "string",
+                      "cols": "number",
+                      "createdAt": "number",
+                      "cwd": "string",
+                      "exitCode": "null",
+                      "exitSignal": "null",
+                      "exited": "boolean",
+                      "exitedAt": "null",
+                      "id": "string",
+                      "lastDataAt": "number",
+                      "lastUserMessageAt": "null",
+                      "pid": "number",
+                      "rows": "number",
+                      "tool": "string",
+                      "working": "boolean"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "go": {
+          "status": 200,
+          "contentType": "application/json",
+          "body": {
+            "type": "object",
+            "fields": {
+              "sessions": {
+                "type": "array",
+                "items": [
+                  {
+                    "type": "object",
+                    "fields": {
+                      "args": {
+                        "type": "array",
+                        "items": [
+                          "string"
+                        ]
+                      },
+                      "cmd": "string",
+                      "cols": "number",
+                      "createdAt": "number",
+                      "cwd": "string",
+                      "exitCode": "null",
+                      "exitSignal": "null",
+                      "exited": "boolean",
+                      "exitedAt": "null",
+                      "id": "string",
+                      "lastDataAt": "number",
+                      "lastUserMessageAt": "null",
+                      "pid": "number",
+                      "rows": "number",
+                      "tool": "string",
+                      "working": "boolean"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "POST /api/sessions/:id/input": {
+        "identical": true,
+        "ts": {
+          "status": 200,
+          "contentType": "application/json",
+          "body": {
+            "type": "object",
+            "fields": {
+              "ok": "boolean"
+            }
+          }
+        },
+        "go": {
+          "status": 200,
+          "contentType": "application/json",
+          "body": {
+            "type": "object",
+            "fields": {
+              "ok": "boolean"
+            }
+          }
+        }
+      },
+      "GET /api/sessions/:id/snapshot": {
+        "identical": true,
+        "ts": {
+          "status": 200,
+          "contentType": "text/plain; charset=utf-8",
+          "xPrettySeq": "string",
+          "body": "string"
+        },
+        "go": {
+          "status": 200,
+          "contentType": "text/plain; charset=utf-8",
+          "xPrettySeq": "string",
+          "body": "string"
+        }
+      },
+      "GET /api/sessions/:id/events?tail=5": {
+        "identical": true,
+        "ts": {
+          "status": 200,
+          "contentType": "application/json",
+          "body": {
+            "type": "object",
+            "fields": {
+              "endIndex": "number",
+              "events": {
+                "type": "array",
+                "items": []
+              },
+              "nextIndex": "number",
+              "startIndex": "number",
+              "totalCount": "number"
+            }
+          }
+        },
+        "go": {
+          "status": 200,
+          "contentType": "application/json",
+          "body": {
+            "type": "object",
+            "fields": {
+              "endIndex": "number",
+              "events": {
+                "type": "array",
+                "items": []
+              },
+              "nextIndex": "number",
+              "startIndex": "number",
+              "totalCount": "number"
+            }
+          }
+        }
+      },
+      "DELETE /api/sessions/:id": {
+        "identical": true,
+        "ts": {
+          "status": 200,
+          "contentType": "application/json",
+          "body": {
+            "type": "object",
+            "fields": {
+              "ok": "boolean"
+            }
+          }
+        },
+        "go": {
+          "status": 200,
+          "contentType": "application/json",
+          "body": {
+            "type": "object",
+            "fields": {
+              "ok": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  "ws": {
+    "marker": "WS_PARITY_MARKER",
+    "markerFound": true,
+    "comparison": {
+      "identical": false,
+      "ts": [
+        {
+          "type": "hello",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "claudeEventsCount": "number",
+              "claudeReplayStart": "number",
+              "currentSeq": "number",
+              "protocol": "number",
+              "resumedFromSeq": "null",
+              "session": {
+                "type": "object",
+                "fields": {
+                  "args": {
+                    "type": "array",
+                    "items": [
+                      "string"
+                    ]
+                  },
+                  "cmd": "string",
+                  "cols": "number",
+                  "createdAt": "number",
+                  "cwd": "string",
+                  "exitCode": "null",
+                  "exitSignal": "null",
+                  "exited": "boolean",
+                  "exitedAt": "null",
+                  "id": "string",
+                  "lastDataAt": "number",
+                  "lastUserMessageAt": "null",
+                  "pid": "number",
+                  "rows": "number",
+                  "tool": "string",
+                  "working": "boolean"
+                }
+              },
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "output",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "data": "string",
+              "seq": "number",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "inputAck",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "ok": "boolean",
+              "requestId": "string",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "output",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "data": "string",
+              "seq": "number",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "output",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "data": "string",
+              "seq": "number",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        }
+      ],
+      "go": [
+        {
+          "type": "hello",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "claudeEventsCount": "number",
+              "claudeReplayStart": "number",
+              "currentSeq": "number",
+              "protocol": "number",
+              "resumedFromSeq": "null",
+              "session": {
+                "type": "object",
+                "fields": {
+                  "args": {
+                    "type": "array",
+                    "items": [
+                      "string"
+                    ]
+                  },
+                  "cmd": "string",
+                  "cols": "number",
+                  "createdAt": "number",
+                  "cwd": "string",
+                  "exitCode": "null",
+                  "exitSignal": "null",
+                  "exited": "boolean",
+                  "exitedAt": "null",
+                  "id": "string",
+                  "lastDataAt": "number",
+                  "lastUserMessageAt": "null",
+                  "pid": "number",
+                  "rows": "number",
+                  "tool": "string",
+                  "working": "boolean"
+                }
+              },
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "output",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "data": "string",
+              "seq": "number",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "output",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "data": "string",
+              "seq": "number",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "output",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "data": "string",
+              "seq": "number",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "inputAck",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "ok": "boolean",
+              "requestId": "string",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "output",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "data": "string",
+              "seq": "number",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "output",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "data": "string",
+              "seq": "number",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "output",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "data": "string",
+              "seq": "number",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "output",
+          "shape": {
+            "type": "object",
+            "fields": {
+              "data": "string",
+              "seq": "number",
+              "sessionId": "string",
+              "type": "string"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "frontend": {
+    "marker": "FRONTEND_PARITY_MARKER",
+    "markerFound": true,
+    "domSelector": ".xterm-rows",
+    "apiCreates": [
+      {
+        "url": "http://127.0.0.1:61209/api/sessions",
+        "status": 201
+      }
+    ],
+    "fsListings": [
+      {
+        "url": "http://127.0.0.1:61209/api/fs/list",
+        "status": 200
+      }
+    ],
+    "failedResponses": [],
+    "screenshot": "runtime/parity/artifacts/go-frontend-smoke.png",
+    "consoleErrors": []
+  },
+  "verdict": {
+    "httpIdentical": true,
+    "wsIdentical": false,
+    "frontendPassed": true
+  }
+}

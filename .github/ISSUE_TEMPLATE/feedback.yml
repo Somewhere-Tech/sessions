@@ -1,0 +1,55 @@
+name: Share feedback
+description: Tell us what would make Sessions more useful.
+title: "[Feedback]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. This feedback is public, so please leave out session content, private source code, filesystem paths, IDs, and credentials.
+  - type: dropdown
+    id: origin
+    attributes:
+      label: Where did this feedback come from?
+      options:
+        - An agent workflow
+        - My direct use
+        - Both
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Sessions inbox and conversation UI
+        - Search and recall
+        - Today and usage
+        - Fleet and pairing
+        - New sessions and delegation
+        - Installation and updates
+        - CLI and agent workflows
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: feedback
+    attributes:
+      label: What should Sessions improve?
+      description: Tell us about the job you were trying to do and where the product got in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What would a good outcome look like?
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed private session content, paths, IDs, credentials, and source code.
+          required: true

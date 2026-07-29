@@ -1,0 +1,137 @@
+package api
+
+import (
+	"sort"
+	"strings"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
+	"github.com/somewhere-tech/sessions/runtime/internal/watch"
+)
+
+// resumableConversations projects provider files and durable Sessions history
+// into one row per provider conversation. The provider UUID is the identity;
+// individual Sessions runtimes are continuation-chain evidence, not duplicate
+// conversations.
+func (s *Server) resumableConversations() ([]watch.ResumableSession, error) {
+	scanned := watch.ScanResumableConversations()
+	history, err := s.integrationEndpoints.History(s.registry.List(true))
+	if err != nil {
+		return nil, err
+	}
+	return mergeResumableConversations(scanned, history.Sessions), nil
+}
+
+func mergeResumableConversations(
+	scanned []watch.ResumableSession,
+	history []integrations.HistorySession,
+) []watch.ResumableSession {
+	byIdentity := make(map[string]*watch.ResumableSession, len(scanned))
+	for index := range scanned {
+		session := scanned[index]
+		key := resumableIdentity(session.Tool, session.SessionID)
+		copy := session
+		byIdentity[key] = &copy
+	}
+
+	runSeen := make(map[string]map[string]struct{}, len(byIdentity))
+	for _, source := range history {
+		tool := resumableTool(source.Tool)
+		if tool == "" || strings.TrimSpace(source.ProviderSessionID) == "" {
+			continue
+		}
+		key := resumableIdentity(tool, source.ProviderSessionID)
+		session := byIdentity[key]
+		if session == nil {
+			if !source.PromptHistoryOnly {
+				continue
+			}
+			session = &watch.ResumableSession{
+				SessionID: source.ProviderSessionID, Tool: tool,
+				Origin: "Claude prompt index", Title: source.Name,
+				Cwd: source.CWD, ModifiedAt: float64(source.LastActivityAt),
+				FirstUserMessage: source.Name, PromptHistoryOnly: true,
+			}
+			byIdentity[key] = session
+		}
+		if source.PromptHistoryOnly {
+			session.HistoryID = source.ID
+			session.PromptHistoryOnly = true
+			session.Origin = "Claude prompt index"
+		} else if session.HistoryID == "" {
+			session.HistoryID = source.ID
+		}
+		if preferredHistoryTitle(session.Title, source.Name) {
+			session.Title = source.Name
+		}
+		if source.CWD != "" && session.Cwd == "" {
+			session.Cwd = source.CWD
+		}
+		if float64(source.LastActivityAt) > session.ModifiedAt {
+			session.ModifiedAt = float64(source.LastActivityAt)
+		}
+		if source.External {
+			continue
+		}
+		seen := runSeen[key]
+		if seen == nil {
+			seen = make(map[string]struct{})
+			runSeen[key] = seen
+		}
+		if _, exists := seen[source.ID]; exists {
+			continue
+		}
+		seen[source.ID] = struct{}{}
+		session.Runs = append(session.Runs, watch.ResumableRun{
+			SessionID: source.ID, Name: source.Name, StartedAt: source.CreatedAt,
+			LastActivityAt: source.LastActivityAt, Machine: source.Machine,
+			ReopenedAs: source.ReopenedAs, ResumedFrom: source.ResumedFrom,
+			MovedToEndpoint: source.MovedToEndpoint, MovedToSessionID: source.MovedToSessionID,
+			MovedFromEndpoint: source.MovedFromEndpoint, MovedFromSessionID: source.MovedFromSessionID,
+		})
+	}
+
+	result := make([]watch.ResumableSession, 0, len(byIdentity))
+	for _, session := range byIdentity {
+		sort.SliceStable(session.Runs, func(i, j int) bool {
+			if session.Runs[i].StartedAt != session.Runs[j].StartedAt {
+				return session.Runs[i].StartedAt < session.Runs[j].StartedAt
+			}
+			return session.Runs[i].SessionID < session.Runs[j].SessionID
+		})
+		result = append(result, *session)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].ModifiedAt != result[j].ModifiedAt {
+			return result[i].ModifiedAt > result[j].ModifiedAt
+		}
+		return resumableIdentity(result[i].Tool, result[i].SessionID) <
+			resumableIdentity(result[j].Tool, result[j].SessionID)
+	})
+	return result
+}
+
+func resumableTool(value string) string {
+	switch strings.TrimSpace(value) {
+	case "claude", "claude-code":
+		return "claude"
+	case "codex":
+		return "codex"
+	default:
+		return ""
+	}
+}
+
+func resumableIdentity(tool, providerID string) string {
+	return strings.TrimSpace(tool) + ":" + strings.TrimSpace(providerID)
+}
+
+func preferredHistoryTitle(current, candidate string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	current = strings.TrimSpace(current)
+	return current == "" ||
+		strings.HasPrefix(strings.ToLower(current), "claude — ") ||
+		strings.HasPrefix(strings.ToLower(current), "codex — ")
+}

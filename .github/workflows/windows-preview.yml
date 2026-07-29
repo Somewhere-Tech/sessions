@@ -1,0 +1,169 @@
+name: Windows host preview
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+
+jobs:
+  build:
+    name: Build Windows host preview
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: runtime/go.mod
+          cache-dependency-path: runtime/go.sum
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable, 2026-07-21
+        with:
+          toolchain: stable
+
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+
+      - name: Verify Windows runtime contracts and compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages="$(go list ./... | grep -v -E '/internal/(interop|winconpty)$')"
+          go test ./internal/tokenstore -run '^TestWindowsTokenStore' -count=1
+          go test ./internal/state -run '^TestConfigFromEnvParityAndScratchIsolation$' -count=1
+          go test ./cmd/sessions -run '^TestTokenCommandPrintsDaemonToken$' -count=1
+          go test ./cmd/sessions -run '^TestWindowsScratchDaemonTokenContract$' -count=1
+          go test ./cmd/sessions -run '^TestWindowsRunnerProtocolReAdoption$' -count=1
+          go test ./internal/ipc -run '^TestWindowsNamedPipe' -count=1
+          go test ./cmd/sessions-runner -run '^TestWindowsConPTYContract$' -count=1
+          go test ./cmd/sessions-runner -run '^TestWaitChildSyncsLastEventBeforeExit$' -count=1
+          go test ./cmd/sessionsd -run 'Test(SupervisorStopEvent|PlatformStopEvent)'
+          # Compile every package and its test binary on Windows. The complete
+          # behavior suite remains a required Unix gate; many of those tests
+          # deliberately assert Unix mode bits, paths, and process semantics.
+          go test $packages -run '^$' -count=1
+          go test ./internal/winconpty -run '^$' -count=1
+          go vet $packages
+          # HPCON is a pointer-shaped Windows handle. The Win32 attribute API
+          # requires its value directly as lpValue; isolate that unavoidable
+          # uintptr-to-pointer ABI conversion and keep normal vet everywhere else.
+          go vet -unsafeptr=false ./internal/winconpty
+          go build ./...
+        working-directory: runtime
+        env:
+          GOFLAGS: -buildvcs=false
+
+      - name: Verify Windows independent process lifetime contracts
+        shell: pwsh
+        run: |
+          ./scripts/windows/run-go-test-outside-actions-job.ps1 `
+            -WorkingDirectory ./runtime `
+            -Package ./cmd/sessions `
+            -Run '^TestWindowsRunnerUnexpectedLossClassification$'
+          ./scripts/windows/run-go-test-outside-actions-job.ps1 `
+            -WorkingDirectory ./runtime `
+            -Package ./internal/winprocess `
+            -Run '^TestDetachedChildSurvivesParentJobClose$'
+          ./scripts/windows/run-go-test-outside-actions-job.ps1 `
+            -WorkingDirectory ./runtime `
+            -Package ./cmd/sessionsd `
+            -Run '^TestSupervisorRestartsCrashedDaemonWithoutTouchingDetachedRunner$'
+        env:
+          GOFLAGS: -buildvcs=false
+
+      - name: Verify shared client
+        shell: bash
+        run: |
+          npm --prefix frontend run typecheck
+          npm --prefix frontend run build
+          npm --prefix frontend run test:markdown
+          npm --prefix frontend run test:native-credentials
+          npm --prefix frontend run test:structured-events
+          npm --prefix frontend run test:structured-view
+          npm --prefix frontend run test:resume-partial
+          npm --prefix frontend run test:fleet-clarity
+          npm --prefix frontend run test:window-scope
+
+      - name: Verify native shell and Windows host contracts
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml windows_credentials::tests
+          cargo test --manifest-path src-tauri/Cargo.toml windows_cli_path::tests
+          cargo test --manifest-path src-tauri/Cargo.toml windows_supervisor::tests
+          cargo test --manifest-path src-tauri/Cargo.toml windows_runtime::tests
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Verify certificate-free Windows release contracts
+        run: |
+          npm run test:updater-release
+          $version = node -p "require('./src-tauri/tauri.conf.json').version"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-windows.ps1 `
+            -Version $version `
+            -NotesFile "release/notes-v$version.md" `
+            -DryRun
+
+      - name: Build unsigned Windows host preview
+        run: npm run tauri:build -- --bundles nsis
+
+      - name: Assemble standalone Windows host
+        run: |
+          $portable = "src-tauri/target/release/Sessions-portable"
+          New-Item -ItemType Directory -Force -Path "$portable/runtime" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$portable/tools" | Out-Null
+          Copy-Item "src-tauri/target/release/sessions-app.exe" "$portable/Sessions.exe"
+          Copy-Item -Recurse -Force "src-tauri/runtime/*" "$portable/runtime/"
+          Copy-Item "scripts/collect-windows-host-evidence.ps1" "$portable/tools/"
+
+      - name: Collect certificate-free Windows package evidence
+        run: |
+          $portable = "src-tauri/target/release/Sessions-portable"
+          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -File |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw "Windows preview installer is missing"
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File "scripts/collect-windows-host-evidence.ps1" `
+            -RuntimeDirectory "$portable/runtime" `
+            -AppPath "$portable/Sessions.exe" `
+            -InstallerPath $installer.FullName `
+            -OutputPath "$portable/windows-host-package-evidence.json" `
+            -SourceCommit "${{ github.sha }}"
+
+      - name: Upload Windows installer and standalone app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Sessions-Windows-preview
+          path: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/Sessions-portable/
+          if-no-files-found: error
+          retention-days: 14

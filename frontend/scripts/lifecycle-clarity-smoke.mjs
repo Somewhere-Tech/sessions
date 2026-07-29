@@ -1,0 +1,215 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
+import puppeteer from 'puppeteer';
+
+const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
+const [
+  app,
+  connection,
+  navigator,
+  details,
+  history,
+  view,
+  tabs,
+  popout,
+  remote,
+  grid,
+  input,
+  modelControl,
+  machineMark,
+  newSession,
+  resumeDialog,
+  styles
+] = await Promise.all([
+  source('src/App.tsx'),
+  source('src/components/ConnectionStatus.tsx'),
+  source('src/components/SessionNavigator.tsx'),
+  source('src/components/SessionDetails.tsx'),
+  source('src/components/SessionHistoryView.tsx'),
+  source('src/components/SessionView.tsx'),
+  source('src/components/SessionTabs.tsx'),
+  source('src/components/SessionPopOutButton.tsx'),
+  source('src/components/RemoteView.tsx'),
+  source('src/components/GridView.tsx'),
+  source('src/components/InputBar.tsx'),
+  source('src/components/ComposerModelControl.tsx'),
+  source('src/components/MachineMark.tsx'),
+  source('src/components/NewSessionDialog.tsx'),
+  source('src/components/ResumeDialog.tsx'),
+  source('src/styles/globals.css')
+]);
+
+assert.doesNotMatch(app, /fromTerminalStatus/);
+assert.match(app, /machine=\{machine\} hydrated=\{sessionsHydrated\} error=\{sessionsError\}/);
+assert.doesNotMatch(connection, /terminalStatus|last known state/i);
+assert.match(connection, /Can’t reach \$\{machine\}/);
+
+assert.match(navigator, /RECENTLY_ENDED_DAYS = 7/);
+assert.match(navigator, /RECENTLY_ENDED_LIMIT = 20/);
+assert.match(navigator, /DisclosureChevron open=\{runningOpen\} \/> Live/);
+assert.match(navigator, /DisclosureChevron open=\{endedOpen\} \/> Recently ended/);
+assert.match(navigator, /session-tree-toggle/);
+assert.match(navigator, /All ended sessions →/);
+assert.doesNotMatch(navigator, /ENDED_CATEGORIES|Provider finished|Ended through Sessions/);
+assert.doesNotMatch(navigator, /Problems/);
+assert.doesNotMatch(navigator, /session-nav-summary/);
+assert.match(navigator, />Resume <span aria-hidden>→<\/span><\/button>/);
+assert.match(navigator, /draggable=\{movingId !== session\.id\}/);
+assert.match(navigator, /text\/x-sessions-session-id/);
+assert.match(navigator, /Start a linked session…/);
+assert.match(navigator, /<MachineMark machine=\{machine\} size=\{17\} \/>/);
+assert.doesNotMatch(navigator, /<span>\{machine\}<\/span>/);
+assert.match(navigator, /<ProviderMark provider=\{providerName\} size=\{20\} \/>/);
+assert.match(navigator, /className="session-continue-action" onClick=\{onContinue\}>Continue<\/button>/);
+assert.match(app, /onContinue=\{\(\) => setDialogOpen\('resume'\)\}/);
+assert.doesNotMatch(navigator, /session-mode-glyph/);
+
+assert.match(details, />Session control</);
+assert.match(details, /The conversation is kept and you can resume it later/);
+assert.doesNotMatch(details, /Danger zone|Already ended|btn-danger/);
+assert.doesNotMatch(history, /Delegate/);
+assert.match(history, /read-only history/);
+assert.doesNotMatch(history, /↻ Resume/);
+assert.match(history, /Archive from list/);
+assert.doesNotMatch(history, /No resumable provider identity was found/);
+assert.doesNotMatch(tabs, /onResume|tab-resume|tab-popout/);
+assert.doesNotMatch(app, /onResume=\{\(\) => setDialogOpen\('resume'\)\}/);
+assert.match(app, /const showManagerTabs = activeManagerTabs\.length > 1/);
+assert.match(app, /sessionWorkspace && showManagerTabs/);
+assert.match(app, /sessionId=\{sessionId\}[\s\S]*isActive[\s\S]*onStatusChange=\{setStatus\}/);
+assert.match(popout, />Pop out<\/span>/);
+assert.match(popout, /mode'\) === 'single'/);
+assert.match(view, /No terminal for this Rich session/);
+assert.match(view, /Not available in 0\.2\.7/);
+assert.doesNotMatch(view, /↳ Delegate|resumed from seq/);
+assert.match(view, /This is a Terminal session/);
+assert.match(view, />Okay<\/button>/);
+assert.match(view, />Don’t show again<\/button>/);
+assert.match(view, /<MachineMark machine=\{getActiveServer\(\)\.name\} size=\{18\} \/>/);
+assert.doesNotMatch(view, /session-parser/);
+assert.match(view, /sessions:terminal-notice-ack:/);
+assert.match(view, /setTimeout\(\(\) => \{[\s\S]*setTerminalNoticeOpen\(true\);[\s\S]*\}, 400\)/);
+assert.match(styles, /\.terminal-runtime-notice\s*\{[\s\S]*position:\s*absolute;/);
+assert.match(styles, /@media \(max-width: 720px\)[\s\S]*\.terminal-runtime-notice\s*\{[\s\S]*position:\s*fixed;/);
+assert.match(styles, /\.session-tree-toggle\s*\{[\s\S]*width:\s*30px;[\s\S]*height:\s*30px;/);
+assert.match(styles, /\.session-ended-summary\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*min-width:\s*0;/);
+assert.match(styles, /\.session-ended-summary\s*>\s*\.session-ended-actions\s*\{[^}]*flex-wrap:\s*wrap;[^}]*max-width:\s*100%;/);
+assert.doesNotMatch(styles, /\.tab-resume|\.tab-popout/);
+assert.match(styles, /\.session-row-action-menu\.opens-up/);
+assert.doesNotMatch(styles, /\.session-ended-summary\.is-failed/);
+assert.doesNotMatch(remote, /copyOnClickAtPointer|onClick=\{\(e\) => copy/);
+assert.doesNotMatch(grid, /copyOnClickAtPointer|onClick=\{\(e\) => copy/);
+assert.match(remote, /<CopyButton getText=\{m\.content\} iconOnly/);
+assert.match(grid, /<CopyButton getText=\{m\.content\} iconOnly/);
+assert.match(input, /<ComposerModelControl/);
+assert.match(modelControl, /Next message/);
+assert.match(modelControl, /listSessionModelOptions\(sessionId\)/);
+assert.match(modelControl, /Applies to the next message\. Existing history is unchanged\./);
+assert.match(machineMark, /aria-label=\{machine\}/);
+assert.match(styles, /\.remote-message-actions\.is-agent\s*\{\s*justify-content:\s*flex-start;/);
+assert.doesNotMatch(styles, /\.remote-bubble-assistant\s*\{[^}]*cursor:\s*copy;/);
+assert.match(newSession, /\{browserOpen \? \([\s\S]*<DirectoryBrowser[\s\S]*\) : null\}/);
+assert.match(resumeDialog, /Continue an earlier chat/);
+assert.match(resumeDialog, /\(\['all', 'claude', 'codex'\] as const\)/);
+assert.match(resumeDialog, /s\.title\?\.toLowerCase\(\)\.includes\(q\)/);
+assert.match(resumeDialog, /const title = session\.title\?\.trim\(\) \|\| msg/);
+assert.match(resumeDialog, /Search titles, requests, or workspaces/);
+
+const browser = await puppeteer.launch({ headless: true });
+try {
+  const page = await browser.newPage();
+  await page.setViewport({ width: 900, height: 600 });
+  await page.setContent(`
+    <style>${styles}</style>
+    <main class="session-view view-remote" style="width: 900px; height: 600px">
+      <header class="session-active-header">
+        <div class="session-active-copy">
+          <span class="session-parent-breadcrumb">Manager session</span>
+          <div class="session-active-title-row">
+            <h1>Terminal compatibility check</h1>
+            <span class="session-live-pill">Idle</span>
+            <span class="session-runtime-anchor">
+              <span class="session-runtime-badge is-terminal">Terminal</span>
+              <aside id="terminal-notice" class="terminal-runtime-notice">
+                <strong>This is a Terminal session</strong>
+                <p>The conversation may be delayed or incomplete.</p>
+                <div class="terminal-runtime-notice-actions"><button class="btn">Okay</button></div>
+              </aside>
+            </span>
+          </div>
+        </div>
+      </header>
+      <div class="session-toolbar"><div class="view-toggle">Conversation</div></div>
+      <div id="session-body" class="session-body"></div>
+    </main>
+  `);
+  const withNotice = await page.evaluate(() => ({
+    bodyHeight: document.querySelector('#session-body').getBoundingClientRect().height,
+    noticeWidth: document.querySelector('#terminal-notice').getBoundingClientRect().width,
+    noticeHeight: document.querySelector('#terminal-notice').getBoundingClientRect().height
+  }));
+  await page.$eval('#terminal-notice', (notice) => notice.remove());
+  const withoutNoticeHeight = await page.$eval('#session-body', (body) => body.getBoundingClientRect().height);
+  assert.equal(withNotice.bodyHeight, withoutNoticeHeight, 'terminal notice must not resize the session body');
+  assert.ok(withNotice.noticeWidth <= 322, `terminal notice should remain a bubble, got ${withNotice.noticeWidth}px`);
+  assert.ok(withNotice.noticeHeight < 240, `terminal notice should remain compact, got ${withNotice.noticeHeight}px`);
+
+  await page.setViewport({ width: 460, height: 500 });
+  await page.setContent(`
+    <style>${styles}</style>
+    <section id="ended-card" class="session-ended-summary" style="width: 392px; box-sizing: border-box">
+      <div><strong>Conversation ended</strong><span>Today at 10:14 AM</span></div>
+      <p>The provider finished normally and the exact conversation is still available.</p>
+      <p class="session-ended-read-only">Viewing does not resume or send anything.</p>
+      <div class="session-ended-actions">
+        <button class="btn btn-primary">Continue conversation →</button>
+        <button class="btn btn-secondary">Archive from list</button>
+      </div>
+    </section>
+  `);
+  const endedActionBounds = await page.evaluate(() => {
+    const card = document.querySelector('#ended-card').getBoundingClientRect();
+    return [...document.querySelectorAll('.session-ended-actions .btn')].map((button) => {
+      const bounds = button.getBoundingClientRect();
+      return { left: bounds.left, right: bounds.right, cardLeft: card.left, cardRight: card.right };
+    });
+  });
+  for (const bounds of endedActionBounds) {
+    assert.ok(bounds.left >= bounds.cardLeft, 'ended-session action must stay inside the card on the left');
+    assert.ok(bounds.right <= bounds.cardRight, 'ended-session action must stay inside the card on the right');
+  }
+} finally {
+  await browser.close();
+}
+
+const scratch = await mkdtemp(join(tmpdir(), 'sessions-mode-smoke-'));
+const output = join(scratch, 'session-mode.mjs');
+try {
+  await build({
+    entryPoints: ['src/lib/sessionMode.ts'],
+    bundle: true,
+    format: 'esm',
+    outfile: output,
+    platform: 'node',
+    target: 'node20',
+    logLevel: 'silent'
+  });
+  const { sessionMode, sessionModeGlyph, sessionModeName } = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
+  const rich = { kind: 'codex-app-server', tool: 'codex' };
+  const terminal = { kind: 'pty', tool: 'claude-code' };
+  assert.equal(sessionMode(rich), 'rich');
+  assert.equal(sessionModeGlyph(rich), '◆');
+  assert.equal(sessionModeName(rich), 'Rich — Codex app-server');
+  assert.equal(sessionMode(terminal), 'terminal');
+  assert.equal(sessionModeGlyph(terminal), '▮');
+  assert.equal(sessionModeName(terminal), 'Terminal compatibility — Claude in a PTY');
+} finally {
+  await rm(scratch, { recursive: true, force: true });
+}
+
+console.log('lifecycle clarity smoke: ok');

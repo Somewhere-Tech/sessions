@@ -1,0 +1,3 @@
+go test fuzz v1
+string("thread/tokenUsage/updated")
+[]byte("{\"threadId\":\"thread-1\",\"turnId\":\"turn-1\",\"tokenUsage\":{\"last\":{\"totalTokens\":1e10000}}}")

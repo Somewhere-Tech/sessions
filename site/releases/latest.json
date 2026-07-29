@@ -1,0 +1,11 @@
+{
+  "version": "0.2.6",
+  "notes": "# Sessions 0.2.6\n\n- Rebuilds Sessions as a clear operations inbox: live work stays under Running,\n  ended work is grouped by outcome, and every session has explicit View,\n  Close view, End, Resume, Move, and Archive actions where applicable.\n- Makes termination auditable. New end records preserve the initiating local\n  agent or paired device, exact time, client, optional literal reason, and batch\n  operation. Multi-session termination is preflighted and protected by the\n  aggregate mass-kill guard.\n- Makes Resume a first-class, linked lifecycle action. The old runtime remains\n  immutable, the new runtime points back to it, and titles, tags, account\n  profile, hierarchy, provider identity, and Rich/Terminal mode carry forward.\n- Adds explicit Rich and Terminal choices. Codex defaults to its app-server\n  conversation runtime; Claude remains terminal-first with a clearly labelled\n  structured preview. Active Claude turns reject extra input visibly instead\n  of creating a hidden prompt queue.\n- Improves search and history readability with stable query state, clearer\n  user-versus-agent results, provider identity, message timestamps, read-only\n  View language, and safer ANSI/control-message cleanup.\n- Keeps degraded sessions live and honest: optional MCP failures render as\n  Limited rather than crashed, while lost runners remain visible during\n  bounded recovery.\n- Adds provider-version inspection and one-click update surfaces, accessible\n  ended-session selection/archive, larger readable typography, Fleet polish,\n  and the responsive mobile foundation used by the Android client.",
+  "pub_date": "2026-07-25T19:20:09.678Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeThmbWFlSVRBOHRnak5JN3ZyZUg5TTFPR3V6TXRWMFZIaGowdmpIQ3B5YXdQNDFDS2pyTU56Q01ERHV3dlI2MUdNbXJER052ajVaZm95a0gyUWJFN0xPU2ZrakpIdmdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MDA3MjA4CWZpbGU6U2Vzc2lvbnMuYXBwLnRhci5negp6WWNhdWtrOUM4VjgzTTVjRVBzTDdhdjArcjdzTnJUa2h1U0FZRXBxODRkMjNIYTJOekdGeGlpWnJZdm0veHQ5QlhMN2xqYzRnd2l5ei9LYVdQOVJCQT09Cg==",
+      "url": "https://github.com/somewhere-tech/sessions/releases/download/v0.2.6/Sessions.app.tar.gz"
+    }
+  }
+}

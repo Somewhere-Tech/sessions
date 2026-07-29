@@ -1,0 +1,79 @@
+# Windows host test matrix
+
+This is the minimum public evidence for a Windows host release. Use disposable
+Sessions state and disposable provider conversations. Never point destructive
+tests at irreplaceable work or credentials.
+
+## Build and package
+
+- Build all Go packages and test binaries on `windows-2022`.
+- Run Windows-specific process, transport, ConPTY, credential, state, and
+  updater tests.
+- Build the shared React frontend and native Tauri tests.
+- Assemble the current-user installer and portable client from the same source
+  revision.
+- Record the source revision, package hashes, runtime manifest, and signing
+  state.
+
+Unix behavior tests remain required for shared packages, but cross-compilation
+is not Windows runtime evidence.
+
+## Clean install
+
+- Install as a standard user without administrator elevation.
+- Verify one per-user supervisor definition and one managed Sessions PATH entry.
+- Confirm the CLI, daemon, and viewer agree on version and state location.
+- Confirm uninstall removes only Sessions-owned integration and does not end or
+  delete unrelated work.
+
+## Terminal and providers
+
+Exercise PowerShell, `cmd.exe`, Claude, and Codex:
+
+- Unicode input/output and paste;
+- terminal resize and scrollback replay;
+- normal provider exit;
+- graceful interrupt followed by bounded hard termination;
+- sleep, wake, sign-out messaging, and viewer relaunch.
+
+## Lifetime and recovery
+
+- Closing the viewer preserves exact runner and provider PIDs.
+- A daemon crash and restart re-adopts compatible runners and restores durable
+  output before accepting new input.
+- Explicit End terminates the runner-owned disposable process tree.
+- Unexpected runner loss creates one durable lost/recovery record and never
+  launches a hidden replacement.
+- An update either preserves the complete live baseline or refuses before
+  changing the active installation.
+
+## Local security
+
+- Named Pipes reject remote and wrong-user access and verify peer identity.
+- DPAPI-protected state decrypts for the owning user and fails closed for a
+  different user, copied path, or corrupt envelope without silent rotation.
+- Secrets do not appear in command lines, logs, links, support output, or
+  browser storage.
+- Provider credentials remain in provider-owned stores.
+- A restrictive parent Job cannot make the viewer or installer the hidden
+  lifetime owner of a runner.
+
+## Signed update
+
+- Verify Authenticode publisher and timestamp on every executable and the
+  installer.
+- Verify the pinned updater signature and exact SHA-256 for the downloaded
+  artifact.
+- Rehearse interruption and rollback.
+- Confirm the update UI reports signed, preview, available, compatible, and
+  installed states literally.
+- Confirm no update path can be authorized solely by an ordinary paired-device
+  credential.
+
+## Release evidence
+
+Save only non-sensitive evidence: source revision, package hashes, signer,
+platform version, test results, and before/after process identifiers from
+disposable sessions. Do not collect transcripts, prompts, terminal contents,
+credentials, private paths, environment variables, or unrelated process
+command lines.

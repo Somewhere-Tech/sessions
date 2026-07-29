@@ -1,0 +1,104 @@
+name: Report a problem
+description: Open a public Sessions support ticket for a reproducible problem.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Sessions.
+
+        This ticket is public. Do not paste transcripts, prompts, terminal output, session IDs, filesystem paths, tokens, credentials, environment variables, or private source code. `sessions support --diagnostics` produces a small preview that excludes those fields, but you should still review it before pasting.
+  - type: dropdown
+    id: origin
+    attributes:
+      label: Who encountered this?
+      description: Sessions is agent-native, so agent-reported failures are first-class product reports.
+      options:
+        - An agent encountered it
+        - I encountered it directly
+        - Both / not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did it happen?
+      options:
+        - Sessions CLI or runtime
+        - Sessions desktop app
+        - Codex session
+        - Claude Code session
+        - Shell session
+        - Fleet or another machine
+        - Other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the visible behavior and the action immediately before it.
+      placeholder: I clicked… Sessions showed…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: A small, safe reproduction is more useful than a raw log dump.
+      placeholder: |
+        1. Open…
+        2. Choose…
+        3. See…
+    validations:
+      required: true
+  - type: textarea
+    id: command_error
+    attributes:
+      label: Sanitized command and error
+      description: Especially for agent reports, include a sanitized command shape or app action, exit code, and exact error after removing private arguments, IDs, paths, and content.
+      placeholder: |
+        Command/action:
+        Exit code:
+        Error:
+  - type: input
+    id: version
+    attributes:
+      label: Sessions version
+      description: Run `sessions version`.
+      placeholder: v0.2.3
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Linux
+        - Windows client
+        - Android client
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Optional diagnostic preview
+      description: Paste only the reviewed output of `sessions support --diagnostics`. Do not paste `sessions doctor`, raw logs, or transcripts.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I reviewed this ticket and removed private session content, paths, IDs, credentials, and source code.
+          required: true

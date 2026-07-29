@@ -1,0 +1,261 @@
+name: Release Sessions
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CI: "true"
+  GOFLAGS: -buildvcs=false
+  APPLE_TEAM_ID: 7GW9T5ZWW8
+  APPLE_ID: ${{ secrets.APPLE_ID }}
+  APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+  APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+  APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  release:
+    name: Sign, notarize, verify, and publish
+    runs-on: macos-14
+    timeout-minutes: 90
+    environment: release
+
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Enforce the public source boundary
+        run: scripts/check-public-tree.sh
+
+      - name: Resolve and verify the release tag
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${REQUESTED_TAG:-$GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: release tag must look like v0.1.0" >&2
+            exit 2
+          fi
+          git fetch --no-tags origin main
+          commit="$(git rev-parse "$tag^{commit}")"
+          if ! git merge-base --is-ancestor "$commit" origin/main; then
+            echo "error: $tag does not point to a commit contained in origin/main" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          notes_file="release/notes-v${version}.md"
+          if [[ ! -f "$notes_file" ]]; then
+            echo "error: release notes are missing at $notes_file" >&2
+            exit 1
+          fi
+          printf 'RELEASE_TAG=%s\nRELEASE_VERSION=%s\nRELEASE_NOTES_FILE=%s\n' \
+            "$tag" "$version" "$notes_file" >> "$GITHUB_ENV"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+            runtime/testdata/node-runtime/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: runtime/go.mod
+          cache-dependency-path: runtime/go.sum
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable, 2026-07-21
+        with:
+          toolchain: stable
+
+      - name: Validate release secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          SESSIONS_UPDATER_PRIVATE_KEY: ${{ secrets.SESSIONS_UPDATER_PRIVATE_KEY }}
+        run: |
+          missing=()
+          [[ -n "$APPLE_CERTIFICATE" ]] || missing+=(APPLE_CERTIFICATE)
+          [[ -n "$APPLE_CERTIFICATE_PASSWORD" ]] || missing+=(APPLE_CERTIFICATE_PASSWORD)
+          [[ -n "$SESSIONS_UPDATER_PRIVATE_KEY" ]] || missing+=(SESSIONS_UPDATER_PRIVATE_KEY)
+          apple_id_ready=0
+          api_key_ready=0
+          [[ -n "$APPLE_ID" && -n "$APPLE_PASSWORD" ]] && apple_id_ready=1
+          [[ -n "$APPLE_API_ISSUER" && -n "$APPLE_API_KEY" && -n "$APPLE_API_PRIVATE_KEY" ]] && api_key_ready=1
+          if ((apple_id_ready == 0 && api_key_ready == 0)); then
+            missing+=("APPLE_ID + APPLE_PASSWORD or APPLE_API_ISSUER + APPLE_API_KEY + APPLE_API_PRIVATE_KEY")
+          fi
+          if ((${#missing[@]})); then
+            printf 'error: missing release secret: %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+
+      - name: Import the Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          certificate_path="$RUNNER_TEMP/sessions-developer-id.p12"
+          keychain_path="$RUNNER_TEMP/sessions-build.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 3600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          identity='Developer ID Application: Uzair Haq (7GW9T5ZWW8)'
+          security find-identity -v -p codesigning "$keychain_path" | grep -F "$identity"
+          printf 'SESSIONS_SIGN_IDENTITY=%s\nAPPLE_SIGNING_IDENTITY=%s\n' \
+            "$identity" "$identity" >> "$GITHUB_ENV"
+
+      - name: Stage updater and notarization keys
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          SESSIONS_UPDATER_PRIVATE_KEY: ${{ secrets.SESSIONS_UPDATER_PRIVATE_KEY }}
+        run: |
+          umask 077
+          updater_key="$RUNNER_TEMP/sessions-updater.key"
+          printf '%s' "$SESSIONS_UPDATER_PRIVATE_KEY" > "$updater_key"
+          cp release/updater.pub "$updater_key.pub"
+          printf 'SESSIONS_UPDATER_KEY_PATH=%s\n' "$updater_key" >> "$GITHUB_ENV"
+          if [[ -n "$APPLE_API_PRIVATE_KEY" ]]; then
+            api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+            printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$api_key_path"
+            printf 'APPLE_API_KEY_PATH=%s\n' "$api_key_path" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+          npm --prefix runtime/testdata/node-runtime ci
+
+      - name: Run the release gate
+        run: |
+          (cd runtime && go build ./... && go vet ./... && go test ./...)
+          bash runtime/scripts/gen-cli-docs.sh
+          git diff --exit-code -- docs/CLI.md
+          npm --prefix frontend run typecheck
+          npm --prefix frontend run build
+          npm --prefix frontend run test:markdown
+          npm --prefix frontend run test:structured-events
+          npm --prefix frontend run test:structured-view
+          npm --prefix frontend run test:window-scope
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build and notarize Sessions.app
+        run: scripts/release-app.sh --version "$RELEASE_VERSION" --notes-file "$RELEASE_NOTES_FILE"
+
+      - name: Build standalone runtime archives
+        run: |
+          runtime/scripts/release.sh \
+            --version "$RELEASE_VERSION" \
+            --output-dir "release/out/v${RELEASE_VERSION}/cli"
+
+      - name: Prepare immutable release assets
+        run: |
+          output_dir="release/out/v${RELEASE_VERSION}"
+          app_bundle="src-tauri/target/release/bundle/macos/Sessions.app"
+          app_archive="src-tauri/target/release/bundle/macos/Sessions.app.tar.gz"
+          app_zip="$output_dir/Sessions_${RELEASE_VERSION}_darwin_arm64.zip"
+          cp "$app_archive" "$output_dir/Sessions.app.tar.gz"
+          cp "$app_archive.sig" "$output_dir/Sessions.app.tar.gz.sig"
+          ditto -c -k --sequesterRsrc --keepParent "$app_bundle" "$app_zip"
+          (
+            cd "$output_dir"
+            for artifact in \
+              Sessions.app.tar.gz \
+              Sessions.app.tar.gz.sig \
+              "Sessions_${RELEASE_VERSION}_darwin_arm64.zip" \
+              latest.json \
+              cli/*; do
+              [[ "$artifact" == *.sha256 ]] && continue
+              shasum -a 256 "$artifact" | sed 's#  cli/#  #'
+            done
+          ) > "$output_dir/checksums.txt"
+          shasum -a 256 "$app_zip" | sed "s#  .*/#  #" > "$app_zip.sha256"
+          xcrun stapler validate "$app_bundle"
+          spctl --assess --type execute --verbose=4 "$app_bundle"
+          (cd "$output_dir" && shasum -a 256 -c "Sessions_${RELEASE_VERSION}_darwin_arm64.zip.sha256")
+          for checksum in "$output_dir"/cli/*.sha256; do
+            (cd "$output_dir/cli" && shasum -a 256 -c "${checksum##*/}")
+          done
+
+      - name: Create draft GitHub Release
+        run: |
+          if draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [[ "$draft" != true ]]; then
+              echo "error: $RELEASE_TAG is already published; refusing to replace immutable assets" >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" \
+              --draft \
+              --verify-tag \
+              --title "Sessions $RELEASE_VERSION" \
+              --notes-file "$RELEASE_NOTES_FILE"
+          fi
+
+      - name: Upload and publish GitHub Release
+        run: |
+          output_dir="release/out/v${RELEASE_VERSION}"
+          assets=(
+            "$output_dir/Sessions.app.tar.gz"
+            "$output_dir/Sessions.app.tar.gz.sig"
+            "$output_dir/Sessions.app.tar.gz.sha256"
+            "$output_dir/Sessions_${RELEASE_VERSION}_darwin_arm64.zip"
+            "$output_dir/Sessions_${RELEASE_VERSION}_darwin_arm64.zip.sha256"
+            "$output_dir/checksums.txt"
+            "$output_dir/latest.json"
+          )
+          for asset in "$output_dir"/cli/*; do
+            assets+=("$asset")
+          done
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+          {
+            echo "## Sessions $RELEASE_VERSION published"
+            echo
+            echo "GitHub Release: https://github.com/Somewhere-Tech/sessions/releases/tag/$RELEASE_TAG"
+            echo
+            echo "Updater promotion remains explicit: patch only \`releases/latest.json\` on the Sessions Somewhere project with \`release/out/v${RELEASE_VERSION}/latest.json\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/sessions-build.keychain-db" 2>/dev/null || true
+          rm -f \
+            "$RUNNER_TEMP/sessions-developer-id.p12" \
+            "$RUNNER_TEMP/sessions-updater.key" \
+            "$RUNNER_TEMP/sessions-updater.key.pub" \
+            "$RUNNER_TEMP"/AuthKey_*.p8

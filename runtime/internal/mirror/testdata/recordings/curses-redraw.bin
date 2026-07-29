@@ -1,0 +1,5 @@
+[?1049h[2J[H[H[1;44;97m dashboard frame 1 [0m[K[3;5H[38;5;82mworker-a[0m  23%[4;5H[38;2;240;180;20mworker-b[0m  17%[8;20r[20;1Htick 1
+[r[H[1;44;97m dashboard frame 2 [0m[K[3;5H[38;5;82mworker-a[0m  46%[4;5H[38;2;240;180;20mworker-b[0m  34%[8;20r[20;1Htick 2
+[r[H[1;44;97m dashboard frame 3 [0m[K[3;5H[38;5;82mworker-a[0m  69%[4;5H[38;2;240;180;20mworker-b[0m  51%[8;20r[20;1Htick 3
+[r[H[1;44;97m dashboard frame 4 [0m[K[3;5H[38;5;82mworker-a[0m  92%[4;5H[38;2;240;180;20mworker-b[0m  68%[8;20r[20;1Htick 4
+[r[24;1Hpress q to quit

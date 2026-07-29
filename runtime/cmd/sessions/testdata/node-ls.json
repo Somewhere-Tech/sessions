@@ -1,0 +1,22 @@
+[
+  {
+    "id": "d268fee4-d5d9-43ca-b1dd-e78c5df9b96c",
+    "cmd": "/bin/bash",
+    "args": [
+      "-i"
+    ],
+    "cwd": "/tmp/sessions-cli-capture.P35AvP/work",
+    "cols": 300,
+    "rows": 50,
+    "createdAt": 1784240220437,
+    "pid": 49150,
+    "tool": "terminal",
+    "working": false,
+    "lastDataAt": 1784240220600,
+    "lastUserMessageAt": null,
+    "exited": false,
+    "exitCode": null,
+    "exitSignal": null,
+    "exitedAt": null
+  }
+]

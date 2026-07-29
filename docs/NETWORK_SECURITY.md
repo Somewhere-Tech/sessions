@@ -1,0 +1,176 @@
+# Sessions-owned network and outbound security
+
+Status: **product security policy.** Sessions is local by default. This policy
+applies to network traffic initiated by Sessions.app, `sessionsd`, and the
+`sessions` CLI. It does not claim that Claude, Codex, a shell, or an agent's own
+tools are offline; those subprocesses retain the permissions the user gave
+them.
+
+## Default
+
+- Starting, viewing, searching, tagging, and measuring local sessions requires
+  no Somewhere account and sends no transcript, prompt, terminal output, usage
+  event, or telemetry to Somewhere.
+- A new Sessions-owned outbound data path must be visible and attributable. Its
+  implementation and UI must name the destination, trigger, payload class,
+  credential source, retention expectation, timeout/retry behavior, and how the
+  user disables or revokes it.
+- Data-bearing outbound features are opt-in. An update check may fetch public
+  release metadata automatically, but it must not attach local session data or
+  a durable machine/user identifier.
+- Sessions does not add third-party analytics, advertising SDKs, or silent crash
+  uploads. Local diagnostics stay local until the user previews and explicitly
+  sends them.
+- LAN, Tailscale Serve, pairing, a future cloud worker, backup, and support
+  access are separate capabilities. Enabling one never silently enables
+  another or creates a general-purpose tunnel.
+
+## Review checklist for an outbound feature
+
+1. Is the destination allowlisted and is TLS/authentication fail-closed?
+2. Can the payload be metadata instead of transcript or terminal content?
+3. Does the UI show the action before the first data-bearing request?
+4. Are credentials referenced from their owner rather than copied into prompts,
+   workspaces, runner environments, or logs?
+5. Are requests bounded, cancelable, rate-limited where appropriate, and free
+   of unbounded retry queues?
+6. Can the user turn it off and revoke server-side capability without
+   reinstalling Sessions?
+7. Do tests prove local-only operation still works with the network unavailable?
+
+## Nearby Bonjour discovery and LAN access
+
+Bonjour is a low-sensitivity discovery hint, not authentication. `sessionsd`
+advertises `_sessions._tcp` only while the user-enabled LAN listener is active
+and names only that selected private IPv4 address as its target. On macOS the
+daemon registers the proxy record through Apple's system Bonjour responder;
+other platforms use the same record contract through the bundled mDNS
+implementation. The record carries the friendly instance name, IP/port,
+protocol marker, HTTP transport marker, and “approval required.” It carries no
+credential, account, full machine ID, session metadata, workspace, usage, or
+filesystem path. Any peer on a local link where the operating system publishes
+Bonjour can observe or spoof such a record, even when the selected target
+address is unreachable from that link.
+
+Native clients and `sessions machines discover` therefore verify `/api/health`
+before presenting a candidate, then require a separate request/accept/claim
+flow. Nearby bootstrap routes:
+
+- exist only on the dedicated LAN listener, never the main loopback listener;
+- require a private IPv4 network peer and `application/json`;
+- reject every browser `Origin`;
+- bind the short-lived request secret to the observed source address;
+- are bounded by the shared pending-request limits; and
+- issue only a per-device revocable token after authenticated local host
+  approval.
+
+LAN traffic is plain HTTP. Credentials and later session traffic are therefore
+not confidential against a hostile observer on shared Wi-Fi even though API
+authorization is required. The product labels this “trusted private network,”
+does not recommend it for hotels, cafés, or other shared networks, and keeps
+Tailscale Serve HTTPS as the preferred remote/untrusted-network path. A
+Bonjour failure does not disable the listener; disabling LAN access also stops
+the advertisement.
+
+The agent surface has the same boundary. `sessions machines connect` accepts
+only private IPv4 HTTP origins or `.ts.net` HTTPS origins, follows no redirects,
+never sends the local daemon token to a candidate, and stores an issued token
+in a separate mode-0600 file. The metadata registry contains no credential.
+`sessions --machine` reads that file internally, while `sessions access`
+exposes the same pending host decisions as the native inbox. The low-level
+global `--host` flag uses the local daemon token only for a loopback target; a
+non-loopback raw host receives no local credential.
+
+## Native update traffic
+
+Automatic update awareness and `sessions update --check` send only an HTTPS
+GET with a non-identifying updater user agent to the fixed public release route:
+`sessions.somewhere.tech` redirects to the allowlisted deployed host
+`sessions.somewhere.site`. They send no token, cookie, account credential,
+machine ID, session ID, usage, transcript, prompt, terminal content, or
+telemetry. Installation is explicit.
+
+`sessions update` then accepts only the exact immutable GitHub release path for
+the announced version; GitHub's asset redirect is restricted to
+`release-assets.githubusercontent.com`. Redirect count and response sizes are
+bounded. Even a compromised mutable manifest cannot authorize executable
+bytes: the archive must verify with the public key compiled into the CLI, then
+the app must pass Developer ID/team/bundle/version and Gatekeeper checks before
+the atomic swap. There is no URL, key, proxy credential, or app-path option in
+the command surface. The system HTTPS proxy setting may be honored, but TLS
+validation and the artifact signature remain mandatory.
+
+## Claude and Codex version controls
+
+Sessions checks the installed Claude Code and Codex versions by resolving the
+local executables and running their local `--version` commands. Codex update
+awareness additionally reads its bounded local version cache. The automatic
+check does not call a package registry, provider API, or Somewhere service
+(`runtime/internal/api/providers_handlers.go`).
+
+Installing a provider update is a separate explicit action in Settings or
+`sessions providers update claude|codex`. That action invokes only the
+resolved provider executable with its own fixed `update` subcommand, so the
+provider updater may access the internet and replace that provider's local
+binary. The mutating endpoint accepts only a loopback/local Sessions client;
+paired devices and other authenticated remote clients may inspect provider
+status but cannot trigger installation. Sessions accepts no provider path, URL,
+package, or shell fragment from the caller. Already-running provider processes
+continue unchanged; sessions created later resolve the updated executable
+(`runtime/internal/api/providers_handlers.go`,
+`runtime/cmd/sessions/providers.go`).
+
+## Feedback and support tickets
+
+The source implementation provides two user-controlled entry points:
+
+- Sessions.app Settings → Help & feedback accepts a local draft, can generate
+  an optional diagnostic preview, copies only the reviewed draft to the
+  clipboard, and opens a fixed public GitHub feedback or bug form. It never
+  submits the form.
+- `sessions support` prints the same public-ticket and private-security-report
+  destinations. `sessions support --diagnostics` previews the small diagnostic
+  object locally and never uploads it. `sessions support --bundle PATH` writes
+  that exact redacted object to a new owner-readable file and refuses to
+  overwrite an existing path. Agents use
+  `sessions --json support --diagnostics`; the returned contract tells them to
+  capture only the sanitized shape of the failing Sessions command/action, exit
+  code, sanitized exact error, expected/actual behavior, and repeatability, then require user approval
+  before opening or submitting a report.
+- After that approval, and only after it, an agent or user can run
+  `sessions support --attach --ticket tsk_ID --project somewhere-project`.
+  Sessions invokes the installed Somewhere CLI once, using its existing local
+  login, without exposing project environment variables. A temporary
+  owner-readable script carries only the redacted diagnostic object, writes one
+  private `/support/<ticket>/...json` project file, and appends that path to the
+  exact named ticket. The temporary script is removed locally. A failed ticket
+  update deletes the uploaded file; a deterministic content path makes a
+  repeated identical request idempotent.
+
+The diagnostic schema contains only generation time, Sessions CLI/daemon
+versions, OS/architecture, daemon reachable/ready/discovery state, and a
+session count. It deliberately excludes transcripts, terminal output, prompts,
+responses, titles, tags, commands, session/process IDs, usernames, hostnames,
+paths, tokens, credentials, environment variables, provider configuration,
+logs, and crash files. The command succeeds with an explicit unreachable state
+when the daemon is down, so support never depends on the broken component.
+The attach command makes one attempt, caps the local operation at 45 seconds
+and the remote script at 10 seconds, and never retries in the background. The
+private bundle remains in the Somewhere project and on the ticket until the
+account owner or project team removes the attachment and file. No public or
+signed download URL is created.
+
+The native shell accepts only the compiled-in GitHub feedback, bug, chooser,
+and private security-advisory destinations; the webview cannot supply an
+arbitrary URL. Public ticket forms repeat the privacy warning and require the
+reporter to confirm review before submission. They also identify whether the
+failure or feedback came from an agent workflow, direct use, or both; agent
+origin does not weaken the approval or privacy boundary.
+
+Temporary live support access remains unimplemented. If it is ever justified,
+the user must authenticate through the Somewhere CLI and select an exact
+ticket; the grant must be separately confirmed, read-only by default, scoped
+to named machines/sessions/capabilities, short-lived, revocable, and audited.
+It must never expose unrelated sessions, provider credentials, environment
+variables, arbitrary filesystem paths, or a master daemon token, and it must
+never create an unattended listener or permanent reverse tunnel.

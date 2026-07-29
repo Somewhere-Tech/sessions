@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"type\":\"result\",\"session_id\":\"session-1\",\"result\":{},\"usage\":{}}")

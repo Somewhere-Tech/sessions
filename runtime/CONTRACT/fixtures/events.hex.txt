@@ -1,0 +1,19 @@
+# Three complete .events records. Offsets and bytes use xxd-style hex.
+#
+# Disk record: [uint32 BE record length][uint32 BE seq][UTF-8 data]
+# record length excludes itself and includes the 4-byte seq.
+
+00000000: 00 00 00 08 00 00 00 01 68 69 0d 0a 00 00 00 10  ........hi......
+00000010: 00 00 00 02 1b 5b 33 31 6d 72 65 64 1b 5b 30 6d  .....[31mred.[0m
+00000020: 00 00 00 07 00 00 00 2a ce bb 0a                 .......*...
+
+Annotations:
+
+- 00000000..0000000b: length 8, seq 1, data `hi\r\n` (4 UTF-8 bytes).
+- 0000000c..0000001f: length 16, seq 2, data `ESC[31mredESC[0m`
+  (12 UTF-8/ANSI bytes).
+- 00000020..0000002a: length 7, seq 42, data `lambda-newline`, encoded as
+  bytes `ce bb 0a` for `lambda` (U+03BB) followed by LF.
+
+The same events as runner-socket OUTPUT frames would each include an extra
+type byte `21`, and the socket length would include that type byte.

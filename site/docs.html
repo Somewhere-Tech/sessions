@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sessions — shipped CLI field guide</title>
+<meta name="description" content="A concise, source-checked field guide to sessions's durable sessions, lanes, recovery, search, access, pairing, encrypted backup, and agent controls.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&amp;family=Instrument+Serif:ital@0;1&amp;display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0b0f0d;
+    --ink-2: #101612;
+    --ink-3: #161e19;
+    --line: #223028;
+    --line-2: #2f4136;
+    --cream: #ece7da;
+    --cream-dim: #a8a496;
+    --cream-faint: #6b6a5f;
+    --phos: #7ef0a6;
+    --phos-dim: #3d7a54;
+    --amber: #f0c674;
+    --rose: #e88b7d;
+    --mono: 'IBM Plex Mono', ui-monospace, monospace;
+    --serif: 'Instrument Serif', georgia, serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--ink); color: var(--cream); font-family: var(--mono); font-size: 15px;
+    line-height: 1.65; -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  body::before {
+    content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      repeating-linear-gradient(0deg, transparent 0 2px, rgba(0,0,0,.14) 2px 4px),
+      radial-gradient(ellipse 120% 90% at 50% -10%, rgba(126,240,166,.05), transparent 55%),
+      radial-gradient(ellipse 100% 100% at 50% 115%, rgba(0,0,0,.5), transparent 60%);
+  }
+  a { color: inherit; text-decoration: none; }
+  ::selection { background: var(--phos); color: var(--ink); }
+  .wrap { position: relative; z-index: 1; max-width: 820px; margin: 0 auto; padding: 0 28px; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; padding: 28px 0 0; }
+  .brand { font-family: var(--serif); font-style: italic; font-size: 28px; color: var(--cream); }
+  .brand .tld { color: var(--phos-dim); font-size: 18px; }
+  nav { display: flex; align-items: center; gap: 22px; }
+  nav a { color: var(--cream-dim); font-size: 13px; white-space: nowrap; }
+  nav a:hover { color: var(--phos); }
+  a:focus-visible { outline: 2px solid var(--phos); outline-offset: 4px; }
+
+  .hero { padding: 88px 0 42px; }
+  .kicker { font-size: 12px; letter-spacing: .22em; text-transform: uppercase; color: var(--phos-dim); margin-bottom: 18px; }
+  .kicker::before { content: '// '; }
+  h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(44px, 8vw, 72px); line-height: 1.02; }
+  h1 em { color: var(--phos); font-style: italic; }
+  .lede { margin-top: 22px; max-width: 58ch; color: var(--cream-dim); }
+  .early {
+    display: inline-block; margin-top: 24px; padding: 5px 12px; border: 1px solid rgba(240,198,116,.3);
+    border-radius: 20px; color: var(--amber); font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  }
+
+  section.doc { padding-top: 68px; }
+  h2 { font-family: var(--serif); font-size: clamp(30px, 5vw, 42px); line-height: 1.1; font-weight: 400; margin-bottom: 12px; }
+  h2 em { color: var(--phos); font-style: italic; }
+  .section-lede { color: var(--cream-dim); max-width: 60ch; margin-bottom: 28px; }
+  code { color: var(--cream); font-family: var(--mono); }
+
+  .reference { border-top: 1px solid var(--line); }
+  .command-row {
+    display: grid; grid-template-columns: minmax(220px, .8fr) 1.2fr; gap: 24px; padding: 17px 3px;
+    border-bottom: 1px dashed var(--line); align-items: baseline;
+  }
+  .command-row code { color: var(--phos); font-size: 13.5px; overflow-wrap: anywhere; }
+  .command-row p { color: var(--cream-dim); font-size: 13.5px; }
+  .command-row p code { color: var(--cream); font-size: 12.5px; }
+
+  .panel {
+    margin-top: 28px; padding: 24px; border: 1px solid var(--line); border-radius: 9px;
+    background: linear-gradient(180deg, var(--ink-2), var(--ink));
+  }
+  pre {
+    overflow-x: auto; margin: 17px 0; padding: 18px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--ink-2); color: var(--cream); font: 13px/1.8 var(--mono);
+  }
+  .panel p { color: var(--cream-dim); font-size: 13.5px; }
+  .env {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin-top: 18px;
+    border: 1px solid var(--line); background: var(--line);
+  }
+  .env code { padding: 11px 13px; background: var(--ink-2); color: var(--cream-dim); font-size: 12px; overflow-wrap: anywhere; }
+
+  .signals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 28px; background: var(--line); border: 1px solid var(--line); }
+  .signal { background: var(--ink-2); padding: 22px 19px; }
+  .signal strong { display: block; margin-bottom: 7px; color: var(--cream); font-size: 13px; font-weight: 500; }
+  .signal p { color: var(--cream-faint); font-size: 12.5px; }
+
+  .fine { margin-top: 18px; color: var(--cream-faint); font-size: 12.5px; }
+  .fine a { color: var(--phos-dim); border-bottom: 1px solid var(--line-2); }
+  .trust-panel {
+    margin-top: 28px; padding: 23px; border-left: 2px solid var(--phos-dim);
+    background: rgba(126,240,166,.035); color: var(--cream-dim); font-size: 13.5px;
+  }
+  .trust-panel strong { color: var(--cream); font-weight: 500; }
+  .trust-panel a { color: var(--phos); border-bottom: 1px solid var(--phos-dim); }
+  .source-note { margin-top: 22px; color: var(--cream-faint); font-size: 11.5px; }
+  .source-note code { color: var(--cream-dim); }
+  footer {
+    margin-top: 92px; padding: 30px 0 44px; border-top: 1px solid var(--line); display: flex;
+    justify-content: space-between; align-items: baseline; color: var(--cream-faint); font-size: 12px;
+  }
+  footer a { color: var(--cream-dim); }
+  footer a:hover { color: var(--phos); }
+
+  @media (max-width: 720px) {
+    nav { gap: 14px; }
+    .command-row { grid-template-columns: 1fr; gap: 7px; }
+    .signals { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 560px) {
+    header { align-items: flex-start; }
+    .brand .tld { display: none; }
+    nav { max-width: 230px; justify-content: flex-end; flex-wrap: wrap; row-gap: 4px; }
+    .hero { padding-top: 64px; }
+    .env { grid-template-columns: 1fr; }
+    footer { align-items: flex-start; gap: 12px; flex-direction: column; }
+  }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a class="brand" href="index.html">Sessions<span class="tld"> by somewhere</span></a>
+    <nav aria-label="Primary navigation">
+      <a href="index.html#what">what it is</a>
+      <a href="setup.html">get set up</a>
+      <a href="connect.html">connect</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="kicker">shipped field manual</p>
+      <h1>What it does,<br><em>in real commands.</em></h1>
+      <p class="lede">The concise guide to durable sessions, agent-owned lanes, recovery, full-history search, direct access, one-scan pairing, and encrypted backup in the current Go CLI.</p>
+      <span class="early">building in public · commands are live</span>
+    </section>
+
+    <section class="doc" id="cli">
+      <p class="kicker">CLI</p>
+      <h2>The daily moves, <em>source-checked.</em></h2>
+      <p class="section-lede">Session IDs can be full IDs or unique prefixes from <code>sessions ls</code>. Put the global <code>--json</code> flag before the command when a script needs structured output.</p>
+      <div class="reference">
+        <div class="command-row"><code>sessions new --tool claude|codex|shell</code><p>Start an interactive session. Add <code>--cwd</code>, <code>--name</code>, <code>--description</code>, <code>--model</code>, <code>--effort</code>, or <code>--on-idle</code> as needed.</p></div>
+        <div class="command-row"><code>sessions ls [--mine]</code><p>List live sessions, scoped to agent provenance with <code>--mine</code>. Add <code>-a</code> to include exited sessions.</p></div>
+        <div class="command-row"><code>sessions list --mine</code><p>List agent sessions and headless lanes together. Purpose descriptions make cleanup decisions readable.</p></div>
+        <div class="command-row"><code>sessions send &lt;id&gt; "…"</code><p>Send text plus Enter, then confirm that Claude or Codex received it. Add <code>--file path</code> for a prompt file or <code>--no-wait</code> for fire-and-forget.</p></div>
+        <div class="command-row"><code>sessions ask &lt;id&gt; "…"</code><p>Send with confirmation, wait for the working → idle edge, and print the last assistant reply.</p></div>
+        <div class="command-row"><code>sessions wait &lt;id&gt;</code><p>Block until a session is idle or a lane exits. Tune with <code>--idle</code> and <code>--timeout</code>; condition waits can watch a commit, file content, or stable idle period.</p></div>
+        <div class="command-row"><code>sessions run [options] -- &lt;command…&gt;</code><p>Start a supervised, headless lane. Add <code>--name</code>, <code>--description</code>, <code>--cwd</code>, or <code>--spec</code>; add <code>--wait --output</code> to block and print its captured tail.</p></div>
+        <div class="command-row"><code>sessions lanes</code><p>List running and completed lanes with exit codes, durations, working directories, and names.</p></div>
+        <div class="command-row"><code>sessions search &lt;query&gt; [--ranked]</code><p>Search live and persisted chat history. Substring is the precise default; choose regex or FTS5-ranked stemming, phrases, and boolean operators.</p></div>
+        <div class="command-row"><code>sessions status &lt;id&gt;</code><p>Show a compact session card with activity, git state, runtime state, and the latest producer verdict.</p></div>
+        <div class="command-row"><code>sessions verdict &lt;id&gt;</code><p>Read the latest explicit verdict. Use <code>sessions verdict emit &lt;id&gt;</code> with schema-versioned JSON to append one.</p></div>
+        <div class="command-row"><code>sessions recover [--reopen]</code><p>Inspect unexpectedly lost lanes, then explicitly reopen the recoverable ones.</p></div>
+        <div class="command-row"><code>sessions adopt &lt;path-or-uuid&gt;</code><p>Bring an existing Claude or Codex provider session under sessions's supervision.</p></div>
+        <div class="command-row"><code>sessions move &lt;id&gt; --to &lt;endpoint&gt;</code><p>Prepare and resume a session on another sessions daemon. Preview with <code>--dry-run</code>; dirty worktrees require <code>--allow-dirty</code>.</p></div>
+        <div class="command-row"><code>sessions lan enable|status|disable</code><p>Opt into a second HTTP listener on the current same-Wi-Fi or Ethernet address. Protected routes still require authentication.</p></div>
+        <div class="command-row"><code>sessions remote enable|status|disable</code><p>Manage the tailnet-only Tailscale Serve HTTPS endpoint used for direct remote access.</p></div>
+        <div class="command-row"><code>sessions pair [--name NAME]</code><p>Mint a five-minute, single-use QR ticket for the best enabled endpoint. The device gets its own revocable token; the master token is not embedded.</p></div>
+        <div class="command-row"><code>sessions devices [revoke &lt;id&gt;]</code><p>List per-device credentials or invalidate one immediately by exact ID or unique prefix.</p></div>
+        <div class="command-row"><code>sessions backup enable --project P --encrypt</code><p>Encrypt transcripts and the manifest locally with XChaCha20-Poly1305 before direct upload to your own somewhere project. Use <code>now</code>, <code>status</code>, or <code>decrypt</code> afterward.</p></div>
+        <div class="command-row"><code>sessions models</code><p>List the live Codex app-server model catalog, including supported efforts and service tiers.</p></div>
+        <div class="command-row"><code>sessions model &lt;id&gt; &lt;model&gt;</code><p>Switch the model, and optionally effort, for an idle supported session.</p></div>
+        <div class="command-row"><code>sessions kill &lt;id&gt; […]</code><p>Terminate one or more sessions and remove their supervised runners.</p></div>
+        <div class="command-row"><code>sessions doctor</code><p>Check the daemon and per-session health; flag runners that need attention.</p></div>
+        <div class="command-row"><code>sessions support [--diagnostics]</code><p>Open the official feedback, bug-ticket, and private security-report channels. Agents use <code>sessions --json support --diagnostics</code>, add the sanitized failing action/error, and ask the user before submission. The local preview excludes session content, IDs, paths, credentials, environment, logs, and crash files; nothing is uploaded automatically.</p></div>
+        <div class="command-row"><code>sessions install</code><p>Register <code>sessionsd</code> as the macOS LaunchAgent, start it, and check its health.</p></div>
+        <div class="command-row"><code>sessions uninstall</code><p>Stop the daemon and remove its launchd registration without deleting session or recovery data.</p></div>
+      </div>
+    </section>
+
+    <section class="doc" id="controls">
+      <p class="kicker">agent controls</p>
+      <h2>Choose the <em>gear.</em></h2>
+      <div class="reference">
+        <div class="command-row"><code>--model &lt;name&gt;</code><p>Choose the startup model for Claude or Codex.</p></div>
+        <div class="command-row"><code>--effort &lt;level&gt;</code><p>Pass the requested reasoning effort to the agent.</p></div>
+        <div class="command-row"><code>--fast</code><p>Use Codex priority service tier. Claude has no equivalent, so sessions rejects that combination.</p></div>
+      </div>
+      <pre><span style="color:var(--phos-dim)">$</span> sessions models
+<span style="color:var(--phos-dim)">$</span> sessions new --tool codex --model &lt;model&gt; --effort high --fast --cwd ~/work</pre>
+    </section>
+
+    <section class="doc" id="hooks">
+      <p class="kicker">when work stops</p>
+      <h2>Let the session <em>tap you.</em></h2>
+      <p class="section-lede">Put one global shell command in <code>~/.config/sessions/hooks.json</code>. It runs on each observed working → idle edge, in that session's working directory.</p>
+      <div class="panel">
+        <pre>{
+  "onIdle": "~/bin/notify-sessions"
+}</pre>
+        <p>The hook receives these environment variables. <code>SESSIONS_OUTCOME</code> is <code>done</code>, <code>blocked</code>, or <code>error</code>; a missing final assistant summary is an empty string.</p>
+        <div class="env">
+          <code>SESSIONS_SESSION_ID</code>
+          <code>SESSIONS_SESSION_NAME</code>
+          <code>SESSIONS_SESSION_TOOL</code>
+          <code>SESSIONS_SESSION_CWD</code>
+          <code>SESSIONS_OUTCOME</code>
+          <code>SESSIONS_FINAL_MESSAGE</code>
+          <code>SESSIONS_DURATION_MS</code>
+        </div>
+      </div>
+      <div class="signals" aria-label="Finish notification outcomes">
+        <div class="signal"><strong>🟢 done</strong><p>The agent reached a clean finish; the notification body carries its final summary.</p></div>
+        <div class="signal"><strong>🟡 needs you</strong><p>A prompt, permission request, or visible choice is waiting for a person.</p></div>
+        <div class="signal"><strong>🔴 error</strong><p>The final screen still shows an unresolved failure.</p></div>
+      </div>
+      <p class="fine">Classification and summary extraction are best-effort. Browser notifications and idle hooks exist today; native Android push when an agent needs you is still being built. Use <code>sessions help</code> as the final word on command syntax. Need the walkthrough? <a href="setup.html">Get set up →</a></p>
+    </section>
+
+    <section class="doc" id="trust">
+      <p class="kicker">the spine</p>
+      <h2>Local by default.<br><em>Direct by design.</em></h2>
+      <div class="trust-panel"><strong>No Sessions account is required, and Sessions never relays terminal bytes.</strong> Localhost is zero setup; LAN is an explicit opt-in; remote access stays inside Tailscale and terminates TLS on your Mac. Optional encrypted backup is the exception that leaves the machine, and it leaves as ciphertext sent directly to your own somewhere project. Sessions is free; <a href="https://somewhere.tech">somewhere</a> is the platform behind it.</div>
+      <p class="source-note">Claims on this page were checked against <code>docs/CLI.md</code>, <code>docs/PRINCIPLES.md</code>, <code>runtime/cmd/sessions/help.go</code>, <code>runtime/cmd/sessions/pair.go</code>, and <code>runtime/internal/backup/encrypt.go</code>.</p>
+    </section>
+  </main>
+
+  <footer>
+    <span>sessions — free, local-first, built in public.</span>
+    <span><a href="setup.html">setup</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="https://github.com/somewhere-tech/sessions">source</a>&nbsp;&nbsp;·&nbsp;&nbsp;macOS + Linux · MIT</span>
+  </footer>
+</div>
+</body>
+</html>

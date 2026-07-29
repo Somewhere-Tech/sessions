@@ -1,0 +1,704 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sessions — the operations room for your coding agents</title>
+<meta name="description" content="Run, monitor, search, and resume Claude Code, Codex, and shell sessions from one native app. Free, local-first, and built so agent work survives app and daemon restarts.">
+<meta name="theme-color" content="#080d0e">
+<meta property="og:title" content="Sessions — the operations room for your coding agents">
+<meta property="og:description" content="Every Claude, Codex, and shell session in one durable, local-first native app. Available for Mac, with a full Windows host preview.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://sessions.somewhere.tech/">
+<meta property="og:image" content="https://sessions.somewhere.tech/assets/og-sessions.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://sessions.somewhere.tech/assets/og-sessions.png">
+<link rel="icon" type="image/png" href="assets/sessions-icon.png">
+<script>
+  // Older `sessions remote enable` links land here with #endpoint. Keep the
+  // fragment out of requests and hand it to the compatibility scrubber.
+  if (new URLSearchParams(location.hash.slice(1)).has('endpoint')) {
+    location.replace('connect.html' + location.hash);
+  }
+</script>
+<style>
+  :root {
+    --bg: #080d0e;
+    --bg-soft: #0c1315;
+    --panel: #10191b;
+    --panel-2: #121e20;
+    --line: #223135;
+    --line-bright: #33464b;
+    --text: #f1f4f2;
+    --muted: #a5b0af;
+    --faint: #6d7b7c;
+    --teal: #35d6cf;
+    --teal-soft: rgba(53, 214, 207, .12);
+    --teal-line: rgba(53, 214, 207, .45);
+    --green: #72df8c;
+    --amber: #efb85f;
+    --danger: #ee826f;
+    --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    min-width: 320px;
+    overflow-x: hidden;
+    background:
+      radial-gradient(950px 560px at 78% -12%, rgba(53, 214, 207, .11), transparent 64%),
+      radial-gradient(700px 500px at 5% 24%, rgba(53, 214, 207, .055), transparent 70%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body::before {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background-image: linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
+    background-size: 48px 48px;
+    mask-image: linear-gradient(to bottom, black, transparent 68%);
+    content: "";
+    pointer-events: none;
+  }
+
+  a { color: inherit; }
+  a:focus-visible, button:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 4px;
+  }
+
+  .wrap { width: min(1180px, calc(100% - 40px)); margin-inline: auto; }
+
+  .site-header {
+    display: flex;
+    min-height: 82px;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(255,255,255,.055);
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 11px;
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 680;
+    letter-spacing: -.02em;
+    text-decoration: none;
+  }
+  .brand img { width: 27px; height: 29px; object-fit: contain; }
+  .brand span { color: var(--faint); font-size: 12px; font-weight: 520; letter-spacing: 0; }
+
+  nav { display: flex; align-items: center; gap: 24px; }
+  nav a {
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 540;
+    text-decoration: none;
+  }
+  nav a:hover { color: var(--text); }
+  nav .nav-download {
+    padding: 9px 14px;
+    border: 1px solid var(--teal-line);
+    border-radius: 8px;
+    color: var(--teal);
+  }
+
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, .93fr) minmax(520px, 1.07fr);
+    gap: 58px;
+    align-items: center;
+    padding: 76px 0 56px;
+  }
+
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 21px;
+    color: var(--teal);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+  }
+  .eyebrow::before {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--teal);
+    box-shadow: 0 0 0 5px var(--teal-soft);
+    content: "";
+  }
+
+  h1 {
+    max-width: 720px;
+    font-size: clamp(48px, 6.2vw, 78px);
+    font-weight: 690;
+    letter-spacing: -.055em;
+    line-height: .99;
+  }
+  h1 em { color: var(--teal); font-style: normal; }
+  .hero-copy {
+    max-width: 620px;
+    margin-top: 24px;
+    color: var(--muted);
+    font-size: clamp(16px, 1.8vw, 19px);
+    line-height: 1.58;
+  }
+  .hero-copy strong { color: var(--text); font-weight: 600; }
+
+  .download-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 31px;
+  }
+  .download-card {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 13px;
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: 13px;
+    background: rgba(15, 24, 26, .86);
+    box-shadow: 0 16px 42px rgba(0,0,0,.18);
+  }
+  .download-card.is-primary {
+    border-color: var(--teal-line);
+    background: linear-gradient(145deg, rgba(53,214,207,.09), rgba(15,24,26,.92) 56%);
+  }
+  .platform {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .platform-mark {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+    place-items: center;
+    border: 1px solid var(--line-bright);
+    border-radius: 9px;
+    background: rgba(255,255,255,.035);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .platform-copy { min-width: 0; }
+  .platform-copy strong { display: block; font-size: 14px; }
+  .platform-copy span {
+    display: block;
+    margin-top: 2px;
+    color: var(--faint);
+    font-size: 10px;
+    line-height: 1.45;
+  }
+  .button {
+    display: inline-flex;
+    min-height: 42px;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 9px 12px;
+    border: 1px solid var(--line-bright);
+    border-radius: 9px;
+    background: rgba(255,255,255,.025);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 680;
+    text-align: center;
+    text-decoration: none;
+    transition: border-color .16s ease, background .16s ease, transform .16s ease;
+  }
+  .button:hover { border-color: var(--teal-line); background: var(--teal-soft); transform: translateY(-1px); }
+  .button.primary { border-color: var(--teal); background: var(--teal); color: #041011; }
+  .button.primary:hover { background: #58e3dc; }
+  .download-links { color: var(--faint); font-size: 10px; line-height: 1.45; }
+  .download-links a { color: var(--muted); text-underline-offset: 3px; }
+  .download-links a:hover { color: var(--teal); }
+  .download-note {
+    margin-top: 12px;
+    color: var(--faint);
+    font-size: 11px;
+  }
+  .download-note code {
+    padding: 3px 7px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 10px;
+  }
+
+  .hero-visual { position: relative; }
+  .app-frame {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--line-bright);
+    border-radius: 16px;
+    background: #080808;
+    box-shadow: 0 46px 110px -44px rgba(0,0,0,.95), 0 0 70px -40px rgba(53,214,207,.4);
+  }
+  .app-bar {
+    display: flex;
+    height: 38px;
+    align-items: center;
+    gap: 7px;
+    padding: 0 13px;
+    border-bottom: 1px solid #242424;
+    background: #151718;
+  }
+  .app-dot { width: 9px; height: 9px; border-radius: 50%; background: #404445; }
+  .app-dot:first-child { background: #ee6a5f; }
+  .app-dot:nth-child(2) { background: #efbd4e; }
+  .app-dot:nth-child(3) { background: #62c655; }
+  .app-title { margin-left: 8px; color: #858b8b; font-family: var(--mono); font-size: 9px; }
+  .app-frame img { display: block; width: 100%; height: auto; }
+  .preview-pill {
+    position: absolute;
+    top: -15px;
+    right: 22px;
+    z-index: 2;
+    padding: 7px 10px;
+    border: 1px solid var(--teal-line);
+    border-radius: 99px;
+    background: #0c1516;
+    color: var(--teal);
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .floating-status {
+    position: absolute;
+    right: -25px;
+    bottom: 32px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 11px 13px;
+    border: 1px solid var(--line-bright);
+    border-radius: 10px;
+    background: rgba(12,19,21,.96);
+    box-shadow: 0 20px 45px rgba(0,0,0,.4);
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .floating-status i { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px rgba(114,223,140,.1); }
+  .floating-status strong { color: var(--text); }
+
+  .proof {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+  .proof-item { padding: 19px 20px; border-right: 1px solid var(--line); }
+  .proof-item:first-child { padding-left: 0; }
+  .proof-item:last-child { border-right: 0; }
+  .proof-item strong { display: block; color: var(--text); font-size: 12px; }
+  .proof-item span { color: var(--faint); font-size: 10px; }
+
+  section { padding: 112px 0 0; }
+  .section-kicker {
+    margin-bottom: 16px;
+    color: var(--teal);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+  h2 {
+    max-width: 800px;
+    font-size: clamp(35px, 5vw, 58px);
+    font-weight: 650;
+    letter-spacing: -.045em;
+    line-height: 1.04;
+  }
+  .section-lead {
+    max-width: 690px;
+    margin-top: 18px;
+    color: var(--muted);
+    font-size: 17px;
+  }
+
+  .pain-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-top: 42px;
+  }
+  .pain-card {
+    min-height: 214px;
+    padding: 24px;
+    border: 1px solid var(--line);
+    border-radius: 13px;
+    background: linear-gradient(150deg, rgba(18,30,32,.96), rgba(10,17,19,.9));
+  }
+  .pain-num { color: var(--teal); font-family: var(--mono); font-size: 10px; }
+  .pain-card h3 { margin-top: 30px; font-size: 17px; letter-spacing: -.02em; }
+  .pain-card p { margin-top: 9px; color: var(--muted); font-size: 13px; }
+
+  .product-story {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    align-items: center;
+    margin-top: 48px;
+  }
+  .story-copy h3 { font-size: clamp(29px, 3.5vw, 42px); letter-spacing: -.04em; line-height: 1.08; }
+  .story-copy > p { margin-top: 16px; color: var(--muted); }
+  .feature-list { display: grid; gap: 13px; margin-top: 27px; list-style: none; }
+  .feature-list li { display: flex; gap: 11px; color: var(--muted); font-size: 13px; }
+  .feature-list li::before { color: var(--teal); content: "✓"; font-family: var(--mono); }
+  .feature-list strong { color: var(--text); font-weight: 600; }
+
+  .mini-window {
+    overflow: hidden;
+    border: 1px solid var(--line-bright);
+    border-radius: 14px;
+    background: #0b1113;
+    box-shadow: 0 30px 70px -40px rgba(0,0,0,.9);
+  }
+  .mini-window img { display: block; width: 100%; height: auto; }
+
+  .gallery {
+    display: grid;
+    grid-template-columns: 1.12fr .88fr;
+    gap: 16px;
+    margin-top: 44px;
+  }
+  .shot {
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--panel);
+  }
+  .shot:first-child { grid-row: span 2; }
+  .shot img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; }
+  .shot:first-child img { min-height: 100%; }
+  .shot-caption {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border-top: 1px solid var(--line);
+  }
+  .shot-caption strong { font-size: 12px; }
+  .shot-caption span { color: var(--faint); font-size: 10px; }
+
+  .trust {
+    display: grid;
+    grid-template-columns: .82fr 1.18fr;
+    gap: 52px;
+    align-items: start;
+    padding: 44px;
+    border: 1px solid var(--teal-line);
+    border-radius: 18px;
+    background: linear-gradient(145deg, rgba(53,214,207,.08), rgba(12,19,21,.96) 54%);
+  }
+  .trust h2 { font-size: clamp(32px, 4vw, 48px); }
+  .trust-copy { display: grid; gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--line); }
+  .trust-row { padding: 18px 19px; background: rgba(9,15,16,.94); }
+  .trust-row strong { display: block; font-size: 13px; }
+  .trust-row p { margin-top: 6px; color: var(--muted); font-size: 12px; }
+  .trust-note { margin-top: 20px; color: var(--faint); font-size: 11px; }
+  .trust-note a { color: var(--teal); }
+
+  .final-cta {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 32px;
+    align-items: center;
+    padding: 46px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: var(--panel);
+  }
+  .final-cta h2 { font-size: clamp(32px, 4vw, 50px); }
+  .final-cta p { max-width: 590px; margin-top: 12px; color: var(--muted); }
+  .final-actions { display: flex; flex-direction: column; gap: 10px; min-width: 230px; }
+  .final-actions .button { min-height: 48px; }
+
+  footer {
+    display: flex;
+    min-height: 116px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 30px;
+    margin-top: 100px;
+    border-top: 1px solid var(--line);
+    color: var(--faint);
+    font-size: 11px;
+  }
+  .footer-brand { display: inline-flex; align-items: center; gap: 9px; }
+  .footer-brand img { width: 20px; height: 22px; object-fit: contain; opacity: .8; }
+  footer nav { gap: 18px; }
+  footer nav a { color: var(--faint); font-size: 11px; }
+
+  @media (max-width: 1020px) {
+    .hero { grid-template-columns: 1fr; gap: 62px; }
+    .hero-content { max-width: 760px; }
+    .hero-visual { width: min(830px, 100%); margin-inline: auto; }
+    .floating-status { right: 18px; }
+    .pain-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  @media (max-width: 760px) {
+    .wrap { width: min(100% - 28px, 1180px); }
+    .site-header { min-height: 72px; }
+    .site-header nav a:not(.nav-download) { display: none; }
+    .brand span { display: none; }
+    .hero { padding-top: 56px; }
+    h1 { font-size: clamp(45px, 13vw, 64px); }
+    .download-grid { grid-template-columns: 1fr; }
+    .proof { grid-template-columns: 1fr 1fr; }
+    .proof-item:nth-child(2) { border-right: 0; }
+    .proof-item:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    .proof-item:nth-child(3) { padding-left: 0; }
+    .pain-grid { grid-template-columns: 1fr; }
+    .product-story { grid-template-columns: 1fr; }
+    .gallery { grid-template-columns: 1fr; }
+    .shot:first-child { grid-row: auto; }
+    .trust { grid-template-columns: 1fr; padding: 30px 22px; }
+    .final-cta { grid-template-columns: 1fr; padding: 34px 24px; }
+    .final-actions { min-width: 0; }
+    footer { align-items: flex-start; flex-direction: column; justify-content: center; }
+    footer nav { flex-wrap: wrap; }
+  }
+
+  @media (max-width: 480px) {
+    nav .nav-download { padding: 8px 10px; }
+    .hero { padding-top: 42px; }
+    .hero-copy { font-size: 16px; }
+    .preview-pill { right: 8px; }
+    .floating-status { display: none; }
+    .proof { grid-template-columns: 1fr; }
+    .proof-item, .proof-item:nth-child(3) { padding: 15px 0; border-right: 0; border-bottom: 1px solid var(--line); }
+    .proof-item:last-child { border-bottom: 0; }
+    section { padding-top: 86px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="site-header">
+    <a class="brand" href="index.html" aria-label="Sessions home">
+      <img src="assets/somewhere-logo.svg" alt="">
+      Sessions <span>by Somewhere</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#what">Product</a>
+      <a href="#never">Local-first</a>
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/Somewhere-Tech/sessions">GitHub</a>
+      <a class="nav-download" href="#download">Download</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero" id="download">
+      <div class="hero-content">
+        <p class="eyebrow">Native agent operations</p>
+        <h1>The operations room for your <em>coding agents.</em></h1>
+        <p class="hero-copy">
+          Run, monitor, search, and resume <strong>Claude Code, Codex, and shell sessions</strong>
+          from one native app. Sessions keeps the work alive when windows close, apps update,
+          and daemons restart.
+        </p>
+
+        <div class="download-grid" aria-label="Downloads">
+          <article class="download-card is-primary">
+            <div class="platform">
+              <span class="platform-mark" aria-hidden>⌘</span>
+              <div class="platform-copy">
+                <strong>Sessions for Mac</strong>
+                <span>Apple Silicon · v0.2.6 · signed &amp; notarized</span>
+              </div>
+            </div>
+            <a class="button primary" href="https://github.com/Somewhere-Tech/sessions/releases/download/v0.2.6/Sessions_0.2.6_darwin_arm64.zip">↓ Download for Mac</a>
+            <p class="download-links">Or install with <a href="setup.html#install">Homebrew</a>.</p>
+          </article>
+
+          <article class="download-card">
+            <div class="platform">
+              <span class="platform-mark" aria-hidden>⊞</span>
+              <div class="platform-copy">
+                <strong>Sessions for Windows</strong>
+                <span>x64 · v0.2.7 local-host preview · unsigned</span>
+              </div>
+            </div>
+            <a class="button" href="https://github.com/Somewhere-Tech/sessions/releases/download/windows-preview-2026-07-26/Sessions_0.2.7_x64-setup.exe">↓ Download Windows host preview</a>
+            <p class="download-links"><a href="https://github.com/Somewhere-Tech/sessions/releases/download/windows-preview-2026-07-26/Sessions_0.2.7_x64-portable.zip">Portable app + runtime</a> · Runs agents locally or connects to another host. Authenticode and signed-update hardware QA are still in progress.</p>
+          </article>
+        </div>
+        <p class="download-note">Free and open source. No Sessions account required. Mac is signed and notarized; the Windows host build is an explicitly unsigned testing preview.</p>
+      </div>
+
+      <div class="hero-visual">
+        <span class="preview-pill">next Mac update preview</span>
+        <div class="app-frame">
+          <div class="app-bar" aria-hidden>
+            <span class="app-dot"></span><span class="app-dot"></span><span class="app-dot"></span>
+            <span class="app-title">Sessions · Codex conversation</span>
+          </div>
+          <img src="assets/sessions-conversation.webp" alt="Sessions showing a Codex conversation with a user request, plan, progress, tool activity, and composer">
+        </div>
+        <div class="floating-status"><i aria-hidden></i><span><strong>3 running</strong> · 1 needs you</span></div>
+      </div>
+    </section>
+
+    <div class="proof" aria-label="Product facts">
+      <div class="proof-item"><strong>Durable by design</strong><span>Runner-owned work survives the UI</span></div>
+      <div class="proof-item"><strong>Claude + Codex + shell</strong><span>One operational surface</span></div>
+      <div class="proof-item"><strong>Local-first</strong><span>No hosted terminal relay</span></div>
+      <div class="proof-item"><strong>Free &amp; open source</strong><span>MIT licensed</span></div>
+    </div>
+
+    <section id="what">
+      <p class="section-kicker">Stop babysitting terminals</p>
+      <h2>Your agents can work in parallel without becoming invisible.</h2>
+      <p class="section-lead">Sessions turns a pile of terminal windows into an operations inbox: what is running, what needs you, what finished, and why each lane exists.</p>
+
+      <div class="pain-grid">
+        <article class="pain-card">
+          <span class="pain-num">01 / SEE THE WORK</span>
+          <h3>Know what needs you</h3>
+          <p>Running, waiting, finished, and failed sessions stay visible with their latest useful summary—not just a vague “idle.”</p>
+        </article>
+        <article class="pain-card">
+          <span class="pain-num">02 / KEEP THE THREAD</span>
+          <h3>Resume the real conversation</h3>
+          <p>Bring an existing Claude or Codex conversation into Sessions without copying its history or silently creating a second prompt queue.</p>
+        </article>
+        <article class="pain-card">
+          <span class="pain-num">03 / FIND ANYTHING</span>
+          <h3>Search across the fleet</h3>
+          <p>Find exact phrases, user requests, agent answers, or ranked full-text matches across live and retained history.</p>
+        </article>
+        <article class="pain-card">
+          <span class="pain-num">04 / UNDERSTAND COST</span>
+          <h3>See local usage clearly</h3>
+          <p>Break down tokens, cache reads, reasoning, and estimated cost by provider, model, project, session, or your own tags.</p>
+        </article>
+        <article class="pain-card">
+          <span class="pain-num">05 / DELEGATE</span>
+          <h3>Managers and child sessions</h3>
+          <p>Keep important manager sessions pinned, see their child health at a glance, and preserve who actually created every lane.</p>
+        </article>
+        <article class="pain-card">
+          <span class="pain-num">06 / LEAVE THE DESK</span>
+          <h3>Connect your own devices</h3>
+          <p>Use another native client over your LAN or Tailscale. Pair once, revoke anytime, and keep the Mac in charge.</p>
+        </article>
+      </div>
+
+      <div class="product-story">
+        <div class="story-copy">
+          <p class="section-kicker">A conversation, not a log dump</p>
+          <h3>The agent UI should explain the work.</h3>
+          <p>Plans render as live checklists. Tool activity collapses into useful groups. Approvals and questions stay prominent. Terminal remains one click away when you need the raw escape hatch.</p>
+          <ul class="feature-list">
+            <li><span><strong>Structured Codex and Claude events</strong>, not screen-scraped terminal JSON.</span></li>
+            <li><span><strong>Clear user and agent turns</strong> with plans, commands, diffs, and timestamps.</span></li>
+            <li><span><strong>Conversation, Terminal, and Details</strong> keep operational plumbing out of the normal reading flow.</span></li>
+            <li><span><strong>Attach context directly</strong> without turning files into a separate workflow.</span></li>
+          </ul>
+        </div>
+        <div class="mini-window">
+          <img src="assets/sessions-conversation.webp" alt="Detailed Sessions conversation view showing structured agent activity">
+        </div>
+      </div>
+
+      <div class="gallery" aria-label="Sessions product screens">
+        <figure class="shot">
+          <img src="assets/sessions-usage.webp" alt="Sessions usage dashboard with token totals, agent time, provider breakdown, and project breakdown">
+          <figcaption class="shot-caption"><strong>Usage that stays local</strong><span>provider · project · model · tags</span></figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/sessions-fleet.webp" alt="Sessions Fleet view with multiple computers and active agent sessions">
+          <figcaption class="shot-caption"><strong>One fleet, many machines</strong><span>Mac host · Windows host preview</span></figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/sessions-conversation.webp" alt="Sessions Codex conversation with a plan and grouped tool activity">
+          <figcaption class="shot-caption"><strong>Every turn stays legible</strong><span>Claude · Codex · shell</span></figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="never">
+      <div class="trust">
+        <div>
+          <p class="section-kicker">Local-first is architecture</p>
+          <h2>Your computer stays in charge.</h2>
+          <p class="trust-note">Sessions is free. <a href="https://somewhere.tech">Somewhere</a> is the optional platform behind encrypted backup and future always-on compute—not a required data plane.</p>
+        </div>
+        <div class="trust-copy">
+          <div class="trust-row">
+            <strong>No Sessions terminal relay</strong>
+            <p>Native clients connect directly to your Sessions host over loopback, your LAN, or your own Tailscale network.</p>
+          </div>
+          <div class="trust-row">
+            <strong>No account required</strong>
+            <p>Install the app and work locally. Cloud features remain explicit, optional choices.</p>
+          </div>
+          <div class="trust-row">
+            <strong>Quitting the app does not quit the work</strong>
+            <p>Independent supervised runners own each session below the UI and daemon lifecycle.</p>
+          </div>
+          <div class="trust-row">
+            <strong>Encrypted backup before upload</strong>
+            <p>Optional backups can be encrypted on your Mac with a recovery key only you hold.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="final-cta">
+        <div>
+          <p class="section-kicker">Start with the machine you already own</p>
+          <h2>Give your agents a real home.</h2>
+          <p>Download the signed native Mac app, or test the full Windows host preview to run local agents and join the same fleet. Android is next.</p>
+        </div>
+        <div class="final-actions">
+          <a class="button primary" href="https://github.com/Somewhere-Tech/sessions/releases/download/v0.2.6/Sessions_0.2.6_darwin_arm64.zip">↓ Download for Mac</a>
+          <a class="button" href="https://github.com/Somewhere-Tech/sessions/releases/download/windows-preview-2026-07-26/Sessions_0.2.7_x64-setup.exe">↓ Windows host preview</a>
+          <a class="button" href="setup.html">Read setup guide →</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-brand"><img src="assets/somewhere-logo.svg" alt=""><span>Sessions by Somewhere · free and open source</span></div>
+    <nav aria-label="Footer navigation">
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/Somewhere-Tech/sessions/releases">Releases</a>
+      <a href="https://github.com/Somewhere-Tech/sessions/issues/new/choose">Support</a>
+      <a href="https://somewhere.tech">Somewhere</a>
+    </nav>
+  </footer>
+</div>
+</body>
+</html>

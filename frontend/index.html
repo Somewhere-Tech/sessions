@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- interactive-widget=resizes-content: iOS 16.4+ shrinks the
+         layout viewport when the on-screen keyboard opens, instead of
+         leaving the keyboard floating over the page. Combined with our
+         flex-column app-shell + position:sticky mobile-nav, this is
+         what keeps the bottom navbar visible above the keyboard
+         instead of getting hidden behind it. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <title>Sessions</title>
+    <meta name="description" content="Durable Claude, Codex, and shell sessions on your own machines." />
+    <meta name="theme-color" content="#0a0a0a" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
+    <!-- These tell iOS / Android Chrome to launch full-screen without
+         browser chrome when the user opens the app from the home
+         screen. Pair with manifest.display="standalone". -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Sessions" />
+    <script>
+      // Service worker: register ONLY for a production deploy, never on the
+      // vite dev server. The dev server serves unhashed source modules, so a
+      // cache-first SW pins the browser to a STALE bundle and breaks HMR —
+      // and that is true whether dev is reached via loopback OR a Tailscale
+      // IP. The old check skipped only loopback, so loading the dev server
+      // over 100.x.y.z silently registered the SW and served users old code
+      // indefinitely (every "fix" got intercepted and replaced with cache).
+      // Key off the dev PORT (5273), not just the host. In dev we also
+      // proactively unregister any SW + nuke its caches so a long-open tab
+      // that already has the buggy SW heals itself on the next load or two.
+      if ('serviceWorker' in navigator) {
+        var host = location.hostname;
+        var isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+        var isDev = isLoopback || location.port === '5273';
+        if (isDev) {
+          navigator.serviceWorker.getRegistrations()
+            .then(function (regs) { regs.forEach(function (r) { r.unregister(); }); })
+            .catch(function () {});
+          if (window.caches && caches.keys) {
+            caches.keys()
+              .then(function (keys) { keys.forEach(function (k) { caches.delete(k); }); })
+              .catch(function () {});
+          }
+        } else {
+          window.addEventListener('load', function () {
+            var swBase = new URL('.', document.baseURI);
+            navigator.serviceWorker
+              .register(new URL('sw.js', swBase), { scope: swBase.pathname })
+              .catch(function () { /* registration failures are non-fatal */ });
+          });
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

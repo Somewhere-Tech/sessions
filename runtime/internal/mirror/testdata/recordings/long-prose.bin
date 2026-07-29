@@ -1,0 +1,2 @@
+[36m  - [0mThis deliberately long prose line is emitted through a real pseudo-terminal and continues well beyond the canonical viewport width so that xterm and the Go mirror must agree about soft wrapping, word boundaries, cursor advance, and the transition onto subsequent physical rows. This second sentence adds enough material to pass three hundred columns without introducing a hard newline until the end of the thought; URLs-like-tokens-abcdefghijklmnopqrstuvwxyz0123456789 also exercise hard wrapping.
+Hard newline preserved here.

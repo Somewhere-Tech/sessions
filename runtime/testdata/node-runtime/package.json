@@ -1,0 +1,68 @@
+{
+  "name": "pretty-pty",
+  "version": "0.1.0",
+  "description": "Persistent PTY daemon, web UI, and CLI for AI coding sessions.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/uzihaq/pretty-pty.git",
+    "directory": "prettyd"
+  },
+  "keywords": [
+    "pty",
+    "terminal",
+    "daemon",
+    "claude-code",
+    "codex"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin"
+  ],
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "pretty": "bin/pretty.cjs"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "web/",
+    "LICENSE",
+    "src/",
+    "scripts/package-assets.cjs",
+    "scripts/fix-spawn-helper.cjs",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build && npm --prefix ../frontend run build && node scripts/package-assets.cjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "postinstall": "node scripts/fix-spawn-helper.cjs",
+    "setup": "npm run build && pretty install",
+    "test:codex-resolver": "tsx --test scripts/test-codex-resolver.mjs",
+    "test:remote": "node --test scripts/test-remote.cjs"
+  },
+  "dependencies": {
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
+    "node-pty": "^1.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "web-push": "^3.6.7",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
+  }
+}

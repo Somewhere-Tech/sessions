@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  GOFLAGS: -buildvcs=false
+
+jobs:
+  verify:
+    name: Go, frontend, and native shell
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enforce the public source boundary
+        run: scripts/check-public-tree.sh
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+            runtime/testdata/node-runtime/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: runtime/go.mod
+          cache-dependency-path: runtime/go.sum
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable, 2026-07-21
+        with:
+          toolchain: stable
+
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+          npm --prefix runtime/testdata/node-runtime ci
+
+      - name: Verify Go runtime
+        working-directory: runtime
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      - name: Verify generated CLI reference
+        run: |
+          bash runtime/scripts/gen-cli-docs.sh
+          git diff --exit-code -- docs/CLI.md
+
+      - name: Verify frontend
+        run: |
+          npm --prefix frontend run typecheck
+          npm --prefix frontend run build
+          npm --prefix frontend run test:markdown
+          npm --prefix frontend run test:structured-events
+          npm --prefix frontend run test:structured-view
+          npm --prefix frontend run test:window-scope
+
+      - name: Verify native shell
+        run: cargo test --manifest-path src-tauri/Cargo.toml

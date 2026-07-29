@@ -1,0 +1,463 @@
+package main
+
+import (
+	"fmt"
+	"io"
+	"strings"
+)
+
+type commandSpec struct {
+	name      string
+	usage     string
+	summary   string
+	longHelp  string
+	examples  []string
+	group     string
+	aliases   []string
+	localJSON bool
+	run       func(*app, []string) error
+}
+
+const (
+	dailyCommandGroup = "Daily workflows"
+	modelCommandGroup = "Models and interactive"
+	adminCommandGroup = "Admin/operational"
+)
+
+// commandTable is the single source of truth for command discovery, dispatch,
+// top-level help, and per-command help. Keep the daily path first.
+var commandTable = []commandSpec{
+	{
+		name: "new", usage: "new [--tool claude|codex|shell] [--structured|--pty-claude|--codex-appserver|--pty-codex] [--full-access] [--profile NAME] [--cwd P] [--name L] [--description PURPOSE] [--tag KEY=VALUE ...] [--worktree [--base REF]] [options] [args...]",
+		summary: "create an interactive session", group: dailyCommandGroup,
+		longHelp: "Create a session. --tool selects a built-in Claude, Codex, or shell preset; --cmd supplies a command directly. Claude defaults to Rich structured mode while retaining its normal permission behavior. Codex defaults to its sandboxed terminal mode because Sessions cannot yet present app-server approval prompts; --codex-appserver therefore requires the explicit --full-access choice. --pty-claude and --pty-codex explicitly select the provider's terminal UI; --structured states the Claude Rich choice explicitly. --full-access disables the selected provider's approval and sandbox protections for this new session only. Existing sessions keep their original runtime and permission mode. --profile selects a private Claude or Codex login under the Sessions user state; first use opens the tool's own login flow. --description (alias --desc) records why the session exists. Repeat --tag key=value for product, client, team, cost center, or any user-defined dimension. --worktree creates sessions/<name> from the current branch (or --base REF), records its provenance, and runs the session there. Sessions does not create node_modules symlinks; install dependencies in the worktree when needed. Session controls include --model, --effort, --fast, --on-idle, --wait-ready, and --force.",
+		examples: []string{"sessions new --tool claude --cwd ~/work", "sessions new --tool claude --pty-claude --name terminal-debug", "sessions new --tool codex --pty-codex", "sessions new --tool codex --codex-appserver --full-access", "sessions new --cmd /bin/zsh"},
+		run:      (*app).cmdNew,
+	},
+	{
+		name: "profiles", usage: "profiles",
+		summary: "list Claude and Codex login profiles", group: dailyCommandGroup, localJSON: true,
+		longHelp: "List profile names, private config paths, active sessions, and last-use times. Sessions never reads or copies credentials and has no profile delete command; remove a profile manually only after reviewing the printed path.",
+		examples: []string{"sessions profiles", "sessions --json profiles"}, run: (*app).cmdProfiles,
+	},
+	{
+		name: "providers", usage: "providers [update claude|codex]",
+		summary: "inspect or update agent CLIs", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Show the locally installed Claude Code and Codex versions using only local provider metadata. `providers update` explicitly invokes that provider's own updater; it may access the internet and change the provider executable. Existing sessions keep their running process, while new sessions use the updated binary.",
+		examples: []string{"sessions providers", "sessions providers update codex", "sessions --json providers"}, run: (*app).cmdProviders,
+	},
+	{
+		name: "run", usage: "run [--name N] [--description PURPOSE] [--tag KEY=VALUE ...] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--wait [--output]] -- <cmd args...>",
+		summary: "run a command in a headless lane", group: dailyCommandGroup,
+		longHelp: "Create a headless lane for the command following the first -- separator. --description (alias --desc) records why the lane exists. --worktree creates an isolated Sessions-owned worktree; it does not symlink node_modules. Every child argument after the separator is passed unchanged. Without --wait, print the lane id and return. --wait blocks for completion and propagates the child exit code; --output prints the captured output tail.",
+		examples: []string{"sessions run -- make test", "sessions run --name lint --worktree --wait --output -- npm run lint", "sessions --json run --wait -- sh -c 'exit 3'"},
+		run:      (*app).cmdRun,
+	},
+	{
+		name: "tags", usage: "tags <session> [key=value ...] [--remove key ...] [--clear]",
+		summary: "view or edit session tags", group: dailyCommandGroup, localJSON: true,
+		longHelp: "With no edits, print a session's tags. key=value adds or replaces a tag, --remove deletes one key, and --clear removes all tags. Tags are durable daemon-owned dimensions used by usage reports and the Sessions dashboard.",
+		examples: []string{"sessions tags 0123abcd", "sessions tags 0123abcd product=Sessions client=Acme", "sessions tags 0123abcd --remove client", "sessions --json tags 0123abcd"}, run: (*app).cmdTags,
+	},
+	{
+		name: "worktrees", usage: "worktrees [clean [--dry-run]]",
+		summary: "list or safely clean Sessions-created worktrees", group: dailyCommandGroup, localJSON: true,
+		longHelp: "List worktrees recorded in the Sessions ledger with dirty, merge, and session state. clean removes only worktrees whose session has exited, whose tree is clean, and whose branch is fully merged into its recorded base; every other worktree is skipped with a reason. --dry-run shows the plan without mutation. There is no force option, and killing a session never cleans its worktree automatically.",
+		examples: []string{"sessions worktrees", "sessions --json worktrees", "sessions worktrees clean --dry-run", "sessions worktrees clean"}, run: (*app).cmdWorktrees,
+	},
+	{
+		name: "gc", usage: "gc [--older-than DURATION] [--apply]",
+		summary: "archive old closed records safely", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. Live runners and ancestors with retained descendants are never archived. Recovery history, transcripts, and worktrees are preserved.",
+		examples: []string{"sessions gc", "sessions gc --older-than 7d", "sessions gc --older-than 30d --apply", "sessions --json gc"}, run: (*app).cmdGC,
+	},
+	{
+		name: "archive", usage: "archive <session> [session...]",
+		summary: "hide selected closed sessions", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Archive one or more explicitly selected closed Sessions records. Archive hides them from normal lists but preserves provider history, transcripts, recovery facts, and worktrees. Live sessions and ancestors with retained descendants are refused.",
+		examples: []string{"sessions archive 0123abcd", "sessions archive 0123abcd 89abcdef", "sessions --json archive 0123abcd"}, run: (*app).cmdArchive,
+	},
+	{
+		name: "aside", usage: "aside <session> [session...] [--clear]",
+		summary: "set live sessions aside or bring them back", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Set aside removes selected live sessions from the default native working set without ending them, suppressing attention, changing notifications, or hiding them from the CLI. --clear brings them back. Ended records use archive instead.",
+		examples: []string{"sessions aside 0123abcd", "sessions aside 0123abcd 89abcdef", "sessions aside 0123abcd --clear", "sessions --json aside 0123abcd"}, run: (*app).cmdAside,
+	},
+	{
+		name: "ls", usage: "ls [--mine | --all] [-a | --include-exited] [--aside | --not-aside]",
+		summary: "list sessions", group: dailyCommandGroup, localJSON: true,
+		longHelp: "List agent sessions known to the daemon. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Exited sessions are hidden by default; -a and --include-exited include them. Set-aside sessions remain listed and marked; --aside selects only them, while --not-aside reproduces the native default working set.",
+		examples: []string{"sessions ls", "sessions ls --mine", "sessions ls --aside", "sessions ls --not-aside", "sessions --json ls"}, run: (*app).cmdLSDispatch,
+	},
+	{
+		name: "list", usage: "list [--mine | --owner ID | --all] [--include-closed]",
+		summary: "list agent sessions and headless lanes", group: dailyCommandGroup, localJSON: true,
+		longHelp: "List agent sessions and headless lanes together. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Closed records are hidden unless --include-closed is supplied.",
+		examples: []string{"sessions", "sessions list --mine", "sessions list --mine --include-closed", "sessions list --owner team:mine"}, run: (*app).cmdSessions,
+	},
+	{
+		name: "lanes", usage: "lanes [--all | --mine [--owner ID] | --subtree ID] [--direct] [--detach]",
+		summary: "list headless lanes", group: dailyCommandGroup, localJSON: true,
+		longHelp: "List retained headless lanes. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. --subtree selects session ancestry; --direct limits ancestry to immediate children.",
+		examples: []string{"sessions lanes", "sessions lanes --mine", "sessions lanes --subtree 0123abcd --direct"}, run: (*app).cmdLanes,
+	},
+	{
+		name: "send", usage: "send <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] <text...>",
+		summary: "send text and Enter to a session", group: dailyCommandGroup,
+		longHelp: "Send a message and Enter. Claude and Codex sessions wait for receipt confirmation by default; --no-wait uses fire-and-forget behavior and --file reads the message body from a UTF-8 file. --from records a durable, content-free source-lane attribution; agents running inside Sessions inherit their source lane automatically.",
+		examples: []string{"sessions send 0123abcd 'Run the focused tests.'", "sessions send 0123abcd --from 89abcdef 'Please review this result.'", "sessions send 0123abcd --file prompt.md"}, run: (*app).cmdSend,
+	},
+	{
+		name: "ask", usage: "ask <id> [--timeout D] [--idle D] [--wait-timeout D] <text...>",
+		summary: "send, wait, and print the reply", group: dailyCommandGroup,
+		longHelp: "Send a confirmed message to a Claude or Codex session, wait for the reply to finish, and print the last assistant message.",
+		examples: []string{"sessions ask 0123abcd 'Summarize the failing test.'", "sessions --json ask 0123abcd --wait-timeout 2m 'Report status.'"}, run: (*app).cmdAsk,
+	},
+	{
+		name: "wait", usage: "wait <id> [<id>... --any] [--idle D] [--timeout D] [--summary] [condition]",
+		summary: "wait for session idle or lane exit", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Wait for a session to become idle or a lane to exit. --summary reports which target changed and its last useful assistant/output summary. Lane waits propagate the lane exit code. Conditions include --until commit, --until-file-contains FILE STRING, and --until-idle-stable D.",
+		examples: []string{"sessions wait 0123abcd --timeout 2m --summary", "sessions wait lane-a lane-b --any --summary", "sessions wait 0123abcd --until commit --timeout 10m"}, run: (*app).cmdWaitDispatch,
+	},
+	{
+		name: "last", usage: "last <id> [--role user|assistant] [-n N]",
+		summary: "print recent conversation or lane output", group: dailyCommandGroup, localJSON: true,
+		longHelp: "For sessions, print recent user and assistant messages from the event log. For completed lanes, print the captured output tail.",
+		examples: []string{"sessions last 0123abcd", "sessions last 0123abcd --role assistant -n 1", "sessions --json last 0123abcd"}, run: (*app).cmdLastDispatch,
+	},
+	{
+		name: "search", usage: "search <query> [--session ID[,ID...]] [--role user|assistant|tool] [--tool claude|codex|shell] [--name GLOB] [--cwd PATH] [--since DATE] [--until DATE] [--context N] [--timeline] [-n N] [--exact | --regex | --ranked] [--json]",
+		summary: "search normalized session chat history", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Search chat history across every live and persisted session known to the daemon. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --timeline merges matching moments chronologically. Filters are evaluated by the daemon, so --host can search a remote Sessions instance.",
+		examples: []string{"sessions search 'drafts rollout' --role user --since 2026-07-23", "sessions search 'hello world' --role user --context 3", `sessions search 'near(draft,egress,8) OR "stable session"' --timeline`, "sessions search '{{first_name}}' --exact --session 0123abcd --json"}, run: (*app).cmdSearch,
+	},
+	{
+		name: "usage", usage: "usage [daily|weekly|monthly|session|tag|provider|model] [--mode auto|calculate|display] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--provider claude|codex] [--dimension KEY] [--json]",
+		summary: "report local Claude and Codex token usage", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Incrementally index the local Claude Code and Codex JSONL stores, then report token usage and estimated cost by day, week, month, session, provider, model, or one session-tag dimension. Reasoning tokens are reported separately but remain a subset of output tokens. auto uses a recorded cost when present and otherwise calculates with pinned ccusage pricing semantics; calculate always prices tokens; display shows recorded costs only. No usage data leaves the daemon.",
+		examples: []string{"sessions usage", "sessions usage weekly --since 2026-07-01", "sessions usage session --mode calculate", "sessions usage tag --dimension product", "sessions usage model", "sessions --json usage monthly"}, run: (*app).cmdUsage,
+	},
+	{
+		name: "status", usage: "status <id>",
+		summary: "show a compact session status card", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Show session state, tool, working directory, git state, activity timestamps, and the latest explicit verdict when present.",
+		examples: []string{"sessions status 0123abcd", "sessions --json status 0123abcd"}, run: (*app).cmdStatus,
+	},
+	{
+		name: "kill", usage: "kill <id> [<id>...] [--reason <text>] [--force]",
+		summary: "terminate sessions or lanes", group: dailyCommandGroup,
+		longHelp: "Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit.",
+		examples: []string{"sessions kill 0123abcd", `sessions kill 0123abcd 89abcdef --reason "completed rollout batch"`}, run: (*app).cmdKill,
+	},
+	{
+		name: "recover", usage: "recover [--all | --reopen [--force]]",
+		summary: "inspect or reopen recoverable sessions", group: dailyCommandGroup, localJSON: true,
+		longHelp: "List actionable recovery recipes. --all also shows blocked and unresumable lost records with reasons. --reopen creates replacement sessions for eligible records; --force overrides the live or moved conversation guard.",
+		examples: []string{"sessions recover", "sessions recover --all", "sessions recover --reopen", "sessions --json recover --reopen --force"}, run: (*app).cmdRecover,
+	},
+	{
+		name: "recall", usage: "recall [<full-session-id> [--raw]]",
+		summary: "inspect integration recall data", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Show the integration-backed recall view, optionally for one full session id. --raw prints the source payload.",
+		examples: []string{"sessions recall", "sessions recall 00000000-0000-4000-8000-000000000001 --raw"}, run: (*app).cmdRecall,
+	},
+	{
+		name: "snap", usage: "snap <id> [--raw]",
+		summary: "print the current terminal buffer", group: dailyCommandGroup,
+		longHelp: "Print the current terminal snapshot. The default cleans terminal control sequences; --raw preserves the daemon response.",
+		examples: []string{"sessions snap 0123abcd", "sessions snap 0123abcd --raw"}, run: (*app).cmdSnap,
+	},
+	{
+		name: "tail", usage: "tail <id> [-f] [-n N]",
+		summary: "print or follow recent terminal lines", group: dailyCommandGroup,
+		longHelp: "Print the last N terminal lines, defaulting to 50. -f keeps following new output.",
+		examples: []string{"sessions tail 0123abcd", "sessions tail 0123abcd -n 200 -f"}, run: (*app).cmdTail,
+	},
+	{
+		name: "transcript", usage: "transcript <id>",
+		summary: "print the full conversation transcript", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Print all user and assistant turns decoded from the session event log. Use the global --json flag for structured turns.",
+		examples: []string{"sessions transcript 0123abcd", "sessions --json transcript 0123abcd"}, run: (*app).cmdTranscript,
+	},
+	{
+		name: "input", usage: "input <id> [send options] <text...>",
+		summary: "alias for send", group: dailyCommandGroup,
+		longHelp: "Send text and Enter using the same confirmation behavior and options as sessions send.",
+		examples: []string{"sessions input 0123abcd 'Continue.'"}, run: (*app).cmdSend,
+	},
+	{
+		name: "keys", usage: "keys <id> <esc|up|down|left|right|^c|^d|enter|tab>",
+		summary: "send a named key to a session", group: dailyCommandGroup,
+		longHelp: "Translate a supported key name to terminal bytes and send it to the session.",
+		examples: []string{"sessions keys 0123abcd esc", "sessions keys 0123abcd ^c"}, run: (*app).cmdKeys,
+	},
+	{
+		name: "resize", usage: "resize <id> <cols> <rows>",
+		summary: "resize a session PTY", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Resize the terminal associated with a session to the requested columns and rows.",
+		examples: []string{"sessions resize 0123abcd 160 48"}, run: (*app).cmdResize,
+	},
+	{
+		name: "verdict", usage: "verdict <id> | verdict emit <id> [JSON]",
+		summary: "read or emit an explicit producer verdict", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Print the latest verdict for a session or lane. verdict emit appends a schemaVersion 1 verdict, reading JSON from the argument or standard input.",
+		examples: []string{"sessions verdict 0123abcd", "sessions --json verdict emit 0123abcd '{\"schemaVersion\":1,\"verdict\":\"pass\",\"findings\":[]}'"}, run: (*app).cmdVerdict,
+	},
+	{
+		name: "move", usage: "move <ended-session> (--machine NAME | --to ENDPOINT [--token T]) [--dry-run] [--allow-dirty]",
+		summary: "continue an ended conversation on another machine", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Continue an ended Claude or Codex conversation on another Sessions machine while preserving the source history. --machine reads the saved per-device credential from its private file; no token appears in argv. Run --dry-run first to verify workspace and conversation identity. The target refuses to overwrite different provider history, creates one Rich runtime, and records both sides of the continuation link. --to/--token remains a low-level endpoint escape hatch. --allow-dirty creates a Git checkpoint without deleting or changing the source worktree.",
+		examples: []string{"sessions move 0123abcd --machine mini --dry-run", "sessions move 0123abcd --machine mini", "sessions move 0123abcd --to https://mini.tailnet.ts.net --dry-run"}, run: (*app).cmdMove,
+	},
+	{
+		name: "adopt", usage: "adopt <path-or-uuid> [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]",
+		summary: "bind an existing conversation into Sessions", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Adopt an existing conversation path or UUID as a Sessions session. --source links an ended Sessions record. --force overrides the live or moved conversation guard. If the runtime starts but a post-launch ledger annotation fails, rerun the emitted --repair command: repair only completes missing records and never starts another runtime.",
+		examples: []string{"sessions adopt 00000000-0000-4000-8000-000000000001", "sessions adopt ~/.claude/projects/example/session.jsonl --force", "sessions adopt 00000000-0000-4000-8000-000000000001 --repair 0123abcd --source 4567cdef"}, run: (*app).cmdAdopt,
+	},
+	{
+		name: "continue", usage: "continue <history-id> [--with claude|codex] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]",
+		summary: "continue one exact saved conversation", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.",
+		examples: []string{"sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex", "sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001"}, run: (*app).cmdContinue,
+	},
+	{
+		name: "model", usage: "model <session> <model> [--effort LEVEL]",
+		summary: "set the next-turn model for a Rich session", group: modelCommandGroup, localJSON: true,
+		longHelp: "Set the model, and optionally effort, used by the next turn of an idle Rich Claude or Rich Codex session. The daemon validates the choice and updates the durable runner; Terminal sessions keep their provider's own model controls. Omitting --effort preserves the current effort.",
+		examples: []string{"sessions model 0123abcd sonnet", "sessions model 0123abcd gpt-5.6-sol --effort high", "sessions --json model 0123abcd opus"}, run: (*app).cmdModel,
+	},
+	{
+		name: "models", usage: "models",
+		summary: "list the live Codex model catalog", group: modelCommandGroup, localJSON: true,
+		longHelp: "Query the Codex app-server model catalog, including supported efforts and service tiers. Use the global --json flag for the full structured catalog.",
+		examples: []string{"sessions models", "sessions --json models"}, run: (*app).cmdModels,
+	},
+	{
+		name: "attach", usage: "attach <id>",
+		summary: "attach a raw two-way terminal stream", group: modelCommandGroup,
+		longHelp: "Attach the local terminal to a session. Press Ctrl+Q to detach without terminating the session.",
+		examples: []string{"sessions attach 0123abcd"}, run: (*app).cmdAttach,
+	},
+	{
+		name: "install", usage: "install",
+		summary: "install and start the development daemon", group: adminCommandGroup,
+		longHelp: "Register the development sessionsd macOS LaunchAgent and start it.",
+		examples: []string{"sessions install"}, run: (*app).cmdInstall,
+	},
+	{
+		name: "uninstall", usage: "uninstall",
+		summary: "stop and remove the development daemon", group: adminCommandGroup,
+		longHelp: "Stop and remove the development sessionsd macOS LaunchAgent.",
+		examples: []string{"sessions uninstall"}, run: (*app).cmdUninstall,
+	},
+	{
+		name: "deploy", usage: "deploy",
+		summary: "explain the retired Node deploy path", group: adminCommandGroup,
+		longHelp: "The mutating Node-daemon deploy path is retired. Sessions.app is the macOS release and update vehicle; this command exits without changing files, services, or sessions and points operators to the current release documentation.",
+		examples: []string{"sessions deploy"}, run: (*app).cmdDeploy,
+	},
+	{
+		name: "update", usage: "update [--check]",
+		summary: "securely update Sessions.app", group: adminCommandGroup, localJSON: true,
+		longHelp: "Check or install the latest macOS Sessions release. The updater accepts no URL or key overrides: it fetches only the public Somewhere release manifest, requires the pinned Minisign key, validates the exact immutable GitHub artifact path, and verifies the Developer ID and notarization before an atomic app swap. Only the Sessions UI is restarted; sessionsd and runners are never stopped.",
+		examples: []string{"sessions update", "sessions update --check", "sessions --json update --check"}, run: (*app).cmdUpdate,
+	},
+	{
+		name: "pair", usage: "pair [--name NAME]",
+		summary: "pair a device on the same LAN", group: adminCommandGroup, localJSON: true,
+		longHelp: "Mint a five-minute, single-use pairing ticket for the explicit same-network LAN listener. This is the fallback for devices without Tailscale: Sessions apps on the same tailnet discover each other and use Request access instead. The claiming device receives its own revocable token; the master daemon token is never embedded in the link.",
+		examples: []string{"sessions pair", "sessions pair --name 'Uzair phone'", "sessions --json pair"}, run: (*app).cmdPair,
+	},
+	{
+		name: "devices", usage: "devices [revoke <id-or-prefix>]",
+		summary: "list or revoke paired devices", group: adminCommandGroup, localJSON: true,
+		longHelp: "List per-device credentials by id prefix, name, creation time, and last use. Revoke resolves an exact id or unique prefix, reports the matched device, and invalidates its token immediately.",
+		examples: []string{"sessions devices", "sessions --json devices", "sessions devices revoke 0123abcd"}, run: (*app).cmdDevices,
+	},
+	{
+		name: "machines", usage: "machines <discover [--timeout D] | connect ENDPOINT [--name ALIAS] [--timeout D] | list | forget ALIAS>",
+		summary: "discover, approve, and save Sessions machines", group: adminCommandGroup, localJSON: true,
+		longHelp: "Discover Sessions hosts announced with Bonjour on the nearby network, request host approval, and save the issued per-device credential in a mode-0600 file. `sessions --machine ALIAS <command>` then runs any daemon-backed CLI command against that saved machine. Discovery reveals no credentials or session data. Nearby HTTP traffic is not encrypted, so connect only on a private network you trust; use Tailscale HTTPS on untrusted networks. Forget removes the local credential but does not revoke it on the host.",
+		examples: []string{"sessions machines discover", "sessions machines connect http://192.168.1.20:8787 --name mini", "sessions machines", "sessions --machine mini ls", "sessions machines forget mini"}, run: (*app).cmdMachines,
+	},
+	{
+		name: "access", usage: "access <requests | accept ID | deny ID>",
+		summary: "review and decide machine access requests", group: adminCommandGroup, localJSON: true,
+		longHelp: "List pending nearby and Tailscale access requests, or accept or deny one by id. Requests show the transport and verified Tailscale identity or observed private-LAN source address before approval. This is the CLI equivalent of the native access inbox, so an authorized agent can complete the same workflow without GUI automation.",
+		examples: []string{"sessions access requests", "sessions --json access requests", "sessions access accept 0123abcd", "sessions access deny 0123abcd"}, run: (*app).cmdAccess,
+	},
+	{
+		name: "lan", usage: "lan <enable|disable|status>",
+		summary: "manage same-network access", group: adminCommandGroup, localJSON: true,
+		longHelp: "Enable, disable, or inspect explicit HTTP access from other devices on the same Wi-Fi or Ethernet network. Enabling LAN access also advertises a low-sensitivity Bonjour record for native discovery. Protected routes still require a revocable device or daemon token. LAN HTTP traffic is unencrypted; use it only on a private network you trust.",
+		examples: []string{"sessions lan enable", "sessions lan status", "sessions lan disable"}, run: (*app).cmdLan,
+	},
+	{
+		name: "notify", usage: "notify <status|on|off> [done|waiting|lost]",
+		summary: "configure session push notifications", group: adminCommandGroup, localJSON: true,
+		longHelp: "Inspect or toggle encrypted push notifications for structured turn completion, sustained waiting, and unexpectedly lost sessions. Omitting the kind from on or off changes all three kinds; delivery begins only after subscribing in the web UI.",
+		examples: []string{"sessions notify status", "sessions notify off waiting", "sessions notify on done", "sessions --json notify status"}, run: (*app).cmdNotify,
+	},
+	{
+		name: "remote", usage: "remote <enable|disable|status>",
+		summary: "manage tailnet-only remote access", group: adminCommandGroup, localJSON: true,
+		longHelp: "Enable, disable, or inspect the Tailscale Serve HTTPS endpoint used for Sessions remote access. Once enabled, other Sessions apps in the same tailnet can discover this Mac and request access; the host must accept before a revocable device credential is issued.",
+		examples: []string{"sessions remote enable", "sessions remote status", "sessions remote disable"}, run: (*app).cmdRemote,
+	},
+	{
+		name: "token", usage: "token",
+		summary: "print the daemon authentication token", group: adminCommandGroup,
+		longHelp: "Read and print the local daemon token for use by an authorized Sessions client.",
+		examples: []string{"sessions token"}, run: func(a *app, _ []string) error { return a.cmdToken() },
+	},
+	{
+		name: "backup", usage: "backup <enable|now|status|decrypt> [options]",
+		summary: "configure and run session backups", group: adminCommandGroup, localJSON: true,
+		longHelp: "Enable scheduled backup storage, push a backup immediately, show backup status, or decrypt an encrypted backup. Enable requires --project and accepts --interval and --encrypt.",
+		examples: []string{"sessions backup enable --project my-project --interval 15m --encrypt", "sessions backup now", "sessions backup decrypt transcript.jsonl.enc", "sessions --json backup status"}, run: (*app).cmdBackup,
+	},
+	{
+		name: "doctor", usage: "doctor",
+		summary: "diagnose daemon and session health", group: adminCommandGroup, localJSON: true,
+		longHelp: "Report per-session health, spawn path, QoS state, and sessions which should be recreated.",
+		examples: []string{"sessions doctor", "sessions --json doctor"}, run: func(a *app, _ []string) error { return a.cmdDoctor() },
+	},
+	{
+		name: "support", usage: "support [--diagnostics | --bundle PATH | --attach --ticket tsk_ID --project somewhere-project]",
+		summary: "leave feedback or open a support ticket", group: adminCommandGroup, localJSON: true,
+		longHelp: "Print the official feedback, bug-ticket, and private security-report links. Agents use `sessions --json support --diagnostics` for a stable machine-readable support contract and local diagnostic preview, add the sanitized failing command shape/action and error, then ask the user before opening or submitting a ticket. `--bundle PATH` writes that same redacted JSON locally without overwriting an existing file. Only the explicit `--attach --ticket ... --project ...` form uploads: it uses the user's existing Somewhere CLI login to attach one private bundle to one named ticket, with one bounded attempt and no project environment access. The bundle contains only versions, platform, daemon readiness, and a session count. It excludes transcripts, terminal output, prompts, responses, titles, tags, session command content, IDs, process details, usernames, hostnames, paths, credentials, environment, logs, and crash files. Nothing is uploaded automatically.",
+		examples: []string{"sessions support", "sessions support --diagnostics", "sessions --json support --diagnostics", "sessions support --bundle ./sessions-support.json", "sessions --json support --attach --ticket tsk_1234abcd --project sessions"}, run: (*app).cmdSupport,
+	},
+	{
+		name: "docs", usage: "docs",
+		summary: "print the complete offline CLI reference", group: adminCommandGroup,
+		longHelp: "Print the complete Sessions CLI reference as Markdown. The output is generated directly from the same command registry as sessions help, needs no daemon or network connection, and can be saved or passed to a coding agent.",
+		examples: []string{"sessions docs", "sessions docs > sessions-cli.md"}, run: (*app).cmdDocs,
+	},
+	{
+		name: "help", usage: "help [command]",
+		summary: "show top-level or command help", group: adminCommandGroup,
+		longHelp: "Show complete command help, or detailed help for one command. sessions <command> --help is equivalent.",
+		examples: []string{"sessions help", "sessions help run", "sessions recover --help"}, run: func(_ *app, _ []string) error { return nil },
+	},
+	{
+		name: "version", usage: "version",
+		summary: "print the CLI version", group: adminCommandGroup, aliases: []string{"--version", "-v"},
+		longHelp: "Print the Sessions CLI version and exit.",
+		examples: []string{"sessions version", "sessions --version"}, run: func(a *app, _ []string) error { _, err := fmt.Fprintln(a.stdout, version); return err },
+	},
+}
+
+func lookupCommand(name string) (commandSpec, bool) {
+	for _, command := range commandTable {
+		if command.name == name {
+			return command, true
+		}
+		for _, alias := range command.aliases {
+			if alias == name {
+				return command, true
+			}
+		}
+	}
+	return commandSpec{}, false
+}
+
+func helpRequested(args []string) bool {
+	for _, argument := range args {
+		if argument == "--" {
+			return false
+		}
+		if argument == "--help" || argument == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func writeTopLevelHelp(writer io.Writer) error {
+	return writeTopLevelHelpFor(writer, commandTable)
+}
+
+func writeTopLevelHelpFor(writer io.Writer, commands []commandSpec) error {
+	if _, err := io.WriteString(writer, "sessions — local session fleet CLI\n\nUsage:\n  sessions [global flags]\n  sessions [global flags] <command> [args]\n  sessions help <command>\n\nWith no command, Sessions lists agent sessions and headless lanes. Session ids may be full ids or unique prefixes from `sessions ls`.\n"); err != nil {
+		return err
+	}
+	groups := []string{dailyCommandGroup, modelCommandGroup, adminCommandGroup}
+	for _, group := range groups {
+		if _, err := fmt.Fprintf(writer, "\n%s:\n", group); err != nil {
+			return err
+		}
+		for _, command := range commands {
+			if command.group != group {
+				continue
+			}
+			name := command.name
+			if len(command.aliases) > 0 {
+				name += " (" + strings.Join(command.aliases, ", ") + ")"
+			}
+			if _, err := fmt.Fprintf(writer, "  %-24s %s\n", name, command.summary); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := io.WriteString(writer, "\nGlobal flags (must precede the command):\n  --json           machine-friendly output\n  --machine NAME   use a saved Sessions machine and its device credential\n  --host HOST      low-level sessionsd host; local token stays on loopback\n  --port PORT      sessionsd port (default 8787)\n\nRun `sessions help <command>` for one command or `sessions docs` for the complete offline reference.\n")
+	return err
+}
+
+func writeCommandHelp(writer io.Writer, name string) error {
+	command, ok := lookupCommand(name)
+	if !ok {
+		return fail(1, "unknown help topic: %s\n\nrun 'sessions help' for commands", name)
+	}
+	return writeCommandSpecHelp(writer, command)
+}
+
+func writeCommandSpecHelp(writer io.Writer, command commandSpec) error {
+	if _, err := fmt.Fprintf(writer, "Usage:\n  sessions %s\n\n%s\n\n%s\n", command.usage, command.summary, command.longHelp); err != nil {
+		return err
+	}
+	if len(command.examples) > 0 {
+		if _, err := io.WriteString(writer, "\nExamples:\n"); err != nil {
+			return err
+		}
+		for _, example := range command.examples {
+			if _, err := fmt.Fprintf(writer, "  %s\n", example); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := io.WriteString(writer, "\nGlobal flags --json, --machine, --host, and --port must appear before the command.\n")
+	return err
+}
+
+func (a *app) cmdDocs(args []string) error {
+	if len(args) != 0 {
+		return fail(1, "usage: sessions docs")
+	}
+	return writeFullDocs(a.stdout, a.commands)
+}
+
+func writeFullDocs(writer io.Writer, commands []commandSpec) error {
+	if _, err := io.WriteString(writer, "<!-- GENERATED by `sessions docs` from runtime/cmd/sessions/help.go — do not edit -->\n\n# Sessions CLI reference\n\nThis complete offline reference is generated from the built `sessions` command registry.\n\n## Top-level help\n\n```text\n"); err != nil {
+		return err
+	}
+	if err := writeTopLevelHelpFor(writer, commands); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(writer, "```\n"); err != nil {
+		return err
+	}
+	for _, command := range commands {
+		if _, err := fmt.Fprintf(writer, "\n## `sessions %s`\n\n```text\n", command.name); err != nil {
+			return err
+		}
+		if err := writeCommandSpecHelp(writer, command); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(writer, "```\n"); err != nil {
+			return err
+		}
+	}
+	return nil
+}

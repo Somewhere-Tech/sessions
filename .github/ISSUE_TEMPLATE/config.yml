@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: https://github.com/Somewhere-Tech/sessions/security/advisories/new
+    about: Report a vulnerability privately. Do not put security-sensitive details in a public issue.
+  - name: Sessions documentation
+    url: https://sessions.somewhere.tech/docs.html
+    about: Installation, connection, and CLI documentation.

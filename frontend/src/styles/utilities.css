@@ -1,0 +1,29 @@
+/* Atomic utilities — keep this small and Tailwind-style.
+ * Globals.css owns layout/components; this file is for one-off tweaks. */
+
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.flex-1 { flex: 1; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-1 { gap: 4px; }
+.gap-2 { gap: 8px; }
+.gap-3 { gap: 12px; }
+
+.hidden { display: none; }
+.w-full { width: 100%; }
+.h-full { height: 100%; }
+.min-w-0 { min-width: 0; }
+.min-h-0 { min-height: 0; }
+
+.text-mono { font-family: var(--font-mono); }
+.text-dim { color: var(--fg-dim); }
+.text-faint { color: var(--fg-faint); }
+.text-sm { font-size: 13px; }
+.text-xs { font-size: 12px; }
+
+.truncate {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

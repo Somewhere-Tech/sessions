@@ -1,0 +1,19 @@
+{
+  "name": "sessions",
+  "private": true,
+  "version": "0.2.8",
+  "description": "Sessions native app and its local Go runtime for durable agent sessions.",
+  "scripts": {
+    "dev": "tauri dev",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "ship": "bash scripts/ship.sh",
+    "build": "tauri build --bundles app",
+    "bootstrap": "npm ci && npm --prefix frontend ci",
+    "test:updater-release": "node --test scripts/render-updater-manifest.test.mjs scripts/verify-updater-signature.test.mjs scripts/windows-platform-contract.test.mjs scripts/collect-windows-host-evidence.test.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.0"
+  }
+}

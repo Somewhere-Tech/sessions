@@ -1,0 +1,59 @@
+
+.DS_Store
+.env
+.env.local
+*.log
+*.tsbuildinfo
+/runtime/testdata/node-runtime/*.tgz
+/runtime/testdata/node-runtime/data/
+/runtime/testdata/node-runtime/LICENSE
+/runtime/testdata/node-runtime/run/
+/runtime/testdata/node-runtime/web/
+# Generated only when exercising the frozen Node compatibility fixture.
+# tsc -b composite-project emits these next to the referenced source
+dist/
+frontend/vite.config.d.ts
+frontend/vite.config.js
+node_modules
+node_modules/
+runtime/dist-go/
+/runtime/*.exe
+/src-tauri/runtime/*
+!/src-tauri/runtime/.gitkeep
+/release/out/
+
+# Private product operations and decision memory live outside the public source
+# repository. Keep both current and historical path names blocked so an export
+# or cherry-pick cannot accidentally publish them again.
+/STATE.md
+/docs/WHY.md
+/docs/lanes/
+/docs/archive/
+/docs/CLOUD_VM.md
+/docs/CUTOVER.md
+/docs/CUTOVER_AUDIT_*.md
+/docs/RUNBOOKS.md
+/ASSESSMENT.md
+/AUDIT.md
+/BACKFILL_NOTES.md
+/BACKFILL_SPEC.md
+/CODEXFIX_NOTES.md
+/CODEXFIX_SPEC.md
+/CODEX_CONTROLS.md
+/COMMERCIAL_GRADE_REVIEW.md
+/CONNECT_SPEC.md
+/CONTROLS_NOTES.md
+/CONTROLS_SPEC.md
+/DEPLOY_NOTES.md
+/DEPLOY_SPEC.md
+/HOOK_NOTES.md
+/HOOK_SPEC.md
+/NOTES.md
+/PKG_NOTES.md
+/PKG_SPEC.md
+/REMOTE_NOTES.md
+/REMOTE_SPEC.md
+/SCAN_NOTES.md
+/SCAN_SPEC.md
+/SPEC.md
+/frontend/CONNECT_NOTES.md

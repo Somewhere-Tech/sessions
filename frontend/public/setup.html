@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sessions — get set up</title>
+<meta name="description" content="Get sessions running on your Mac in minutes. Two paths — local and from-anywhere over Tailscale — and the page checks each step actually worked.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0b0f0d;
+    --ink-2: #101612;
+    --ink-3: #161e19;
+    --line: #223028;
+    --line-2: #2f4136;
+    --cream: #ece7da;
+    --cream-dim: #a8a496;
+    --cream-faint: #6b6a5f;
+    --phos: #7ef0a6;
+    --phos-dim: #3d7a54;
+    --amber: #f0c674;
+    --rose: #e88b7d;
+    --mono: 'IBM Plex Mono', ui-monospace, monospace;
+    --serif: 'Instrument Serif', georgia, serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--ink);
+    color: var(--cream);
+    font-family: var(--mono);
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      repeating-linear-gradient(0deg, transparent 0 2px, rgba(0,0,0,0.14) 2px 3px),
+      radial-gradient(120% 80% at 50% -10%, rgba(126,240,166,0.05), transparent 60%);
+    mix-blend-mode: overlay;
+  }
+  a { color: inherit; text-decoration: none; }
+  ::selection { background: var(--phos); color: var(--ink); }
+
+  .wrap { position: relative; z-index: 1; max-width: 760px; margin: 0 auto; padding: 0 28px; }
+
+  /* ---- top bar ---- */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 26px 0 0; position: relative; z-index: 2;
+  }
+  .brand { font-family: var(--serif); font-size: 26px; letter-spacing: .5px; }
+  .brand .dot { color: var(--phos); }
+  .back { font-size: 12.5px; color: var(--cream-faint); border-bottom: 1px solid transparent; transition: .2s; }
+  .back:hover { color: var(--phos); border-color: var(--phos-dim); }
+
+  /* ---- hero ---- */
+  .hero { padding: 78px 0 30px; }
+  .kicker { font-size: 12px; letter-spacing: 3px; text-transform: uppercase; color: var(--phos-dim); margin-bottom: 22px; }
+  h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(42px, 8vw, 72px); line-height: 1.02; letter-spacing: -.5px; }
+  h1 em { font-style: italic; color: var(--phos); }
+  .lede { margin-top: 22px; max-width: 52ch; color: var(--cream-dim); font-size: 16px; }
+  .lede b { color: var(--cream); font-weight: 500; }
+
+  /* ---- step blocks ---- */
+  .step { margin: 64px 0; }
+  .step-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 8px; }
+  .num {
+    font-family: var(--serif); font-size: 40px; line-height: 1; color: var(--phos);
+    min-width: 46px;
+  }
+  .step-title { font-family: var(--serif); font-size: 28px; font-weight: 400; }
+  .step-sub { color: var(--cream-faint); font-size: 13px; margin-top: 2px; }
+  .step-body { padding-left: 62px; }
+  @media (max-width: 560px){ .step-body { padding-left: 0; } .num { font-size: 30px; min-width: 34px; } }
+  p.note { color: var(--cream-dim); margin: 14px 0; }
+  p.note a { color: var(--phos); border-bottom: 1px solid var(--phos-dim); }
+
+  /* ---- command blocks ---- */
+  .cmd {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--ink-2); border: 1px solid var(--line);
+    border-radius: 7px; padding: 13px 15px; margin: 12px 0;
+    font-size: 14px; position: relative;
+  }
+  .cmd::before { content: '$'; color: var(--phos-dim); font-weight: 600; }
+  .cmd code { color: var(--cream); flex: 1; overflow-x: auto; white-space: nowrap; }
+  .cmd .copy {
+    font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--cream-faint);
+    cursor: pointer; border: 1px solid var(--line-2); border-radius: 4px; padding: 4px 9px;
+    background: none; font-family: var(--mono); transition: .18s; flex-shrink: 0;
+  }
+  .cmd .copy:hover { color: var(--phos); border-color: var(--phos-dim); }
+  .cmd .copy.done { color: var(--phos); border-color: var(--phos-dim); }
+
+  .pill {
+    display: inline-block; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--amber); border: 1px solid rgba(240,198,116,.3); border-radius: 20px;
+    padding: 3px 11px; margin-bottom: 4px;
+  }
+  .tip { border-left: 2px solid var(--line-2); padding: 4px 0 4px 16px; margin: 16px 0; color: var(--cream-faint); font-size: 13.5px; }
+  .tip b { color: var(--cream-dim); }
+  .btn-open {
+    display: inline-flex; align-items: center; gap: 9px; margin-top: 10px;
+    border: 1px solid var(--phos-dim); color: var(--phos); border-radius: 7px;
+    padding: 11px 18px; font-size: 14px; transition: .2s;
+  }
+  .btn-open:hover { background: rgba(126,240,166,.08); }
+  .btn-open .arr { transition: transform .2s; }
+  .btn-open:hover .arr { transform: translateX(3px); }
+
+  /* ---- the live check panel ---- */
+  .check {
+    margin: 22px 0; border: 1px solid var(--line-2); border-radius: 10px;
+    background: linear-gradient(180deg, var(--ink-3), var(--ink-2));
+    overflow: hidden;
+  }
+  .check-bar {
+    display: flex; align-items: center; gap: 8px; padding: 11px 16px;
+    border-bottom: 1px solid var(--line); font-size: 12px; color: var(--cream-faint);
+    letter-spacing: 1px; text-transform: uppercase;
+  }
+  .check-bar .led { width: 9px; height: 9px; border-radius: 50%; background: var(--cream-faint); box-shadow: 0 0 0 rgba(0,0,0,0); transition: .3s; }
+  .check.ok .led { background: var(--phos); box-shadow: 0 0 12px var(--phos); }
+  .check.bad .led { background: var(--rose); box-shadow: 0 0 12px var(--rose); }
+  .check.wait .led { background: var(--amber); box-shadow: 0 0 12px var(--amber); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .check-body { padding: 18px 16px; }
+  .check-row { display: flex; gap: 10px; }
+  .check-row input {
+    flex: 1; background: var(--ink); border: 1px solid var(--line-2); color: var(--cream);
+    border-radius: 6px; padding: 12px 14px; font-family: var(--mono); font-size: 14px; outline: none; transition: .2s;
+  }
+  .check-row input:focus { border-color: var(--phos-dim); }
+  .check-row button {
+    background: var(--phos); color: var(--ink); border: none; border-radius: 6px;
+    padding: 0 20px; font-family: var(--mono); font-weight: 600; font-size: 13px;
+    letter-spacing: 1px; text-transform: uppercase; cursor: pointer; transition: .2s;
+  }
+  .check-row button:hover { background: #9df7bd; }
+  .check-row button:disabled { opacity: .5; cursor: default; }
+  .verdict { margin-top: 16px; font-size: 14px; min-height: 1.2em; }
+  .verdict .glyph { font-weight: 600; }
+  .verdict.ok { color: var(--phos); }
+  .verdict.bad { color: var(--rose); }
+  .verdict.wait { color: var(--amber); }
+  .verdict small { display:block; color: var(--cream-faint); margin-top: 6px; font-size: 13px; line-height: 1.6; }
+
+  /* ---- closing ---- */
+  .closing { margin: 90px 0 40px; padding-top: 40px; border-top: 1px solid var(--line); text-align: center; }
+  .closing .line { font-family: var(--serif); font-size: clamp(24px, 5vw, 36px); font-style: italic; color: var(--cream); }
+  .closing .never { margin-top: 20px; font-size: 12.5px; color: var(--cream-faint); letter-spacing: .3px; }
+  .closing .never a { color: var(--phos-dim); border-bottom: 1px solid var(--line-2); }
+  footer { padding: 30px 0 60px; text-align: center; color: var(--cream-faint); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">Sessions<span class="dot">.</span></div>
+    <a class="back" href="/">← what it is</a>
+  </header>
+
+  <section class="hero">
+    <div class="kicker">get set up</div>
+    <h1>Let's get you <em>running</em>.</h1>
+    <p class="lede">Two ways in — on your Mac, or from anywhere. Both take minutes. And this page <b>checks each step actually worked</b>, so you're never guessing whether it's connected.</p>
+  </section>
+
+  <!-- prereqs -->
+  <div class="step">
+    <div class="step-head"><div class="num">0</div><div><div class="step-title">Before you start</div><div class="step-sub">a 10-second inventory</div></div></div>
+    <div class="step-body">
+      <p class="note">You need an <b style="color:var(--cream)">Apple Silicon Mac</b> and <b style="color:var(--cream)">Claude Code</b> and/or <b style="color:var(--cream)">Codex</b> already installed — Sessions runs the agents you already have; it doesn't replace them. You do not need Node, npm, Xcode, or a native build toolchain.</p>
+    </div>
+  </div>
+
+  <!-- 1: install -->
+  <div class="step">
+    <div class="step-head"><div class="num">1</div><div><div class="step-title">Install sessions</div><div class="step-sub">on your Mac</div></div></div>
+    <div class="step-body">
+      <span class="pill">native Mac app</span>
+      <p class="note">Download the signed <b style="color:var(--cream)">Sessions.app</b> release, move it to Applications, and open it. The app installs and checks its own background runtime; there is no package-manager or compile step.</p>
+      <a class="btn-open" href="https://github.com/somewhere-tech/sessions/releases" target="_blank" rel="noopener">Download Sessions <span class="arr">→</span></a>
+      <p class="note">The background runtime <b>survives restarts and reboots</b>. Your sessions live outside the app window — close the window or quit the app and they keep going.</p>
+      <a class="btn-open" href="http://localhost:8787" target="_blank" rel="noopener">Open it on this Mac <span class="arr">→</span></a>
+      <div class="tip"><b>Stuck?</b> Open Sessions and check the daemon status in Settings. Power users can also run <code>sessions doctor</code> from the CLI bundled with the app.</div>
+    </div>
+  </div>
+
+  <!-- 2: tailscale -->
+  <div class="step">
+    <div class="step-head"><div class="num">2</div><div><div class="step-title">Reach it from anywhere</div><div class="step-sub">optional · +2 minutes</div></div></div>
+    <div class="step-body">
+      <p class="note">Want your sessions on your phone, or from another laptop? You'll put them on <b>Tailscale</b> — a private network just for <em>your</em> devices. No ports opened to the internet, and <b>nothing routed through us</b>: your browser talks straight to your Mac.</p>
+      <p class="note" style="margin-top:18px"><b style="color:var(--cream)">a.</b> Install Tailscale and sign in — <a href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com/download</a>. Do it on your Mac <em>and</em> your phone (same account).</p>
+      <p class="note"><b style="color:var(--cream)">b.</b> Back on your Mac, turn on remote access:</p>
+      <div class="cmd"><code>sessions remote enable</code><button class="copy">copy</button></div>
+      <p class="note">That runs <code>tailscale serve</code> for you (gives your daemon a real HTTPS address like <code>https://your-mac.tailnet.ts.net</code>) and prints a <b>QR code</b>. Scan it with your phone — it lands you right back here, already connected, no typing.</p>
+      <div class="tip"><b>One honest heads-up:</b> Tailscale's HTTPS certificate lists your machine + tailnet name in public certificate-transparency logs. Harmless for most, but if your machine name is sensitive, rename it before you enable serve.</div>
+    </div>
+  </div>
+
+  <!-- 3: the live check -->
+  <div class="step">
+    <div class="step-head"><div class="num">3</div><div><div class="step-title">Is it working?</div><div class="step-sub">the whole chain, checked live</div></div></div>
+    <div class="step-body">
+      <p class="note">Paste your sessions address below and we'll actually reach out to it — right now, from your browser — and tell you if Tailscale, the daemon, and the connection are all up. (This check runs entirely between you and your Mac. We never see it.)</p>
+      <div class="check" id="check">
+        <div class="check-bar"><span class="led"></span><span id="checkLabel">not checked yet</span></div>
+        <div class="check-body">
+          <div class="check-row">
+            <input id="daemonUrl" type="text" spellcheck="false" placeholder="https://your-mac.your-tailnet.ts.net  (or http://localhost:8787)" autocomplete="off">
+            <button id="checkBtn">check</button>
+          </div>
+          <div class="verdict" id="verdict"></div>
+        </div>
+      </div>
+      <p class="note" style="font-size:13.5px;color:var(--cream-faint)">On your Mac? Just try <code>http://localhost:8787</code>. From your phone? Use the <code>.ts.net</code> address the QR gave you.</p>
+    </div>
+  </div>
+
+  <div class="closing">
+    <div class="line">Close the laptop. Take the walk.<br>It keeps going.</div>
+    <div class="never">Terminal traffic goes straight from your browser to your Mac — we never relay or store it. <a href="/">what we never do →</a></div>
+  </div>
+
+  <footer>sessions · a better tmux for Claude Code &amp; Codex</footer>
+</div>
+
+<script>
+  // copy buttons
+  document.querySelectorAll('.cmd .copy').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var code = b.parentElement.querySelector('code').textContent;
+      navigator.clipboard.writeText(code).then(function () {
+        b.textContent = 'copied'; b.classList.add('done');
+        setTimeout(function () { b.textContent = 'copy'; b.classList.remove('done'); }, 1400);
+      });
+    });
+  });
+
+  // ---- the live daemon check ----
+  // Talks ONLY to the URL you type (your own daemon). /api/health is always open
+  // (no token needed) and returns { discovering, sessionsLoaded }. The daemon
+  // allows this page's origin (see sessionsd isAllowedOrigin), so we can read the body.
+  var el = {
+    box: document.getElementById('check'),
+    label: document.getElementById('checkLabel'),
+    input: document.getElementById('daemonUrl'),
+    btn: document.getElementById('checkBtn'),
+    verdict: document.getElementById('verdict')
+  };
+
+  function setState(state, label) {
+    el.box.classList.remove('ok', 'bad', 'wait');
+    if (state) el.box.classList.add(state);
+    el.verdict.classList.remove('ok', 'bad', 'wait');
+    if (state) el.verdict.classList.add(state);
+    if (label) el.label.textContent = label;
+  }
+
+  function normalize(raw) {
+    var u = raw.trim().replace(/\/+$/, '');
+    if (!u) return '';
+    if (!/^https?:\/\//i.test(u)) u = 'https://' + u; // bare host → assume https (tailnet)
+    return u;
+  }
+
+  async function runCheck() {
+    var base = normalize(el.input.value);
+    if (!base) { setState('bad', 'need an address'); el.verdict.innerHTML = '<span class="glyph">○</span> Paste your sessions address first.'; return; }
+
+    setState('wait', 'reaching your Mac…');
+    el.verdict.innerHTML = '<span class="glyph">◌</span> Knocking on ' + base + ' …';
+    el.btn.disabled = true;
+
+    var t0 = Date.now();
+    try {
+      var ctrl = new AbortController();
+      var timer = setTimeout(function () { ctrl.abort(); }, 8000);
+      var r = await fetch(base + '/api/health', { signal: ctrl.signal, cache: 'no-store' });
+      clearTimeout(timer);
+      var ms = Date.now() - t0;
+      if (r.ok) {
+        var h = {};
+        try { h = await r.json(); } catch (e) {}
+        var n = (typeof h.sessionsLoaded === 'number') ? h.sessionsLoaded : null;
+        setState('ok', 'connected');
+        el.verdict.innerHTML = '<span class="glyph">●</span> <b>You\'re connected.</b> ' +
+          (n !== null ? n + ' session' + (n === 1 ? '' : 's') + ' running' : 'Daemon is up') +
+          ' · ' + ms + 'ms' +
+          (h.discovering ? ' <small>Still reattaching sessions — give it a second and re-check.</small>' :
+            '<small>Tailscale, the daemon, and the connection are all working. Open the address above to jump in.</small>');
+      } else {
+        setState('bad', 'daemon said ' + r.status);
+        el.verdict.innerHTML = '<span class="glyph">○</span> Reached your Mac, but the daemon answered <b>' + r.status +
+          '</b>.<small>' + (r.status === 401 || r.status === 403
+            ? 'Auth is on and this page has no token yet — use the QR/connect link from <code>sessions remote enable</code>, which carries it.'
+            : 'The daemon is reachable but unhappy — try <code>sessions doctor</code> on your Mac.') + '</small>';
+      }
+    } catch (e) {
+      setState('bad', 'no answer');
+      var https = /^https:/i.test(base);
+      el.verdict.innerHTML = '<span class="glyph">○</span> <b>Couldn\'t reach it.</b>' +
+        '<small>Most likely one of:<br>' +
+        '• <b>Tailscale isn\'t connected</b> on this device — open the Tailscale app and check you\'re signed in (both this device and your Mac).<br>' +
+        '• <b>The daemon isn\'t running</b> — run <code>sessions install</code> on your Mac.<br>' +
+        (https ? '• <b>Remote access isn\'t on</b> — run <code>sessions remote enable</code> to start <code>tailscale serve</code>.'
+               : '• Using <code>http://localhost</code> from a different device won\'t work — that only reaches the Mac you\'re sitting at.') +
+        '</small>';
+    } finally {
+      el.btn.disabled = false;
+    }
+  }
+
+  el.btn.addEventListener('click', runCheck);
+  el.input.addEventListener('keydown', function (e) { if (e.key === 'Enter') runCheck(); });
+
+  // On load, figure out what to check without making you type:
+  (async function () {
+    // 1. An explicit endpoint from the QR / connect link wins.
+    var m = /[#&]endpoint=([^&]+)/.exec(location.hash);
+    if (m) { el.input.value = decodeURIComponent(m[1]); runCheck(); return; }
+    // 2. Otherwise, if THIS page is being served BY a daemon (a same-origin
+    //    /api/health answers), auto-detect it — the "on your Mac" case then
+    //    needs zero typing and confirms instantly.
+    try {
+      var r = await fetch('/api/health', { cache: 'no-store' });
+      if (r.ok) { el.input.value = location.origin; runCheck(); }
+    } catch (e) { /* hosted (not daemon-served) — you'll paste your address */ }
+  })();
+</script>
+</body>
+</html>

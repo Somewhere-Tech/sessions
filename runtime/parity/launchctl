@@ -1,0 +1,93 @@
+#!/usr/bin/env node
+'use strict';
+
+// Scratch-only launchctl replacement for the parity harness. Both daemons
+// still generate their normative plists; this shim reads the plist and starts
+// the runner directly so the test never registers a real LaunchAgent.
+
+const { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { basename, join } = require('node:path');
+const { spawn, spawnSync } = require('node:child_process');
+
+const [, , operation, ...args] = process.argv;
+const stateDir = process.env.PARITY_LAUNCHCTL_STATE;
+
+if (!stateDir) {
+  process.stderr.write('PARITY_LAUNCHCTL_STATE is required\n');
+  process.exit(2);
+}
+
+mkdirSync(stateDir, { recursive: true });
+
+function recordPath(label) {
+  return join(stateDir, `${label.replace(/[^a-zA-Z0-9._-]/g, '_')}.json`);
+}
+
+function parsePlist(plistPath) {
+  const parsed = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plistPath], {
+    encoding: 'utf8'
+  });
+  if (parsed.status !== 0) {
+    throw new Error(parsed.stderr.trim() || `plutil failed for ${plistPath}`);
+  }
+  return JSON.parse(parsed.stdout);
+}
+
+function bootstrap() {
+  const plistPath = args.at(-1);
+  if (!plistPath) throw new Error('bootstrap requires a plist path');
+  const plist = parsePlist(plistPath);
+  const program = plist.ProgramArguments;
+  if (!Array.isArray(program) || program.length === 0 || program.some((value) => typeof value !== 'string')) {
+    throw new Error(`invalid ProgramArguments in ${plistPath}`);
+  }
+
+  const label = typeof plist.Label === 'string' ? plist.Label : basename(plistPath, '.plist');
+  const stdoutPath = plist.StandardOutPath;
+  const stderrPath = plist.StandardErrorPath ?? stdoutPath;
+  if (typeof stdoutPath !== 'string' || typeof stderrPath !== 'string') {
+    throw new Error(`missing runner log path in ${plistPath}`);
+  }
+  mkdirSync(require('node:path').dirname(stdoutPath), { recursive: true });
+  mkdirSync(require('node:path').dirname(stderrPath), { recursive: true });
+  const stdout = openSync(stdoutPath, 'a');
+  const stderr = stderrPath === stdoutPath ? stdout : openSync(stderrPath, 'a');
+  const child = spawn(program[0], program.slice(1), {
+    cwd: plist.WorkingDirectory,
+    env: { ...process.env, ...(plist.EnvironmentVariables ?? {}) },
+    detached: true,
+    stdio: ['ignore', stdout, stderr]
+  });
+  child.unref();
+  closeSync(stdout);
+  if (stderr !== stdout) closeSync(stderr);
+  writeFileSync(recordPath(label), JSON.stringify({ label, pid: child.pid, plistPath }) + '\n', { mode: 0o600 });
+}
+
+function bootout() {
+  const target = args.at(-1) ?? '';
+  const label = target.split('/').at(-1) ?? target;
+  const path = recordPath(label);
+  try {
+    const record = JSON.parse(readFileSync(path, 'utf8'));
+    if (Number.isInteger(record.pid) && record.pid > 1) {
+      try {
+        process.kill(-record.pid, 'SIGTERM');
+      } catch {
+        try { process.kill(record.pid, 'SIGTERM'); } catch { /* already gone */ }
+      }
+    }
+  } catch {
+    // An already-exited runner is the normal clean-exit case.
+  }
+  rmSync(path, { force: true });
+}
+
+try {
+  if (operation === 'bootstrap') bootstrap();
+  else if (operation === 'bootout') bootout();
+  else throw new Error(`unsupported scratch launchctl operation: ${operation ?? '(missing)'}`);
+} catch (error) {
+  process.stderr.write(`${error.message}\n`);
+  process.exit(1);
+}

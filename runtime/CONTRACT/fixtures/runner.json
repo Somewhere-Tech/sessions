@@ -1,0 +1,13 @@
+{
+  "id": "2f577cd7-565b-4861-8ea2-c77c39a20e24",
+  "cmd": "/bin/zsh",
+  "args": [
+    "-l"
+  ],
+  "cwd": "/Users/example/project",
+  "cols": 300,
+  "rows": 50,
+  "createdAt": 1750000000123,
+  "pid": 43210,
+  "sockPath": "/Users/example/.local/state/sessions/runners/2f577cd7-565b-4861-8ea2-c77c39a20e24.sock"
+}

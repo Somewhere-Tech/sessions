@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@DAEMON_LABEL@</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@SESSIONS_BINARY@</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>SESSIONS_HOST</key>
+    <string>@SESSIONS_HOST@</string>
+    <key>SESSIONS_PORT</key>
+    <string>@SESSIONS_PORT@</string>
+    <key>SESSIONS_RUNNER</key>
+    <string>@SESSIONS_RUNNER@</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>@WORKING_DIRECTORY@</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>@LOG_PATH@</string>
+  <key>StandardErrorPath</key>
+  <string>@LOG_PATH@</string>
+</dict>
+</plist>

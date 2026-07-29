@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"id\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"cmd\":\"/bin/sh\",\"args\":[],\"cwd\":\"/tmp\",\"cols\":80,\"rows\":24,\"createdAt\":1,\"pid\":42,\"sockPath\":\"/tmp/runner.sock\"}")

@@ -1,0 +1,156 @@
+name: Windows signed release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing reviewed release tag, for example v0.2.6
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-signed-candidate-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CI: "true"
+  GOFLAGS: -buildvcs=false
+
+jobs:
+  build:
+    name: Sign and verify Windows candidate
+    runs-on: windows-2022
+    timeout-minutes: 60
+    environment: release
+
+    steps:
+      - name: Check out the reviewed tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag }}
+
+      - name: Resolve and verify the release tag
+        shell: pwsh
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          if ($env:REQUESTED_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "release tag must look like v0.2.6"
+          }
+          git fetch --no-tags origin main
+          if ($LASTEXITCODE -ne 0) { throw "could not fetch origin/main" }
+          git merge-base --is-ancestor "$env:REQUESTED_TAG^{commit}" origin/main
+          if ($LASTEXITCODE -ne 0) { throw "$env:REQUESTED_TAG is not contained in origin/main" }
+          $version = $env:REQUESTED_TAG.Substring(1)
+          $notes = "release/notes-v$version.md"
+          if (-not (Test-Path $notes -PathType Leaf)) { throw "release notes are missing at $notes" }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_NOTES_FILE=$notes" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+            runtime/testdata/node-runtime/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: runtime/go.mod
+          cache-dependency-path: runtime/go.sum
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable, 2026-07-21
+        with:
+          toolchain: stable
+
+      - name: Validate required signing secrets
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          SESSIONS_UPDATER_PRIVATE_KEY: ${{ secrets.SESSIONS_UPDATER_PRIVATE_KEY }}
+        run: |
+          $missing = @()
+          if (-not $env:WINDOWS_CERTIFICATE) { $missing += "WINDOWS_CERTIFICATE" }
+          if (-not $env:WINDOWS_CERTIFICATE_PASSWORD) { $missing += "WINDOWS_CERTIFICATE_PASSWORD" }
+          if (-not $env:SESSIONS_UPDATER_PRIVATE_KEY) { $missing += "SESSIONS_UPDATER_PRIVATE_KEY" }
+          if ($missing.Count) { throw "missing release secrets: $($missing -join ', ')" }
+
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+          npm --prefix runtime/testdata/node-runtime ci
+
+      - name: Run the Windows release gate
+        run: |
+          npm run test:updater-release
+          npm --prefix frontend run typecheck
+          npm --prefix frontend run build
+          npm --prefix frontend run test:markdown
+          npm --prefix frontend run test:structured-events
+          npm --prefix frontend run test:structured-view
+          npm --prefix frontend run test:window-scope
+          cargo test --manifest-path src-tauri/Cargo.toml
+          Push-Location runtime
+          try {
+            go build ./...
+            go vet ./...
+            go test ./...
+          }
+          finally {
+            Pop-Location
+          }
+
+      - name: Stage ephemeral signing material
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          SESSIONS_UPDATER_PRIVATE_KEY: ${{ secrets.SESSIONS_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $certificate = Join-Path $env:RUNNER_TEMP "sessions-authenticode.pfx"
+          $updater = Join-Path $env:RUNNER_TEMP "sessions-updater.key"
+          [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          [IO.File]::WriteAllText($updater, $env:SESSIONS_UPDATER_PRIVATE_KEY)
+          Copy-Item release/updater.pub "$updater.pub"
+          "SESSIONS_WINDOWS_CERTIFICATE_PATH=$certificate" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SESSIONS_UPDATER_KEY_PATH=$updater" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build and verify the signed candidate
+        shell: pwsh
+        env:
+          SESSIONS_WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          scripts/release-windows.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -NotesFile $env:RELEASE_NOTES_FILE
+
+      - name: Upload reviewed candidate only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Sessions-Windows-signed-candidate-v${{ env.RELEASE_VERSION }}
+          path: release/out/v${{ env.RELEASE_VERSION }}/windows/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove temporary signing material
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item -Force -ErrorAction SilentlyContinue `
+            (Join-Path $env:RUNNER_TEMP "sessions-authenticode.pfx"), `
+            (Join-Path $env:RUNNER_TEMP "sessions-updater.key"), `
+            (Join-Path $env:RUNNER_TEMP "sessions-updater.key.pub")
