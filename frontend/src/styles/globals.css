@@ -3297,6 +3297,7 @@ button:active:not(:disabled),
 .product-update-card button:hover { background: rgba(251, 191, 36, .18); }
 .product-update-card button:disabled { cursor: default; opacity: .55; }
 .product-update-card small { overflow: hidden; color: #fca5a5; font-size: 12px; line-height: 1.4; }
+.product-update-card .product-update-safe { color: var(--fg-dim); }
 .product-update-card.is-provider { border-color: var(--accent-border-soft); background: var(--accent-bg-soft); }
 .product-update-card.is-provider span { color: var(--accent); }
 .product-update-card.is-provider button { border-color: var(--accent-border-soft); background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }

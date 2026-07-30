@@ -167,6 +167,7 @@ export function ProductSidebar({ active, theme, onNavigate, onNewSession, onOpen
             <button type="button" disabled={updateBusy} onClick={() => void installUpdate()}>
               {updateBusy ? 'Updating…' : 'Update app'}
             </button>
+            <small className="product-update-safe">Your sessions will keep running during the update.</small>
             {updateError ? <small role="alert">{updateError}</small> : null}
           </div>
         ) : null}

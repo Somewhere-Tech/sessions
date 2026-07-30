@@ -40,6 +40,30 @@ Install the native app through Homebrew with:
 brew install --cask somewhere-tech/tap/sessions-app
 ```
 
+## Windows host preview
+
+The Windows preview release provides two packages:
+
+- `Sessions_<version>_x64-setup.exe` — the normal current-user installer;
+- `Sessions_<version>_x64-portable.zip` — a standalone test layout.
+
+Prefer the installer. A newer installer is the normal upgrade path for an
+existing installed copy of Sessions; do not delete `%LOCALAPPDATA%\Sessions`
+or the Sessions state directory during an upgrade. The updater and installer
+are designed to leave compatible runners on their existing runtime while new
+sessions use the updated runtime. This preservation contract still requires
+the real-hardware checks in [`WINDOWS_TEST.md`](WINDOWS_TEST.md) before the
+unsigned preview can be described as production-ready.
+
+The portable package is not registered as an installed application and cannot
+update an older portable copy in place. Close the portable viewer, remove its
+old extracted directory, and extract the new archive to a fresh directory.
+Provider credentials and Sessions state live outside that directory.
+
+The current preview installer is intentionally unsigned. Windows may show a
+SmartScreen warning until Authenticode signing and hardware verification are
+complete.
+
 ## Homebrew runtime install on macOS
 
 Homebrew is the npm-like package-manager channel for the three standalone
