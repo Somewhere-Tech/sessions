@@ -74,7 +74,11 @@ type ClaudeSettings struct {
 
 func DefaultClaudeSettings() ClaudeSettings {
 	return ClaudeSettings{
-		RemoteControl:  ClaudeChoiceInherit,
+		// Sessions' primary Claude experience is the native interactive CLI
+		// with Remote Control enabled. This keeps subscription authentication,
+		// Claude's terminal, claude.ai, and mobile on one provider session.
+		// Users can still choose Off for a local-only launch.
+		RemoteControl:  ClaudeChoiceOn,
 		PermissionMode: ClaudeChoiceInherit,
 		Effort:         ClaudeChoiceInherit,
 		Chrome:         ClaudeChoiceInherit,
@@ -257,11 +261,12 @@ func (n *NotifySettings) Set(kind string, enabled bool) error {
 // state. Additive fields keep this file easy to extend without changing its
 // location or format.
 type Settings struct {
-	LAN    bool            `json:"lan"`
-	Notify *NotifySettings `json:"notify,omitempty"`
-	Recap  *RecapSettings  `json:"recap,omitempty"`
-	AI     *AISettings     `json:"ai,omitempty"`
-	Claude *ClaudeSettings `json:"claude,omitempty"`
+	LAN                     bool            `json:"lan"`
+	Notify                  *NotifySettings `json:"notify,omitempty"`
+	Recap                   *RecapSettings  `json:"recap,omitempty"`
+	AI                      *AISettings     `json:"ai,omitempty"`
+	Claude                  *ClaudeSettings `json:"claude,omitempty"`
+	ClaudeExperienceVersion int             `json:"claudeExperienceVersion,omitempty"`
 }
 
 func (s Settings) EffectiveNotify() NotifySettings {
@@ -289,7 +294,16 @@ func (s Settings) EffectiveClaude() ClaudeSettings {
 	if s.Claude == nil {
 		return DefaultClaudeSettings()
 	}
-	return *s.Claude
+	effective := *s.Claude
+	// Before the interactive Remote Control experience became the default,
+	// Sessions stored "inherit" even when the user had never chosen a Remote
+	// Control policy. Treat that legacy value as the new default. Once the
+	// user saves this settings surface, the version marker preserves a future
+	// explicit "Use Claude's setting" choice.
+	if s.ClaudeExperienceVersion < 1 && effective.RemoteControl == ClaudeChoiceInherit {
+		effective.RemoteControl = ClaudeChoiceOn
+	}
+	return effective
 }
 
 func LoadSettings(path string) (Settings, error) {

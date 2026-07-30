@@ -104,6 +104,14 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     && session.tool !== 'terminal'
     && !richSession
   );
+  // Claude's Conversation view is sourced from its canonical JSONL, not its
+  // screen. Only the Codex PTY compatibility adapter needs the one-time
+  // warning about incomplete terminal interpretation.
+  const terminalCompatibilityAgent = Boolean(
+    session
+    && session.tool === 'codex'
+    && !richSession
+  );
   const terminalDrawerOpen = Boolean(
     supportsConversation
     && effectiveView === 'terminal'
@@ -231,7 +239,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
       !isActive
       || effectiveView !== 'remote'
       || detailsOpen
-      || !terminalBackedAgent
+      || !terminalCompatibilityAgent
       || terminalWarningDismissed
       || terminalNoticeAcknowledged
       || terminalNoticeShownThisLaunch
@@ -246,7 +254,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     detailsOpen,
     effectiveView,
     isActive,
-    terminalBackedAgent,
+    terminalCompatibilityAgent,
     terminalNoticeAcknowledged,
     terminalWarningDismissed
   ]);
@@ -399,9 +407,9 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               <span className="session-runtime-anchor">
                 <span
                   ref={terminalModePillRef}
-                  className={`session-runtime-badge${sessionMode(session) === 'terminal' ? ' is-terminal' : ''}`}
+                  className={`session-runtime-badge${sessionMode(session) === 'terminal' && session.tool !== 'claude-code' ? ' is-terminal' : ''}`}
                   title={sessionModeName(session)}
-                  tabIndex={terminalBackedAgent ? 0 : undefined}
+                  tabIndex={terminalCompatibilityAgent ? 0 : undefined}
                   aria-describedby={terminalNoticeOpen ? `terminal-runtime-notice-${sessionId}` : undefined}
                 >
                   {sessionModeShort(session)}
@@ -413,19 +421,18 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
                     role="status"
                     aria-live="polite"
                   >
-                    <strong>This is a Terminal session</strong>
+                    <strong>This Codex session uses its terminal interface</strong>
                     <p>
-                      Sessions builds this conversation by reading {session.tool === 'claude-code' ? 'Claude' : 'Codex'}’s screen, so status,
-                      messages, and tool activity can be delayed or incomplete. The Terminal tab always shows exactly what {session.tool === 'claude-code' ? 'Claude' : 'Codex'} printed.
+                      Some status, messages, and tool activity can be delayed or incomplete. Terminal always shows exactly what Codex printed.
                     </p>
                     <p className="terminal-runtime-notice-rich">
-                      Rich sessions read the same information directly from {session.tool === 'claude-code' ? 'Claude' : 'Codex'}.
+                      Rich Codex sessions receive the same information through its app-server protocol.
                     </p>
                     <div className="terminal-runtime-notice-actions">
                       <button type="button" className="btn btn-secondary" onClick={() => acknowledgeTerminalNotice()}>Okay</button>
                       <button type="button" className="btn btn-ghost" onClick={dismissTerminalNoticeForProvider}>Don’t show again</button>
                     </div>
-                    <small>Applies to {session.tool === 'claude-code' ? 'Claude' : 'Codex'} sessions.</small>
+                    <small>Applies only to Codex terminal sessions.</small>
                   </aside>
                 ) : null}
               </span>

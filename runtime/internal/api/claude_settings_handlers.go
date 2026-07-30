@@ -31,6 +31,7 @@ func (s *Server) handleClaudeSettingsRoute(response http.ResponseWriter, request
 		}
 		if err := state.UpdateSettings(s.lan.settingsPath, func(settings *state.Settings) error {
 			settings.Claude = &normalized
+			settings.ClaudeExperienceVersion = 1
 			return nil
 		}); err != nil {
 			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)

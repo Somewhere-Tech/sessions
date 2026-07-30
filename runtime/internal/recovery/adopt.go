@@ -355,21 +355,31 @@ func Adopt(
 		description = selected.Source.Description
 		tags = state.CloneTags(selected.Source.Tags)
 		profile = selected.Source.Profile
-		kind = selected.Source.Kind
 		if selected.Source.DisplayParentSessionID != nil {
 			parent := *selected.Source.DisplayParentSessionID
 			displayParent = &parent
 		}
 	}
-	if adoption.Tool == string(state.ToolCodex) && kind == "" {
-		kind = state.KindCodexAppServer
-	}
-	if adoption.Tool == string(state.ToolClaude) && kind == "" {
-		kind = state.KindClaudeStructured
-	}
-	if selected.RuntimeMode == "terminal" {
+	// An omitted runtime is the product default, not "repeat whatever
+	// implementation the ended Sessions record happened to use." Claude
+	// resumes in its native interactive process so Conversation, Terminal,
+	// claude.ai, and mobile share one provider session. Codex keeps its
+	// structured app-server default. Rich remains an explicit automation
+	// choice for either provider.
+	switch selected.RuntimeMode {
+	case "":
+		if adoption.Tool == string(state.ToolCodex) {
+			kind = state.KindCodexAppServer
+		}
+	case "terminal":
 		kind = ""
-	} else if selected.RuntimeMode != "" && selected.RuntimeMode != "rich" {
+	case "rich":
+		if adoption.Tool == string(state.ToolCodex) {
+			kind = state.KindCodexAppServer
+		} else if adoption.Tool == string(state.ToolClaude) {
+			kind = state.KindClaudeStructured
+		}
+	default:
 		return AdoptResult{}, errors.New("runtime mode must be rich or terminal")
 	}
 	conversationID := ""

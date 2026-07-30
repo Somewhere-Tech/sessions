@@ -258,11 +258,13 @@ inside the session manager before the runner boundary
 `runtime/internal/session/claude_defaults.go`). Remote Control, permission
 mode, model, effort, Chrome, Remote Control naming, and the Somewhere MCP are
 typed rather than free-form startup commands. Explicit per-session choices win;
-`inherit` leaves Claude authoritative. Remote Control is applied only to
-Terminal Claude sessions: Claude's Rich `--print` interface has no interactive
-slash commands or `/rc`, so Rich launches explicitly disable it and the
-conversation composer offers a safe continuation into Terminal when a slash
-command is entered. Sessions never rewrites Claude's files.
+`inherit` leaves Claude authoritative. New Claude sessions default to the
+native interactive CLI with Remote Control: Sessions renders the provider's
+canonical JSONL in Conversation while Terminal, claude.ai, and mobile remain
+views of that same process. `off` keeps the interactive session local. The
+explicit Rich `--print` runtime remains available for headless automation and
+disables Remote Control because it is a separate non-interactive process.
+Sessions never rewrites Claude's files.
 The Somewhere resolver recognizes the canonical HTTP registration or local
 `somewhere mcp` adapter, avoids an equivalent duplicate, and fails on a
 same-name/different-target conflict without copying a token into runner state.
@@ -417,9 +419,10 @@ explicit, unambiguous provider artifact (`runtime/internal/recovery/adopt.go`).
 The one prompt-index exception is still exact: an authenticated Claude history
 ID must supply a valid provider UUID and an existing recorded absolute
 workspace. Sessions launches only `claude --resume <uuid>` there and never
-searches for a similar folder or conversation. New Claude and Codex
-continuations default to Rich structured runtimes; an ended source preserves
-its explicitly chosen runtime kind.
+searches for a similar folder or conversation. Claude continuations default to
+the native interactive Conversation + Terminal runtime with the destination's
+Remote Control setting. Codex continuations default to its Rich app-server
+runtime. Explicit runtime choices remain available at the recovery boundary.
 
 `runtime/internal/recovery/continue_provider.go` owns the separate
 cross-provider creation boundary. The API normalizes the exact selected

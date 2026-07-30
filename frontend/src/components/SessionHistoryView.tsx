@@ -107,7 +107,7 @@ export function SessionHistoryView({ session, onResume, onCloseView, onOpenSessi
         {onBack ? <button type="button" className="mobile-session-back" onClick={onBack} aria-label="Back to sessions">‹</button> : null}
         <div className="session-active-copy">
           <span className="session-parent-breadcrumb">{parent ? `${sessionLabel(parent)} / ${session.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}` : 'Manager session'} · saved history</span>
-          <div className="session-active-title-row"><h1>{label}</h1><span className={`session-live-pill ${continuationIsLive ? 'is-completed' : 'is-finished'}`}>{lifecycleLabel}</span><span className={`session-runtime-badge${sessionMode(session) === 'terminal' ? ' is-terminal' : ''}`} title={sessionModeName(session)}>{sessionModeShort(session)}</span></div>
+          <div className="session-active-title-row"><h1>{label}</h1><span className={`session-live-pill ${continuationIsLive ? 'is-completed' : 'is-finished'}`}>{lifecycleLabel}</span><span className={`session-runtime-badge${sessionMode(session) === 'terminal' && session.tool !== 'claude-code' ? ' is-terminal' : ''}`} title={sessionModeName(session)}>{sessionModeShort(session)}</span></div>
           <div className="session-active-meta">
             {provider ? <ProviderBadge provider={provider} compact /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}
             <span>{session.profile || 'Default profile'}</span><span>Saved on {getActiveServer().name}</span><span title={session.cwd}>{session.cwd}</span>

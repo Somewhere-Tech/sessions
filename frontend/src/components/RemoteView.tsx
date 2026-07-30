@@ -394,7 +394,7 @@ export function RemoteView({
             <h2>Start a {providerName} conversation</h2>
             <p className="remote-empty-hint">
               {terminalAvailable
-                ? 'Send the first request below. Terminal stays one click away whenever you need the raw session.'
+                ? 'Send the first request below. Conversation and Terminal stay connected to the same provider session.'
                 : 'Send the first request below. Rich sessions use the provider’s structured conversation interface.'}
             </p>
           </div>

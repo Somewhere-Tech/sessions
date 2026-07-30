@@ -18,7 +18,7 @@ func TestClaudeSettingsRoundTrip(t *testing.T) {
 	}
 	var defaults state.ClaudeSettings
 	decodeBody(t, response, &defaults)
-	if defaults.PermissionMode != state.ClaudeChoiceInherit || defaults.RemoteControl != state.ClaudeChoiceInherit {
+	if defaults.PermissionMode != state.ClaudeChoiceInherit || defaults.RemoteControl != state.ClaudeChoiceOn {
 		t.Fatalf("defaults = %#v", defaults)
 	}
 

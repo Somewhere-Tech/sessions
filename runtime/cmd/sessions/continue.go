@@ -12,9 +12,10 @@ func (a *app) cmdContinue(args []string) error {
 	sourceSessionID, sourceSet := pluck(&args, "--source")
 	destinationProvider, destinationSet := pluck(&args, "--with")
 	terminal := removeFirst(&args, "--terminal")
+	structured := removeFirst(&args, "--structured")
 	remoteControl := removeFirst(&args, "--remote-control")
 	if len(args) != 1 || args[0] == "" {
-		return fail(1, "usage: sessions continue <history-id> [--with claude|codex] [--terminal [--remote-control]] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
+		return fail(1, "usage: sessions continue <history-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
 	}
 	if repairSet && repairLaneID == "" {
 		return fail(1, "--repair requires the existing live successor id")
@@ -30,6 +31,12 @@ func (a *app) cmdContinue(args []string) error {
 	}
 	if terminal && repairSet {
 		return fail(1, "--terminal cannot be combined with --repair")
+	}
+	if structured && repairSet {
+		return fail(1, "--structured cannot be combined with --repair")
+	}
+	if terminal && structured {
+		return fail(1, "--terminal and --structured cannot be combined")
 	}
 	if remoteControl && !terminal {
 		return fail(1, "--remote-control requires --terminal")
@@ -49,6 +56,9 @@ func (a *app) cmdContinue(args []string) error {
 	}
 	if terminal {
 		body["runtimeMode"] = "terminal"
+	}
+	if structured {
+		body["runtimeMode"] = "rich"
 	}
 	if remoteControl {
 		body["remoteControl"] = true

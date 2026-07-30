@@ -94,7 +94,7 @@ func TestNormalizeAISettings(t *testing.T) {
 
 func TestNormalizeAndResolveClaudeSettings(t *testing.T) {
 	defaults := DefaultClaudeSettings()
-	if defaults.RemoteControl != ClaudeChoiceInherit || defaults.PermissionMode != ClaudeChoiceInherit || defaults.SomewhereMCP != ClaudeChoiceInherit {
+	if defaults.RemoteControl != ClaudeChoiceOn || defaults.PermissionMode != ClaudeChoiceInherit || defaults.SomewhereMCP != ClaudeChoiceInherit {
 		t.Fatalf("default Claude settings = %#v", defaults)
 	}
 	normalized, err := NormalizeClaudeSettings(ClaudeSettings{
@@ -128,5 +128,19 @@ func TestNormalizeAndResolveClaudeSettings(t *testing.T) {
 		if _, err := NormalizeClaudeSettings(invalid); err == nil {
 			t.Fatalf("invalid Claude settings accepted: %#v", invalid)
 		}
+	}
+}
+
+func TestLegacyClaudeInheritMigratesWithoutOverridingNewExplicitChoice(t *testing.T) {
+	legacy := Settings{Claude: &ClaudeSettings{RemoteControl: ClaudeChoiceInherit}}
+	if got := legacy.EffectiveClaude().RemoteControl; got != ClaudeChoiceOn {
+		t.Fatalf("legacy Remote Control = %q, want %q", got, ClaudeChoiceOn)
+	}
+	versioned := Settings{
+		Claude:                  &ClaudeSettings{RemoteControl: ClaudeChoiceInherit},
+		ClaudeExperienceVersion: 1,
+	}
+	if got := versioned.EffectiveClaude().RemoteControl; got != ClaudeChoiceInherit {
+		t.Fatalf("explicit versioned Remote Control = %q, want %q", got, ClaudeChoiceInherit)
 	}
 }

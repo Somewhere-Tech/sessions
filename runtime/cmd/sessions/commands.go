@@ -342,7 +342,7 @@ func (a *app) cmdNew(args []string) error {
 			return fail(1, "--codex-appserver and --pty-codex are only valid with --tool codex")
 		}
 		if strings.EqualFold(tool, "claude") {
-			if !forcePTYClaude {
+			if forceStructuredClaude {
 				body.Kind = "claude-structured"
 			}
 		} else if forceStructuredClaude || forcePTYClaude {
@@ -370,7 +370,7 @@ func (a *app) cmdNew(args []string) error {
 			return err
 		}
 		if state.CommandTool(body.Cmd) == state.ToolClaude {
-			if !forcePTYClaude {
+			if forceStructuredClaude {
 				body.Kind = state.KindClaudeStructured
 			}
 		} else if forceStructuredClaude || forcePTYClaude {

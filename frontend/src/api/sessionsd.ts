@@ -1056,8 +1056,8 @@ export async function adoptConversation(
   sourceSessionId?: string,
   historyId?: string,
   destinationProvider?: 'claude' | 'codex',
-  runtimeMode: 'rich' | 'terminal' = 'rich',
-  remoteControl = false
+  runtimeMode?: 'rich' | 'terminal',
+  remoteControl?: boolean
 ): Promise<AdoptConversationResult> {
   const r = await apiFetch(`${httpBase()}/api/recovery/adopt`, {
     method: 'POST',

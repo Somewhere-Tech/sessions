@@ -47,6 +47,19 @@ func TestClaudeDefaultsBecomeLaunchArguments(t *testing.T) {
 	}
 }
 
+func TestClaudeInteractiveDefaultsRemoteControlOn(t *testing.T) {
+	manager := &Manager{}
+	request, err := manager.applyClaudeDefaults(state.CreateSessionRequest{
+		Cmd: "claude", Args: []string{"--session-id", "fixture"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasAnyArg(request.Args, "--remote-control") {
+		t.Fatalf("interactive Claude launch did not default Remote Control on: %q", request.Args)
+	}
+}
+
 func TestClaudeStructuredForcesRemoteControlOff(t *testing.T) {
 	settingsPath := filepath.Join(t.TempDir(), "settings.json")
 	settings := state.ClaudeSettings{

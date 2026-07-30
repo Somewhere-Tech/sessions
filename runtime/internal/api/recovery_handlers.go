@@ -154,7 +154,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			RepairLaneID        string `json:"repairLaneId,omitempty"`
 			DestinationProvider string `json:"destinationProvider,omitempty"`
 			RuntimeMode         string `json:"runtimeMode,omitempty"`
-			RemoteControl       bool   `json:"remoteControl,omitempty"`
+			RemoteControl       *bool  `json:"remoteControl,omitempty"`
 			Force               bool   `json:"force,omitempty"`
 		}
 		if err := readJSON(request, &body); err != nil {
@@ -171,7 +171,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			return
 		}
 		body.RuntimeMode = runtimeMode
-		if body.RemoteControl && body.RuntimeMode != "terminal" {
+		if body.RemoteControl != nil && *body.RemoteControl && body.RuntimeMode != "terminal" {
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{
 				"error": "Remote Control requires runtimeMode terminal",
 			}, corsOrigin)
@@ -351,14 +351,18 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			source = adoptSourceFromSession(candidate)
 		}
 		var claudeOptions *state.ClaudeSessionOptions
-		if body.RemoteControl {
+		if body.RemoteControl != nil {
 			if adoption.Tool != string(state.ToolClaude) {
 				s.sendJSON(response, http.StatusBadRequest, map[string]any{
 					"error": "Remote Control is available only when continuing a Claude conversation in Terminal",
 				}, corsOrigin)
 				return
 			}
-			claudeOptions = &state.ClaudeSessionOptions{RemoteControl: state.ClaudeChoiceOn}
+			choice := state.ClaudeChoiceOff
+			if *body.RemoteControl {
+				choice = state.ClaudeChoiceOn
+			}
+			claudeOptions = &state.ClaudeSessionOptions{RemoteControl: choice}
 		}
 		if body.RepairLaneID != "" {
 			successorSession, live := s.registry.Get(body.RepairLaneID)

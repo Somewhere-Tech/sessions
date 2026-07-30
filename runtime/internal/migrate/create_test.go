@@ -7,26 +7,27 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
-func TestSessionRequestCreatesRichProviderContinuations(t *testing.T) {
+func TestSessionRequestCreatesProviderDefaultContinuations(t *testing.T) {
 	cwd := filepath.Join(t.TempDir(), "workspace")
 	cases := []struct {
-		name string
-		tool string
-		id   string
-		argv []string
-		kind string
+		name           string
+		tool           string
+		id             string
+		argv           []string
+		kind           string
+		conversationID string
 	}{
 		{
 			name: "Claude", tool: "claude-code",
 			id:   "11111111-1111-4111-8111-111111111111",
 			argv: []string{"claude", "--resume", "11111111-1111-4111-8111-111111111111"},
-			kind: state.KindClaudeStructured,
+			kind: "", conversationID: "",
 		},
 		{
 			name: "Codex", tool: "codex",
 			id:   "22222222-2222-4222-8222-222222222222",
 			argv: []string{"codex", "resume", "22222222-2222-4222-8222-222222222222"},
-			kind: state.KindCodexAppServer,
+			kind: state.KindCodexAppServer, conversationID: "22222222-2222-4222-8222-222222222222",
 		},
 	}
 	for _, test := range cases {
@@ -39,11 +40,26 @@ func TestSessionRequestCreatesRichProviderContinuations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if request.Kind != test.kind || request.ConversationID != test.id ||
+			if request.Kind != test.kind || request.ConversationID != test.conversationID ||
 				request.Cmd != test.argv[0] || request.Name != "Continue BOLO" {
 				t.Fatalf("create request = %#v", request)
 			}
 		})
+	}
+}
+
+func TestSessionRequestCreatesExplicitRichClaudeContinuation(t *testing.T) {
+	id := "11111111-1111-4111-8111-111111111111"
+	request, err := SessionRequest(CreateRequest{
+		Tool: "claude-code", UUID: id, Cwd: filepath.Join(t.TempDir(), "workspace"),
+		ResumeRecipe: []string{"claude", "--resume", id}, RuntimeMode: RuntimeRich,
+		SourceID: "source-lane", SourceEndpoint: "this-machine",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Kind != state.KindClaudeStructured || request.ConversationID != id {
+		t.Fatalf("Rich Claude continuation = %#v", request)
 	}
 }
 

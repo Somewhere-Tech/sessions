@@ -139,7 +139,7 @@ export async function listNativeMoveMachines(): Promise<NativeSavedMachine[]> {
 export async function moveNativeSession(
   sessionId: string,
   machine: string,
-  options: { dryRun: boolean; allowDirty?: boolean; runtimeMode?: 'rich' | 'terminal' }
+  options: { dryRun: boolean; allowDirty?: boolean; runtimeMode: 'rich' | 'terminal' }
 ): Promise<NativeMovePlan> {
   if (!isTauri()) throw new Error('Cross-machine continuation is available in Sessions.app');
   const result = await invoke<NativeConnectionCommand<NativeMovePlan>>('native_move_session', {
@@ -147,7 +147,7 @@ export async function moveNativeSession(
     machine,
     dryRun: options.dryRun,
     allowDirty: options.allowDirty ?? false,
-    runtimeMode: options.runtimeMode ?? 'rich'
+    runtimeMode: options.runtimeMode
   });
   return result.data;
 }

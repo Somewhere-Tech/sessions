@@ -614,7 +614,7 @@ Auth required. Resolves one explicit provider conversation and creates its
 successor through the normal write-ahead session boundary:
 
 ```json
-{"target":"<provider UUID or conversation path>","sourceSessionId":"<optional ended Sessions id>","runtimeMode":"rich","force":false}
+{"target":"<provider UUID or conversation path>","sourceSessionId":"<optional ended Sessions id>","force":false}
 ```
 
 A complete adoption returns `201` with `ok: true`, the new `laneId`, and the
@@ -623,11 +623,14 @@ actor/provider/source-link annotations are appended. If one of those
 post-launch appends fails, the endpoint therefore returns `202`, not a false
 full failure:
 
-`runtimeMode` is optional and defaults to `rich`. `terminal` reopens the exact
-same provider conversation through the provider's terminal interface. It is
-accepted only for same-provider continuation; cross-provider continuation
-requires Rich mode because its imported/linked context is delivered through
-the structured runtime.
+`runtimeMode` is optional. Claude defaults to its native interactive runtime,
+where Sessions presents Conversation and Terminal for the same process and the
+destination's typed Claude setting enables Remote Control. Codex defaults to
+its Rich app-server runtime. Explicit `rich` selects the structured runtime;
+explicit `terminal` selects the provider terminal. Terminal is accepted only
+for same-provider continuation; cross-provider continuation requires Rich mode
+because its imported/linked context is delivered through the structured
+runtime.
 
 ```json
 {
@@ -858,17 +861,18 @@ Returns the effective typed defaults Sessions applies only to newly launched
 Claude sessions:
 
 ```json
-{"remoteControl":"inherit","permissionMode":"inherit","model":"","effort":"inherit","chrome":"inherit","somewhereMcp":"inherit","remoteControlNamePrefix":""}
+{"remoteControl":"on","permissionMode":"inherit","model":"","effort":"inherit","chrome":"inherit","somewhereMcp":"inherit","remoteControlNamePrefix":""}
 ```
 
 Remote Control and Chrome accept `inherit`, `on`, or `off`; permission mode
 accepts Claude's supported modes plus `inherit`; effort accepts `inherit`,
 `low`, `medium`, `high`, `xhigh`, or `max`; Somewhere MCP accepts `inherit` or
 `ensure`. Empty model and name-prefix fields preserve provider defaults.
-Remote Control is an interactive Claude capability: Sessions applies this
-default only to Terminal Claude sessions. Rich `claude-structured` sessions
-explicitly disable provider Remote Control because Claude's `--print`
-interface has no slash-command or `/rc` surface.
+Remote Control is an interactive Claude capability and defaults on for new
+native Claude sessions. `off` starts the same Conversation + Terminal runtime
+without claude.ai/mobile connectivity. Explicit Rich `claude-structured`
+sessions disable provider Remote Control because Claude's `--print` interface
+cannot join the interactive Remote Control session.
 
 ### `PUT /api/claude/settings`
 

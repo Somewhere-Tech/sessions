@@ -396,6 +396,32 @@ func TestAdoptForwardsClaudeRemoteControlToTerminalContinuation(t *testing.T) {
 	}
 }
 
+func TestAdoptDefaultsClaudeToInteractiveRuntime(t *testing.T) {
+	root := t.TempDir()
+	store := openScratchLedger(t, root)
+	provider := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	creator := &adoptTestCreator{
+		boundaries: store.Boundaries(),
+		laneID:     "20000000-0000-4000-8000-000000000003", providerUUID: provider,
+	}
+	result, err := recovery.Adopt(
+		context.Background(),
+		recovery.Adoption{
+			Path: filepath.Join(root, "conversation.jsonl"),
+			Tool: string(state.ToolClaude), Cwd: root, ProviderUUID: provider,
+			Cmd: "claude", Args: []string{"--resume", provider},
+		},
+		"Remote Claude", creator, store.Boundaries(), store.Observations(),
+		recovery.AdoptOptions{Events: store},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || creator.calls != 1 || creator.request.Kind != "" {
+		t.Fatalf("default Claude continuation = result %+v request %#v", result, creator.request)
+	}
+}
+
 type failAdoptCreatedBoundary struct {
 	ledger.BoundaryWriter
 }

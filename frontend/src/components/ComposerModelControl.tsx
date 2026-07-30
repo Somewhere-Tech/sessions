@@ -104,7 +104,7 @@ export function ComposerModelControl({
         aria-expanded={open}
         title={supported
           ? 'Choose the model and effort for the next message'
-          : 'Live model changes require a current Rich session'}
+          : 'This session keeps Claude’s native live controls'}
       >
         <span>{compactModel(model)}</span>
         {effort ? <span>{effort}</span> : null}
@@ -117,7 +117,7 @@ export function ComposerModelControl({
             <button type="button" aria-label="Close model selector" onClick={() => setOpen(false)}>×</button>
           </header>
           {!supported ? (
-            <p>This session uses Terminal compatibility mode or an older runner. Change the model in Terminal, or resume it with the current Rich runtime.</p>
+            <p>This native interactive session keeps model changes inside Claude today. Choose the model when starting the session, or use Claude’s control in Terminal. A verified Sessions control is the next compatibility step.</p>
           ) : (
             <>
               <div className="composer-model-field">
