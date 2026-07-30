@@ -46,11 +46,14 @@ interface Props {
   // Switches the parent SessionView to the raw terminal when the
   // snapshot classifier sees a prompt/menu instead of a composer.
   onOpenTerminal: () => void;
+  terminalAvailable?: boolean;
   provider: SessionTool;
   model?: string;
   effort?: string;
   modelControlSupported?: boolean;
   onConfigureModel?: (model: string, effort: string) => Promise<void>;
+  onRename?: (name: string) => Promise<void>;
+  onContinueInTerminal?: (enableRemoteControl: boolean) => Promise<void>;
 }
 
 // Provider-neutral conversation view over the durable session transport.
@@ -76,11 +79,14 @@ export function RemoteView({
   sidebar,
   cwd,
   onOpenTerminal,
+  terminalAvailable = true,
   provider,
   model,
   effort,
   modelControlSupported = false,
-  onConfigureModel
+  onConfigureModel,
+  onRename,
+  onContinueInTerminal
 }: Props): JSX.Element {
   const providerName = provider === 'codex' ? 'Codex' : 'Claude';
   const providerIdentity: ProviderIdentity = provider === 'codex' ? 'codex' : 'claude';
@@ -184,7 +190,11 @@ export function RemoteView({
   const [blockingState, setBlockingState] = useState<SnapshotComposerState | null>(null);
 
   useEffect(() => {
-    if (!latestFailedSend) {
+    // Snapshot prompt classification is a terminal-screen heuristic. Rich
+    // sessions have structured provider events but no terminal stream, so
+    // applying it there can turn ordinary conversation text into a false
+    // "open Terminal" warning with an impossible action.
+    if (!terminalAvailable || !latestFailedSend) {
       setBlockingState(null);
       return;
     }
@@ -207,7 +217,7 @@ export function RemoteView({
 
     void checkSnapshot();
     return () => { alive = false; };
-  }, [sessionId, latestFailedSend?.id, latestFailedSend?.createdAt]);
+  }, [sessionId, terminalAvailable, latestFailedSend?.id, latestFailedSend?.createdAt]);
 
   // Scroll-anchor preservation across window expansion. Prepending
   // older messages grows scrollHeight by ~the prepended block's
@@ -383,7 +393,9 @@ export function RemoteView({
             <span>Ready</span>
             <h2>Start a {providerName} conversation</h2>
             <p className="remote-empty-hint">
-              Send the first request below. Terminal stays one click away whenever you need the raw session.
+              {terminalAvailable
+                ? 'Send the first request below. Terminal stays one click away whenever you need the raw session.'
+                : 'Send the first request below. Rich sessions use the provider’s structured conversation interface.'}
             </p>
           </div>
         ) : null}
@@ -462,6 +474,9 @@ export function RemoteView({
           modelControlSupported={modelControlSupported}
           providerWorking={sidebar.isWorking}
           onConfigureModel={onConfigureModel}
+          richSession={!terminalAvailable}
+          onRename={onRename}
+          onContinueInTerminal={onContinueInTerminal}
         />
       </div>
     </div>

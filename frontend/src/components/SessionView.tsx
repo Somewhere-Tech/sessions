@@ -28,7 +28,12 @@ interface Props {
   // expensive per-session work (snapshot polling for picker detection)
   // so we don't burn N×CPU for sessions the user isn't looking at.
   isActive?: boolean;
-  onResume?: (session: import('../types').SessionInfo) => void;
+  onResume?: (
+    session: import('../types').SessionInfo,
+    destinationProvider?: 'claude' | 'codex',
+    runtimeMode?: 'rich' | 'terminal',
+    remoteControl?: boolean
+  ) => void;
   onCloseView?: (sessionId: string) => void;
   onOpenSession?: (sessionId: string) => void;
   onBack?: () => void;
@@ -73,6 +78,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   const session = useSessions((s) => s.sessions.find((x) => x.id === sessionId)) ?? null;
   const allSessions = useSessions((s) => s.sessions);
   const endSession = useSessions((s) => s.kill);
+  const updateName = useSessions((s) => s.updateName);
   const updateModel = useSessions((s) => s.updateModel);
   const customLabel = useTabLabel(sessionId, session?.cwd);
 
@@ -281,6 +287,25 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   const loadEarlierClaudeEvents = useCallback((): void => {
     term.loadEarlierClaudeEventsRef.current();
   }, [term.loadEarlierClaudeEventsRef]);
+
+  const continueInTerminal = useCallback(async (enableRemoteControl: boolean): Promise<void> => {
+    if (!session || !onResume) {
+      throw new Error('Open Sessions in the main window to continue this chat in Terminal.');
+    }
+    if (!richSession || session.tool !== 'claude-code') {
+      throw new Error('This action is available for Rich Claude sessions.');
+    }
+    if (session.working) {
+      throw new Error('Claude is still working. Wait for this turn to finish; your draft will stay in the composer.');
+    }
+    await endSession(
+      session.id,
+      enableRemoteControl
+        ? 'Continuing the same Claude conversation in Terminal with Remote Control.'
+        : 'Continuing the same Claude conversation in Terminal for slash commands.'
+    );
+    onResume(session, 'claude', 'terminal', enableRemoteControl);
+  }, [endSession, onResume, richSession, session]);
 
   // Put the cursor in the terminal when this tab becomes the active,
   // terminal-viewed session. Tab switches are a CSS display toggle (no
@@ -536,11 +561,16 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             sidebar={sidebar}
             cwd={session?.cwd}
             onOpenTerminal={() => setViewMode('terminal')}
+            terminalAvailable={!richSession}
             provider={session?.tool ?? 'claude-code'}
             model={session?.model}
             effort={session?.effort}
             modelControlSupported={Boolean(richSession && (session?.runnerProtocol ?? 0) >= 2)}
             onConfigureModel={session ? (model, effort) => updateModel(session.id, model, effort) : undefined}
+            onRename={session ? (name) => updateName(session.id, name) : undefined}
+            onContinueInTerminal={richSession && session?.tool === 'claude-code' && onResume
+              ? continueInTerminal
+              : undefined}
           />
         </div>
         <div className="session-details-pane">

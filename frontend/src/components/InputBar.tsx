@@ -28,6 +28,19 @@ interface Props {
   modelControlSupported?: boolean;
   providerWorking?: boolean;
   onConfigureModel?: (model: string, effort: string) => Promise<void>;
+  // Rich provider sessions have no interactive TUI. Claude slash commands
+  // must never be pasted into their structured composer as ordinary chat.
+  richSession?: boolean;
+  onRename?: (name: string) => Promise<void>;
+  onContinueInTerminal?: (enableRemoteControl: boolean) => Promise<void>;
+}
+
+interface ComposerNotice {
+  tone: 'info' | 'error';
+  title: string;
+  detail: string;
+  canContinueInTerminal?: boolean;
+  enableRemoteControl?: boolean;
 }
 
 // Quote a path for safe shell-style insertion. Single quotes wrap the
@@ -54,7 +67,10 @@ export function InputBar({
   effort,
   modelControlSupported = false,
   providerWorking = false,
-  onConfigureModel
+  onConfigureModel,
+  richSession = false,
+  onRename,
+  onContinueInTerminal
 }: Props): JSX.Element {
   const [text, setText] = useState('');
   // 'idle' | 'sent' — sent briefly turns the Send button green so the
@@ -67,6 +83,8 @@ export function InputBar({
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [composerNotice, setComposerNotice] = useState<ComposerNotice | null>(null);
+  const [continuingInTerminal, setContinuingInTerminal] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handledRecoveryKeysRef = useRef<Set<string>>(new Set());
@@ -100,9 +118,71 @@ export function InputBar({
     setText(recoverDraft.text);
   }, [recoverDraft, text]);
 
-  const submit = (): void => {
+  const submit = async (): Promise<void> => {
     if (!connected) return;
     setUploadError(null); // clear any lingering upload error on submit
+    setComposerNotice(null);
+    const trimmed = text.trim();
+
+    if (richSession && /^\/rename(?:\s|$)/i.test(trimmed)) {
+      const name = trimmed.replace(/^\/rename(?:\s+|$)/i, '').trim();
+      if (!name) {
+        setComposerNotice({
+          tone: 'error',
+          title: 'Add a name after /rename',
+          detail: 'For example: /rename Database migration'
+        });
+        return;
+      }
+      if (!onRename) {
+        setComposerNotice({
+          tone: 'error',
+          title: 'Could not rename this session',
+          detail: 'This Sessions runtime does not expose durable rename yet.'
+        });
+        return;
+      }
+      try {
+        await onRename(name);
+        setText('');
+        restoredDraftRef.current = null;
+        setFeedback('sent');
+        window.setTimeout(() => setFeedback('idle'), 500);
+      } catch (reason) {
+        setComposerNotice({
+          tone: 'error',
+          title: 'Could not rename this session',
+          detail: reason instanceof Error ? reason.message : 'Try again after Sessions reconnects.'
+        });
+      }
+      return;
+    }
+
+    if (richSession && trimmed.startsWith('/')) {
+      const command = trimmed.split(/\s+/, 1)[0]?.toLowerCase() ?? 'slash command';
+      setComposerNotice({
+        tone: 'info',
+        title: command === '/rc'
+          ? 'Remote Control needs a Terminal session'
+          : `${command} needs a Terminal session`,
+        detail: command === '/rc'
+          ? 'Claude exposes Remote Control only from its interactive terminal. This command was not sent as a chat message.'
+          : 'Claude slash commands run in its interactive terminal. This command was not sent as a chat message.',
+        canContinueInTerminal: Boolean(onContinueInTerminal),
+        enableRemoteControl: command === '/rc'
+      });
+      return;
+    }
+
+    if (richSession && providerWorking) {
+      setComposerNotice({
+        tone: 'info',
+        title: 'Claude is still working',
+        detail: 'Your draft is kept here and was not sent or queued. Send it when this turn finishes.'
+      });
+      return;
+    }
+
     if (text) {
       // Two-step submit:
       //   1. Send the text wrapped in bracketed-paste markers so
@@ -133,7 +213,7 @@ export function InputBar({
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      submit();
+      void submit();
       return;
     }
     if (e.key === 'Escape') {
@@ -255,6 +335,45 @@ export function InputBar({
           >×</button>
         </div>
       ) : null}
+      {composerNotice ? (
+        <div className={`input-composer-notice is-${composerNotice.tone}`} role={composerNotice.tone === 'error' ? 'alert' : 'status'}>
+          <div>
+            <strong>{composerNotice.title}</strong>
+            <span>{composerNotice.detail}</span>
+          </div>
+          <div className="input-composer-notice-actions">
+            {composerNotice.canContinueInTerminal && onContinueInTerminal ? (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={providerWorking || continuingInTerminal}
+                title={providerWorking ? 'Available after the current turn finishes' : 'End this Rich runtime, then continue the same Claude conversation in Terminal'}
+                onClick={() => {
+                  setContinuingInTerminal(true);
+                  void onContinueInTerminal(Boolean(composerNotice.enableRemoteControl))
+                    .catch((reason) => {
+                      setComposerNotice({
+                        tone: 'error',
+                        title: 'Could not continue in Terminal',
+                        detail: reason instanceof Error ? reason.message : 'The Rich session is still intact. Try again when it is idle.'
+                      });
+                    })
+                    .finally(() => setContinuingInTerminal(false));
+                }}
+              >
+                {providerWorking
+                  ? 'Available when Claude finishes'
+                  : continuingInTerminal
+                    ? 'Preparing…'
+                    : composerNotice.enableRemoteControl
+                      ? 'End Rich & open Remote Control…'
+                      : 'End Rich & continue in Terminal…'}
+              </button>
+            ) : null}
+            <button type="button" className="btn btn-ghost" onClick={() => setComposerNotice(null)}>Dismiss</button>
+          </div>
+        </div>
+      ) : null}
       <div className="input-composer">
         <input
           ref={fileInputRef}
@@ -314,7 +433,7 @@ export function InputBar({
           <button
             type="button"
             className={`btn btn-primary input-send${feedback === 'sent' ? ' is-sent' : ''}`}
-            onClick={submit}
+            onClick={() => void submit()}
             disabled={!connected}
             aria-label="Send"
             title="Send (Enter)"

@@ -436,7 +436,9 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         claude: tool === 'claude-code'
           ? claudeSafeMode
             ? { ...claudeOptions, remoteControl: 'off', chrome: 'off', somewhereMcp: 'inherit' }
-            : claudeOptions
+            : runtimeMode === 'rich'
+              ? { ...claudeOptions, remoteControl: 'off' }
+              : claudeOptions
           : undefined,
         creatorSessionId: parentSession?.id
       });
@@ -703,9 +705,9 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                       <option value="dontAsk">Don’t ask</option>
                       <option value="bypassPermissions">Bypass permissions</option>
                     </select></label>
-                    <label><span>Remote Control</span><select value={claudeOptions.remoteControl ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, remoteControl: event.currentTarget.value as ClaudeSessionOptions['remoteControl'] }))}>
+                    <label><span>Remote Control</span><select value={runtimeMode === 'rich' ? 'off' : claudeOptions.remoteControl ?? ''} disabled={runtimeMode === 'rich'} onChange={(event) => setClaudeOptions((current) => ({ ...current, remoteControl: event.currentTarget.value as ClaudeSessionOptions['remoteControl'] }))}>
                       <option value="">Use Settings</option><option value="inherit">Claude default</option><option value="on">On</option><option value="off">Off</option>
-                    </select></label>
+                    </select><small>{runtimeMode === 'rich' ? 'Choose Terminal for Claude slash commands and Remote Control.' : 'Available in Claude’s full interactive terminal.'}</small></label>
                     <label><span>Use Chrome</span><select value={claudeOptions.chrome ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, chrome: event.currentTarget.value as ClaudeSessionOptions['chrome'] }))}>
                       <option value="">Use Settings</option><option value="inherit">Claude default</option><option value="on">On</option><option value="off">Off</option>
                     </select></label>

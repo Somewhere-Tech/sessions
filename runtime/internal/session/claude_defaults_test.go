@@ -47,6 +47,42 @@ func TestClaudeDefaultsBecomeLaunchArguments(t *testing.T) {
 	}
 }
 
+func TestClaudeStructuredForcesRemoteControlOff(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	settings := state.ClaudeSettings{
+		RemoteControl: state.ClaudeChoiceOn, PermissionMode: state.ClaudeChoiceInherit,
+		Effort: state.ClaudeChoiceInherit, Chrome: state.ClaudeChoiceInherit,
+		SomewhereMCP: state.ClaudeChoiceInherit, RemoteControlNamePrefix: "sessions",
+	}
+	if err := state.SaveSettings(settingsPath, state.Settings{Claude: &settings}); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{config: state.Config{SettingsPath: settingsPath}}
+	request, err := manager.applyClaudeDefaults(state.CreateSessionRequest{
+		Cmd: "claude", Kind: state.KindClaudeStructured,
+		Args: []string{"--session-id", "fixture"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasAnyArg(request.Args, "--remote-control", "--remote-control-session-name-prefix") {
+		t.Fatalf("Rich Claude launch received interactive Remote Control args: %q", request.Args)
+	}
+	settingsIndex := slices.Index(request.Args, "--settings")
+	if settingsIndex < 0 || settingsIndex+1 >= len(request.Args) ||
+		!strings.Contains(request.Args[settingsIndex+1], `"remoteControlAtStartup":false`) {
+		t.Fatalf("Rich Claude launch did not explicitly disable provider Remote Control: %q", request.Args)
+	}
+
+	_, err = manager.applyClaudeDefaults(state.CreateSessionRequest{
+		Cmd: "claude", Kind: state.KindClaudeStructured,
+		Args: []string{"--session-id", "fixture", "--remote-control"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires a Terminal session") {
+		t.Fatalf("explicit Rich Remote Control error = %v", err)
+	}
+}
+
 func TestClaudePerSessionOverridesAndExistingSomewhereConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

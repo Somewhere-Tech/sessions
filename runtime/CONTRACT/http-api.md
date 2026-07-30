@@ -829,6 +829,10 @@ Remote Control and Chrome accept `inherit`, `on`, or `off`; permission mode
 accepts Claude's supported modes plus `inherit`; effort accepts `inherit`,
 `low`, `medium`, `high`, `xhigh`, or `max`; Somewhere MCP accepts `inherit` or
 `ensure`. Empty model and name-prefix fields preserve provider defaults.
+Remote Control is an interactive Claude capability: Sessions applies this
+default only to Terminal Claude sessions. Rich `claude-structured` sessions
+explicitly disable provider Remote Control because Claude's `--print`
+interface has no slash-command or `/rc` surface.
 
 ### `PUT /api/claude/settings`
 
@@ -843,6 +847,16 @@ explicit `inherit` defers that setting to Claude. The object is rejected for a
 non-Claude command. `somewhereMcp: "ensure"` adopts an equivalent existing
 registration or injects the local `somewhere mcp` stdio adapter; a conflicting
 server named `somewhere` fails closed rather than being overwritten.
+An explicit `--remote-control` argument is rejected for a
+`claude-structured` launch with an instructional 400 response; choose a
+Terminal runtime instead.
+
+`POST /api/recovery/adopt` accepts `remoteControl: true` only together with
+`runtimeMode: "terminal"` for a same-provider Claude continuation. It forwards
+the typed per-launch setting through the normal session-creation boundary;
+Rich, Codex, cross-provider, and repair requests reject the combination rather
+than silently ignoring it. The CLI equivalent is
+`sessions continue <history-id> --terminal --remote-control`.
 
 ### `POST /api/search/plan`
 

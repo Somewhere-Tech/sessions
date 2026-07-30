@@ -34,6 +34,17 @@ func (m *Manager) applyClaudeDefaults(request state.CreateSessionRequest) (state
 		return request, err
 	}
 	args := append([]string(nil), request.Args...)
+	if request.Kind == state.KindClaudeStructured {
+		if hasAnyArg(args, "--remote-control") {
+			return request, errors.New("Claude Remote Control requires a Terminal session; Rich sessions do not have an interactive Claude terminal")
+		}
+		// Claude exposes --remote-control only on its interactive TUI. Force
+		// the provider setting off for Rich sessions even when the user's
+		// global Sessions default is On, otherwise claude receives the
+		// incompatible --print + --remote-control combination.
+		resolved.RemoteControl = state.ClaudeChoiceOff
+		resolved.RemoteControlNamePrefix = ""
+	}
 
 	if !hasAnyArg(args, "--dangerously-skip-permissions", "--permission-mode") {
 		switch resolved.PermissionMode {

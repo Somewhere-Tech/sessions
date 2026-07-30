@@ -1054,12 +1054,20 @@ export async function adoptConversation(
   sourceSessionId?: string,
   historyId?: string,
   destinationProvider?: 'claude' | 'codex',
-  runtimeMode: 'rich' | 'terminal' = 'rich'
+  runtimeMode: 'rich' | 'terminal' = 'rich',
+  remoteControl = false
 ): Promise<AdoptConversationResult> {
   const r = await apiFetch(`${httpBase()}/api/recovery/adopt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ target: providerUuid, sourceSessionId, historyId, destinationProvider, runtimeMode })
+    body: JSON.stringify({
+      target: providerUuid,
+      sourceSessionId,
+      historyId,
+      destinationProvider,
+      runtimeMode,
+      remoteControl
+    })
   });
   return json<AdoptConversationResult>(r);
 }

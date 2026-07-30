@@ -258,7 +258,11 @@ inside the session manager before the runner boundary
 `runtime/internal/session/claude_defaults.go`). Remote Control, permission
 mode, model, effort, Chrome, Remote Control naming, and the Somewhere MCP are
 typed rather than free-form startup commands. Explicit per-session choices win;
-`inherit` leaves Claude authoritative. Sessions never rewrites Claude's files.
+`inherit` leaves Claude authoritative. Remote Control is applied only to
+Terminal Claude sessions: Claude's Rich `--print` interface has no interactive
+slash commands or `/rc`, so Rich launches explicitly disable it and the
+conversation composer offers a safe continuation into Terminal when a slash
+command is entered. Sessions never rewrites Claude's files.
 The Somewhere resolver recognizes the canonical HTTP registration or local
 `somewhere mcp` adapter, avoids an equivalent duplicate, and fails on a
 same-name/different-target conflict without copying a token into runner state.
