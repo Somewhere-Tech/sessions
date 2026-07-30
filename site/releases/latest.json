@@ -1,11 +1,11 @@
 {
-  "version": "0.2.13",
-  "notes": "# Sessions 0.2.13\n\n- Makes durable Sessions conversation names authoritative in every native\n  view, including names changed through `sessions rename` or another machine.\n- Keeps older browser-local and project-folder labels only as fallbacks for\n  unnamed legacy conversations.\n- Prevents renaming one conversation from silently applying that title to\n  future sessions created in the same folder.\n- Includes the 0.2.12 portable continuation work: Claude Rich is the default,\n  Terminal remains an explicit compatibility choice, and a conversation can\n  continue on another Sessions machine without changing its source history.",
-  "pub_date": "2026-07-30T19:25:48.560Z",
+  "version": "0.2.14",
+  "notes": "# Sessions 0.2.14\n\n- Prevents Rich Claude sessions from showing an impossible Terminal prompt or\n  offering a Terminal view that does not exist.\n- Keeps Claude slash commands out of the conversation transcript instead of\n  sending them as ordinary user messages.\n- Makes `/rename` update the durable Sessions conversation name directly from\n  a Rich session.\n- Gives `/rc` an explicit path to end an idle Rich runtime and continue the\n  same Claude conversation in Terminal with Remote Control enabled.\n- Keeps drafts local while Claude is working; Sessions still does not create a\n  hidden prompt queue.\n- Adds matching CLI and API support for continuing a Claude conversation in\n  Terminal with Remote Control.",
+  "pub_date": "2026-07-30T20:30:23.645Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeThmbWFlSVRBOGpIOTlJV1VzNGJPM29ZN0VPLzZKbVZMOFVqdFlhMDNPa3FpOHhWeElJQkowQ3pyV01IaDh3eUtHWFJveGcxbjZObURQNGJDRTFPajVJOHBoRUZOTkFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NDM5NTQ3CWZpbGU6U2Vzc2lvbnMuYXBwLnRhci5negpzVWZDNVpsKzJsMStvenJWdkJBUGUwYXM2R2xHTUFQQXFUY0NSRllLNWxFYUtaZVNiYXZBU0w2Wko1R2tTWitvem5yK2pqU0dDRk9Pb2JJbEJjODFCUT09Cg==",
-      "url": "https://github.com/somewhere-tech/sessions/releases/download/v0.2.13/Sessions.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeThmbWFlSVRBOGsvRkF2THhoYi9xSmJKYXRTS3VGellDQnpNVlZpNjU1YWFiU0t1RkFPWkhwTzhpVkFOQ2M2MU4xeUlwRS9pY3cybExIQitRMFRXTklTQXAxc0ZPY3dvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NDQzNDIyCWZpbGU6U2Vzc2lvbnMuYXBwLnRhci5negpRN2YzdHAwWjYvbTVocHJSc2dTbTl2Q0tGOU9ZNnRldHZOK2d4SnJoNW9rS1UzK1FkS1pXOWI2N0hmV3pmK2g0VkpraDFsWjl5VDVpb25FOHdoeVhEUT09Cg==",
+      "url": "https://github.com/somewhere-tech/sessions/releases/download/v0.2.14/Sessions.app.tar.gz"
     }
   }
 }
