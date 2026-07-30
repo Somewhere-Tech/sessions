@@ -47,6 +47,21 @@ func TestSessionRequestCreatesRichProviderContinuations(t *testing.T) {
 	}
 }
 
+func TestSessionRequestCreatesExplicitTerminalContinuation(t *testing.T) {
+	id := "11111111-1111-4111-8111-111111111111"
+	request, err := SessionRequest(CreateRequest{
+		Tool: "claude-code", UUID: id, Cwd: filepath.Join(t.TempDir(), "workspace"),
+		ResumeRecipe: []string{"claude", "--resume", id}, RuntimeMode: RuntimeTerminal,
+		SourceID: "source-lane", SourceEndpoint: "this-machine",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Kind != "" || request.ConversationID != "" || request.Args[0] != "--resume" {
+		t.Fatalf("terminal continuation = %#v", request)
+	}
+}
+
 func TestSessionRequestRejectsUnsafeOrUnsupportedContinuation(t *testing.T) {
 	base := CreateRequest{
 		Tool: "claude-code", UUID: "11111111-1111-4111-8111-111111111111",
@@ -70,6 +85,9 @@ func TestSessionRequestRejectsUnsafeOrUnsupportedContinuation(t *testing.T) {
 		}},
 		{name: "relative workspace", mutate: func(value *CreateRequest) {
 			value.Cwd = "workspace"
+		}},
+		{name: "unknown runtime", mutate: func(value *CreateRequest) {
+			value.RuntimeMode = "magic"
 		}},
 	}
 	for _, test := range cases {

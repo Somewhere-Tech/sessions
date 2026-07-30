@@ -290,9 +290,10 @@ func readConversationIdentity(path string) (provider, cwd string, codex bool, er
 }
 
 type AdoptOptions struct {
-	Force  bool
-	Source *AdoptSource
-	Events AdoptionEventReader
+	Force       bool
+	Source      *AdoptSource
+	Events      AdoptionEventReader
+	RuntimeMode string
 }
 
 type AdoptionEventReader interface {
@@ -362,6 +363,11 @@ func Adopt(
 	}
 	if adoption.Tool == string(state.ToolClaude) && kind == "" {
 		kind = state.KindClaudeStructured
+	}
+	if selected.RuntimeMode == "terminal" {
+		kind = ""
+	} else if selected.RuntimeMode != "" && selected.RuntimeMode != "rich" {
+		return AdoptResult{}, errors.New("runtime mode must be rich or terminal")
 	}
 	conversationID := ""
 	if kind == state.KindCodexAppServer || kind == state.KindClaudeStructured {

@@ -89,6 +89,7 @@ try {
   assert.equal(repaired.laneId, laneId);
   assert.equal(requests.length, 2);
   assert.equal(requests[0].repairLaneId, undefined);
+  assert.equal(requests[0].runtimeMode, 'rich');
   assert.equal(requests[1].repairLaneId, laneId);
   assert.equal(requests[1].sourceSessionId, sourceSessionId);
 

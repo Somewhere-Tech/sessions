@@ -111,8 +111,8 @@ export function useTabLabel(sessionId: string, cwd?: string): string | null {
 // Resolution order mirrors the tab strip's derivedLabel so every consumer
 // (SessionTabs, GridView, MobileNav, pop-out title, …) shows the same
 // name for the same session.
-//   1. Claude's /rename title (user-facing, cross-client authoritative)
-//   2. Sessions' explicit durable name (for example the first launcher task)
+//   1. Sessions' explicit durable name
+//   2. Claude's /rename title (imported when Sessions has no title)
 //   3. Claude's ai-title (auto-generated first-prompt summary)
 //   4. explicit durable description
 //   5. cwd basename — the project folder name, our traditional default
@@ -122,8 +122,8 @@ export function useTabLabel(sessionId: string, cwd?: string): string | null {
 // getTabLabel / useTabLabel) so it always wins without being part of
 // this function.
 export function sessionLabel(session: SessionInfo): string {
-  if (session.claudeCustomTitle && session.claudeCustomTitle.length > 0) return session.claudeCustomTitle;
   if (session.name && session.name.length > 0) return session.name;
+  if (session.claudeCustomTitle && session.claudeCustomTitle.length > 0) return session.claudeCustomTitle;
   if (session.claudeAiTitle && session.claudeAiTitle.length > 0) return session.claudeAiTitle;
   if (session.description && session.description.length > 0) return session.description;
   if (session.cwd && session.cwd.length > 0) {

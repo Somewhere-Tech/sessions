@@ -60,6 +60,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions tags 0123abcd", "sessions tags 0123abcd product=Sessions client=Acme", "sessions tags 0123abcd --remove client", "sessions --json tags 0123abcd"}, run: (*app).cmdTags,
 	},
 	{
+		name: "rename", usage: "rename <session> <name>",
+		summary: "rename a session everywhere in Sessions", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Set the durable Sessions title used by the app, CLI, Fleet, search, and later continuations. Claude /rename titles are imported when no Sessions title has been chosen. Sessions does not rewrite Claude or Codex private history files, so unsupported provider-native renames remain unchanged.",
+		examples: []string{"sessions rename 0123abcd DB", "sessions --json rename 0123abcd 'Database migration'"}, run: (*app).cmdRename,
+	},
+	{
 		name: "worktrees", usage: "worktrees [clean [--dry-run]]",
 		summary: "list or safely clean Sessions-created worktrees", group: dailyCommandGroup, localJSON: true,
 		longHelp: "List worktrees recorded in the Sessions ledger with dirty, merge, and session state. clean removes only worktrees whose session has exited, whose tree is clean, and whose branch is fully merged into its recorded base; every other worktree is skipped with a reason. --dry-run shows the plan without mutation. There is no force option, and killing a session never cleans its worktree automatically.",
@@ -204,10 +210,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions verdict 0123abcd", "sessions --json verdict emit 0123abcd '{\"schemaVersion\":1,\"verdict\":\"pass\",\"findings\":[]}'"}, run: (*app).cmdVerdict,
 	},
 	{
-		name: "move", usage: "move <ended-session> (--machine NAME | --to ENDPOINT [--token T]) [--dry-run] [--allow-dirty]",
+		name: "move", usage: "move <ended-session> (--machine NAME | --to ENDPOINT [--token T]) [--terminal] [--dry-run] [--allow-dirty]",
 		summary: "continue an ended conversation on another machine", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Continue an ended Claude or Codex conversation on another Sessions machine while preserving the source history. --machine reads the saved per-device credential from its private file; no token appears in argv. Run --dry-run first to verify workspace and conversation identity. The target refuses to overwrite different provider history, creates one Rich runtime, and records both sides of the continuation link. --to/--token remains a low-level endpoint escape hatch. --allow-dirty creates a Git checkpoint without deleting or changing the source worktree.",
-		examples: []string{"sessions move 0123abcd --machine mini --dry-run", "sessions move 0123abcd --machine mini", "sessions move 0123abcd --to https://mini.tailnet.ts.net --dry-run"}, run: (*app).cmdMove,
+		longHelp: "Continue an ended Claude or Codex conversation on another Sessions machine while preserving the source history. --machine reads the saved per-device credential from its private file; no token appears in argv. Run --dry-run first to verify workspace and conversation identity. The target refuses to overwrite different provider history, creates one Rich runtime by default, and records both sides of the continuation link. --terminal explicitly reopens the provider's terminal interface instead. --to/--token remains a low-level endpoint escape hatch. --allow-dirty creates a Git checkpoint without deleting or changing the source worktree.",
+		examples: []string{"sessions move 0123abcd --machine mini --dry-run", "sessions move 0123abcd --machine mini", "sessions move 0123abcd --machine mini --terminal", "sessions move 0123abcd --to https://mini.tailnet.ts.net --dry-run"}, run: (*app).cmdMove,
 	},
 	{
 		name: "adopt", usage: "adopt <path-or-uuid> [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]",
@@ -216,10 +222,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions adopt 00000000-0000-4000-8000-000000000001", "sessions adopt ~/.claude/projects/example/session.jsonl --force", "sessions adopt 00000000-0000-4000-8000-000000000001 --repair 0123abcd --source 4567cdef"}, run: (*app).cmdAdopt,
 	},
 	{
-		name: "continue", usage: "continue <history-id> [--with claude|codex] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]",
+		name: "continue", usage: "continue <history-id> [--with claude|codex] [--terminal] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]",
 		summary: "continue one exact saved conversation", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.",
-		examples: []string{"sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex", "sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001"}, run: (*app).cmdContinue,
+		longHelp: "Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. Rich is the default. --terminal explicitly opens the original provider's terminal interface and cannot be combined with a cross-provider continuation. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.",
+		examples: []string{"sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex", "sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001"}, run: (*app).cmdContinue,
 	},
 	{
 		name: "model", usage: "model <session> <model> [--effort LEVEL]",

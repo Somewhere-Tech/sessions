@@ -11,7 +11,7 @@ import (
 )
 
 func (a *app) cmdMove(args []string) error {
-	const usage = "usage: sessions move <ended-session> (--machine NAME | --to ENDPOINT [--token T]) [--dry-run] [--allow-dirty]"
+	const usage = "usage: sessions move <ended-session> (--machine NAME | --to ENDPOINT [--token T]) [--terminal] [--dry-run] [--allow-dirty]"
 	if len(args) == 0 || strings.HasPrefix(args[0], "--") {
 		return fail(1, usage)
 	}
@@ -31,6 +31,7 @@ func (a *app) cmdMove(args []string) error {
 	}
 	dryRun := removeFirst(&args, "--dry-run")
 	allowDirty := removeFirst(&args, "--allow-dirty")
+	terminal := removeFirst(&args, "--terminal")
 	if len(args) != 0 {
 		return fail(1, "unknown move option %s", args[0])
 	}
@@ -101,9 +102,12 @@ func (a *app) cmdMove(args []string) error {
 	}
 	request.Workspace = workspace
 	request.SourceEndpoint = localEndpoint(a)
+	if terminal {
+		request.RuntimeMode = migrate.RuntimeTerminal
+	}
 	result := migrate.MoveResult{
 		SourceID: source.ID, TargetEndpoint: client.Endpoint(), Tool: request.Tool, Cwd: request.Cwd,
-		ResumeRecipe: append([]string(nil), request.ResumeRecipe...), Workspace: workspace,
+		ResumeRecipe: append([]string(nil), request.ResumeRecipe...), RuntimeMode: request.RuntimeMode, Workspace: workspace,
 		ConversationSize: len(request.ConversationBytes), DryRun: dryRun,
 	}
 	if dryRun {
@@ -133,7 +137,7 @@ func (a *app) cmdMove(args []string) error {
 	if a.wantJSON {
 		return writeJSON(a.stdout, result, true)
 	}
-	if _, err := fmt.Fprintf(a.stdout, "continued %s on %s as %s\n", source.ID, client.Endpoint(), created.Session.ID); err != nil {
+	if _, err := fmt.Fprintf(a.stdout, "continued %s on %s as %s (%s)\n", source.ID, client.Endpoint(), created.Session.ID, request.RuntimeMode); err != nil {
 		return err
 	}
 	if workspace.Git {
@@ -175,6 +179,9 @@ func writeMovePlan(a *app, result migrate.MoveResult) error {
 		return err
 	}
 	if _, err := fmt.Fprintf(a.stdout, "conversation: %d bytes would be transferred\n", result.ConversationSize); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(a.stdout, "runtime: %s\n", result.RuntimeMode); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintln(a.stdout, "dry run: no files, sessions, or ledger events changed")

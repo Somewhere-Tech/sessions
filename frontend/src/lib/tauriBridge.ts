@@ -111,6 +111,7 @@ export interface NativeMovePlan {
   tool: string;
   cwd: string;
   resume_recipe: string[];
+  runtime_mode: 'rich' | 'terminal';
   conversation_bytes: number;
   dry_run: boolean;
   target_lineage_recorded?: boolean;
@@ -138,14 +139,15 @@ export async function listNativeMoveMachines(): Promise<NativeSavedMachine[]> {
 export async function moveNativeSession(
   sessionId: string,
   machine: string,
-  options: { dryRun: boolean; allowDirty?: boolean }
+  options: { dryRun: boolean; allowDirty?: boolean; runtimeMode?: 'rich' | 'terminal' }
 ): Promise<NativeMovePlan> {
   if (!isTauri()) throw new Error('Cross-machine continuation is available in Sessions.app');
   const result = await invoke<NativeConnectionCommand<NativeMovePlan>>('native_move_session', {
     sessionId,
     machine,
     dryRun: options.dryRun,
-    allowDirty: options.allowDirty ?? false
+    allowDirty: options.allowDirty ?? false,
+    runtimeMode: options.runtimeMode ?? 'rich'
   });
   return result.data;
 }

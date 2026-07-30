@@ -474,6 +474,48 @@ func (r *Registry) UpdateTags(id string, requested map[string]string) (map[strin
 	return CloneTags(tags), nil
 }
 
+// UpdateName persists the canonical Sessions title. Provider-native titles
+// remain visible when this value is empty, but Sessions never rewrites a
+// provider's private conversation files to imitate an unsupported rename API.
+func (r *Registry) UpdateName(id, requested string) (string, error) {
+	if !validMetadataID(id) {
+		return "", fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	name := strings.TrimSpace(requested)
+	if name == "" {
+		return "", errors.New("session name is required")
+	}
+	if len([]rune(name)) > 120 {
+		return "", errors.New("session name must be 120 characters or fewer")
+	}
+	if strings.IndexFunc(name, func(value rune) bool {
+		return value < ' ' || value == '\u007f'
+	}) >= 0 {
+		return "", errors.New("session name cannot contain control characters")
+	}
+	session, live := r.Get(id)
+	path := filepath.Join(r.config.RunnerStateDir, id+".json")
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+		}
+		return "", fmt.Errorf("read session name: %w", err)
+	}
+	var metadata Metadata
+	if err := json.Unmarshal(encoded, &metadata); err != nil {
+		return "", fmt.Errorf("decode session name: %w", err)
+	}
+	metadata.Name = name
+	if err := WriteMetadata(path, metadata); err != nil {
+		return "", fmt.Errorf("persist session name: %w", err)
+	}
+	if live {
+		session.setName(name)
+	}
+	return name, nil
+}
+
 // UpdateDisplayParent persists only the user's visual organization. Trusted
 // creator provenance remains in the append-only ledger and is intentionally
 // not modified by drag-and-drop in the app.

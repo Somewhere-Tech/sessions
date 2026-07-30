@@ -5550,6 +5550,27 @@ select.field-input {
 }
 .continue-elsewhere-dirty span { display: grid; gap: 3px; }
 .continue-elsewhere-dirty small { color: var(--fg-dim); }
+.continue-elsewhere-runtime {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.continue-elsewhere-runtime legend {
+  padding: 0 5px;
+  color: var(--fg-dim);
+  font-size: 13px;
+  font-weight: 600;
+}
+.continue-elsewhere-runtime label {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+.continue-elsewhere-runtime label span { display: grid; gap: 2px; }
+.continue-elsewhere-runtime label small { color: var(--fg-dim); }
 .continue-elsewhere-plan,
 .continue-elsewhere-empty {
   display: grid;

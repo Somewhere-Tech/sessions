@@ -37,7 +37,8 @@ func ResolveSource(ctx context.Context, store *ledger.Store, source SourceSessio
 
 	request := ReceiveRequest{
 		Tool: tool, UUID: providerUUID, Cwd: source.Cwd,
-		ResumeRecipe: resumeRecipe, Name: source.Name, SourceID: source.ID,
+		ResumeRecipe: resumeRecipe, RuntimeMode: RuntimeRich,
+		Name: source.Name, SourceID: source.ID,
 	}
 	switch tool {
 	case "claude-code":

@@ -48,7 +48,7 @@ const (
 // Version is stamped into sessionsd at build time and reported by both health
 // endpoints. Keep the source fallback aligned with the current app version so
 // an un-stamped development build is still honest.
-var Version = "0.2.11"
+var Version = "0.2.12"
 
 type Server struct {
 	config               state.Config
@@ -686,6 +686,40 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			return
 		}
 		s.sendJSON(response, http.StatusOK, map[string]any{"setAsideAt": setAsideAt}, corsOrigin)
+		return
+	}
+	if suffix == "/name" && request.Method == http.MethodPut {
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := readJSON(request, &body); err != nil {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+			return
+		}
+		renamer, supported := s.registry.(interface {
+			UpdateName(context.Context, string, string) (string, error)
+		})
+		var name string
+		var err error
+		if supported {
+			name, err = renamer.UpdateName(request.Context(), id, body.Name)
+		} else if registryRenamer, registrySupported := s.registry.(interface {
+			UpdateName(string, string) (string, error)
+		}); registrySupported {
+			name, err = registryRenamer.UpdateName(id, body.Name)
+		} else {
+			s.sendJSON(response, http.StatusNotImplemented, map[string]any{"error": "session rename is not available on this runtime"}, corsOrigin)
+			return
+		}
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, state.ErrSessionNotFound) || errors.Is(err, os.ErrNotExist) {
+				status = http.StatusNotFound
+			}
+			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
+			return
+		}
+		s.sendJSON(response, http.StatusOK, map[string]any{"name": name}, corsOrigin)
 		return
 	}
 	if suffix == "/tags" && request.Method == http.MethodGet {

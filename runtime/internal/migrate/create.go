@@ -14,7 +14,8 @@ func CreateRequestFromReceive(request ReceiveRequest) CreateRequest {
 	return CreateRequest{
 		Tool: request.Tool, UUID: request.UUID, Cwd: request.Cwd,
 		ResumeRecipe: append([]string(nil), request.ResumeRecipe...),
-		Name:         request.Name, SourceID: request.SourceID, SourceEndpoint: request.SourceEndpoint,
+		RuntimeMode:  request.RuntimeMode, Name: request.Name,
+		SourceID: request.SourceID, SourceEndpoint: request.SourceEndpoint,
 	}
 }
 
@@ -35,6 +36,9 @@ func ValidateCreateRequest(request CreateRequest) error {
 	if len(request.ResumeRecipe) == 0 {
 		return errors.New("resume_recipe is required")
 	}
+	if request.RuntimeMode != "" && request.RuntimeMode != RuntimeRich && request.RuntimeMode != RuntimeTerminal {
+		return errors.New("runtime_mode must be rich or terminal")
+	}
 	provider, safe := ledger.SafeResumeRecipe(tool, request.ResumeRecipe[0], request.ResumeRecipe[1:])
 	if provider != request.UUID || !slices.Equal(safe, request.ResumeRecipe) {
 		return errors.New("resume_recipe is not the minimal recipe for uuid")
@@ -50,9 +54,16 @@ func SessionRequest(request CreateRequest) (state.CreateSessionRequest, error) {
 	if canonicalTool(request.Tool, request.ResumeRecipe[0]) == string(state.ToolClaude) {
 		kind = state.KindClaudeStructured
 	}
+	if request.RuntimeMode == RuntimeTerminal {
+		kind = ""
+	}
+	conversationID := request.UUID
+	if kind == "" {
+		conversationID = ""
+	}
 	return state.CreateSessionRequest{
 		Cmd: request.ResumeRecipe[0], Args: append([]string(nil), request.ResumeRecipe[1:]...),
-		Cwd: request.Cwd, Name: request.Name, Kind: kind, ConversationID: request.UUID,
+		Cwd: request.Cwd, Name: request.Name, Kind: kind, ConversationID: conversationID,
 	}, nil
 }
 

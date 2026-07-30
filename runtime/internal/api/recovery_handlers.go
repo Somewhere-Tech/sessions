@@ -53,6 +53,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			SourceSessionID     string `json:"sourceSessionId,omitempty"`
 			RepairLaneID        string `json:"repairLaneId,omitempty"`
 			DestinationProvider string `json:"destinationProvider,omitempty"`
+			RuntimeMode         string `json:"runtimeMode,omitempty"`
 			Force               bool   `json:"force,omitempty"`
 		}
 		if err := readJSON(request, &body); err != nil {
@@ -63,6 +64,12 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "target or historyId is required"}, corsOrigin)
 			return
 		}
+		runtimeMode, runtimeModeErr := normalizeContinuationRuntime(body.RuntimeMode)
+		if runtimeModeErr != nil {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": runtimeModeErr.Error()}, corsOrigin)
+			return
+		}
+		body.RuntimeMode = runtimeMode
 		recoveryMutationMu.Lock()
 		defer recoveryMutationMu.Unlock()
 		store, _, ok := s.openRecoveryReport(request.Context(), response, corsOrigin)
@@ -131,6 +138,12 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 				return
 			}
 			if destination != "" && destination != sourceProvider {
+				if body.RuntimeMode == "terminal" {
+					s.sendJSON(response, http.StatusBadRequest, map[string]any{
+						"error": "Terminal is available only when continuing with the original provider; cross-provider continuation uses Rich mode",
+					}, corsOrigin)
+					return
+				}
 				if body.RepairLaneID != "" {
 					s.sendJSON(response, http.StatusBadRequest, map[string]any{
 						"error": "cross-provider continuation repair is not available; the source remains untouched",
@@ -295,7 +308,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		}
 		result, err := recovery.Adopt(
 			request.Context(), adoption, body.Name, s.registry, store.Boundaries(), store.Observations(),
-			recovery.AdoptOptions{Force: body.Force, Source: source, Events: store},
+			recovery.AdoptOptions{Force: body.Force, Source: source, Events: store, RuntimeMode: body.RuntimeMode},
 		)
 		if err != nil {
 			status := http.StatusBadRequest
@@ -327,6 +340,17 @@ func normalizeContinuationProvider(value string) (string, error) {
 		return "codex", nil
 	default:
 		return "", errors.New("destinationProvider must be claude or codex")
+	}
+}
+
+func normalizeContinuationRuntime(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "rich":
+		return strings.ToLower(strings.TrimSpace(value)), nil
+	case "terminal":
+		return "terminal", nil
+	default:
+		return "", errors.New("runtimeMode must be rich or terminal")
 	}
 }
 

@@ -746,6 +746,7 @@ async fn native_move_session(
     machine: String,
     dry_run: bool,
     allow_dirty: bool,
+    runtime_mode: String,
 ) -> Result<NativeConnectionCommand, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let session_id = session_id.trim();
@@ -769,6 +770,11 @@ async fn native_move_session(
         }
         if allow_dirty {
             args.push("--allow-dirty".to_string());
+        }
+        if runtime_mode == "terminal" {
+            args.push("--terminal".to_string());
+        } else if runtime_mode != "rich" {
+            return Err("runtime mode must be rich or terminal".to_string());
         }
         run_bundled_sessions_json(&app, &args, "cross-machine continuation")
     })

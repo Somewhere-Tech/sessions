@@ -424,6 +424,18 @@ or the append-only creator ledger. Unknown source or parent sessions return
 404. Self-parenting, descendant cycles, malformed JSON, and an already cyclic
 display graph return 400.
 
+### `PUT /api/sessions/:id/name`
+
+Auth required. Body is `{"name":"<title>"}`. The title is trimmed, must be
+non-empty, contain no control characters, and be at most 120 Unicode
+characters. Success returns `{"name":"<title>"}` and updates both runner
+metadata and the append-only `renamed` fact used by retained history.
+
+This is the canonical title across the Sessions app, CLI, Fleet, search, and
+later continuations. A Claude `custom-title` event remains an imported fallback
+when no Sessions title exists. Sessions never rewrites Claude or Codex private
+conversation files to imitate an unsupported provider rename API.
+
 ### `PUT /api/sessions/:id/model`
 
 Auth required. Body is `{"model":"<exact model>","effort":"<level>"}`. Omitting
@@ -602,7 +614,7 @@ Auth required. Resolves one explicit provider conversation and creates its
 successor through the normal write-ahead session boundary:
 
 ```json
-{"target":"<provider UUID or conversation path>","sourceSessionId":"<optional ended Sessions id>","force":false}
+{"target":"<provider UUID or conversation path>","sourceSessionId":"<optional ended Sessions id>","runtimeMode":"rich","force":false}
 ```
 
 A complete adoption returns `201` with `ok: true`, the new `laneId`, and the
@@ -610,6 +622,12 @@ resolved provider metadata. The runtime exists before the secondary
 actor/provider/source-link annotations are appended. If one of those
 post-launch appends fails, the endpoint therefore returns `202`, not a false
 full failure:
+
+`runtimeMode` is optional and defaults to `rich`. `terminal` reopens the exact
+same provider conversation through the provider's terminal interface. It is
+accepted only for same-provider continuation; cross-provider continuation
+requires Rich mode because its imported/linked context is delivered through
+the structured runtime.
 
 ```json
 {
@@ -749,7 +767,7 @@ Tailscale. It no longer creates Tailscale QR links.
 ## Go runtime extensions: smart search
 
 The following authenticated routes are additive Go-runtime surfaces implemented
-by `internal/api/search_handlers.go`; older `prettyd` builds return the standard
+by `internal/api/search_handlers.go`; older compatibility runtimes return the standard
 404 body for them.
 
 ### `GET /api/ai/settings`
