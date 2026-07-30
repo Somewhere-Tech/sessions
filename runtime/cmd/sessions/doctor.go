@@ -61,13 +61,11 @@ func (a *app) cmdDoctor() error {
 		qos := runnerQoS(a.home, value.ID, processTypePattern)
 		spawn := "dead?"
 		if value.PID != 0 {
-			parent := psField("ppid=", value.PID)
-			parentPID, _ := strconv.Atoi(strings.TrimSpace(parent))
-			parentCommand := ""
-			if parentPID != 0 {
-				parentCommand = psField("command=", parentPID)
-			}
-			spawn = classifyRunnerSpawn(parentCommand)
+			// The runner is intentionally independent of the daemon and the
+			// app. It may be re-parented after either one updates, so its
+			// parent command is not evidence of how the runner itself was
+			// launched. Inspect the durable runner process instead.
+			spawn = classifyRunnerSpawn(psField("command=", value.PID))
 		}
 		rows = append(rows, doctorRow{
 			ID: value.ID, Tool: toolOfSession(value), Size: fmt.Sprintf("%dx%d", value.Cols, value.Rows),
