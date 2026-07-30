@@ -431,6 +431,14 @@ turn. Neither path rewrites the source provider store or copies credentials,
 tool output, diffs, or attachments. The public behavior and limitations are in
 [`docs/CONTINUATION.md`](CONTINUATION.md).
 
+The adjacent `POST /api/recovery/fork` boundary is deliberately
+non-lifecycle: it snapshots authored messages only after the current turn is
+idle, creates a fresh Rich provider conversation, and leaves the source runner
+live. Same-provider forks and cross-provider copies share the private
+continuation sidecar, while `recovery.ForkConversation` skips the successor
+ledger mutation used by Continue and groups the copy beneath its source only
+through the display hierarchy.
+
 ### Feedback and support
 
 `runtime/cmd/sessions/support.go` owns the local diagnostic schema and official

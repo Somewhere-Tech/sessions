@@ -98,6 +98,7 @@ command registry.
 | `sessions status <id>` | Show compact session, git, activity, and verdict state |
 | `sessions recover [--reopen]` | Inspect or reopen unexpectedly lost lanes |
 | `sessions continue <history-id> [--with claude\|codex]` | Continue the original chat or start a cross-provider continuation |
+| `sessions fork <live-id> [--with claude\|codex]` | Branch a live chat without stopping the original |
 | `sessions remote enable\|status\|disable` | Manage early-access Tailscale HTTPS access |
 | `sessions model <id> <model> [--effort LEVEL]` | Switch an idle supported Claude session model |
 | `sessions support [--diagnostics]` | Open feedback/support channels and preview a redacted local diagnostic summary |

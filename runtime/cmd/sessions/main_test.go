@@ -487,6 +487,50 @@ func TestContinueWithProviderRequestsCrossProviderContinuation(t *testing.T) {
 	}
 }
 
+func TestForkCopiesLiveConversationWithoutEndOrForce(t *testing.T) {
+	var posted map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/recovery/fork" {
+			http.NotFound(response, request)
+			return
+		}
+		if err := json.NewDecoder(request.Body).Decode(&posted); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(response, `{
+			"ok":true,
+			"laneId":"forked-lane",
+			"sourceProvider":"claude",
+			"destinationProvider":"codex",
+			"mode":"native-import",
+			"importedMessages":42,
+			"forkedFromSessionId":"source-lane",
+			"sourceUntouched":true
+		}`)
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := run(
+		[]string{"--host", server.URL, "fork", "source-lane", "--with", "codex"},
+		strings.NewReader(""), &stdout, &stderr,
+	); code != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if posted["sourceSessionId"] != "source-lane" || posted["destinationProvider"] != "codex" {
+		t.Fatalf("posted body = %#v", posted)
+	}
+	if _, forced := posted["force"]; forced {
+		t.Fatalf("fork must not force or end its source: %#v", posted)
+	}
+	if stdout.String() != "forked-lane\n" ||
+		!strings.Contains(stderr.String(), "source source-lane keeps running") {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestContinueTerminalCanEnableClaudeRemoteControl(t *testing.T) {
 	historyID := "provider-history:claude:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 	var posted map[string]any

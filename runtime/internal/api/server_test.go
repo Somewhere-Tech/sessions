@@ -19,8 +19,10 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto/prototest"
+	"github.com/somewhere-tech/sessions/runtime/internal/recovery"
 	sessionruntime "github.com/somewhere-tech/sessions/runtime/internal/session"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
+	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -43,6 +45,68 @@ func TestNormalizeContinuationRuntime(t *testing.T) {
 		if got != test.want {
 			t.Fatalf("normalizeContinuationRuntime(%q) = %q, want %q", test.input, got, test.want)
 		}
+	}
+}
+
+func TestForkLiveConversationCreatesCopyWithoutEndingSource(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	daemon := newTestDaemon(t)
+	providerID := "11111111-2222-4333-8444-555555555555"
+	created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "claude", Args: []string{"--session-id", providerID},
+		Cwd: daemon.root, Kind: state.KindClaudeStructured,
+		Name: "Database", Description: "Live database work",
+		ConversationID: providerID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationPath := filepath.Join(
+		home, ".claude", "projects", watch.EncodeClaudeCWD(daemon.root), providerID+".jsonl",
+	)
+	if err := os.MkdirAll(filepath.Dir(conversationPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conversation := strings.Join([]string{
+		`{"type":"user","uuid":"u1","timestamp":"2026-07-30T17:01:00Z","message":{"role":"user","content":"Review the migration."}}`,
+		`{"type":"assistant","uuid":"a1","timestamp":"2026-07-30T17:01:02Z","message":{"role":"assistant","content":[{"type":"text","text":"The first pass is complete."}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(conversationPath, []byte(conversation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	body := strings.NewReader(`{"sourceSessionId":"` + created.ID + `","destinationProvider":"codex"}`)
+	response := serve(
+		t, daemon.handler, http.MethodPost, "/api/recovery/fork", body, "127.0.0.1:1", nil,
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("fork status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result recovery.AdoptResult
+	decodeBody(t, response, &result)
+	if !result.OK || !result.SourceUntouched ||
+		result.ForkedFromSessionID != created.ID ||
+		result.DestinationProvider != "codex" ||
+		result.ImportedMessages != 2 {
+		t.Fatalf("fork result = %+v", result)
+	}
+	source, live := daemon.registry.Get(created.ID)
+	if !live || source.Info().Exited || source.Info().ReopenedAs != "" {
+		t.Fatalf("source changed after fork: live=%v info=%+v", live, source.Info())
+	}
+	copySession, live := daemon.registry.Get(result.LaneID)
+	if !live {
+		t.Fatalf("forked session %s is not live", result.LaneID)
+	}
+	copyInfo := copySession.Info()
+	if copyInfo.Tool != state.ToolCodex ||
+		copyInfo.DisplayParentSessionID == nil ||
+		*copyInfo.DisplayParentSessionID != created.ID {
+		t.Fatalf("forked session = %+v", copyInfo)
+	}
+	if len(daemon.launcher.Launches) != 2 {
+		t.Fatalf("launch count = %d, want source + one copy", len(daemon.launcher.Launches))
 	}
 }
 

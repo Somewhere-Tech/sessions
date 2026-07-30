@@ -56,3 +56,32 @@ func TestContinuationInstructionsCarryExactSearchableLineage(t *testing.T) {
 		}
 	}
 }
+
+func TestForkInstructionsExplainIndependentLiveBranch(t *testing.T) {
+	continuation := state.ContinuationContext{
+		SourceProvider:      "claude",
+		SourceHistoryID:     "history-id",
+		SourceCWD:           "/work/repo",
+		DestinationProvider: "codex",
+		Mode:                state.ContinuationNativeImport,
+		Fork:                true,
+		Messages: []state.ContinuationMessage{
+			{Role: "user", Text: "Investigate the issue."},
+		},
+	}
+
+	for label, instructions := range map[string]string{
+		"Claude": continuationBridge(continuation),
+		"Codex":  codexContinuationInstructions(continuation),
+	} {
+		for _, fragment := range []string{
+			"new branch copied from a live claude conversation",
+			"original conversation remains live",
+			"may continue independently",
+		} {
+			if !strings.Contains(instructions, fragment) {
+				t.Fatalf("%s fork instructions missing %q: %s", label, fragment, instructions)
+			}
+		}
+	}
+}

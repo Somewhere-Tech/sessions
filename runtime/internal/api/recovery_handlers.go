@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/recovery"
 	sessionruntime "github.com/somewhere-tech/sessions/runtime/internal/session"
@@ -45,6 +46,105 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		defer store.Close()
 		result := recovery.Reopen(request.Context(), report, s.registry, store.Observations(), recovery.ReopenOptions{Force: body.Force})
 		s.sendJSON(response, http.StatusOK, result, corsOrigin)
+	case request.URL.Path == "/api/recovery/fork" && request.Method == http.MethodPost:
+		var body struct {
+			SourceSessionID     string `json:"sourceSessionId"`
+			DestinationProvider string `json:"destinationProvider,omitempty"`
+			Name                string `json:"name,omitempty"`
+		}
+		if err := readJSON(request, &body); err != nil {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+			return
+		}
+		if strings.TrimSpace(body.SourceSessionID) == "" {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "sourceSessionId is required"}, corsOrigin)
+			return
+		}
+		recoveryMutationMu.Lock()
+		defer recoveryMutationMu.Unlock()
+		sourceSession, live := s.registry.Get(body.SourceSessionID)
+		if !live {
+			s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "source session not found"}, corsOrigin)
+			return
+		}
+		candidate := sourceSession.Info()
+		if candidate.Exited {
+			s.sendJSON(response, http.StatusConflict, map[string]any{
+				"error": "source session has ended; use Continue conversation instead",
+			}, corsOrigin)
+			return
+		}
+		if candidate.Working {
+			s.sendJSON(response, http.StatusConflict, map[string]any{
+				"error": "wait for the current turn to finish before copying this conversation; the original is still running",
+			}, corsOrigin)
+			return
+		}
+		sourceProvider, providerErr := normalizeContinuationProvider(string(candidate.Tool))
+		if providerErr != nil || sourceProvider == "" {
+			s.sendJSON(response, http.StatusConflict, map[string]any{
+				"error": "only live Claude and Codex conversations can be copied",
+			}, corsOrigin)
+			return
+		}
+		destination, destinationErr := normalizeContinuationProvider(body.DestinationProvider)
+		if destinationErr != nil {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": destinationErr.Error()}, corsOrigin)
+			return
+		}
+		if destination == "" {
+			destination = sourceProvider
+		}
+		sourceCandidates := s.registry.List(true)
+		history, historyErr := s.integrationEndpoints.LookupHistory(sourceCandidates, candidate.ID)
+		if historyErr != nil || !history.ConversationAvailable || history.PromptHistoryOnly {
+			s.sendJSON(response, http.StatusConflict, map[string]any{
+				"error": "a complete authored conversation snapshot is not available yet",
+			}, corsOrigin)
+			return
+		}
+		providerUUID, _ := ledger.ExistingProviderResume(candidate.Cmd, candidate.Args)
+		if providerUUID == "" {
+			providerUUID = candidate.ConversationID
+		}
+		if providerUUID == "" {
+			providerUUID = candidate.ClaudeSessionID
+		}
+		if providerUUID == "" || providerUUID != history.ProviderSessionID {
+			s.sendJSON(response, http.StatusConflict, map[string]any{
+				"error": "source session history does not match its live provider conversation",
+			}, corsOrigin)
+			return
+		}
+		transcript, transcriptErr := s.integrationEndpoints.Transcript(sourceCandidates, history.ID)
+		if transcriptErr != nil {
+			s.sendJSON(response, http.StatusConflict, map[string]any{
+				"error": "complete authored conversation is unavailable: " + transcriptErr.Error(),
+			}, corsOrigin)
+			return
+		}
+		messages := continuationMessages(transcript.Messages)
+		mode := state.ContinuationLinkedSearch
+		if destination == "codex" {
+			mode = state.ContinuationNativeImport
+		}
+		continuation := state.ContinuationContext{
+			SchemaVersion:   state.ContinuationSchemaVersion,
+			SourceHistoryID: history.ID, SourceProvider: sourceProvider,
+			SourceProviderID: history.ProviderSessionID, SourceTitle: history.Name,
+			SourceCWD: history.CWD, DestinationProvider: destination,
+			Mode: mode, Fork: true, Messages: messages,
+			SourceWorktreePath: candidate.WorktreePath, SourceBranch: candidate.Branch,
+			SourceRepo: candidate.SourceRepo,
+		}
+		result, forkErr := recovery.ForkConversation(
+			request.Context(), continuation, body.Name, s.registry, adoptSourceFromSession(candidate),
+		)
+		if forkErr != nil {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": forkErr.Error()}, corsOrigin)
+			return
+		}
+		s.sendJSON(response, http.StatusCreated, result, corsOrigin)
 	case request.URL.Path == "/api/recovery/adopt" && request.Method == http.MethodPost:
 		var body struct {
 			Target              string `json:"target"`
@@ -187,22 +287,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 					}, corsOrigin)
 					return
 				}
-				messages := make([]state.ContinuationMessage, 0, len(transcript.Messages))
-				for _, message := range transcript.Messages {
-					if message.Role != "user" && message.Role != "assistant" {
-						continue
-					}
-					if strings.TrimSpace(message.Text) == "" {
-						continue
-					}
-					timestamp := ""
-					if message.Timestamp != nil {
-						timestamp = *message.Timestamp
-					}
-					messages = append(messages, state.ContinuationMessage{
-						Role: message.Role, Text: message.Text, Timestamp: timestamp,
-					})
-				}
+				messages := continuationMessages(transcript.Messages)
 				mode := state.ContinuationLinkedSearch
 				if destination == "codex" {
 					mode = state.ContinuationNativeImport
@@ -361,6 +446,26 @@ func normalizeContinuationProvider(value string) (string, error) {
 	default:
 		return "", errors.New("destinationProvider must be claude or codex")
 	}
+}
+
+func continuationMessages(messages []integrations.TranscriptMessage) []state.ContinuationMessage {
+	result := make([]state.ContinuationMessage, 0, len(messages))
+	for _, message := range messages {
+		if message.Role != "user" && message.Role != "assistant" {
+			continue
+		}
+		if strings.TrimSpace(message.Text) == "" {
+			continue
+		}
+		timestamp := ""
+		if message.Timestamp != nil {
+			timestamp = *message.Timestamp
+		}
+		result = append(result, state.ContinuationMessage{
+			Role: message.Role, Text: message.Text, Timestamp: timestamp,
+		})
+	}
+	return result
 }
 
 func normalizeContinuationRuntime(value string) (string, error) {

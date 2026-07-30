@@ -34,7 +34,7 @@ import { preloadDaily } from './lib/dailyCache';
 import { providerConversationId } from './lib/sessionStatus';
 import { effectiveParentId } from './lib/workingSet';
 import { preferNextSessionView } from './lib/sessionViewPreference';
-import { adoptConversation, repairAdoption } from './api/sessionsd';
+import { adoptConversation, forkConversation, repairAdoption } from './api/sessionsd';
 import type { SessionInfo, SessionTool } from './types';
 
 const TOOL_ICONS: Record<SessionTool, string> = {
@@ -228,6 +228,14 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       ? { resumeProviderId: providerId, sourceSessionId: session.id, destinationProvider, runtimeMode, remoteControl }
       : 'resume');
   }, []);
+  const forkSession = useCallback(async (
+    session: SessionInfo,
+    destinationProvider: 'claude' | 'codex'
+  ): Promise<void> => {
+    const result = await forkConversation(session.id, destinationProvider);
+    await refresh();
+    openSession(result.laneId);
+  }, [openSession, refresh]);
 
   // Bound how many sessions are kept LIVE (mounted SessionView → xterm
   // buffer + claudeEvents history + WS attach). Without this, every session
@@ -330,6 +338,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     useServers.getState().setActive(serverId);
     openSession(sessionId);
   }, [openSession]);
+  const openFleetMachine = useCallback((serverId: string): void => {
+    useServers.getState().setActive(serverId);
+    setActive(null);
+    setLayoutMode('tabs');
+    setMobileSessionDetail(false);
+  }, [setActive]);
   const continueExactConversation = useCallback(async (
     serverId: string,
     providerSessionId: string,
@@ -530,6 +544,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             onNew={() => setDialogOpen('new')}
             onContinue={() => setDialogOpen('resume')}
             onResumeSession={resumeSession}
+            onForkSession={forkSession}
             onStartLinked={(id) => setDialogOpen({ delegateFrom: id })}
             openSessionIds={openTabIds}
             onCloseView={closeTab}
@@ -573,6 +588,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             onNew={() => setDialogOpen('new')}
             onContinue={() => setDialogOpen('resume')}
             onResumeSession={resumeSession}
+            onForkSession={forkSession}
             onStartLinked={(id) => setDialogOpen({ delegateFrom: id })}
             openSessionIds={openTabIds}
             onCloseView={closeTab}
@@ -581,7 +597,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         ) : effectiveLayout === 'home' ? (
           <HomeView sessions={sessions} machine={machine} onOpen={openSession} onNew={() => setDialogOpen('new')} onNavigate={(view) => setLayoutMode(view)} />
         ) : effectiveLayout === 'fleet' ? (
-          <FleetView onOpenSession={openFleetSession} />
+          <FleetView onOpenSession={openFleetSession} onOpenMachine={openFleetMachine} />
         ) : effectiveLayout === 'today' ? (
           <DailyView />
         ) : effectiveLayout === 'search' ? (

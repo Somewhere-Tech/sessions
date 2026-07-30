@@ -428,7 +428,8 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if s.handleLanesRoute(response, request, corsOrigin) {
 		return
 	}
-	if path == "/api/recovery" || path == "/api/recovery/reopen" || path == "/api/recovery/adopt" {
+	if path == "/api/recovery" || path == "/api/recovery/reopen" ||
+		path == "/api/recovery/adopt" || path == "/api/recovery/fork" {
 		s.handleRecovery(response, request, corsOrigin)
 		return
 	}
