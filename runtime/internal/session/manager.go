@@ -144,6 +144,10 @@ type Manager struct {
 	cancel context.CancelFunc
 	ticker *time.Ticker
 
+	workerMu      sync.Mutex
+	workerWG      sync.WaitGroup
+	workersClosed bool
+
 	mu       sync.Mutex
 	runtimes map[string]*runtimeSession
 	hooks    globalHooks
@@ -230,14 +234,30 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 	manager.notify = selected.Notify
 	if manager.notify == nil {
 		manager.notify = func(payload PushPayload) {
-			go manager.push.Send(context.Background(), payload)
+			manager.startWorker(func() {
+				manager.push.Send(manager.ctx, payload)
+			})
 		}
 	}
 	manager.registry.SetTerminalObservers(manager.recordRunnerExited, manager.recordReaped)
 	manager.recordDaemonRestart(ctx)
 	manager.ticker = time.NewTicker(selected.ActivityInterval)
-	go manager.activityLoop()
+	manager.startWorker(manager.activityLoop)
 	return manager
+}
+
+func (m *Manager) startWorker(run func()) bool {
+	m.workerMu.Lock()
+	defer m.workerMu.Unlock()
+	if m.workersClosed {
+		return false
+	}
+	m.workerWG.Add(1)
+	go func() {
+		defer m.workerWG.Done()
+		run()
+	}()
+	return true
 }
 
 func (m *Manager) Registry() *state.Registry { return m.registry }
@@ -1336,6 +1356,10 @@ func (m *Manager) Close() {
 	for _, runtime := range runtimes {
 		runtime.stop()
 	}
+	m.workerMu.Lock()
+	m.workersClosed = true
+	m.workerMu.Unlock()
+	m.workerWG.Wait()
 }
 
 func (m *Manager) manage(session *state.Session) *runtimeSession {
@@ -1382,7 +1406,14 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 	if !m.options.DisableWatchers {
 		runtime.startWatcher(info)
 	}
-	go runtime.observe()
+	if !m.startWorker(runtime.observe) {
+		runtime.stop()
+		m.mu.Lock()
+		if m.runtimes[info.ID] == runtime {
+			delete(m.runtimes, info.ID)
+		}
+		m.mu.Unlock()
+	}
 	return runtime
 }
 
@@ -1622,7 +1653,7 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 	r.mu.Lock()
 	r.watcher = watcher
 	r.mu.Unlock()
-	go func() {
+	if !r.manager.startWorker(func() {
 		for watcher != nil {
 			select {
 			case event, ok := <-watcher.Events:
@@ -1650,7 +1681,9 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 				return
 			}
 		}
-	}()
+	}) {
+		watcher.Close()
+	}
 }
 
 func (m *Manager) waitReady(ctx context.Context, runtime *runtimeSession) {

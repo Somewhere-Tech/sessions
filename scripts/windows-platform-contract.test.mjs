@@ -15,6 +15,7 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
     fleet,
     health,
     workflow,
+    frontendPackageText,
     windowsRuntimeBuild,
     windowsReleaseScript
   ] = await Promise.all([
@@ -26,6 +27,7 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
     read('frontend/src/components/FleetView.tsx'),
     read('runtime/internal/api/server.go'),
     read('.github/workflows/windows-preview.yml'),
+    read('frontend/package.json'),
     read('scripts/build-app-runtime.ps1'),
     read('scripts/release-windows.ps1')
   ]);
@@ -58,7 +60,9 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
   assert.match(fleet, /Sessions \$\{version\}/);
 
   assert.match(workflow, /npm run test:updater-release/);
-  assert.match(workflow, /npm --prefix frontend run test:fleet-clarity/);
+  assert.match(workflow, /npm --prefix frontend run test:smoke/);
+  const frontendPackage = JSON.parse(frontendPackageText);
+  assert.match(frontendPackage.scripts['test:smoke'], /npm run test:fleet-clarity/);
   assert.match(workflow, /runs-on: windows-2022/);
   assert.match(windowsRuntimeBuild, /package\.json/);
   assert.match(windowsRuntimeBuild, /v\$AppVersion-dev\.g\$SourceCommit/);
