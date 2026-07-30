@@ -72,7 +72,9 @@ jobs:
         run: |
           npm --prefix frontend run typecheck
           npm --prefix frontend run build
-          npm --prefix frontend run test:smoke
+          # Browser behavior is gated by the canonical CI workflow. Ubuntu
+          # 24.04 blocks Puppeteer's downloaded Chromium sandbox before those
+          # tests can start; do not weaken the sandbox in a packaging job.
 
       - name: Build the client-only APK
         run: npx tauri android build --debug --apk --target aarch64 --ci
