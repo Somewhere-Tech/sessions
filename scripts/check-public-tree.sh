@@ -132,4 +132,6 @@ if [ -n "$external_design_refs" ]; then
   exit 1
 fi
 
+node scripts/check-doc-links.mjs
+
 printf '%s\n' "public-tree path check passed"
