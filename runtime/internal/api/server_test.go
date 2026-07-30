@@ -73,7 +73,7 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 	var body map[string]any
 	decodeBody(t, health, &body)
-	for _, key := range []string{"ok", "name", "version", "listen", "lan", "system", "compatibility", "discovering", "sessionsLoaded"} {
+	for _, key := range []string{"ok", "name", "version", "listen", "lan", "access", "system", "compatibility", "discovering", "sessionsLoaded"} {
 		if _, exists := body[key]; !exists {
 			t.Errorf("health missing key %q: %#v", key, body)
 		}
@@ -85,6 +85,10 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	lan := body["lan"].(map[string]any)
 	if lan["enabled"] != false || lan["url"] != nil {
 		t.Fatalf("unexpected LAN health shape: %#v", lan)
+	}
+	access := body["access"].(map[string]any)
+	if access["open"] != false {
+		t.Fatalf("unexpected access health shape: %#v", access)
 	}
 	system := body["system"].(map[string]any)
 	if system["os"] == "" || system["arch"] == "" {
@@ -221,6 +225,12 @@ func TestAuthAndOriginMatrix(t *testing.T) {
 		opened := serve(t, daemon.handler, http.MethodGet, "/api/sessions", nil, external, nil)
 		if opened.Code != http.StatusOK {
 			t.Fatalf("open escape hatch status = %d, body=%s", opened.Code, opened.Body.String())
+		}
+		openHealth := serve(t, daemon.handler, http.MethodGet, "/api/health", nil, external, nil)
+		var openBody map[string]any
+		decodeBody(t, openHealth, &openBody)
+		if openBody["access"].(map[string]any)["open"] != true {
+			t.Fatalf("health did not expose open access state: %#v", openBody["access"])
 		}
 	})
 }

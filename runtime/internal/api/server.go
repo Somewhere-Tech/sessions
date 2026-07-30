@@ -212,6 +212,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			"ok": true, "name": "sessionsd", "version": Version,
 			"listen": map[string]any{"host": s.config.Host, "port": s.config.Port},
 			"lan":    s.lan.state(),
+			"access": map[string]any{"open": s.openAccessEnabled()},
 			"system": map[string]any{"os": goruntime.GOOS, "arch": goruntime.GOARCH},
 			"compatibility": map[string]any{
 				"api": map[string]any{
@@ -229,6 +230,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if path == "/api/health/deep" && request.Method == http.MethodGet {
 		s.sendJSON(response, http.StatusOK, map[string]any{
 			"ok": true, "name": "sessionsd", "version": Version,
+			"access": map[string]any{"open": s.openAccessEnabled()},
 			"compatibility": map[string]any{
 				"api": map[string]any{
 					"current": apiProtocolVersion, "minimumClient": minimumAPIClient, "maximumClient": maximumAPIClient,
@@ -552,6 +554,22 @@ func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) 
 	return authPrincipal{
 		Kind: ledger.CreatorExternal, ID: "device:" + device.DeviceID, Name: device.Name,
 	}, true, nil
+}
+
+func (s *Server) openAccessEnabled() bool {
+	_, err := os.Stat(s.config.OpenPath)
+	return err == nil
+}
+
+func (s *Server) requireLocalPrincipal(response http.ResponseWriter, request *http.Request, corsOrigin, operation string) bool {
+	principal, ok := request.Context().Value(authPrincipalContextKey{}).(authPrincipal)
+	if ok && principal.Local {
+		return true
+	}
+	s.sendJSON(response, http.StatusForbidden, map[string]any{
+		"error": operation + " is available only on this machine",
+	}, corsOrigin)
+	return false
 }
 
 func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.Request, id, suffix, corsOrigin string) {

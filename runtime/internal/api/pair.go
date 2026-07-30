@@ -511,6 +511,9 @@ func (s *Server) handlePairRoutes(response http.ResponseWriter, request *http.Re
 			s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
 			return true
 		}
+		if !s.requireLocalPrincipal(response, request, corsOrigin, "Pairing ticket creation") {
+			return true
+		}
 		var body struct {
 			Name string `json:"name"`
 		}
@@ -530,6 +533,9 @@ func (s *Server) handlePairRoutes(response http.ResponseWriter, request *http.Re
 			s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
 			return true
 		}
+		if !s.requireLocalPrincipal(response, request, corsOrigin, "Device administration") {
+			return true
+		}
 		devices, err := s.pair.devices.list()
 		if err != nil {
 			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
@@ -540,6 +546,9 @@ func (s *Server) handlePairRoutes(response http.ResponseWriter, request *http.Re
 	case strings.HasPrefix(request.URL.Path, "/api/devices/"):
 		if request.Method != http.MethodDelete {
 			s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+			return true
+		}
+		if !s.requireLocalPrincipal(response, request, corsOrigin, "Device administration") {
 			return true
 		}
 		id := strings.TrimPrefix(request.URL.Path, "/api/devices/")

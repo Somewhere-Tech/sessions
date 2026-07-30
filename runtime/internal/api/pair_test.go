@@ -125,10 +125,11 @@ func TestDeviceRevocationAndPersistenceRoundTrip(t *testing.T) {
 	deviceHeaders := http.Header{"Authorization": {"Bearer " + claimed.Token}}
 
 	restarted := New(daemon.config, daemon.registry)
-	before := serve(t, restarted, http.MethodGet, "/api/devices", nil, externalPairingPeer, deviceHeaders)
-	if before.Code != http.StatusOK {
-		t.Fatalf("restarted device authorization status = %d, body=%s", before.Code, before.Body.String())
+	remoteList := serve(t, restarted, http.MethodGet, "/api/devices", nil, externalPairingPeer, deviceHeaders)
+	if remoteList.Code != http.StatusForbidden {
+		t.Fatalf("remote device administration status = %d, body=%s", remoteList.Code, remoteList.Body.String())
 	}
+	before := serve(t, restarted, http.MethodGet, "/api/devices", nil, "127.0.0.1:1234", nil)
 	var listed struct {
 		Devices []deviceView `json:"devices"`
 	}
@@ -138,7 +139,11 @@ func TestDeviceRevocationAndPersistenceRoundTrip(t *testing.T) {
 	}
 
 	masterHeaders := http.Header{"Authorization": {"Bearer " + testToken}}
-	revoked := serve(t, restarted, http.MethodDelete, "/api/devices/"+claimed.DeviceID, nil, externalPairingPeer, masterHeaders)
+	remoteRevoke := serve(t, restarted, http.MethodDelete, "/api/devices/"+claimed.DeviceID, nil, externalPairingPeer, masterHeaders)
+	if remoteRevoke.Code != http.StatusForbidden {
+		t.Fatalf("remote revoke status = %d, body=%s", remoteRevoke.Code, remoteRevoke.Body.String())
+	}
+	revoked := serve(t, restarted, http.MethodDelete, "/api/devices/"+claimed.DeviceID, nil, "127.0.0.1:1234", nil)
 	if revoked.Code != http.StatusOK {
 		t.Fatalf("revoke status = %d, body=%s", revoked.Code, revoked.Body.String())
 	}
@@ -148,10 +153,35 @@ func TestDeviceRevocationAndPersistenceRoundTrip(t *testing.T) {
 	}
 
 	restartedAgain := New(daemon.config, daemon.registry)
-	listedAfter := serve(t, restartedAgain, http.MethodGet, "/api/devices", nil, externalPairingPeer, masterHeaders)
+	listedAfter := serve(t, restartedAgain, http.MethodGet, "/api/devices", nil, "127.0.0.1:1234", nil)
 	decodeBody(t, listedAfter, &listed)
 	if len(listed.Devices) != 0 {
 		t.Fatalf("devices after persisted revoke = %#v", listed.Devices)
+	}
+}
+
+func TestCredentialAdministrationRequiresLocalPrincipal(t *testing.T) {
+	daemon := newTestDaemon(t)
+	headers := http.Header{
+		"Authorization": {"Bearer " + testToken},
+		"Content-Type":  {"application/json"},
+	}
+	for _, test := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodPost, path: "/api/pair/ticket", body: `{"name":"Remote"}`},
+		{method: http.MethodGet, path: "/api/devices"},
+		{method: http.MethodDelete, path: "/api/devices/11111111-1111-4111-8111-111111111111"},
+	} {
+		response := serve(
+			t, daemon.handler, test.method, test.path, strings.NewReader(test.body),
+			externalPairingPeer, headers,
+		)
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "only on this machine") {
+			t.Fatalf("%s %s status = %d, body=%s", test.method, test.path, response.Code, response.Body.String())
+		}
 	}
 }
 

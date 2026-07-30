@@ -457,6 +457,9 @@ func (s *Server) handleTailnetAccessAdminRoute(response http.ResponseWriter, req
 	if collection == "" {
 		return false
 	}
+	if !s.requireLocalPrincipal(response, request, corsOrigin, "Access request administration") {
+		return true
+	}
 	if request.URL.Path == collection {
 		if request.Method != http.MethodGet {
 			s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)

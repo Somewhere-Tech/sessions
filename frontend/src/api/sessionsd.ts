@@ -262,6 +262,7 @@ export interface ServerHealth {
   version: string;
   listen: { host: string; port: number };
   lan: { enabled: boolean; url: string | null };
+  access?: { open: boolean };
   system?: { os: string; arch: string };
   compatibility?: {
     api: { current: number; minimumClient: number; maximumClient: number };

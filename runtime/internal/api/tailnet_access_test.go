@@ -101,6 +101,13 @@ func TestTailnetAccessRequestAcceptAndClaim(t *testing.T) {
 	if !validMachineID(request.RequestID) || request.RequestSecret == "" || request.Status != "pending" {
 		t.Fatalf("request response = %#v", request)
 	}
+	remoteAdmin := serve(
+		t, daemon.handler, http.MethodGet, "/api/tailnet/access/requests", nil, "198.51.100.20:6060",
+		http.Header{"Authorization": {"Bearer " + testToken}},
+	)
+	if remoteAdmin.Code != http.StatusForbidden {
+		t.Fatalf("remote access administration status = %d, body=%s", remoteAdmin.Code, remoteAdmin.Body.String())
+	}
 
 	duplicate := serve(
 		t, daemon.handler, http.MethodPost, "/api/tailnet/access/request",
