@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-var version = "0.2.11"
+var version = "0.2.12"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))

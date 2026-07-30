@@ -278,6 +278,21 @@ func (m *Manager) DeepDiagnostics() []map[string]any    { return m.registry.Deep
 func (m *Manager) UpdateTags(id string, tags map[string]string) (map[string]string, error) {
 	return m.registry.UpdateTags(id, tags)
 }
+func (m *Manager) UpdateName(ctx context.Context, id, name string) (string, error) {
+	updated, err := m.registry.UpdateName(id, name)
+	if err != nil {
+		return "", err
+	}
+	if m.observations == nil {
+		return updated, nil
+	}
+	if err := m.observations.RecordRenamed(ctx, ledger.Rename{
+		Meta: ledger.Meta{LaneID: id}, Name: updated,
+	}); err != nil {
+		return "", fmt.Errorf("session was renamed to %q, but the durable history annotation failed: %w", updated, err)
+	}
+	return updated, nil
+}
 func (m *Manager) Tags(id string) (map[string]string, error) {
 	return m.registry.Tags(id)
 }
@@ -687,6 +702,9 @@ func (m *Manager) withProvenance(ctx context.Context, infos []state.SessionInfo)
 		current, exists := byID[infos[index].ID]
 		if !exists || !current.Created {
 			continue
+		}
+		if current.Name != "" {
+			infos[index].Name = current.Name
 		}
 		if infos[index].Exited {
 			derived := durableExitReason(current)

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { SessionInfo } from '../types';
 import { ParserIcon } from './ParserIcon';
 import { getTabLabel, setTabLabel, sessionLabel } from '../lib/tabLabels';
+import { useSessions } from '../store/sessions';
 
 export type TabStatus = 'working' | 'finished' | 'idle';
 
@@ -53,14 +54,19 @@ export function SessionTabs({
   // the typed-but-not-committed string.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState('');
+  const updateName = useSessions((state) => state.updateName);
   const startRename = (s: SessionInfo): void => {
     setEditingId(s.id);
     setEditingValue(shortLabel(s));
   };
   const commitRename = (): void => {
     if (editingId) {
-      const s = sessions.find((x) => x.id === editingId);
-      setTabLabel(editingId, editingValue, s?.cwd);
+      const id = editingId;
+      const name = editingValue.trim();
+      const session = sessions.find((candidate) => candidate.id === id);
+      if (name) {
+        void updateName(id, name).then(() => setTabLabel(id, name, session?.cwd));
+      }
     }
     setEditingId(null);
   };

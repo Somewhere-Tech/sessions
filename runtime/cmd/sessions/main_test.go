@@ -331,6 +331,38 @@ func TestTagsCommandReadsMergesAndClearsTags(t *testing.T) {
 	}
 }
 
+func TestRenameCommandUsesDurableNameEndpoint(t *testing.T) {
+	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	var renamed string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{{"id": id, "name": "old"}}})
+		case request.Method == http.MethodPut && request.URL.Path == "/api/sessions/"+id+"/name":
+			var body renameResponse
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				http.Error(response, err.Error(), http.StatusBadRequest)
+				return
+			}
+			renamed = body.Name
+			_ = json.NewEncoder(response).Encode(body)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "rename", id[:8], "Database", "work"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("rename exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if renamed != "Database work" || stdout.String() != "Database work\n" {
+		t.Fatalf("rename state=%q output=%q", renamed, stdout.String())
+	}
+}
+
 func TestDescriptionAndDescFlagsFlowThroughNewAndRun(t *testing.T) {
 	tests := []struct {
 		name string

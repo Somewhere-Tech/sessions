@@ -22,6 +22,7 @@ Daily workflows:
   providers                inspect or update agent CLIs
   run                      run a command in a headless lane
   tags                     view or edit session tags
+  rename                   rename a session everywhere in Sessions
   worktrees                list or safely clean Sessions-created worktrees
   gc                       archive old closed records safely
   archive                  hide selected closed sessions
@@ -174,6 +175,23 @@ Examples:
   sessions tags 0123abcd product=Sessions client=Acme
   sessions tags 0123abcd --remove client
   sessions --json tags 0123abcd
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions rename`
+
+```text
+Usage:
+  sessions rename <session> <name>
+
+rename a session everywhere in Sessions
+
+Set the durable Sessions title used by the app, CLI, Fleet, search, and later continuations. Claude /rename titles are imported when no Sessions title has been chosen. Sessions does not rewrite Claude or Codex private history files, so unsupported provider-native renames remain unchanged.
+
+Examples:
+  sessions rename 0123abcd DB
+  sessions --json rename 0123abcd 'Database migration'
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -612,15 +630,16 @@ Examples:
 
 ```text
 Usage:
-  sessions move <ended-session> (--machine NAME | --to ENDPOINT [--token T]) [--dry-run] [--allow-dirty]
+  sessions move <ended-session> (--machine NAME | --to ENDPOINT [--token T]) [--terminal] [--dry-run] [--allow-dirty]
 
 continue an ended conversation on another machine
 
-Continue an ended Claude or Codex conversation on another Sessions machine while preserving the source history. --machine reads the saved per-device credential from its private file; no token appears in argv. Run --dry-run first to verify workspace and conversation identity. The target refuses to overwrite different provider history, creates one Rich runtime, and records both sides of the continuation link. --to/--token remains a low-level endpoint escape hatch. --allow-dirty creates a Git checkpoint without deleting or changing the source worktree.
+Continue an ended Claude or Codex conversation on another Sessions machine while preserving the source history. --machine reads the saved per-device credential from its private file; no token appears in argv. Run --dry-run first to verify workspace and conversation identity. The target refuses to overwrite different provider history, creates one Rich runtime by default, and records both sides of the continuation link. --terminal explicitly reopens the provider's terminal interface instead. --to/--token remains a low-level endpoint escape hatch. --allow-dirty creates a Git checkpoint without deleting or changing the source worktree.
 
 Examples:
   sessions move 0123abcd --machine mini --dry-run
   sessions move 0123abcd --machine mini
+  sessions move 0123abcd --machine mini --terminal
   sessions move 0123abcd --to https://mini.tailnet.ts.net --dry-run
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -648,14 +667,15 @@ Examples:
 
 ```text
 Usage:
-  sessions continue <history-id> [--with claude|codex] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
+  sessions continue <history-id> [--with claude|codex] [--terminal] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
 
 continue one exact saved conversation
 
-Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.
+Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. Rich is the default. --terminal explicitly opens the original provider's terminal interface and cannot be combined with a cross-provider continuation. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.
 
 Examples:
   sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001
+  sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal
   sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex
   sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001
 

@@ -106,7 +106,8 @@ assert.match(app, /sessionId=\{sessionId\}[\s\S]*isActive[\s\S]*onStatusChange=\
 assert.match(popout, />Pop out<\/span>/);
 assert.match(popout, /mode'\) === 'single'/);
 assert.match(view, /No terminal for this Rich session/);
-assert.match(view, /Not available in 0\.2\.7/);
+assert.match(view, /choose Continue conversation, then select Terminal/);
+assert.doesNotMatch(view, /Not available in 0\.2\.7/);
 assert.doesNotMatch(view, /↳ Delegate|resumed from seq/);
 assert.match(view, /This is a Terminal session/);
 assert.match(view, />Okay<\/button>/);

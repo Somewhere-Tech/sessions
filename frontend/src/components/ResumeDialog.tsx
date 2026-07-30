@@ -105,6 +105,7 @@ export function ResumeDialog({
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<ResumableSession | null>(null);
   const [destinationProvider, setDestinationProvider] = useState<'claude' | 'codex'>('claude');
+  const [runtimeMode, setRuntimeMode] = useState<'rich' | 'terminal'>('rich');
   const preferredDestinationApplied = useRef(false);
 
   useEffect(() => {
@@ -204,6 +205,7 @@ export function ResumeDialog({
       return;
     }
     if (!preferredDestinationProvider) setDestinationProvider(selected.tool);
+    setRuntimeMode('rich');
   }, [preferredDestinationProvider, selected?.sessionId, selected?.tool]);
 
   // Flat = newest-first across all folders. Backend already sorts
@@ -244,7 +246,7 @@ export function ResumeDialog({
       const sourceSessionId = preferredSourceSessionId
         ?? (matchingSources.length === 1 ? matchingSources[0]?.id : undefined);
       const result = await adoptConversation(
-        selected.sessionId, sourceSessionId, selected.historyId, destinationProvider
+        selected.sessionId, sourceSessionId, selected.historyId, destinationProvider, runtimeMode
       );
       await refresh();
       onResumed(result.laneId);
@@ -452,7 +454,7 @@ export function ResumeDialog({
                   role="radio"
                   aria-checked={destinationProvider === 'claude'}
                   className={destinationProvider === 'claude' ? 'is-active' : ''}
-                  onClick={() => setDestinationProvider('claude')}
+                  onClick={() => { setDestinationProvider('claude'); if (selected.tool !== 'claude') setRuntimeMode('rich'); }}
                   disabled={busy}
                 >Claude</button>
                 <button
@@ -460,7 +462,7 @@ export function ResumeDialog({
                   role="radio"
                   aria-checked={destinationProvider === 'codex'}
                   className={destinationProvider === 'codex' ? 'is-active' : ''}
-                  onClick={() => setDestinationProvider('codex')}
+                  onClick={() => { setDestinationProvider('codex'); if (selected.tool !== 'codex') setRuntimeMode('rich'); }}
                   disabled={busy}
                 >Codex</button>
               </div>
@@ -471,6 +473,25 @@ export function ResumeDialog({
                     ? 'Creates a Codex chat with authored history imported.'
                     : 'Creates a Claude chat linked to the exact searchable history.'}
               </small>
+              <div role="radiogroup" aria-label="Runtime">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={runtimeMode === 'rich'}
+                  className={runtimeMode === 'rich' ? 'is-active' : ''}
+                  onClick={() => setRuntimeMode('rich')}
+                  disabled={busy}
+                >Rich</button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={runtimeMode === 'terminal'}
+                  className={runtimeMode === 'terminal' ? 'is-active' : ''}
+                  onClick={() => setRuntimeMode('terminal')}
+                  disabled={busy || destinationProvider !== selected.tool}
+                  title={destinationProvider !== selected.tool ? 'Cross-provider continuation uses Rich mode' : 'Open the provider’s full terminal interface'}
+                >Terminal</button>
+              </div>
             </div>
           ) : null}
           <button type="button" className="btn btn-primary" onClick={() => void resume()} disabled={busy || !selected || Boolean(partialResult)}>

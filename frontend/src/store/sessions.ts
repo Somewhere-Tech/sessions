@@ -123,6 +123,7 @@ interface SessionsState {
   create: (req: CreateSessionRequest) => Promise<SessionInfo>;
   kill: (id: string, reason?: string) => Promise<void>;
   archive: (ids: string[]) => Promise<api.ArchiveResult>;
+  updateName: (id: string, name: string) => Promise<void>;
   updateTags: (id: string, tags: Record<string, string>) => Promise<void>;
   updateModel: (id: string, model: string, effort: string) => Promise<void>;
   updateDisplayParent: (id: string, parentId: string | null) => Promise<void>;
@@ -361,6 +362,17 @@ export const useSessions = create<SessionsState>((set, get) => ({
     const result = await api.archiveSessions(ids);
     await get().refresh();
     return result;
+  },
+
+  updateName: async (id, requested) => {
+    const name = await api.updateSessionName(id, requested);
+    set((state) => {
+      const sessions = state.sessions.map((session) => (
+        session.id === id ? { ...session, name } : session
+      ));
+      writeCache(sessions, state.activeId);
+      return { sessions };
+    });
   },
 
   updateTags: async (id, requested) => {

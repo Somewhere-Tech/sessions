@@ -505,8 +505,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               <h2>No terminal for this Rich session</h2>
               <p>Sessions is connected through the provider’s structured interface, which makes messages, plans, tool activity, diffs, and Stop more reliable.</p>
               <p>A Terminal compatibility session would be a separate runtime. Its screen-read status and history can be incomplete or delayed.</p>
-              <button type="button" className="btn btn-ghost" disabled title="Not available in 0.2.7">Start a Terminal session on this conversation…</button>
-              <small>Not available in 0.2.7</small>
+              <small>To switch safely, end this runtime, choose Continue conversation, then select Terminal. Sessions will keep the same provider conversation and preserve this runtime in history.</small>
             </div>
           ) : (
             <>

@@ -228,6 +228,12 @@ func (s *Session) setTags(tags map[string]string) {
 	s.mu.Unlock()
 }
 
+func (s *Session) setName(name string) {
+	s.mu.Lock()
+	s.info.Name = name
+	s.mu.Unlock()
+}
+
 func (s *Session) setFirstMessageDescription(description string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -133,6 +133,19 @@ export async function updateDisplayParent(
   return body.displayParentSessionId;
 }
 
+export async function updateSessionName(
+  sessionId: string,
+  name: string
+): Promise<string> {
+  const r = await apiFetch(`${httpBase()}/api/sessions/${encodeURIComponent(sessionId)}/name`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  const body = await featureJSON<{ name: string }>(r, 'Session rename');
+  return body.name;
+}
+
 export async function updateSetAside(
   sessionId: string,
   setAside: boolean
@@ -1040,12 +1053,13 @@ export async function adoptConversation(
   providerUuid: string,
   sourceSessionId?: string,
   historyId?: string,
-  destinationProvider?: 'claude' | 'codex'
+  destinationProvider?: 'claude' | 'codex',
+  runtimeMode: 'rich' | 'terminal' = 'rich'
 ): Promise<AdoptConversationResult> {
   const r = await apiFetch(`${httpBase()}/api/recovery/adopt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ target: providerUuid, sourceSessionId, historyId, destinationProvider })
+    body: JSON.stringify({ target: providerUuid, sourceSessionId, historyId, destinationProvider, runtimeMode })
   });
   return json<AdoptConversationResult>(r);
 }

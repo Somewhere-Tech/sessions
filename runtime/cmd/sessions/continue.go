@@ -11,8 +11,9 @@ func (a *app) cmdContinue(args []string) error {
 	repairLaneID, repairSet := pluck(&args, "--repair")
 	sourceSessionID, sourceSet := pluck(&args, "--source")
 	destinationProvider, destinationSet := pluck(&args, "--with")
+	terminal := removeFirst(&args, "--terminal")
 	if len(args) != 1 || args[0] == "" {
-		return fail(1, "usage: sessions continue <history-id> [--with claude|codex] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
+		return fail(1, "usage: sessions continue <history-id> [--with claude|codex] [--terminal] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
 	}
 	if repairSet && repairLaneID == "" {
 		return fail(1, "--repair requires the existing live successor id")
@@ -26,6 +27,9 @@ func (a *app) cmdContinue(args []string) error {
 	if destinationSet && repairSet {
 		return fail(1, "--with cannot be combined with --repair")
 	}
+	if terminal && repairSet {
+		return fail(1, "--terminal cannot be combined with --repair")
+	}
 	body := map[string]any{"historyId": args[0], "force": force}
 	if sourceSet {
 		body["sourceSessionId"] = sourceSessionID
@@ -35,6 +39,9 @@ func (a *app) cmdContinue(args []string) error {
 	}
 	if destinationSet {
 		body["destinationProvider"] = destinationProvider
+	}
+	if terminal {
+		body["runtimeMode"] = "terminal"
 	}
 	var result recovery.AdoptResult
 	if err := a.postJSON("/api/recovery/adopt", body, &result, 2); err != nil {

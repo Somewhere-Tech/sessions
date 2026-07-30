@@ -26,6 +26,7 @@ export function ContinueElsewhereButton({
   const [selected, setSelected] = useState('');
   const [plan, setPlan] = useState<NativeMovePlan | null>(null);
   const [allowDirty, setAllowDirty] = useState(false);
+  const [runtimeMode, setRuntimeMode] = useState<'rich' | 'terminal'>('rich');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [complete, setComplete] = useState<NativeMovePlan | null>(null);
@@ -54,7 +55,7 @@ export function ContinueElsewhereButton({
     setBusy(true);
     setError(null);
     try {
-      setPlan(await moveNativeSession(sessionId, selected, { dryRun: true, allowDirty }));
+      setPlan(await moveNativeSession(sessionId, selected, { dryRun: true, allowDirty, runtimeMode }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not prepare this continuation.');
     } finally {
@@ -67,7 +68,7 @@ export function ContinueElsewhereButton({
     setBusy(true);
     setError(null);
     try {
-      const result = await moveNativeSession(sessionId, selected, { dryRun: false, allowDirty });
+      const result = await moveNativeSession(sessionId, selected, { dryRun: false, allowDirty, runtimeMode });
       setComplete(result);
       await refresh();
     } catch (reason) {
@@ -141,10 +142,22 @@ export function ContinueElsewhereButton({
                   }} />
                   <span><strong>Include uncommitted Git work in a temporary checkpoint</strong><small>The original files and branch stay unchanged.</small></span>
                 </label>
+                <fieldset className="continue-elsewhere-runtime">
+                  <legend>Open as</legend>
+                  <label>
+                    <input type="radio" name="move-runtime" checked={runtimeMode === 'rich'} disabled={busy} onChange={() => { setRuntimeMode('rich'); setPlan(null); }} />
+                    <span><strong>Rich</strong><small>Recommended. Clean conversation, plans, tools, and model controls.</small></span>
+                  </label>
+                  <label>
+                    <input type="radio" name="move-runtime" checked={runtimeMode === 'terminal'} disabled={busy} onChange={() => { setRuntimeMode('terminal'); setPlan(null); }} />
+                    <span><strong>Terminal</strong><small>The provider’s full terminal interface, including slash commands and setup screens.</small></span>
+                  </label>
+                </fieldset>
                 {plan ? (
                   <div className="continue-elsewhere-plan">
                     <strong>Ready to continue</strong>
                     <span>{plan.tool === 'codex' ? 'Codex' : 'Claude'} · {(plan.conversation_bytes / 1024 / 1024).toFixed(1)} MB conversation</span>
+                    <span>{plan.runtime_mode === 'terminal' ? 'Terminal interface' : 'Rich conversation'}</span>
                     <span>{plan.workspace.git ? `Git ${plan.workspace.branch || 'workspace'} at ${(plan.workspace.revision || '').slice(0, 8)}` : 'The same folder must already exist on the destination'}</span>
                     <span>Source history remains here</span>
                   </div>

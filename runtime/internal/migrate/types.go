@@ -12,6 +12,8 @@ import (
 const (
 	MaxConversationBytes int64 = 64 << 20
 	MaxReceiveBodyBytes  int64 = 88 << 20
+	RuntimeRich                = "rich"
+	RuntimeTerminal            = "terminal"
 )
 
 // SourceSession is the daemon and ledger metadata needed to prepare a move.
@@ -52,6 +54,7 @@ type ReceiveRequest struct {
 	Cwd               string    `json:"cwd"`
 	ConversationBytes []byte    `json:"conversation_bytes,omitempty"`
 	ResumeRecipe      []string  `json:"resume_recipe"`
+	RuntimeMode       string    `json:"runtime_mode,omitempty"`
 	Name              string    `json:"name,omitempty"`
 	SourceID          string    `json:"source_id,omitempty"`
 	SourceEndpoint    string    `json:"source_endpoint,omitempty"`
@@ -71,6 +74,7 @@ type CreateRequest struct {
 	UUID           string   `json:"uuid"`
 	Cwd            string   `json:"cwd"`
 	ResumeRecipe   []string `json:"resume_recipe"`
+	RuntimeMode    string   `json:"runtime_mode,omitempty"`
 	Name           string   `json:"name,omitempty"`
 	SourceID       string   `json:"source_id"`
 	SourceEndpoint string   `json:"source_endpoint"`
@@ -89,6 +93,7 @@ type MoveResult struct {
 	Tool                  string        `json:"tool"`
 	Cwd                   string        `json:"cwd"`
 	ResumeRecipe          []string      `json:"resume_recipe"`
+	RuntimeMode           string        `json:"runtime_mode"`
 	Workspace             Workspace     `json:"workspace"`
 	ConversationSize      int           `json:"conversation_bytes"`
 	DryRun                bool          `json:"dry_run"`

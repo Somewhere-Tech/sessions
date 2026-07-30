@@ -25,6 +25,27 @@ import (
 
 const testToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
+func TestNormalizeContinuationRuntime(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+		ok    bool
+	}{
+		{input: "", want: "", ok: true},
+		{input: " Rich ", want: "rich", ok: true},
+		{input: "TERMINAL", want: "terminal", ok: true},
+		{input: "automatic", ok: false},
+	} {
+		got, err := normalizeContinuationRuntime(test.input)
+		if (err == nil) != test.ok {
+			t.Fatalf("normalizeContinuationRuntime(%q) error = %v, want ok=%v", test.input, err, test.ok)
+		}
+		if got != test.want {
+			t.Fatalf("normalizeContinuationRuntime(%q) = %q, want %q", test.input, got, test.want)
+		}
+	}
+}
+
 type testDaemon struct {
 	config   state.Config
 	registry *state.Registry
@@ -510,6 +531,19 @@ func TestSessionsLifecycleAndRouteShapes(t *testing.T) {
 	invalidTags := serve(t, daemon.handler, http.MethodPut, "/api/sessions/"+info.ID+"/tags", strings.NewReader(`{"tags":{"bad key":"value"}}`), "127.0.0.1:1", nil)
 	if invalidTags.Code != http.StatusBadRequest {
 		t.Fatalf("invalid tags: status=%d body=%s", invalidTags.Code, invalidTags.Body.String())
+	}
+	renamed := serve(t, daemon.handler, http.MethodPut, "/api/sessions/"+info.ID+"/name", strings.NewReader(`{"name":"  DB  "}`), "127.0.0.1:1", nil)
+	if renamed.Code != http.StatusOK || !strings.Contains(renamed.Body.String(), `"name":"DB"`) {
+		t.Fatalf("rename: status=%d body=%s", renamed.Code, renamed.Body.String())
+	}
+	list = serve(t, daemon.handler, http.MethodGet, "/api/sessions", nil, "127.0.0.1:1", nil)
+	decodeBody(t, list, &listed)
+	if len(listed.Sessions) != 1 || listed.Sessions[0].Name != "DB" {
+		t.Fatalf("sessions after rename = %#v", listed.Sessions)
+	}
+	renamedMetadata, err := state.ReadRunnerMetadata(metadataPath)
+	if err != nil || renamedMetadata.Name != "DB" {
+		t.Fatalf("persisted rename = %#v, err=%v", renamedMetadata, err)
 	}
 
 	runner := daemon.launcher.Runner(info.ID)
