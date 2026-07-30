@@ -3695,7 +3695,7 @@ button.session-tree-group-head { width: 100%; }
 .session-details-pane { position: relative; display: none; min-width: 0; min-height: 0; background: var(--bg-base); }
 .mobile-terminal-keys { display: none; }
 .session-view.view-details .session-details-pane { position: absolute; inset: 0; z-index: 3; display: flex; overflow: auto; }
-.session-history-body { min-height: 0; flex: 1; overflow: auto; background: var(--bg-base); }
+.session-history-body { position: relative; min-height: 0; flex: 1; overflow: auto; background: var(--bg-base); }
 .session-history-transcript { width: min(860px, calc(100% - 48px)); margin: 0 auto; padding: 28px 0 80px; }
 .session-history-message { display: flex; flex-direction: column; margin: 20px 0; color: var(--fg); }
 .session-history-message.is-assistant.is-continuation { margin-top: -8px; }
@@ -3720,7 +3720,7 @@ button.session-tree-group-head { width: 100%; }
   box-shadow: var(--shadow-1);
 }
 .session-history-message > footer { display: flex; gap: 7px; padding: 6px 4px 0; color: var(--fg-faint); font-size: 12px; }
-.session-ended-summary { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px 16px; min-width: 0; margin: 0 0 28px; padding: 16px 18px; border: 1px solid var(--border-strong); border-radius: 11px; background: var(--bg-elev-1); }
+.session-ended-summary { position: sticky; top: 12px; z-index: 6; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px 16px; min-width: 0; margin: 0 0 28px; padding: 16px 18px; border: 1px solid var(--border-strong); border-radius: 11px; background: var(--bg-elev-1); box-shadow: var(--shadow-2); }
 .session-ended-summary > div { display: flex; align-items: baseline; gap: 10px; }
 .session-ended-summary strong { color: var(--fg); font-size: 14px; }
 .session-ended-actor { appearance: none; border: 0; padding: 0; background: transparent; color: var(--accent); font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; text-align: left; }
@@ -4402,9 +4402,12 @@ button.session-tree-group-head { width: 100%; }
   border-radius: 8px;
   background: var(--bg-base);
   color: var(--fg-faint);
+  font-size: 13px;
+  line-height: 1.2;
   text-align: left;
   cursor: pointer;
 }
+.product-command-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .product-command-button:hover { border-color: var(--border-strong); background: var(--bg-elev-1); color: var(--fg); }
 .product-command-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; }
 .product-command-button kbd,
@@ -6625,6 +6628,28 @@ details[open] > summary > .sessions-command-disclosure {
 .scroll-to-bottom-anchor > .scroll-to-bottom:hover {
   transform: translateY(-45px);
 }
+
+.session-history-jump-anchor {
+  position: sticky;
+  bottom: 14px;
+  z-index: 7;
+  display: flex;
+  justify-content: flex-end;
+  width: min(860px, calc(100% - 48px));
+  height: 0;
+  margin: 0 auto;
+  pointer-events: none;
+}
+.session-history-jump-anchor > .scroll-to-bottom {
+  position: relative;
+  inset: auto;
+  flex: 0 0 auto;
+  margin-right: 2px;
+  transform: translateY(-48px);
+  pointer-events: auto;
+  animation: none;
+}
+.session-history-jump-anchor > .scroll-to-bottom:hover { transform: translateY(-49px); }
 
 /* ── Copy button (used by claude_message + command + per-codeblock) ── */
 .copy-btn {

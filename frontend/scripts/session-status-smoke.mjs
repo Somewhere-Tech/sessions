@@ -20,6 +20,8 @@ try {
   });
 
   const {
+    canContinueSession,
+    continuationSession,
     endedCategory,
     endedSummary,
     isCrashedSession,
@@ -82,6 +84,34 @@ try {
   assert.equal(endedSummary(crashed).label, 'Ended unexpectedly');
   assert.equal(endedSummary(crashed).tone, 'attention');
   assert.match(endedSummary(crashed).detail, /Saved history is still available/);
+
+  const endedWithContinuation = {
+    ...explicitlyEnded,
+    id: 'original-runtime',
+    createdAt: 100,
+    reopenedAs: 'live-successor',
+    claudeSessionId: 'provider-conversation'
+  };
+  const liveSuccessor = {
+    ...liveMcpWarning,
+    id: 'live-successor',
+    createdAt: 200,
+    name: 'PM',
+    claudeSessionId: 'provider-conversation'
+  };
+  assert.equal(continuationSession(endedWithContinuation, [endedWithContinuation, liveSuccessor])?.id, 'live-successor');
+  assert.equal(endedSummary(endedWithContinuation, [endedWithContinuation, liveSuccessor]).label, 'Live as PM');
+  assert.equal(canContinueSession(endedWithContinuation), false);
+
+  const inferredSuccessor = {
+    ...liveSuccessor,
+    id: 'inferred-successor',
+    resumedFrom: 'original-runtime'
+  };
+  assert.equal(continuationSession(
+    { ...endedWithContinuation, reopenedAs: undefined },
+    [endedWithContinuation, inferredSuccessor]
+  )?.id, 'inferred-successor');
 
   console.log('session status smoke: ok');
 } finally {
