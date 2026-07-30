@@ -94,7 +94,7 @@ func TestNormalizeAISettings(t *testing.T) {
 
 func TestNormalizeAndResolveClaudeSettings(t *testing.T) {
 	defaults := DefaultClaudeSettings()
-	if defaults.RemoteControl != ClaudeChoiceOn || defaults.PermissionMode != ClaudeChoiceInherit || defaults.SomewhereMCP != ClaudeChoiceInherit {
+	if defaults.RemoteControl != ClaudeChoiceOff || defaults.PermissionMode != ClaudeChoiceInherit || defaults.SomewhereMCP != ClaudeChoiceInherit {
 		t.Fatalf("default Claude settings = %#v", defaults)
 	}
 	normalized, err := NormalizeClaudeSettings(ClaudeSettings{
@@ -131,16 +131,53 @@ func TestNormalizeAndResolveClaudeSettings(t *testing.T) {
 	}
 }
 
-func TestLegacyClaudeInheritMigratesWithoutOverridingNewExplicitChoice(t *testing.T) {
-	legacy := Settings{Claude: &ClaudeSettings{RemoteControl: ClaudeChoiceInherit}}
-	if got := legacy.EffectiveClaude().RemoteControl; got != ClaudeChoiceOn {
-		t.Fatalf("legacy Remote Control = %q, want %q", got, ClaudeChoiceOn)
+func TestRemoteControlRequiresCompletedOnboardingConsent(t *testing.T) {
+	for name, settings := range map[string]Settings{
+		"fresh install": {},
+		"legacy inherit": {
+			Claude: &ClaudeSettings{RemoteControl: ClaudeChoiceInherit},
+		},
+		"legacy on": {
+			Claude: &ClaudeSettings{RemoteControl: ClaudeChoiceOn},
+		},
+		"reset onboarding": {
+			Claude:     &ClaudeSettings{RemoteControl: ClaudeChoiceOn},
+			Onboarding: &OnboardingSettings{Version: 0, RemoteControlConsent: RemoteControlConsentEnabled},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if state := settings.EffectiveOnboarding(); state.Complete || state.RemoteControl != RemoteControlConsentPending {
+				t.Fatalf("onboarding = %#v", state)
+			}
+			if got := settings.EffectiveClaude().RemoteControl; got != ClaudeChoiceOff {
+				t.Fatalf("Remote Control = %q, want %q", got, ClaudeChoiceOff)
+			}
+		})
 	}
-	versioned := Settings{
-		Claude:                  &ClaudeSettings{RemoteControl: ClaudeChoiceInherit},
-		ClaudeExperienceVersion: 1,
+
+	enabled := Settings{
+		Claude: &ClaudeSettings{RemoteControl: ClaudeChoiceOn},
+		Onboarding: &OnboardingSettings{
+			Version: OnboardingCurrentVersion, RemoteControlConsent: RemoteControlConsentEnabled,
+		},
 	}
-	if got := versioned.EffectiveClaude().RemoteControl; got != ClaudeChoiceInherit {
-		t.Fatalf("explicit versioned Remote Control = %q, want %q", got, ClaudeChoiceInherit)
+	if state := enabled.EffectiveOnboarding(); !state.Complete || state.RemoteControl != RemoteControlConsentEnabled {
+		t.Fatalf("enabled onboarding = %#v", state)
+	}
+	if got := enabled.EffectiveClaude().RemoteControl; got != ClaudeChoiceOn {
+		t.Fatalf("enabled Remote Control = %q, want %q", got, ClaudeChoiceOn)
+	}
+
+	localOnly := Settings{
+		Claude: &ClaudeSettings{RemoteControl: ClaudeChoiceOff},
+		Onboarding: &OnboardingSettings{
+			Version: OnboardingCurrentVersion, RemoteControlConsent: RemoteControlConsentLocalOnly,
+		},
+	}
+	if state := localOnly.EffectiveOnboarding(); !state.Complete || state.RemoteControl != RemoteControlConsentLocalOnly {
+		t.Fatalf("local-only onboarding = %#v", state)
+	}
+	if got := localOnly.EffectiveClaude().RemoteControl; got != ClaudeChoiceOff {
+		t.Fatalf("local-only Remote Control = %q, want %q", got, ClaudeChoiceOff)
 	}
 }

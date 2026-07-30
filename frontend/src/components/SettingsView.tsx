@@ -7,6 +7,7 @@ import {
   fetchRecapSettings,
   updateAISettings,
   updateClaudeSettings,
+  updateOnboardingPreference,
   updateRecapSettings,
   updateProvider,
   type AIProvider,
@@ -67,7 +68,7 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange,
   const [recapAvailable, setRecapAvailable] = useState(true);
   const [recapMessage, setRecapMessage] = useState<string | null>(null);
   const [claudeSettings, setClaudeSettings] = useState<ClaudeSettings>({
-    remoteControl: 'inherit', permissionMode: 'inherit', model: '', effort: 'inherit',
+    remoteControl: 'off', permissionMode: 'inherit', model: '', effort: 'inherit',
     chrome: 'inherit', somewhereMcp: 'inherit', remoteControlNamePrefix: ''
   });
   const [claudeBusy, setClaudeBusy] = useState(false);
@@ -216,6 +217,32 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange,
     }
   };
 
+  const saveRemoteControlPreference = async (enabled: boolean): Promise<void> => {
+    if (claudeBusy || !claudeAvailable) return;
+    const previous = claudeSettings;
+    const generation = claudeGeneration.current + 1;
+    claudeGeneration.current = generation;
+    setClaudeBusy(true);
+    setClaudeSettings({ ...previous, remoteControl: enabled ? 'on' : 'off' });
+    setClaudeMessage(null);
+    try {
+      await updateOnboardingPreference(enabled ? 'enabled' : 'local-only');
+      const saved = await fetchClaudeSettings();
+      if (claudeGeneration.current !== generation) return;
+      setClaudeSettings(saved);
+      setClaudeMessage(enabled
+        ? 'Remote Control will be available for new Claude sessions.'
+        : 'New Claude sessions will stay local.');
+    } catch (error) {
+      if (claudeGeneration.current === generation) {
+        setClaudeSettings(previous);
+        setClaudeMessage(error instanceof Error ? error.message : 'Could not save Remote Control preference.');
+      }
+    } finally {
+      if (claudeGeneration.current === generation) setClaudeBusy(false);
+    }
+  };
+
   const checkForUpdate = async (): Promise<void> => {
     if (!native || updateBusy) return;
     setUpdateBusy(true);
@@ -308,6 +335,7 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange,
             onAIProvider={saveAIProvider}
             onRecapProvider={saveRecapProvider}
             onClaudeSettings={saveClaudeSettings}
+            onRemoteControl={saveRemoteControlPreference}
             onClaudeDraft={setClaudeSettings}
           />
         ) : section === 'accounts' ? (
@@ -414,6 +442,7 @@ interface AgentSettingsProps {
   claudeAvailable: boolean;
   claudeMessage: string | null;
   onClaudeSettings: (settings: ClaudeSettings) => Promise<void>;
+  onRemoteControl: (enabled: boolean) => Promise<void>;
   onClaudeDraft: (settings: ClaudeSettings) => void;
 }
 
@@ -427,7 +456,7 @@ function AgentSettings(props: AgentSettingsProps): JSX.Element {
       <div className="settings-card">
         <h2>Claude session defaults</h2>
         <p>Applied only to sessions launched by Sessions. Claude’s own settings files remain untouched.</p>
-        <label className="settings-select-row"><span><strong>Remote Control</strong><small>Connect each new local Claude session to claude.ai and mobile while Sessions remains its primary Conversation view.</small></span><select value={props.claudeSettings.remoteControl} disabled={props.claudeBusy || !props.claudeAvailable} onChange={(event) => void props.onClaudeSettings({ ...props.claudeSettings, remoteControl: event.currentTarget.value as ClaudeSettings['remoteControl'] })}><option value="on">On for new Claude sessions</option><option value="off">Local only</option><option value="inherit">Use Claude’s setting</option></select></label>
+        <label className="settings-select-row"><span><strong>Remote Control</strong><small>When enabled, new Claude sessions connect directly to Anthropic and also appear on claude.ai and mobile. Sessions is not a relay.</small></span><select value={props.claudeSettings.remoteControl === 'on' ? 'on' : 'off'} disabled={props.claudeBusy || !props.claudeAvailable} onChange={(event) => void props.onRemoteControl(event.currentTarget.value === 'on')}><option value="on">Enabled for new Claude sessions</option><option value="off">Keep sessions local</option></select></label>
         <label className="settings-select-row"><span><strong>Permission mode</strong><small>Claude default preserves the provider’s normal prompts. Bypass gives new Claude sessions full access.</small></span><select value={props.claudeSettings.permissionMode} disabled={props.claudeBusy || !props.claudeAvailable} onChange={(event) => void props.onClaudeSettings({ ...props.claudeSettings, permissionMode: event.currentTarget.value as ClaudeSettings['permissionMode'] })}><option value="inherit">Claude default</option><option value="manual">Manual</option><option value="acceptEdits">Accept edits</option><option value="auto">Auto</option><option value="plan">Plan</option><option value="dontAsk">Don’t ask</option><option value="bypassPermissions">Bypass permissions</option></select></label>
         <label className="settings-select-row"><span><strong>Model</strong><small>Leave blank to use Claude’s selected default model.</small></span><input value={props.claudeSettings.model} disabled={props.claudeBusy || !props.claudeAvailable} maxLength={128} placeholder="Provider default" onChange={(event) => props.onClaudeDraft({ ...props.claudeSettings, model: event.currentTarget.value })} onBlur={() => void props.onClaudeSettings(props.claudeSettings)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>
         <label className="settings-select-row"><span><strong>Effort</strong><small>Leave inherited unless you want every new Claude session to use the same effort.</small></span><select value={props.claudeSettings.effort} disabled={props.claudeBusy || !props.claudeAvailable} onChange={(event) => void props.onClaudeSettings({ ...props.claudeSettings, effort: event.currentTarget.value as ClaudeSettings['effort'] })}><option value="inherit">Inherit from Claude</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option></select></label>

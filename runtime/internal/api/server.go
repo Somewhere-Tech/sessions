@@ -413,6 +413,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if s.handleRecapRoute(response, request, corsOrigin) {
 		return
 	}
+	if s.handleOnboardingRoute(response, request, corsOrigin) {
+		return
+	}
 	if s.handleClaudeSettingsRoute(response, request, corsOrigin) {
 		return
 	}
@@ -901,7 +904,7 @@ func (s *Server) sendJSON(response http.ResponseWriter, status int, body any, co
 	}
 	response.Header().Set("Vary", "Origin")
 	response.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization, x-sessions-creator-session, x-sessions-owner-id, x-sessions-client, x-sessions-filename")
+	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization, x-sessions-creator-session, x-sessions-owner-id, x-sessions-client, x-sessions-filename, x-sessions-user-consent")
 	response.WriteHeader(status)
 	if status == http.StatusNoContent {
 		return

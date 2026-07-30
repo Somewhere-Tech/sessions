@@ -22,12 +22,14 @@ func (m *Manager) applyClaudeDefaults(request state.CreateSessionRequest) (state
 	}
 
 	defaults := state.DefaultClaudeSettings()
+	remoteControlConsent := false
 	if m.config.SettingsPath != "" {
 		settings, err := state.LoadSettings(m.config.SettingsPath)
 		if err != nil {
 			return request, fmt.Errorf("load Claude defaults: %w", err)
 		}
 		defaults = settings.EffectiveClaude()
+		remoteControlConsent = settings.EffectiveOnboarding().RemoteControl == state.RemoteControlConsentEnabled
 	}
 	resolved, err := state.ResolveClaudeSettings(defaults, request.Claude)
 	if err != nil {
@@ -42,6 +44,15 @@ func (m *Manager) applyClaudeDefaults(request state.CreateSessionRequest) (state
 		// the provider setting off for Rich sessions even when the user's
 		// global Sessions default is On, otherwise claude receives the
 		// incompatible --print + --remote-control combination.
+		resolved.RemoteControl = state.ClaudeChoiceOff
+		resolved.RemoteControlNamePrefix = ""
+	}
+	if request.Kind != state.KindClaudeStructured && !remoteControlConsent {
+		if hasAnyArg(args, "--remote-control") || resolved.RemoteControl == state.ClaudeChoiceOn {
+			return request, errors.New("Claude Remote Control requires explicit user consent in Sessions onboarding or Settings")
+		}
+		// "inherit" is a useful override for other Claude settings, but it
+		// cannot defer this consent boundary back to a provider-owned default.
 		resolved.RemoteControl = state.ClaudeChoiceOff
 		resolved.RemoteControlNamePrefix = ""
 	}

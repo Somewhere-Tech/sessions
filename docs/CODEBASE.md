@@ -252,19 +252,21 @@ the generated FTS5 query locally (`runtime/internal/api/search_handlers.go`).
 Browser-origin checks are a separate CORS and WebSocket boundary, not a second
 authentication factor.
 
-Claude launch defaults live at `GET/PUT /api/claude/settings` and are resolved
+Machine-level onboarding and Claude launch defaults live at
+`GET/PUT /api/onboarding` and `GET/PUT /api/claude/settings`, then are resolved
 inside the session manager before the runner boundary
 (`runtime/internal/api/claude_settings_handlers.go`,
 `runtime/internal/session/claude_defaults.go`). Remote Control, permission
 mode, model, effort, Chrome, Remote Control naming, and the Somewhere MCP are
-typed rather than free-form startup commands. Explicit per-session choices win;
-`inherit` leaves Claude authoritative. New Claude sessions default to the
-native interactive CLI with Remote Control: Sessions renders the provider's
-canonical JSONL in Conversation while Terminal, claude.ai, and mobile remain
-views of that same process. `off` keeps the interactive session local. The
-explicit Rich `--print` runtime remains available for headless automation and
-disables Remote Control because it is a separate non-interactive process.
-Sessions never rewrites Claude's files.
+typed rather than free-form startup commands. New Claude sessions default to
+the native interactive CLI, but Remote Control stays explicitly off until the
+user chooses it in first-run onboarding or Settings. A legacy `on` value and a
+per-session override cannot count as consent. Once enabled, Sessions renders
+the provider's canonical JSONL in Conversation while Terminal, claude.ai, and
+mobile remain views of that same process. The explicit Rich `--print` runtime
+remains available for headless automation and disables Remote Control because
+it is a separate non-interactive process. Sessions never rewrites Claude's
+files.
 The Somewhere resolver recognizes the canonical HTTP registration or local
 `somewhere mcp` adapter, avoids an equivalent duplicate, and fails on a
 same-name/different-target conflict without copying a token into runner state.

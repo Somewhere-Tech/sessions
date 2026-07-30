@@ -532,8 +532,8 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
             </div>
             {tool === 'claude-code' ? (
               <div className="launcher-claude-runtime-summary">
-                <span><strong>Conversation + Terminal</strong><em>Remote Control</em></span>
-                <small>Sessions opens Claude’s native interactive session. Conversation is the main view; Terminal, claude.ai, and mobile stay connected to that same session.</small>
+                <span><strong>Conversation + Terminal</strong><em>Native Claude</em></span>
+                <small>Sessions opens Claude’s native interactive session. Remote Control follows the explicit choice for this machine in Settings.</small>
               </div>
             ) : tool === 'codex' ? (
                 <div className="field launcher-runtime-field">
@@ -709,18 +709,13 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                       <option value="dontAsk">Don’t ask</option>
                       <option value="bypassPermissions">Bypass permissions</option>
                     </select></label>
-                    <label><span>Remote Control</span><select value={claudeOptions.remoteControl ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, remoteControl: event.currentTarget.value as ClaudeSessionOptions['remoteControl'] }))}>
-                      <option value="">Use Settings</option><option value="inherit">Claude default</option><option value="on">On</option><option value="off">Off</option>
-                    </select><small>On connects this same local Claude session to claude.ai and mobile. Off keeps it local to Sessions and Terminal.</small></label>
                     <label><span>Use Chrome</span><select value={claudeOptions.chrome ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, chrome: event.currentTarget.value as ClaudeSessionOptions['chrome'] }))}>
                       <option value="">Use Settings</option><option value="inherit">Claude default</option><option value="on">On</option><option value="off">Off</option>
                     </select></label>
                     <label><span>Somewhere tools</span><select value={claudeOptions.somewhereMcp ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, somewhereMcp: event.currentTarget.value as ClaudeSessionOptions['somewhereMcp'] }))}>
                       <option value="">Use Settings</option><option value="inherit">Use Claude configuration</option><option value="ensure">Make available</option>
                     </select></label>
-                    {claudeOptions.remoteControl === 'on' ? (
-                      <label className="is-wide"><span>Remote Control name</span><input value={claudeOptions.remoteControlNamePrefix ?? ''} maxLength={64} placeholder="Optional prefix" onChange={(event) => setClaudeOptions((current) => ({ ...current, remoteControlNamePrefix: event.currentTarget.value }))} /></label>
-                    ) : null}
+                    <div className="launcher-claude-option-note"><strong>Remote Control</strong><small>Uses this machine’s consent choice from Settings. A session cannot turn it on by itself.</small></div>
                   </div>
                 </details>
               ) : null}
