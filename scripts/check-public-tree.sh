@@ -48,6 +48,7 @@ tracked="$(git ls-files)"
 bad=
 stale=
 unexpected=
+external_design_refs=
 
 allowed_roots="$(cat scripts/public-paths.txt)"
 while IFS= read -r tracked_path; do
@@ -102,6 +103,11 @@ done <<EOF
 $reference_forbidden
 EOF
 
+external_design_refs="$(git grep -n -i -E \
+  '(^|[^[:alnum:]_])(t3([ -]?code)?|happier|sessions-tmux|spotify)([^[:alnum:]_]|$)' -- \
+  ':!.gitignore' \
+  ':!scripts/check-public-tree.sh' 2>/dev/null || true)"
+
 if [ -n "$bad" ]; then
   printf '%s\n' "private product artifacts are tracked in the public tree:" >&2
   printf '%s' "$bad" | sort -u >&2
@@ -117,6 +123,12 @@ fi
 if [ -n "$stale" ]; then
   printf '%s\n' "public files still refer to private product artifacts:" >&2
   printf '%s' "$stale" | sort -u >&2
+  exit 1
+fi
+
+if [ -n "$external_design_refs" ]; then
+  printf '%s\n' "public files still refer to external product-design sources:" >&2
+  printf '%s\n' "$external_design_refs" >&2
   exit 1
 fi
 

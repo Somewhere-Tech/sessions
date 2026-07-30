@@ -12,7 +12,9 @@ export function readInitialSessionView(sessionId: string): SessionViewMode {
       return oneShot;
     }
     const saved = window.localStorage.getItem(GLOBAL_VIEW_KEY);
-    if (saved === 'terminal' || saved === 'remote') return saved;
+    // Conversation is the durable default. Terminal is an escape hatch and
+    // should not make every subsequently opened provider session start raw.
+    if (saved === 'terminal' || saved === 'remote') return 'remote';
     if (saved === 'details' || saved === 'reflowed' || saved === 'sessions' || saved === 'split') {
       return 'remote';
     }
@@ -24,7 +26,7 @@ export function readInitialSessionView(sessionId: string): SessionViewMode {
 
 export function writeSessionView(mode: SessionViewMode): void {
   try {
-    window.localStorage.setItem(GLOBAL_VIEW_KEY, mode);
+    window.localStorage.setItem(GLOBAL_VIEW_KEY, mode === 'terminal' ? 'remote' : mode);
   } catch {
     // Storage is optional.
   }

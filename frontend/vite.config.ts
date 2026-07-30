@@ -55,8 +55,8 @@ export default defineConfig({
   plugins: [react(), injectServiceWorkerBuildHash()],
   server: {
     host: VITE_HOST,
-    // 5273 (not 5173) so sessions can run alongside sessions-tmux,
-    // which is still on the default :5173 until Phase 5.
+    // Use a non-default port so Sessions can coexist with other local
+    // development servers.
     port: Number(process.env.VITE_PORT ?? 5273),
     strictPort: false,
     proxy: {

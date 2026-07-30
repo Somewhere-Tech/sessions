@@ -60,6 +60,26 @@ const fixtures = [
     expectIncludes: ['vscode://file/Users/test/proj/src/foo.ts:42']
   },
   {
+    name: 'paths in fenced code stay copy-clean',
+    md: '```text\nsrc/foo.ts:42\n```',
+    cwd: '/Users/test/proj',
+    expectIncludes: ['src/foo.ts:42'],
+    expectExcludes: ['vscode://file/Users/test/proj/src/foo.ts:42']
+  },
+  {
+    name: 'URL-shaped prose is not treated as a local file',
+    md: 'See example.com/index.html for the public page.',
+    cwd: '/Users/test/proj',
+    expectIncludes: ['example.com/index.html'],
+    expectExcludes: ['vscode://file/Users/test/proj/example.com/index.html']
+  },
+  {
+    name: 'dot-directory paths remain clickable',
+    md: 'Update `.github/workflows/ci.yml` before release.',
+    cwd: '/Users/test/proj',
+    expectIncludes: ['vscode://file/Users/test/proj/.github/workflows/ci.yml']
+  },
+  {
     name: 'ANSI colors survive into HTML spans',
     md: '\x1b[38;2;110;255;140mgreen text\x1b[0m next',
     // anser inline-styles for truecolor.

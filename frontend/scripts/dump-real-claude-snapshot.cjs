@@ -7,8 +7,8 @@
 //   3. The parser's output (Block[] types) for that snapshot
 //
 // This is the gap-finder: if the parser produces 0 blocks against a real
-// Claude session, the input format from xterm-headless differs from what
-// the sessions-tmux parser was written for (tmux capture-pane -p -e -J).
+// Claude session, the xterm-headless input format differs from the captured
+// terminal snapshots used to build the parser.
 
 const path = require('node:path');
 const fs = require('node:fs');

@@ -46,6 +46,7 @@ interface UseTerminalResult {
   // instead of parsing a TUI snapshot. The wire retains its historical
   // claudeEvent naming until the next protocol-version bump.
   claudeEvents: ClaudeSessionEvent[];
+  historyPending: boolean;
   hasEarlierClaudeEvents: boolean;
   loadingEarlierClaudeEvents: boolean;
   loadEarlierClaudeEventsRef: { current: () => void };
@@ -60,7 +61,7 @@ const CLAUDE_EVENT_PAGE = 300;
 const CLAUDE_EVENT_HELD_CAP = 1200;
 
 // Connection model: every session in this window shares ONE multiplexed
-// WebSocket (lib/wsMux) — frames are sessionId-tagged, tmux-style. This
+// WebSocket (lib/wsMux) with sessionId-tagged frames. This
 // hook attaches its session to that shared socket and receives exactly
 // the ServerMsg stream it used to read off a private socket. With 50+
 // sessions mounted, the old one-socket-per-session shape meant reconnect
@@ -83,6 +84,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
   const [exitInfo, setExitInfo] = useState<{ code: number | null; signal: string | null } | null>(null);
   const [resumedFromSeq, setResumedFromSeq] = useState<number | null>(null);
   const [claudeEvents, setClaudeEvents] = useState<ClaudeSessionEvent[]>([]);
+  const [historyPending, setHistoryPending] = useState(true);
   const [hasEarlierClaudeEvents, setHasEarlierClaudeEvents] = useState(false);
   const [loadingEarlierClaudeEvents, setLoadingEarlierClaudeEvents] = useState(false);
   const containerElRef = useRef<HTMLDivElement | null>(null);
@@ -280,6 +282,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         claudeEventsSeen = nextIndex;
         pendingClaudeEvents.length = 0;
         setClaudeEvents(kept);
+        setHistoryPending(false);
         updateEarlierAvailability();
       };
 
@@ -426,6 +429,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
             updateEarlierAvailability();
           }
           claudeEventsSeen = replayStart;
+          if (msg.claudeEventsCount === 0) setHistoryPending(false);
           if (term) {
             // First chance to fit the terminal to the visible container.
             requestAnimationFrame(() => {
@@ -522,6 +526,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
                 const merged = [...prev, ...batch];
                 return overflow > 0 ? merged.slice(overflow) : merged;
               });
+              setHistoryPending(false);
               updateEarlierAvailability();
             });
           }
@@ -614,6 +619,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
 
       const attachNow = async (active: boolean): Promise<void> => {
         if (disposed) return;
+        if (active) setHistoryPending(true);
         channel?.detach();
         channel = null;
         const tailPromise = active ? loadClaudeTail() : Promise.resolve(false);
@@ -681,6 +687,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
     focusTerminalRef,
     fitTerminalRef,
     claudeEvents,
+    historyPending,
     hasEarlierClaudeEvents,
     loadingEarlierClaudeEvents,
     loadEarlierClaudeEventsRef

@@ -17,6 +17,7 @@ import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMo
 import { SessionPopOutButton } from './SessionPopOutButton';
 import { MachineMark } from './MachineMark';
 import { readInitialSessionView, writeSessionView, type SessionViewMode } from '../lib/sessionViewPreference';
+import { LoadingShell } from './LoadingShell';
 
 import type { ActiveStatus } from '../App';
 
@@ -31,6 +32,7 @@ interface Props {
   onCloseView?: (sessionId: string) => void;
   onOpenSession?: (sessionId: string) => void;
   onBack?: () => void;
+  preferFullTerminal?: boolean;
 }
 
 // View modes:
@@ -62,9 +64,10 @@ let terminalNoticeShownThisLaunch = false;
 // unchanged session's view skips the poll entirely. Props are all stable
 // per session (sessionId; onStatusChange is setActiveStatus for the active
 // tab and undefined otherwise; isActive flips only on switch).
-function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onCloseView, onBack }: Props): JSX.Element {
+function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onCloseView, onBack, preferFullTerminal = false }: Props): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>(() => readInitialSessionView(sessionId));
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [terminalExpanded, setTerminalExpanded] = useState(false);
   const sessionViewRef = useRef<HTMLDivElement>(null);
   const terminalModePillRef = useRef<HTMLSpanElement>(null);
   const session = useSessions((s) => s.sessions.find((x) => x.id === sessionId)) ?? null;
@@ -93,6 +96,13 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   const terminalBackedAgent = Boolean(
     session
     && session.tool !== 'terminal'
+    && !richSession
+  );
+  const terminalDrawerOpen = Boolean(
+    supportsConversation
+    && effectiveView === 'terminal'
+    && !onBack
+    && !preferFullTerminal
     && !richSession
   );
   const terminalWarningKey = session ? `sessions:terminal-runtime-warning:${session.tool}` : '';
@@ -280,9 +290,12 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   // (it was display:none a frame ago) so focus() actually takes.
   useEffect(() => {
     if (!isActive || effectiveView !== 'terminal' || !hasMountedTerminal) return;
-    const id = requestAnimationFrame(() => focusTerminal());
+    const id = requestAnimationFrame(() => {
+      term.fitTerminalRef.current();
+      focusTerminal();
+    });
     return () => cancelAnimationFrame(id);
-  }, [isActive, effectiveView, hasMountedTerminal, focusTerminal]);
+  }, [isActive, effectiveView, hasMountedTerminal, focusTerminal, term.fitTerminalRef, terminalExpanded]);
 
   // Auto-switch to Terminal when Claude's TUI shows a numbered-choice
   // picker. The picker needs arrow-keys + Enter to interact, which the
@@ -349,7 +362,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   ]);
 
   return (
-    <div ref={sessionViewRef} className={`session-view view-${effectiveView}${detailsOpen ? ' view-details' : ''}${session?.continuedFromHistoryId ? ' has-continuation' : ''}`}>
+    <div ref={sessionViewRef} className={`session-view view-${effectiveView}${terminalDrawerOpen ? ' has-terminal-drawer' : ''}${terminalDrawerOpen && terminalExpanded ? ' terminal-drawer-expanded' : ''}${detailsOpen ? ' view-details' : ''}${session?.continuedFromHistoryId ? ' has-continuation' : ''}`}>
       <header className="session-active-header">
         {onBack ? <button type="button" className="mobile-session-back" onClick={onBack} aria-label="Back to sessions">‹</button> : null}
         <div className="session-active-copy">
@@ -402,19 +415,50 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
         </div>
         <div className="session-active-actions">
           {session ? <SessionPopOutButton sessionId={session.id} label={customLabel ?? sessionLabel(session)} /> : null}
-          {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(sessionId)} title="Close this view. The agent keeps running.">Close view</button> : null}
+          {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(sessionId)} title="Close this tab. The agent keeps running and remains in Live.">Close tab</button> : null}
         </div>
       </header>
 
       <div className="session-toolbar">
-        <div className="view-toggle is-content-switch" role="tablist" aria-label="Conversation or terminal">
+        <div className="view-toggle is-content-switch" aria-label="Conversation and terminal">
           {supportsConversation ? (
-            <button type="button" className={`view-toggle-btn${effectiveView === 'remote' ? ' is-active' : ''}`} onClick={() => setViewMode('remote')} title="Structured conversation, activity, plans, and usage">Conversation</button>
+            <button type="button" className="view-toggle-btn is-active" onClick={() => setViewMode('remote')} title="Structured conversation, activity, plans, and usage">Conversation</button>
           ) : null}
-          <button type="button" className={`view-toggle-btn${effectiveView === 'terminal' ? ' is-active' : ''}`} onClick={() => setViewMode('terminal')}>Terminal</button>
+          <button
+            type="button"
+            className={`view-toggle-btn terminal-drawer-toggle${effectiveView === 'terminal' ? ' is-active' : ''}`}
+            onClick={() => {
+              if (effectiveView === 'terminal' && supportsConversation) {
+                setTerminalExpanded(false);
+                setViewMode('remote');
+              } else {
+                setViewMode('terminal');
+              }
+            }}
+            aria-expanded={terminalDrawerOpen}
+            aria-controls={`terminal-pane-${sessionId}`}
+            disabled={richSession}
+            title={richSession ? 'Rich sessions do not have a terminal stream' : supportsConversation ? 'Show the exact provider terminal' : 'Terminal'}
+          >
+            {richSession ? 'No terminal' : effectiveView === 'terminal' && supportsConversation ? 'Hide terminal' : 'Terminal'}
+          </button>
         </div>
         {term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Reconnecting…' : 'Conversation stream unavailable'}</span> : null}
-        {session ? <button type="button" className={`details-inspector-button${detailsOpen ? ' is-active' : ''}`} onClick={() => setDetailsOpen((current) => !current)}>{detailsOpen ? 'Close details' : 'Details'}</button> : null}
+        {session ? (
+          <button
+            type="button"
+            className={`details-inspector-button${detailsOpen ? ' is-active' : ''}`}
+            onClick={() => {
+              if (!detailsOpen && supportsConversation) {
+                setTerminalExpanded(false);
+                setViewMode('remote');
+              }
+              setDetailsOpen((current) => !current);
+            }}
+          >
+            {detailsOpen ? 'Close details' : 'Details'}
+          </button>
+        ) : null}
         {pickerNotice ? (
           <span className="status-picker-notice" aria-live="polite">
             Switched to Terminal for picker — your draft is preserved in Sessions view
@@ -438,7 +482,23 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           stay alive while the user is reading Remote view. CSS hides
           whichever pane the active view-mode doesn't want. */}
       <div className="session-body">
-        <div className="session-terminal-pane" onPointerDown={focusTerminal}>
+        <div id={`terminal-pane-${sessionId}`} className="session-terminal-pane" onPointerDown={focusTerminal}>
+          {terminalDrawerOpen ? (
+            <header className="terminal-drawer-header">
+              <span><strong>Terminal</strong>Exact provider view</span>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setTerminalExpanded((current) => !current)}
+                  aria-label={terminalExpanded ? 'Restore terminal drawer size' : 'Expand terminal drawer'}
+                  title={terminalExpanded ? 'Restore drawer size' : 'Expand terminal'}
+                >
+                  {terminalExpanded ? '↙' : '↗'}
+                </button>
+                <button type="button" onClick={() => { setTerminalExpanded(false); setViewMode('remote'); }} aria-label="Close terminal drawer">×</button>
+              </div>
+            </header>
+          ) : null}
           {richSession ? (
             <div className="rich-terminal-empty">
               <span>Rich session</span>
@@ -468,6 +528,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           <RemoteView
             sessionId={sessionId}
             events={term.claudeEvents}
+            historyPending={term.historyPending}
             send={sendInput}
             connected={term.status === 'open'}
             hasEarlierClaudeEvents={term.hasEarlierClaudeEvents}
@@ -493,6 +554,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
 
 function SessionViewRouter(props: Props): JSX.Element {
   const session = useSessions((state) => state.sessions.find((item) => item.id === props.sessionId)) ?? null;
+  const hydrated = useSessions((state) => state.hydrated);
   useEffect(() => {
     if (!session?.exited || !props.onStatusChange) return;
     props.onStatusChange({
@@ -502,7 +564,18 @@ function SessionViewRouter(props: Props): JSX.Element {
       terminalStatus: 'closed'
     });
   }, [props.onStatusChange, session?.exited, session?.tool]);
-  if (session?.exited) return <SessionHistoryView session={session} onResume={props.onResume} onCloseView={props.onCloseView} onOpenSession={props.onOpenSession} onBack={props.onBack} />;
+  if (!session && !hydrated) return <LoadingShell label="Loading this session" />;
+  if (!session) {
+    return (
+      <div className="session-missing-shell" role="status">
+        <span>Session unavailable</span>
+        <h2>This session is no longer on this machine</h2>
+        <p>It may have been archived, moved, or removed since this view opened.</p>
+        {props.onBack ? <button type="button" className="btn btn-secondary" onClick={props.onBack}>Back to Sessions</button> : null}
+      </div>
+    );
+  }
+  if (session.exited) return <SessionHistoryView session={session} onResume={props.onResume} onCloseView={props.onCloseView} onOpenSession={props.onOpenSession} onBack={props.onBack} />;
   return <SessionViewInner {...props} />;
 }
 

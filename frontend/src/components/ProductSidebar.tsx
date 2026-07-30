@@ -17,6 +17,7 @@ interface Props {
   theme: ThemeMode;
   onNavigate: (view: ProductView) => void;
   onNewSession: () => void;
+  onOpenCommandPalette: () => void;
   onToggleTheme: () => void;
 }
 
@@ -35,7 +36,7 @@ const UPDATE_NOTIFIED_KEY = 'sessions:native-update-notified-version';
 const PROVIDER_UPDATE_NOTIFIED_KEY = 'sessions:provider-update-notified:';
 const UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000;
 
-export function ProductSidebar({ active, theme, onNavigate, onNewSession, onToggleTheme }: Props): JSX.Element {
+export function ProductSidebar({ active, theme, onNavigate, onNewSession, onOpenCommandPalette, onToggleTheme }: Props): JSX.Element {
   const [updateInfo, setUpdateInfo] = useState<NativeUpdateInfo | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
@@ -128,6 +129,12 @@ export function ProductSidebar({ active, theme, onNavigate, onNewSession, onTogg
 
       <button type="button" className="product-new-session" onClick={onNewSession}>
         <span aria-hidden>＋</span><span>New Session</span>
+      </button>
+
+      <button type="button" className="product-command-button" onClick={onOpenCommandPalette}>
+        <SearchIcon />
+        <span>Find or run…</span>
+        <kbd>⌘K</kbd>
       </button>
 
       <nav className="product-nav" aria-label="Sessions">

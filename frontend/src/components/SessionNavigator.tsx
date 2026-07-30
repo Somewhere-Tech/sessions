@@ -12,6 +12,7 @@ import {
 import { effectiveParentId, groupWorkingSet, isSetAside } from '../lib/workingSet';
 import { useSessions } from '../store/sessions';
 import { MachineMark } from './MachineMark';
+import { ContinueElsewhereButton } from './ContinueElsewhereButton';
 
 type PrimaryFilter = 'all' | 'needs' | 'working' | 'aside' | 'ended';
 type ProviderFilter = 'all' | 'claude' | 'codex' | 'shell';
@@ -66,7 +67,7 @@ interface Props {
   onOpen: (id: string) => void;
   onNew: () => void;
   onContinue: () => void;
-  onResumeSession: (session: SessionInfo) => void;
+  onResumeSession: (session: SessionInfo, destinationProvider?: 'claude' | 'codex') => void;
   onStartLinked: (sessionId: string) => void;
   openSessionIds: string[];
   onCloseView: (id: string) => void;
@@ -138,6 +139,31 @@ export function SessionNavigator({
     if (searching || primary === 'ended') setEndedOpen(true);
     if (primary === 'aside') setSetAsideOpen(true);
   }, [primary, query]);
+  useEffect(() => {
+    if (!actionMenuId) return;
+    const dismiss = (event: MouseEvent): void => {
+      const target = event.target;
+      const element = target instanceof Element
+        ? target
+        : target instanceof Node
+          ? target.parentElement
+          : null;
+      if (element?.closest(`[data-session-actions="${actionMenuId}"]`)) return;
+      setActionMenuId(null);
+    };
+    const dismissOnEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const summary = document.querySelector<HTMLElement>(`[data-session-actions="${actionMenuId}"] > summary`);
+      setActionMenuId(null);
+      summary?.focus();
+    };
+    document.addEventListener('click', dismiss);
+    document.addEventListener('keydown', dismissOnEscape);
+    return () => {
+      document.removeEventListener('click', dismiss);
+      document.removeEventListener('keydown', dismissOnEscape);
+    };
+  }, [actionMenuId]);
   const children = useMemo(() => {
     const byParent = new Map<string, SessionInfo[]>();
     for (const session of sessions) {
@@ -374,6 +400,12 @@ export function SessionNavigator({
     const status = session.exited ? 'finished' : degraded ? 'limited' : session.working ? 'running' : needsYou(session) ? 'needs' : 'idle';
     const end = session.exited ? endedSummary(session, sessions) : null;
     const currentParentID = effectiveParentId(session);
+    const otherProvider = session.tool === 'claude-code'
+      ? 'codex'
+      : session.tool === 'codex'
+        ? 'claude'
+        : null;
+    const otherProviderLabel = otherProvider === 'codex' ? 'Codex' : 'Claude';
     const parent = currentParentID ? sessions.find((candidate) => candidate.id === currentParentID) : null;
     const resumedFrom = session.resumedFrom ? sessions.find((candidate) => candidate.id === session.resumedFrom) : null;
     const hasChildren = visible.length > 0 || completed.length > 0;
@@ -445,6 +477,7 @@ export function SessionNavigator({
           {!selectingEnded ? (
             <details
               className="session-row-actions"
+              data-session-actions={session.id}
               open={actionMenuId === session.id}
               onToggle={(event) => {
                 if (event.currentTarget.open) setActionMenuId(session.id);
@@ -454,13 +487,33 @@ export function SessionNavigator({
             >
               <summary aria-label={`Actions for ${label}`} title="Session actions">•••</summary>
               <div className={`session-row-action-menu${session.exited ? ' opens-up' : ''}`} role="menu">
-                <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.id); }}>{session.exited ? 'View history' : 'Open'}</button>
-                {openSessionIds.includes(session.id) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onCloseView(session.id); }}>Close view <small>keeps running</small></button> : null}
-                {end && canContinueSession(session) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onResumeSession(session); }}>Resume <small>new runtime</small></button> : null}
+                <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.id); }}>{session.exited ? 'View history' : 'Open in tab'}</button>
+                {openSessionIds.includes(session.id) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onCloseView(session.id); }}>Close tab <small>stays in Live</small></button> : null}
+                {end && canContinueSession(session) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onResumeSession(session); }}>Continue conversation…</button> : null}
+                {end && canContinueSession(session) && otherProvider ? (
+                  <button type="button" role="menuitem" onClick={() => {
+                    setActionMenuId(null);
+                    onResumeSession(session, otherProvider);
+                  }}>Continue with {otherProviderLabel}…</button>
+                ) : null}
+                {end && canContinueSession(session) ? (
+                  <ContinueElsewhereButton
+                    sessionId={session.id}
+                    label={label}
+                    appearance="menuitem"
+                    onOpen={() => setActionMenuId(null)}
+                  />
+                ) : null}
+                {!session.exited && otherProvider ? (
+                  <>
+                    <button type="button" role="menuitem" aria-disabled="true">Continue with {otherProviderLabel}… <small>end first</small></button>
+                    <button type="button" role="menuitem" aria-disabled="true">Continue on another machine… <small>end first</small></button>
+                  </>
+                ) : null}
                 {session.reopenedAs ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.reopenedAs!); }}>Open resumed runtime</button> : null}
                 {session.resumedFrom ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.resumedFrom!); }}>View previous runtime</button> : null}
-                <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onStartLinked(session.id); }}>Start a linked session…</button>
-                <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); setMovePickerId(session.id); }}>Move under…</button>
+                <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onStartLinked(session.id); }}>Start child session…</button>
+                <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); setMovePickerId(session.id); }}>Group under…</button>
                 {currentParentID ? <button type="button" role="menuitem" onClick={() => void moveSession(session.id, null)}>Make top-level</button> : null}
                 {!currentParentID ? <button type="button" role="menuitem" disabled={!pins.includes(session.id) && pins.length >= 5} onClick={() => { togglePin(session.id); setActionMenuId(null); }}>{pins.includes(session.id) ? 'Unpin manager' : 'Pin manager'}</button> : null}
                 {session.exited ? (
@@ -472,7 +525,7 @@ export function SessionNavigator({
                   <>
                     {isSetAside(session)
                       ? <button type="button" role="menuitem" onClick={() => void changeSetAside(session, false)}>Bring back <small>show in Live</small></button>
-                      : <button type="button" role="menuitem" onClick={() => void changeSetAside(session, true)}>Set aside {openSessionIds.includes(session.id) ? <small>closes this tab</small> : null}</button>}
+                      : <button type="button" role="menuitem" onClick={() => void changeSetAside(session, true)}>Set aside for later <small>keeps running</small></button>}
                     <button type="button" role="menuitem" disabled={endingId !== null} onClick={() => void requestEndSession(session)}>{endingId === session.id ? 'Ending…' : 'End session…'}</button>
                   </>
                 )}

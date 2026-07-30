@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
 
-// Reactive media-query hook. Same shape as @react-hook/media-query and
-// sessions-tmux's hook. Returns the live match state and re-renders when
-// the query starts/stops matching (window resize, orientation change,
-// dark-mode toggle, etc.).
+// Reactive media-query hook. Returns the live match state and re-renders
+// when the query starts or stops matching (window resize, orientation
+// change, dark-mode toggle, etc.).
 //
 // The CSS-only @media path still owns visual layout — this is for
 // JS-side branching (e.g. mounting different components, sending

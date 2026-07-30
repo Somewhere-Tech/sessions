@@ -18,6 +18,7 @@ import type { ClaudeSessionOptions, DirectoryCandidate, SessionInfo } from '../t
 import { getActiveServer, isLocalServer, useServers } from '../lib/servers';
 import { sessionLabel } from '../lib/tabLabels';
 import { ProviderMark } from './ProviderBadge';
+import { CLAUDE_MODEL_OPTIONS, ModelPicker, type ModelPickerOption } from './ModelPicker';
 
 interface ToolDef {
   id: NewSessionTool;
@@ -57,12 +58,6 @@ const TOOLS: ToolDef[] = [
   { id: 'codex', name: 'Codex', description: 'Code-focused planning and implementation.' },
   { id: 'shell', name: 'Shell', description: 'Commands without an AI agent.' }
 ];
-
-const CLAUDE_MODELS = [
-  { id: 'opus', name: 'Opus' },
-  { id: 'sonnet', name: 'Sonnet' },
-  { id: 'haiku', name: 'Haiku' }
-] as const;
 
 function workspaceKind(kind: DirectoryCandidate['kind']): string {
   if (kind === 'project') return 'Recent project';
@@ -234,6 +229,15 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdWithDeliveryError, setCreatedWithDeliveryError] = useState<string | null>(null);
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [onClose]);
 
   // Resumable sessions on disk. Loaded once when the dialog opens.
   // Only used now to power the inline "you have prior sessions here"
@@ -373,6 +377,16 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   );
   const selectedCodexModel = codexModels.find((model) => model.id === codexModel)
     ?? codexModels.find((model) => model.isDefault);
+  const modelOptions: ModelPickerOption[] = tool === 'claude-code'
+    ? CLAUDE_MODEL_OPTIONS
+    : codexModels.map((model) => ({
+        id: model.id,
+        label: model.displayName || model.id,
+        description: model.isDefault
+          ? `Default · ${model.defaultReasoningEffort || 'provider effort'}`
+          : model.id,
+        isDefault: model.isDefault
+      }));
   const effortChoices = tool === 'claude-code'
     ? ['low', 'medium', 'high', 'xhigh', 'max']
     : selectedCodexModel?.supportedReasoningEfforts.map((option) => option.reasoningEffort) ?? [];
@@ -458,8 +472,29 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   };
 
   const showSkipPerms = tool === 'codex';
-
   const isDelegate = parentSession !== null;
+  const selectedTool = TOOLS.find((item) => item.id === tool) ?? TOOLS[0];
+  const selectedModel = tool === 'claude-code' ? (claudeOptions.model ?? '') : codexModel;
+  const selectedEffort = tool === 'claude-code' ? (claudeOptions.effort ?? '') : codexEffort;
+  const selectModel = (nextModel: string): void => {
+    if (tool === 'claude-code') {
+      setClaudeOptions((current) => ({ ...current, model: nextModel }));
+      return;
+    }
+    setCodexModel(nextModel);
+    const option = codexModels.find((model) => model.id === nextModel)
+      ?? codexModels.find((model) => model.isDefault);
+    if (codexEffort && !option?.supportedReasoningEfforts.some((effort) => effort.reasoningEffort === codexEffort)) {
+      setCodexEffort('');
+    }
+  };
+  const selectEffort = (nextEffort: string): void => {
+    if (tool === 'claude-code') {
+      setClaudeOptions((current) => ({ ...current, effort: nextEffort as ClaudeSessionOptions['effort'] }));
+      return;
+    }
+    setCodexEffort(nextEffort);
+  };
 
   return (
     <div className="dialog-backdrop" onClick={onClose}>
@@ -493,7 +528,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
               ))}
             </div>
             {tool !== 'shell' ? (
-              <>
                 <div className="field launcher-runtime-field">
                   <span className="field-label">How should it run?</span>
                   <div className="runtime-mode-selector" role="radiogroup" aria-label="Agent runtime experience">
@@ -512,55 +546,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                     </button>
                   </div>
                 </div>
-                <div className="launcher-model-wrap">
-                  <div className="launcher-model-controls" aria-label={`${tool === 'claude-code' ? 'Claude' : 'Codex'} model and effort`}>
-                    <label>
-                      <span>Model</span>
-                      <select
-                        value={tool === 'claude-code' ? (claudeOptions.model ?? '') : codexModel}
-                        onChange={(event) => {
-                          const nextModel = event.currentTarget.value;
-                          if (tool === 'claude-code') {
-                            setClaudeOptions((current) => ({ ...current, model: nextModel }));
-                          } else {
-                            setCodexModel(nextModel);
-                            const option = codexModels.find((model) => model.id === nextModel)
-                              ?? codexModels.find((model) => model.isDefault);
-                            if (codexEffort && !option?.supportedReasoningEfforts.some((effort) => effort.reasoningEffort === codexEffort)) {
-                              setCodexEffort('');
-                            }
-                          }
-                        }}
-                      >
-                        <option value="">Default</option>
-                        {tool === 'claude-code'
-                          ? CLAUDE_MODELS.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)
-                          : codexModels.map((model) => <option key={model.id} value={model.id}>{model.displayName || model.id}</option>)}
-                      </select>
-                    </label>
-                    <label>
-                      <span>Effort</span>
-                      <select
-                        value={tool === 'claude-code' ? (claudeOptions.effort ?? '') : codexEffort}
-                        onChange={(event) => {
-                          if (tool === 'claude-code') setClaudeOptions((current) => ({ ...current, effort: event.currentTarget.value as ClaudeSessionOptions['effort'] }));
-                          else setCodexEffort(event.currentTarget.value);
-                        }}
-                      >
-                        <option value="">Default</option>
-                        {effortChoices.map((effort) => <option key={effort} value={effort}>{effortLabel(effort)}</option>)}
-                      </select>
-                    </label>
-                  </div>
-                  <span className="field-help">
-                    {tool === 'codex' && codexModelsLoading
-                      ? 'Loading the models available in your Codex account…'
-                      : tool === 'codex' && codexModelsError
-                        ? 'The live Codex model list is unavailable. Default will use your current Codex setting.'
-                        : `Default uses your ${tool === 'claude-code' ? 'Claude' : 'Codex'} settings. You can change model and effort later.`}
-                  </span>
-                </div>
-              </>
             ) : null}
           </section>
           {isDelegate ? (
@@ -614,10 +599,44 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
               {cwd === homeWorkspace ? <span className="field-help">Choosing a project folder avoids macOS prompts for unrelated protected folders such as Music and cloud drives.</span> : null}
             </section>
           ) : null}
-          <div className="field launcher-task-field">
+          <div className="field launcher-task-field launcher-composer">
             <span className="field-label">{isDelegate ? 'Task for this linked session' : 'First message'} <span className="field-optional">optional</span></span>
-            <textarea value={task} onChange={(event) => setTask(event.currentTarget.value)} placeholder={isDelegate ? 'What should this linked session work on?' : 'Describe a task, ask a question, or leave blank to start…'} rows={3} />
-            <span className="field-help">{requiresProviderLogin ? 'A new account must finish login first. This request will stay here for copying; Sessions will not queue or paste it into the login flow.' : isDelegate ? `Starts in ${parentSession?.cwd} and stays grouped under ${parentSession ? sessionLabel(parentSession) : 'the current session'}.` : 'If you leave this blank, the session opens ready for your first message.'}</span>
+            <textarea value={task} onChange={(event) => setTask(event.currentTarget.value)} placeholder={isDelegate ? 'What should this linked session work on?' : 'Describe a task, ask a question, or leave blank to start…'} rows={5} />
+            <div className="launcher-composer-footer">
+              <div className="launcher-composer-context" aria-label="New session configuration">
+                <span className="launcher-context-chip" title={`Agent: ${selectedTool.name}`}><AgentMark tool={tool} />{selectedTool.name}</span>
+                <span className="launcher-context-chip" title={`Machine: ${selectedMachine?.name ?? 'This computer'}`}><span className="launcher-machine-icon" aria-hidden />{selectedMachine?.isDefault && isLocalServer(selectedMachine) ? 'This computer' : selectedMachine?.name ?? 'Machine'}</span>
+                <span className="launcher-context-chip is-folder" title={cwd}>⌑ {cwd.split('/').filter(Boolean).pop() || 'Choose folder'}</span>
+                {tool !== 'shell' ? (
+                  <>
+                    <ModelPicker
+                      provider={tool === 'claude-code' ? 'claude' : 'codex'}
+                      value={selectedModel}
+                      options={modelOptions}
+                      loading={tool === 'codex' && codexModelsLoading}
+                      error={tool === 'codex' ? codexModelsError : null}
+                      onChange={selectModel}
+                      allowCustom
+                      compact
+                    />
+                    <label className="launcher-effort-chip">
+                      <span className="sr-only">Effort</span>
+                      <select value={selectedEffort} onChange={(event) => selectEffort(event.currentTarget.value)} aria-label="Reasoning effort">
+                        <option value="">Default effort</option>
+                        {effortChoices.map((effort) => <option key={effort} value={effort}>{effortLabel(effort)}</option>)}
+                      </select>
+                    </label>
+                  </>
+                ) : null}
+              </div>
+              <div className="launcher-composer-actions">
+                <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+                <button type={createdWithDeliveryError ? 'button' : 'submit'} className="btn btn-primary launcher-composer-start" disabled={!createdWithDeliveryError && (busy || !cwd.trim() || !profileValid)} onClick={createdWithDeliveryError ? onClose : undefined}>
+                  {createdWithDeliveryError ? 'View session' : busy ? 'Starting…' : 'Start session'}
+                </button>
+              </div>
+            </div>
+            <span className="field-help">{requiresProviderLogin ? 'A new account must finish login first. This request will stay here for copying; Sessions will not queue or paste it into the login flow.' : isDelegate ? `Starts in ${parentSession?.cwd} and stays grouped under ${parentSession ? sessionLabel(parentSession) : 'the current session'}.` : 'Leave this blank to open an empty conversation. You can change the model and effort later.'}</span>
           </div>
           <details className="launcher-advanced">
             <summary><strong>Advanced</strong><span>Accounts, isolation, and integrations</span></summary>
@@ -757,12 +776,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
             )
           ) : null}
           {error ? <div className="dialog-error">{error}</div> : null}
-          <div className="dialog-actions">
-            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
-            <button type={createdWithDeliveryError ? 'button' : 'submit'} className="btn btn-primary" disabled={!createdWithDeliveryError && (busy || !cwd.trim() || !profileValid)} onClick={createdWithDeliveryError ? onClose : undefined}>
-              {createdWithDeliveryError ? 'View session' : busy ? 'Starting…' : 'Start session'}
-            </button>
-          </div>
         </div>
       </form>
     </div>

@@ -16,6 +16,7 @@
     "test:search-conversations": "node scripts/search-conversation-smoke.mjs",
     "test:terminal-renderer": "node scripts/terminal-renderer-smoke.mjs",
     "test:lifecycle-clarity": "node scripts/lifecycle-clarity-smoke.mjs",
+    "test:workspace-ux": "node scripts/workspace-ux-smoke.mjs",
     "test:session-status": "node scripts/session-status-smoke.mjs",
     "test:resume-partial": "node scripts/resume-partial-smoke.mjs",
     "test:working-set": "node scripts/working-set-smoke.mjs",

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   isTauri,
   listNativeMoveMachines,
@@ -10,10 +11,14 @@ import { useSessions } from '../store/sessions';
 
 export function ContinueElsewhereButton({
   sessionId,
-  label
+  label,
+  appearance = 'button',
+  onOpen
 }: {
   sessionId: string;
   label: string;
+  appearance?: 'button' | 'menuitem';
+  onOpen?: () => void;
 }): JSX.Element | null {
   const refresh = useSessions((state) => state.refresh);
   const [open, setOpen] = useState(false);
@@ -74,10 +79,18 @@ export function ContinueElsewhereButton({
 
   return (
     <>
-      <button type="button" className="btn btn-secondary" onClick={() => void show()}>
-        Continue on another machine
+      <button
+        type="button"
+        className={appearance === 'button' ? 'btn btn-secondary' : undefined}
+        role={appearance === 'menuitem' ? 'menuitem' : undefined}
+        onClick={() => {
+          onOpen?.();
+          void show();
+        }}
+      >
+        Continue on another machine{appearance === 'menuitem' ? '…' : ''}
       </button>
-      {open ? (
+      {open ? createPortal((
         <div className="dialog-backdrop continue-elsewhere-backdrop" onMouseDown={(event) => {
           if (event.target === event.currentTarget && !busy) setOpen(false);
         }}>
@@ -153,7 +166,7 @@ export function ContinueElsewhereButton({
             )}
           </section>
         </div>
-      ) : null}
+      ), document.body) : null}
     </>
   );
 }

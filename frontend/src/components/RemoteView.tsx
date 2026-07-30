@@ -13,12 +13,23 @@ import { classifySnapshotComposerState, type SnapshotComposerState } from '../li
 import type { DispatchMessage } from '../hooks/useDispatch';
 import { ProviderMark, type Provider as ProviderIdentity } from './ProviderBadge';
 import { CopyButton } from './CopyButton';
+import { linkifyFilePaths } from '../lib/filePaths';
+
+function renderFileReference(path: string, cwd = ''): string {
+  const escaped = path
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  return linkifyFilePaths(escaped, cwd);
+}
 
 interface Props {
   sessionId: string;
   // Provider-neutral structured history. Claude supplies JSONL records;
   // Codex supplies normalized rollout or app-server notifications.
   events: ClaudeSessionEvent[];
+  historyPending: boolean;
   // Live byte sender — used by InputBar to dispatch the actual
   // keystrokes through the WS, and by retry() in useDispatch.
   send: (data: string) => void;
@@ -56,6 +67,7 @@ interface Props {
 export function RemoteView({
   sessionId,
   events,
+  historyPending,
   send,
   connected,
   hasEarlierClaudeEvents,
@@ -115,6 +127,19 @@ export function RemoteView({
     );
     return [...eventMessages, ...stillPending];
   }, [eventMessages, dispatchMessages]);
+  const changedFiles = useMemo(() => {
+    const files = new Set<string>();
+    for (const message of eventMessages) {
+      for (const call of message.toolCalls ?? []) {
+        if (call.kind !== 'fileChange') continue;
+        for (const row of (call.inputFull ?? '').split('\n')) {
+          const path = row.trim().replace(/^(?:add|added|create|created|delete|deleted|modify|modified|update|updated|rename|renamed)\s+/i, '');
+          if (path) files.add(path);
+        }
+      }
+    }
+    return Array.from(files);
+  }, [eventMessages]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const initialPos = useMemo(
     () => readScrollPosition(sessionId, 'remote'),
@@ -327,12 +352,32 @@ export function RemoteView({
           reset sends
         </button>
       ) : null}
+      {changedFiles.length > 0 ? (
+        <details className="remote-changes-strip">
+          <summary>Changes <span>{changedFiles.length} loaded {changedFiles.length === 1 ? 'file' : 'files'}</span></summary>
+          <div>
+            {changedFiles.map((path) => (
+              <code key={path} dangerouslySetInnerHTML={{ __html: renderFileReference(path, cwd) }} />
+            ))}
+          </div>
+        </details>
+      ) : null}
       <div
         className="remote-scroll"
         ref={scrollRef}
         onScroll={onScroll}
       >
-        {messages.length === 0 ? (
+        {messages.length === 0 && historyPending ? (
+          <div className="remote-history-loading" role="status" aria-busy="true" aria-label="Loading conversation history">
+            <span className="loading-skeleton is-title" />
+            <span className="loading-skeleton is-line" />
+            <span className="loading-skeleton is-line is-medium" />
+            <div>
+              <span className="loading-skeleton is-line" />
+              <span className="loading-skeleton is-line is-short" />
+            </div>
+          </div>
+        ) : messages.length === 0 ? (
           <div className="remote-empty">
             <ProviderMark provider={providerIdentity} size={48} />
             <span>Ready</span>

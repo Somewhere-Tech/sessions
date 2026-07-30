@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSessions } from '../store/sessions';
 import {
   adoptConversation,
@@ -24,6 +24,7 @@ interface Props {
   preferredProviderId?: string;
   preferredSourceSessionId?: string;
   preferredHistoryId?: string;
+  preferredDestinationProvider?: 'claude' | 'codex';
   // Click handler if the user wants to abandon resume and start fresh.
   // App.tsx swaps to the New Session dialog so the user doesn't lose
   // their place if the picker turns out to be empty.
@@ -83,7 +84,13 @@ function extractClaudeSessionId(args: string[]): string | null {
 }
 
 export function ResumeDialog({
-  onClose, onResumed, onStartNew, preferredProviderId, preferredSourceSessionId, preferredHistoryId
+  onClose,
+  onResumed,
+  onStartNew,
+  preferredProviderId,
+  preferredSourceSessionId,
+  preferredHistoryId,
+  preferredDestinationProvider
 }: Props): JSX.Element {
   const refresh = useSessions((s) => s.refresh);
   const openSessions = useSessions((s) => s.sessions);
@@ -98,6 +105,7 @@ export function ResumeDialog({
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<ResumableSession | null>(null);
   const [destinationProvider, setDestinationProvider] = useState<'claude' | 'codex'>('claude');
+  const preferredDestinationApplied = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -189,8 +197,14 @@ export function ResumeDialog({
   }, [available, selected]);
 
   useEffect(() => {
-    if (selected) setDestinationProvider(selected.tool);
-  }, [selected?.sessionId, selected?.tool]);
+    if (!selected) return;
+    if (preferredDestinationProvider && !preferredDestinationApplied.current) {
+      preferredDestinationApplied.current = true;
+      setDestinationProvider(preferredDestinationProvider);
+      return;
+    }
+    if (!preferredDestinationProvider) setDestinationProvider(selected.tool);
+  }, [preferredDestinationProvider, selected?.sessionId, selected?.tool]);
 
   // Flat = newest-first across all folders. Backend already sorts
   // resumable by modifiedAt desc, so we just keep that order.

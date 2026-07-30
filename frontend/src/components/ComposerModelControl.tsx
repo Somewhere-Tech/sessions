@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { listSessionModelOptions, type SessionModelOption } from '../api/sessionsd';
 import type { SessionTool } from '../types';
+import { CLAUDE_MODEL_OPTIONS, ModelPicker, type ModelPickerOption } from './ModelPicker';
 
 interface Props {
   sessionId: string;
@@ -35,7 +36,6 @@ export function ComposerModelControl({
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const modelListId = useId();
 
   useEffect(() => {
     if (open) return;
@@ -85,6 +85,16 @@ export function ComposerModelControl({
   };
 
   const providerName = provider === 'codex' ? 'Codex' : 'Claude';
+  const modelOptions: ModelPickerOption[] = provider === 'claude-code'
+    ? CLAUDE_MODEL_OPTIONS
+    : options.map((option) => ({
+        id: option.id,
+        label: option.displayName || option.id,
+        description: option.isDefault
+          ? `Default · ${option.defaultReasoningEffort || 'provider effort'}`
+          : option.id,
+        isDefault: option.isDefault
+      }));
   return (
     <div className="composer-model-control" ref={rootRef}>
       <button
@@ -110,28 +120,20 @@ export function ComposerModelControl({
             <p>This session uses Terminal compatibility mode or an older runner. Change the model in Terminal, or resume it with the current Rich runtime.</p>
           ) : (
             <>
-              <label>
+              <div className="composer-model-field">
                 <span>Model</span>
-                <input
+                <ModelPicker
+                  provider={provider === 'codex' ? 'codex' : 'claude'}
                   value={draftModel}
-                  onChange={(event) => setDraftModel(event.currentTarget.value)}
-                  list={modelListId}
-                  placeholder={provider === 'codex' ? 'Exact Codex model ID' : 'Claude model or alias'}
-                  maxLength={128}
-                  autoFocus
+                  options={modelOptions}
+                  onChange={setDraftModel}
+                  loading={optionsLoading}
+                  error={optionsError}
+                  includeDefault={false}
+                  allowCustom
+                  compact
                 />
-                <datalist id={modelListId}>
-                  {provider === 'claude-code' ? (
-                    <>
-                    <option value="opus" />
-                    <option value="sonnet" />
-                    <option value="haiku" />
-                    </>
-                  ) : options.map((option) => (
-                    <option key={option.id} value={option.id}>{option.displayName}</option>
-                  ))}
-                </datalist>
-              </label>
+              </div>
               <label>
                 <span>Effort</span>
                 <select value={draftEffort} onChange={(event) => setDraftEffort(event.currentTarget.value)}>

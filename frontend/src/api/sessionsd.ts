@@ -1200,7 +1200,7 @@ export function wsUrl(sessionId: string, lastSeq?: number, claudeEventsSince?: n
 }
 
 // Multiplexed WS endpoint: ONE socket per window carrying every attached
-// session's traffic as sessionId-tagged frames (tmux-style). useTerminal
+// session's traffic as sessionId-tagged frames. useTerminal
 // attaches/detaches sessions over it via lib/wsMux.
 export function wsMuxUrl(): string {
   const s = getActiveServer();

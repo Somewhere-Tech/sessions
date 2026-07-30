@@ -84,10 +84,17 @@ exited sessions so completed children and ended parents remain visible. Dragging
 a row calls `PUT /api/sessions/:id/display-parent`; `state.Metadata` persists
 that display-only override and `session.Manager` rejects cycles before
 `state.Registry` writes it. Creator kind, parent ID, ancestry, and provenance
-status remain separate daemon/ledger truth. `SessionView.tsx`
-owns the Conversation/Terminal/Details switch. `SessionDetails.tsx` renders
+status remain separate daemon/ledger truth. `SessionView.tsx` keeps Conversation
+as the primary agent surface; terminal-backed agents open the exact provider
+terminal as a bounded drawer, while shell sessions and single-session pop-outs
+retain the full terminal. Details stays a separate inspector.
+`SessionDetails.tsx` renders
 runtime, workspace, recovery, relationship, usage, and destructive controls;
-closing `SessionTabs.tsx` only closes a view. `SessionHistoryView.tsx` is the
+closing `SessionTabs.tsx` only closes a view. The navigator's row menu keeps
+that boundary literal: Close tab leaves the session in Live, Set aside moves it
+out of the default working set without stopping it, and ended-session
+cross-provider or cross-machine actions route through the existing audited
+continuation dialogs. `SessionHistoryView.tsx` is the
 explicit exited-session path: it fetches the bounded history preview and never
 mounts xterm or a live WebSocket; its Continue button opens the audited provider
 adoption picker with that identity preselected. The picker is provider-neutral:
@@ -99,9 +106,16 @@ credentials and transcript bytes do not enter WebView state. `RemoteView.tsx` re
 timestamped Codex-style user cards and full-width provider answers, while
 `InputBar.tsx` owns the single Attach composer action. Terminal quick keys are
 scoped to the mobile Terminal pane. Grid and mobile navigation receive only active
-sessions, while the full navigator retains lineage history. `NewSessionDialog.tsx` handles two
+sessions, while the full navigator retains lineage history. `CommandPalette.tsx`
+provides the global Command-K session/action finder, but only invokes existing
+App callbacks and adds no runtime authority. Initial loads retain their workspace
+and conversation geometry through `LoadingShell.tsx`; cached real state is never
+replaced by a skeleton. `ModelPicker.tsx` is the shared searchable Claude/Codex
+model control used by the composer and launcher. `NewSessionDialog.tsx` handles two
 different flows: a global recent-workspace launcher and a delegated child
-launcher. The latter sends its parent via the trusted HTTP creator header, then
+launcher. Its common path is a compact composer footer over the existing Agent,
+Machine, and Folder sequence; Advanced keeps accounts, worktree, integrations,
+and troubleshooting out of the default path. The latter sends its parent via the trusted HTTP creator header, then
 uses wait-ready plus the composer's bracketed-paste/separate-Enter input contract
 for an optional initial task. Profiles inherit only while the child keeps the
 same provider; switching providers visibly resets to that provider's default login.

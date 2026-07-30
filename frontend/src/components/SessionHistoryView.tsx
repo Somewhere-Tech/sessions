@@ -92,7 +92,7 @@ export function SessionHistoryView({ session, onResume, onCloseView, onOpenSessi
         </div>
         <div className="session-active-actions">
           <SessionPopOutButton sessionId={session.id} label={label} />
-          {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(session.id)} title="Close this view. The saved conversation remains available."><span aria-hidden>×</span> Close</button> : null}
+          {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(session.id)} title="Close this tab. The saved conversation remains available."><span aria-hidden>×</span> Close tab</button> : null}
         </div>
       </header>
       <div className="session-toolbar">

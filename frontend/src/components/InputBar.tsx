@@ -42,8 +42,7 @@ function quotePath(p: string): string {
 // when focused, but in Sessions mode the user can't see the cursor — they
 // need an obvious "type here" target. Keystrokes go through the same WS
 // as xterm's onData; the PTY echoes them and the parser sees them on the
-// next snapshot. No "live-type diff" machinery from sessions-tmux: with a
-// real PTY, the echoed text just appears.
+// next snapshot without a separate live-typing diff.
 export function InputBar({
   send,
   connected,
@@ -204,8 +203,8 @@ export function InputBar({
     await uploadAndInsert(files);
   };
 
-  // Paste handling. Cmd-V (screenshot from system clipboard, or any
-  // image copied from another app) lands here as a clipboard paste
+  // Paste handling. Cmd-V (screenshot from the system clipboard, or any
+  // copied image) lands here as a clipboard paste
   // event with image/* DataTransferItems. We pull the Blobs, give
   // each a sensible filename derived from MIME, then run them through
   // the same upload-and-insert flow as drag-drop. Plain text pastes

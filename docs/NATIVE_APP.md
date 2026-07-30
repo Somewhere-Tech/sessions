@@ -17,12 +17,15 @@ The package contains three runtime binaries:
   command.
 
 The native process may install, inspect, and request an update of the daemon.
-It never becomes the parent whose exit ends a runner. Closing a view, quitting
+It never becomes the parent whose exit ends a runner. Closing a tab, quitting
 the app, or installing a compatible update must not silently terminate work.
 
 Explicit lifecycle verbs stay literal:
 
-- **Close view** removes only a UI surface.
+- **Close tab** removes only the open UI tab. The session remains in Live and
+  keeps running.
+- **Set aside** closes its open tab and moves the session out of the default
+  Live working set. It does not stop the agent and remains reversible.
 - **End session** asks the runner to stop its process tree and preserves the
   record.
 - **Continue** resumes supported provider history or creates an explicitly

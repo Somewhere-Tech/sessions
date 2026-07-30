@@ -24,6 +24,7 @@ const [
   machineMark,
   newSession,
   resumeDialog,
+  continueElsewhere,
   productSidebar,
   settingsView,
   api,
@@ -44,6 +45,7 @@ const [
   source('src/components/MachineMark.tsx'),
   source('src/components/NewSessionDialog.tsx'),
   source('src/components/ResumeDialog.tsx'),
+  source('src/components/ContinueElsewhereButton.tsx'),
   source('src/components/ProductSidebar.tsx'),
   source('src/components/SettingsView.tsx'),
   source('src/api/sessionsd.ts'),
@@ -67,7 +69,16 @@ assert.doesNotMatch(navigator, /session-nav-summary/);
 assert.match(navigator, />Resume <span aria-hidden>→<\/span><\/button>/);
 assert.match(navigator, /draggable=\{movingId !== session\.id\}/);
 assert.match(navigator, /text\/x-sessions-session-id/);
-assert.match(navigator, /Start a linked session…/);
+assert.match(navigator, /Start child session…/);
+assert.match(navigator, /Close tab <small>stays in Live<\/small>/);
+assert.match(navigator, /Set aside for later <small>keeps running<\/small>/);
+assert.match(navigator, /Continue with \{otherProviderLabel\}…/);
+assert.match(navigator, /ContinueElsewhereButton/);
+assert.match(navigator, /document\.addEventListener\('click', dismiss\)/);
+assert.match(navigator, /event\.key !== 'Escape'/);
+assert.match(continueElsewhere, /createPortal/);
+assert.match(continueElsewhere, /appearance === 'menuitem'/);
+assert.match(resumeDialog, /preferredDestinationApplied/);
 assert.match(navigator, /<MachineMark machine=\{machine\} size=\{17\} \/>/);
 assert.doesNotMatch(navigator, /<span>\{machine\}<\/span>/);
 assert.match(navigator, /<ProviderMark provider=\{providerName\} size=\{20\} \/>/);
@@ -126,7 +137,9 @@ const folderStep = newSession.indexOf('Choose a folder');
 assert.ok(agentStep > 0 && agentStep < machineStep && machineStep < folderStep, 'new-session steps must be Agent, Machine, Folder');
 assert.match(newSession, /This computer/);
 assert.match(newSession, /configuredMachines\.find\(\(machine\) => machine\.isDefault && isLocalServer\(machine\)\)/);
-assert.match(newSession, /<select[\s\S]*<option value="">Default<\/option>[\s\S]*CLAUDE_MODELS/);
+assert.match(newSession, /<ModelPicker[\s\S]*options=\{modelOptions\}/);
+assert.match(newSession, /CLAUDE_MODEL_OPTIONS/);
+assert.match(newSession, /launcher-composer-footer/);
 assert.match(newSession, /listNewSessionCodexModels\(controller\.signal\)/);
 assert.match(api, /\/api\/models\/codex/);
 assert.doesNotMatch(newSession, /Provider default|More options|screen parsing|message parsing/);
