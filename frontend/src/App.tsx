@@ -185,6 +185,8 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       sourceSessionId?: string;
       historyId?: string;
       destinationProvider?: 'claude' | 'codex';
+      runtimeMode?: 'rich' | 'terminal';
+      remoteControl?: boolean;
     }
   >(null);
   const [activeStatus, setActiveStatus] = useState<ActiveStatus>(INITIAL_STATUS);
@@ -217,11 +219,13 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   }, [rawSessions, setActive, updateSetAside, writeOpenTabs]);
   const resumeSession = useCallback((
     session: SessionInfo,
-    destinationProvider?: 'claude' | 'codex'
+    destinationProvider?: 'claude' | 'codex',
+    runtimeMode?: 'rich' | 'terminal',
+    remoteControl?: boolean
   ): void => {
     const providerId = providerConversationId(session);
     setDialogOpen(providerId
-      ? { resumeProviderId: providerId, sourceSessionId: session.id, destinationProvider }
+      ? { resumeProviderId: providerId, sourceSessionId: session.id, destinationProvider, runtimeMode, remoteControl }
       : 'resume');
   }, []);
 
@@ -698,6 +702,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             : undefined}
           preferredDestinationProvider={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
             ? dialogOpen.destinationProvider
+            : undefined}
+          preferredRuntimeMode={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+            ? dialogOpen.runtimeMode
+            : undefined}
+          preferredRemoteControl={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+            ? dialogOpen.remoteControl
             : undefined}
         />
       ) : null}

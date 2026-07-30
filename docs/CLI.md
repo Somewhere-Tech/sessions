@@ -95,7 +95,7 @@ Usage:
 
 create an interactive session
 
-Create a session. --tool selects a built-in Claude, Codex, or shell preset; --cmd supplies a command directly. Claude defaults to Rich structured mode while retaining its normal permission behavior. Codex defaults to its sandboxed terminal mode because Sessions cannot yet present app-server approval prompts; --codex-appserver therefore requires the explicit --full-access choice. --pty-claude and --pty-codex explicitly select the provider's terminal UI; --structured states the Claude Rich choice explicitly. --full-access disables the selected provider's approval and sandbox protections for this new session only. Existing sessions keep their original runtime and permission mode. --profile selects a private Claude or Codex login under the Sessions user state; first use opens the tool's own login flow. --description (alias --desc) records why the session exists. Repeat --tag key=value for product, client, team, cost center, or any user-defined dimension. --worktree creates sessions/<name> from the current branch (or --base REF), records its provenance, and runs the session there. Sessions does not create node_modules symlinks; install dependencies in the worktree when needed. Session controls include --model, --effort, --fast, --on-idle, --wait-ready, and --force.
+Create a session. --tool selects a built-in Claude, Codex, or shell preset; --cmd supplies a command directly. Claude defaults to Rich structured mode while retaining its normal permission behavior. Claude slash commands and Remote Control require its interactive Terminal runtime; use --pty-claude when those are part of the workflow. Codex defaults to its sandboxed terminal mode because Sessions cannot yet present app-server approval prompts; --codex-appserver therefore requires the explicit --full-access choice. --pty-claude and --pty-codex explicitly select the provider's terminal UI; --structured states the Claude Rich choice explicitly. --full-access disables the selected provider's approval and sandbox protections for this new session only. Existing sessions keep their original runtime and permission mode. --profile selects a private Claude or Codex login under the Sessions user state; first use opens the tool's own login flow. --description (alias --desc) records why the session exists. Repeat --tag key=value for product, client, team, cost center, or any user-defined dimension. --worktree creates sessions/<name> from the current branch (or --base REF), records its provenance, and runs the session there. Sessions does not create node_modules symlinks; install dependencies in the worktree when needed. Session controls include --model, --effort, --fast, --on-idle, --wait-ready, and --force.
 
 Examples:
   sessions new --tool claude --cwd ~/work
@@ -667,15 +667,15 @@ Examples:
 
 ```text
 Usage:
-  sessions continue <history-id> [--with claude|codex] [--terminal] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
+  sessions continue <history-id> [--with claude|codex] [--terminal [--remote-control]] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
 
 continue one exact saved conversation
 
-Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. Rich is the default. --terminal explicitly opens the original provider's terminal interface and cannot be combined with a cross-provider continuation. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.
+Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. Rich is the default. --terminal explicitly opens the original provider's terminal interface and cannot be combined with a cross-provider continuation. --remote-control starts that Terminal Claude continuation with Claude Remote Control enabled. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.
 
 Examples:
   sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001
-  sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal
+  sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal --remote-control
   sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex
   sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001
 

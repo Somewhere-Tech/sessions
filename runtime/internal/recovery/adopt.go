@@ -294,6 +294,7 @@ type AdoptOptions struct {
 	Source      *AdoptSource
 	Events      AdoptionEventReader
 	RuntimeMode string
+	Claude      *state.ClaudeSessionOptions
 }
 
 type AdoptionEventReader interface {
@@ -378,6 +379,7 @@ func Adopt(
 		Cwd: adoption.Cwd, Name: name, Description: description, Tags: tags,
 		Profile: profile, Kind: kind, ConversationID: conversationID,
 		DisplayParentSessionID: displayParent, Force: selected.Force,
+		Claude: selected.Claude,
 	})
 	if err != nil {
 		return AdoptResult{}, err

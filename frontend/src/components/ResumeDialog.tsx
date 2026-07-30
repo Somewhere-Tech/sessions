@@ -25,6 +25,8 @@ interface Props {
   preferredSourceSessionId?: string;
   preferredHistoryId?: string;
   preferredDestinationProvider?: 'claude' | 'codex';
+  preferredRuntimeMode?: 'rich' | 'terminal';
+  preferredRemoteControl?: boolean;
   // Click handler if the user wants to abandon resume and start fresh.
   // App.tsx swaps to the New Session dialog so the user doesn't lose
   // their place if the picker turns out to be empty.
@@ -90,7 +92,9 @@ export function ResumeDialog({
   preferredProviderId,
   preferredSourceSessionId,
   preferredHistoryId,
-  preferredDestinationProvider
+  preferredDestinationProvider,
+  preferredRuntimeMode,
+  preferredRemoteControl
 }: Props): JSX.Element {
   const refresh = useSessions((s) => s.refresh);
   const openSessions = useSessions((s) => s.sessions);
@@ -106,7 +110,10 @@ export function ResumeDialog({
   const [selected, setSelected] = useState<ResumableSession | null>(null);
   const [destinationProvider, setDestinationProvider] = useState<'claude' | 'codex'>('claude');
   const [runtimeMode, setRuntimeMode] = useState<'rich' | 'terminal'>('rich');
+  const [remoteControl, setRemoteControl] = useState(Boolean(preferredRemoteControl));
   const preferredDestinationApplied = useRef(false);
+  const preferredRuntimeApplied = useRef(false);
+  const preferredRemoteControlApplied = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -202,11 +209,28 @@ export function ResumeDialog({
     if (preferredDestinationProvider && !preferredDestinationApplied.current) {
       preferredDestinationApplied.current = true;
       setDestinationProvider(preferredDestinationProvider);
-      return;
+    } else if (!preferredDestinationProvider) {
+      setDestinationProvider(selected.tool);
     }
-    if (!preferredDestinationProvider) setDestinationProvider(selected.tool);
-    setRuntimeMode('rich');
-  }, [preferredDestinationProvider, selected?.sessionId, selected?.tool]);
+    if (preferredRuntimeMode && !preferredRuntimeApplied.current) {
+      preferredRuntimeApplied.current = true;
+      setRuntimeMode(preferredRuntimeMode);
+    } else if (!preferredRuntimeMode) {
+      setRuntimeMode('rich');
+    }
+    if (preferredRemoteControl && !preferredRemoteControlApplied.current) {
+      preferredRemoteControlApplied.current = true;
+      setRemoteControl(true);
+    } else if (!preferredRemoteControl) {
+      setRemoteControl(false);
+    }
+  }, [
+    preferredDestinationProvider,
+    preferredRemoteControl,
+    preferredRuntimeMode,
+    selected?.sessionId,
+    selected?.tool
+  ]);
 
   // Flat = newest-first across all folders. Backend already sorts
   // resumable by modifiedAt desc, so we just keep that order.
@@ -246,7 +270,12 @@ export function ResumeDialog({
       const sourceSessionId = preferredSourceSessionId
         ?? (matchingSources.length === 1 ? matchingSources[0]?.id : undefined);
       const result = await adoptConversation(
-        selected.sessionId, sourceSessionId, selected.historyId, destinationProvider, runtimeMode
+        selected.sessionId,
+        sourceSessionId,
+        selected.historyId,
+        destinationProvider,
+        runtimeMode,
+        destinationProvider === 'claude' && runtimeMode === 'terminal' && remoteControl
       );
       await refresh();
       onResumed(result.laneId);
@@ -492,6 +521,12 @@ export function ResumeDialog({
                   title={destinationProvider !== selected.tool ? 'Cross-provider continuation uses Rich mode' : 'Open the provider’s full terminal interface'}
                 >Terminal</button>
               </div>
+              {destinationProvider === 'claude' && runtimeMode === 'terminal' ? (
+                <label className="resume-remote-control">
+                  <input type="checkbox" checked={remoteControl} onChange={(event) => setRemoteControl(event.currentTarget.checked)} disabled={busy} />
+                  <span><strong>Remote Control</strong><small>Start Claude with access from claude.ai and mobile.</small></span>
+                </label>
+              ) : null}
             </div>
           ) : null}
           <button type="button" className="btn btn-primary" onClick={() => void resume()} disabled={busy || !selected || Boolean(partialResult)}>

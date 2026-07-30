@@ -54,6 +54,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			RepairLaneID        string `json:"repairLaneId,omitempty"`
 			DestinationProvider string `json:"destinationProvider,omitempty"`
 			RuntimeMode         string `json:"runtimeMode,omitempty"`
+			RemoteControl       bool   `json:"remoteControl,omitempty"`
 			Force               bool   `json:"force,omitempty"`
 		}
 		if err := readJSON(request, &body); err != nil {
@@ -70,6 +71,12 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			return
 		}
 		body.RuntimeMode = runtimeMode
+		if body.RemoteControl && body.RuntimeMode != "terminal" {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{
+				"error": "Remote Control requires runtimeMode terminal",
+			}, corsOrigin)
+			return
+		}
 		recoveryMutationMu.Lock()
 		defer recoveryMutationMu.Unlock()
 		store, _, ok := s.openRecoveryReport(request.Context(), response, corsOrigin)
@@ -258,6 +265,16 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			}
 			source = adoptSourceFromSession(candidate)
 		}
+		var claudeOptions *state.ClaudeSessionOptions
+		if body.RemoteControl {
+			if adoption.Tool != string(state.ToolClaude) {
+				s.sendJSON(response, http.StatusBadRequest, map[string]any{
+					"error": "Remote Control is available only when continuing a Claude conversation in Terminal",
+				}, corsOrigin)
+				return
+			}
+			claudeOptions = &state.ClaudeSessionOptions{RemoteControl: state.ClaudeChoiceOn}
+		}
 		if body.RepairLaneID != "" {
 			successorSession, live := s.registry.Get(body.RepairLaneID)
 			if !live {
@@ -308,7 +325,10 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		}
 		result, err := recovery.Adopt(
 			request.Context(), adoption, body.Name, s.registry, store.Boundaries(), store.Observations(),
-			recovery.AdoptOptions{Force: body.Force, Source: source, Events: store, RuntimeMode: body.RuntimeMode},
+			recovery.AdoptOptions{
+				Force: body.Force, Source: source, Events: store,
+				RuntimeMode: body.RuntimeMode, Claude: claudeOptions,
+			},
 		)
 		if err != nil {
 			status := http.StatusBadRequest

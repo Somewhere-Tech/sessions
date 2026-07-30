@@ -12,8 +12,9 @@ func (a *app) cmdContinue(args []string) error {
 	sourceSessionID, sourceSet := pluck(&args, "--source")
 	destinationProvider, destinationSet := pluck(&args, "--with")
 	terminal := removeFirst(&args, "--terminal")
+	remoteControl := removeFirst(&args, "--remote-control")
 	if len(args) != 1 || args[0] == "" {
-		return fail(1, "usage: sessions continue <history-id> [--with claude|codex] [--terminal] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
+		return fail(1, "usage: sessions continue <history-id> [--with claude|codex] [--terminal [--remote-control]] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
 	}
 	if repairSet && repairLaneID == "" {
 		return fail(1, "--repair requires the existing live successor id")
@@ -30,6 +31,12 @@ func (a *app) cmdContinue(args []string) error {
 	if terminal && repairSet {
 		return fail(1, "--terminal cannot be combined with --repair")
 	}
+	if remoteControl && !terminal {
+		return fail(1, "--remote-control requires --terminal")
+	}
+	if remoteControl && destinationSet && destinationProvider != "claude" {
+		return fail(1, "--remote-control is available only with Claude")
+	}
 	body := map[string]any{"historyId": args[0], "force": force}
 	if sourceSet {
 		body["sourceSessionId"] = sourceSessionID
@@ -42,6 +49,9 @@ func (a *app) cmdContinue(args []string) error {
 	}
 	if terminal {
 		body["runtimeMode"] = "terminal"
+	}
+	if remoteControl {
+		body["remoteControl"] = true
 	}
 	var result recovery.AdoptResult
 	if err := a.postJSON("/api/recovery/adopt", body, &result, 2); err != nil {

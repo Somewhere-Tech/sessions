@@ -344,10 +344,12 @@ type adoptTestCreator struct {
 	laneID       string
 	providerUUID string
 	calls        int
+	request      state.CreateSessionRequest
 }
 
 func (c *adoptTestCreator) Create(ctx context.Context, request state.CreateSessionRequest) (state.SessionInfo, error) {
 	c.calls++
+	c.request = request
 	resumeArgv := append([]string{request.Cmd}, request.Args...)
 	if err := c.boundaries.RecordCreated(ctx, ledger.Created{
 		Meta: ledger.Meta{LaneID: c.laneID}, Name: request.Name, Description: request.Description,
@@ -358,6 +360,40 @@ func (c *adoptTestCreator) Create(ctx context.Context, request state.CreateSessi
 		return state.SessionInfo{}, err
 	}
 	return state.SessionInfo{ID: c.laneID, Cmd: request.Cmd, Args: request.Args, Cwd: request.Cwd}, nil
+}
+
+func TestAdoptForwardsClaudeRemoteControlToTerminalContinuation(t *testing.T) {
+	root := t.TempDir()
+	store := openScratchLedger(t, root)
+	provider := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	creator := &adoptTestCreator{
+		boundaries: store.Boundaries(),
+		laneID:     "20000000-0000-4000-8000-000000000002", providerUUID: provider,
+	}
+	result, err := recovery.Adopt(
+		context.Background(),
+		recovery.Adoption{
+			Path: filepath.Join(root, "conversation.jsonl"),
+			Tool: string(state.ToolClaude), Cwd: root, ProviderUUID: provider,
+			Cmd: "claude", Args: []string{"--resume", provider},
+		},
+		"Remote Claude", creator, store.Boundaries(), store.Observations(),
+		recovery.AdoptOptions{
+			RuntimeMode: "terminal",
+			Claude:      &state.ClaudeSessionOptions{RemoteControl: state.ClaudeChoiceOn},
+			Events:      store,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || creator.calls != 1 {
+		t.Fatalf("result=%+v calls=%d", result, creator.calls)
+	}
+	if creator.request.Kind != "" || creator.request.Claude == nil ||
+		creator.request.Claude.RemoteControl != state.ClaudeChoiceOn {
+		t.Fatalf("Terminal Claude continuation request = %#v", creator.request)
+	}
 }
 
 type failAdoptCreatedBoundary struct {
