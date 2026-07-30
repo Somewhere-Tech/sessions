@@ -439,6 +439,13 @@ Terminal sessions, ended sessions, working sessions, old runners, unavailable
 models, and invalid efforts fail explicitly without changing the recorded
 model. Agents use the same contract through `sessions model`.
 
+### `GET /api/models/codex`
+
+Auth required. Returns `{"models":[...]}` from the live Codex app-server model
+catalog without creating a session. The New Session launcher uses this route
+to offer an exact dropdown before runtime creation. A catalog failure is
+reported explicitly; Sessions does not replace it with a stale hardcoded list.
+
 ### `GET /api/sessions/:id/model-options`
 
 Auth required. For a Rich Codex session, returns `{"models":[...]}` from the

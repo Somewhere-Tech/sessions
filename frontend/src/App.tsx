@@ -15,6 +15,8 @@ import { ProductSidebar, type ProductView, type ThemeMode } from './components/P
 import { SessionNavigator } from './components/SessionNavigator';
 import { HomeView } from './components/HomeView';
 import { SettingsView } from './components/SettingsView';
+import { CommandPalette } from './components/CommandPalette';
+import { SessionsWorkspaceSkeleton } from './components/LoadingShell';
 import { useSessions } from './store/sessions';
 import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer } from './lib/servers';
 import { SettingsMenu } from './components/SettingsMenu';
@@ -75,14 +77,14 @@ function readSingleModeParams(): { sessionId: string } | null {
 // (active-machine monitor tiles).
 // Persisted per-window in localStorage so each window remembers its
 // last choice. Grid is best when N ≥ 2 and the window is wide.
-type LayoutMode = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'settings' | 'connections' | 'grid';
+type LayoutMode = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'settings' | 'feedback' | 'connections' | 'grid';
 const LAYOUT_KEY = 'sessions:layout-mode';
 const OPEN_TABS_KEY = 'sessions:open-tabs:v1';
 const THEME_KEY = 'sessions:theme:v1';
 function readStoredLayout(): LayoutMode {
   try {
     const v = window.localStorage.getItem(LAYOUT_KEY);
-    if (v === 'home' || v === 'tabs' || v === 'today' || v === 'fleet' || v === 'search' || v === 'usage' || v === 'settings' || v === 'connections' || v === 'grid') return v;
+    if (v === 'home' || v === 'tabs' || v === 'today' || v === 'fleet' || v === 'search' || v === 'usage' || v === 'settings' || v === 'feedback' || v === 'connections' || v === 'grid') return v;
   } catch { /* ignore */ }
   return 'tabs';
 }
@@ -182,12 +184,14 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       resumeProviderId: string;
       sourceSessionId?: string;
       historyId?: string;
+      destinationProvider?: 'claude' | 'codex';
     }
   >(null);
   const [activeStatus, setActiveStatus] = useState<ActiveStatus>(INITIAL_STATUS);
   const [openTabIds, setOpenTabIds] = useState<string[]>(readOpenTabs);
   const [theme, setTheme] = useState<ThemeMode>(readTheme);
   const [mobileSessionDetail, setMobileSessionDetail] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   const writeOpenTabs = useCallback((ids: string[]): void => {
     try { window.localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(ids)); } catch { /* non-fatal */ }
@@ -211,9 +215,14 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // after the component has completed initialization.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawSessions, setActive, updateSetAside, writeOpenTabs]);
-  const resumeSession = useCallback((session: SessionInfo): void => {
+  const resumeSession = useCallback((
+    session: SessionInfo,
+    destinationProvider?: 'claude' | 'codex'
+  ): void => {
     const providerId = providerConversationId(session);
-    setDialogOpen(providerId ? { resumeProviderId: providerId, sourceSessionId: session.id } : 'resume');
+    setDialogOpen(providerId
+      ? { resumeProviderId: providerId, sourceSessionId: session.id, destinationProvider }
+      : 'resume');
   }, []);
 
   // Bound how many sessions are kept LIVE (mounted SessionView → xterm
@@ -254,6 +263,30 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // useful on phones and narrow Mac windows, so the mobile nav keeps them.
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(readStoredLayout);
   const effectiveLayout: LayoutMode = isMobile && layoutMode === 'grid' ? 'tabs' : layoutMode;
+  useEffect(() => {
+    if (single) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const inTerminal = document.activeElement instanceof Element
+        && document.activeElement.closest('.terminal-host') !== null;
+      // Ctrl-K/Ctrl-N are real terminal controls (readline kill-line and
+      // next-history). On macOS Command remains the app shortcut; on Windows
+      // and Linux Ctrl opens Sessions only outside the live terminal.
+      if (event.ctrlKey && !event.metaKey && inTerminal) return;
+      if (event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        event.stopPropagation();
+        setCommandPaletteOpen((current) => !current);
+      } else if (event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        event.stopPropagation();
+        setCommandPaletteOpen(false);
+        setDialogOpen('new');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [single]);
   useEffect(() => {
     try { window.localStorage.setItem(LAYOUT_KEY, layoutMode); } catch { /* ignore */ }
   }, [layoutMode]);
@@ -482,7 +515,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
 
   return (
     <div className={`app-shell operations-shell text-size-${textSize.toLowerCase()}`} data-theme={theme}>
-      {!isMobile ? <ProductSidebar active={productView} theme={theme} onNavigate={navigateProduct} onNewSession={() => setDialogOpen('new')} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} /> : null}
+      {!isMobile ? <ProductSidebar active={productView} theme={theme} onNavigate={navigateProduct} onNewSession={() => setDialogOpen('new')} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} /> : null}
       <div className="operations-frame">
         {sessionWorkspace && !isMobile ? (
           <SessionNavigator
@@ -525,6 +558,8 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             error="sessionsd: authentication required (401)"
             onRetry={() => void refresh()}
           />
+        ) : sessionWorkspace && sessions.length === 0 && !sessionsHydrated && !sessionsError ? (
+          <SessionsWorkspaceSkeleton />
         ) : sessionWorkspace && isMobile && !mobileSessionDetail ? (
           <SessionNavigator
             sessions={sessions}
@@ -551,8 +586,14 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
           />
         ) : effectiveLayout === 'usage' ? (
           <UsageDashboard />
-        ) : effectiveLayout === 'settings' || effectiveLayout === 'connections' ? (
-          <SettingsView theme={theme} onThemeChange={setTheme} textSize={textSize} onTextSizeChange={changeTextSize} />
+        ) : effectiveLayout === 'settings' || effectiveLayout === 'feedback' || effectiveLayout === 'connections' ? (
+          <SettingsView
+            theme={theme}
+            onThemeChange={setTheme}
+            textSize={textSize}
+            onTextSizeChange={changeTextSize}
+            initialSection={effectiveLayout === 'feedback' ? 'support' : effectiveLayout === 'connections' ? 'network' : 'general'}
+          />
         ) : effectiveLayout === 'grid' ? (
           liveSessions.length > 0 ? (
             <GridView
@@ -612,7 +653,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       </div>
 
       <MobileNav
-        layoutMode={effectiveLayout === 'grid' ? 'tabs' : effectiveLayout}
+        layoutMode={effectiveLayout === 'grid' ? 'tabs' : effectiveLayout === 'feedback' ? 'settings' : effectiveLayout}
         showingSessionDetail={effectiveLayout === 'tabs' && mobileSessionDetail}
         onLayoutChange={(mode) => {
           setLayoutMode(mode);
@@ -622,6 +663,16 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
           setLayoutMode('tabs');
           setMobileSessionDetail(false);
         }}
+      />
+
+      <CommandPalette
+        open={commandPaletteOpen}
+        sessions={sessions}
+        onClose={() => setCommandPaletteOpen(false)}
+        onNavigate={navigateProduct}
+        onNewSession={() => setDialogOpen('new')}
+        onContinue={() => setDialogOpen('resume')}
+        onOpenSession={openSession}
       />
 
       {dialogOpen === 'new' ? (
@@ -644,6 +695,9 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             : undefined}
           preferredHistoryId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
             ? dialogOpen.historyId
+            : undefined}
+          preferredDestinationProvider={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+            ? dialogOpen.destinationProvider
             : undefined}
         />
       ) : null}
@@ -814,6 +868,7 @@ function SinglePopOut({
         key={sessionId}
         sessionId={sessionId}
         isActive
+        preferFullTerminal
         onStatusChange={setStatus}
         onOpenSession={(nextSessionId) => {
           const next = new URL(window.location.href);

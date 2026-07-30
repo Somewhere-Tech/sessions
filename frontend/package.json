@@ -1,7 +1,7 @@
 {
   "name": "sessions-frontend",
   "private": true,
-  "version": "0.2.8",
+  "version": "0.2.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,11 +16,15 @@
     "test:search-conversations": "node scripts/search-conversation-smoke.mjs",
     "test:terminal-renderer": "node scripts/terminal-renderer-smoke.mjs",
     "test:lifecycle-clarity": "node scripts/lifecycle-clarity-smoke.mjs",
+    "test:workspace-ux": "node scripts/workspace-ux-smoke.mjs",
     "test:session-status": "node scripts/session-status-smoke.mjs",
     "test:resume-partial": "node scripts/resume-partial-smoke.mjs",
     "test:working-set": "node scripts/working-set-smoke.mjs",
     "test:typography": "node scripts/typography-smoke.mjs",
-    "test:window-scope": "node scripts/window-scope-smoke.mjs"
+    "test:window-scope": "node scripts/window-scope-smoke.mjs",
+    "test:same-origin-bootstrap": "node scripts/same-origin-bootstrap-smoke.mjs",
+    "test:webapp": "node scripts/webapp-smoke.mjs",
+    "test:smoke": "npm run test:markdown && npm run test:native-credentials && npm run test:structured-events && npm run test:structured-view && npm run test:fleet-clarity && npm run test:search-conversations && npm run test:terminal-renderer && npm run test:lifecycle-clarity && npm run test:workspace-ux && npm run test:session-status && npm run test:resume-partial && npm run test:working-set && npm run test:typography && npm run test:window-scope && npm run test:same-origin-bootstrap"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

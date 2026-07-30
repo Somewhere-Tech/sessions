@@ -25,6 +25,6 @@
    passes.
 
 The repository's active package direction is documented in
-[`NATIVE_APP.md`](NATIVE_APP.md). Node-era implementation notes are retained
-under [`archive/node-daemon/`](archive/node-daemon/) only as historical and
-cutover evidence.
+[`NATIVE_APP.md`](NATIVE_APP.md), and the public source topology and protocol
+boundaries are documented in [`CODEBASE.md`](CODEBASE.md). Historical cutover
+notes are intentionally kept out of the public source tree.

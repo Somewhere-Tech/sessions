@@ -29,9 +29,12 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
-const idleShutdown = 30 * time.Second
+const (
+	idleShutdown       = 30 * time.Second
+	clientOutboxFrames = 16
+)
 
-var version = "0.2.8"
+var version = "0.2.9"
 
 type config struct {
 	id                string
@@ -79,24 +82,102 @@ type resizeRequest struct {
 }
 
 type client struct {
-	conn net.Conn
-	mu   sync.Mutex
+	conn      net.Conn
+	outbox    chan clientWrite
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
-type terminalHistory interface {
-	Append(uint32, []byte) error
-	Sync() error
-	Close() error
-	Unlink() error
+type clientWrite struct {
+	frame []byte
+	done  chan error
+}
+
+func newClient(conn net.Conn) *client {
+	c := &client{
+		conn:   conn,
+		outbox: make(chan clientWrite, clientOutboxFrames),
+		closed: make(chan struct{}),
+	}
+	go c.writeLoop()
+	return c
+}
+
+func (c *client) writeLoop() {
+	for {
+		select {
+		case <-c.closed:
+			return
+		case request := <-c.outbox:
+			err := c.writeFrame(request.frame)
+			if request.done != nil {
+				request.done <- err
+			}
+			if err != nil {
+				c.close()
+				return
+			}
+		}
+	}
+}
+
+func (c *client) writeFrame(frame []byte) error {
+	_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	err := writeBytes(c.conn, frame)
+	_ = c.conn.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func (c *client) write(typ proto.Type, payload []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	err := proto.Write(c.conn, typ, payload)
-	_ = c.conn.SetWriteDeadline(time.Time{})
-	return err
+	frame, err := proto.Encode(typ, payload)
+	if err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	select {
+	case c.outbox <- clientWrite{frame: frame, done: done}:
+	case <-c.closed:
+		return net.ErrClosed
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-c.closed:
+		return net.ErrClosed
+	}
+}
+
+func (c *client) enqueue(typ proto.Type, payload []byte) bool {
+	frame, err := proto.Encode(typ, payload)
+	if err != nil {
+		return false
+	}
+	return c.enqueueFrame(frame)
+}
+
+func (c *client) enqueueFrame(frame []byte) bool {
+	select {
+	case <-c.closed:
+		return false
+	default:
+	}
+	select {
+	case c.outbox <- clientWrite{frame: frame}:
+		return true
+	default:
+		// A viewer that cannot keep up must not stall the provider reader or
+		// every other viewer. Its daemon can reconnect and replay from the
+		// durable runner history.
+		c.close()
+		return false
+	}
+}
+
+func (c *client) close() {
+	c.closeOnce.Do(func() {
+		close(c.closed)
+		_ = c.conn.Close()
+	})
 }
 
 func (c *client) writeOutput(ev state.Event) error {
@@ -104,12 +185,25 @@ func (c *client) writeOutput(ev state.Event) error {
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	err = writeBytes(c.conn, b)
-	_ = c.conn.SetWriteDeadline(time.Time{})
-	return err
+	done := make(chan error, 1)
+	select {
+	case c.outbox <- clientWrite{frame: b, done: done}:
+	case <-c.closed:
+		return net.ErrClosed
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-c.closed:
+		return net.ErrClosed
+	}
+}
+
+type terminalHistory interface {
+	Append(uint32, []byte) error
+	Sync() error
+	Close() error
+	Unlink() error
 }
 
 type runner struct {
@@ -445,7 +539,7 @@ func (r *runner) acceptLoop() {
 }
 
 func (r *runner) serveClient(conn net.Conn) {
-	c := &client{conn: conn}
+	c := newClient(conn)
 	// Prevent live OUTPUT from racing ahead of the greeting.
 	r.streamMu.Lock()
 	r.mu.Lock()
@@ -466,11 +560,11 @@ func (r *runner) serveClient(conn net.Conn) {
 	}
 	r.streamMu.Unlock()
 	if err != nil {
-		_ = conn.Close()
+		c.close()
 	}
 
 	defer func() {
-		_ = conn.Close()
+		c.close()
 		r.removeClient(c)
 	}()
 	for {
@@ -823,14 +917,7 @@ func (r *runner) broadcastBytes(frame []byte) {
 	}
 	r.mu.Unlock()
 	for _, c := range clients {
-		c.mu.Lock()
-		_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		err := writeBytes(c.conn, frame)
-		_ = c.conn.SetWriteDeadline(time.Time{})
-		c.mu.Unlock()
-		if err != nil {
-			_ = c.conn.Close()
-		}
+		c.enqueueFrame(frame)
 	}
 }
 

@@ -262,6 +262,7 @@ export interface ServerHealth {
   version: string;
   listen: { host: string; port: number };
   lan: { enabled: boolean; url: string | null };
+  access?: { open: boolean };
   system?: { os: string; arch: string };
   compatibility?: {
     api: { current: number; minimumClient: number; maximumClient: number };
@@ -703,6 +704,12 @@ export interface SessionModelOption {
   isDefault: boolean;
   defaultReasoningEffort: string;
   supportedReasoningEfforts: Array<{ reasoningEffort: string; description: string }>;
+}
+
+export async function listNewSessionCodexModels(signal?: AbortSignal): Promise<SessionModelOption[]> {
+  const r = await apiFetch(`${httpBase()}/api/models/codex`, { signal });
+  const body = await featureJSON<{ models?: SessionModelOption[] }>(r, 'Codex model choices');
+  return body.models ?? [];
 }
 
 export async function listSessionModelOptions(sessionId: string): Promise<SessionModelOption[]> {
@@ -1194,7 +1201,7 @@ export function wsUrl(sessionId: string, lastSeq?: number, claudeEventsSince?: n
 }
 
 // Multiplexed WS endpoint: ONE socket per window carrying every attached
-// session's traffic as sessionId-tagged frames (tmux-style). useTerminal
+// session's traffic as sessionId-tagged frames. useTerminal
 // attaches/detaches sessions over it via lib/wsMux.
 export function wsMuxUrl(): string {
   const s = getActiveServer();

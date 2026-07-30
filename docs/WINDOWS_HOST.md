@@ -66,6 +66,11 @@ The viewer uses a current-user installer. A public update additionally requires
 Authenticode, the updater signature pinned by the application, exact artifact
 hash verification, rollback rehearsal, and the hardware matrix.
 
+The read-only evidence collector in
+[`scripts/collect-windows-host-evidence.ps1`](../scripts/collect-windows-host-evidence.ps1)
+records package identity, signatures, process ownership, and runner preservation
+without collecting session content, credentials, or process command lines.
+
 ## Source orientation
 
 The platform-neutral runtime is under `runtime/`. Windows-specific process,

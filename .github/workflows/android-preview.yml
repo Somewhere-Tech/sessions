@@ -1,0 +1,95 @@
+name: Android client preview
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  ANDROID_NDK_VERSION: "29.0.14206865"
+
+jobs:
+  build:
+    name: Build sideloadable Android preview
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+
+      - name: Install reviewed Android toolchain
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          printf 'NDK_HOME=%s/ndk/%s\n' "$ANDROID_HOME" "$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Set up Rust Android targets
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable, 2026-07-21
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+
+      - name: Verify the shared client
+        run: |
+          npm --prefix frontend run typecheck
+          npm --prefix frontend run build
+          npm --prefix frontend run test:smoke
+
+      - name: Build the client-only APK
+        run: npx tauri android build --debug --apk --target aarch64 --ci
+
+      - name: Verify and checksum the APK
+        run: |
+          apk="src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk"
+          test -s "$apk"
+          unzip -l "$apk" | grep -F 'lib/arm64-v8a/libsessions_app_lib.so'
+          sha256sum "$apk" > "$apk.sha256"
+
+      - name: Upload the sideloadable APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Sessions-Android-preview
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+            src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 14

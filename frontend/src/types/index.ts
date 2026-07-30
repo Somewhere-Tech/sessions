@@ -191,8 +191,7 @@ export type ServerMsg =
   | { type: 'claudeEvent'; event: ClaudeSessionEvent; sessionId?: string };
 
 // Client → server messages on the multiplexed socket (`/ws?mux=1`): one
-// connection per window, every attached session's traffic tagged with
-// sessionId (tmux-style — N sessions, 1 socket).
+// connection per window, with every attached session tagged by sessionId.
 export type MuxClientMsg =
   // outputReplay=false suppresses raw PTY bytes (replay AND live) for
   // this attach — Sessions-only sessions don't consume them, and replaying

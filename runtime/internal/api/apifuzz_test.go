@@ -176,6 +176,9 @@ func TestConcurrentSessionHandlers(t *testing.T) {
 	request := func(method, target string, body io.Reader) *httptest.ResponseRecorder {
 		httpRequest := httptest.NewRequest(method, target, body)
 		httpRequest.RemoteAddr = "127.0.0.1:1"
+		if body != nil {
+			httpRequest.Header.Set("Content-Type", "application/json")
+		}
 		response := httptest.NewRecorder()
 		daemon.handler.ServeHTTP(response, httpRequest)
 		return response

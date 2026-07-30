@@ -64,7 +64,8 @@ func (s *Server) handleLanesRoute(response http.ResponseWriter, request *http.Re
 			s.sendJSON(response, http.StatusCreated, info, corsOrigin)
 			return true
 		default:
-			return false
+			s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+			return true
 		}
 	}
 

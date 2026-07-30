@@ -7,7 +7,7 @@ service plans are maintained outside this repository.
 
 ## Sessions are durable work
 
-A window is not a process and a process is not a conversation. Closing a view
+A window is not a process and a process is not a conversation. Closing a tab
 must not silently end work. Ending a runtime must be explicit, and provider
 history remains available for supported continuation and search.
 
@@ -35,7 +35,7 @@ identified and must not silently turn into a tunnel to a user's local machine.
 
 Routine states such as finished, resumable, archived, or temporarily offline
 are not emergencies. Red and blocking confirmation are reserved for meaningful
-danger or irreversible loss. Labels such as Close view, End session, Continue,
+danger or irreversible loss. Labels such as Close tab, Set aside, End session, Continue,
 Move, and Archive must describe their actual effect.
 
 ## Compatibility over forced lockstep

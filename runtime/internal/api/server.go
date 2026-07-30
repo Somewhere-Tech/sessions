@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -47,7 +48,7 @@ const (
 // Version is stamped into sessionsd at build time and reported by both health
 // endpoints. Keep the source fallback aligned with the current app version so
 // an un-stamped development build is still honest.
-var Version = "0.2.8"
+var Version = "0.2.9"
 
 type Server struct {
 	config               state.Config
@@ -112,6 +113,10 @@ type modelCatalogService interface {
 	ModelOptions(context.Context, string) ([]codexapp.Model, error)
 }
 
+type newSessionModelCatalogService interface {
+	CodexModelOptions(context.Context) ([]codexapp.Model, error)
+}
+
 type pushService interface {
 	VAPIDPublicKey() (string, error)
 	AddSubscription(any) error
@@ -173,8 +178,21 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	path := request.URL.Path
 	origin := request.Header.Get("Origin")
 	corsOrigin := ""
-	if allowedOrigin(origin, s.config.Host, s.lan.activeHost()) {
+	originAllowed := allowedOrigin(origin, s.config.Host, s.lan.activeHost())
+	if originAllowed {
 		corsOrigin = origin
+	}
+
+	// CORS controls whether a browser may read a response; it does not stop a
+	// browser from sending a state-changing request. Reject ambient-authority
+	// writes from untrusted browser origins before authentication or route
+	// dispatch. Credential-bearing remote clients remain valid; a hostile page
+	// cannot add Authorization without a preflight that this server rejects.
+	if isStateChangingMethod(request.Method) && origin != "" &&
+		!trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost()) &&
+		strings.TrimSpace(request.Header.Get("Authorization")) == "" {
+		s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
+		return
 	}
 
 	if request.Method == http.MethodOptions {
@@ -194,6 +212,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			"ok": true, "name": "sessionsd", "version": Version,
 			"listen": map[string]any{"host": s.config.Host, "port": s.config.Port},
 			"lan":    s.lan.state(),
+			"access": map[string]any{"open": s.openAccessEnabled()},
 			"system": map[string]any{"os": goruntime.GOOS, "arch": goruntime.GOARCH},
 			"compatibility": map[string]any{
 				"api": map[string]any{
@@ -211,6 +230,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if path == "/api/health/deep" && request.Method == http.MethodGet {
 		s.sendJSON(response, http.StatusOK, map[string]any{
 			"ok": true, "name": "sessionsd", "version": Version,
+			"access": map[string]any{"open": s.openAccessEnabled()},
 			"compatibility": map[string]any{
 				"api": map[string]any{
 					"current": apiProtocolVersion, "minimumClient": minimumAPIClient, "maximumClient": maximumAPIClient,
@@ -309,6 +329,20 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if path == "/api/sessions" && request.Method == http.MethodGet {
 		includeExited := request.URL.Query().Get("include_exited") == "1"
 		s.sendJSON(response, http.StatusOK, map[string]any{"sessions": s.registry.List(includeExited)}, corsOrigin)
+		return
+	}
+	if path == "/api/models/codex" && request.Method == http.MethodGet {
+		catalog, supported := s.registry.(newSessionModelCatalogService)
+		if !supported {
+			s.sendJSON(response, http.StatusNotImplemented, map[string]any{"error": "Codex model choices are not available on this runtime"}, corsOrigin)
+			return
+		}
+		models, err := catalog.CodexModelOptions(request.Context())
+		if err != nil {
+			s.sendJSON(response, http.StatusBadGateway, map[string]any{"error": err.Error()}, corsOrigin)
+			return
+		}
+		s.sendJSON(response, http.StatusOK, map[string]any{"models": models}, corsOrigin)
 		return
 	}
 	if path == "/api/sessions/end-batch" && request.Method == http.MethodPost {
@@ -522,6 +556,22 @@ func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) 
 	}, true, nil
 }
 
+func (s *Server) openAccessEnabled() bool {
+	_, err := os.Stat(s.config.OpenPath)
+	return err == nil
+}
+
+func (s *Server) requireLocalPrincipal(response http.ResponseWriter, request *http.Request, corsOrigin, operation string) bool {
+	principal, ok := request.Context().Value(authPrincipalContextKey{}).(authPrincipal)
+	if ok && principal.Local {
+		return true
+	}
+	s.sendJSON(response, http.StatusForbidden, map[string]any{
+		"error": operation + " is available only on this machine",
+	}, corsOrigin)
+	return false
+}
+
 func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.Request, id, suffix, corsOrigin string) {
 	session, ok := s.registry.Get(id)
 	if suffix == "/model-options" && request.Method == http.MethodGet {
@@ -568,11 +618,11 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		if err != nil {
 			status := http.StatusBadRequest
 			switch {
-			case strings.Contains(err.Error(), "not found"):
+			case errors.Is(err, state.ErrSessionNotFound):
 				status = http.StatusNotFound
-			case strings.Contains(err.Error(), "working"),
-				strings.Contains(err.Error(), "has ended"),
-				strings.Contains(err.Error(), "protocol"):
+			case errors.Is(err, state.ErrSessionWorking),
+				errors.Is(err, state.ErrSessionEnded),
+				errors.Is(err, state.ErrRunnerProtocol):
 				status = http.StatusConflict
 			}
 			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
@@ -599,7 +649,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		parentID, err := grouping.UpdateDisplayParent(id, body.ParentSessionID)
 		if err != nil {
 			status := http.StatusBadRequest
-			if strings.Contains(err.Error(), "not found") {
+			if errors.Is(err, state.ErrSessionNotFound) {
 				status = http.StatusNotFound
 			}
 			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
@@ -627,9 +677,9 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		if err != nil {
 			status := http.StatusBadRequest
 			switch {
-			case strings.Contains(err.Error(), "not found"):
+			case errors.Is(err, state.ErrSessionNotFound):
 				status = http.StatusNotFound
-			case strings.Contains(err.Error(), "has ended"):
+			case errors.Is(err, state.ErrSessionEnded):
 				status = http.StatusConflict
 			}
 			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
@@ -658,7 +708,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		tags, err := s.registry.UpdateTags(id, body.Tags)
 		if err != nil {
 			status := http.StatusBadRequest
-			if strings.Contains(err.Error(), "not found") || errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, state.ErrSessionNotFound) || errors.Is(err, os.ErrNotExist) {
 				status = http.StatusNotFound
 			}
 			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
@@ -816,7 +866,7 @@ func (s *Server) sendJSON(response http.ResponseWriter, status int, body any, co
 	}
 	response.Header().Set("Vary", "Origin")
 	response.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization, x-sessions-creator-session, x-sessions-owner-id, x-sessions-client")
+	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization, x-sessions-creator-session, x-sessions-owner-id, x-sessions-client, x-sessions-filename")
 	response.WriteHeader(status)
 	if status == http.StatusNoContent {
 		return
@@ -947,6 +997,16 @@ func creatorHeaderValue(header http.Header, name string) (string, bool, error) {
 }
 
 func readJSON(request *http.Request, target any) error {
+	if request.ContentLength != 0 {
+		contentTypes := request.Header.Values("Content-Type")
+		if len(contentTypes) != 1 {
+			return errors.New("content-type must be application/json")
+		}
+		mediaType, _, err := mime.ParseMediaType(contentTypes[0])
+		if err != nil || mediaType != "application/json" {
+			return errors.New("content-type must be application/json")
+		}
+	}
 	reader := http.MaxBytesReader(nil, request.Body, maxJSONBody)
 	encoded, err := io.ReadAll(reader)
 	if err != nil {

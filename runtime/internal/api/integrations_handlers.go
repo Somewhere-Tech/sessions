@@ -247,6 +247,7 @@ func (s *Server) sendIntegrationBytes(
 	response.Header().Set("Vary", "Origin")
 	response.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
 	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization")
+	response.Header().Set("Access-Control-Expose-Headers", "X-Sessions-Schema-Version")
 	response.WriteHeader(status)
 	_, _ = response.Write(body)
 }

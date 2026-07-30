@@ -147,6 +147,43 @@ func TestLANRouteRequiresAuthorizationFromNonLoopbackPeer(t *testing.T) {
 	}
 }
 
+func TestLANActiveHostDoesNotWaitForBonjour(t *testing.T) {
+	config := state.Config{Port: 0, SettingsPath: t.TempDir() + "/settings.json"}
+	listener := newLANListener(config, http.NotFoundHandler(), machineIdentity{Name: "test", ID: "test-machine"})
+	listener.pickIP = func() (net.IP, error) { return net.ParseIP("127.0.0.1"), nil }
+	advertiseStarted := make(chan struct{})
+	allowAdvertise := make(chan struct{})
+	listener.advertise = func(net.IP, int, string, string) (discovery.Registration, error) {
+		close(advertiseStarted)
+		<-allowAdvertise
+		return &fakeBonjourRegistration{}, nil
+	}
+	t.Cleanup(func() { _, _ = listener.disable(false) })
+
+	enableDone := make(chan error, 1)
+	go func() {
+		_, err := listener.enable(false)
+		enableDone <- err
+	}()
+	<-advertiseStarted
+
+	hostDone := make(chan string, 1)
+	go func() { hostDone <- listener.activeHost() }()
+	select {
+	case host := <-hostDone:
+		if host != "127.0.0.1" {
+			t.Fatalf("active host = %q, want 127.0.0.1", host)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("activeHost blocked behind Bonjour advertisement")
+	}
+
+	close(allowAdvertise)
+	if err := <-enableDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRestoreLANWithoutInterfaceLogsAndContinues(t *testing.T) {
 	daemon := newTestDaemon(t)
 	daemon.config.UserStateRoot = daemon.config.StateRoot

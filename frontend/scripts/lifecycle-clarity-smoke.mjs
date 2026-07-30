@@ -24,6 +24,10 @@ const [
   machineMark,
   newSession,
   resumeDialog,
+  continueElsewhere,
+  productSidebar,
+  settingsView,
+  api,
   styles
 ] = await Promise.all([
   source('src/App.tsx'),
@@ -41,6 +45,10 @@ const [
   source('src/components/MachineMark.tsx'),
   source('src/components/NewSessionDialog.tsx'),
   source('src/components/ResumeDialog.tsx'),
+  source('src/components/ContinueElsewhereButton.tsx'),
+  source('src/components/ProductSidebar.tsx'),
+  source('src/components/SettingsView.tsx'),
+  source('src/api/sessionsd.ts'),
   source('src/styles/globals.css')
 ]);
 
@@ -61,7 +69,16 @@ assert.doesNotMatch(navigator, /session-nav-summary/);
 assert.match(navigator, />Resume <span aria-hidden>→<\/span><\/button>/);
 assert.match(navigator, /draggable=\{movingId !== session\.id\}/);
 assert.match(navigator, /text\/x-sessions-session-id/);
-assert.match(navigator, /Start a linked session…/);
+assert.match(navigator, /Start child session…/);
+assert.match(navigator, /Close tab <small>stays in Live<\/small>/);
+assert.match(navigator, /Set aside for later <small>keeps running<\/small>/);
+assert.match(navigator, /Continue with \{otherProviderLabel\}…/);
+assert.match(navigator, /ContinueElsewhereButton/);
+assert.match(navigator, /document\.addEventListener\('click', dismiss\)/);
+assert.match(navigator, /event\.key !== 'Escape'/);
+assert.match(continueElsewhere, /createPortal/);
+assert.match(continueElsewhere, /appearance === 'menuitem'/);
+assert.match(resumeDialog, /preferredDestinationApplied/);
 assert.match(navigator, /<MachineMark machine=\{machine\} size=\{17\} \/>/);
 assert.doesNotMatch(navigator, /<span>\{machine\}<\/span>/);
 assert.match(navigator, /<ProviderMark provider=\{providerName\} size=\{20\} \/>/);
@@ -114,6 +131,26 @@ assert.match(machineMark, /aria-label=\{machine\}/);
 assert.match(styles, /\.remote-message-actions\.is-agent\s*\{\s*justify-content:\s*flex-start;/);
 assert.doesNotMatch(styles, /\.remote-bubble-assistant\s*\{[^}]*cursor:\s*copy;/);
 assert.match(newSession, /\{browserOpen \? \([\s\S]*<DirectoryBrowser[\s\S]*\) : null\}/);
+const agentStep = newSession.indexOf('Choose an agent');
+const machineStep = newSession.indexOf('Choose a machine');
+const folderStep = newSession.indexOf('Choose a folder');
+assert.ok(agentStep > 0 && agentStep < machineStep && machineStep < folderStep, 'new-session steps must be Agent, Machine, Folder');
+assert.match(newSession, /This computer/);
+assert.match(newSession, /configuredMachines\.find\(\(machine\) => machine\.isDefault && isLocalServer\(machine\)\)/);
+assert.match(newSession, /<ModelPicker[\s\S]*options=\{modelOptions\}/);
+assert.match(newSession, /CLAUDE_MODEL_OPTIONS/);
+assert.match(newSession, /launcher-composer-footer/);
+assert.match(newSession, /listNewSessionCodexModels\(controller\.signal\)/);
+assert.match(api, /\/api\/models\/codex/);
+assert.doesNotMatch(newSession, /Provider default|More options|screen parsing|message parsing/);
+assert.match(newSession, /<summary><strong>Advanced<\/strong>/);
+assert.match(newSession, /Runs \{tool === 'claude-code' \? 'Claude' : 'Codex'\} just as it appears in Terminal/);
+assert.match(productSidebar, />Send feedback<\/span>/);
+assert.match(productSidebar, /onNavigate\('feedback'\)/);
+assert.match(settingsView, /Help shape Sessions/);
+assert.match(settingsView, /Share an idea or win/);
+assert.match(settingsView, /Report a bug/);
+assert.doesNotMatch(settingsView, /Reporting from an agent/);
 assert.match(resumeDialog, /Continue an earlier chat/);
 assert.match(resumeDialog, /\(\['all', 'claude', 'codex'\] as const\)/);
 assert.match(resumeDialog, /s\.title\?\.toLowerCase\(\)\.includes\(q\)/);

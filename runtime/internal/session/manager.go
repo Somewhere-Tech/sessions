@@ -144,6 +144,10 @@ type Manager struct {
 	cancel context.CancelFunc
 	ticker *time.Ticker
 
+	workerMu      sync.Mutex
+	workerWG      sync.WaitGroup
+	workersClosed bool
+
 	mu       sync.Mutex
 	runtimes map[string]*runtimeSession
 	hooks    globalHooks
@@ -230,14 +234,30 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 	manager.notify = selected.Notify
 	if manager.notify == nil {
 		manager.notify = func(payload PushPayload) {
-			go manager.push.Send(context.Background(), payload)
+			manager.startWorker(func() {
+				manager.push.Send(manager.ctx, payload)
+			})
 		}
 	}
 	manager.registry.SetTerminalObservers(manager.recordRunnerExited, manager.recordReaped)
 	manager.recordDaemonRestart(ctx)
 	manager.ticker = time.NewTicker(selected.ActivityInterval)
-	go manager.activityLoop()
+	manager.startWorker(manager.activityLoop)
 	return manager
+}
+
+func (m *Manager) startWorker(run func()) bool {
+	m.workerMu.Lock()
+	defer m.workerMu.Unlock()
+	if m.workersClosed {
+		return false
+	}
+	m.workerWG.Add(1)
+	go func() {
+		defer m.workerWG.Done()
+		run()
+	}()
+	return true
 }
 
 func (m *Manager) Registry() *state.Registry { return m.registry }
@@ -258,7 +278,9 @@ func (m *Manager) DeepDiagnostics() []map[string]any    { return m.registry.Deep
 func (m *Manager) UpdateTags(id string, tags map[string]string) (map[string]string, error) {
 	return m.registry.UpdateTags(id, tags)
 }
-func (m *Manager) Tags(id string) (map[string]string, error) { return m.registry.Tags(id) }
+func (m *Manager) Tags(id string) (map[string]string, error) {
+	return m.registry.Tags(id)
+}
 
 // UpdateDisplayParent changes only the user's visual grouping. The trusted
 // creator ledger remains authoritative for who actually created the session.
@@ -269,11 +291,11 @@ func (m *Manager) UpdateDisplayParent(id, parentID string) (string, error) {
 		byID[info.ID] = info
 	}
 	if _, exists := byID[id]; !exists {
-		return "", fmt.Errorf("session %s not found", id)
+		return "", fmt.Errorf("%w: session %s", state.ErrSessionNotFound, id)
 	}
 	if parentID != "" {
 		if _, exists := byID[parentID]; !exists {
-			return "", fmt.Errorf("parent session %s not found", parentID)
+			return "", fmt.Errorf("%w: parent session %s", state.ErrSessionNotFound, parentID)
 		}
 	}
 
@@ -315,10 +337,10 @@ func (m *Manager) UpdateSetAside(id string, setAside bool) (*int64, error) {
 		}
 	}
 	if current == nil {
-		return nil, fmt.Errorf("session %s not found", id)
+		return nil, fmt.Errorf("%w: session %s", state.ErrSessionNotFound, id)
 	}
 	if current.Exited {
-		return nil, errors.New("this session has ended; use archive to hide an ended record")
+		return nil, fmt.Errorf("%w; use archive to hide an ended record", state.ErrSessionEnded)
 	}
 	return m.registry.UpdateSetAside(id, setAside)
 }
@@ -1165,14 +1187,14 @@ func (m *Manager) MessageRelays(ctx context.Context, id string) ([]ledger.Messag
 func (m *Manager) ConfigureModel(ctx context.Context, id, model, effort string) (state.SessionInfo, error) {
 	current, ok := m.registry.Get(id)
 	if !ok {
-		return state.SessionInfo{}, fmt.Errorf("session %s not found", id)
+		return state.SessionInfo{}, fmt.Errorf("%w: session %s", state.ErrSessionNotFound, id)
 	}
 	info := current.Info()
 	if info.Kind != state.KindCodexAppServer && info.Kind != state.KindClaudeStructured {
 		return state.SessionInfo{}, errors.New("model changes are available only for Rich Claude and Rich Codex sessions; Terminal sessions keep their provider's own controls")
 	}
 	if info.Working {
-		return state.SessionInfo{}, fmt.Errorf("session is working; wait for the turn to finish with `sessions wait %s`", id)
+		return state.SessionInfo{}, fmt.Errorf("%w; wait for the turn to finish with `sessions wait %s`", state.ErrSessionWorking, id)
 	}
 	model = strings.TrimSpace(model)
 	effort = strings.ToLower(strings.TrimSpace(effort))
@@ -1211,13 +1233,20 @@ func (m *Manager) ConfigureModel(ctx context.Context, id, model, effort string) 
 func (m *Manager) ModelOptions(ctx context.Context, id string) ([]codexapp.Model, error) {
 	current, ok := m.registry.Get(id)
 	if !ok {
-		return nil, fmt.Errorf("session %s not found", id)
+		return nil, fmt.Errorf("%w: session %s", state.ErrSessionNotFound, id)
 	}
 	info := current.Info()
 	if info.Kind != state.KindCodexAppServer {
 		return nil, errors.New("the live model catalog is available for Rich Codex sessions")
 	}
 	return m.listModels(ctx, info.Cmd)
+}
+
+// CodexModelOptions returns the same live provider catalog used to validate
+// Rich Codex sessions, but does not require a session to exist yet. The native
+// launcher uses it to present real choices before creating a runtime.
+func (m *Manager) CodexModelOptions(ctx context.Context) ([]codexapp.Model, error) {
+	return m.listModels(ctx, "codex")
 }
 
 func (m *Manager) captureFirstMessageDescription(id, data string) {
@@ -1329,6 +1358,10 @@ func (m *Manager) Close() {
 	for _, runtime := range runtimes {
 		runtime.stop()
 	}
+	m.workerMu.Lock()
+	m.workersClosed = true
+	m.workerMu.Unlock()
+	m.workerWG.Wait()
 }
 
 func (m *Manager) manage(session *state.Session) *runtimeSession {
@@ -1375,7 +1408,14 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 	if !m.options.DisableWatchers {
 		runtime.startWatcher(info)
 	}
-	go runtime.observe()
+	if !m.startWorker(runtime.observe) {
+		runtime.stop()
+		m.mu.Lock()
+		if m.runtimes[info.ID] == runtime {
+			delete(m.runtimes, info.ID)
+		}
+		m.mu.Unlock()
+	}
 	return runtime
 }
 
@@ -1615,7 +1655,7 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 	r.mu.Lock()
 	r.watcher = watcher
 	r.mu.Unlock()
-	go func() {
+	if !r.manager.startWorker(func() {
 		for watcher != nil {
 			select {
 			case event, ok := <-watcher.Events:
@@ -1643,7 +1683,9 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 				return
 			}
 		}
-	}()
+	}) {
+		watcher.Close()
+	}
 }
 
 func (m *Manager) waitReady(ctx context.Context, runtime *runtimeSession) {
@@ -1802,6 +1844,14 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 			}
 			metadataPath := filepath.Join(m.config.RunnerStateDir, id+".json")
 			metadata, metadataErr := state.ReadRunnerMetadata(metadataPath)
+			if metadataErr != nil {
+				// A torn, temporarily unreadable, or forward-version metadata
+				// document is absence of evidence, not evidence that the
+				// runner died. Preserve every artifact for a later retry.
+				log.Printf("[discover] runner %s metadata unreadable — leaving it alone: %v", id, metadataErr)
+				delete(candidates, id)
+				continue
+			}
 			probe := metadata.Info
 			probe.ID = id
 			probe.SocketPath = state.For(m.config.RunnerStateDir, id).Socket
@@ -1823,9 +1873,14 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 				delete(candidates, id)
 				continue
 			}
-			if metadataErr == nil && metadata.Info.PID > 0 && m.options.ProcessAlive(metadata.Info.PID) {
+			if metadata.Info.PID <= 0 {
+				log.Printf("[discover] runner %s has no trustworthy pid — leaving it alone", id)
+				delete(candidates, id)
+				continue
+			}
+			if m.options.ProcessAlive(metadata.Info.PID) {
 				command := m.options.ProcessCommand(metadata.Info.PID)
-				if runnerCommandMatches(command, id, metadata.Info.Cmd) {
+				if runnerCommandMatches(command, id, metadata.Info.Cmd, metadata.Kind) {
 					log.Printf("[discover] runner %s unreachable but pid %d alive — leaving it alone", id, metadata.Info.PID)
 					continue
 				}
@@ -1843,7 +1898,11 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 	var cleanupErrors []error
 	for _, id := range ids {
 		if _, dead := deadArtifacts[id]; dead {
-			for _, suffix := range []string{".sock", ".json", ".codexapp.jsonl", ".claudep.jsonl"} {
+			// Structured histories are durable conversation evidence, not
+			// disposable runner coordination artifacts. An unreachable or dead
+			// runner may lose its socket and metadata, but discovery must never
+			// erase the transcript needed to inspect or continue that session.
+			for _, suffix := range []string{".sock", ".json"} {
 				if removeErr := os.Remove(filepath.Join(m.config.RunnerStateDir, id+suffix)); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 					cleanupErrors = append(cleanupErrors, removeErr)
 				}
@@ -1909,7 +1968,7 @@ func (m *Manager) orphanPlistCandidates() (map[string]struct{}, map[string]struc
 		}
 		if m.options.ProcessAlive(metadata.Info.PID) {
 			command := m.options.ProcessCommand(metadata.Info.PID)
-			if runnerCommandMatches(command, id, metadata.Info.Cmd) {
+			if runnerCommandMatches(command, id, metadata.Info.Cmd, metadata.Kind) {
 				continue
 			}
 			log.Printf("[discover] orphan runner %s pid %d is PID reuse (%s) — treating as dead", id, metadata.Info.PID, truncate(command, 60))
@@ -1920,8 +1979,16 @@ func (m *Manager) orphanPlistCandidates() (map[string]struct{}, map[string]struc
 	return candidates, deadArtifacts
 }
 
-func runnerCommandMatches(command, id, expectedCommand string) bool {
+func runnerCommandMatches(command, id, expectedCommand, kind string) bool {
 	if command == "" || strings.Contains(command, "runner.js") || strings.Contains(command, "runner.ts") || strings.Contains(command, id) {
+		return true
+	}
+	// Structured Codex and Claude sessions are hosted directly by
+	// sessions-runner, so their process command does not contain the provider
+	// command or session ID. Treat another Sessions runner at the recorded PID
+	// as live rather than risk reaping a real session during a socket outage.
+	if (kind == state.KindCodexAppServer || kind == state.KindClaudeStructured) &&
+		strings.Contains(strings.ToLower(command), "sessions-runner") {
 		return true
 	}
 	expectedBase := filepath.Base(strings.TrimSpace(expectedCommand))

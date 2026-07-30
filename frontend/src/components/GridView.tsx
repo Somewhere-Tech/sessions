@@ -327,7 +327,7 @@ function GridCell({ session, status, icon, onPopOut, onExpand, onEnd }: CellProp
                 e.stopPropagation();
                 setEndConfirm(true);
               }}
-              title="End the running process. Closing a view does not."
+              title="End the running process. Closing a tab does not."
               aria-label="End session"
             >■</button>
           )

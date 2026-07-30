@@ -445,7 +445,7 @@ func (r *Registry) RegisterMetadata(ctx context.Context, runner proto.Runner, me
 // survives daemon restart and runner re-adoption.
 func (r *Registry) UpdateTags(id string, requested map[string]string) (map[string]string, error) {
 	if !validMetadataID(id) {
-		return nil, fmt.Errorf("session %s not found", id)
+		return nil, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 	}
 	tags, err := NormalizeTags(requested)
 	if err != nil {
@@ -455,6 +455,9 @@ func (r *Registry) UpdateTags(id string, requested map[string]string) (map[strin
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
 	encoded, err := os.ReadFile(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+		}
 		return nil, fmt.Errorf("read session tags: %w", err)
 	}
 	var metadata Metadata
@@ -476,12 +479,15 @@ func (r *Registry) UpdateTags(id string, requested map[string]string) (map[strin
 // not modified by drag-and-drop in the app.
 func (r *Registry) UpdateDisplayParent(id, parentID string) (string, error) {
 	if !validMetadataID(id) {
-		return "", fmt.Errorf("session %s not found", id)
+		return "", fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 	}
 	session, live := r.Get(id)
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
 	encoded, err := os.ReadFile(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+		}
 		return "", fmt.Errorf("read session display parent: %w", err)
 	}
 	var metadata Metadata
@@ -504,12 +510,15 @@ func (r *Registry) UpdateDisplayParent(id, parentID string) (string, error) {
 // metadata and the absence remains the default.
 func (r *Registry) UpdateSetAside(id string, setAside bool) (*int64, error) {
 	if !validMetadataID(id) {
-		return nil, fmt.Errorf("session %s not found", id)
+		return nil, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 	}
 	session, live := r.Get(id)
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
 	encoded, err := os.ReadFile(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+		}
 		return nil, fmt.Errorf("read session working-set state: %w", err)
 	}
 	var metadata Metadata
@@ -533,7 +542,7 @@ func (r *Registry) UpdateSetAside(id string, setAside bool) (*int64, error) {
 
 func (r *Registry) Tags(id string) (map[string]string, error) {
 	if !validMetadataID(id) {
-		return nil, fmt.Errorf("session %s not found", id)
+		return nil, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 	}
 	if session, ok := r.Get(id); ok {
 		return CloneTags(session.Info().Tags), nil
@@ -541,7 +550,7 @@ func (r *Registry) Tags(id string) (map[string]string, error) {
 	metadata, err := readRunnerMetadata(filepath.Join(r.config.RunnerStateDir, id+".json"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("session %s not found", id)
+			return nil, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 		}
 		return nil, fmt.Errorf("read session tags: %w", err)
 	}
@@ -687,7 +696,7 @@ func (r *Registry) Kill(ctx context.Context, id string, _ bool) bool {
 func (r *Registry) RequestKill(ctx context.Context, id string, _ bool) error {
 	session, ok := r.Get(id)
 	if !ok {
-		return fmt.Errorf("session %s not found", id)
+		return fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 	}
 	return session.RequestKill(ctx)
 }
@@ -700,7 +709,7 @@ func (r *Registry) Input(ctx context.Context, id, data string) bool {
 func (r *Registry) ConfigureModel(ctx context.Context, id, model, effort string) (SessionInfo, error) {
 	session, ok := r.Get(id)
 	if !ok {
-		return SessionInfo{}, fmt.Errorf("session %s not found", id)
+		return SessionInfo{}, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 	}
 	if err := session.ConfigureModel(ctx, model, effort); err != nil {
 		return SessionInfo{}, err

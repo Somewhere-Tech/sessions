@@ -70,6 +70,37 @@ Exercise PowerShell, `cmd.exe`, Claude, and Codex:
 - Confirm no update path can be authorized solely by an ordinary paired-device
   credential.
 
+### Read-only live-update comparison
+
+With at least one disposable runner active, use the read-only evidence collector
+to record an unelevated baseline before starting the update:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File scripts/collect-windows-host-evidence.ps1 `
+  -LiveHost `
+  -RequireRunner `
+  -SourceCommit (git rev-parse HEAD) `
+  -OutputPath .\windows-host-before.json
+```
+
+After the update completes, run the same read-only collector against the new
+runtime and compare it with the baseline:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File scripts/collect-windows-host-evidence.ps1 `
+  -LiveHost `
+  -RequireRunner `
+  -SourceCommit (git rev-parse HEAD) `
+  -CompareBaseline .\windows-host-before.json `
+  -OutputPath .\windows-host-after.json
+```
+
+`-CompareBaseline` requires every baseline runner and provider-child PID to
+remain present. The collector does not stop processes, modify the installation,
+or collect command lines, transcripts, credentials, or session content.
+
 ## Release evidence
 
 Save only non-sensitive evidence: source revision, package hashes, signer,

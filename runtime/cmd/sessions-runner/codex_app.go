@@ -322,7 +322,7 @@ func (r *codexAppRunner) acceptLoop() {
 }
 
 func (r *codexAppRunner) serveClient(conn net.Conn) {
-	c := &client{conn: conn}
+	c := newClient(conn)
 	r.streamMu.Lock()
 	r.mu.Lock()
 	r.clients[c] = struct{}{}
@@ -339,10 +339,10 @@ func (r *codexAppRunner) serveClient(conn net.Conn) {
 	}
 	r.streamMu.Unlock()
 	if err != nil {
-		_ = conn.Close()
+		c.close()
 	}
 	defer func() {
-		_ = conn.Close()
+		c.close()
 		r.mu.Lock()
 		delete(r.clients, c)
 		r.mu.Unlock()
@@ -530,9 +530,7 @@ func (r *codexAppRunner) appendStructured(raw json.RawMessage) {
 	}
 	r.mu.Unlock()
 	for _, c := range clients {
-		if err := c.write(proto.Structured, raw); err != nil {
-			_ = c.conn.Close()
-		}
+		c.enqueue(proto.Structured, raw)
 	}
 }
 
@@ -611,7 +609,7 @@ func (r *codexAppRunner) shutdown(permanent bool, code int) {
 		payload, _ := json.Marshal(exit)
 		for _, c := range clients {
 			_ = c.write(proto.Exit, payload)
-			_ = c.conn.Close()
+			c.close()
 		}
 		if r.client != nil {
 			_ = r.client.Close()

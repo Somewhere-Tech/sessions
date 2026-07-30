@@ -13,8 +13,7 @@ interface Props {
 
 // Tiny "Copy" button with built-in flash-to-Copied feedback. No toasts,
 // no global state — the button itself shows the success/fail state for
-// 1.4s, then reverts. Matches what sessions-tmux had on MessageBlock /
-// CommandBlock / FileCard.
+// 1.4s, then reverts consistently across message and activity cards.
 export function CopyButton({ getText, className, label = 'Copy', iconOnly = false }: Props): JSX.Element {
   const [state, setState] = useState<'idle' | 'ok' | 'err'>('idle');
 

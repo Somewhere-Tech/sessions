@@ -202,4 +202,6 @@ Common checks:
 - **Lost lanes:** run `sessions recover`, review the plan, then opt in with
   `sessions recover --reopen`.
 
-For remote setup and operational recovery, see the [runbooks](RUNBOOKS.md).
+For remote setup, see [Network security](NETWORK_SECURITY.md). For signed
+updates, rollback boundaries, and release recovery, see
+[Release and distribution](RELEASE.md).

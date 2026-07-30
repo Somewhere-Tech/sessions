@@ -1072,6 +1072,115 @@ func TestDiscoveryPreservesUnreachableLivePID(t *testing.T) {
 	}
 }
 
+func TestDiscoveryRecognizesStructuredRunnerAndPreservesHistory(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.RunnerStateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "00000000-0000-4000-8000-000000000098"
+	paths := state.For(config.RunnerStateDir, id)
+	if err := os.WriteFile(paths.Socket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Structured, []byte("{\"source\":\"codex-app-server\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteMetadata(paths.Meta, state.Metadata{
+		ID: id, Kind: state.KindCodexAppServer, Cmd: "codex", Cwd: root,
+		Cols: 300, Rows: 50, CreatedAt: 1, PID: 1234, SockPath: paths.Socket,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, DiscoveryRetries: 1, DiscoveryDelay: time.Millisecond,
+		ProcessAlive:   func(int) bool { return true },
+		ProcessCommand: func(int) string { return "/Applications/Sessions.app/Contents/Resources/sessions-runner" },
+	})
+	t.Cleanup(manager.Close)
+	if err := manager.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.Socket, paths.Meta, paths.Structured} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("discovery removed live structured-session state %s: %v", path, err)
+		}
+	}
+}
+
+func TestDiscoveryNeverDeletesStructuredHistoryForDeadRunner(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.RunnerStateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "00000000-0000-4000-8000-000000000097"
+	paths := state.For(config.RunnerStateDir, id)
+	for _, historyPath := range []string{paths.Structured, paths.ClaudeP} {
+		if err := os.WriteFile(historyPath, []byte("{\"retained\":true}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(paths.Socket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteMetadata(paths.Meta, state.Metadata{
+		ID: id, Kind: state.KindCodexAppServer, Cmd: "codex", Cwd: root,
+		Cols: 300, Rows: 50, CreatedAt: 1, PID: 1234, SockPath: paths.Socket,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, DiscoveryRetries: 1, DiscoveryDelay: time.Millisecond,
+		ProcessAlive:   func(int) bool { return true },
+		ProcessCommand: func(int) string { return "/usr/bin/unrelated-process" },
+	})
+	t.Cleanup(manager.Close)
+	if err := manager.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, coordinationPath := range []string{paths.Socket, paths.Meta} {
+		if _, err := os.Stat(coordinationPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("discovery left dead coordination artifact %s: %v", coordinationPath, err)
+		}
+	}
+	for _, historyPath := range []string{paths.Structured, paths.ClaudeP} {
+		if _, err := os.Stat(historyPath); err != nil {
+			t.Fatalf("discovery deleted structured history %s: %v", historyPath, err)
+		}
+	}
+}
+
+func TestDiscoveryPreservesArtifactsWhenMetadataIsCorrupt(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.RunnerStateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "00000000-0000-4000-8000-000000000096"
+	paths := state.For(config.RunnerStateDir, id)
+	for _, path := range []string{paths.Socket, paths.Structured} {
+		if err := os.WriteFile(path, []byte("sacred"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(paths.Meta, []byte(`{"id":"`+id+`","pid":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, DiscoveryRetries: 1, DiscoveryDelay: time.Millisecond,
+	})
+	t.Cleanup(manager.Close)
+	if err := manager.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.Socket, paths.Meta, paths.Structured} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("discovery removed state with ambiguous metadata %s: %v", path, err)
+		}
+	}
+}
+
 func testConfig(root string) state.Config {
 	return state.Config{
 		Host: "127.0.0.1", Port: 8787,

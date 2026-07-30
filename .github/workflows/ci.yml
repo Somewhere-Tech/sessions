@@ -76,10 +76,7 @@ jobs:
         run: |
           npm --prefix frontend run typecheck
           npm --prefix frontend run build
-          npm --prefix frontend run test:markdown
-          npm --prefix frontend run test:structured-events
-          npm --prefix frontend run test:structured-view
-          npm --prefix frontend run test:window-scope
+          npm --prefix frontend run test:smoke
 
       - name: Verify native shell
         run: cargo test --manifest-path src-tauri/Cargo.toml

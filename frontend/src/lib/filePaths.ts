@@ -22,6 +22,15 @@ function linkifyText(text: string, cwd: string): string {
     // Strip leading "./" / "../" prefix for the version check
     const bare = path.replace(/^\.{1,2}\//, '').replace(/^\//, '');
     if (VERSION_RE.test(bare)) return _full;
+    // Avoid turning URL-shaped prose (example.com/index.html) into a local
+    // editor link. Relative repository paths remain useful and resolve under
+    // the session workspace.
+    const firstSegment = bare.split('/')[0] ?? '';
+    const hostnameShaped = !firstSegment.startsWith('.')
+      && /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/.test(firstSegment);
+    if (!path.startsWith('/') && !path.startsWith('./') && !path.startsWith('../') && hostnameShaped) {
+      return _full;
+    }
 
     // Build the absolute filesystem path
     const absPath = path.startsWith('/') ? path : `${cwd}/${path.replace(/^\.\//, '')}`;
@@ -39,6 +48,7 @@ export function linkifyFilePaths(html: string, cwd: string): string {
   let result = '';
   let i = 0;
   let insideAnchor = 0;
+  let insidePre = 0;
   while (i < html.length) {
     if (html[i] === '<') {
       const end = html.indexOf('>', i);
@@ -49,13 +59,15 @@ export function linkifyFilePaths(html: string, cwd: string): string {
       const tag = html.slice(i, end + 1);
       if (/^<a\b/i.test(tag)) insideAnchor++;
       else if (/^<\/a\s*>/i.test(tag)) insideAnchor--;
+      else if (/^<pre\b/i.test(tag)) insidePre++;
+      else if (/^<\/pre\s*>/i.test(tag)) insidePre--;
       result += tag;
       i = end + 1;
     } else {
       const next = html.indexOf('<', i);
       const stop = next < 0 ? html.length : next;
       const text = html.slice(i, stop);
-      result += insideAnchor > 0 ? text : linkifyText(text, cwd);
+      result += insideAnchor > 0 || insidePre > 0 ? text : linkifyText(text, cwd);
       i = stop;
     }
   }

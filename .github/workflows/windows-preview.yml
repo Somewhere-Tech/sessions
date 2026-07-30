@@ -105,13 +105,7 @@ jobs:
         run: |
           npm --prefix frontend run typecheck
           npm --prefix frontend run build
-          npm --prefix frontend run test:markdown
-          npm --prefix frontend run test:native-credentials
-          npm --prefix frontend run test:structured-events
-          npm --prefix frontend run test:structured-view
-          npm --prefix frontend run test:resume-partial
-          npm --prefix frontend run test:fleet-clarity
-          npm --prefix frontend run test:window-scope
+          npm --prefix frontend run test:smoke
 
       - name: Verify native shell and Windows host contracts
         run: |

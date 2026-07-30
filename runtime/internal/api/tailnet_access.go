@@ -98,9 +98,9 @@ func (s *tailnetAccessService) requestForTransport(
 		name = "Sessions device"
 	}
 
-	now := s.now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now().UTC()
 	s.pruneLocked(now)
 	for _, existing := range s.requests {
 		if existing.Login == identity.Login &&
@@ -109,7 +109,7 @@ func (s *tailnetAccessService) requestForTransport(
 			existing.Status != "denied" {
 			return tailnetAccessRequestResponse{
 				RequestID: existing.ID, RequestSecret: existing.Secret,
-				ExpiresAt: existing.ExpiresAt, Status: "pending",
+				ExpiresAt: existing.ExpiresAt, Status: existing.Status,
 			}, nil
 		}
 	}
@@ -167,9 +167,9 @@ func (s *tailnetAccessService) claimForTransport(
 	if !validMachineID(requestID) || secret == "" || len(secret) > 512 {
 		return pairingClaimResponse{}, errTailnetAccessGone
 	}
-	now := s.now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now().UTC()
 	s.pruneLocked(now)
 	request, ok := s.requests[requestID]
 	if !ok ||
@@ -206,9 +206,9 @@ func (s *tailnetAccessService) claimForTransport(
 }
 
 func (s *tailnetAccessService) list() []tailnetAccessRequestView {
-	now := s.now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now().UTC()
 	s.pruneLocked(now)
 	requests := make([]tailnetAccessRequestView, 0, len(s.requests))
 	for _, request := range s.requests {
@@ -233,9 +233,9 @@ func (s *tailnetAccessService) decide(requestID, decision string) (tailnetAccess
 	if !validMachineID(requestID) || (decision != "accept" && decision != "deny") {
 		return tailnetAccessRequestView{}, errTailnetAccessGone
 	}
-	now := s.now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now().UTC()
 	s.pruneLocked(now)
 	request, ok := s.requests[requestID]
 	if !ok {
@@ -456,6 +456,9 @@ func (s *Server) handleTailnetAccessAdminRoute(response http.ResponseWriter, req
 	}
 	if collection == "" {
 		return false
+	}
+	if !s.requireLocalPrincipal(response, request, corsOrigin, "Access request administration") {
+		return true
 	}
 	if request.URL.Path == collection {
 		if request.Method != http.MethodGet {

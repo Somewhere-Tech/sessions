@@ -96,6 +96,55 @@ func TestGlobalParsingStopsAtCommandAndFirstSeparator(t *testing.T) {
 	}
 }
 
+func TestTrailingJSONForSessionAndLaneCreation(t *testing.T) {
+	const (
+		sessionID = "00000000-0000-4000-8000-000000000091"
+		laneID    = "00000000-0000-4000-8000-000000000092"
+	)
+	var lane runLaneRequest
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions":
+			response.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(response, `{"id":"`+sessionID+`"}`)
+		case request.Method == http.MethodPost && request.URL.Path == "/api/lanes":
+			if err := json.NewDecoder(request.Body).Decode(&lane); err != nil {
+				t.Errorf("decode lane request: %v", err)
+			}
+			response.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(response, `{"id":"`+laneID+`"}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	for _, test := range []struct {
+		name string
+		args []string
+		id   string
+	}{
+		{name: "new", args: []string{"--host", server.URL, "new", "--cmd", "/bin/sh", "--json"}, id: sessionID},
+		{name: "run", args: []string{"--host", server.URL, "run", "--json", "--", "tool", "--json"}, id: laneID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(test.args, strings.NewReader(""), &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			var output map[string]any
+			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil || output["id"] != test.id {
+				t.Fatalf("output=%q decoded=%#v err=%v", stdout.String(), output, err)
+			}
+		})
+	}
+	if lane.Cmd != "tool" || !reflect.DeepEqual(lane.Args, []string{"--json"}) {
+		t.Fatalf("run child argv = cmd %q args %#v, want tool [--json]", lane.Cmd, lane.Args)
+	}
+}
+
 func TestDeclarativeHelpIsCompleteDailyFirstAndSuccessful(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var stdout, stderr bytes.Buffer

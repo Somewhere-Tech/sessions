@@ -73,7 +73,7 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 	var body map[string]any
 	decodeBody(t, health, &body)
-	for _, key := range []string{"ok", "name", "version", "listen", "lan", "system", "compatibility", "discovering", "sessionsLoaded"} {
+	for _, key := range []string{"ok", "name", "version", "listen", "lan", "access", "system", "compatibility", "discovering", "sessionsLoaded"} {
 		if _, exists := body[key]; !exists {
 			t.Errorf("health missing key %q: %#v", key, body)
 		}
@@ -85,6 +85,10 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	lan := body["lan"].(map[string]any)
 	if lan["enabled"] != false || lan["url"] != nil {
 		t.Fatalf("unexpected LAN health shape: %#v", lan)
+	}
+	access := body["access"].(map[string]any)
+	if access["open"] != false {
+		t.Fatalf("unexpected access health shape: %#v", access)
 	}
 	system := body["system"].(map[string]any)
 	if system["os"] == "" || system["arch"] == "" {
@@ -118,6 +122,22 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 }
 
+func TestKnownMutationRoutesReturnMethodNotAllowed(t *testing.T) {
+	daemon := newTestDaemon(t)
+	for _, path := range []string{
+		"/api/retention/gc",
+		"/api/retention/archive",
+		"/api/worktrees",
+		"/api/worktrees/clean",
+		"/api/lanes",
+	} {
+		response := serve(t, daemon.handler, http.MethodPatch, path, nil, "127.0.0.1:4321", nil)
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestAuthAndOriginMatrix(t *testing.T) {
 	daemon := newTestDaemon(t)
 	external := "198.51.100.25:5555"
@@ -135,10 +155,70 @@ func TestAuthAndOriginMatrix(t *testing.T) {
 		{name: "query token", remote: external, target: "/api/sessions?token=" + testToken, wantStatus: http.StatusOK},
 		{name: "loopback exempt", remote: "127.0.0.1:4567", target: "/api/sessions", wantStatus: http.StatusOK},
 		{name: "xff defeats exemption", remote: "127.0.0.1:4567", target: "/api/sessions", headers: http.Header{"X-Forwarded-For": {"127.0.0.1"}}, wantStatus: http.StatusUnauthorized},
-		{name: "evil origin not echoed", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://evil.test"}}, wantStatus: http.StatusOK},
+		{name: "evil origin response unreadable", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://evil.test"}}, wantStatus: http.StatusOK},
 		{name: "hosted tech allowed", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://sessions.somewhere.tech"}}, wantStatus: http.StatusOK, wantOrigin: "https://sessions.somewhere.tech"},
 		{name: "hosted canonical origin allowed", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://sessions.somewhere.site"}}, wantStatus: http.StatusOK, wantOrigin: "https://sessions.somewhere.site"},
 	}
+
+	t.Run("hostile browser cannot create a loopback session", func(t *testing.T) {
+		before := len(daemon.registry.List(true))
+		body := strings.NewReader(`{"cmd":"/bin/sh","args":["-c","touch /tmp/sessions-origin-bypass"]}`)
+		response := serve(t, daemon.handler, http.MethodPost, "/api/sessions", body, "127.0.0.1:4567", http.Header{
+			"Origin":       {"https://evil.test"},
+			"Content-Type": {"text/plain"},
+		})
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusForbidden, response.Body.String())
+		}
+		if after := len(daemon.registry.List(true)); after != before {
+			t.Fatalf("hostile origin changed session count from %d to %d", before, after)
+		}
+	})
+
+	t.Run("native JSON endpoints reject simple browser content types", func(t *testing.T) {
+		before := len(daemon.registry.List(true))
+		response := serve(t, daemon.handler, http.MethodPost, "/api/sessions",
+			strings.NewReader(`{"cmd":"/bin/sh"}`), "127.0.0.1:4567",
+			http.Header{"Content-Type": {"text/plain"}})
+		if response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), "content-type must be application/json") {
+			t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+		}
+		if after := len(daemon.registry.List(true)); after != before {
+			t.Fatalf("wrong content type changed session count from %d to %d", before, after)
+		}
+	})
+	t.Run("credential-bearing remote write remains available", func(t *testing.T) {
+		before := len(daemon.registry.List(true))
+		response := serve(t, daemon.handler, http.MethodPost, "/api/sessions",
+			strings.NewReader(`{"cmd":"/bin/sh"}`), external,
+			http.Header{
+				"Authorization": {"Bearer " + testToken},
+				"Content-Type":  {"application/json"},
+				"Origin":        {"https://client.example"},
+			})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusCreated, response.Body.String())
+		}
+		if after := len(daemon.registry.List(true)); after != before+1 {
+			t.Fatalf("credential-bearing write changed session count from %d to %d", before, after)
+		}
+	})
+	t.Run("arbitrary localhost port has no ambient write authority", func(t *testing.T) {
+		before := len(daemon.registry.List(true))
+		response := serve(t, daemon.handler, http.MethodPost, "/api/sessions",
+			strings.NewReader(`{"cmd":"/bin/sh"}`), "127.0.0.1:4567",
+			http.Header{
+				"Content-Type": {"application/json"},
+				"Origin":       {"http://localhost:3000"},
+			})
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusForbidden, response.Body.String())
+		}
+		if after := len(daemon.registry.List(true)); after != before {
+			t.Fatalf("untrusted localhost origin changed session count from %d to %d", before, after)
+		}
+	})
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			response := serve(t, daemon.handler, http.MethodGet, test.target, nil, test.remote, test.headers)
@@ -162,7 +242,38 @@ func TestAuthAndOriginMatrix(t *testing.T) {
 		if opened.Code != http.StatusOK {
 			t.Fatalf("open escape hatch status = %d, body=%s", opened.Code, opened.Body.String())
 		}
+		openHealth := serve(t, daemon.handler, http.MethodGet, "/api/health", nil, external, nil)
+		var openBody map[string]any
+		decodeBody(t, openHealth, &openBody)
+		if openBody["access"].(map[string]any)["open"] != true {
+			t.Fatalf("health did not expose open access state: %#v", openBody["access"])
+		}
 	})
+}
+
+func TestTrustedAmbientWriteOrigin(t *testing.T) {
+	tests := []struct {
+		name   string
+		origin string
+		want   bool
+	}{
+		{name: "macOS Tauri", origin: "tauri://localhost", want: true},
+		{name: "Windows Tauri", origin: "http://tauri.localhost", want: true},
+		{name: "checked in dev server", origin: "http://localhost:5273", want: true},
+		{name: "daemon same origin", origin: "http://localhost:8787", want: true},
+		{name: "daemon IPv6 same origin", origin: "http://[::1]:8787", want: true},
+		{name: "LAN daemon same origin", origin: "http://mini.tail.test:8787", want: true},
+		{name: "arbitrary local port", origin: "http://localhost:3000", want: false},
+		{name: "hosted client needs credential", origin: "https://sessions.somewhere.tech", want: false},
+		{name: "untrusted site", origin: "https://evil.test", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := trustedAmbientWriteOrigin(test.origin, "127.0.0.1", 8787, "mini.tail.test"); got != test.want {
+				t.Fatalf("trustedAmbientWriteOrigin(%q) = %v, want %v", test.origin, got, test.want)
+			}
+		})
+	}
 }
 
 func TestTokenCreationAndJSONBodyLimit(t *testing.T) {
@@ -476,6 +587,20 @@ func TestRichSessionModelControlAppliesToNextTurn(t *testing.T) {
 	})
 	t.Cleanup(manager.Close)
 	daemon.handler = New(daemon.config, manager)
+
+	newSessionOptions := serve(
+		t,
+		daemon.handler,
+		http.MethodGet,
+		"/api/models/codex",
+		nil,
+		"127.0.0.1:1",
+		nil,
+	)
+	if newSessionOptions.Code != http.StatusOK || !strings.Contains(newSessionOptions.Body.String(), `"id":"gpt-next"`) {
+		t.Fatalf("new-session model options status=%d body=%s", newSessionOptions.Code, newSessionOptions.Body.String())
+	}
+
 	created, err := manager.Create(context.Background(), state.CreateSessionRequest{
 		Cmd: "codex", Cwd: daemon.root, Kind: state.KindCodexAppServer,
 	})
@@ -624,6 +749,10 @@ func serve(t *testing.T, handler http.Handler, method, target string, body io.Re
 		for _, value := range values {
 			request.Header.Add(key, value)
 		}
+	}
+	if body != nil && request.Header.Get("Content-Type") == "" &&
+		!strings.Contains(target, "/upload") {
+		request.Header.Set("Content-Type", "application/json")
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

@@ -252,7 +252,7 @@ func (r *claudeStructuredRunner) acceptLoop() {
 }
 
 func (r *claudeStructuredRunner) serveClient(connection net.Conn) {
-	c := &client{conn: connection}
+	c := newClient(connection)
 	r.streamMu.Lock()
 	r.mu.Lock()
 	r.clients[c] = struct{}{}
@@ -269,10 +269,10 @@ func (r *claudeStructuredRunner) serveClient(connection net.Conn) {
 	}
 	r.streamMu.Unlock()
 	if err != nil {
-		_ = connection.Close()
+		c.close()
 	}
 	defer func() {
-		_ = connection.Close()
+		c.close()
 		r.mu.Lock()
 		delete(r.clients, c)
 		r.mu.Unlock()
@@ -485,9 +485,7 @@ func (r *claudeStructuredRunner) appendStructured(raw json.RawMessage) {
 	}
 	r.mu.Unlock()
 	for _, c := range clients {
-		if err := c.write(proto.Structured, raw); err != nil {
-			_ = c.conn.Close()
-		}
+		c.enqueue(proto.Structured, raw)
 	}
 }
 
@@ -537,7 +535,7 @@ func (r *claudeStructuredRunner) shutdown(permanent bool, code int) {
 		payload, _ := json.Marshal(exit)
 		for _, c := range clients {
 			_ = c.write(proto.Exit, payload)
-			_ = c.conn.Close()
+			c.close()
 		}
 		r.closeHistory()
 		if permanent {

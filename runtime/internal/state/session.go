@@ -359,13 +359,13 @@ func (s *Session) ConfigureModel(ctx context.Context, model, effort string) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.info.Exited {
-		return errors.New("session has ended")
+		return ErrSessionEnded
 	}
 	if s.info.Working {
-		return errors.New("session is working; wait for the turn to finish")
+		return fmt.Errorf("%w; wait for the turn to finish", ErrSessionWorking)
 	}
 	if s.info.RunnerProtocol < 2 {
-		return fmt.Errorf("runner protocol v%d cannot change models live; update Sessions and start or resume this conversation with the current runtime", s.info.RunnerProtocol)
+		return fmt.Errorf("%w: runner protocol v%d cannot change models live; update Sessions and start or resume this conversation with the current runtime", ErrRunnerProtocol, s.info.RunnerProtocol)
 	}
 	if err := s.runner.ConfigureModel(ctx, proto.ModelControl{Model: model, Effort: effort}); err != nil {
 		return fmt.Errorf("configure runner model: %w", err)
