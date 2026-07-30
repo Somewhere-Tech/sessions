@@ -6,6 +6,7 @@ import {
   readWindowScope,
   sessionMatchesWindowScope
 } from '../lib/windowScope';
+import { reconcileDurableTabLabels } from '../lib/tabLabels';
 
 const windowScope = readWindowScope();
 
@@ -321,6 +322,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const fresh = filterSessionsForWindow(await api.listSessions(), windowScope);
+      reconcileDurableTabLabels(fresh);
       const sessions = reconcileSessions(get().sessions, fresh);
       const active = get().activeId;
       const stillExists = active && sessions.some((s) => s.id === active);

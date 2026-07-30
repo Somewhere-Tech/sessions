@@ -1,14 +1,11 @@
-// User-chosen labels for session tabs. Two layers:
+// Legacy browser-local labels for session tabs. Two layers:
 //
 //   labelById[sessionId] — explicit rename for a specific sessionsd
-//     session. Overrides everything else.
+//     session. Durable session names returned by sessionsd replace this
+//     compatibility value during every refresh.
 //   labelByCwd[cwd]      — "friendly name for this project." Set
-//     automatically every time the user renames a tab (we record
-//     the cwd alongside the session id), so a fresh session or a
-//     resume in the same folder inherits the same friendly name
-//     without the user having to rename again. Also makes the
-//     resume picker show your real project names instead of bare
-//     folder basenames.
+//     by older versions when a user renamed a tab. It remains a fallback
+//     for unnamed legacy sessions and resume-picker project hints.
 //
 // Empty / missing override = fall back to the cwd-derived basename.
 
@@ -80,8 +77,8 @@ export function getCwdLabel(cwd: string): string | null {
   return cache.byCwd[cwd] ?? null;
 }
 
-// Set the label for a specific sessionsd session. Also records the cwd
-// → label mapping so future sessions in the same folder inherit it.
+// Set a browser-local compatibility label. New durable renames omit cwd so
+// one conversation title does not silently become every future chat's title.
 export function setTabLabel(sessionId: string, label: string, cwd?: string): void {
   const trimmed = label.trim();
   const byId = { ...cache.byId };
@@ -93,6 +90,26 @@ export function setTabLabel(sessionId: string, label: string, cwd?: string): voi
     if (cwd) byCwd[cwd] = trimmed;
   }
   cache = { byId, byCwd };
+  write(cache);
+  notify();
+}
+
+// sessionsd is the canonical title store. Reconcile its durable names into
+// the compatibility cache before React renders a refreshed session list so
+// stale browser-local labels can never hide CLI, Fleet, or remote renames.
+export function reconcileDurableTabLabels(
+  sessions: Array<Pick<SessionInfo, 'id' | 'name'>>
+): void {
+  let changed = false;
+  const byId = { ...cache.byId };
+  for (const session of sessions) {
+    const durable = session.name?.trim();
+    if (!durable || byId[session.id] === durable) continue;
+    byId[session.id] = durable;
+    changed = true;
+  }
+  if (!changed) return;
+  cache = { ...cache, byId };
   write(cache);
   notify();
 }
@@ -118,9 +135,8 @@ export function useTabLabel(sessionId: string, cwd?: string): string | null {
 //   5. cwd basename — the project folder name, our traditional default
 //   6. cmd basename or short id as last resort
 //
-// User's sessions tab rename is layered ABOVE this by callers (via
-// getTabLabel / useTabLabel) so it always wins without being part of
-// this function.
+// Browser-local aliases are retained only for pre-durable-name compatibility;
+// refresh reconciliation makes a durable name win in every consumer.
 export function sessionLabel(session: SessionInfo): string {
   if (session.name && session.name.length > 0) return session.name;
   if (session.claudeCustomTitle && session.claudeCustomTitle.length > 0) return session.claudeCustomTitle;
