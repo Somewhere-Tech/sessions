@@ -13,7 +13,7 @@ description: Spawn, drive, monitor, and recover long-lived Claude Code / Codex /
 
 ```bash
 # 1. Spawn. Codex runs on the structured app-server by default (reliable, no scraping).
-id=$(sessions new --tool codex --cwd /path/to/work --name my-subtask --json | jq -r .id)
+id=$(sessions --json new --tool codex --cwd /path/to/work --name my-subtask | jq -r .id)
 #   Claude:  sessions new --tool claude --cwd DIR --name NAME
 #   Claude structured (subscription-billed, no live TUI): add --structured
 #   Pick model/effort:  --model gpt-5.6-sol --effort high   (validated against the live catalog)
@@ -25,8 +25,8 @@ sessions ask "$id" "Do X. Reply DONE when finished."
 # 3. Or send + poll separately:
 sessions send "$id" "your message"     # blocks until receipt is confirmed (exit 0); exit 1/2 = failed/ambiguous
 sessions wait "$id" --idle 30s --timeout 30m   # block until genuinely idle for 30s
-sessions last "$id" --json             # structured last user+assistant message
-sessions status "$id" --json           # state / git / activity / verdict card
+sessions --json last "$id"             # structured last user+assistant message
+sessions --json status "$id"           # state / git / activity / verdict card
 
 # 4. Clean up when done:
 sessions kill "$id"
@@ -35,9 +35,9 @@ sessions kill "$id"
 ## Headless lanes (run a command as a tracked session)
 
 ```bash
-lane=$(sessions run --name build-check --cwd /repo -- go test ./... --json | jq -r .id)
+lane=$(sessions --json run --name build-check --cwd /repo -- go test ./... | jq -r .id)
 sessions wait "$lane" --timeout 20m       # returns when the command exits
-sessions last "$lane" --json              # exit code + output tail (completion manifest)
+sessions --json last "$lane"              # exit code + output tail (completion manifest)
 sessions lanes                            # list headless lanes
 ```
 
@@ -66,8 +66,8 @@ sessions recover --reopen   # re-open every unexpectedly-lost session (idempoten
 
 ```bash
 sessions ls                       # all live sessions
-sessions status <id> --json       # one session's full state
-sessions transcript <id> --json   # full structured history
+sessions --json status <id>       # one session's full state
+sessions --json transcript <id>   # full structured history
 sessions tail <id> -f             # follow output live
 sessions snap <id>                # current screen (human viewing only — DON'T parse this)
 ```
@@ -82,22 +82,22 @@ sessions snap <id>                # current screen (human viewing only — DON'T
 
 ## Background pattern (for long sub-tasks)
 
-Run `sessions wait "$id" --timeout 30m &` in the background so your orchestration can be re-invoked when the sub-agent finishes, instead of blocking. Then `sessions last "$id" --json` for the result.
+Run `sessions wait "$id" --timeout 30m &` in the background so your orchestration can be re-invoked when the sub-agent finishes, instead of blocking. Then `sessions --json last "$id"` for the result.
 
 ## Quick reference
 
 | Need | Command |
 |---|---|
-| spawn codex sub-agent | `sessions new --tool codex --cwd DIR --name NAME --json` |
-| spawn claude sub-agent | `sessions new --tool claude --cwd DIR --name NAME --json` |
+| spawn codex sub-agent | `sessions --json new --tool codex --cwd DIR --name NAME` |
+| spawn claude sub-agent | `sessions --json new --tool claude --cwd DIR --name NAME` |
 | headless command lane | `sessions run --name NAME --cwd DIR -- CMD ARGS` |
 | ask + get reply | `sessions ask <id> "msg"` |
 | send (confirmed) | `sessions send <id> "msg"` |
 | wait until idle | `sessions wait <id> --idle 30s --timeout 30m` |
-| structured result | `sessions last <id> --json` / `sessions status <id> --json` |
+| structured result | `sessions --json last <id>` / `sessions --json status <id>` |
 | my sessions + lanes | `sessions list --mine` |
 | list all | `sessions ls` |
-| model catalog | `sessions models --json` |
+| model catalog | `sessions --json models` |
 | recover lost | `sessions recover [--reopen]` |
 | report a Sessions problem | `sessions --json support --diagnostics` |
 | clean up | `sessions kill <id>` |

@@ -75,11 +75,13 @@ Admin/operational:
   help                     show top-level or command help
   version (--version, -v)  print the CLI version
 
-Global flags (must precede the command):
-  --json           machine-friendly output
+Global flags:
+  --json           machine-friendly output; may also appear among command options
   --machine NAME   use a saved Sessions machine and its device credential
   --host HOST      low-level sessionsd host; local token stays on loopback
   --port PORT      sessionsd port (default 8787)
+
+Connection flags must precede the command. Arguments after `sessions run --` always belong to the child command.
 
 Run `sessions help <command>` for one command or `sessions docs` for the complete offline reference.
 ```
@@ -101,7 +103,7 @@ Examples:
   sessions new --tool codex --codex-appserver --full-access
   sessions new --cmd /bin/zsh
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions profiles`
@@ -118,7 +120,7 @@ Examples:
   sessions profiles
   sessions --json profiles
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions providers`
@@ -136,7 +138,7 @@ Examples:
   sessions providers update codex
   sessions --json providers
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions run`
@@ -154,7 +156,7 @@ Examples:
   sessions run --name lint --worktree --wait --output -- npm run lint
   sessions --json run --wait -- sh -c 'exit 3'
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions tags`
@@ -173,7 +175,7 @@ Examples:
   sessions tags 0123abcd --remove client
   sessions --json tags 0123abcd
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions worktrees`
@@ -192,7 +194,7 @@ Examples:
   sessions worktrees clean --dry-run
   sessions worktrees clean
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions gc`
@@ -211,7 +213,7 @@ Examples:
   sessions gc --older-than 30d --apply
   sessions --json gc
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions archive`
@@ -229,7 +231,7 @@ Examples:
   sessions archive 0123abcd 89abcdef
   sessions --json archive 0123abcd
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions aside`
@@ -248,7 +250,7 @@ Examples:
   sessions aside 0123abcd --clear
   sessions --json aside 0123abcd
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions ls`
@@ -268,7 +270,7 @@ Examples:
   sessions ls --not-aside
   sessions --json ls
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions list`
@@ -287,7 +289,7 @@ Examples:
   sessions list --mine --include-closed
   sessions list --owner team:mine
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions lanes`
@@ -305,7 +307,7 @@ Examples:
   sessions lanes --mine
   sessions lanes --subtree 0123abcd --direct
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions send`
@@ -323,7 +325,7 @@ Examples:
   sessions send 0123abcd --from 89abcdef 'Please review this result.'
   sessions send 0123abcd --file prompt.md
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions ask`
@@ -340,7 +342,7 @@ Examples:
   sessions ask 0123abcd 'Summarize the failing test.'
   sessions --json ask 0123abcd --wait-timeout 2m 'Report status.'
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions wait`
@@ -358,7 +360,7 @@ Examples:
   sessions wait lane-a lane-b --any --summary
   sessions wait 0123abcd --until commit --timeout 10m
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions last`
@@ -376,7 +378,7 @@ Examples:
   sessions last 0123abcd --role assistant -n 1
   sessions --json last 0123abcd
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions search`
@@ -395,7 +397,7 @@ Examples:
   sessions search 'near(draft,egress,8) OR "stable session"' --timeline
   sessions search '{{first_name}}' --exact --session 0123abcd --json
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions usage`
@@ -416,7 +418,7 @@ Examples:
   sessions usage model
   sessions --json usage monthly
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions status`
@@ -433,7 +435,7 @@ Examples:
   sessions status 0123abcd
   sessions --json status 0123abcd
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions kill`
@@ -450,7 +452,7 @@ Examples:
   sessions kill 0123abcd
   sessions kill 0123abcd 89abcdef --reason "completed rollout batch"
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions recover`
@@ -469,7 +471,7 @@ Examples:
   sessions recover --reopen
   sessions --json recover --reopen --force
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions recall`
@@ -486,7 +488,7 @@ Examples:
   sessions recall
   sessions recall 00000000-0000-4000-8000-000000000001 --raw
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions snap`
@@ -503,7 +505,7 @@ Examples:
   sessions snap 0123abcd
   sessions snap 0123abcd --raw
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions tail`
@@ -520,7 +522,7 @@ Examples:
   sessions tail 0123abcd
   sessions tail 0123abcd -n 200 -f
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions transcript`
@@ -537,7 +539,7 @@ Examples:
   sessions transcript 0123abcd
   sessions --json transcript 0123abcd
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions input`
@@ -553,7 +555,7 @@ Send text and Enter using the same confirmation behavior and options as sessions
 Examples:
   sessions input 0123abcd 'Continue.'
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions keys`
@@ -570,7 +572,7 @@ Examples:
   sessions keys 0123abcd esc
   sessions keys 0123abcd ^c
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions resize`
@@ -586,7 +588,7 @@ Resize the terminal associated with a session to the requested columns and rows.
 Examples:
   sessions resize 0123abcd 160 48
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions verdict`
@@ -603,7 +605,7 @@ Examples:
   sessions verdict 0123abcd
   sessions --json verdict emit 0123abcd '{"schemaVersion":1,"verdict":"pass","findings":[]}'
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions move`
@@ -621,7 +623,7 @@ Examples:
   sessions move 0123abcd --machine mini
   sessions move 0123abcd --to https://mini.tailnet.ts.net --dry-run
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions adopt`
@@ -639,7 +641,7 @@ Examples:
   sessions adopt ~/.claude/projects/example/session.jsonl --force
   sessions adopt 00000000-0000-4000-8000-000000000001 --repair 0123abcd --source 4567cdef
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions continue`
@@ -657,7 +659,7 @@ Examples:
   sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex
   sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions model`
@@ -675,7 +677,7 @@ Examples:
   sessions model 0123abcd gpt-5.6-sol --effort high
   sessions --json model 0123abcd opus
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions models`
@@ -692,7 +694,7 @@ Examples:
   sessions models
   sessions --json models
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions attach`
@@ -708,7 +710,7 @@ Attach the local terminal to a session. Press Ctrl+Q to detach without terminati
 Examples:
   sessions attach 0123abcd
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions install`
@@ -724,7 +726,7 @@ Register the development sessionsd macOS LaunchAgent and start it.
 Examples:
   sessions install
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions uninstall`
@@ -740,7 +742,7 @@ Stop and remove the development sessionsd macOS LaunchAgent.
 Examples:
   sessions uninstall
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions deploy`
@@ -756,7 +758,7 @@ The mutating Node-daemon deploy path is retired. Sessions.app is the macOS relea
 Examples:
   sessions deploy
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions update`
@@ -774,7 +776,7 @@ Examples:
   sessions update --check
   sessions --json update --check
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions pair`
@@ -792,7 +794,7 @@ Examples:
   sessions pair --name 'Uzair phone'
   sessions --json pair
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions devices`
@@ -810,7 +812,7 @@ Examples:
   sessions --json devices
   sessions devices revoke 0123abcd
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions machines`
@@ -830,7 +832,7 @@ Examples:
   sessions --machine mini ls
   sessions machines forget mini
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions access`
@@ -849,7 +851,7 @@ Examples:
   sessions access accept 0123abcd
   sessions access deny 0123abcd
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions lan`
@@ -867,7 +869,7 @@ Examples:
   sessions lan status
   sessions lan disable
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions notify`
@@ -886,7 +888,7 @@ Examples:
   sessions notify on done
   sessions --json notify status
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions remote`
@@ -904,7 +906,7 @@ Examples:
   sessions remote status
   sessions remote disable
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions token`
@@ -920,7 +922,7 @@ Read and print the local daemon token for use by an authorized Sessions client.
 Examples:
   sessions token
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions backup`
@@ -939,7 +941,7 @@ Examples:
   sessions backup decrypt transcript.jsonl.enc
   sessions --json backup status
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions doctor`
@@ -956,7 +958,7 @@ Examples:
   sessions doctor
   sessions --json doctor
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions support`
@@ -976,7 +978,7 @@ Examples:
   sessions support --bundle ./sessions-support.json
   sessions --json support --attach --ticket tsk_1234abcd --project sessions
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions docs`
@@ -993,7 +995,7 @@ Examples:
   sessions docs
   sessions docs > sessions-cli.md
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions help`
@@ -1011,7 +1013,7 @@ Examples:
   sessions help run
   sessions recover --help
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions version`
@@ -1028,5 +1030,5 @@ Examples:
   sessions version
   sessions --version
 
-Global flags --json, --machine, --host, and --port must appear before the command.
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

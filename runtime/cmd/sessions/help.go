@@ -29,7 +29,7 @@ const (
 var commandTable = []commandSpec{
 	{
 		name: "new", usage: "new [--tool claude|codex|shell] [--structured|--pty-claude|--codex-appserver|--pty-codex] [--full-access] [--profile NAME] [--cwd P] [--name L] [--description PURPOSE] [--tag KEY=VALUE ...] [--worktree [--base REF]] [options] [args...]",
-		summary: "create an interactive session", group: dailyCommandGroup,
+		summary: "create an interactive session", group: dailyCommandGroup, localJSON: true,
 		longHelp: "Create a session. --tool selects a built-in Claude, Codex, or shell preset; --cmd supplies a command directly. Claude defaults to Rich structured mode while retaining its normal permission behavior. Codex defaults to its sandboxed terminal mode because Sessions cannot yet present app-server approval prompts; --codex-appserver therefore requires the explicit --full-access choice. --pty-claude and --pty-codex explicitly select the provider's terminal UI; --structured states the Claude Rich choice explicitly. --full-access disables the selected provider's approval and sandbox protections for this new session only. Existing sessions keep their original runtime and permission mode. --profile selects a private Claude or Codex login under the Sessions user state; first use opens the tool's own login flow. --description (alias --desc) records why the session exists. Repeat --tag key=value for product, client, team, cost center, or any user-defined dimension. --worktree creates sessions/<name> from the current branch (or --base REF), records its provenance, and runs the session there. Sessions does not create node_modules symlinks; install dependencies in the worktree when needed. Session controls include --model, --effort, --fast, --on-idle, --wait-ready, and --force.",
 		examples: []string{"sessions new --tool claude --cwd ~/work", "sessions new --tool claude --pty-claude --name terminal-debug", "sessions new --tool codex --pty-codex", "sessions new --tool codex --codex-appserver --full-access", "sessions new --cmd /bin/zsh"},
 		run:      (*app).cmdNew,
@@ -48,7 +48,7 @@ var commandTable = []commandSpec{
 	},
 	{
 		name: "run", usage: "run [--name N] [--description PURPOSE] [--tag KEY=VALUE ...] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--wait [--output]] -- <cmd args...>",
-		summary: "run a command in a headless lane", group: dailyCommandGroup,
+		summary: "run a command in a headless lane", group: dailyCommandGroup, localJSON: true,
 		longHelp: "Create a headless lane for the command following the first -- separator. --description (alias --desc) records why the lane exists. --worktree creates an isolated Sessions-owned worktree; it does not symlink node_modules. Every child argument after the separator is passed unchanged. Without --wait, print the lane id and return. --wait blocks for completion and propagates the child exit code; --output prints the captured output tail.",
 		examples: []string{"sessions run -- make test", "sessions run --name lint --worktree --wait --output -- npm run lint", "sessions --json run --wait -- sh -c 'exit 3'"},
 		run:      (*app).cmdRun,
@@ -103,13 +103,13 @@ var commandTable = []commandSpec{
 	},
 	{
 		name: "send", usage: "send <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] <text...>",
-		summary: "send text and Enter to a session", group: dailyCommandGroup,
+		summary: "send text and Enter to a session", group: dailyCommandGroup, localJSON: true,
 		longHelp: "Send a message and Enter. Claude and Codex sessions wait for receipt confirmation by default; --no-wait uses fire-and-forget behavior and --file reads the message body from a UTF-8 file. --from records a durable, content-free source-lane attribution; agents running inside Sessions inherit their source lane automatically.",
 		examples: []string{"sessions send 0123abcd 'Run the focused tests.'", "sessions send 0123abcd --from 89abcdef 'Please review this result.'", "sessions send 0123abcd --file prompt.md"}, run: (*app).cmdSend,
 	},
 	{
 		name: "ask", usage: "ask <id> [--timeout D] [--idle D] [--wait-timeout D] <text...>",
-		summary: "send, wait, and print the reply", group: dailyCommandGroup,
+		summary: "send, wait, and print the reply", group: dailyCommandGroup, localJSON: true,
 		longHelp: "Send a confirmed message to a Claude or Codex session, wait for the reply to finish, and print the last assistant message.",
 		examples: []string{"sessions ask 0123abcd 'Summarize the failing test.'", "sessions --json ask 0123abcd --wait-timeout 2m 'Report status.'"}, run: (*app).cmdAsk,
 	},
@@ -401,7 +401,7 @@ func writeTopLevelHelpFor(writer io.Writer, commands []commandSpec) error {
 			}
 		}
 	}
-	_, err := io.WriteString(writer, "\nGlobal flags (must precede the command):\n  --json           machine-friendly output\n  --machine NAME   use a saved Sessions machine and its device credential\n  --host HOST      low-level sessionsd host; local token stays on loopback\n  --port PORT      sessionsd port (default 8787)\n\nRun `sessions help <command>` for one command or `sessions docs` for the complete offline reference.\n")
+	_, err := io.WriteString(writer, "\nGlobal flags:\n  --json           machine-friendly output; may also appear among command options\n  --machine NAME   use a saved Sessions machine and its device credential\n  --host HOST      low-level sessionsd host; local token stays on loopback\n  --port PORT      sessionsd port (default 8787)\n\nConnection flags must precede the command. Arguments after `sessions run --` always belong to the child command.\n\nRun `sessions help <command>` for one command or `sessions docs` for the complete offline reference.\n")
 	return err
 }
 
@@ -427,7 +427,7 @@ func writeCommandSpecHelp(writer io.Writer, command commandSpec) error {
 			}
 		}
 	}
-	_, err := io.WriteString(writer, "\nGlobal flags --json, --machine, --host, and --port must appear before the command.\n")
+	_, err := io.WriteString(writer, "\n--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.\n")
 	return err
 }
 
