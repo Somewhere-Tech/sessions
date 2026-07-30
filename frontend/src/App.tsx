@@ -75,14 +75,14 @@ function readSingleModeParams(): { sessionId: string } | null {
 // (active-machine monitor tiles).
 // Persisted per-window in localStorage so each window remembers its
 // last choice. Grid is best when N ≥ 2 and the window is wide.
-type LayoutMode = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'settings' | 'connections' | 'grid';
+type LayoutMode = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'settings' | 'feedback' | 'connections' | 'grid';
 const LAYOUT_KEY = 'sessions:layout-mode';
 const OPEN_TABS_KEY = 'sessions:open-tabs:v1';
 const THEME_KEY = 'sessions:theme:v1';
 function readStoredLayout(): LayoutMode {
   try {
     const v = window.localStorage.getItem(LAYOUT_KEY);
-    if (v === 'home' || v === 'tabs' || v === 'today' || v === 'fleet' || v === 'search' || v === 'usage' || v === 'settings' || v === 'connections' || v === 'grid') return v;
+    if (v === 'home' || v === 'tabs' || v === 'today' || v === 'fleet' || v === 'search' || v === 'usage' || v === 'settings' || v === 'feedback' || v === 'connections' || v === 'grid') return v;
   } catch { /* ignore */ }
   return 'tabs';
 }
@@ -551,8 +551,14 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
           />
         ) : effectiveLayout === 'usage' ? (
           <UsageDashboard />
-        ) : effectiveLayout === 'settings' || effectiveLayout === 'connections' ? (
-          <SettingsView theme={theme} onThemeChange={setTheme} textSize={textSize} onTextSizeChange={changeTextSize} />
+        ) : effectiveLayout === 'settings' || effectiveLayout === 'feedback' || effectiveLayout === 'connections' ? (
+          <SettingsView
+            theme={theme}
+            onThemeChange={setTheme}
+            textSize={textSize}
+            onTextSizeChange={changeTextSize}
+            initialSection={effectiveLayout === 'feedback' ? 'support' : effectiveLayout === 'connections' ? 'network' : 'general'}
+          />
         ) : effectiveLayout === 'grid' ? (
           liveSessions.length > 0 ? (
             <GridView
@@ -612,7 +618,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       </div>
 
       <MobileNav
-        layoutMode={effectiveLayout === 'grid' ? 'tabs' : effectiveLayout}
+        layoutMode={effectiveLayout === 'grid' ? 'tabs' : effectiveLayout === 'feedback' ? 'settings' : effectiveLayout}
         showingSessionDetail={effectiveLayout === 'tabs' && mobileSessionDetail}
         onLayoutChange={(mode) => {
           setLayoutMode(mode);

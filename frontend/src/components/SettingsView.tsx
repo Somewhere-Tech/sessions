@@ -41,9 +41,10 @@ interface Props {
   onThemeChange: (theme: ThemeMode) => void;
   textSize: TextSize;
   onTextSizeChange: (size: TextSize) => void;
+  initialSection?: Section;
 }
 
-export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange }: Props): JSX.Element {
+export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange, initialSection = 'general' }: Props): JSX.Element {
   const activeServerId = useServers((state) => state.activeId);
   const activeServerIsLocal = useServers((state) =>
     state.servers.find((server) => server.id === state.activeId)?.isDefault === true
@@ -56,7 +57,7 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange 
     ? sessions.filter((session) => !session.exited).length
     : null;
   const native = isTauri();
-  const [section, setSection] = useState<Section>('general');
+  const [section, setSection] = useState<Section>(initialSection);
   const [aiProvider, setAIProvider] = useState<AIProvider>('codex');
   const [aiBusy, setAIBusy] = useState(false);
   const [aiAvailable, setAIAvailable] = useState(true);
@@ -83,6 +84,10 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange 
   const aiGeneration = useRef(0);
   const recapGeneration = useRef(0);
   const claudeGeneration = useRef(0);
+
+  useEffect(() => {
+    setSection(initialSection);
+  }, [initialSection]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -627,32 +632,26 @@ function SupportSettings({ native }: { native: boolean }): JSX.Element {
 
   return (
     <section className="settings-page support-page">
-      <span className="settings-kicker">Agent-native · user-approved</span>
-      <h1>Help & feedback</h1>
-      <p>You or an agent can prepare a public feedback or problem ticket. Sessions never uploads diagnostics, transcripts, terminal output, or credentials in the background.</p>
+      <span className="settings-kicker">Help shape Sessions</span>
+      <h1>Send feedback</h1>
+      <p>Tell us what you love, what would make Sessions better, or what went wrong.</p>
       <div className="settings-card">
-        <h2>Tell us what happened</h2>
+        <h2>What would you like to share?</h2>
         <label className="support-draft">
           <span>Optional draft</span>
           <textarea
             value={draft}
             maxLength={4_000}
-            placeholder="What were you trying to do? What happened instead?"
+            placeholder="A feature you love, an idea, or what happened when something went wrong…"
             onChange={(event) => setDraft(event.currentTarget.value)}
           />
           <small>{draft.length.toLocaleString()} / 4,000 · This stays in the app until you copy it.</small>
         </label>
         <div className="support-actions">
-          <button type="button" className="btn btn-primary" onClick={() => void copyAndOpen('bug')}>Report a problem</button>
-          <button type="button" className="btn btn-ghost" onClick={() => void copyAndOpen('feedback')}>Share feedback</button>
+          <button type="button" className="btn btn-primary" onClick={() => void copyAndOpen('feedback')}>Share an idea or win</button>
+          <button type="button" className="btn btn-ghost" onClick={() => void copyAndOpen('bug')}>Report a bug</button>
         </div>
         <p className="support-privacy">Tickets are public GitHub issues. Sessions copies your draft to the clipboard and opens the form; it does not submit for you.</p>
-      </div>
-      <div className="settings-card">
-        <h2>Reporting from an agent</h2>
-        <div className="settings-static-row">
-          <span><strong>Machine-readable and local</strong><small>Agents can run <code>sessions --json support --diagnostics</code>, add the sanitized failing command shape and error, then ask you before opening or submitting a ticket.</small></span>
-        </div>
       </div>
       <div className="settings-card">
         <h2>Optional diagnostic preview</h2>

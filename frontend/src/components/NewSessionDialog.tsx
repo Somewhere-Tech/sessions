@@ -1,12 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSessions } from '../store/sessions';
 import { DirectoryBrowser } from './DirectoryBrowser';
-import { fetchClaudeSettings, fetchProfiles, fetchResumableSessions, listDirectories, sendInput, type AccountProfile, type ResumableSession } from '../api/sessionsd';
+import {
+  fetchProfiles,
+  fetchResumableSessions,
+  listDirectories,
+  listNewSessionCodexModels,
+  sendInput,
+  type AccountProfile,
+  type ResumableSession,
+  type SessionModelOption
+} from '../api/sessionsd';
 import { readNewSessionDefaults, type NewSessionTool } from '../lib/newSessionDefaults';
 import { randomUUID } from '../lib/uuid';
 import { TagEditor } from './TagEditor';
-import type { ClaudeSessionOptions, ClaudeSettings, DirectoryCandidate, SessionInfo } from '../types';
-import { getActiveServer } from '../lib/servers';
+import type { ClaudeSessionOptions, DirectoryCandidate, SessionInfo } from '../types';
+import { getActiveServer, isLocalServer, useServers } from '../lib/servers';
 import { sessionLabel } from '../lib/tabLabels';
 import { ProviderMark } from './ProviderBadge';
 
@@ -38,11 +47,22 @@ function relativeWhen(ms: number): string {
   return new Date(ms).toLocaleDateString();
 }
 
+function effortLabel(effort: string): string {
+  if (effort === 'xhigh') return 'Extra high';
+  return effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
 const TOOLS: ToolDef[] = [
-  { id: 'claude-code', name: 'Claude', description: 'Best for complex reasoning and nuanced responses.' },
-  { id: 'codex', name: 'Codex', description: 'Best for codebase tasks, refactoring, and automation.' },
-  { id: 'shell', name: 'Shell', description: 'Best for running commands and system operations.' }
+  { id: 'claude-code', name: 'Claude', description: 'Deep reasoning and long-running work.' },
+  { id: 'codex', name: 'Codex', description: 'Code-focused planning and implementation.' },
+  { id: 'shell', name: 'Shell', description: 'Commands without an AI agent.' }
 ];
+
+const CLAUDE_MODELS = [
+  { id: 'opus', name: 'Opus' },
+  { id: 'sonnet', name: 'Sonnet' },
+  { id: 'haiku', name: 'Haiku' }
+] as const;
 
 function workspaceKind(kind: DirectoryCandidate['kind']): string {
   if (kind === 'project') return 'Recent project';
@@ -173,7 +193,17 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const create = useSessions((s) => s.create);
   const openSessions = useSessions((s) => s.sessions);
   const activeId = useSessions((s) => s.activeId);
+  const configuredMachines = useServers((state) => state.servers);
+  const activeMachineId = useServers((state) => state.activeId);
+  const selectActiveMachine = useServers((state) => state.setActive);
   const [initialDefaults] = useState(readNewSessionDefaults);
+  const [machineId, setMachineId] = useState(() => {
+    if (parentSession) return activeMachineId ?? configuredMachines[0]?.id ?? '';
+    return configuredMachines.find((machine) => machine.isDefault && isLocalServer(machine))?.id
+      ?? activeMachineId
+      ?? configuredMachines[0]?.id
+      ?? '';
+  });
   const [tool, setTool] = useState<NewSessionTool>(() => parentSession?.tool === 'terminal' ? 'shell' : parentSession?.tool ?? initialDefaults.tool);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(() => defaultRuntimeMode(
     parentSession?.tool === 'terminal' ? 'shell' : parentSession?.tool ?? initialDefaults.tool,
@@ -182,10 +212,12 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   ));
   const [skipPerms, setSkipPerms] = useState(initialDefaults.skipPerms);
   const [claudeOptions, setClaudeOptions] = useState<ClaudeSessionOptions>({});
-  const [claudeDefaults, setClaudeDefaults] = useState<ClaudeSettings | null>(null);
   const [claudeSafeMode, setClaudeSafeMode] = useState(false);
   const [codexModel, setCodexModel] = useState('');
   const [codexEffort, setCodexEffort] = useState('');
+  const [codexModels, setCodexModels] = useState<SessionModelOption[]>([]);
+  const [codexModelsLoading, setCodexModelsLoading] = useState(false);
+  const [codexModelsError, setCodexModelsError] = useState<string | null>(null);
   const [cwd, setCwd] = useState(
     parentSession?.cwd
       ?? openSessions.find((session) => session.id === activeId)?.cwd
@@ -213,23 +245,33 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const selectedProfile = profileChoice === NEW_PROFILE ? newProfile.trim() : profileChoice;
   const profileValid = profileChoice !== NEW_PROFILE || PROFILE_NAME.test(selectedProfile);
   const requiresProviderLogin = profileChoice === NEW_PROFILE;
+  const selectedMachine = configuredMachines.find((machine) => machine.id === machineId)
+    ?? configuredMachines[0]
+    ?? null;
 
   useEffect(() => {
     if (parentSession) return;
+    if (!configuredMachines.some((machine) => machine.id === machineId)) {
+      const fallback = configuredMachines.find((machine) => machine.isDefault && isLocalServer(machine))
+        ?? configuredMachines[0];
+      if (fallback) setMachineId(fallback.id);
+      return;
+    }
+    selectActiveMachine(machineId);
     let active = true;
     void listDirectories().then((items) => {
       if (!active) return;
       setRecentWorkspaces(items);
-      const home = items.find((item) => item.kind === 'home')?.path;
       setCwd((current) => {
-        if (current && current !== home) return current;
+        if (current && items.some((item) => item.path === current)) return current;
         return items.find((item) => item.kind === 'project')?.path
           || items.find((item) => item.kind === 'common')?.path
+          || items.find((item) => item.kind === 'home')?.path
           || current;
       });
     }).catch(() => { if (active) setRecentWorkspaces([]); });
     return () => { active = false; };
-  }, [parentSession]);
+  }, [configuredMachines, machineId, parentSession, selectActiveMachine]);
 
   useEffect(() => {
     if (!profileTool) {
@@ -241,16 +283,31 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       .then(setProfiles)
       .catch(() => setProfiles([]));
     return () => controller.abort();
-  }, [profileTool]);
+  }, [machineId, profileTool]);
 
   useEffect(() => {
-    if (tool !== 'claude-code') return;
+    if (tool !== 'codex') {
+      setCodexModels([]);
+      setCodexModelsError(null);
+      setCodexModelsLoading(false);
+      return;
+    }
     const controller = new AbortController();
-    void fetchClaudeSettings(controller.signal)
-      .then(setClaudeDefaults)
-      .catch(() => setClaudeDefaults(null));
+    setCodexModels([]);
+    setCodexModelsError(null);
+    setCodexModelsLoading(true);
+    void listNewSessionCodexModels(controller.signal)
+      .then((models) => setCodexModels(models.filter((model) => !model.hidden)))
+      .catch((reason) => {
+        if (!controller.signal.aborted) {
+          setCodexModelsError(reason instanceof Error ? reason.message : 'Could not load Codex models.');
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setCodexModelsLoading(false);
+      });
     return () => controller.abort();
-  }, [tool]);
+  }, [machineId, tool]);
 
   useEffect(() => {
     setProfileChoice(inheritedProfile(parentSession, tool));
@@ -267,7 +324,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       .then((s) => { if (alive) setResumable(s); })
       .catch(() => { if (alive) setResumable(null); });
     return () => { alive = false; };
-  }, [tool, selectedProfile]);
+  }, [machineId, tool, selectedProfile]);
 
   // Sessions already open as sessionsd tabs — exclude these from the
   // inline hint so we don't suggest resuming what's already on screen.
@@ -314,6 +371,20 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       ?? '',
     [recentWorkspaces, initialDefaults.cwd, cwd]
   );
+  const selectedCodexModel = codexModels.find((model) => model.id === codexModel)
+    ?? codexModels.find((model) => model.isDefault);
+  const effortChoices = tool === 'claude-code'
+    ? ['low', 'medium', 'high', 'xhigh', 'max']
+    : selectedCodexModel?.supportedReasoningEfforts.map((option) => option.reasoningEffort) ?? [];
+
+  const chooseMachine = (nextMachineId: string): void => {
+    if (nextMachineId === machineId) return;
+    selectActiveMachine(nextMachineId);
+    setMachineId(nextMachineId);
+    setRecentWorkspaces([]);
+    setCwd('');
+    setBrowserOpen(false);
+  };
 
   const startSession = async (resumeId: string | null): Promise<void> => {
     if (!profileValid) {
@@ -323,6 +394,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     setBusy(true);
     setError(null);
     try {
+      if (!parentSession && machineId) selectActiveMachine(machineId);
       const { cmd, args } = resolveCommand(tool, skipPerms, resumeId, codexModel, codexEffort, claudeSafeMode);
       const resumeCwd = resumeId
         ? (resumable?.find((s) => s.sessionId === resumeId)?.cwd ?? cwd.trim())
@@ -402,34 +474,11 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
           </div>
         </header>
         <div className="dialog-body">
-          <div className="field launcher-task-field">
-            <span className="field-label">What do you want to work on? <span className="field-optional">optional</span></span>
-            <textarea value={task} onChange={(event) => setTask(event.currentTarget.value)} placeholder={isDelegate ? 'What should this linked session work on?' : 'Describe a task, ask a question, or leave blank to start…'} rows={3} autoFocus />
-            <span className="field-help">{requiresProviderLogin ? 'A new account must finish login first. This request will stay here for copying; Sessions will not queue or paste it into the login flow.' : isDelegate ? `Starts in ${parentSession?.cwd} on this machine and stays grouped under ${parentSession ? sessionLabel(parentSession) : 'the current session'}.` : 'Sent once the provider is ready. Sessions does not create a hidden prompt queue.'}</span>
-          </div>
-          {isDelegate ? (
-            <div className="launcher-inherited"><span>Workspace</span><strong>{cwd}</strong><small>{getActiveServer().name} · parent {parentSession?.id.slice(0, 8)}</small></div>
-          ) : (
-            <div className="field launcher-workspace-field">
-              <div className="launcher-section-head">
-                <span className="field-label">Workspace</span>
-                <details className="workspace-browser-disclosure" open={browserOpen} onToggle={(event) => setBrowserOpen(event.currentTarget.open)}>
-                  <summary>Choose folder…</summary>
-                  {browserOpen ? (
-                    <div className="workspace-browser-panel">
-                      <input className="field-input workspace-path-input" value={cwd} onChange={(event) => setCwd(event.currentTarget.value)} placeholder="/path/to/project" />
-                      <DirectoryBrowser value={cwd} onChange={(path, confirmed) => { setCwd(path); if (confirmed) setBrowserOpen(false); }} />
-                    </div>
-                  ) : null}
-                </details>
-              </div>
-              {displayedWorkspaces.length > 0 ? <div className="recent-workspaces">{displayedWorkspaces.map((item) => <button type="button" key={item.path} className={cwd === item.path ? 'is-active' : ''} onClick={() => setCwd(item.path)}><span className="workspace-folder-icon" aria-hidden /><span className="workspace-card-copy"><strong>{item.label}</strong><small>{getActiveServer().name} · {workspaceKind(item.kind)}</small></span><span className="workspace-radio" aria-hidden /></button>)}</div> : null}
-              <div className="workspace-selection"><span className="workspace-status-dot" aria-hidden /><strong>{getActiveServer().name}</strong><span>·</span><code>{cwd || 'Choose a workspace'}</code></div>
-              {cwd === homeWorkspace ? <span className="field-help">Your whole home folder includes protected locations such as Music and cloud drives. Choose a project folder to avoid extra macOS permission prompts.</span> : null}
+          <section className="launcher-step launcher-agent-step">
+            <div className="launcher-step-heading">
+              <span className="launcher-step-number">1</span>
+              <span><strong>Choose an agent</strong><small>You can change the model before or after it starts.</small></span>
             </div>
-          )}
-          <div className="field launcher-agent-field">
-            <span className="field-label">Agent</span>
             <div className="tool-selector">
               {TOOLS.map((t) => (
                 <button key={t.id} type="button" className={`tool-option${tool === t.id ? ' is-active' : ''}`} onClick={() => {
@@ -443,151 +492,245 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                 </button>
               ))}
             </div>
-          </div>
-          {tool !== 'shell' ? (
-            <div className="field launcher-runtime-field">
-              <span className="field-label">Experience</span>
-              <div className="runtime-mode-selector" role="radiogroup" aria-label="Agent runtime experience">
-                <button type="button" role="radio" aria-checked={runtimeMode === 'rich'} className={`runtime-mode-option${runtimeMode === 'rich' ? ' is-active' : ''}`} onClick={() => {
-                  setRuntimeMode('rich');
-                  if (tool === 'codex') setSkipPerms(true);
-                }}>
-                  <span><strong>Rich</strong><em>{tool === 'codex' ? 'Full access' : 'Recommended'}</em></span>
-                  <small>{tool === 'codex' ? 'Native Codex app-server events and model controls. Currently requires Full Access because approval prompts are not available here yet.' : 'Structured Claude turns without screen parsing. Slash commands and interactive pickers are not available yet.'}</small>
-                </button>
-                <button type="button" role="radio" aria-checked={runtimeMode === 'terminal'} className={`runtime-mode-option${runtimeMode === 'terminal' ? ' is-active' : ''}`} onClick={() => setRuntimeMode('terminal')}>
-                  <span><strong>Terminal</strong><em>Compatible</em></span>
-                  <small>Runs the provider’s exact terminal UI. Best for slash commands and pickers; status and message parsing can be incomplete.</small>
-                </button>
+            {tool !== 'shell' ? (
+              <>
+                <div className="field launcher-runtime-field">
+                  <span className="field-label">How should it run?</span>
+                  <div className="runtime-mode-selector" role="radiogroup" aria-label="Agent runtime experience">
+                    <button type="button" role="radio" aria-checked={runtimeMode === 'rich'} className={`runtime-mode-option${runtimeMode === 'rich' ? ' is-active' : ''}`} onClick={() => {
+                      setRuntimeMode('rich');
+                      if (tool === 'codex') setSkipPerms(true);
+                    }}>
+                      <span><strong>Rich</strong><em>{tool === 'codex' ? 'Full access' : 'Recommended'}</em></span>
+                      <small>{tool === 'codex'
+                        ? 'A clean conversation view with live plans, tools, and model controls. Best for everyday Codex work. Full Access is currently required.'
+                        : 'A clean conversation view with messages, plans, tools, and approvals. Best for everyday Claude work.'}</small>
+                    </button>
+                    <button type="button" role="radio" aria-checked={runtimeMode === 'terminal'} className={`runtime-mode-option${runtimeMode === 'terminal' ? ' is-active' : ''}`} onClick={() => setRuntimeMode('terminal')}>
+                      <span><strong>Terminal</strong><em>Full terminal</em></span>
+                      <small>Runs {tool === 'claude-code' ? 'Claude' : 'Codex'} just as it appears in Terminal. Best for slash commands, setup screens, and the full provider interface.</small>
+                    </button>
+                  </div>
+                </div>
+                <div className="launcher-model-wrap">
+                  <div className="launcher-model-controls" aria-label={`${tool === 'claude-code' ? 'Claude' : 'Codex'} model and effort`}>
+                    <label>
+                      <span>Model</span>
+                      <select
+                        value={tool === 'claude-code' ? (claudeOptions.model ?? '') : codexModel}
+                        onChange={(event) => {
+                          const nextModel = event.currentTarget.value;
+                          if (tool === 'claude-code') {
+                            setClaudeOptions((current) => ({ ...current, model: nextModel }));
+                          } else {
+                            setCodexModel(nextModel);
+                            const option = codexModels.find((model) => model.id === nextModel)
+                              ?? codexModels.find((model) => model.isDefault);
+                            if (codexEffort && !option?.supportedReasoningEfforts.some((effort) => effort.reasoningEffort === codexEffort)) {
+                              setCodexEffort('');
+                            }
+                          }
+                        }}
+                      >
+                        <option value="">Default</option>
+                        {tool === 'claude-code'
+                          ? CLAUDE_MODELS.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)
+                          : codexModels.map((model) => <option key={model.id} value={model.id}>{model.displayName || model.id}</option>)}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Effort</span>
+                      <select
+                        value={tool === 'claude-code' ? (claudeOptions.effort ?? '') : codexEffort}
+                        onChange={(event) => {
+                          if (tool === 'claude-code') setClaudeOptions((current) => ({ ...current, effort: event.currentTarget.value as ClaudeSessionOptions['effort'] }));
+                          else setCodexEffort(event.currentTarget.value);
+                        }}
+                      >
+                        <option value="">Default</option>
+                        {effortChoices.map((effort) => <option key={effort} value={effort}>{effortLabel(effort)}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                  <span className="field-help">
+                    {tool === 'codex' && codexModelsLoading
+                      ? 'Loading the models available in your Codex account…'
+                      : tool === 'codex' && codexModelsError
+                        ? 'The live Codex model list is unavailable. Default will use your current Codex setting.'
+                        : `Default uses your ${tool === 'claude-code' ? 'Claude' : 'Codex'} settings. You can change model and effort later.`}
+                  </span>
+                </div>
+              </>
+            ) : null}
+          </section>
+          {isDelegate ? (
+            <div className="launcher-inherited"><span>Machine & folder</span><strong>{cwd}</strong><small>{getActiveServer().name} · inherited from {parentSession ? sessionLabel(parentSession) : 'the parent session'}</small></div>
+          ) : (
+            <section className="launcher-step launcher-machine-step">
+              <div className="launcher-step-heading">
+                <span className="launcher-step-number">2</span>
+                <span><strong>Choose a machine</strong><small>Sessions starts here unless you choose a paired computer.</small></span>
               </div>
-              {tool === 'claude-code' && runtimeMode === 'rich' ? <span className="field-help">Claude Rich currently uses the subscription-authenticated structured CLI path, not the Agent SDK. If it cannot start, Sessions reports the failure and does not silently switch runtimes.</span> : null}
-            </div>
+              <div className="launcher-machine-selector" role="radiogroup" aria-label="Machine">
+                {configuredMachines.map((machine) => {
+                  const local = machine.isDefault && isLocalServer(machine);
+                  return (
+                    <button
+                      key={machine.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={machine.id === machineId}
+                      className={machine.id === machineId ? 'is-active' : ''}
+                      onClick={() => chooseMachine(machine.id)}
+                    >
+                      <span className="launcher-machine-icon" aria-hidden />
+                      <span><strong>{local ? 'This computer' : machine.name}</strong><small>{local ? 'Runs on this device' : 'Paired machine'}</small></span>
+                      <span className="workspace-radio" aria-hidden />
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+          {!isDelegate ? (
+            <section className="launcher-step launcher-workspace-field">
+              <div className="launcher-section-head">
+                <div className="launcher-step-heading">
+                  <span className="launcher-step-number">3</span>
+                  <span><strong>Choose a folder</strong><small>Recent projects from {selectedMachine?.name ?? 'this machine'}.</small></span>
+                </div>
+                <details className="workspace-browser-disclosure" open={browserOpen} onToggle={(event) => setBrowserOpen(event.currentTarget.open)}>
+                  <summary>Choose another…</summary>
+                  {browserOpen ? (
+                    <div className="workspace-browser-panel">
+                      <input className="field-input workspace-path-input" value={cwd} onChange={(event) => setCwd(event.currentTarget.value)} placeholder="/path/to/project" />
+                      <DirectoryBrowser value={cwd} onChange={(path, confirmed) => { setCwd(path); if (confirmed) setBrowserOpen(false); }} />
+                    </div>
+                  ) : null}
+                </details>
+              </div>
+              {displayedWorkspaces.length > 0 ? <div className="recent-workspaces">{displayedWorkspaces.map((item) => <button type="button" key={item.path} className={cwd === item.path ? 'is-active' : ''} onClick={() => setCwd(item.path)}><span className="workspace-folder-icon" aria-hidden /><span className="workspace-card-copy"><strong>{item.label}</strong><small>{workspaceKind(item.kind)}</small></span><span className="workspace-radio" aria-hidden /></button>)}</div> : null}
+              <div className="workspace-selection"><span className="workspace-status-dot" aria-hidden /><strong>{selectedMachine?.name ?? 'Machine'}</strong><span>·</span><code>{cwd || 'Choose a folder'}</code></div>
+              {cwd === homeWorkspace ? <span className="field-help">Choosing a project folder avoids macOS prompts for unrelated protected folders such as Music and cloud drives.</span> : null}
+            </section>
           ) : null}
-          {tool !== 'shell' ? (
-            <div className="launcher-model-controls" aria-label={`${tool === 'claude-code' ? 'Claude' : 'Codex'} model and effort`}>
-              <label>
-                <span>Model</span>
-                <input
-                  value={tool === 'claude-code' ? (claudeOptions.model ?? '') : codexModel}
-                  maxLength={128}
-                  placeholder={tool === 'claude-code' && claudeDefaults?.model ? `Default · ${claudeDefaults.model}` : 'Provider default'}
-                  onChange={(event) => {
-                    if (tool === 'claude-code') setClaudeOptions((current) => ({ ...current, model: event.currentTarget.value }));
-                    else setCodexModel(event.currentTarget.value);
-                  }}
-                />
-              </label>
-              <label>
-                <span>Effort</span>
-                <select
-                  value={tool === 'claude-code' ? (claudeOptions.effort ?? '') : codexEffort}
-                  onChange={(event) => {
-                    if (tool === 'claude-code') setClaudeOptions((current) => ({ ...current, effort: event.currentTarget.value as ClaudeSessionOptions['effort'] }));
-                    else setCodexEffort(event.currentTarget.value);
-                  }}
-                >
-                  <option value="">{tool === 'claude-code' && claudeDefaults && claudeDefaults.effort !== 'inherit' ? `Settings default · ${claudeDefaults.effort}` : 'Provider default'}</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra high</option>
-                  <option value="max">Max</option>
-                </select>
-              </label>
-            </div>
-          ) : null}
+          <div className="field launcher-task-field">
+            <span className="field-label">{isDelegate ? 'Task for this linked session' : 'First message'} <span className="field-optional">optional</span></span>
+            <textarea value={task} onChange={(event) => setTask(event.currentTarget.value)} placeholder={isDelegate ? 'What should this linked session work on?' : 'Describe a task, ask a question, or leave blank to start…'} rows={3} />
+            <span className="field-help">{requiresProviderLogin ? 'A new account must finish login first. This request will stay here for copying; Sessions will not queue or paste it into the login flow.' : isDelegate ? `Starts in ${parentSession?.cwd} and stays grouped under ${parentSession ? sessionLabel(parentSession) : 'the current session'}.` : 'If you leave this blank, the session opens ready for your first message.'}</span>
+          </div>
           <details className="launcher-advanced">
-            <summary>More options <span>account · tags · permissions · worktree</span></summary>
-          {profileTool ? (
-            <div className="field account-profile-field">
-              <span className="field-label">Account <span className="field-optional">optional · separate login</span></span>
-              <select
-                className="field-input"
-                value={profileChoice}
-                onChange={(event) => setProfileChoice(event.target.value)}
-                disabled={busy}
-              >
-                <option value="">Default {tool === 'claude-code' ? 'Claude' : 'Codex'} login</option>
-                {selectedProfile && profileChoice !== NEW_PROFILE && !toolProfiles.some((profile) => profile.name === selectedProfile) ? (
-                  <option value={selectedProfile}>{selectedProfile} · inherited</option>
-                ) : null}
-                {toolProfiles.map((profile) => (
-                  <option key={`${profile.tool}:${profile.name}`} value={profile.name}>{profile.name}</option>
-                ))}
-                <option value={NEW_PROFILE}>Add another login…</option>
-              </select>
-              {profileChoice === NEW_PROFILE ? (
-                <input
-                  className="field-input"
-                  value={newProfile}
-                  onChange={(event) => setNewProfile(event.target.value.toLowerCase())}
-                  placeholder="work or personal"
-                  maxLength={32}
-                  pattern="[a-z0-9-]{1,32}"
-                  autoFocus
-                  aria-invalid={!profileValid}
-                />
+            <summary><strong>Advanced</strong><span>Accounts, isolation, and integrations</span></summary>
+            <div className="launcher-advanced-body">
+              {profileTool ? (
+                <div className="field launcher-advanced-card account-profile-field">
+                  <span className="field-label">Account</span>
+                  <select
+                    className="field-input"
+                    value={profileChoice}
+                    onChange={(event) => setProfileChoice(event.target.value)}
+                    disabled={busy}
+                  >
+                    <option value="">Default</option>
+                    {selectedProfile && profileChoice !== NEW_PROFILE && !toolProfiles.some((profile) => profile.name === selectedProfile) ? (
+                      <option value={selectedProfile}>{selectedProfile} · inherited</option>
+                    ) : null}
+                    {toolProfiles.map((profile) => (
+                      <option key={`${profile.tool}:${profile.name}`} value={profile.name}>{profile.name}</option>
+                    ))}
+                    <option value={NEW_PROFILE}>Add another login…</option>
+                  </select>
+                  {profileChoice === NEW_PROFILE ? (
+                    <>
+                      <input
+                        className="field-input"
+                        value={newProfile}
+                        onChange={(event) => setNewProfile(event.target.value.toLowerCase())}
+                        placeholder="work or personal"
+                        maxLength={32}
+                        pattern="[a-z0-9-]{1,32}"
+                        autoFocus
+                        aria-invalid={!profileValid}
+                      />
+                      <span className="field-help">This opens a separate provider login and keeps its history separate.</span>
+                    </>
+                  ) : null}
+                </div>
               ) : null}
-              <span className="field-help">
-                Profiles keep provider credentials and histories separate. A new profile opens the provider's own login flow.
-              </span>
+              {!isDelegate ? (
+                <label className="field-checkbox launcher-advanced-card">
+                  <input type="checkbox" checked={makeWorktree} onChange={(event) => setMakeWorktree(event.currentTarget.checked)} />
+                  <span className="field-checkbox-body">
+                    <span>Use a separate worktree</span>
+                    <span className="field-hint">Keeps this session’s code changes isolated from your current checkout.</span>
+                  </span>
+                </label>
+              ) : null}
+              <details className="launcher-advanced-subsection">
+                <summary>Tags <span>Optional organization</span></summary>
+                <TagEditor value={tags} onChange={setTags} disabled={busy} />
+              </details>
+              {tool === 'claude-code' ? (
+                <details className="launcher-advanced-subsection">
+                  <summary>Claude options <span>Uses Settings by default</span></summary>
+                  <div className="launcher-claude-options">
+                    <label><span>Approvals</span><select value={claudeOptions.permissionMode ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, permissionMode: event.currentTarget.value as ClaudeSessionOptions['permissionMode'] }))}>
+                      <option value="">Use Settings</option>
+                      <option value="inherit">Claude default</option>
+                      <option value="manual">Ask every time</option>
+                      <option value="acceptEdits">Accept edits</option>
+                      <option value="auto">Auto</option>
+                      <option value="plan">Plan only</option>
+                      <option value="dontAsk">Don’t ask</option>
+                      <option value="bypassPermissions">Bypass permissions</option>
+                    </select></label>
+                    <label><span>Remote Control</span><select value={claudeOptions.remoteControl ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, remoteControl: event.currentTarget.value as ClaudeSessionOptions['remoteControl'] }))}>
+                      <option value="">Use Settings</option><option value="inherit">Claude default</option><option value="on">On</option><option value="off">Off</option>
+                    </select></label>
+                    <label><span>Use Chrome</span><select value={claudeOptions.chrome ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, chrome: event.currentTarget.value as ClaudeSessionOptions['chrome'] }))}>
+                      <option value="">Use Settings</option><option value="inherit">Claude default</option><option value="on">On</option><option value="off">Off</option>
+                    </select></label>
+                    <label><span>Somewhere tools</span><select value={claudeOptions.somewhereMcp ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, somewhereMcp: event.currentTarget.value as ClaudeSessionOptions['somewhereMcp'] }))}>
+                      <option value="">Use Settings</option><option value="inherit">Use Claude configuration</option><option value="ensure">Make available</option>
+                    </select></label>
+                    {claudeOptions.remoteControl === 'on' ? (
+                      <label className="is-wide"><span>Remote Control name</span><input value={claudeOptions.remoteControlNamePrefix ?? ''} maxLength={64} placeholder="Optional prefix" onChange={(event) => setClaudeOptions((current) => ({ ...current, remoteControlNamePrefix: event.currentTarget.value }))} /></label>
+                    ) : null}
+                  </div>
+                </details>
+              ) : null}
+              {tool === 'claude-code' ? (
+                <details className="launcher-advanced-subsection launcher-troubleshooting">
+                  <summary>Troubleshooting <span>Start without Claude customizations</span></summary>
+                  <label className="field-checkbox">
+                    <input type="checkbox" checked={claudeSafeMode} onChange={(event) => setClaudeSafeMode(event.currentTarget.checked)} />
+                    <span className="field-checkbox-body">
+                      <span>Temporarily turn customizations off</span>
+                      <span className="field-hint">Disables hooks, plugins, MCP servers, skills, and project instructions for this session.</span>
+                    </span>
+                  </label>
+                </details>
+              ) : null}
+              {showSkipPerms ? (
+                <label className="field-checkbox launcher-advanced-card">
+                  <input
+                    type="checkbox"
+                    checked={skipPerms}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      setSkipPerms(enabled);
+                      if (!enabled && tool === 'codex' && runtimeMode === 'rich') setRuntimeMode('terminal');
+                    }}
+                  />
+                  <span className="field-checkbox-body">
+                    <span>Full Access</span>
+                    <span className="field-hint">
+                      Lets Codex work without approval or sandbox checks. Use only for a workspace and task you trust.
+                    </span>
+                  </span>
+                </label>
+              ) : null}
             </div>
-          ) : null}
-            <div className="field">
-              <span className="field-label">Tags <span className="field-optional">optional</span></span>
-              <TagEditor value={tags} onChange={setTags} disabled={busy} />
-            </div>
-            {!isDelegate ? <label className="field-checkbox"><input type="checkbox" checked={makeWorktree} onChange={(event) => setMakeWorktree(event.currentTarget.checked)} /><span className="field-checkbox-body"><span>Create an isolated worktree</span><span className="field-hint">Uses Sessions' existing safe worktree flow.</span></span></label> : null}
-          {tool === 'claude-code' ? (
-            <div className="launcher-claude-options">
-              <label className="field-checkbox is-wide">
-                <input type="checkbox" checked={claudeSafeMode} onChange={(event) => setClaudeSafeMode(event.currentTarget.checked)} />
-                <span className="field-checkbox-body">
-                  <span>Start without customizations</span>
-                  <span className="field-hint">Claude safe mode disables user hooks, plugins, MCP servers, skills, and project instructions for this session. Use it to troubleshoot unexpected macOS permission prompts.</span>
-                </span>
-              </label>
-              <label><span>Permission mode</span><select value={claudeOptions.permissionMode ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, permissionMode: event.currentTarget.value as ClaudeSessionOptions['permissionMode'] }))}>
-                <option value="">Settings default</option>
-                <option value="inherit">Claude default</option>
-                <option value="manual">Manual</option>
-                <option value="acceptEdits">Accept edits</option>
-                <option value="auto">Auto</option>
-                <option value="plan">Plan</option>
-                <option value="dontAsk">Don’t ask</option>
-                <option value="bypassPermissions">Bypass permissions</option>
-              </select></label>
-              <label><span>Remote Control</span><select value={claudeOptions.remoteControl ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, remoteControl: event.currentTarget.value as ClaudeSessionOptions['remoteControl'] }))}>
-                <option value="">Settings default</option><option value="inherit">Claude default</option><option value="on">On</option><option value="off">Off</option>
-              </select></label>
-              <label><span>Chrome</span><select value={claudeOptions.chrome ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, chrome: event.currentTarget.value as ClaudeSessionOptions['chrome'] }))}>
-                <option value="">Settings default</option><option value="inherit">Claude default</option><option value="on">On</option><option value="off">Off</option>
-              </select></label>
-              <label><span>Somewhere MCP</span><select value={claudeOptions.somewhereMcp ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, somewhereMcp: event.currentTarget.value as ClaudeSessionOptions['somewhereMcp'] }))}>
-                <option value="">Settings default</option><option value="inherit">Use provider configuration</option><option value="ensure">Ensure enabled</option>
-              </select></label>
-              <label className="is-wide"><span>Remote Control name prefix</span><input value={claudeOptions.remoteControlNamePrefix ?? ''} maxLength={64} placeholder="Settings default" onChange={(event) => setClaudeOptions((current) => ({ ...current, remoteControlNamePrefix: event.currentTarget.value }))} /></label>
-            </div>
-          ) : null}
-          {showSkipPerms ? (
-            <label className="field-checkbox">
-              <input
-                type="checkbox"
-                checked={skipPerms}
-                onChange={(e) => {
-                  const enabled = e.target.checked;
-                  setSkipPerms(enabled);
-                  if (!enabled && tool === 'codex' && runtimeMode === 'rich') setRuntimeMode('terminal');
-                }}
-              />
-              <span className="field-checkbox-body">
-                <span>Full Access</span>
-                <span className="field-hint">
-                  Runs without Codex approval or sandbox protections. Leave off unless this workspace and task are trusted.
-                </span>
-              </span>
-            </label>
-          ) : null}
           </details>
           {/* Inline hints always enter the audited Resume flow. They never
               create an unlinked direct `--resume` runtime. */}

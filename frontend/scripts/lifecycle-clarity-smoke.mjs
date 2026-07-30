@@ -24,6 +24,9 @@ const [
   machineMark,
   newSession,
   resumeDialog,
+  productSidebar,
+  settingsView,
+  api,
   styles
 ] = await Promise.all([
   source('src/App.tsx'),
@@ -41,6 +44,9 @@ const [
   source('src/components/MachineMark.tsx'),
   source('src/components/NewSessionDialog.tsx'),
   source('src/components/ResumeDialog.tsx'),
+  source('src/components/ProductSidebar.tsx'),
+  source('src/components/SettingsView.tsx'),
+  source('src/api/sessionsd.ts'),
   source('src/styles/globals.css')
 ]);
 
@@ -114,6 +120,24 @@ assert.match(machineMark, /aria-label=\{machine\}/);
 assert.match(styles, /\.remote-message-actions\.is-agent\s*\{\s*justify-content:\s*flex-start;/);
 assert.doesNotMatch(styles, /\.remote-bubble-assistant\s*\{[^}]*cursor:\s*copy;/);
 assert.match(newSession, /\{browserOpen \? \([\s\S]*<DirectoryBrowser[\s\S]*\) : null\}/);
+const agentStep = newSession.indexOf('Choose an agent');
+const machineStep = newSession.indexOf('Choose a machine');
+const folderStep = newSession.indexOf('Choose a folder');
+assert.ok(agentStep > 0 && agentStep < machineStep && machineStep < folderStep, 'new-session steps must be Agent, Machine, Folder');
+assert.match(newSession, /This computer/);
+assert.match(newSession, /configuredMachines\.find\(\(machine\) => machine\.isDefault && isLocalServer\(machine\)\)/);
+assert.match(newSession, /<select[\s\S]*<option value="">Default<\/option>[\s\S]*CLAUDE_MODELS/);
+assert.match(newSession, /listNewSessionCodexModels\(controller\.signal\)/);
+assert.match(api, /\/api\/models\/codex/);
+assert.doesNotMatch(newSession, /Provider default|More options|screen parsing|message parsing/);
+assert.match(newSession, /<summary><strong>Advanced<\/strong>/);
+assert.match(newSession, /Runs \{tool === 'claude-code' \? 'Claude' : 'Codex'\} just as it appears in Terminal/);
+assert.match(productSidebar, />Send feedback<\/span>/);
+assert.match(productSidebar, /onNavigate\('feedback'\)/);
+assert.match(settingsView, /Help shape Sessions/);
+assert.match(settingsView, /Share an idea or win/);
+assert.match(settingsView, /Report a bug/);
+assert.doesNotMatch(settingsView, /Reporting from an agent/);
 assert.match(resumeDialog, /Continue an earlier chat/);
 assert.match(resumeDialog, /\(\['all', 'claude', 'codex'\] as const\)/);
 assert.match(resumeDialog, /s\.title\?\.toLowerCase\(\)\.includes\(q\)/);

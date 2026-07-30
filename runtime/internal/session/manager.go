@@ -1220,6 +1220,13 @@ func (m *Manager) ModelOptions(ctx context.Context, id string) ([]codexapp.Model
 	return m.listModels(ctx, info.Cmd)
 }
 
+// CodexModelOptions returns the same live provider catalog used to validate
+// Rich Codex sessions, but does not require a session to exist yet. The native
+// launcher uses it to present real choices before creating a runtime.
+func (m *Manager) CodexModelOptions(ctx context.Context) ([]codexapp.Model, error) {
+	return m.listModels(ctx, "codex")
+}
+
 func (m *Manager) captureFirstMessageDescription(id, data string) {
 	m.mu.Lock()
 	runtime := m.runtimes[id]

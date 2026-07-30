@@ -705,6 +705,12 @@ export interface SessionModelOption {
   supportedReasoningEfforts: Array<{ reasoningEffort: string; description: string }>;
 }
 
+export async function listNewSessionCodexModels(signal?: AbortSignal): Promise<SessionModelOption[]> {
+  const r = await apiFetch(`${httpBase()}/api/models/codex`, { signal });
+  const body = await featureJSON<{ models?: SessionModelOption[] }>(r, 'Codex model choices');
+  return body.models ?? [];
+}
+
 export async function listSessionModelOptions(sessionId: string): Promise<SessionModelOption[]> {
   const r = await apiFetch(`${httpBase()}/api/sessions/${encodeURIComponent(sessionId)}/model-options`);
   const body = await featureJSON<{ models?: SessionModelOption[] }>(r, 'Live model options');

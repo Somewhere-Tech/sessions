@@ -476,6 +476,20 @@ func TestRichSessionModelControlAppliesToNextTurn(t *testing.T) {
 	})
 	t.Cleanup(manager.Close)
 	daemon.handler = New(daemon.config, manager)
+
+	newSessionOptions := serve(
+		t,
+		daemon.handler,
+		http.MethodGet,
+		"/api/models/codex",
+		nil,
+		"127.0.0.1:1",
+		nil,
+	)
+	if newSessionOptions.Code != http.StatusOK || !strings.Contains(newSessionOptions.Body.String(), `"id":"gpt-next"`) {
+		t.Fatalf("new-session model options status=%d body=%s", newSessionOptions.Code, newSessionOptions.Body.String())
+	}
+
 	created, err := manager.Create(context.Background(), state.CreateSessionRequest{
 		Cmd: "codex", Cwd: daemon.root, Kind: state.KindCodexAppServer,
 	})

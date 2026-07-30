@@ -112,6 +112,10 @@ type modelCatalogService interface {
 	ModelOptions(context.Context, string) ([]codexapp.Model, error)
 }
 
+type newSessionModelCatalogService interface {
+	CodexModelOptions(context.Context) ([]codexapp.Model, error)
+}
+
 type pushService interface {
 	VAPIDPublicKey() (string, error)
 	AddSubscription(any) error
@@ -309,6 +313,20 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if path == "/api/sessions" && request.Method == http.MethodGet {
 		includeExited := request.URL.Query().Get("include_exited") == "1"
 		s.sendJSON(response, http.StatusOK, map[string]any{"sessions": s.registry.List(includeExited)}, corsOrigin)
+		return
+	}
+	if path == "/api/models/codex" && request.Method == http.MethodGet {
+		catalog, supported := s.registry.(newSessionModelCatalogService)
+		if !supported {
+			s.sendJSON(response, http.StatusNotImplemented, map[string]any{"error": "Codex model choices are not available on this runtime"}, corsOrigin)
+			return
+		}
+		models, err := catalog.CodexModelOptions(request.Context())
+		if err != nil {
+			s.sendJSON(response, http.StatusBadGateway, map[string]any{"error": err.Error()}, corsOrigin)
+			return
+		}
+		s.sendJSON(response, http.StatusOK, map[string]any{"models": models}, corsOrigin)
 		return
 	}
 	if path == "/api/sessions/end-batch" && request.Method == http.MethodPost {
