@@ -230,7 +230,7 @@ func runtimeStillLive(registry *state.Registry, config state.Config, id string) 
 		return false
 	}
 	return processAlive(metadata.Info.PID) &&
-		runnerCommandMatches(processCommand(metadata.Info.PID), id, metadata.Info.Cmd)
+		runnerCommandMatches(processCommand(metadata.Info.PID), id, metadata.Info.Cmd, metadata.Kind)
 }
 
 func hasRetainedDescendant(

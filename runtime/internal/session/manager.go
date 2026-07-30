@@ -1832,7 +1832,7 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 			}
 			if metadataErr == nil && metadata.Info.PID > 0 && m.options.ProcessAlive(metadata.Info.PID) {
 				command := m.options.ProcessCommand(metadata.Info.PID)
-				if runnerCommandMatches(command, id, metadata.Info.Cmd) {
+				if runnerCommandMatches(command, id, metadata.Info.Cmd, metadata.Kind) {
 					log.Printf("[discover] runner %s unreachable but pid %d alive — leaving it alone", id, metadata.Info.PID)
 					continue
 				}
@@ -1850,7 +1850,11 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 	var cleanupErrors []error
 	for _, id := range ids {
 		if _, dead := deadArtifacts[id]; dead {
-			for _, suffix := range []string{".sock", ".json", ".codexapp.jsonl", ".claudep.jsonl"} {
+			// Structured histories are durable conversation evidence, not
+			// disposable runner coordination artifacts. An unreachable or dead
+			// runner may lose its socket and metadata, but discovery must never
+			// erase the transcript needed to inspect or continue that session.
+			for _, suffix := range []string{".sock", ".json"} {
 				if removeErr := os.Remove(filepath.Join(m.config.RunnerStateDir, id+suffix)); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 					cleanupErrors = append(cleanupErrors, removeErr)
 				}
@@ -1916,7 +1920,7 @@ func (m *Manager) orphanPlistCandidates() (map[string]struct{}, map[string]struc
 		}
 		if m.options.ProcessAlive(metadata.Info.PID) {
 			command := m.options.ProcessCommand(metadata.Info.PID)
-			if runnerCommandMatches(command, id, metadata.Info.Cmd) {
+			if runnerCommandMatches(command, id, metadata.Info.Cmd, metadata.Kind) {
 				continue
 			}
 			log.Printf("[discover] orphan runner %s pid %d is PID reuse (%s) — treating as dead", id, metadata.Info.PID, truncate(command, 60))
@@ -1927,8 +1931,16 @@ func (m *Manager) orphanPlistCandidates() (map[string]struct{}, map[string]struc
 	return candidates, deadArtifacts
 }
 
-func runnerCommandMatches(command, id, expectedCommand string) bool {
+func runnerCommandMatches(command, id, expectedCommand, kind string) bool {
 	if command == "" || strings.Contains(command, "runner.js") || strings.Contains(command, "runner.ts") || strings.Contains(command, id) {
+		return true
+	}
+	// Structured Codex and Claude sessions are hosted directly by
+	// sessions-runner, so their process command does not contain the provider
+	// command or session ID. Treat another Sessions runner at the recorded PID
+	// as live rather than risk reaping a real session during a socket outage.
+	if (kind == state.KindCodexAppServer || kind == state.KindClaudeStructured) &&
+		strings.Contains(strings.ToLower(command), "sessions-runner") {
 		return true
 	}
 	expectedBase := filepath.Base(strings.TrimSpace(expectedCommand))

@@ -103,10 +103,36 @@ func WriteMetadata(path string, meta Metadata) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	dir := filepath.Dir(path)
+	temporary, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Chmod(path, 0o600)
+	temporaryPath := temporary.Name()
+	keepTemporary := true
+	defer func() {
+		_ = temporary.Close()
+		if keepTemporary {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := temporary.Write(b); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	keepTemporary = false
+	return nil
 }
 
 func WriteCompletionManifest(path string, manifest CompletionManifest) error {
