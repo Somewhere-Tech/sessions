@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="57" viewBox="0 0 150 57">
+  <rect width="150" height="57" fill="#ffffff"/>
+  <g transform="translate(12 9)">
+    <rect x="0" y="18" width="8" height="8" rx="1.5" fill="#16afad"/>
+    <rect x="11" y="7" width="8" height="8" rx="1.5" fill="#16afad"/>
+    <rect x="11" y="18" width="8" height="8" rx="1.5" fill="#16afad"/>
+    <rect x="11" y="29" width="8" height="8" rx="1.5" fill="#16afad"/>
+    <rect x="22" y="7" width="8" height="8" rx="1.5" fill="#16afad"/>
+  </g>
+  <text x="52" y="27" fill="#10201f" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700">Sessions</text>
+  <text x="52" y="42" fill="#657572" font-family="Segoe UI, Arial, sans-serif" font-size="8.5">Agent work that lasts.</text>
+</svg>

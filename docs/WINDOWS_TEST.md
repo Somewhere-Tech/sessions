@@ -12,6 +12,8 @@ tests at irreplaceable work or credentials.
 - Build the shared React frontend and native Tauri tests.
 - Assemble the current-user installer and portable client from the same source
   revision.
+- Verify the installer renders the reviewed Sessions header, sidebar artwork,
+  and installer/uninstaller icons without clipping or color conversion defects.
 - Record the source revision, package hashes, runtime manifest, and signing
   state.
 
@@ -21,6 +23,8 @@ is not Windows runtime evidence.
 ## Clean install
 
 - Install as a standard user without administrator elevation.
+- Install over the previous preview and confirm Windows keeps one Sessions
+  entry rather than creating a side-by-side duplicate.
 - Verify one per-user supervisor definition and one managed Sessions PATH entry.
 - Confirm the CLI, daemon, and viewer agree on version and state location.
 - Confirm uninstall removes only Sessions-owned integration and does not end or

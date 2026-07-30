@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const root = new URL('../', import.meta.url);
 const read = (path) => readFile(new URL(path, root), 'utf8');
+const readBinary = (path) => readFile(new URL(path, root));
 
 test('Windows uses the signed app updater and appears as a versioned Fleet host', async () => {
   const [
@@ -17,7 +18,9 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
     workflow,
     frontendPackageText,
     windowsRuntimeBuild,
-    windowsReleaseScript
+    windowsReleaseScript,
+    installerHeader,
+    installerSidebar
   ] = await Promise.all([
     read('src-tauri/tauri.conf.json'),
     read('src-tauri/tauri.windows.conf.json'),
@@ -29,7 +32,9 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
     read('.github/workflows/windows-preview.yml'),
     read('frontend/package.json'),
     read('scripts/build-app-runtime.ps1'),
-    read('scripts/release-windows.ps1')
+    read('scripts/release-windows.ps1'),
+    readBinary('src-tauri/windows/installer-header.bmp'),
+    readBinary('src-tauri/windows/installer-sidebar.bmp')
   ]);
 
   const appConfig = JSON.parse(appConfigText);
@@ -39,6 +44,19 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
   assert.equal(appConfig.plugins.updater.endpoints[0], 'https://sessions.somewhere.tech/releases/latest.json');
   assert.match(appConfig.plugins.updater.pubkey, /\S/);
   assert.equal(windowsBundle.bundle.windows.nsis.installMode, 'currentUser');
+  assert.equal(windowsBundle.bundle.windows.nsis.headerImage, './windows/installer-header.bmp');
+  assert.equal(windowsBundle.bundle.windows.nsis.sidebarImage, './windows/installer-sidebar.bmp');
+  assert.equal(windowsBundle.bundle.windows.nsis.installerIcon, './icons/icon.ico');
+  assert.equal(windowsBundle.bundle.windows.nsis.uninstallerIcon, './icons/icon.ico');
+  assert.equal(windowsBundle.bundle.windows.nsis.uninstallerHeaderImage, './windows/installer-header.bmp');
+  assert.deepEqual(
+    [installerHeader.readInt32LE(18), installerHeader.readInt32LE(22), installerHeader.readUInt16LE(28)],
+    [150, 57, 24]
+  );
+  assert.deepEqual(
+    [installerSidebar.readInt32LE(18), installerSidebar.readInt32LE(22), installerSidebar.readUInt16LE(28)],
+    [164, 314, 24]
+  );
   assert.equal(windowsRelease.bundle.createUpdaterArtifacts, true);
   assert.equal(windowsRelease.plugins.updater.windows.installMode, 'passive');
   assert.equal(windowsRelease.bundle.windows.digestAlgorithm, 'sha256');
@@ -48,6 +66,7 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
   assert.match(sidebar, /checkForNativeUpdate\(\)/);
   assert.match(sidebar, /notifyNativeUpdate\(available\)/);
   assert.match(sidebar, /'Update app'/);
+  assert.match(sidebar, /Your sessions will keep running during the update\./);
   assert.doesNotMatch(sidebar, /darwin|macos|target_os/);
   assert.match(bridge, /pendingUpdate\.downloadAndInstall/);
   assert.match(bridge, /await relaunch\(\)/);
