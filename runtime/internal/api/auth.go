@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -118,6 +119,72 @@ func allowedOrigin(origin, bindHost string, additionalHosts ...string) bool {
 		}
 	}
 	return false
+}
+
+func isStateChangingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+// trustedAmbientWriteOrigin is deliberately narrower than allowedOrigin.
+// allowedOrigin controls readable CORS responses and includes hosted clients
+// that authenticate with a token. This function defines the small set of
+// native, development, and daemon-same-origin pages that may write using only
+// loopback trust.
+func trustedAmbientWriteOrigin(origin, bindHost string, bindPort int, additionalHosts ...string) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	normalized := normalizedOrigin(parsed)
+	switch normalized {
+	case "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost":
+		return true
+	case "http://localhost:5273", "http://127.0.0.1:5273":
+		// The checked-in Tauri development URL. Production uses the native
+		// origins above, so no arbitrary localhost port receives ambient trust.
+		return true
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	if effectiveOriginPort(parsed) != bindPort {
+		return false
+	}
+	hostname := strings.ToLower(parsed.Hostname())
+	if hostname == "127.0.0.1" || hostname == "localhost" || hostname == "::1" ||
+		strings.EqualFold(hostname, strings.Trim(bindHost, "[]")) {
+		return true
+	}
+	for _, host := range additionalHosts {
+		if host != "" && strings.EqualFold(hostname, strings.Trim(host, "[]")) {
+			return true
+		}
+	}
+	return false
+}
+
+func effectiveOriginPort(parsed *url.URL) int {
+	if port := parsed.Port(); port != "" {
+		value, err := strconv.Atoi(port)
+		if err != nil {
+			return 0
+		}
+		return value
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http":
+		return 80
+	case "https":
+		return 443
+	default:
+		return 0
+	}
 }
 
 func normalizedOrigin(parsed *url.URL) string {

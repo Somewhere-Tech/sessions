@@ -135,7 +135,7 @@ func TestAuthAndOriginMatrix(t *testing.T) {
 		{name: "query token", remote: external, target: "/api/sessions?token=" + testToken, wantStatus: http.StatusOK},
 		{name: "loopback exempt", remote: "127.0.0.1:4567", target: "/api/sessions", wantStatus: http.StatusOK},
 		{name: "xff defeats exemption", remote: "127.0.0.1:4567", target: "/api/sessions", headers: http.Header{"X-Forwarded-For": {"127.0.0.1"}}, wantStatus: http.StatusUnauthorized},
-		{name: "evil origin rejected", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://evil.test"}}, wantStatus: http.StatusForbidden},
+		{name: "evil origin response unreadable", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://evil.test"}}, wantStatus: http.StatusOK},
 		{name: "hosted tech allowed", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://sessions.somewhere.tech"}}, wantStatus: http.StatusOK, wantOrigin: "https://sessions.somewhere.tech"},
 		{name: "hosted canonical origin allowed", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://sessions.somewhere.site"}}, wantStatus: http.StatusOK, wantOrigin: "https://sessions.somewhere.site"},
 	}
@@ -168,6 +168,37 @@ func TestAuthAndOriginMatrix(t *testing.T) {
 			t.Fatalf("wrong content type changed session count from %d to %d", before, after)
 		}
 	})
+	t.Run("credential-bearing remote write remains available", func(t *testing.T) {
+		before := len(daemon.registry.List(true))
+		response := serve(t, daemon.handler, http.MethodPost, "/api/sessions",
+			strings.NewReader(`{"cmd":"/bin/sh"}`), external,
+			http.Header{
+				"Authorization": {"Bearer " + testToken},
+				"Content-Type":  {"application/json"},
+				"Origin":        {"https://client.example"},
+			})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusCreated, response.Body.String())
+		}
+		if after := len(daemon.registry.List(true)); after != before+1 {
+			t.Fatalf("credential-bearing write changed session count from %d to %d", before, after)
+		}
+	})
+	t.Run("arbitrary localhost port has no ambient write authority", func(t *testing.T) {
+		before := len(daemon.registry.List(true))
+		response := serve(t, daemon.handler, http.MethodPost, "/api/sessions",
+			strings.NewReader(`{"cmd":"/bin/sh"}`), "127.0.0.1:4567",
+			http.Header{
+				"Content-Type": {"application/json"},
+				"Origin":       {"http://localhost:3000"},
+			})
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusForbidden, response.Body.String())
+		}
+		if after := len(daemon.registry.List(true)); after != before {
+			t.Fatalf("untrusted localhost origin changed session count from %d to %d", before, after)
+		}
+	})
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			response := serve(t, daemon.handler, http.MethodGet, test.target, nil, test.remote, test.headers)
@@ -192,6 +223,31 @@ func TestAuthAndOriginMatrix(t *testing.T) {
 			t.Fatalf("open escape hatch status = %d, body=%s", opened.Code, opened.Body.String())
 		}
 	})
+}
+
+func TestTrustedAmbientWriteOrigin(t *testing.T) {
+	tests := []struct {
+		name   string
+		origin string
+		want   bool
+	}{
+		{name: "macOS Tauri", origin: "tauri://localhost", want: true},
+		{name: "Windows Tauri", origin: "http://tauri.localhost", want: true},
+		{name: "checked in dev server", origin: "http://localhost:5273", want: true},
+		{name: "daemon same origin", origin: "http://localhost:8787", want: true},
+		{name: "daemon IPv6 same origin", origin: "http://[::1]:8787", want: true},
+		{name: "LAN daemon same origin", origin: "http://mini.tail.test:8787", want: true},
+		{name: "arbitrary local port", origin: "http://localhost:3000", want: false},
+		{name: "hosted client needs credential", origin: "https://sessions.somewhere.tech", want: false},
+		{name: "untrusted site", origin: "https://evil.test", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := trustedAmbientWriteOrigin(test.origin, "127.0.0.1", 8787, "mini.tail.test"); got != test.want {
+				t.Fatalf("trustedAmbientWriteOrigin(%q) = %v, want %v", test.origin, got, test.want)
+			}
+		})
+	}
 }
 
 func TestTokenCreationAndJSONBodyLimit(t *testing.T) {

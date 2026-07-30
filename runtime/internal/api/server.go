@@ -184,11 +184,13 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	}
 
 	// CORS controls whether a browser may read a response; it does not stop a
-	// browser from sending a state-changing request. Reject hostile browser
-	// origins before authentication or route dispatch so loopback trust cannot
-	// be turned into blind command or input execution by an arbitrary web page.
-	if origin != "" && !originAllowed &&
-		(strings.HasPrefix(path, "/api/") || path == "/ws") {
+	// browser from sending a state-changing request. Reject ambient-authority
+	// writes from untrusted browser origins before authentication or route
+	// dispatch. Credential-bearing remote clients remain valid; a hostile page
+	// cannot add Authorization without a preflight that this server rejects.
+	if isStateChangingMethod(request.Method) && origin != "" &&
+		!trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost()) &&
+		strings.TrimSpace(request.Header.Get("Authorization")) == "" {
 		s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
 		return
 	}
