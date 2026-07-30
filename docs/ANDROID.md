@@ -67,6 +67,10 @@ The installable debug APK is:
 src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
 ```
 
+Every reviewed push to `main` also runs the **Android client preview**
+workflow and retains the same sideloadable APK plus its SHA-256 checksum for
+14 days. That artifact is a debug-signed test build, not a Play Store release.
+
 Install it over USB debugging with:
 
 ```sh
