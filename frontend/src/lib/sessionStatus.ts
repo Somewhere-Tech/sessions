@@ -8,6 +8,28 @@ export interface EndedSummary {
 
 export type EndedCategory = 'user' | 'provider' | 'continued' | 'crashed' | 'other';
 
+export function continuationSession(session: SessionInfo, allSessions: SessionInfo[]): SessionInfo | null {
+  const linkedIDs = new Set([
+    session.reopenedAs,
+    session.movedToSessionId
+  ].filter((value): value is string => Boolean(value)));
+  const providerID = providerConversationId(session);
+  const candidates = allSessions.filter((candidate) => {
+    if (candidate.id === session.id) return false;
+    if (linkedIDs.has(candidate.id)) return true;
+    if (candidate.resumedFrom === session.id || candidate.movedFromSessionId === session.id) return true;
+    return Boolean(
+      providerID
+      && providerConversationId(candidate) === providerID
+      && candidate.createdAt >= session.createdAt
+    );
+  });
+  return candidates.sort((left, right) => {
+    if (left.exited !== right.exited) return left.exited ? 1 : -1;
+    return right.createdAt - left.createdAt;
+  })[0] ?? null;
+}
+
 export function isDegradedSession(session: SessionInfo): boolean {
   return !session.exited
     && session.idleReason === 'failed'
@@ -42,6 +64,31 @@ export function endedSummary(session: SessionInfo, allSessions: SessionInfo[] = 
   const reason = session.exitReason?.trim().toLowerCase() ?? '';
   const code = session.exitCode;
   const signal = session.exitSignal?.trim() ?? '';
+  const continuation = continuationSession(session, allSessions);
+  const hasContinuation = Boolean(continuation || session.reopenedAs || session.movedToSessionId);
+
+  if (hasContinuation) {
+    const name = continuation?.name?.trim()
+      || continuation?.description?.trim()
+      || continuation?.claudeCustomTitle?.trim()
+      || continuation?.claudeAiTitle?.trim();
+    if (continuation && !continuation.exited) {
+      return {
+        label: name ? `Live as ${name}` : 'Conversation is live in a new session',
+        detail: 'This runtime ended after the same conversation continued in a new live session.',
+        tone: 'completed'
+      };
+    }
+    return {
+      label: name
+        ? `Continued as ${name}`
+        : session.movedToEndpoint
+        ? `Continued on ${session.movedToEndpoint}`
+        : 'Continued in a new session',
+      detail: 'This runtime ended after the conversation continued elsewhere.',
+      tone: 'ended'
+    };
+  }
 
   if (reason === 'ended-by-user') {
     const actor = endInitiatorLabel(session, allSessions);
@@ -134,7 +181,10 @@ export function endedAtLabel(session: SessionInfo): string {
 }
 
 export function canContinueSession(session: SessionInfo): boolean {
-  return session.tool !== 'terminal' && !session.reopenedAs && Boolean(providerConversationId(session));
+  return session.tool !== 'terminal'
+    && !session.reopenedAs
+    && !session.movedToSessionId
+    && Boolean(providerConversationId(session));
 }
 
 export function providerConversationId(session: SessionInfo): string | null {

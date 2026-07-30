@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchServerHistoryTranscript, type HistoryTranscript } from '../api/sessionsd';
 import { getActiveServer, useServers } from '../lib/servers';
 import { sessionLabel, useTabLabel } from '../lib/tabLabels';
@@ -6,7 +6,7 @@ import { useSessions } from '../store/sessions';
 import type { SessionInfo } from '../types';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import { SessionDetails } from './SessionDetails';
-import { canContinueSession, endedAtLabel, endedSummary } from '../lib/sessionStatus';
+import { canContinueSession, continuationSession, endedAtLabel, endedSummary } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
 import { ContinueElsewhereButton } from './ContinueElsewhereButton';
@@ -31,12 +31,18 @@ export function SessionHistoryView({ session, onResume, onCloseView, onOpenSessi
   const [error, setError] = useState<string | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const historyBodyRef = useRef<HTMLDivElement>(null);
   const displayParentID = session.displayParentSessionId !== undefined
     ? session.displayParentSessionId
     : session.parentSessionId;
   const parent = displayParentID ? allSessions.find((item) => item.id === displayParentID) : null;
   const provider = normalizeProvider(session.tool);
   const end = endedSummary(session, allSessions);
+  const continuation = continuationSession(session, allSessions);
+  const hasContinuation = Boolean(continuation || session.reopenedAs || session.movedToSessionId);
+  const continuationIsLive = Boolean(continuation && !continuation.exited);
+  const lifecycleLabel = continuationIsLive ? 'Continued · live' : hasContinuation ? 'Continued' : 'Ended';
   const endInitiator = session.endedByKind === 'session' && session.endedById
     ? allSessions.find((item) => item.id === session.endedById)
     : null;
@@ -78,16 +84,33 @@ export function SessionHistoryView({ session, onResume, onCloseView, onOpenSessi
     return () => controller.abort();
   }, [activeServerId, session.id, supportsConversation]);
 
+  const updateJumpToLatest = useCallback(() => {
+    const element = historyBodyRef.current;
+    if (!element) return;
+    setShowJumpToLatest(element.scrollHeight - element.scrollTop - element.clientHeight > 120);
+  }, []);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(updateJumpToLatest);
+    return () => window.cancelAnimationFrame(frame);
+  }, [detailsOpen, transcript, updateJumpToLatest]);
+
+  const jumpToLatest = (): void => {
+    const element = historyBodyRef.current;
+    if (!element) return;
+    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+  };
+
   return (
     <div className={`session-view view-history${detailsOpen ? ' view-details' : ''}`}>
       <header className="session-active-header">
         {onBack ? <button type="button" className="mobile-session-back" onClick={onBack} aria-label="Back to sessions">‹</button> : null}
         <div className="session-active-copy">
           <span className="session-parent-breadcrumb">{parent ? `${sessionLabel(parent)} / ${session.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}` : 'Manager session'} · saved history</span>
-          <div className="session-active-title-row"><h1>{label}</h1><span className="session-live-pill is-finished">Ended</span><span className={`session-runtime-badge${sessionMode(session) === 'terminal' ? ' is-terminal' : ''}`} title={sessionModeName(session)}>{sessionModeShort(session)}</span></div>
+          <div className="session-active-title-row"><h1>{label}</h1><span className={`session-live-pill ${continuationIsLive ? 'is-completed' : 'is-finished'}`}>{lifecycleLabel}</span><span className={`session-runtime-badge${sessionMode(session) === 'terminal' ? ' is-terminal' : ''}`} title={sessionModeName(session)}>{sessionModeShort(session)}</span></div>
           <div className="session-active-meta">
             {provider ? <ProviderBadge provider={provider} compact /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}
-            <span>{session.profile || 'Default profile'}</span><span>{getActiveServer().name}</span><span title={session.cwd}>{session.cwd}</span>
+            <span>{session.profile || 'Default profile'}</span><span>Saved on {getActiveServer().name}</span><span title={session.cwd}>{session.cwd}</span>
           </div>
         </div>
         <div className="session-active-actions">
@@ -97,10 +120,10 @@ export function SessionHistoryView({ session, onResume, onCloseView, onOpenSessi
       </header>
       <div className="session-toolbar">
         {supportsConversation ? <div className="view-toggle is-content-switch"><button type="button" className="view-toggle-btn is-active">Conversation</button></div> : <span className="history-shell-label">Shell session</span>}
-        <span className="status-text">Ended {endedAtLabel(session)} · read-only history</span>
+        <span className="status-text">{hasContinuation ? `Original runtime ended ${endedAtLabel(session)} · ${continuationIsLive ? 'live continuation' : 'continued elsewhere'}` : `Ended ${endedAtLabel(session)} · read-only history`}</span>
         <button type="button" className={`details-inspector-button${detailsOpen ? ' is-active' : ''}`} onClick={() => setDetailsOpen((current) => !current)}>{detailsOpen ? 'Close details' : 'Details'}</button>
       </div>
-      <div className="session-history-body">
+      <div ref={historyBodyRef} className="session-history-body" onScroll={updateJumpToLatest}>
         {detailsOpen ? (
           <SessionDetails session={session} allSessions={allSessions} onEnd={async () => undefined} onResume={onResume} />
         ) : (
@@ -113,10 +136,14 @@ export function SessionHistoryView({ session, onResume, onCloseView, onOpenSessi
                 <span>{endedAtLabel(session)}</span>
               </div>
               <p>{end.detail}</p>
-              <p className="session-ended-read-only">Viewing does not resume or send anything.</p>
+              <p className="session-ended-read-only">{continuationIsLive ? 'You are viewing the original runtime. Open the live continuation to send a message.' : 'Viewing does not resume or send anything.'}</p>
               <div className="session-ended-actions">
-                {canContinueSession(session) ? (
+                {continuation && onOpenSession ? (
+                  <button type="button" className="btn btn-primary" onClick={() => onOpenSession(continuation.id)}>Open {continuationIsLive ? 'live ' : ''}continuation <span aria-hidden>→</span></button>
+                ) : canContinueSession(session) ? (
                   <button type="button" className="btn btn-primary" onClick={() => onResume?.(session)}>Continue conversation <span aria-hidden>→</span></button>
+                ) : hasContinuation ? (
+                  <span>The continuation is recorded on another machine.</span>
                 ) : (
                   <span>{supportsConversation
                     ? 'This runtime ended before Sessions recorded an agent conversation ID.'
@@ -153,6 +180,13 @@ export function SessionHistoryView({ session, onResume, onCloseView, onOpenSessi
             {!loading && !error && transcript?.messages.length === 0 ? <div className="usage-empty">This session has no normalized conversation messages.</div> : null}
           </div>
         )}
+        {!detailsOpen && showJumpToLatest ? (
+          <div className="session-history-jump-anchor">
+            <button type="button" className="scroll-to-bottom" onClick={jumpToLatest} aria-label="Jump to latest message" title="Jump to latest message">
+              <span aria-hidden>↓</span>
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );

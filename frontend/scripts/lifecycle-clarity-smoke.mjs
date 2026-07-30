@@ -93,6 +93,10 @@ assert.doesNotMatch(history, /Delegate/);
 assert.match(history, /read-only history/);
 assert.doesNotMatch(history, /↻ Resume/);
 assert.match(history, /Archive from list/);
+assert.match(history, /continuationSession\(session, allSessions\)/);
+assert.match(history, /Open \{continuationIsLive \? 'live ' : ''\}continuation/);
+assert.match(history, /aria-label="Jump to latest message"/);
+assert.match(history, /element\.scrollTo\(\{ top: element\.scrollHeight, behavior: 'smooth' \}\)/);
 assert.doesNotMatch(history, /No resumable provider identity was found/);
 assert.doesNotMatch(tabs, /onResume|tab-resume|tab-popout/);
 assert.doesNotMatch(app, /onResume=\{\(\) => setDialogOpen\('resume'\)\}/);
@@ -115,7 +119,10 @@ assert.match(styles, /\.terminal-runtime-notice\s*\{[\s\S]*position:\s*absolute;
 assert.match(styles, /@media \(max-width: 720px\)[\s\S]*\.terminal-runtime-notice\s*\{[\s\S]*position:\s*fixed;/);
 assert.match(styles, /\.session-tree-toggle\s*\{[\s\S]*width:\s*30px;[\s\S]*height:\s*30px;/);
 assert.match(styles, /\.session-ended-summary\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*min-width:\s*0;/);
+assert.match(styles, /\.session-ended-summary\s*\{[^}]*position:\s*sticky;[^}]*top:\s*12px;/);
 assert.match(styles, /\.session-ended-summary\s*>\s*\.session-ended-actions\s*\{[^}]*flex-wrap:\s*wrap;[^}]*max-width:\s*100%;/);
+assert.match(styles, /\.session-history-jump-anchor\s*\{[^}]*position:\s*sticky;[^}]*bottom:\s*14px;/);
+assert.match(styles, /\.product-command-button\s*\{[^}]*font-size:\s*13px;/);
 assert.doesNotMatch(styles, /\.tab-resume|\.tab-popout/);
 assert.match(styles, /\.session-row-action-menu\.opens-up/);
 assert.doesNotMatch(styles, /\.session-ended-summary\.is-failed/);
@@ -220,6 +227,43 @@ try {
     assert.ok(bounds.left >= bounds.cardLeft, 'ended-session action must stay inside the card on the left');
     assert.ok(bounds.right <= bounds.cardRight, 'ended-session action must stay inside the card on the right');
   }
+
+  await page.setViewport({ width: 900, height: 620 });
+  await page.setContent(`
+    <style>${styles}</style>
+    <main id="history-body" class="session-history-body" style="width: 860px; height: 500px">
+      <section class="session-history-transcript">
+        <div id="sticky-ended-card" class="session-ended-summary">
+          <div><strong>Ended</strong><span>Today at 10:14 AM</span></div>
+          <p>The runtime ended. The saved conversation remains available.</p>
+        </div>
+        ${Array.from({ length: 32 }, (_, index) => `<article class="session-history-message"><p>Conversation message ${index + 1}</p></article>`).join('')}
+      </section>
+      <div class="session-history-jump-anchor">
+        <button id="history-jump" class="scroll-to-bottom">↓</button>
+      </div>
+    </main>
+  `);
+  await page.$eval('#history-body', (element) => { element.scrollTop = 640; });
+  const jumpBounds = await page.evaluate(() => {
+    const body = document.querySelector('#history-body').getBoundingClientRect();
+    const card = document.querySelector('#sticky-ended-card').getBoundingClientRect();
+    const jump = document.querySelector('#history-jump').getBoundingClientRect();
+    return {
+      bodyTop: body.top,
+      bodyBottom: body.bottom,
+      bodyRight: body.right,
+      cardTop: card.top,
+      cardBottom: card.bottom,
+      jumpBottom: jump.bottom,
+      jumpRight: jump.right
+    };
+  });
+  assert.ok(jumpBounds.cardTop >= jumpBounds.bodyTop, 'ended-session card must remain inside the history viewport');
+  assert.ok(jumpBounds.cardTop <= jumpBounds.bodyTop + 16, 'ended-session card must stick near the top while history scrolls');
+  assert.ok(jumpBounds.cardBottom <= jumpBounds.bodyBottom, 'ended-session card must not obscure the entire history viewport');
+  assert.ok(jumpBounds.jumpBottom <= jumpBounds.bodyBottom, 'jump-to-latest button must stay inside the history viewport');
+  assert.ok(jumpBounds.jumpRight <= jumpBounds.bodyRight, 'jump-to-latest button must stay inside the history viewport');
 } finally {
   await browser.close();
 }

@@ -19,7 +19,7 @@ import (
 )
 
 var anyHosts = map[string]struct{}{"0.0.0.0": {}, "::": {}, "::0": {}, "*": {}}
-var version = "0.2.10"
+var version = "0.2.11"
 
 func main() {
 	handled, err := runPlatformSupervisor(os.Args[1:])
