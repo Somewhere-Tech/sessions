@@ -28,6 +28,8 @@ const [
   productSidebar,
   settingsView,
   api,
+  tabLabels,
+  sessionsStore,
   styles
 ] = await Promise.all([
   source('src/App.tsx'),
@@ -49,6 +51,8 @@ const [
   source('src/components/ProductSidebar.tsx'),
   source('src/components/SettingsView.tsx'),
   source('src/api/sessionsd.ts'),
+  source('src/lib/tabLabels.ts'),
+  source('src/store/sessions.ts'),
   source('src/styles/globals.css')
 ]);
 
@@ -85,6 +89,11 @@ assert.match(navigator, /<ProviderMark provider=\{providerName\} size=\{20\} \/>
 assert.match(navigator, /className="session-continue-action" onClick=\{onContinue\}>Continue<\/button>/);
 assert.match(app, /onContinue=\{\(\) => setDialogOpen\('resume'\)\}/);
 assert.doesNotMatch(navigator, /session-mode-glyph/);
+assert.match(tabLabels, /export function reconcileDurableTabLabels/);
+assert.match(tabLabels, /const durable = session\.name\?\.trim\(\)/);
+assert.match(sessionsStore, /reconcileDurableTabLabels\(fresh\)/);
+assert.match(tabs, /setTabLabel\(id, name\)/);
+assert.doesNotMatch(tabs, /setTabLabel\(id, name, session\?\.cwd\)/);
 
 assert.match(details, />Session control</);
 assert.match(details, /The conversation is kept and you can resume it later/);

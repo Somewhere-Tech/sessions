@@ -63,9 +63,8 @@ export function SessionTabs({
     if (editingId) {
       const id = editingId;
       const name = editingValue.trim();
-      const session = sessions.find((candidate) => candidate.id === id);
       if (name) {
-        void updateName(id, name).then(() => setTabLabel(id, name, session?.cwd));
+        void updateName(id, name).then(() => setTabLabel(id, name));
       }
     }
     setEditingId(null);
