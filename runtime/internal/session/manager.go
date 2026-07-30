@@ -1809,6 +1809,14 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 			}
 			metadataPath := filepath.Join(m.config.RunnerStateDir, id+".json")
 			metadata, metadataErr := state.ReadRunnerMetadata(metadataPath)
+			if metadataErr != nil {
+				// A torn, temporarily unreadable, or forward-version metadata
+				// document is absence of evidence, not evidence that the
+				// runner died. Preserve every artifact for a later retry.
+				log.Printf("[discover] runner %s metadata unreadable — leaving it alone: %v", id, metadataErr)
+				delete(candidates, id)
+				continue
+			}
 			probe := metadata.Info
 			probe.ID = id
 			probe.SocketPath = state.For(m.config.RunnerStateDir, id).Socket
@@ -1830,7 +1838,12 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 				delete(candidates, id)
 				continue
 			}
-			if metadataErr == nil && metadata.Info.PID > 0 && m.options.ProcessAlive(metadata.Info.PID) {
+			if metadata.Info.PID <= 0 {
+				log.Printf("[discover] runner %s has no trustworthy pid — leaving it alone", id)
+				delete(candidates, id)
+				continue
+			}
+			if m.options.ProcessAlive(metadata.Info.PID) {
 				command := m.options.ProcessCommand(metadata.Info.PID)
 				if runnerCommandMatches(command, id, metadata.Info.Cmd, metadata.Kind) {
 					log.Printf("[discover] runner %s unreachable but pid %d alive — leaving it alone", id, metadata.Info.PID)

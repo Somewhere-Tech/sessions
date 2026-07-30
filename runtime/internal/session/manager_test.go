@@ -1151,6 +1151,36 @@ func TestDiscoveryNeverDeletesStructuredHistoryForDeadRunner(t *testing.T) {
 	}
 }
 
+func TestDiscoveryPreservesArtifactsWhenMetadataIsCorrupt(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.RunnerStateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "00000000-0000-4000-8000-000000000096"
+	paths := state.For(config.RunnerStateDir, id)
+	for _, path := range []string{paths.Socket, paths.Structured} {
+		if err := os.WriteFile(path, []byte("sacred"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(paths.Meta, []byte(`{"id":"`+id+`","pid":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, DiscoveryRetries: 1, DiscoveryDelay: time.Millisecond,
+	})
+	t.Cleanup(manager.Close)
+	if err := manager.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.Socket, paths.Meta, paths.Structured} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("discovery removed state with ambiguous metadata %s: %v", path, err)
+		}
+	}
+}
+
 func testConfig(root string) state.Config {
 	return state.Config{
 		Host: "127.0.0.1", Port: 8787,
