@@ -135,10 +135,39 @@ func TestAuthAndOriginMatrix(t *testing.T) {
 		{name: "query token", remote: external, target: "/api/sessions?token=" + testToken, wantStatus: http.StatusOK},
 		{name: "loopback exempt", remote: "127.0.0.1:4567", target: "/api/sessions", wantStatus: http.StatusOK},
 		{name: "xff defeats exemption", remote: "127.0.0.1:4567", target: "/api/sessions", headers: http.Header{"X-Forwarded-For": {"127.0.0.1"}}, wantStatus: http.StatusUnauthorized},
-		{name: "evil origin not echoed", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://evil.test"}}, wantStatus: http.StatusOK},
+		{name: "evil origin rejected", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://evil.test"}}, wantStatus: http.StatusForbidden},
 		{name: "hosted tech allowed", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://sessions.somewhere.tech"}}, wantStatus: http.StatusOK, wantOrigin: "https://sessions.somewhere.tech"},
 		{name: "hosted canonical origin allowed", remote: external, target: "/api/sessions?token=" + testToken, headers: http.Header{"Origin": {"https://sessions.somewhere.site"}}, wantStatus: http.StatusOK, wantOrigin: "https://sessions.somewhere.site"},
 	}
+
+	t.Run("hostile browser cannot create a loopback session", func(t *testing.T) {
+		before := len(daemon.registry.List(true))
+		body := strings.NewReader(`{"cmd":"/bin/sh","args":["-c","touch /tmp/sessions-origin-bypass"]}`)
+		response := serve(t, daemon.handler, http.MethodPost, "/api/sessions", body, "127.0.0.1:4567", http.Header{
+			"Origin":       {"https://evil.test"},
+			"Content-Type": {"text/plain"},
+		})
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusForbidden, response.Body.String())
+		}
+		if after := len(daemon.registry.List(true)); after != before {
+			t.Fatalf("hostile origin changed session count from %d to %d", before, after)
+		}
+	})
+
+	t.Run("native JSON endpoints reject simple browser content types", func(t *testing.T) {
+		before := len(daemon.registry.List(true))
+		response := serve(t, daemon.handler, http.MethodPost, "/api/sessions",
+			strings.NewReader(`{"cmd":"/bin/sh"}`), "127.0.0.1:4567",
+			http.Header{"Content-Type": {"text/plain"}})
+		if response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), "content-type must be application/json") {
+			t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+		}
+		if after := len(daemon.registry.List(true)); after != before {
+			t.Fatalf("wrong content type changed session count from %d to %d", before, after)
+		}
+	})
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			response := serve(t, daemon.handler, http.MethodGet, test.target, nil, test.remote, test.headers)
@@ -638,6 +667,10 @@ func serve(t *testing.T, handler http.Handler, method, target string, body io.Re
 		for _, value := range values {
 			request.Header.Add(key, value)
 		}
+	}
+	if body != nil && request.Header.Get("Content-Type") == "" &&
+		!strings.Contains(target, "/upload") {
+		request.Header.Set("Content-Type", "application/json")
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

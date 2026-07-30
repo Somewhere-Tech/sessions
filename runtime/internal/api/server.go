@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -177,8 +178,19 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	path := request.URL.Path
 	origin := request.Header.Get("Origin")
 	corsOrigin := ""
-	if allowedOrigin(origin, s.config.Host, s.lan.activeHost()) {
+	originAllowed := allowedOrigin(origin, s.config.Host, s.lan.activeHost())
+	if originAllowed {
 		corsOrigin = origin
+	}
+
+	// CORS controls whether a browser may read a response; it does not stop a
+	// browser from sending a state-changing request. Reject hostile browser
+	// origins before authentication or route dispatch so loopback trust cannot
+	// be turned into blind command or input execution by an arbitrary web page.
+	if origin != "" && !originAllowed &&
+		(strings.HasPrefix(path, "/api/") || path == "/ws") {
+		s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
+		return
 	}
 
 	if request.Method == http.MethodOptions {
@@ -965,6 +977,16 @@ func creatorHeaderValue(header http.Header, name string) (string, bool, error) {
 }
 
 func readJSON(request *http.Request, target any) error {
+	if request.ContentLength != 0 {
+		contentTypes := request.Header.Values("Content-Type")
+		if len(contentTypes) != 1 {
+			return errors.New("content-type must be application/json")
+		}
+		mediaType, _, err := mime.ParseMediaType(contentTypes[0])
+		if err != nil || mediaType != "application/json" {
+			return errors.New("content-type must be application/json")
+		}
+	}
 	reader := http.MaxBytesReader(nil, request.Body, maxJSONBody)
 	encoded, err := io.ReadAll(reader)
 	if err != nil {
