@@ -278,7 +278,9 @@ func (m *Manager) DeepDiagnostics() []map[string]any    { return m.registry.Deep
 func (m *Manager) UpdateTags(id string, tags map[string]string) (map[string]string, error) {
 	return m.registry.UpdateTags(id, tags)
 }
-func (m *Manager) Tags(id string) (map[string]string, error) { return m.registry.Tags(id) }
+func (m *Manager) Tags(id string) (map[string]string, error) {
+	return m.registry.Tags(id)
+}
 
 // UpdateDisplayParent changes only the user's visual grouping. The trusted
 // creator ledger remains authoritative for who actually created the session.
@@ -289,11 +291,11 @@ func (m *Manager) UpdateDisplayParent(id, parentID string) (string, error) {
 		byID[info.ID] = info
 	}
 	if _, exists := byID[id]; !exists {
-		return "", fmt.Errorf("session %s not found", id)
+		return "", fmt.Errorf("%w: session %s", state.ErrSessionNotFound, id)
 	}
 	if parentID != "" {
 		if _, exists := byID[parentID]; !exists {
-			return "", fmt.Errorf("parent session %s not found", parentID)
+			return "", fmt.Errorf("%w: parent session %s", state.ErrSessionNotFound, parentID)
 		}
 	}
 
@@ -335,10 +337,10 @@ func (m *Manager) UpdateSetAside(id string, setAside bool) (*int64, error) {
 		}
 	}
 	if current == nil {
-		return nil, fmt.Errorf("session %s not found", id)
+		return nil, fmt.Errorf("%w: session %s", state.ErrSessionNotFound, id)
 	}
 	if current.Exited {
-		return nil, errors.New("this session has ended; use archive to hide an ended record")
+		return nil, fmt.Errorf("%w; use archive to hide an ended record", state.ErrSessionEnded)
 	}
 	return m.registry.UpdateSetAside(id, setAside)
 }
@@ -1185,14 +1187,14 @@ func (m *Manager) MessageRelays(ctx context.Context, id string) ([]ledger.Messag
 func (m *Manager) ConfigureModel(ctx context.Context, id, model, effort string) (state.SessionInfo, error) {
 	current, ok := m.registry.Get(id)
 	if !ok {
-		return state.SessionInfo{}, fmt.Errorf("session %s not found", id)
+		return state.SessionInfo{}, fmt.Errorf("%w: session %s", state.ErrSessionNotFound, id)
 	}
 	info := current.Info()
 	if info.Kind != state.KindCodexAppServer && info.Kind != state.KindClaudeStructured {
 		return state.SessionInfo{}, errors.New("model changes are available only for Rich Claude and Rich Codex sessions; Terminal sessions keep their provider's own controls")
 	}
 	if info.Working {
-		return state.SessionInfo{}, fmt.Errorf("session is working; wait for the turn to finish with `sessions wait %s`", id)
+		return state.SessionInfo{}, fmt.Errorf("%w; wait for the turn to finish with `sessions wait %s`", state.ErrSessionWorking, id)
 	}
 	model = strings.TrimSpace(model)
 	effort = strings.ToLower(strings.TrimSpace(effort))
@@ -1231,7 +1233,7 @@ func (m *Manager) ConfigureModel(ctx context.Context, id, model, effort string) 
 func (m *Manager) ModelOptions(ctx context.Context, id string) ([]codexapp.Model, error) {
 	current, ok := m.registry.Get(id)
 	if !ok {
-		return nil, fmt.Errorf("session %s not found", id)
+		return nil, fmt.Errorf("%w: session %s", state.ErrSessionNotFound, id)
 	}
 	info := current.Info()
 	if info.Kind != state.KindCodexAppServer {

@@ -25,7 +25,8 @@ func (s *Server) handleRetentionRoute(
 		return false
 	}
 	if request.Method != http.MethodPost {
-		return false
+		s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+		return true
 	}
 	if request.URL.Path == "/api/retention/archive" {
 		manager, ok := s.registry.(explicitArchiveService)

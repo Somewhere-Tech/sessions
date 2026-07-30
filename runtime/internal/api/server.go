@@ -618,11 +618,11 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		if err != nil {
 			status := http.StatusBadRequest
 			switch {
-			case strings.Contains(err.Error(), "not found"):
+			case errors.Is(err, state.ErrSessionNotFound):
 				status = http.StatusNotFound
-			case strings.Contains(err.Error(), "working"),
-				strings.Contains(err.Error(), "has ended"),
-				strings.Contains(err.Error(), "protocol"):
+			case errors.Is(err, state.ErrSessionWorking),
+				errors.Is(err, state.ErrSessionEnded),
+				errors.Is(err, state.ErrRunnerProtocol):
 				status = http.StatusConflict
 			}
 			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
@@ -649,7 +649,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		parentID, err := grouping.UpdateDisplayParent(id, body.ParentSessionID)
 		if err != nil {
 			status := http.StatusBadRequest
-			if strings.Contains(err.Error(), "not found") {
+			if errors.Is(err, state.ErrSessionNotFound) {
 				status = http.StatusNotFound
 			}
 			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
@@ -677,9 +677,9 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		if err != nil {
 			status := http.StatusBadRequest
 			switch {
-			case strings.Contains(err.Error(), "not found"):
+			case errors.Is(err, state.ErrSessionNotFound):
 				status = http.StatusNotFound
-			case strings.Contains(err.Error(), "has ended"):
+			case errors.Is(err, state.ErrSessionEnded):
 				status = http.StatusConflict
 			}
 			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
@@ -708,7 +708,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		tags, err := s.registry.UpdateTags(id, body.Tags)
 		if err != nil {
 			status := http.StatusBadRequest
-			if strings.Contains(err.Error(), "not found") || errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, state.ErrSessionNotFound) || errors.Is(err, os.ErrNotExist) {
 				status = http.StatusNotFound
 			}
 			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
@@ -866,7 +866,7 @@ func (s *Server) sendJSON(response http.ResponseWriter, status int, body any, co
 	}
 	response.Header().Set("Vary", "Origin")
 	response.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization, x-sessions-creator-session, x-sessions-owner-id, x-sessions-client")
+	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization, x-sessions-creator-session, x-sessions-owner-id, x-sessions-client, x-sessions-filename")
 	response.WriteHeader(status)
 	if status == http.StatusNoContent {
 		return

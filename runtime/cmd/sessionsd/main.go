@@ -85,10 +85,11 @@ func main() {
 	}
 
 	go manager.RunDiscoveryLoop()
+	serveErrors := make(chan error, 1)
 	go func() {
 		log.Printf("sessionsd listening on http://%s", config.ListenAddress())
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("sessionsd: server error: %v", err)
+			serveErrors <- err
 		}
 	}()
 
@@ -96,8 +97,12 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	cleanupPlatformStop := watchPlatformStop(stop)
 	defer cleanupPlatformStop()
-	sig := <-stop
-	log.Printf("sessionsd: %s received, shutting down", sig)
+	select {
+	case sig := <-stop:
+		log.Printf("sessionsd: %s received, shutting down", sig)
+	case err := <-serveErrors:
+		log.Printf("sessionsd: server error: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {

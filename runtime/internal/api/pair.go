@@ -141,16 +141,16 @@ func (p *pairService) mint(name string) (pairingTicketResponse, error) {
 }
 
 func (p *pairService) claim(encoded, name, userAgent string) (pairingClaimResponse, error) {
-	now := p.now().UTC()
 	id, secret, validShape := strings.Cut(strings.TrimSpace(encoded), ".")
 	if !validShape || id == "" || secret == "" || strings.Contains(secret, ".") {
-		if p.recordFailedClaim(now) {
+		if p.recordFailedClaim() {
 			return pairingClaimResponse{}, errPairRateLimit
 		}
 		return pairingClaimResponse{}, errPairTicketGone
 	}
 
 	p.mu.Lock()
+	now := p.now().UTC()
 	p.pruneFailuresLocked(now)
 	if len(p.failedClaims) >= pairFailureLimit {
 		p.mu.Unlock()
@@ -189,9 +189,10 @@ func (p *pairService) claim(encoded, name, userAgent string) (pairingClaimRespon
 	return pairingClaimResponse{DeviceID: record.DeviceID, Token: token, Name: record.Name}, nil
 }
 
-func (p *pairService) recordFailedClaim(now time.Time) bool {
+func (p *pairService) recordFailedClaim() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	now := p.now().UTC()
 	p.pruneFailuresLocked(now)
 	if len(p.failedClaims) >= pairFailureLimit {
 		return true
@@ -229,8 +230,11 @@ func (s *deviceStore) createPending(name string, pendingUntil time.Time) (device
 	if err != nil {
 		return deviceRecord{}, "", fmt.Errorf("generate device id: %w", err)
 	}
-	now := s.now().UTC()
 	hash := sha256.Sum256([]byte(token))
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
 	record := deviceRecord{
 		DeviceID: id, Name: name, TokenHash: hex.EncodeToString(hash[:]),
 		CreatedAt: now, LastUsedAt: now,
@@ -239,9 +243,6 @@ func (s *deviceStore) createPending(name string, pendingUntil time.Time) (device
 		expires := pendingUntil.UTC()
 		record.PendingUntil = &expires
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := s.loadLocked(); err != nil {
 		return deviceRecord{}, "", err
 	}

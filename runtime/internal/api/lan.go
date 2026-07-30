@@ -31,6 +31,7 @@ type LANState struct {
 }
 
 type lanListener struct {
+	opMu         sync.Mutex
 	mu           sync.Mutex
 	config       state.Config
 	handler      http.Handler
@@ -93,28 +94,32 @@ func (l *lanListener) activeHost() string {
 }
 
 func (l *lanListener) enable(persist bool) (LANState, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.opMu.Lock()
+	defer l.opMu.Unlock()
 
 	ip, err := l.pickIP()
 	if err != nil {
-		return l.stateLocked(), err
+		return l.state(), err
 	}
 	host := ip.String()
+	l.mu.Lock()
 	if l.server != nil && l.host == host {
-		l.ensureBonjourLocked(ip, portFromURL(l.url, l.config.Port))
+		port := portFromURL(l.url, l.config.Port)
+		l.mu.Unlock()
+		l.ensureBonjour(ip, port)
 		if persist {
 			if err := l.persistEnabled(true); err != nil {
-				return l.stateLocked(), err
+				return l.state(), err
 			}
 		}
-		return l.stateLocked(), nil
+		return l.state(), nil
 	}
+	l.mu.Unlock()
 
 	address := net.JoinHostPort(host, strconv.Itoa(l.config.Port))
 	listener, err := l.listen("tcp", address)
 	if err != nil {
-		return l.stateLocked(), fmt.Errorf("could not open the LAN listener at %s: %w; make sure this Mac is still on the network that owns %s and port %d is free, then retry `sessions lan enable`", address, err, host, l.config.Port)
+		return l.state(), fmt.Errorf("could not open the LAN listener at %s: %w; make sure this Mac is still on the network that owns %s and port %d is free, then retry `sessions lan enable`", address, err, host, l.config.Port)
 	}
 	actualAddress, ok := listener.Addr().(*net.TCPAddr)
 	if ok {
@@ -124,7 +129,7 @@ func (l *lanListener) enable(persist bool) (LANState, error) {
 	if persist {
 		if err := l.persistEnabled(true); err != nil {
 			_ = listener.Close()
-			return l.stateLocked(), err
+			return l.state(), err
 		}
 	}
 
@@ -135,6 +140,7 @@ func (l *lanListener) enable(persist bool) (LANState, error) {
 		}),
 		ReadHeaderTimeout: 65 * time.Second, IdleTimeout: 60 * time.Second,
 	}
+	l.mu.Lock()
 	previous := l.server
 	previousRegistration := l.registration
 	l.server = server
@@ -142,7 +148,7 @@ func (l *lanListener) enable(persist bool) (LANState, error) {
 	l.bonjourError = ""
 	l.host = host
 	l.url = url
-	l.ensureBonjourLocked(ip, portFromURL(url, l.config.Port))
+	l.mu.Unlock()
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			log.Printf("sessionsd: LAN listener error: %v", err)
@@ -162,24 +168,25 @@ func (l *lanListener) enable(persist bool) (LANState, error) {
 			}
 		}
 	}()
+	l.ensureBonjour(ip, portFromURL(url, l.config.Port))
 	if previous != nil {
 		_ = previous.Close()
 	}
 	if previousRegistration != nil {
 		_ = previousRegistration.Shutdown()
 	}
-	return l.stateLocked(), nil
+	return l.state(), nil
 }
 
 func (l *lanListener) disable(persist bool) (LANState, error) {
-	l.mu.Lock()
+	l.opMu.Lock()
+	defer l.opMu.Unlock()
 	if persist {
 		if err := l.persistEnabled(false); err != nil {
-			state := l.stateLocked()
-			l.mu.Unlock()
-			return state, err
+			return l.state(), err
 		}
 	}
+	l.mu.Lock()
 	server := l.server
 	registration := l.registration
 	l.server = nil
@@ -201,18 +208,35 @@ func (l *lanListener) disable(persist bool) (LANState, error) {
 	return LANState{Bonjour: BonjourState{Service: discovery.ServiceType}}, nil
 }
 
-func (l *lanListener) ensureBonjourLocked(ip net.IP, port int) {
+func (l *lanListener) ensureBonjour(ip net.IP, port int) {
+	l.mu.Lock()
 	if l.registration != nil {
+		l.mu.Unlock()
 		return
 	}
+	server := l.server
+	host := l.host
+	l.mu.Unlock()
+
 	registration, err := l.advertise(ip, port, l.machineName, l.machineID)
 	if err != nil {
-		l.bonjourError = "Bonjour discovery could not start; retry `sessions lan enable` or use the pairing link."
+		l.mu.Lock()
+		if l.server == server && l.host == host {
+			l.bonjourError = "Bonjour discovery could not start; retry `sessions lan enable` or use the pairing link."
+		}
+		l.mu.Unlock()
 		log.Printf("sessionsd: Bonjour advertisement unavailable: %v", err)
+		return
+	}
+	l.mu.Lock()
+	if l.server != server || l.host != host || l.registration != nil {
+		l.mu.Unlock()
+		_ = registration.Shutdown()
 		return
 	}
 	l.registration = registration
 	l.bonjourError = ""
+	l.mu.Unlock()
 }
 
 func portFromURL(value string, fallback int) int {

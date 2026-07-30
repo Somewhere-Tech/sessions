@@ -16,6 +16,11 @@ func (s *Server) handleWorktreesRoute(response http.ResponseWriter, request *htt
 	if request.URL.Path != "/api/worktrees" && request.URL.Path != "/api/worktrees/clean" {
 		return false
 	}
+	if (request.URL.Path == "/api/worktrees" && request.Method != http.MethodGet) ||
+		(request.URL.Path == "/api/worktrees/clean" && request.Method != http.MethodPost) {
+		s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+		return true
+	}
 	service, ok := s.registry.(worktreeService)
 	if !ok {
 		s.sendJSON(response, http.StatusNotImplemented, map[string]any{"error": "worktree management is unavailable"}, corsOrigin)
@@ -46,5 +51,5 @@ func (s *Server) handleWorktreesRoute(response http.ResponseWriter, request *htt
 		s.sendJSON(response, http.StatusOK, map[string]any{"results": results, "dry_run": body.DryRun}, corsOrigin)
 		return true
 	}
-	return false
+	return true
 }

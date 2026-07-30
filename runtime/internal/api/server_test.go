@@ -122,6 +122,22 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 }
 
+func TestKnownMutationRoutesReturnMethodNotAllowed(t *testing.T) {
+	daemon := newTestDaemon(t)
+	for _, path := range []string{
+		"/api/retention/gc",
+		"/api/retention/archive",
+		"/api/worktrees",
+		"/api/worktrees/clean",
+		"/api/lanes",
+	} {
+		response := serve(t, daemon.handler, http.MethodPatch, path, nil, "127.0.0.1:4321", nil)
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestAuthAndOriginMatrix(t *testing.T) {
 	daemon := newTestDaemon(t)
 	external := "198.51.100.25:5555"
