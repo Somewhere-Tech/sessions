@@ -237,7 +237,7 @@ var commandTable = []commandSpec{
 		name: "fork", usage: "fork <live-session> [--with claude|codex]",
 		summary: "copy a live conversation without stopping it", group: dailyCommandGroup, localJSON: true,
 		longHelp: "Create a new Rich conversation from a stable authored-history snapshot while the original session remains live and unchanged. Omit --with to fork into the same provider, or select Claude/Codex to open a copy in the other provider. Sessions copies user and assistant messages only; tool output, credentials, attachments, provider internals, and the source runtime are never modified. Wait for the current turn to finish before forking.",
-		examples: []string{"sessions fork 0123abcd", "sessions fork 0123abcd --with codex", "sessions --json fork 0123abcd --with claude"}, run: (*app).cmdFork,
+		examples: []string{"sessions fork 0123abcd", "sessions fork 0123abcd --with codex", "sessions fork 0123abcd --at 42 --message-id a1b2c3", "sessions --json fork 0123abcd --with claude"}, run: (*app).cmdFork,
 	},
 	{
 		name: "model", usage: "model <session> <model> [--effort LEVEL]",

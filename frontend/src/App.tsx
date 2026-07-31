@@ -244,9 +244,10 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   }, []);
   const forkSession = useCallback(async (
     session: SessionInfo,
-    destinationProvider: 'claude' | 'codex'
+    destinationProvider: 'claude' | 'codex',
+    point?: { index: number; messageId: string }
   ): Promise<void> => {
-    const result = await forkConversation(session.id, destinationProvider);
+    const result = await forkConversation(session.id, destinationProvider, point);
     await refresh();
     openSession(result.laneId);
   }, [openSession, refresh]);
@@ -710,6 +711,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
                   isActive={s.id === activeId}
                   onStatusChange={s.id === activeId ? setActiveStatus : undefined}
                   onResume={resumeSession}
+                  onFork={forkSession}
                   onCloseView={closeTab}
                   onOpenSession={openSession}
                   onBack={isMobile ? () => setMobileSessionDetail(false) : undefined}

@@ -6,6 +6,10 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,6 +187,63 @@ func TestUpdateCommandUsesSecureRunnerAndSupportsCheck(t *testing.T) {
 	}
 	if output := application.stdout.(*bytes.Buffer).String(); output != "safe check\n" {
 		t.Fatalf("stdout = %q", output)
+	}
+}
+
+func TestUpdateCommandWaitsForDaemonCLIAndLiveSessionConvergence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	updated := false
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/api/health":
+			version := "0.2.15"
+			if updated {
+				version = "0.2.16"
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"ok": true, "name": "sessionsd", "version": version, "discovering": false,
+			})
+		case "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"sessions": []map[string]any{{"id": "session-a"}, {"id": "session-b"}},
+			})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	application, err := newApp(
+		[]string{"--host", server.URL, "update"},
+		strings.NewReader(""),
+		&stdout,
+		io.Discard,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.close()
+	application.runUpdate = func(_ context.Context, checkOnly bool) (nativeUpdateResult, error) {
+		if checkOnly {
+			t.Fatal("update unexpectedly ran as --check")
+		}
+		updated = true
+		return nativeUpdateResult{
+			CurrentVersion: "0.2.15",
+			LatestVersion:  "0.2.16",
+			Updated:        true,
+			Reopened:       true,
+		}, nil
+	}
+	application.cliIsCurrent = func(version string) bool { return version == "0.2.16" }
+	if err := application.dispatch(); err != nil {
+		t.Fatal(err)
+	}
+	want := "Updated Sessions 0.2.15 → 0.2.16. The app, CLI, and background service are current; 2 live sessions were preserved.\n"
+	if stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
 	}
 }
 

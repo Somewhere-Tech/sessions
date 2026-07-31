@@ -665,8 +665,8 @@ was started.
 
 ### `POST /api/recovery/fork`
 
-Auth required. Creates a new Rich conversation from a stable authored-history
-snapshot while leaving the source runtime live:
+Auth required. Creates a new conversation from a stable authored-history
+snapshot while leaving the source unchanged:
 
 ```json
 {"sourceSessionId":"<live Sessions id>","destinationProvider":"codex"}
@@ -676,6 +676,22 @@ snapshot while leaving the source runtime live:
 source must be a live, idle Claude or Codex session with a complete local
 conversation. A working source returns `409`; clients should wait for its
 current turn to finish instead of copying a partial assistant response.
+
+To fork through one exact authored message, include its normalized transcript
+index and stable ID:
+
+```json
+{
+  "sourceSessionId": "<Sessions id>",
+  "destinationProvider": "claude",
+  "sourceMessageIndex": 42,
+  "sourceMessageId": "<stable transcript message id>"
+}
+```
+
+The index is zero-based. The ID is a concurrency guard: a mismatch returns
+`409` and no runtime is created. Omitting both fields forks from the latest
+stable authored snapshot.
 
 Success returns `201`:
 
@@ -689,6 +705,8 @@ Success returns `201`:
   "mode": "native-import",
   "importedMessages": 42,
   "forkedFromSessionId": "<source Sessions id>",
+  "forkPointIndex": 42,
+  "forkPointMessageId": "<stable transcript message id>",
   "sourceUntouched": true
 }
 ```

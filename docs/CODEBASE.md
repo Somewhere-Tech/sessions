@@ -437,12 +437,14 @@ tool output, diffs, or attachments. The public behavior and limitations are in
 [`docs/CONTINUATION.md`](CONTINUATION.md).
 
 The adjacent `POST /api/recovery/fork` boundary is deliberately
-non-lifecycle: it snapshots authored messages only after the current turn is
-idle, creates a fresh Rich provider conversation, and leaves the source runner
-live. Same-provider forks and cross-provider copies share the private
+non-lifecycle: it snapshots authored messages only after a live current turn is
+idle, optionally truncates at an exact normalized message index guarded by its
+stable message ID, creates a fresh provider conversation, and leaves the source
+unchanged. Same-provider forks and cross-provider copies share the private
 continuation sidecar, while `recovery.ForkConversation` skips the successor
 ledger mutation used by Continue and groups the copy beneath its source only
-through the display hierarchy.
+through the display hierarchy. The sidecar carries the selected fork point so
+lineage remains explicit after launch.
 
 ### Feedback and support
 

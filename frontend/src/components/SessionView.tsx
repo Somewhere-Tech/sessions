@@ -4,7 +4,7 @@ import { useSessionSidebar } from '../hooks/useSessionSidebar';
 import { RemoteView } from './RemoteView';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import { useSessions } from '../store/sessions';
-import { wsMuxUrl } from '../api/sessionsd';
+import { fetchServerHistoryTranscript, wsMuxUrl } from '../api/sessionsd';
 import { classifySnapshotComposerState } from '../lib/detectMultiChoice';
 import { requestSnapshot } from '../lib/wsMux';
 import { SessionDetails } from './SessionDetails';
@@ -34,6 +34,11 @@ interface Props {
     runtimeMode?: 'rich' | 'terminal',
     remoteControl?: boolean
   ) => void;
+  onFork?: (
+    session: import('../types').SessionInfo,
+    destinationProvider: 'claude' | 'codex',
+    point?: { index: number; messageId: string }
+  ) => Promise<void>;
   onCloseView?: (sessionId: string) => void;
   onOpenSession?: (sessionId: string) => void;
   onBack?: () => void;
@@ -69,7 +74,7 @@ let terminalNoticeShownThisLaunch = false;
 // unchanged session's view skips the poll entirely. Props are all stable
 // per session (sessionId; onStatusChange is setActiveStatus for the active
 // tab and undefined otherwise; isActive flips only on switch).
-function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onCloseView, onBack, preferFullTerminal = false }: Props): JSX.Element {
+function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onFork, onCloseView, onBack, preferFullTerminal = false }: Props): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>(() => readInitialSessionView(sessionId));
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [terminalExpanded, setTerminalExpanded] = useState(false);
@@ -314,6 +319,34 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     );
     onResume(session, 'claude', 'terminal', enableRemoteControl);
   }, [endSession, onResume, richSession, session]);
+
+  const forkFromVisibleMessage = useCallback(async (
+    message: { role: 'user' | 'assistant'; content: string; createdAt: number },
+    destinationProvider: 'claude' | 'codex'
+  ): Promise<void> => {
+    if (!session || !onFork) {
+      throw new Error('Open Sessions in the main window to fork this conversation.');
+    }
+    const transcript = await fetchServerHistoryTranscript(getActiveServer(), session.id);
+    const candidates = transcript.messages.filter((candidate) =>
+      candidate.role === message.role && candidate.text.trim() === message.content.trim()
+    );
+    if (candidates.length === 0) {
+      throw new Error('This message is not in the durable provider history yet. Wait a moment and try again.');
+    }
+    const selected = candidates.reduce((best, candidate) => {
+      const candidateTime = candidate.timestamp ? Date.parse(candidate.timestamp) : Number.NaN;
+      const bestTime = best.timestamp ? Date.parse(best.timestamp) : Number.NaN;
+      const candidateDistance = Number.isFinite(candidateTime)
+        ? Math.abs(candidateTime - message.createdAt)
+        : Number.POSITIVE_INFINITY;
+      const bestDistance = Number.isFinite(bestTime)
+        ? Math.abs(bestTime - message.createdAt)
+        : Number.POSITIVE_INFINITY;
+      return candidateDistance < bestDistance ? candidate : best;
+    });
+    await onFork(session, destinationProvider, { index: selected.index, messageId: selected.id });
+  }, [onFork, session]);
 
   // Put the cursor in the terminal when this tab becomes the active,
   // terminal-viewed session. Tab switches are a CSS display toggle (no
@@ -578,6 +611,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             onContinueInTerminal={richSession && session?.tool === 'claude-code' && onResume
               ? continueInTerminal
               : undefined}
+            onForkFromMessage={onFork ? forkFromVisibleMessage : undefined}
           />
         </div>
         <div className="session-details-pane">
@@ -611,7 +645,7 @@ function SessionViewRouter(props: Props): JSX.Element {
       </div>
     );
   }
-  if (session.exited) return <SessionHistoryView session={session} onResume={props.onResume} onCloseView={props.onCloseView} onOpenSession={props.onOpenSession} onBack={props.onBack} />;
+  if (session.exited) return <SessionHistoryView session={session} onResume={props.onResume} onFork={props.onFork} onCloseView={props.onCloseView} onOpenSession={props.onOpenSession} onBack={props.onBack} />;
   return <SessionViewInner {...props} />;
 }
 

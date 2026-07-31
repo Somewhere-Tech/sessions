@@ -14,12 +14,17 @@ import { ContinueElsewhereButton } from './ContinueElsewhereButton';
 interface Props {
   session: SessionInfo;
   onResume?: (session: SessionInfo) => void;
+  onFork?: (
+    session: SessionInfo,
+    destinationProvider: 'claude' | 'codex',
+    point: { index: number; messageId: string }
+  ) => Promise<void>;
   onCloseView?: (sessionId: string) => void;
   onOpenSession?: (sessionId: string) => void;
   onBack?: () => void;
 }
 
-export function SessionHistoryView({ session, onResume, onCloseView, onOpenSession, onBack }: Props): JSX.Element {
+export function SessionHistoryView({ session, onResume, onFork, onCloseView, onOpenSession, onBack }: Props): JSX.Element {
   const activeServerId = useServers((state) => state.activeId);
   const allSessions = useSessions((state) => state.sessions);
   const archiveSessions = useSessions((state) => state.archive);
@@ -32,6 +37,9 @@ export function SessionHistoryView({ session, onResume, onCloseView, onOpenSessi
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [forkPoint, setForkPoint] = useState<number | null>(null);
+  const [forkBusy, setForkBusy] = useState(false);
+  const [forkError, setForkError] = useState<string | null>(null);
   const historyBodyRef = useRef<HTMLDivElement>(null);
   const displayParentID = session.displayParentSessionId !== undefined
     ? session.displayParentSessionId
@@ -99,6 +107,22 @@ export function SessionHistoryView({ session, onResume, onCloseView, onOpenSessi
     const element = historyBodyRef.current;
     if (!element) return;
     element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+  };
+  const forkFromMessage = async (
+    message: NonNullable<typeof transcript>['messages'][number],
+    destinationProvider: 'claude' | 'codex'
+  ): Promise<void> => {
+    if (!onFork || forkBusy) return;
+    setForkBusy(true);
+    setForkError(null);
+    try {
+      await onFork(session, destinationProvider, { index: message.index, messageId: message.id });
+      setForkPoint(null);
+    } catch (reason) {
+      setForkError(reason instanceof Error ? reason.message : 'Could not fork this conversation.');
+    } finally {
+      setForkBusy(false);
+    }
   };
 
   return (
@@ -174,9 +198,36 @@ export function SessionHistoryView({ session, onResume, onCloseView, onOpenSessi
                     <time>{message.timestamp ? formatDate(message.timestamp) : ''}</time>
                   </footer>
                 ) : null}
+                {onFork && provider ? (
+                  <div className="session-history-message-actions">
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      disabled={forkBusy}
+                      onClick={() => {
+                        setForkError(null);
+                        setForkPoint((current) => current === message.index ? null : message.index);
+                      }}
+                    >
+                      Fork from here…
+                    </button>
+                    {forkPoint === message.index ? (
+                      <div className="session-history-fork-picker">
+                        <span>Start an independent copy through this message. The original stays unchanged.</span>
+                        <button type="button" className="btn btn-secondary" disabled={forkBusy} onClick={() => void forkFromMessage(message, provider)}>
+                          {forkBusy ? 'Forking…' : `Fork in ${provider === 'claude' ? 'Claude' : 'Codex'}`}
+                        </button>
+                        <button type="button" className="btn btn-secondary" disabled={forkBusy} onClick={() => void forkFromMessage(message, provider === 'claude' ? 'codex' : 'claude')}>
+                          {`Open copy in ${provider === 'claude' ? 'Codex' : 'Claude'}`}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </article>
               );
             })}
+            {forkError ? <div className="session-history-action-error" role="alert">{forkError}</div> : null}
             {!loading && !error && transcript?.messages.length === 0 ? <div className="usage-empty">This session has no normalized conversation messages.</div> : null}
           </div>
         )}

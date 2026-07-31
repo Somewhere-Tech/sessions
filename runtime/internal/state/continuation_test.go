@@ -65,3 +65,22 @@ func TestContinuationAllowsSameProviderOnlyForFork(t *testing.T) {
 		t.Fatalf("fork validation: %v", err)
 	}
 }
+
+func TestContinuationValidatesExactForkPoint(t *testing.T) {
+	point := 3
+	value := ContinuationContext{
+		SchemaVersion:   ContinuationSchemaVersion,
+		SourceHistoryID: "source", SourceProvider: "claude",
+		SourceCWD: t.TempDir(), DestinationProvider: "codex",
+		Mode: ContinuationNativeImport, Fork: true,
+		ForkPointIndex: &point, ForkPointMessageID: "message-hash",
+		Messages: []ContinuationMessage{{Role: "user", Text: "Branch here."}},
+	}
+	if err := value.Validate(); err != nil {
+		t.Fatalf("valid exact fork point rejected: %v", err)
+	}
+	value.ForkPointMessageID = ""
+	if err := value.Validate(); err == nil {
+		t.Fatal("fork point without stable message id was accepted")
+	}
+}

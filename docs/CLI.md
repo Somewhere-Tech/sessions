@@ -714,6 +714,7 @@ Create a new Rich conversation from a stable authored-history snapshot while the
 Examples:
   sessions fork 0123abcd
   sessions fork 0123abcd --with codex
+  sessions fork 0123abcd --at 42 --message-id a1b2c3
   sessions --json fork 0123abcd --with claude
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.

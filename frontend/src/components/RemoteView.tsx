@@ -54,6 +54,10 @@ interface Props {
   onConfigureModel?: (model: string, effort: string) => Promise<void>;
   onRename?: (name: string) => Promise<void>;
   onContinueInTerminal?: (enableRemoteControl: boolean) => Promise<void>;
+  onForkFromMessage?: (
+    message: { role: 'user' | 'assistant'; content: string; createdAt: number },
+    destinationProvider: 'claude' | 'codex'
+  ) => Promise<void>;
 }
 
 // Provider-neutral conversation view over the durable session transport.
@@ -86,7 +90,8 @@ export function RemoteView({
   modelControlSupported = false,
   onConfigureModel,
   onRename,
-  onContinueInTerminal
+  onContinueInTerminal,
+  onForkFromMessage
 }: Props): JSX.Element {
   const providerName = provider === 'codex' ? 'Codex' : 'Claude';
   const providerIdentity: ProviderIdentity = provider === 'codex' ? 'codex' : 'claude';
@@ -188,6 +193,30 @@ export function RemoteView({
     ? { id: latestFailedSend.id, text: latestFailedSend.content, version: latestFailedSend.createdAt }
     : null;
   const [blockingState, setBlockingState] = useState<SnapshotComposerState | null>(null);
+  const [forkPointId, setForkPointId] = useState<string | null>(null);
+  const [forkBusy, setForkBusy] = useState(false);
+  const [forkError, setForkError] = useState<string | null>(null);
+
+  const forkVisibleMessage = useCallback(async (
+    message: DispatchMessage,
+    destinationProvider: 'claude' | 'codex'
+  ): Promise<void> => {
+    if (!onForkFromMessage || forkBusy) return;
+    setForkBusy(true);
+    setForkError(null);
+    try {
+      await onForkFromMessage({
+        role: message.role,
+        content: message.content,
+        createdAt: message.createdAt
+      }, destinationProvider);
+      setForkPointId(null);
+    } catch (reason) {
+      setForkError(reason instanceof Error ? reason.message : 'Could not fork this conversation.');
+    } finally {
+      setForkBusy(false);
+    }
+  }, [forkBusy, onForkFromMessage]);
 
   useEffect(() => {
     // Snapshot prompt classification is a terminal-screen heuristic. Rich
@@ -425,6 +454,18 @@ export function RemoteView({
             showAgentHeader={m.role === 'assistant' && visibleMessages[i - 1]?.role !== 'assistant'}
             onRetry={() => retry(m.id)}
             onDelete={() => remove(m.id)}
+            forkOpen={forkPointId === m.id}
+            forkBusy={forkBusy}
+            forkError={forkPointId === m.id ? forkError : null}
+            onToggleFork={onForkFromMessage && m.status === 'sent' && !m.queued && Boolean(m.content)
+              ? () => {
+                setForkError(null);
+                setForkPointId((current) => current === m.id ? null : m.id);
+              }
+              : undefined}
+            onFork={onForkFromMessage
+              ? (destinationProvider) => void forkVisibleMessage(m, destinationProvider)
+              : undefined}
           />
         ))}
         {/* Sticky-anchor: pins the down-arrow to the right edge of the
@@ -492,6 +533,11 @@ interface RemoteMessageProps {
   showAgentHeader: boolean;
   onRetry: () => void;
   onDelete: () => void;
+  forkOpen: boolean;
+  forkBusy: boolean;
+  forkError: string | null;
+  onToggleFork?: () => void;
+  onFork?: (destinationProvider: 'claude' | 'codex') => void;
 }
 
 // Per-message render. Memoized — adapted-co + somewhere-tech both have
@@ -513,7 +559,12 @@ function RemoteMessageInner({
   isLatest,
   showAgentHeader,
   onRetry,
-  onDelete
+  onDelete,
+  forkOpen,
+  forkBusy,
+  forkError,
+  onToggleFork,
+  onFork
 }: RemoteMessageProps): JSX.Element {
   const isUser = m.role === 'user';
   const cls = `remote-msg remote-msg-${m.role} is-${m.status}${isLatest ? ' is-latest' : ''}${m.interrupted ? ' is-interrupted' : ''}${m.queued ? ' is-queued' : ''}${!isUser && !showAgentHeader ? ' is-continuation' : ''}`;
@@ -681,6 +732,25 @@ function RemoteMessageInner({
           ) : null}
         </>
       )}
+      {onToggleFork ? (
+        <div className={`remote-message-fork${isUser ? ' is-user' : ''}`}>
+          <button type="button" className="remote-message-fork-trigger" disabled={forkBusy} onClick={onToggleFork}>
+            Fork from here…
+          </button>
+          {forkOpen ? (
+            <div className="remote-message-fork-picker">
+              <span>Start an independent copy through this message. This conversation keeps running.</span>
+              <button type="button" disabled={forkBusy} onClick={() => onFork?.(provider === 'claude' ? 'claude' : 'codex')}>
+                {forkBusy ? 'Forking…' : `Fork in ${agentName}`}
+              </button>
+              <button type="button" disabled={forkBusy} onClick={() => onFork?.(provider === 'claude' ? 'codex' : 'claude')}>
+                Open copy in {provider === 'claude' ? 'Codex' : 'Claude'}
+              </button>
+              {forkError ? <small role="alert">{forkError}</small> : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -691,6 +761,7 @@ const RemoteMessage = memo(RemoteMessageInner, (a, b) => {
   // on every parent render but always do the same thing.
   if (a.isLatest !== b.isLatest) return false;
   if (a.showAgentHeader !== b.showAgentHeader) return false;
+  if (a.forkOpen !== b.forkOpen || a.forkBusy !== b.forkBusy || a.forkError !== b.forkError) return false;
   if (a.cwd !== b.cwd) return false;
   if (a.agentName !== b.agentName || a.provider !== b.provider) return false;
   const ma = a.message;

@@ -51,6 +51,8 @@ type AdoptResult struct {
 	Mode                string              `json:"mode,omitempty"`
 	ImportedMessages    int                 `json:"importedMessages,omitempty"`
 	ForkedFromSessionID string              `json:"forkedFromSessionId,omitempty"`
+	ForkPointIndex      *int                `json:"forkPointIndex,omitempty"`
+	ForkPointMessageID  string              `json:"forkPointMessageId,omitempty"`
 	SourceUntouched     bool                `json:"sourceUntouched,omitempty"`
 }
 

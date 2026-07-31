@@ -519,12 +519,13 @@ func TestForkCopiesLiveConversationWithoutEndOrForce(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	if code := run(
-		[]string{"--host", server.URL, "fork", "source-lane", "--with", "codex"},
+		[]string{"--host", server.URL, "fork", "source-lane", "--with", "codex", "--at", "17", "--message-id", "message-hash"},
 		strings.NewReader(""), &stdout, &stderr,
 	); code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if posted["sourceSessionId"] != "source-lane" || posted["destinationProvider"] != "codex" {
+	if posted["sourceSessionId"] != "source-lane" || posted["destinationProvider"] != "codex" ||
+		posted["sourceMessageIndex"] != float64(17) || posted["sourceMessageId"] != "message-hash" {
 		t.Fatalf("posted body = %#v", posted)
 	}
 	if _, forced := posted["force"]; forced {

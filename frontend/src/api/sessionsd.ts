@@ -1072,6 +1072,8 @@ export interface AdoptConversationResult {
   mode?: 'native-import' | 'linked-search';
   importedMessages?: number;
   forkedFromSessionId?: string;
+  forkPointIndex?: number;
+  forkPointMessageId?: string;
   sourceUntouched?: boolean;
 }
 
@@ -1121,12 +1123,17 @@ export async function repairAdoption(request: AdoptRepairRequest): Promise<Adopt
 
 export async function forkConversation(
   sourceSessionId: string,
-  destinationProvider: 'claude' | 'codex'
+  destinationProvider: 'claude' | 'codex',
+  point?: { index: number; messageId: string }
 ): Promise<AdoptConversationResult> {
   const r = await apiFetch(`${httpBase()}/api/recovery/fork`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sourceSessionId, destinationProvider })
+    body: JSON.stringify({
+      sourceSessionId,
+      destinationProvider,
+      ...(point ? { sourceMessageIndex: point.index, sourceMessageId: point.messageId } : {})
+    })
   });
   return featureJSON<AdoptConversationResult>(r, 'Conversation copies');
 }
