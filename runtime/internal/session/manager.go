@@ -378,7 +378,7 @@ func (m *Manager) recordCreated(ctx context.Context, prepared state.PreparedSess
 		WorktreePath: prepared.WorktreePath, Branch: prepared.WorktreeBranch,
 		Base: prepared.WorktreeBase, SourceRepo: prepared.SourceRepo,
 		ResumeArgv: resumeArgv, LaneUUID: info.ID, ProviderUUID: providerUUID,
-		CreatorKind: creatorKind, CreatorID: creatorID,
+		CreatorKind: creatorKind, CreatorID: creatorID, DelegationKind: prepared.DelegationKind,
 	}); err != nil {
 		return fmt.Errorf("record lane creation before launch: %w", err)
 	}
@@ -718,6 +718,7 @@ func (m *Manager) withProvenance(ctx context.Context, infos []state.SessionInfo)
 		}
 		infos[index].CreatorKind = string(current.CreatorKind)
 		infos[index].CreatorID = current.CreatorID
+		infos[index].DelegationKind = current.DelegationKind
 		infos[index].Profile = current.Profile
 		infos[index].ConfigDir = current.ConfigDir
 		infos[index].WorktreePath = current.WorktreePath
@@ -865,6 +866,16 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 	creatorKind, creatorID, err := m.resolveCreator(ctx, request)
 	if err != nil {
 		return state.SessionInfo{}, fmt.Errorf("resolve lane creator: %w", err)
+	}
+	if creatorKind == ledger.CreatorSession {
+		if request.DelegationKind == "" {
+			request.DelegationKind = "agent"
+		}
+		if request.DelegationKind != "user" && request.DelegationKind != "agent" {
+			return state.SessionInfo{}, errors.New("delegation kind must be user or agent")
+		}
+	} else if request.DelegationKind != "" {
+		return state.SessionInfo{}, errors.New("delegation kind requires a parent session")
 	}
 
 	providerUUID, _ := ledger.ExistingProviderResume(request.Cmd, request.Args)

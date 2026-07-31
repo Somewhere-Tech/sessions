@@ -9,13 +9,19 @@ import {
   isCrashedSession,
   isDegradedSession
 } from '../lib/sessionStatus';
-import { effectiveParentId, groupWorkingSet, isSetAside } from '../lib/workingSet';
+import {
+  effectiveParentId,
+  groupWorkingSet,
+  humanEngagementAt,
+  isAgentLedChild,
+  isSetAside
+} from '../lib/workingSet';
 import { useSessions } from '../store/sessions';
 import { MachineMark } from './MachineMark';
 import { ContinueElsewhereButton } from './ContinueElsewhereButton';
 import { useServers } from '../lib/servers';
 
-type PrimaryFilter = 'all' | 'needs' | 'working' | 'aside' | 'ended';
+type PrimaryFilter = 'all' | 'needs' | 'working' | 'later' | 'quiet';
 type ProviderFilter = 'all' | 'claude' | 'codex' | 'shell';
 type DateFilter = 'all' | 'today' | 'week';
 
@@ -58,7 +64,9 @@ function needsYou(session: SessionInfo): boolean {
   if (session.exited || session.working) return false;
   if (isDegradedSession(session)) return true;
   if (session.idleReason) return session.idleReason === 'needs-input';
-  return session.lastUserMessageAt !== null;
+  // Unknown idle state is not enough evidence to alarm the user. Providers
+  // that can identify a question or approval record needs-input explicitly.
+  return false;
 }
 
 interface Props {
@@ -103,6 +111,7 @@ export function SessionNavigator({
   const [query, setQuery] = useState('');
   const [pins, setPins] = useState<string[]>(readPins);
   const [expandedCompleted, setExpandedCompleted] = useState<Set<string>>(new Set());
+  const [expandedHelpers, setExpandedHelpers] = useState<Set<string>>(new Set());
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
@@ -159,8 +168,8 @@ export function SessionNavigator({
       setRunningOpen(true);
       setSetAsideOpen(true);
     }
-    if (searching || primary === 'ended') setEndedOpen(true);
-    if (primary === 'aside') setSetAsideOpen(true);
+    if (searching || primary === 'quiet') setEndedOpen(true);
+    if (primary === 'later') setSetAsideOpen(true);
   }, [primary, query]);
   useEffect(() => {
     if (!actionMenuId) return;
@@ -198,9 +207,29 @@ export function SessionNavigator({
       list.push(session);
       byParent.set(parentID, list);
     }
-    for (const list of byParent.values()) list.sort((a, b) => lastActivity(b) - lastActivity(a));
+    for (const list of byParent.values()) list.sort((a, b) => humanEngagementAt(b) - humanEngagementAt(a));
     return byParent;
   }, [sessions, sessionIds]);
+
+  const subtreeHumanEngagement = useMemo(() => {
+    const values = new Map<string, number>();
+    const visiting = new Set<string>();
+    const visit = (session: SessionInfo): number => {
+      const cached = values.get(session.id);
+      if (cached !== undefined) return cached;
+      if (visiting.has(session.id)) return humanEngagementAt(session);
+      visiting.add(session.id);
+      const value = Math.max(
+        humanEngagementAt(session),
+        ...(children.get(session.id) ?? []).map(visit)
+      );
+      visiting.delete(session.id);
+      values.set(session.id, value);
+      return value;
+    };
+    for (const session of sessions) visit(session);
+    return values;
+  }, [children, sessions]);
 
   const grouped = useMemo(
     () => groupWorkingSet(sessions, openSessionIds, pins),
@@ -211,7 +240,8 @@ export function SessionNavigator({
       const ap = pins.indexOf(a.id); const bp = pins.indexOf(b.id);
       if (ap >= 0 || bp >= 0) return ap < 0 ? 1 : bp < 0 ? -1 : ap - bp;
     }
-    return lastActivity(b) - lastActivity(a);
+    return (subtreeHumanEngagement.get(b.id) ?? humanEngagementAt(b))
+      - (subtreeHumanEngagement.get(a.id) ?? humanEngagementAt(a));
   });
   const runningRoots = sortRoots(grouped.runningRoots, true);
   const setAsideRoots = sortRoots(grouped.setAsideRoots, false);
@@ -219,7 +249,7 @@ export function SessionNavigator({
   const projects = useMemo(() => [...new Set(sessions.map(projectName).filter(Boolean))].sort(), [sessions]);
   const counts = useMemo(() => ({
     needs: sessions.filter(needsYou).length,
-    running: sessions.filter((session) => !session.exited && grouped.runningIds.has(session.id)).length,
+    running: sessions.filter((session) => grouped.runningIds.has(session.id)).length,
     aside: sessions.filter((session) => grouped.setAsideIds.has(session.id)).length,
     working: sessions.filter((session) => session.working && !session.exited).length
   }), [grouped.runningIds, grouped.setAsideIds, sessions]);
@@ -234,8 +264,8 @@ export function SessionNavigator({
   const matches = (session: SessionInfo): boolean => {
     if (primary === 'needs' && !needsYou(session)) return false;
     if (primary === 'working' && (!session.working || session.exited)) return false;
-    if (primary === 'aside' && !grouped.setAsideIds.has(session.id)) return false;
-    if (primary === 'ended' && !session.exited) return false;
+    if (primary === 'later' && !grouped.setAsideIds.has(session.id)) return false;
+    if (primary === 'quiet' && !session.exited) return false;
     const normalized = normalizeProvider(session.tool);
     if (provider !== 'all' && (provider === 'shell' ? session.tool !== 'terminal' : normalized !== provider)) return false;
     if (project !== 'all' && projectName(session) !== project) return false;
@@ -264,7 +294,7 @@ export function SessionNavigator({
   const recentEnded = filteredEnded
     .filter((session) => lastActivity(session) >= recentCutoff)
     .slice(0, RECENTLY_ENDED_LIMIT);
-  const browsingAllEnded = showAllEnded || primary === 'ended' || query.trim() !== '';
+  const browsingAllEnded = showAllEnded || primary === 'quiet' || query.trim() !== '';
   const visibleEnded = browsingAllEnded ? filteredEnded : recentEnded;
   const hasOlderEnded = filteredEnded.length > recentEnded.length;
   useEffect(() => {
@@ -311,7 +341,7 @@ export function SessionNavigator({
   const requestEndSession = async (session: SessionInfo): Promise<void> => {
     if (session.exited || endingId) return;
     const label = getTabLabel(session.id) ?? sessionLabel(session);
-    if (!window.confirm(`End this session?\n\n“${label}” will stop running. Its conversation is kept, and you can resume it later from Recently ended.`)) return;
+    if (!window.confirm(`End this session?\n\n“${label}” will stop running. Its conversation is kept, and you can resume it later from Quiet.`)) return;
     setEndingId(session.id);
     setMoveError(null);
     setActionMenuId(null);
@@ -338,6 +368,11 @@ export function SessionNavigator({
     }
   };
   const toggleCompleted = (id: string): void => setExpandedCompleted((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleHelpers = (id: string): void => setExpandedHelpers((current) => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
@@ -404,6 +439,29 @@ export function SessionNavigator({
     if (canMove(id, parentID)) void moveSession(id, parentID);
   };
 
+  const descendantRollup = (session: SessionInfo, groupIds: Set<string>): {
+    working: number;
+    needs: number;
+    finished: number;
+  } => {
+    const seen = new Set<string>();
+    const descendants: SessionInfo[] = [];
+    const collect = (parent: SessionInfo): void => {
+      for (const child of children.get(parent.id) ?? []) {
+        if (!groupIds.has(child.id) || seen.has(child.id)) continue;
+        seen.add(child.id);
+        descendants.push(child);
+        collect(child);
+      }
+    };
+    collect(session);
+    return {
+      working: descendants.filter((child) => !child.exited && child.working).length,
+      needs: descendants.filter(needsYou).length,
+      finished: descendants.filter((child) => child.exited || isFinished(child)).length
+    };
+  };
+
   const renderNode = (
     session: SessionInfo,
     depth: number,
@@ -415,9 +473,28 @@ export function SessionNavigator({
     // Never collapse the only path to live work. A finished intermediary can
     // still own a running grandchild, so it remains visible until its entire
     // subtree is finished.
-    const completed = nested.filter((child) => isFinished(child) && !hasLiveDescendant(child, groupIds));
+    const agentChildren = nested.filter(isAgentLedChild);
+    const userChildren = nested.filter((child) => !isAgentLedChild(child));
+    const helpersExpanded = expandedHelpers.has(session.id);
+    const urgentAgentChildren = agentChildren.filter((child) => (
+      child.id === activeId
+      || needsYou(child)
+      || isDegradedSession(child)
+      || isCrashedSession(child)
+    ));
+    const visibleAgentIDs = new Set((helpersExpanded ? agentChildren : urgentAgentChildren).map((child) => child.id));
+    const completed = userChildren.filter((child) => isFinished(child) && !hasLiveDescendant(child, groupIds));
     const completedIds = new Set(completed.map((child) => child.id));
-    const visible = nested.filter((child) => !completedIds.has(child.id) || expandedCompleted.has(session.id));
+    const visible = nested.filter((child) => (
+      isAgentLedChild(child)
+        ? visibleAgentIDs.has(child.id)
+        : !completedIds.has(child.id) || expandedCompleted.has(session.id)
+    ));
+    const helperRollup = {
+      working: agentChildren.filter((child) => !child.exited && child.working).length,
+      needs: agentChildren.filter(needsYou).length,
+      finished: agentChildren.filter((child) => child.exited || isFinished(child)).length
+    };
     const providerName = normalizeProvider(session.tool);
     const degraded = isDegradedSession(session);
     const status = session.exited ? 'finished' : degraded ? 'limited' : session.working ? 'running' : needsYou(session) ? 'needs' : 'idle';
@@ -431,9 +508,22 @@ export function SessionNavigator({
     const otherProviderLabel = otherProvider === 'codex' ? 'Codex' : 'Claude';
     const parent = currentParentID ? sessions.find((candidate) => candidate.id === currentParentID) : null;
     const resumedFrom = session.resumedFrom ? sessions.find((candidate) => candidate.id === session.resumedFrom) : null;
-    const hasChildren = visible.length > 0 || completed.length > 0;
+    const hasChildren = visible.length > 0 || completed.length > 0 || agentChildren.length > 0;
     const collapsed = collapsedTrees.has(session.id);
     const label = getTabLabel(session.id) ?? sessionLabel(session);
+    const rollup = depth === 0 && !endedFlat ? descendantRollup(session, groupIds) : null;
+    const rollupParts = rollup
+      ? [
+        rollup.working ? `${rollup.working} working` : '',
+        rollup.needs ? `${rollup.needs} need you` : '',
+        rollup.finished ? `${rollup.finished} finished` : ''
+      ].filter(Boolean)
+      : [];
+    const helperParts = [
+      helperRollup.working ? `${helperRollup.working} working` : '',
+      helperRollup.needs ? `${helperRollup.needs} need you` : '',
+      helperRollup.finished ? `${helperRollup.finished} finished` : ''
+    ].filter(Boolean);
     return (
       <div className="session-tree-node" key={session.id}>
         <div
@@ -477,8 +567,9 @@ export function SessionNavigator({
             {end ? <span className={`session-nav-ended is-${end.tone}`}>{end.label}</span> : null}
             {resumedFrom ? <span className="session-nav-parent">Resumed from {getTabLabel(resumedFrom.id) ?? sessionLabel(resumedFrom)}</span> : null}
             {endedFlat && parent ? <span className="session-nav-parent">Under {getTabLabel(parent.id) ?? sessionLabel(parent)}</span> : null}
-            {!endedFlat && depth === 0 && parent && isSetAside(parent) ? <span className="session-nav-parent">Under {getTabLabel(parent.id) ?? sessionLabel(parent)} (set aside)</span> : null}
-            {session.setAsideAt != null ? <span className="session-nav-aside-chip">{session.exited ? 'Was set aside' : 'Set aside'}</span> : null}
+            {!endedFlat && depth === 0 && parent && isSetAside(parent) ? <span className="session-nav-parent">Under {getTabLabel(parent.id) ?? sessionLabel(parent)} (Later)</span> : null}
+            {session.setAsideAt != null ? <span className="session-nav-aside-chip">{session.exited ? 'Was in Later' : 'Later'}</span> : null}
+            {rollupParts.length > 0 ? <span className="session-nav-rollup">{rollupParts.join(' · ')}</span> : null}
             <span className="session-nav-meta">
               {providerName
                 ? <span className="session-nav-provider" title={providerName === 'claude' ? 'Claude' : 'Codex'}><ProviderMark provider={providerName} size={20} /></span>
@@ -511,7 +602,7 @@ export function SessionNavigator({
               <summary aria-label={`Actions for ${label}`} title="Session actions">•••</summary>
               <div className={`session-row-action-menu${session.exited ? ' opens-up' : ''}`} role="menu">
                 <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.id); }}>{session.exited ? 'View history' : 'Open in tab'}</button>
-                {openSessionIds.includes(session.id) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onCloseView(session.id); }}>Close tab <small>stays in Live</small></button> : null}
+                {openSessionIds.includes(session.id) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onCloseView(session.id); }}>Close tab <small>keeps running in In focus</small></button> : null}
                 {end && canContinueSession(session) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onResumeSession(session); }}>Continue conversation…</button> : null}
                 {end && canContinueSession(session) && otherProvider ? (
                   <button type="button" role="menuitem" onClick={() => {
@@ -564,8 +655,8 @@ export function SessionNavigator({
                 ) : (
                   <>
                     {isSetAside(session)
-                      ? <button type="button" role="menuitem" onClick={() => void changeSetAside(session, false)}>Bring back <small>show in Live</small></button>
-                      : <button type="button" role="menuitem" onClick={() => void changeSetAside(session, true)}>Set aside for later <small>keeps running</small></button>}
+                      ? <button type="button" role="menuitem" onClick={() => void changeSetAside(session, false)}>Bring into focus</button>
+                      : <button type="button" role="menuitem" onClick={() => void changeSetAside(session, true)}>Move to Later <small>keeps running</small></button>}
                     <button type="button" role="menuitem" disabled={endingId !== null} onClick={() => void requestEndSession(session)}>{endingId === session.id ? 'Ending…' : 'End session…'}</button>
                   </>
                 )}
@@ -574,6 +665,17 @@ export function SessionNavigator({
           ) : null}
         </div>
         {!collapsed ? visible.map((child) => renderNode(child, depth + 1, false, groupIds)) : null}
+        {!collapsed && agentChildren.length > 0 ? (
+          <button
+            type="button"
+            className="session-helper-summary"
+            style={{ '--tree-depth': depth + 1 } as React.CSSProperties}
+            onClick={() => toggleHelpers(session.id)}
+          >
+            <span>{helpersExpanded ? 'Hide helpers' : 'Helpers'}</span>
+            <small>{helperParts.length > 0 ? helperParts.join(' · ') : `${agentChildren.length} quiet`}</small>
+          </button>
+        ) : null}
         {!collapsed && completed.length > 0 ? (
           <button type="button" className="completed-children" style={{ '--tree-depth': depth + 1 } as React.CSSProperties} onClick={() => toggleCompleted(session.id)}>
             {expandedCompleted.has(session.id) ? 'Hide completed' : `${completed.length} completed`}
@@ -619,7 +721,8 @@ export function SessionNavigator({
         <FilterButton label="All" active={primary === 'all'} onClick={() => setPrimary('all')} />
         <FilterButton label={`Needs you${counts.needs ? ` ${counts.needs}` : ''}`} active={primary === 'needs'} onClick={() => setPrimary('needs')} />
         <FilterButton label={`Working${counts.working ? ` ${counts.working}` : ''}`} active={primary === 'working'} onClick={() => setPrimary('working')} />
-        <FilterButton label="Ended" active={primary === 'ended'} onClick={() => setPrimary('ended')} />
+        <FilterButton label="Later" active={primary === 'later'} onClick={() => setPrimary('later')} />
+        <FilterButton label="Quiet" active={primary === 'quiet'} onClick={() => setPrimary('quiet')} />
         <details className="session-more-filters">
           <summary aria-label="More filters">⋯</summary>
           <div className="session-filter-popover">
@@ -650,21 +753,21 @@ export function SessionNavigator({
             Drop here to make this a manager session
           </div>
         ) : null}
-        {primary !== 'ended' && primary !== 'aside' ? <div className="session-tree-group">
+        {primary !== 'quiet' && primary !== 'later' ? <div className="session-tree-group">
           <button type="button" className="session-tree-group-head" onClick={() => setRunningOpen((current) => !current)}>
-            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Live</span><strong>{counts.running}</strong>
+            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> In focus</span><strong>{counts.running}</strong>
           </button>
           {runningOpen ? (
             <>
               {pins.some((id) => filteredRunningRoots.some((root) => root.id === id)) ? <div className="session-tree-label">Pinned managers <span>{Math.min(pins.length, 5)}/5</span></div> : null}
               {filteredRunningRoots.map((root) => renderNode(root, 0, false, grouped.runningIds))}
-              {filteredRunningRoots.length === 0 ? <div className="session-tree-empty is-compact">No matching live sessions.</div> : null}
+              {filteredRunningRoots.length === 0 ? <div className="session-tree-empty is-compact">No matching work in focus.</div> : null}
             </>
           ) : null}
         </div> : null}
-        {primary !== 'ended' && (counts.aside > 0 || primary === 'aside') ? <div className="session-tree-group is-set-aside">
+        {primary !== 'quiet' && (counts.aside > 0 || primary === 'later') ? <div className="session-tree-group is-set-aside">
           <button type="button" className="session-tree-group-head" onClick={() => setSetAsideOpen((current) => !current)}>
-            <span className="session-group-disclosure"><DisclosureChevron open={setAsideOpen} /> Set aside</span>
+            <span className="session-group-disclosure"><DisclosureChevron open={setAsideOpen} /> Later</span>
             <span className={(setAsideAttention.needs || setAsideAttention.limited) ? 'session-group-attention' : undefined}>
               {counts.aside}
               {setAsideAttention.needs ? ` · ${setAsideAttention.needs} needs you` : ''}
@@ -674,21 +777,21 @@ export function SessionNavigator({
           {setAsideOpen ? (
             <>
               {filteredSetAsideRoots.map((root) => renderNode(root, 0, false, grouped.setAsideIds))}
-              {filteredSetAsideRoots.length === 0 ? <div className="session-tree-empty is-compact">No matching set-aside sessions.</div> : null}
+              {filteredSetAsideRoots.length === 0 ? <div className="session-tree-empty is-compact">Nothing is waiting for later.</div> : null}
             </>
           ) : null}
         </div> : null}
-        {primary !== 'working' && primary !== 'needs' && primary !== 'aside' ? <div className="session-tree-group">
+        {primary !== 'working' && primary !== 'needs' && primary !== 'later' ? <div className="session-tree-group">
           <div className="session-tree-group-head">
-            <button type="button" onClick={() => setEndedOpen((current) => !current)}><span className="session-group-disclosure"><DisclosureChevron open={endedOpen} /> Recently ended</span><strong>{visibleEnded.length}</strong></button>
+            <button type="button" onClick={() => setEndedOpen((current) => !current)}><span className="session-group-disclosure"><DisclosureChevron open={endedOpen} /> Quiet</span><strong>{visibleEnded.length}</strong></button>
             {filteredEnded.length > 0 ? <button type="button" className="session-select-ended" onClick={() => { setSelectingEnded((current) => !current); setEndedOpen(true); }}>Select</button> : null}
           </div>
           {endedOpen ? (
             <>
               {visibleEnded.map((session) => renderNode(session, 0, true))}
-              {!browsingAllEnded && hasOlderEnded ? <button type="button" className="session-all-ended" onClick={() => setShowAllEnded(true)}>All ended sessions →</button> : null}
-              {showAllEnded && primary !== 'ended' && query.trim() === '' ? <button type="button" className="session-all-ended" onClick={() => setShowAllEnded(false)}>Show recent only</button> : null}
-              {visibleEnded.length === 0 ? <div className="session-tree-empty is-compact">No recently ended sessions.</div> : null}
+              {!browsingAllEnded && hasOlderEnded ? <button type="button" className="session-all-ended" onClick={() => setShowAllEnded(true)}>All quiet sessions →</button> : null}
+              {showAllEnded && primary !== 'quiet' && query.trim() === '' ? <button type="button" className="session-all-ended" onClick={() => setShowAllEnded(false)}>Show recent only</button> : null}
+              {visibleEnded.length === 0 ? <div className="session-tree-empty is-compact">No quiet sessions yet.</div> : null}
             </>
           ) : null}
         </div> : null}
@@ -704,7 +807,7 @@ export function SessionNavigator({
               {moveCandidates.map((candidate) => (
                 <button type="button" key={candidate.id} onClick={() => void moveSession(movePickerSession.id, candidate.id)}>
                   <strong>{getTabLabel(candidate.id) ?? sessionLabel(candidate)}</strong>
-                  <small>{candidate.exited ? 'Ended manager' : candidate.working ? 'Working' : 'Live · idle'} · {projectName(candidate)}</small>
+                  <small>{candidate.exited ? 'Quiet manager' : candidate.working ? 'Working' : 'In focus · idle'} · {projectName(candidate)}</small>
                 </button>
               ))}
             </div>

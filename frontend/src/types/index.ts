@@ -72,6 +72,9 @@ export interface SessionInfo {
   creatorKind?: string;
   creatorId?: string;
   parentSessionId?: string;
+  // Whether a child was explicitly delegated by a person or created by an
+  // agent session. Legacy children omit this and stay fully visible.
+  delegationKind?: 'user' | 'agent';
   // User-controlled visual grouping. Undefined preserves trusted creator
   // lineage; an empty string deliberately promotes the session to a root.
   displayParentSessionId?: string;
@@ -116,6 +119,7 @@ export interface CreateSessionRequest {
   // Frontend-only transport hint. api/sessionsd.ts removes this from the
   // JSON body and sends it through the daemon's trusted creator header.
   creatorSessionId?: string;
+  delegationKind?: 'user' | 'agent';
 }
 
 export type ClaudeToggle = 'inherit' | 'on' | 'off';
@@ -145,7 +149,7 @@ export interface ClaudeSessionOptions {
 export interface DirectoryCandidate {
   path: string;
   label: string;
-  kind: 'home' | 'common' | 'project';
+  kind: 'home' | 'common' | 'project' | 'somewhere';
 }
 
 export type ServerMsg =

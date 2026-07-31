@@ -63,6 +63,7 @@ const TOOLS: ToolDef[] = [
 ];
 
 function workspaceKind(kind: DirectoryCandidate['kind']): string {
+  if (kind === 'somewhere') return 'Somewhere project';
   if (kind === 'project') return 'Recent project';
   if (kind === 'home') return 'Home folder';
   return 'Recent workspace';
@@ -255,6 +256,13 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const selectedMachine = configuredMachines.find((machine) => machine.id === machineId)
     ?? configuredMachines[0]
     ?? null;
+  const selectedMachineIsLoaded = machineId === activeMachineId;
+  const liveOnSelectedMachine = selectedMachineIsLoaded
+    ? openSessions.filter((session) => !session.exited).length
+    : 0;
+  const workingOnSelectedMachine = selectedMachineIsLoaded
+    ? openSessions.filter((session) => !session.exited && session.working).length
+    : 0;
 
   useEffect(() => {
     if (parentSession) return;
@@ -270,10 +278,13 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       if (!active) return;
       setRecentWorkspaces(items);
       setCwd((current) => {
-        if (current && items.some((item) => item.path === current)) return current;
-        return items.find((item) => item.kind === 'project')?.path
+        const currentCandidate = items.find((item) => item.path === current);
+        if (currentCandidate?.kind === 'somewhere') return current;
+        return items.find((item) => item.kind === 'somewhere')?.path
+          || items.find((item) => item.kind === 'project')?.path
           || items.find((item) => item.kind === 'common')?.path
           || items.find((item) => item.kind === 'home')?.path
+          || currentCandidate?.path
           || current;
       });
     }).catch(() => { if (active) setRecentWorkspaces([]); });
@@ -441,7 +452,8 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
             ? { ...claudeOptions, remoteControl: 'off', chrome: 'off', somewhereMcp: 'inherit' }
             : claudeOptions
           : undefined,
-        creatorSessionId: parentSession?.id
+        creatorSessionId: parentSession?.id,
+        delegationKind: parentSession ? 'user' : undefined
       });
       // Open the durable record before attempting prompt delivery. Permission
       // dialogs and provider readiness are runtime concerns; they must not
@@ -503,7 +515,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     <div className="dialog-backdrop" onClick={onClose}>
       <form className="dialog dialog-wide new-session-launcher" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
         <header className="dialog-head">
-          <div><span className="dialog-kicker">{isDelegate ? `Linked to ${parentSession ? sessionLabel(parentSession) : 'this session'}` : 'Start a conversation or command'}</span><h2 className="dialog-title">New Session</h2></div>
+          <div><span className="dialog-kicker">{isDelegate ? `Linked to ${parentSession ? sessionLabel(parentSession) : 'this session'}` : 'Start work anywhere in your fleet'}</span><h2 className="dialog-title">{isDelegate ? 'Start linked work' : 'Start a session'}</h2></div>
           <div className="launcher-head-actions">
             {onOpenResume && !isDelegate && selectedProfile === '' ? (
               <button type="button" className="dialog-head-link" onClick={() => onOpenResume()}>Resume instead</button>
@@ -515,7 +527,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
           <section className="launcher-step launcher-agent-step">
             <div className="launcher-step-heading">
               <span className="launcher-step-number">1</span>
-              <span><strong>Choose an agent</strong><small>You can change the model before or after it starts.</small></span>
+              <span><strong>Who should work on this?</strong><small>Choose the agent. Model and effort can change later.</small></span>
             </div>
             <div className="tool-selector">
               {TOOLS.map((t) => (
@@ -560,7 +572,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
             <section className="launcher-step launcher-machine-step">
               <div className="launcher-step-heading">
                 <span className="launcher-step-number">2</span>
-                <span><strong>Choose a machine</strong><small>Sessions starts here unless you choose a paired computer.</small></span>
+                <span><strong>Where should it run?</strong><small>This computer is ready by default; choose another connected machine when the files live there.</small></span>
               </div>
               <div className="launcher-machine-selector" role="radiogroup" aria-label="Machine">
                 {configuredMachines.map((machine) => {
@@ -581,6 +593,12 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                   );
                 })}
               </div>
+              {liveOnSelectedMachine >= 8 ? (
+                <div className="launcher-capacity-note">
+                  <strong>This machine already has {liveOnSelectedMachine} live sessions</strong>
+                  <span>{workingOnSelectedMachine} working now. Starting another is allowed; Sessions never stops or queues existing work automatically.</span>
+                </div>
+              ) : null}
             </section>
           )}
           {!isDelegate ? (
@@ -588,7 +606,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
               <div className="launcher-section-head">
                 <div className="launcher-step-heading">
                   <span className="launcher-step-number">3</span>
-                  <span><strong>Choose a folder</strong><small>Recent projects from {selectedMachine?.name ?? 'this machine'}.</small></span>
+                  <span><strong>Choose the project</strong><small>Somewhere projects and recent work from {selectedMachine?.name ?? 'this machine'} appear first.</small></span>
                 </div>
                 <details className="workspace-browser-disclosure" open={browserOpen} onToggle={(event) => setBrowserOpen(event.currentTarget.open)}>
                   <summary>Choose another…</summary>
@@ -600,13 +618,32 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                   ) : null}
                 </details>
               </div>
-              {displayedWorkspaces.length > 0 ? <div className="recent-workspaces">{displayedWorkspaces.map((item) => <button type="button" key={item.path} className={cwd === item.path ? 'is-active' : ''} onClick={() => setCwd(item.path)}><span className="workspace-folder-icon" aria-hidden /><span className="workspace-card-copy"><strong>{item.label}</strong><small>{workspaceKind(item.kind)}</small></span><span className="workspace-radio" aria-hidden /></button>)}</div> : null}
+              {displayedWorkspaces.length > 0 ? (
+                <div className="recent-workspaces">
+                  {displayedWorkspaces.map((item) => (
+                    <button
+                      type="button"
+                      key={item.path}
+                      className={`${cwd === item.path ? 'is-active' : ''}${item.kind === 'somewhere' ? ' is-somewhere' : ''}`}
+                      onClick={() => setCwd(item.path)}
+                    >
+                      <span className="workspace-folder-icon" aria-hidden />
+                      <span className="workspace-card-copy">
+                        <strong>{item.label}</strong>
+                        <small>{workspaceKind(item.kind)}</small>
+                      </span>
+                      <span className="workspace-radio" aria-hidden />
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <span className="launcher-somewhere-note">Somewhere projects use the selected machine’s local checkout and its existing agent login.</span>
               <div className="workspace-selection"><span className="workspace-status-dot" aria-hidden /><strong>{selectedMachine?.name ?? 'Machine'}</strong><span>·</span><code>{cwd || 'Choose a folder'}</code></div>
               {cwd === homeWorkspace ? <span className="field-help">Choosing a project folder avoids macOS prompts for unrelated protected folders such as Music and cloud drives.</span> : null}
             </section>
           ) : null}
           <div className="field launcher-task-field launcher-composer">
-            <span className="field-label">{isDelegate ? 'Task for this linked session' : 'First message'} <span className="field-optional">optional</span></span>
+            <span className="field-label">{isDelegate ? 'What should this helper do?' : 'What should it do first?'} <span className="field-optional">optional</span></span>
             <textarea value={task} onChange={(event) => setTask(event.currentTarget.value)} placeholder={isDelegate ? 'What should this linked session work on?' : 'Describe a task, ask a question, or leave blank to start…'} rows={5} />
             <div className="launcher-composer-footer">
               <div className="launcher-composer-context" aria-label="New session configuration">
@@ -683,13 +720,16 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                 </div>
               ) : null}
               {!isDelegate ? (
-                <label className="field-checkbox launcher-advanced-card">
-                  <input type="checkbox" checked={makeWorktree} onChange={(event) => setMakeWorktree(event.currentTarget.checked)} />
-                  <span className="field-checkbox-body">
-                    <span>Use a separate worktree</span>
-                    <span className="field-hint">Keeps this session’s code changes isolated from your current checkout.</span>
-                  </span>
-                </label>
+                <details className="launcher-advanced-subsection">
+                  <summary>Developer isolation <span>Optional separate copy</span></summary>
+                  <label className="field-checkbox">
+                    <input type="checkbox" checked={makeWorktree} onChange={(event) => setMakeWorktree(event.currentTarget.checked)} />
+                    <span className="field-checkbox-body">
+                      <span>Give this session its own Git copy</span>
+                      <span className="field-hint">Useful when two agents may edit the same project at once. Sessions manages the worktree automatically.</span>
+                    </span>
+                  </label>
+                </details>
               ) : null}
               <details className="launcher-advanced-subsection">
                 <summary>Tags <span>Optional organization</span></summary>

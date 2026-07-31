@@ -437,7 +437,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/directories" && request.Method == http.MethodGet {
-		s.sendJSON(response, http.StatusOK, map[string]any{"directories": listDirectoryCandidates()}, corsOrigin)
+		s.sendJSON(response, http.StatusOK, map[string]any{"directories": listDirectoryCandidates(s.registry.List(true))}, corsOrigin)
 		return
 	}
 	if path == "/api/fs/list" && request.Method == http.MethodGet {

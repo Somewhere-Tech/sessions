@@ -18,6 +18,20 @@ export function effectiveParentId(session: SessionInfo): string | undefined {
     : session.parentSessionId;
 }
 
+// User attention, not provider chatter, decides where work appears. This keeps
+// a manager stable while its agents stream tools and output, but lets a thread
+// the user actually returns to rise naturally without requiring a pin.
+export function humanEngagementAt(session: SessionInfo): number {
+  return Math.max(session.lastUserMessageAt ?? 0, session.createdAt || 0);
+}
+
+// New clients record how a child was requested. Older provider lanes already
+// carry KindLane, so they can receive the same compact helper treatment while
+// legacy child sessions of unknown provenance remain fully visible.
+export function isAgentLedChild(session: SessionInfo): boolean {
+  return session.delegationKind === 'agent' || session.kind === 'lane';
+}
+
 // Set-aside is working-set organization, not lifecycle. This reducer keeps
 // live non-aside descendants reachable by promoting them across a set-aside
 // ancestor, while retaining ended ancestors only when they are the path to
@@ -49,7 +63,11 @@ export function groupWorkingSet(
     if (!session.exited) {
       result = open.has(session.id) || pinned.has(session.id) || !isSetAside(session);
     } else {
-      result = (children.get(session.id) ?? []).some(belongsInRunning);
+      // An ended conversation can still be work the user is actively reading.
+      // Keep an open or pinned record in focus; closing its view returns it to
+      // Quiet without changing or deleting provider history.
+      result = open.has(session.id) || pinned.has(session.id)
+        || (children.get(session.id) ?? []).some(belongsInRunning);
     }
     visiting.delete(session.id);
     runningMemo.set(session.id, result);
@@ -60,6 +78,33 @@ export function groupWorkingSet(
   const setAsideIds = new Set(sessions
     .filter((session) => isSetAside(session) && !open.has(session.id) && !pinned.has(session.id))
     .map((session) => session.id));
+  const includeDescendants = (
+    session: SessionInfo,
+    target: Set<string>,
+    shouldSkip: (child: SessionInfo) => boolean,
+    seen = new Set<string>()
+  ): void => {
+    if (seen.has(session.id)) return;
+    seen.add(session.id);
+    for (const child of children.get(session.id) ?? []) {
+      if (shouldSkip(child)) continue;
+      target.add(child.id);
+      includeDescendants(child, target, shouldSkip, seen);
+    }
+  };
+  // Finished descendants remain part of their manager's story so the
+  // navigator can collapse them into a useful completion rollup. A child that
+  // the user explicitly moved to Later forms a separate working-set root.
+  for (const session of sessions.filter((candidate) => runningIds.has(candidate.id))) {
+    includeDescendants(session, runningIds, (child) => (
+      isSetAside(child) && !open.has(child.id) && !pinned.has(child.id)
+    ));
+  }
+  for (const session of sessions.filter((candidate) => setAsideIds.has(candidate.id))) {
+    includeDescendants(session, setAsideIds, (child) => (
+      open.has(child.id) || pinned.has(child.id) || runningIds.has(child.id)
+    ));
+  }
   const rootsFor = (ids: Set<string>): SessionInfo[] => sessions.filter((session) => {
     if (!ids.has(session.id)) return false;
     const parentId = effectiveParentId(session);

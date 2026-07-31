@@ -21,6 +21,7 @@ func TestAddedRouteShapeTable(t *testing.T) {
 	fixture := t.TempDir()
 	home := filepath.Join(fixture, "home")
 	mustMkdirAll(t, filepath.Join(home, "Code", "nested-project", ".git"))
+	mustMkdirAll(t, filepath.Join(home, "somewhere", "tech", ".git"))
 	mustMkdirAll(t, filepath.Join(home, "top-project"))
 	mustWriteFile(t, filepath.Join(home, "top-project", "go.mod"), []byte("module example.test/top\n"))
 	mustMkdirAll(t, filepath.Join(home, "Alpha"))
@@ -75,6 +76,7 @@ func TestAddedRouteShapeTable(t *testing.T) {
 					home:                        {"~", "home"},
 					filepath.Join(home, "Code"): {"~/Code", "common"},
 					filepath.Join(home, "Code", "nested-project"): {"~/Code/nested-project", "project"},
+					filepath.Join(home, "somewhere", "tech"):      {"~/somewhere/tech", "somewhere"},
 				} {
 					candidate, ok := got[path]
 					if !ok || candidate["label"] != want[0] || candidate["kind"] != want[1] {
@@ -84,8 +86,8 @@ func TestAddedRouteShapeTable(t *testing.T) {
 				if candidate := got[filepath.Join(home, "top-project")]; candidate != nil {
 					t.Errorf("broad home scan unexpectedly returned %#v", candidate)
 				}
-				if len(directories) == 0 || valueMap(t, directories[0])["kind"] != "project" {
-					t.Errorf("projects should be offered before broad folders: %#v", directories)
+				if len(directories) == 0 || valueMap(t, directories[0])["kind"] != "somewhere" {
+					t.Errorf("Somewhere projects should be offered first: %#v", directories)
 				}
 			},
 		},

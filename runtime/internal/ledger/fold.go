@@ -23,6 +23,7 @@ type LaneState struct {
 	ProviderUUID             string
 	CreatorKind              CreatorKind
 	CreatorID                string
+	DelegationKind           string
 	CreatedAtMS              int64
 	LastEventAtMS            int64
 	LastActivityAtMS         int64
@@ -113,6 +114,7 @@ func Fold(events []Event) []LaneState {
 			state.ProviderUUID = payload.ProviderUUID
 			state.CreatorKind = payload.CreatorKind
 			state.CreatorID = payload.CreatorID
+			state.DelegationKind = payload.DelegationKind
 		case EventLaunchStarted:
 			state.LaunchStarted = true
 		case EventRunnerReady:

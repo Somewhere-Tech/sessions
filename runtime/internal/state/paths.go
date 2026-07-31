@@ -84,6 +84,7 @@ type Metadata struct {
 	ImportedMessageCount   int               `json:"importedMessageCount,omitempty"`
 	DisplayParentSessionID *string           `json:"display_parent_session_id,omitempty"`
 	SetAsideAt             *int64            `json:"set_aside_at,omitempty"`
+	DelegationKind         string            `json:"delegation_kind,omitempty"`
 }
 
 // CompletionManifest is the durable terminal fact emitted by a headless lane.

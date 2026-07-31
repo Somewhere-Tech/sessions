@@ -119,6 +119,7 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `effort` | string, optional | effort parsed from effective arguments |
 | `fast` | boolean, optional | present as `true` for Codex priority service tier; otherwise omitted |
 | `setAsideAt` | number, optional | Unix epoch milliseconds when the live session was removed from the native app's default working set; this is organization, not lifecycle |
+| `delegation_kind` | `"user" \| "agent"`, optional | presentation provenance for a child session: explicitly started by the user or created by its parent agent |
 
 Exited sessions remain in the daemon map for 30 seconds. They are omitted from
 the default list but can be requested with `include_exited=1` during that grace
@@ -257,6 +258,7 @@ Auth required. Every request field is optional:
 | `base` | string | optional worktree base ref; requires `worktree`; defaults to the source checkout's current branch |
 | `onIdle` | string | trimmed; empty becomes absent |
 | `waitReady` | boolean | only literal `true` waits for readiness, capped at 30 seconds |
+| `delegationKind` | `"user" \| "agent"` | optional child presentation provenance; requires a validated `X-Sessions-Creator-Session` parent |
 
 `RUNNER_*`, `NODE_OPTIONS`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, and
 `LD_PRELOAD` caller keys are stripped. Known Claude/Codex commands receive
@@ -725,11 +727,14 @@ Auth required. Returns `200 {"directories":[...]}`. Each entry is:
 {"path":"/absolute/path","label":"~/sessions/path","kind":"home"}
 ```
 
-`kind` is `home`, `common`, or `project`. The source adds the home directory,
-existing common child names, then project-shaped children containing one of
-`.git`, `package.json`, `pyproject.toml`, `Cargo.toml`, or `go.mod`. Duplicates
-and nonexistent paths are skipped; the result is capped approximately (not
-strictly) around 50 by the outer scan logic.
+`kind` is `home`, `common`, `project`, or `somewhere`. The source offers
+project-shaped checkouts beneath `~/somewhere` (including `~/somewhere/wt`)
+first, followed by folders recently used by Sessions on that machine and
+conventional local development roots. A project-shaped directory contains one
+of `.git`, `package.json`, `pyproject.toml`, `Cargo.toml`, or `go.mod`.
+Protected broad folders are offered as explicit choices without background
+reads so discovery does not trigger unrelated macOS permission prompts.
+Duplicates are skipped and the result remains bounded to roughly 50 entries.
 
 ### `GET /api/fs/list`
 

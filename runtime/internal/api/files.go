@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 const maxUploadBody = 25 * 1024 * 1024
@@ -30,7 +32,7 @@ type directoryEntry struct {
 	Hidden bool   `json:"hidden"`
 }
 
-func listDirectoryCandidates() []directoryCandidate {
+func listDirectoryCandidates(sessions []state.SessionInfo) []directoryCandidate {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return []directoryCandidate{}
@@ -57,6 +59,45 @@ func listDirectoryCandidates() []directoryCandidate {
 		out = append(out, directoryCandidate{Path: path, Label: label, Kind: kind})
 	}
 
+	// Somewhere is the primary project surface for Sessions. Discover its
+	// checked-out projects and managed worktrees before generic development
+	// folders so starting useful work does not require filesystem knowledge.
+	for _, rootName := range []string{"somewhere", "Somewhere"} {
+		root := filepath.Join(home, rootName)
+		if isProjectDirectory(root) {
+			push(root, "somewhere", true)
+		}
+		for _, path := range listProjectChildren(root, 24) {
+			push(path, "somewhere", true)
+		}
+		worktrees := filepath.Join(root, "wt")
+		for _, path := range listProjectChildren(worktrees, 30) {
+			push(path, "somewhere", true)
+		}
+	}
+
+	// A folder already used by Sessions is safe to recommend without probing
+	// or recursively reading it. This keeps real work on the selected machine
+	// easy to return to, including projects stored outside conventional roots.
+	recent := append([]state.SessionInfo(nil), sessions...)
+	sort.SliceStable(recent, func(left, right int) bool {
+		return directorySessionActivity(recent[left]) > directorySessionActivity(recent[right])
+	})
+	for _, session := range recent {
+		path := filepath.Clean(strings.TrimSpace(session.Cwd))
+		if path == "." || !pathWithinBase(path, home) {
+			continue
+		}
+		kind := "project"
+		if pathWithinSomewhere(path, home) {
+			kind = "somewhere"
+		}
+		push(path, kind, false)
+		if len(out) >= 40 {
+			break
+		}
+	}
+
 	// Desktop, Documents, and Downloads may be iCloud-backed on macOS. A
 	// synchronous ReadDir there can wait on remote hydration and used to hold
 	// the New Session launcher open indefinitely. Do not even stat protected
@@ -80,6 +121,22 @@ func listDirectoryCandidates() []directoryCandidate {
 		push(filepath.Join(home, name), "common", false)
 	}
 	return out
+}
+
+func directorySessionActivity(session state.SessionInfo) int64 {
+	if session.LastUserMessageAt != nil {
+		return *session.LastUserMessageAt
+	}
+	return session.CreatedAt
+}
+
+func pathWithinSomewhere(path, home string) bool {
+	for _, rootName := range []string{"somewhere", "Somewhere"} {
+		if pathWithinBase(path, filepath.Join(home, rootName)) {
+			return true
+		}
+	}
+	return false
 }
 
 func listProjectChildren(parent string, maximum int) []string {

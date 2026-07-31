@@ -50,6 +50,7 @@ function reconcileSessions(prev: SessionInfo[], fresh: SessionInfo[]): SessionIn
       old.base === f.base &&
       old.sourceRepo === f.sourceRepo &&
       old.parentSessionId === f.parentSessionId &&
+      old.delegationKind === f.delegationKind &&
       old.displayParentSessionId === f.displayParentSessionId &&
       old.setAsideAt === f.setAsideAt &&
       old.creatorKind === f.creatorKind &&
@@ -167,6 +168,7 @@ interface CachedSession {
   base?: string;
   sourceRepo?: string;
   parentSessionId?: string;
+  delegationKind?: 'user' | 'agent';
   displayParentSessionId?: string;
   setAsideAt?: number | null;
   creatorKind?: string;
@@ -265,6 +267,7 @@ function writeCache(sessions: SessionInfo[], activeId: string | null): void {
       base: s.base,
       sourceRepo: s.sourceRepo,
       parentSessionId: s.parentSessionId,
+      delegationKind: s.delegationKind,
       displayParentSessionId: s.displayParentSessionId,
       setAsideAt: s.setAsideAt,
       creatorKind: s.creatorKind,

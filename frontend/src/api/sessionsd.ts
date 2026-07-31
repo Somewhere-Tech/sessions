@@ -219,6 +219,7 @@ type WireSessionInfo = SessionInfo & {
   creator_kind?: string;
   creator_id?: string;
   parent_session_id?: string;
+  delegation_kind?: 'user' | 'agent';
   display_parent_session_id?: string;
   creator_ancestry?: string[];
   root_creator_kind?: string;
@@ -249,6 +250,7 @@ function normalizeSessionInfo(session: SessionInfo): SessionInfo {
     creatorKind: session.creatorKind ?? wire.creator_kind,
     creatorId: session.creatorId ?? wire.creator_id,
     parentSessionId: session.parentSessionId ?? wire.parent_session_id,
+    delegationKind: session.delegationKind ?? wire.delegation_kind,
     displayParentSessionId: session.displayParentSessionId ?? wire.display_parent_session_id,
     creatorAncestry: session.creatorAncestry ?? wire.creator_ancestry,
     rootCreatorKind: session.rootCreatorKind ?? wire.root_creator_kind,

@@ -19,7 +19,7 @@ try {
     logLevel: 'silent'
   });
 
-  const { groupWorkingSet } = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
+  const { groupWorkingSet, humanEngagementAt, isAgentLedChild } = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
   const session = (id, values = {}) => ({
     id,
     exited: false,
@@ -30,6 +30,7 @@ try {
   const sessions = [
     session('aside-manager', { setAsideAt: 100 }),
     session('live-child', { parentSessionId: 'aside-manager' }),
+    session('finished-child', { parentSessionId: 'live-child', exited: true }),
     session('aside-child', { parentSessionId: 'aside-manager', setAsideAt: 110 }),
     session('ended-manager', { exited: true }),
     session('live-grandchild', { parentSessionId: 'ended-manager' }),
@@ -41,6 +42,7 @@ try {
   assert.deepEqual(grouped.setAsideRoots.map(({ id }) => id), ['aside-manager']);
   assert.deepEqual(grouped.ended.map(({ id }) => id), ['ended-alone']);
   assert.equal(grouped.runningIds.has('live-grandchild'), true);
+  assert.equal(grouped.runningIds.has('finished-child'), true, 'finished children stay grouped under an in-focus manager');
   assert.equal(grouped.setAsideIds.has('aside-child'), true);
 
   const opened = groupWorkingSet(sessions, ['aside-manager'], []);
@@ -50,6 +52,14 @@ try {
   const pinned = groupWorkingSet(sessions, [], ['aside-child']);
   assert.equal(pinned.runningIds.has('aside-child'), true);
   assert.equal(pinned.setAsideIds.has('aside-child'), false);
+
+  const openedHistory = groupWorkingSet(sessions, ['ended-alone'], []);
+  assert.equal(openedHistory.runningIds.has('ended-alone'), true, 'open history stays in focus while it is being read');
+  assert.equal(openedHistory.ended.some(({ id }) => id === 'ended-alone'), false);
+
+  assert.equal(humanEngagementAt(session('human', { createdAt: 10, lastDataAt: 999, lastUserMessageAt: 25 })), 25);
+  assert.equal(isAgentLedChild(session('lane', { kind: 'lane' })), true);
+  assert.equal(isAgentLedChild(session('explicit-user', { delegationKind: 'user' })), false);
 
   const cycle = [
     session('cycle-a', { parentSessionId: 'cycle-b', setAsideAt: 1 }),

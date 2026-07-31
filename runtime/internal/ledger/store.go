@@ -239,6 +239,9 @@ func (w boundaryWriter) RecordCreated(ctx context.Context, value Created) error 
 	if err := ValidateCreator(value.CreatorKind, value.CreatorID); err != nil {
 		return fmt.Errorf("record created: %w", err)
 	}
+	if value.DelegationKind != "" && value.DelegationKind != "user" && value.DelegationKind != "agent" {
+		return fmt.Errorf("record created: invalid delegation kind %q", value.DelegationKind)
+	}
 	if value.Actor == "" {
 		value.Actor = ActorDaemon
 	}
@@ -274,7 +277,7 @@ func (w boundaryWriter) RecordCreated(ctx context.Context, value Created) error 
 		WorktreePath: value.WorktreePath, Branch: value.Branch, Base: value.Base, SourceRepo: value.SourceRepo,
 		ResumeArgv: append([]string{}, value.ResumeArgv...),
 		LaneUUID:   value.LaneUUID, ProviderUUID: value.ProviderUUID,
-		CreatorKind: value.CreatorKind, CreatorID: value.CreatorID,
+		CreatorKind: value.CreatorKind, CreatorID: value.CreatorID, DelegationKind: value.DelegationKind,
 	}
 	return w.store.append(ctx, EventCreated, value.Meta, payload, false)
 }
@@ -675,6 +678,7 @@ type createdPayload struct {
 	ProviderUUID      string            `json:"provider_uuid,omitempty"`
 	CreatorKind       CreatorKind       `json:"creator_kind"`
 	CreatorID         string            `json:"creator_id"`
+	DelegationKind    string            `json:"delegation_kind,omitempty"`
 }
 
 type providerPayload struct {

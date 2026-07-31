@@ -55,6 +55,18 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 	if child.ParentSessionID != parent.ID || !reflect.DeepEqual(child.CreatorAncestry, []string{parent.ID}) {
 		t.Fatalf("direct child provenance = %#v", child)
 	}
+	if child.DelegationKind != "agent" || grandchild.DelegationKind != "agent" {
+		t.Fatalf("agent-created child presentation provenance = child %q grandchild %q", child.DelegationKind, grandchild.DelegationKind)
+	}
+	userChild, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/sh", Cwd: root, Name: "Explicit helper", CreatorSessionID: parent.ID, DelegationKind: "user",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if userChild.DelegationKind != "user" {
+		t.Fatalf("user-created child presentation provenance = %q, want user", userChild.DelegationKind)
+	}
 	if grandchild.ParentSessionID != child.ID ||
 		!reflect.DeepEqual(grandchild.CreatorAncestry, []string{child.ID, parent.ID}) ||
 		grandchild.RootCreatorKind != string(ledger.CreatorUser) || grandchild.RootCreatorID != wantUser {
@@ -94,6 +106,16 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 		Cmd: "/bin/sh", Cwd: root, CreatorSessionID: parent.ID, CreatorOwnerID: "both",
 	}); createErr == nil || !strings.Contains(createErr.Error(), "cannot both be set") {
 		t.Fatalf("combined creator provenance err=%v", createErr)
+	}
+	if _, createErr := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/sh", Cwd: root, DelegationKind: "user",
+	}); createErr == nil || !strings.Contains(createErr.Error(), "requires a parent session") {
+		t.Fatalf("unparented delegation provenance err=%v", createErr)
+	}
+	if _, createErr := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/sh", Cwd: root, CreatorSessionID: parent.ID, DelegationKind: "unknown",
+	}); createErr == nil || !strings.Contains(createErr.Error(), "must be user or agent") {
+		t.Fatalf("invalid delegation provenance err=%v", createErr)
 	}
 
 	if err := store.Observations().RecordRunnerExited(context.Background(), ledger.RunnerExit{

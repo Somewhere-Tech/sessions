@@ -54,6 +54,7 @@ type PreparedSession struct {
 	WorktreeBranch    string
 	WorktreeBase      string
 	SourceRepo        string
+	DelegationKind    string
 }
 
 type SessionMetadata struct {
@@ -63,6 +64,7 @@ type SessionMetadata struct {
 	Tags                   map[string]string
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
+	DelegationKind         string
 	OnIdle                 string
 	Kind                   string
 	SpecPath               string
@@ -243,6 +245,7 @@ func (r *Registry) CreateWithLifecycle(
 		Profile: profile, ConfigDir: configDir,
 		WorktreePath: request.WorktreePath, WorktreeBranch: request.WorktreeBranch,
 		WorktreeBase: request.WorktreeBase, SourceRepo: request.SourceRepo,
+		DelegationKind: request.DelegationKind,
 	}
 	if prepared.Name != "" {
 		launchRequest.Env["RUNNER_NAME"] = prepared.Name
@@ -287,7 +290,7 @@ func (r *Registry) CreateWithLifecycle(
 		Name: prepared.Name, Description: prepared.Description, DescriptionSource: prepared.DescriptionSource,
 		Tags: CloneTags(prepared.Tags), DisplayParentSessionID: cloneStringPointer(request.DisplayParentSessionID),
 		OnIdle: strings.TrimSpace(request.OnIdle), Kind: prepared.Kind, SpecPath: prepared.SpecPath,
-		Profile: prepared.Profile, ConfigDir: prepared.ConfigDir,
+		Profile: prepared.Profile, ConfigDir: prepared.ConfigDir, DelegationKind: prepared.DelegationKind,
 	}
 	if request.Continuation != nil {
 		continuation := *request.Continuation
@@ -430,8 +433,8 @@ func (r *Registry) RegisterMetadata(ctx context.Context, runner proto.Runner, me
 	return r.register(ctx, runner, SessionMetadata{
 		Name: metadata.Name, Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
-		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt),
-		OnIdle:     onIdle, Kind: metadata.Kind, SpecPath: metadata.SpecPath,
+		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), DelegationKind: metadata.DelegationKind,
+		OnIdle: onIdle, Kind: metadata.Kind, SpecPath: metadata.SpecPath,
 		Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  metadata.ContinuedFromProvider,
@@ -867,8 +870,8 @@ func writeMetadata(dir string, info proto.RunnerInfo, sessionMetadata SessionMet
 		ID: info.ID, Name: sessionMetadata.Name, Description: sessionMetadata.Description,
 		DescriptionSource: sessionMetadata.DescriptionSource, Kind: sessionMetadata.Kind, SpecPath: sessionMetadata.SpecPath,
 		Tags: CloneTags(sessionMetadata.Tags), DisplayParentSessionID: cloneStringPointer(sessionMetadata.DisplayParentSessionID),
-		SetAsideAt: cloneInt64Pointer(sessionMetadata.SetAsideAt),
-		Profile:    sessionMetadata.Profile, ConfigDir: sessionMetadata.ConfigDir,
+		SetAsideAt: cloneInt64Pointer(sessionMetadata.SetAsideAt), DelegationKind: sessionMetadata.DelegationKind,
+		Profile: sessionMetadata.Profile, ConfigDir: sessionMetadata.ConfigDir,
 		ContinuedFromHistoryID: sessionMetadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  sessionMetadata.ContinuedFromProvider,
 		ContinuationMode:       sessionMetadata.ContinuationMode,
@@ -894,6 +897,7 @@ type RunnerMetadata struct {
 	Tags                   map[string]string
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
+	DelegationKind         string
 	Kind                   string
 	SpecPath               string
 	Profile                string
@@ -930,8 +934,8 @@ func parseRunnerMetadata(encoded []byte) (RunnerMetadata, error) {
 		},
 		Name: metadata.Name, Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
-		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt),
-		Kind:       metadata.Kind, SpecPath: metadata.SpecPath, Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
+		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), DelegationKind: metadata.DelegationKind,
+		Kind: metadata.Kind, SpecPath: metadata.SpecPath, Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  metadata.ContinuedFromProvider,
 		ContinuationMode:       metadata.ContinuationMode,
