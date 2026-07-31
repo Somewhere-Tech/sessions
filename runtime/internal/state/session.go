@@ -324,6 +324,17 @@ func (s *Session) Attach(options AttachOptions) Attachment {
 }
 
 func (s *Session) Snapshot(_ context.Context, cols int) (string, uint32, error) {
+	return s.snapshot(cols, false)
+}
+
+// TerminalSnapshot primes an interactive terminal with the bounded history
+// retained by the server-side mirror. Other snapshot consumers deliberately
+// remain viewport-only so status parsing and responsive reflow are unchanged.
+func (s *Session) TerminalSnapshot(_ context.Context) (string, uint32, error) {
+	return s.snapshot(0, true)
+}
+
+func (s *Session) snapshot(cols int, includeScrollback bool) (string, uint32, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	seq := uint32(0)
@@ -347,6 +358,9 @@ func (s *Session) Snapshot(_ context.Context, cols int) (string, uint32, error) 
 	}
 	if cols > 0 {
 		return s.mirror.ReflowTo(cols), seq, nil
+	}
+	if includeScrollback {
+		return s.mirror.SerializeANSIWithScrollback(), seq, nil
 	}
 	return s.mirror.SerializeANSI(), seq, nil
 }

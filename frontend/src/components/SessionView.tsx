@@ -577,6 +577,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               <div className="terminal-host" ref={term.containerRef} />
               <div className="mobile-terminal-keys" role="toolbar" aria-label="Terminal keys">
                 <button type="button" onClick={() => sendInput('\x1b')}>Esc</button>
+                <button type="button" onClick={() => sendInput('\x1b\x1b')}>↶ Earlier</button>
                 <button type="button" onClick={() => sendInput('\x1b[A')}>↑ Prev</button>
                 <button type="button" onClick={() => sendInput('\x1b[B')}>↓ Next</button>
                 <button type="button" onClick={() => sendInput('\x03')}>Ctrl-C</button>

@@ -696,6 +696,40 @@ func (m *Mirror) SerializeANSI() string {
 	return m.serializeANSI()
 }
 
+// SerializeANSIWithScrollback returns one bulk ANSI stream containing the
+// retained main-buffer history followed by the current viewport. It is used
+// only to prime a real terminal view: the ordinary snapshot intentionally
+// remains viewport-only for status classification and reflowed views.
+//
+// The rows of blank output after the retained history push exactly that
+// history into a fresh terminal's scrollback. ED 2 then clears only the live
+// viewport (not scrollback) before the canonical active screen is painted.
+// Alternate-screen applications do not expose scrollback while that screen is
+// active, so retain the existing viewport-only behavior there.
+func (m *Mirror) SerializeANSIWithScrollback() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	scrollback := m.term.Scrollback()
+	if m.altScreen || scrollback == nil || scrollback.Len() == 0 {
+		return m.serializeANSI()
+	}
+
+	var out strings.Builder
+	for _, line := range scrollback.Lines() {
+		out.WriteString(line.Render())
+		out.WriteString("\r\n")
+	}
+	for row := 1; row < m.rows; row++ {
+		out.WriteString("\r\n")
+	}
+	// Clear the visible filler rows without erasing the scrollback we just
+	// restored, then repaint the active viewport using the proven serializer.
+	out.WriteString("\x1b[2J\x1b[H")
+	out.WriteString(m.serializeANSI())
+	return out.String()
+}
+
 // ReflowTo serializes the active screen and applies the exact server-side
 // reflow semantics preserved in runtime/testdata/node-runtime/src/reflow.ts.
 func (m *Mirror) ReflowTo(width int) string {

@@ -30,6 +30,12 @@ try {
   assert.match(hook, /terminalRenderer\(isTauri\(\), navigator\.userAgent\)/);
   assert.match(hook, /renderer === 'dom'/);
   assert.match(hook, /term\.refresh\(0, term\.rows - 1\)/);
+  assert.match(hook, /fetchServerSnapshot\(sessionId, undefined, true\)/,
+    'interactive terminals must restore bounded server scrollback during bulk prefill');
+
+  const sessionView = await readFile(new URL('../src/components/SessionView.tsx', import.meta.url), 'utf8');
+  assert.match(sessionView, /sendInput\('\\x1b\\x1b'\).*↶ Earlier/,
+    'mobile terminal controls must expose Claude\'s native Esc Esc rewind');
 
   const css = await readFile(new URL('../src/styles/globals.css', import.meta.url), 'utf8');
   assert.match(css, /html,\s*body,\s*#root\s*\{[^}]*overflow:\s*hidden/s);

@@ -176,3 +176,32 @@ func TestSerializeANSIAfterViewportScroll(t *testing.T) {
 		t.Fatalf("round-trip Snapshot() = %q, want %q\nANSI: %q", got, want, m.SerializeANSI())
 	}
 }
+
+func TestSerializeANSIWithScrollbackRestoresHistoryAndViewport(t *testing.T) {
+	m := newTestMirror(t, 8, 3)
+	writeString(t, m, "old one\r\nold two\r\ncurrent1\r\ncurrent2")
+	if got := m.term.ScrollbackLen(); got != 1 {
+		t.Fatalf("source scrollback length = %d, want 1", got)
+	}
+
+	clone := newTestMirror(t, 8, 3)
+	writeString(t, clone, m.SerializeANSIWithScrollback())
+	if got, want := clone.term.ScrollbackLen(), m.term.ScrollbackLen(); got != want {
+		t.Fatalf("round-trip scrollback length = %d, want %d", got, want)
+	}
+	if got, want := clone.term.Scrollback().Line(0).String(), m.term.Scrollback().Line(0).String(); got != want {
+		t.Fatalf("round-trip scrollback line = %q, want %q", got, want)
+	}
+	if got, want := clone.Snapshot(), m.Snapshot(); got != want {
+		t.Fatalf("round-trip Snapshot() = %q, want %q", got, want)
+	}
+}
+
+func TestSerializeANSIWithScrollbackLeavesViewportSnapshotUnchanged(t *testing.T) {
+	m := newTestMirror(t, 8, 3)
+	writeString(t, m, "old one\r\nold two\r\ncurrent1\r\ncurrent2")
+
+	if got := m.SerializeANSI(); strings.Contains(got, "old one") {
+		t.Fatalf("viewport-only SerializeANSI leaked scrollback: %q", got)
+	}
+}

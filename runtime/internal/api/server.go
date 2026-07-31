@@ -794,7 +794,14 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		if cols < 0 {
 			cols = 0
 		}
-		text, seq, err := session.Snapshot(request.Context(), cols)
+		var text string
+		var seq uint32
+		var err error
+		if request.URL.Query().Get("scrollback") == "1" && cols == 0 {
+			text, seq, err = session.TerminalSnapshot(request.Context())
+		} else {
+			text, seq, err = session.Snapshot(request.Context(), cols)
+		}
 		if err != nil {
 			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
 			return

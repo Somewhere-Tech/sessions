@@ -929,8 +929,11 @@ export interface Snapshot {
 // visible width before sending. The Reflowed view passes its viewport
 // width here so long prose wraps to fit without horizontal scroll while
 // box-drawing / table lines stay intact.
-export async function snapshot(sessionId: string, cols?: number): Promise<Snapshot | null> {
-  const params = cols && cols > 0 ? `?cols=${cols | 0}` : '';
+export async function snapshot(sessionId: string, cols?: number, includeScrollback = false): Promise<Snapshot | null> {
+  const query = new URLSearchParams();
+  if (cols && cols > 0) query.set('cols', String(cols | 0));
+  if (includeScrollback && !cols) query.set('scrollback', '1');
+  const params = query.size > 0 ? `?${query.toString()}` : '';
   const r = await apiFetch(`${httpBase()}/api/sessions/${encodeURIComponent(sessionId)}/snapshot${params}`);
   if (r.status === 404) return null;
   if (!r.ok) {

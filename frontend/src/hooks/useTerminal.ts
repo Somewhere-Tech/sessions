@@ -605,7 +605,11 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           });
         });
         try {
-          const snap = await fetchServerSnapshot(sessionId);
+          // Terminal priming asks for the mirror's bounded scrollback as one
+          // bulk stream. The old viewport-only snapshot made the terminal
+          // look current but left nothing above it to scroll into; replaying
+          // every raw event would reintroduce the multi-second attach cost.
+          const snap = await fetchServerSnapshot(sessionId, undefined, true);
           if (disposed || !isActiveRef.current) return;
           if (snap && snap.seq > 0) {
             term.reset();
