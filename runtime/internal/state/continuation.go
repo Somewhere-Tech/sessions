@@ -12,7 +12,12 @@ const (
 	ContinuationSchemaVersion = 1
 	ContinuationNativeImport  = "native-import"
 	ContinuationLinkedSearch  = "linked-search"
-	maxContinuationBytes      = 8 * 1024 * 1024
+	// Authored histories are written to a private local sidecar, never placed
+	// on a command line or forwarded through the daemon HTTP request. Eight
+	// MiB rejected ordinary long-running manager conversations before their
+	// provider could apply its own context policy. Keep a firm allocation/DoS
+	// bound, but leave enough room for real multi-week conversations.
+	maxContinuationBytes = 32 * 1024 * 1024
 )
 
 // ContinuationMessage is the deliberately small provider-neutral history

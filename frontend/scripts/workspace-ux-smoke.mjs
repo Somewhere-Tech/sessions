@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-const [app, palette, picker, launcher, sessionView, preference, sidebar, styles] = await Promise.all([
+const [app, palette, picker, launcher, sessionView, preference, sidebar, navigator, styles] = await Promise.all([
   source('src/App.tsx'),
   source('src/components/CommandPalette.tsx'),
   source('src/components/ModelPicker.tsx'),
@@ -11,6 +11,7 @@ const [app, palette, picker, launcher, sessionView, preference, sidebar, styles]
   source('src/components/SessionView.tsx'),
   source('src/lib/sessionViewPreference.ts'),
   source('src/components/ProductSidebar.tsx'),
+  source('src/components/SessionNavigator.tsx'),
   source('src/styles/globals.css')
 ]);
 
@@ -34,6 +35,13 @@ assert.match(sessionView, /terminal-drawer-expanded/);
 assert.match(sessionView, /term\.fitTerminalRef\.current\(\)/);
 assert.match(preference, /Terminal is an escape hatch/);
 assert.match(sidebar, /Find or run…/);
+assert.match(app, /onClickCapture=\{handleExternalLinkClick\}/,
+  'the native app shell must delegate external links to the operating system');
+assert.match(navigator, /aria-label="Connected computers"/);
+assert.match(navigator, /selectMachine\(configured\.id\)/,
+  'connected computers must be visible as one-click session filters');
+assert.match(styles, /\.scroll-to-bottom-anchor\s*\{[^}]*justify-content:\s*center/s,
+  'scroll-to-latest must stay centered away from the composer send controls');
 
 const browser = await puppeteer.launch({ headless: true });
 try {

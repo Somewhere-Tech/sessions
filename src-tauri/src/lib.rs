@@ -840,42 +840,59 @@ fn support_page_url(kind: &str) -> Result<&'static str, String> {
     }
 }
 
+fn validate_external_url(value: &str) -> Result<url::Url, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 8192 || value.chars().any(char::is_control) {
+        return Err("invalid external URL".to_string());
+    }
+    let parsed = url::Url::parse(value).map_err(|_| "invalid external URL".to_string())?;
+    match parsed.scheme() {
+        "http" | "https" if parsed.host_str().is_some() => Ok(parsed),
+        "mailto" if !parsed.path().is_empty() => Ok(parsed),
+        "vscode" if !parsed.path().is_empty() => Ok(parsed),
+        _ => Err("unsupported external URL scheme".to_string()),
+    }
+}
+
+fn open_external_target(url: &str) -> Result<(), String> {
+    let parsed = validate_external_url(url)?;
+    let target = parsed.as_str();
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("/usr/bin/open");
+        command.arg(target);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("rundll32.exe");
+        command.args(["url.dll,FileProtocolHandler", target]);
+        command
+    };
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(target);
+        command
+    };
+    let status = command
+        .status()
+        .map_err(|error| format!("open external URL: {error}"))?;
+    if !status.success() {
+        return Err(format!("open external URL failed with {status}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    open_external_target(&url)
+}
+
 #[tauri::command]
 fn open_support_page(kind: String) -> Result<(), String> {
     let url = support_page_url(kind.trim())?;
-    #[cfg(target_os = "macos")]
-    {
-        let status = Command::new("/usr/bin/open")
-            .arg(url)
-            .status()
-            .map_err(|error| format!("open support page: {error}"))?;
-        if !status.success() {
-            return Err(format!("open support page failed with {status}"));
-        }
-        Ok(())
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let status = Command::new("rundll32.exe")
-            .args(["url.dll,FileProtocolHandler", url])
-            .status()
-            .map_err(|error| format!("open support page: {error}"))?;
-        if !status.success() {
-            return Err(format!("open support page failed with {status}"));
-        }
-        Ok(())
-    }
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    {
-        let status = Command::new("xdg-open")
-            .arg(url)
-            .status()
-            .map_err(|error| format!("open support page: {error}"))?;
-        if !status.success() {
-            return Err(format!("open support page failed with {status}"));
-        }
-        Ok(())
-    }
+    open_external_target(url)
 }
 
 #[tauri::command]
@@ -2039,6 +2056,7 @@ pub fn run() {
             native_move_session,
             native_machine_credentials_load,
             native_machine_credentials_save,
+            open_external_url,
             open_support_page,
             somewhere_cli_status
         ])
@@ -2237,6 +2255,33 @@ mod tests {
             let parsed = url::Url::parse(url).unwrap();
             assert_eq!(parsed.scheme(), "https");
             assert_eq!(parsed.host_str(), Some("github.com"));
+        }
+    }
+
+    #[test]
+    fn external_links_allow_only_explicit_non_executable_schemes() {
+        for valid in [
+            "https://somewhere.tech/sessions",
+            "http://127.0.0.1:8787/docs",
+            "mailto:support@somewhere.tech",
+            "vscode://file/Users/test/project/main.go:12",
+        ] {
+            assert!(
+                validate_external_url(valid).is_ok(),
+                "external URL was rejected: {valid}"
+            );
+        }
+        for invalid in [
+            "javascript:alert(1)",
+            "data:text/html,hello",
+            "file:///Users/test/.ssh/id_ed25519",
+            "https://example.com/\nnext",
+            "relative/path",
+        ] {
+            assert!(
+                validate_external_url(invalid).is_err(),
+                "unsafe URL was accepted: {invalid}"
+            );
         }
     }
 

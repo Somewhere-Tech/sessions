@@ -3490,6 +3490,41 @@ button:active:not(:disabled),
   font-weight: 650;
 }
 .session-navigator-actions .session-new-action { width: 30px; padding: 0; font-size: 15px; }
+.session-machine-filter {
+  display: flex;
+  gap: 6px;
+  margin: 0 12px 9px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.session-machine-filter::-webkit-scrollbar { display: none; }
+.session-machine-filter button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 165px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-base);
+  color: var(--fg-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.session-machine-filter button > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-machine-filter button:hover { border-color: var(--border-strong); color: var(--fg); }
+.session-machine-filter button.is-active {
+  border-color: var(--accent-border-soft);
+  background: var(--accent-bg-soft);
+  color: var(--accent);
+}
 .session-nav-search {
   display: flex;
   align-items: center;
@@ -6912,7 +6947,7 @@ details[open] > summary > .sessions-command-disclosure {
   margin-right: auto;
   height: 0;
   display: flex;
-  justify-content: flex-end;
+  justify-content: center;
   pointer-events: none;
 }
 .scroll-to-bottom-anchor > .scroll-to-bottom {
@@ -6921,12 +6956,12 @@ details[open] > summary > .sessions-command-disclosure {
   position: relative;
   inset: auto;
   pointer-events: auto;
-  /* Lift up by button height + a bit so it floats above the
-   * content rather than overlapping the line below. The default
+  /* Center above the composer. Keeping this away from the right edge is
+   * important: the send and model controls live there at every width. Lift
+   * up by button height + a bit so it floats above the content. The default
    * .scroll-to-bottom entrance animation lands at translateY(0),
    * which would fight this — disable it here. */
   transform: translateY(-44px);
-  margin-right: 16px;
   animation: none;
 }
 .scroll-to-bottom-anchor > .scroll-to-bottom:hover {

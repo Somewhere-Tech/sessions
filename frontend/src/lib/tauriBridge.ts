@@ -453,6 +453,17 @@ export async function openSupportPage(kind: SupportPage): Promise<void> {
   if (!opened) window.location.assign(target);
 }
 
+export async function openExternalURL(url: string): Promise<void> {
+  if (isTauri()) {
+    await invoke<void>('open_external_url', { url });
+    return;
+  }
+  const opened = window.open(url, '_blank', 'noopener,noreferrer');
+  if (!opened) {
+    throw new Error('The browser blocked the new tab. Allow pop-ups for Sessions and try again.');
+  }
+}
+
 export interface NativeUpdateInfo {
   currentVersion: string;
   version: string;

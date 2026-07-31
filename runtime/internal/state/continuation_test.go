@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -82,5 +83,21 @@ func TestContinuationValidatesExactForkPoint(t *testing.T) {
 	value.ForkPointMessageID = ""
 	if err := value.Validate(); err == nil {
 		t.Fatal("fork point without stable message id was accepted")
+	}
+}
+
+func TestContinuationAcceptsLongManagerHistoryButRemainsBounded(t *testing.T) {
+	value := ContinuationContext{
+		SchemaVersion:   ContinuationSchemaVersion,
+		SourceHistoryID: "source", SourceProvider: "claude", SourceCWD: t.TempDir(),
+		DestinationProvider: "codex", Mode: ContinuationNativeImport,
+		Messages: []ContinuationMessage{{Role: "user", Text: strings.Repeat("x", 12*1024*1024)}},
+	}
+	if _, err := continuationBytes(value); err != nil {
+		t.Fatalf("ordinary long-running manager history was rejected: %v", err)
+	}
+	value.Messages[0].Text = strings.Repeat("x", maxContinuationBytes)
+	if _, err := continuationBytes(value); err == nil {
+		t.Fatal("continuation larger than the hard allocation bound was accepted")
 	}
 }

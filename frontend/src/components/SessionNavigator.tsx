@@ -13,6 +13,7 @@ import { effectiveParentId, groupWorkingSet, isSetAside } from '../lib/workingSe
 import { useSessions } from '../store/sessions';
 import { MachineMark } from './MachineMark';
 import { ContinueElsewhereButton } from './ContinueElsewhereButton';
+import { useServers } from '../lib/servers';
 
 type PrimaryFilter = 'all' | 'needs' | 'working' | 'aside' | 'ended';
 type ProviderFilter = 'all' | 'claude' | 'codex' | 'shell';
@@ -92,6 +93,9 @@ export function SessionNavigator({
   const archiveSessions = useSessions((state) => state.archive);
   const endSession = useSessions((state) => state.kill);
   const updateSetAside = useSessions((state) => state.updateSetAside);
+  const configuredMachines = useServers((state) => state.servers);
+  const activeMachineId = useServers((state) => state.activeId);
+  const selectMachine = useServers((state) => state.setActive);
   const [primary, setPrimary] = useState<PrimaryFilter>('all');
   const [provider, setProvider] = useState<ProviderFilter>('all');
   const [project, setProject] = useState('all');
@@ -595,6 +599,21 @@ export function SessionNavigator({
           <button type="button" className="session-new-action" onClick={onNew} aria-label="New session">＋</button>
         </div>
       </header>
+      <div className="session-machine-filter" role="toolbar" aria-label="Connected computers">
+        {configuredMachines.map((configured) => (
+          <button
+            type="button"
+            key={configured.id}
+            className={configured.id === activeMachineId ? 'is-active' : undefined}
+            aria-pressed={configured.id === activeMachineId}
+            title={`Show sessions on ${configured.name}`}
+            onClick={() => selectMachine(configured.id)}
+          >
+            <MachineMark machine={configured.name} size={16} />
+            <span>{configured.name}</span>
+          </button>
+        ))}
+      </div>
       <div className="session-nav-search"><span aria-hidden>⌕</span><input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Filter sessions" /></div>
       <div className="session-filter-row" role="toolbar" aria-label="Session status filters">
         <FilterButton label="All" active={primary === 'all'} onClick={() => setPrimary('all')} />
@@ -605,7 +624,7 @@ export function SessionNavigator({
           <summary aria-label="More filters">⋯</summary>
           <div className="session-filter-popover">
             <label>Provider<select value={provider} onChange={(event) => setProvider(event.currentTarget.value as ProviderFilter)}><option value="all">All providers</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="shell">Shell</option></select></label>
-            <label>Machine<select disabled><option>{machine}</option></select></label>
+            <label>Computer<select value={activeMachineId ?? ''} onChange={(event) => selectMachine(event.currentTarget.value)}>{configuredMachines.map((configured) => <option key={configured.id} value={configured.id}>{configured.name}</option>)}</select></label>
             <label>Project<select value={project} onChange={(event) => setProject(event.currentTarget.value)}><option value="all">All projects</option>{projects.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>Date<select value={date} onChange={(event) => setDate(event.currentTarget.value as DateFilter)}><option value="all">Any time</option><option value="today">Today</option><option value="week">Past 7 days</option></select></label>
           </div>

@@ -35,6 +35,7 @@ import { preloadDaily } from './lib/dailyCache';
 import { providerConversationId } from './lib/sessionStatus';
 import { effectiveParentId } from './lib/workingSet';
 import { preferNextSessionView } from './lib/sessionViewPreference';
+import { handleExternalLinkClick } from './lib/externalLinks';
 import {
   adoptConversation,
   fetchOnboardingState,
@@ -582,7 +583,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   };
 
   return (
-    <div className={`app-shell operations-shell text-size-${textSize.toLowerCase()}`} data-theme={theme}>
+    <div className={`app-shell operations-shell text-size-${textSize.toLowerCase()}`} data-theme={theme} onClickCapture={handleExternalLinkClick}>
       {!isMobile ? <ProductSidebar active={productView} theme={theme} onNavigate={navigateProduct} onNewSession={() => setDialogOpen('new')} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} /> : null}
       <div className="operations-frame">
         {sessionWorkspace && !isMobile ? (
@@ -934,7 +935,7 @@ function SinglePopOut({
   }, [label, status.isWorking]);
 
   return (
-    <div className={`app-shell single-mode text-size-${textSize.toLowerCase()}`}>
+    <div className={`app-shell single-mode text-size-${textSize.toLowerCase()}`} onClickCapture={handleExternalLinkClick}>
       <header className="single-mode-header">
         <ParserIcon icon={status.parserIcon} size={18} />
         <span className="single-mode-label">{label}</span>

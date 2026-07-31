@@ -127,6 +127,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       let scrollDisp: { dispose: () => void } | null = null;
       let dataDisp: { dispose: () => void } | null = null;
       let ro: ResizeObserver | null = null;
+      let repaintAlternateScreenAfterWrite = false;
 
       if (mountTerminal) {
         const [xtermMod, serializeMod, fitMod, webglMod, canvasMod] = await Promise.all([
@@ -184,6 +185,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           // correctness. Chromium/WebView2 keeps WebGL and falls back to
           // Canvas on context loss.
           const renderer = terminalRenderer(isTauri(), navigator.userAgent);
+          repaintAlternateScreenAfterWrite = renderer === 'dom';
           if (renderer === 'dom') {
             // No addon: xterm's built-in DOM renderer is the reliable Apple
             // WebView path. Output batching and active-session mounting keep
@@ -360,12 +362,32 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       // tracked per-message (above) so resume is unaffected by the batching.
       let pendingOutput: string[] = [];
       let outputRaf: number | null = null;
+      let outputWriteInFlight = false;
       const flushOutput = (): void => {
         outputRaf = null;
-        if (!term || pendingOutput.length === 0) return;
+        if (!term || outputWriteInFlight || pendingOutput.length === 0) return;
         const data = pendingOutput.length === 1 ? pendingOutput[0]! : pendingOutput.join('');
         pendingOutput = [];
-        term.write(data);
+        outputWriteInFlight = true;
+        term.write(data, () => {
+          outputWriteInFlight = false;
+          if (disposed || !term) return;
+          // WKWebView's correctness-first DOM renderer needs the repaint only
+          // after xterm has parsed the full frame. Calling refresh before the
+          // write callback leaves stale row spans visible during Claude's
+          // slash-command/settings alternate screen. Normal scrollback does
+          // not pay this full-viewport repaint cost.
+          if (
+            repaintAlternateScreenAfterWrite
+            && term.buffer.active.type === 'alternate'
+            && term.rows > 0
+          ) {
+            term.refresh(0, term.rows - 1);
+          }
+          if (pendingOutput.length > 0 && outputRaf === null) {
+            outputRaf = requestAnimationFrame(flushOutput);
+          }
+        });
       };
 
       // Sizing strategy: FitAddon measures cell metrics + container dims

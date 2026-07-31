@@ -30,6 +30,10 @@ try {
   assert.match(hook, /terminalRenderer\(isTauri\(\), navigator\.userAgent\)/);
   assert.match(hook, /renderer === 'dom'/);
   assert.match(hook, /term\.refresh\(0, term\.rows - 1\)/);
+  assert.match(hook, /term\.write\(data, \(\) =>/,
+    'PTY frames must repaint only after xterm has parsed the complete batch');
+  assert.match(hook, /term\.buffer\.active\.type === 'alternate'/,
+    'native Apple repainting must target provider pickers without slowing normal scrollback');
   assert.match(hook, /fetchServerSnapshot\(sessionId, undefined, true\)/,
     'interactive terminals must restore bounded server scrollback during bulk prefill');
 
