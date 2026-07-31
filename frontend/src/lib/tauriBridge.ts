@@ -153,7 +153,7 @@ export async function moveNativeSession(
 }
 
 export interface NativeRuntimeStatus {
-  state: 'ready' | 'development' | 'client-only' | 'disabled' | 'error';
+  state: 'starting' | 'ready' | 'development' | 'client-only' | 'disabled' | 'error';
   detail: string;
   serviceLabel: string;
   runtimeVersion: string | null;

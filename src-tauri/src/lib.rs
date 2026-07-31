@@ -2066,11 +2066,14 @@ pub fn run() {
                     log::error!("Sessions native connection settings: {error}");
                     lifecycle::default_port()
                 });
-            let runtime_status = lifecycle::install_for_app(app.handle());
+            // Never run launchd reconciliation on Tauri's setup thread. Until
+            // setup returns WebKit cannot draw even the recovery shell, and a
+            // machine with many retained runners can need minutes to re-adopt
+            // them after a daemon update. Publish a truthful transitional state
+            // first, then reconcile without blocking the viewer.
+            let runtime_status = lifecycle::startup_status();
+            let reconcile_runtime = lifecycle::needs_background_reconcile(&runtime_status);
             let owns_local_runtime = runtime_status.state != "client-only";
-            if runtime_status.state == "error" {
-                log::error!("Sessions background service: {}", runtime_status.detail);
-            }
             app.manage(RuntimeState {
                 status: Mutex::new(runtime_status),
                 port: Mutex::new(configured_port),
@@ -2099,6 +2102,28 @@ pub fn run() {
                 if owns_local_runtime {
                     start_tray_poll(app.handle().clone());
                 }
+            }
+
+            if reconcile_runtime {
+                let worker = app.handle().clone();
+                thread::spawn(move || {
+                    let status = lifecycle::install_for_app(&worker);
+                    if status.state == "error" {
+                        log::error!("Sessions background service: {}", status.detail);
+                    }
+                    if let Ok(mut current) = worker.state::<RuntimeState>().status.lock() {
+                        *current = status;
+                    }
+                    #[cfg(desktop)]
+                    {
+                        let app_for_menu = worker.clone();
+                        let _ = worker.run_on_main_thread(move || {
+                            if let Err(error) = refresh_tray(&app_for_menu) {
+                                log::warn!("refresh tray after runtime reconciliation: {error}");
+                            }
+                        });
+                    }
+                });
             }
 
             #[cfg(mobile)]

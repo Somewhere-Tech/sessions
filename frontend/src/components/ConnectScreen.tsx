@@ -18,6 +18,7 @@ const HEALTH_TIMEOUT_MS = 8_000;
 interface ConnectScreenProps {
   clientOnly?: boolean;
   localDaemonUnavailable?: boolean;
+  reconnecting?: boolean;
   detail?: string;
   onRetry?: () => void;
 }
@@ -25,6 +26,7 @@ interface ConnectScreenProps {
 export function ConnectScreen({
   clientOnly = false,
   localDaemonUnavailable = false,
+  reconnecting = false,
   detail,
   onRetry
 }: ConnectScreenProps = {}): JSX.Element {
@@ -149,24 +151,31 @@ export function ConnectScreen({
       <main className="connect-screen" data-testid="connect-screen">
         <section className="connect-panel" aria-labelledby="connect-title">
           <div className="connect-brand">Sessions</div>
-          <p className="connect-kicker">native window → local daemon</p>
-          <h1 id="connect-title">Sessions isn&apos;t running yet.</h1>
+          <p className="connect-kicker">native window → local background service</p>
+          <h1 id="connect-title">
+            {reconnecting ? 'Reconnecting to your sessions…' : 'Sessions isn\'t running yet.'}
+          </h1>
           <p className="connect-lede">
-            The app is only a window onto the local background service. Your sessions
-            stay separate from the app and keep running when you quit it.
+            {reconnecting
+              ? 'Your agents are still running. Sessions is rebuilding its view of them; messages stay disabled and drafts are never sent until the connection returns.'
+              : 'The app is only a window onto the local background service. Your sessions stay separate from the app and keep running when you quit it.'}
           </p>
           <section className="connect-setup" aria-labelledby="setup-title">
             <h2 id="setup-title">Background service</h2>
             <ol>
               <li>
-                <span>Sessions installs and starts its signed local runtime automatically.</span>
+                <span>
+                  {reconnecting
+                    ? 'This can take a little longer on a machine with a large retained history. This screen updates automatically.'
+                    : 'Sessions installs and starts its signed local runtime automatically.'}
+                </span>
                 <code>~/Library/Logs/Sessions/sessionsd.log</code>
               </li>
             </ol>
           </section>
           {detail ? <p className="connect-error" role="alert">{detail}</p> : null}
           <button type="button" className="connect-submit" onClick={onRetry}>
-            Try again
+            {reconnecting ? 'Check again' : 'Try again'}
           </button>
         </section>
       </main>

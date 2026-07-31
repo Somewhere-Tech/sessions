@@ -295,6 +295,10 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     term.sendInputRef.current(data);
   }, [term.sendInputRef]);
 
+  const sendConfirmedInput = useCallback((data: string): Promise<void> => {
+    return term.sendConfirmedInputRef.current(data);
+  }, [term.sendConfirmedInputRef]);
+
   const scrollTerminalToBottom = useCallback((): void => {
     term.scrollTerminalToBottomRef.current();
   }, [term.scrollTerminalToBottomRef]);
@@ -616,7 +620,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             sessionId={sessionId}
             events={term.claudeEvents}
             historyPending={term.historyPending}
-            send={sendInput}
+            sendConfirmed={sendConfirmedInput}
             connected={term.status === 'open'}
             hasEarlierClaudeEvents={term.hasEarlierClaudeEvents}
             loadingEarlierClaudeEvents={term.loadingEarlierClaudeEvents}

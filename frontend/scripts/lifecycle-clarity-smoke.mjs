@@ -8,6 +8,7 @@ import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
+const mux = await source('src/lib/wsMux.ts');
 const [
   app,
   connection,
@@ -154,6 +155,14 @@ assert.match(input, /<ComposerModelControl/);
 assert.match(input, /Remote Control needs a Terminal session/);
 assert.match(input, /This command was not sent as a chat message/);
 assert.match(input, /Your draft is kept here and was not sent or queued/);
+assert.match(input, /title: 'Message not sent'/);
+assert.match(input, /Your draft is still here/);
+assert.ok(input.includes("await send('\\x1b[200~' + text + '\\x1b[201~')"));
+assert.doesNotMatch(mux, /return msg\.type === 'input' \|\|/);
+assert.match(mux, /Sessions is reconnecting\. Your message was not sent\./);
+assert.doesNotMatch(remote, />retry<\/button>/);
+assert.match(remote, />restore draft<\/button>/);
+assert.doesNotMatch(await source('src/hooks/useDispatch.ts'), /ENTER_RETRY_OFFSETS_MS|scheduleEnterRetries|send\('\\r'\)/);
 assert.match(input, /\/rename\(\?:\\s\|\$\)/);
 assert.match(remote, /if \(!terminalAvailable \|\| !latestFailedSend\)/);
 assert.match(remote, /richSession=\{!terminalAvailable\}/);

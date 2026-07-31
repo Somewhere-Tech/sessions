@@ -161,14 +161,22 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   const sessionsError = useSessions((s) => s.error);
   const sessionsHydrated = useSessions((s) => s.hydrated);
   const [nativeRuntimeError, setNativeRuntimeError] = useState<string | null>(null);
+  const [nativeRuntimeReconnecting, setNativeRuntimeReconnecting] = useState(false);
   useEffect(() => {
     if (!isTauri() || !sessionsError || sessionsHydrated) {
       setNativeRuntimeError(null);
+      setNativeRuntimeReconnecting(false);
       return;
     }
     void getNativeRuntimeStatus()
-      .then((status) => setNativeRuntimeError(status?.state === 'error' ? status.detail : null))
-      .catch(() => setNativeRuntimeError(null));
+      .then((status) => {
+        setNativeRuntimeError(status?.state === 'error' ? status.detail : null);
+        setNativeRuntimeReconnecting(status?.state === 'starting');
+      })
+      .catch(() => {
+        setNativeRuntimeError(null);
+        setNativeRuntimeReconnecting(false);
+      });
   }, [sessionsError, sessionsHydrated]);
 
   // User-defined tab order. Persisted in localStorage so the order
@@ -544,6 +552,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       <ConnectScreen
         clientOnly={nativeClientOnly}
         localDaemonUnavailable={!nativeClientOnly}
+        reconnecting={nativeRuntimeReconnecting}
         detail={nativeRuntimeError ?? sessionsError}
         onRetry={() => void refresh()}
       />

@@ -36,6 +36,7 @@ impl RuntimeStatus {
     pub fn menu_label(&self) -> String {
         match self.state.as_str() {
             "ready" => "Background service: ready".to_string(),
+            "starting" => "Background service: reconnecting".to_string(),
             "development" => "Background service: external (development)".to_string(),
             "client-only" => "Background service: runs on your Mac".to_string(),
             "disabled" => "Background service: automatic install disabled".to_string(),
@@ -81,6 +82,42 @@ impl RuntimeStatus {
             runtime_version: None,
         }
     }
+}
+
+// Return a truthful first-frame status without touching launchd or waiting for
+// runner adoption. The native window must be able to paint before a release
+// update reconciles sessionsd: a large retained fleet can take minutes to
+// re-adopt, while every runner continues independently in the background.
+pub fn startup_status() -> RuntimeStatus {
+    if cfg!(debug_assertions) && cfg!(target_os = "macos") {
+        return RuntimeStatus::informational(
+            "development",
+            "debug builds use the separately managed development daemon",
+        );
+    }
+    if cfg!(mobile) {
+        return RuntimeStatus::informational(
+            "client-only",
+            "mobile clients connect to a Mac-hosted background service",
+        );
+    }
+    if cfg!(not(any(target_os = "macos", target_os = "windows"))) {
+        return RuntimeStatus::informational(
+            "client-only",
+            "this platform connects to a Sessions host",
+        );
+    }
+    if env::var_os("SESSIONS_DISABLE_RUNTIME_INSTALL").is_some() {
+        return RuntimeStatus::informational("disabled", "SESSIONS_DISABLE_RUNTIME_INSTALL is set");
+    }
+    RuntimeStatus::informational(
+        "starting",
+        "checking the local background service; agent sessions keep running",
+    )
+}
+
+pub fn needs_background_reconcile(status: &RuntimeStatus) -> bool {
+    status.state == "starting"
 }
 
 pub fn install_for_app(app: &AppHandle) -> RuntimeStatus {
@@ -369,7 +406,7 @@ fn save_configured_port(app: &AppHandle, port: u16) -> LifecycleResult<()> {
     write_atomic(&path, &encoded, 0o600)
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeManifest {
     schema_version: u32,
@@ -412,6 +449,14 @@ struct SessionEnvelope {
 fn install_runtime(config: &RuntimeConfig) -> LifecycleResult<(InstallOutcome, String)> {
     validate_config(config)?;
     let installed = stage_runtime(config)?;
+    // launchd receives one stable runner path for the lifetime of the app.
+    // Existing runner processes keep their already-open executable when this
+    // file is atomically replaced, while future sessions retain a consistent
+    // macOS privacy identity across versioned runtime updates.
+    let stable_runner = stable_runner_path(config);
+    if !runner_is_usable(config, &stable_runner) {
+        activate_stable_runner(config, &installed)?;
+    }
     let plist = daemon_plist(config, &installed.directory);
     let previous_plist = match fs::read(&config.plist_path) {
         Ok(bytes) => Some(bytes),
@@ -453,12 +498,90 @@ fn install_runtime(config: &RuntimeConfig) -> LifecycleResult<(InstallOutcome, S
         InstallOutcome::Installed
     };
 
+    // Defer the normal version swap until the daemon update is known healthy.
+    // If rollback was needed, the previously active runner therefore remains
+    // paired with the restored daemon. Replacement is atomic and never stops
+    // a runner that is already serving a live session.
+    activate_stable_runner(config, &installed)?;
+
     if let Err(error) = install_cli_link(config, &installed.directory) {
         // CLI discoverability is useful but must never turn a healthy daemon
         // update into a rollback or put live sessions at risk.
         eprintln!("Sessions CLI PATH integration: {error}");
     }
     Ok((outcome, installed.manifest.runtime_version))
+}
+
+fn stable_runner_path(config: &RuntimeConfig) -> PathBuf {
+    config.managed_root.join("sessions-runner")
+}
+
+fn runner_is_usable(config: &RuntimeConfig, path: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.file_type().is_file() {
+        return false;
+    }
+    !config.verify_signatures
+        || run_checked_path(&config.codesign, &["--verify", "--strict"], path).is_ok()
+}
+
+fn activate_stable_runner(
+    config: &RuntimeConfig,
+    installed: &InstalledRuntime,
+) -> LifecycleResult<PathBuf> {
+    let source = installed.directory.join("sessions-runner");
+    let destination = stable_runner_path(config);
+    let expected_digest = installed
+        .manifest
+        .binaries
+        .get("sessions-runner")
+        .ok_or_else(|| "bundled runtime manifest is missing sessions-runner".to_string())?;
+    if runner_is_usable(config, &destination)
+        && verify_binary(config, &destination, expected_digest).is_ok()
+    {
+        return Ok(destination);
+    }
+
+    fs::create_dir_all(&config.managed_root).map_err(|error| {
+        format!(
+            "create Sessions runtime root {}: {error}",
+            config.managed_root.display()
+        )
+    })?;
+    set_directory_mode(&config.managed_root, 0o700)?;
+    let temporary = config.managed_root.join(format!(
+        ".sessions-runner-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let activated = (|| -> LifecycleResult<()> {
+        fs::copy(&source, &temporary).map_err(|error| {
+            format!(
+                "stage stable Sessions runner {} from {}: {error}",
+                temporary.display(),
+                source.display()
+            )
+        })?;
+        set_file_mode(&temporary, 0o755)?;
+        fs::File::open(&temporary)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| format!("sync stable Sessions runner: {error}"))?;
+        verify_binary(config, &temporary, expected_digest)?;
+        fs::rename(&temporary, &destination).map_err(|error| {
+            format!(
+                "activate stable Sessions runner {}: {error}",
+                destination.display()
+            )
+        })?;
+        verify_binary(config, &destination, expected_digest)
+    })();
+    if activated.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    activated?;
+    Ok(destination)
 }
 
 #[cfg(unix)]
@@ -810,7 +933,7 @@ fn daemon_plist(config: &RuntimeConfig, runtime_dir: &Path) -> String {
         ("SESSIONS_PORT".to_string(), config.port.to_string()),
         (
             "SESSIONS_RUNNER".to_string(),
-            runtime_dir.join("sessions-runner").display().to_string(),
+            stable_runner_path(config).display().to_string(),
         ),
     ];
     environment.extend(config.environment.clone());
@@ -1356,6 +1479,18 @@ mod tests {
         assert_eq!(readiness_timeout(&config, 10_000), Duration::from_secs(300));
     }
 
+    #[test]
+    fn only_transitional_runtime_status_reconciles_in_background() {
+        assert!(needs_background_reconcile(&RuntimeStatus::informational(
+            "starting", "checking",
+        )));
+        for state in ["ready", "development", "client-only", "disabled", "error"] {
+            assert!(!needs_background_reconcile(&RuntimeStatus::informational(
+                state, "settled",
+            )));
+        }
+    }
+
     use std::{io::Read, net::TcpListener};
 
     const HELPER_ENV: &str = "SESSIONS_LAUNCHD_TEST_HELPER";
@@ -1441,8 +1576,61 @@ mod tests {
         assert!(plist.contains("tech.somewhere.sessions.fixture"));
         assert!(plist.contains("/tmp/Sessions &amp; tests/runtime/v1/sessionsd"));
         assert!(plist.contains("SESSIONS_RUNNER"));
-        assert!(plist.contains("/tmp/Sessions &amp; tests/runtime/v1/sessions-runner"));
+        assert!(plist.contains(
+            "/tmp/Sessions &amp; tests/Application Support/Sessions/runtime/sessions-runner"
+        ));
         assert!(plist.contains("<key>KeepAlive</key>"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stable_runner_is_atomically_replaced_without_changing_its_path() {
+        let root = env::temp_dir().join(format!(
+            "sessions-stable-runner-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let mut config = fixture_config(&root, "tech.somewhere.sessions.stable-runner", 47872);
+        config.verify_signatures = false;
+
+        write_fixture_runtime(&config, "v1", None);
+        let v1 = stage_runtime(&config).unwrap();
+        let stable = activate_stable_runner(&config, &v1).unwrap();
+        assert_eq!(stable, config.managed_root.join("sessions-runner"));
+        let first_digest = command_text_path(&config.shasum, &["-a", "256"], &stable).unwrap();
+
+        let replacement = root.join("replacement-runner");
+        fs::copy("/usr/bin/true", &replacement).unwrap();
+        write_fixture_runtime(&config, "v2", Some(&replacement));
+        fs::copy(&replacement, config.source_dir.join("sessions-runner")).unwrap();
+        set_file_mode(&config.source_dir.join("sessions-runner"), 0o755).unwrap();
+        let mut manifest: RuntimeManifest = serde_json::from_slice(
+            &fs::read(config.source_dir.join("runtime-manifest.json")).unwrap(),
+        )
+        .unwrap();
+        manifest.binaries.insert(
+            "sessions-runner".to_string(),
+            command_text_path(
+                &config.shasum,
+                &["-a", "256"],
+                &config.source_dir.join("sessions-runner"),
+            )
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string(),
+        );
+        fs::write(
+            config.source_dir.join("runtime-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let v2 = stage_runtime(&config).unwrap();
+        assert_eq!(activate_stable_runner(&config, &v2).unwrap(), stable);
+        let second_digest = command_text_path(&config.shasum, &["-a", "256"], &stable).unwrap();
+        assert_ne!(first_digest, second_digest);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

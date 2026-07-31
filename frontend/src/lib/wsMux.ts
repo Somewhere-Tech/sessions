@@ -40,9 +40,9 @@ export interface SessionChannel {
 
 const RECONNECT_BACKOFF_MS = [500, 1000, 2000, 4000, 8000] as const;
 
-// Cap on input/resize frames buffered while the socket is down. Keystrokes
-// are tiny; this is seconds of furious typing. Bounded so a socket that
-// never comes back can't grow it without limit.
+// Cap on replayable query/resize frames buffered while the socket is down.
+// User input is deliberately never included: a message must either receive
+// an inputAck now or remain visibly in the composer for the user to retry.
 const OUTBOX_CAP = 2000;
 const REQUEST_TIMEOUT_MS = 10_000;
 const IDLE_SHUTDOWN_MS = 15_000;
@@ -87,8 +87,7 @@ function isRpcResponse(msg: ServerMsg): msg is RpcResponse {
 }
 
 function isQueueableWhileClosed(msg: MuxClientMsg): boolean {
-  return msg.type === 'input' ||
-    msg.type === 'resize' ||
+  return msg.type === 'resize' ||
     msg.type === 'snapshot' ||
     msg.type === 'events';
 }
@@ -103,11 +102,9 @@ class MuxManager {
   private readonly sessions = new Map<string, SessionHandlers>();
   private readonly requests = new Map<string, PendingRequest>();
   private idleShutdownTimer: number | null = null;
-  // Input/resize typed while the socket isn't OPEN (initial connect, or a
-  // reconnect blip after phone-sleep / network handoff). Without this they
-  // were silently dropped — you'd click a terminal that LOOKS ready (the
-  // snapshot is already painted) and type into the void until the socket
-  // happened to be OPEN. Flushed in order on reopen, after re-attach.
+  // Replayable requests and resize frames may wait for a reconnect. User
+  // input never enters this outbox: delayed delivery would be a hidden prompt
+  // queue and could make a message run long after the user thought it failed.
   private readonly outbox: MuxClientMsg[] = [];
   private readonly onVis = (): void => {
     // Phone unlock / tab foreground: if the socket died while backgrounded,
@@ -150,6 +147,13 @@ class MuxManager {
 
   request(msg: MuxClientMsg & { requestId: string }, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<RpcResponse> {
     this.cancelIdleShutdown();
+    if (msg.type === 'input' && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
+      if (!this.ws || this.ws.readyState >= WebSocket.CLOSING) {
+        if (this.reconnectTimer === null) this.connect();
+      }
+      this.scheduleIdleShutdown();
+      return Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'));
+    }
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.requests.delete(msg.requestId);
@@ -170,18 +174,17 @@ class MuxManager {
       this.ws.send(JSON.stringify(msg));
       return;
     }
-    // Socket not OPEN. Queue input & resize so they're delivered on reopen
-    // instead of silently lost. RPC frames queue the same way. attach/detach
-    // are NOT queued — they're rebuilt from the live `sessions` map on
-    // reconnect, so a stale queued attach/detach would only fight that.
+    // Socket not OPEN. Queue replayable reads and resize state, but never
+    // user input. attach/detach are also rebuilt from the live `sessions` map
+    // on reconnect, so a stale queued attach/detach would only fight that.
     if (isQueueableWhileClosed(msg)) {
       this.outbox.push(msg);
       if (this.outbox.length > OUTBOX_CAP) {
         const dropped = this.outbox.splice(0, this.outbox.length - OUTBOX_CAP);
         this.rejectDroppedRequests(dropped);
       }
-      // A queued keystroke means we WANT a live socket. If none is pending,
-      // kick a connect now rather than waiting for the next backoff tick.
+      // Queued work means we want a live socket. If none is pending, connect
+      // now rather than waiting for the next backoff tick.
       if (!this.ws || this.ws.readyState >= WebSocket.CLOSING) {
         if (this.reconnectTimer === null) this.connect();
       }

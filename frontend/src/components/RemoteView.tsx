@@ -30,9 +30,9 @@ interface Props {
   // Codex supplies normalized rollout or app-server notifications.
   events: ClaudeSessionEvent[];
   historyPending: boolean;
-  // Live byte sender — used by InputBar to dispatch the actual
-  // keystrokes through the WS, and by retry() in useDispatch.
-  send: (data: string) => void;
+  // Composer sends use the acknowledged path. Raw terminal keystrokes stay
+  // inside SessionView and are never used for conversation dispatch.
+  sendConfirmed: (data: string) => Promise<void>;
   connected: boolean;
   hasEarlierClaudeEvents: boolean;
   loadingEarlierClaudeEvents: boolean;
@@ -77,7 +77,7 @@ export function RemoteView({
   sessionId,
   events,
   historyPending,
-  send,
+  sendConfirmed,
   connected,
   hasEarlierClaudeEvents,
   loadingEarlierClaudeEvents,
@@ -118,10 +118,9 @@ export function RemoteView({
     return counts;
   }, [eventMessages]);
 
-  const { messages: dispatchMessages, recordSent, retry, remove, resetLog } = useDispatch({
+  const { messages: dispatchMessages, recordSent, restoreDraft, remove, resetLog } = useDispatch({
     sessionId,
-    eventUserContentCounts,
-    send
+    eventUserContentCounts
   });
   const hasRecoverableLocalState = dispatchMessages.some(
     (message) => message.status === 'pending' || message.status === 'failed'
@@ -476,7 +475,7 @@ export function RemoteView({
               && !visibleMessages[i + 1]?.content
               && visibleMessages[i + 1]?.toolCalls?.length
             )}
-            onRetry={() => retry(m.id)}
+            onRetry={() => restoreDraft(m.id)}
             onDelete={() => remove(m.id)}
             forkOpen={forkPointId === m.id}
             forkBusy={forkBusy}
@@ -528,7 +527,7 @@ export function RemoteView({
 
       <div className="remote-input-wrap">
         <InputBar
-          send={send}
+          send={sendConfirmed}
           connected={connected}
           sessionId={sessionId}
           onSubmitted={recordSent}
@@ -665,7 +664,7 @@ function RemoteMessageInner({
             {m.status === 'failed' ? (
               <div className="remote-bubble-status remote-bubble-failed">
                 <span>{m.failureReason ? `not delivered: ${m.failureReason}` : 'not delivered'}</span>
-                <button type="button" className="remote-bubble-retry" onClick={onRetry}>retry</button>
+                <button type="button" className="remote-bubble-retry" onClick={onRetry}>restore draft</button>
                 <button
                   type="button"
                   className="remote-bubble-delete"
