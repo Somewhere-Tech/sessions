@@ -172,6 +172,61 @@ try {
   assert.deepEqual(claude.map((message) => message.content), ['hello', 'hi']);
   assert.equal(claude[0].author?.name, 'Review lane');
 
+  const orderedClaude = eventsToMessages([
+    {
+      type: 'user',
+      uuid: 'ordered-user',
+      timestamp: '2026-07-20T11:00:00Z',
+      message: { role: 'user', content: 'Continue the merge' }
+    },
+    {
+      type: 'assistant',
+      uuid: 'ordered-intro',
+      timestamp: '2026-07-20T11:00:01Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'I will merge master first.' }] }
+    },
+    {
+      type: 'assistant',
+      uuid: 'ordered-tool-1',
+      timestamp: '2026-07-20T11:00:02Z',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'git merge master', description: 'Fetch and merge master' } }] }
+    },
+    {
+      type: 'user',
+      uuid: 'ordered-result-1',
+      timestamp: '2026-07-20T11:00:03Z',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'merged' }] }
+    },
+    {
+      type: 'assistant',
+      uuid: 'ordered-tool-2',
+      timestamp: '2026-07-20T11:00:04Z',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tool-2', name: 'Bash', input: { command: 'git status', description: 'List conflicted files' } }] }
+    },
+    {
+      type: 'user',
+      uuid: 'ordered-result-2',
+      timestamp: '2026-07-20T11:00:05Z',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-2', content: 'package.json' }] }
+    },
+    {
+      type: 'assistant',
+      uuid: 'ordered-followup',
+      timestamp: '2026-07-20T11:00:06Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Now I will regenerate the docs.' }] }
+    }
+  ]);
+  assert.deepEqual(
+    orderedClaude.map((message) => ({ content: message.content, tools: message.toolCalls?.map((tool) => tool.id) ?? [] })),
+    [
+      { content: 'Continue the merge', tools: [] },
+      { content: 'I will merge master first.', tools: [] },
+      { content: '', tools: ['tool-1', 'tool-2'] },
+      { content: 'Now I will regenerate the docs.', tools: [] }
+    ],
+    'Claude tool activity must remain between the prose messages that surround it'
+  );
+
   const rejected = eventsToMessages([
     {
       type: 'system',

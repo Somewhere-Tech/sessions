@@ -91,6 +91,9 @@ try {
   const report = await page.evaluate(() => ({
     planSteps: document.querySelectorAll('.remote-bubble-plan-step').length,
     activityItems: document.querySelectorAll('.remote-bubble-tool-row').length,
+    activitySummary: document.querySelector('.remote-bubble-tools-toggle')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+    activityLabels: Array.from(document.querySelectorAll('.remote-bubble-tool-input')).map((element) => element.textContent?.trim() ?? ''),
+    activityListRadius: getComputedStyle(document.querySelector('.remote-bubble-tools-list')).borderRadius,
     reasoning: document.querySelector('.remote-bubble-reasoning')?.textContent ?? '',
     updates: document.querySelector('.remote-bubble-updates')?.textContent ?? '',
     attachControl: document.querySelector('.input-attach')?.textContent ?? '',
@@ -104,6 +107,11 @@ try {
   }));
   assert.equal(report.planSteps, 3);
   assert.equal(report.activityItems, 2);
+  assert.match(report.activitySummary, /Used 2 tools/);
+  assert.doesNotMatch(report.activitySummary, /Activity/);
+  assert.match(report.activityLabels[0] ?? '', /go test/);
+  assert.doesNotMatch(report.activityLabels[0] ?? '', /^Command\b/);
+  assert.notEqual(report.activityListRadius, '0px');
   assert.match(report.reasoning, /Reasoning summary/);
   assert.match(report.updates, /progress update/);
   assert.match(report.attachControl, /Attach/);

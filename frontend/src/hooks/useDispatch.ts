@@ -34,12 +34,10 @@ interface Block {
 // "what Claude did" without expanding the full tool output. Sourced
 // from `tool_use` content blocks inside an assistant event.
 //
-// Multi-step assistant turns (Claude calls 5 tools then replies)
-// arrive as a sequence of assistant events in the JSONL: each tool
-// is its own event with just thinking+tool_use, then a final event
-// with the text reply. We collapse all those into one logical
-// message and ship every ToolCall as part of the message's
-// `toolCalls`. The matching tool_result events (user role,
+// Multi-step assistant turns (Claude writes prose, calls 5 tools, then
+// writes more prose) arrive as a sequence of assistant events in the
+// JSONL. Consecutive tool events are grouped into one ordered activity
+// message between the surrounding prose. The matching tool_result events (user role,
 // content[].type=='tool_result') are indexed by tool_use_id and
 // stored on `resultPreview` + `resultFull` so the UI can show the
 // full output on click without an extra fetch.

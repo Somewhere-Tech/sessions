@@ -2650,6 +2650,8 @@ button:active:not(:disabled),
 .remote-msg-user { align-items: flex-end; padding-top: 26px; padding-bottom: 12px; }
 .remote-msg-assistant { padding-top: 18px; padding-bottom: 26px; }
 .remote-msg-assistant.is-continuation { padding-top: 0; padding-bottom: 18px; }
+.remote-msg-assistant.has-following-tool-activity { padding-bottom: 3px; }
+.remote-msg-assistant.is-tool-only { gap: 0; padding-top: 0; padding-bottom: 12px; }
 .remote-message-meta {
   display: flex;
   align-items: center;
@@ -2752,60 +2754,57 @@ button:active:not(:disabled),
   100% { opacity: 0; transform: translate(-50%, calc(-100% - 24px)) scale(1); }
 }
 
-/* Tool-calls panel — collapsed by default ("Used N tools · Read,
- * Bash, Edit") so a long agentic turn doesn't fill the chat with
- * twelve consecutive tool chips. Click the header to expand into a
- * per-tool list; each tool row is itself click-to-expand for the
- * full input + output (sourced from the matching tool_result event).
- * Auditability without clutter — both axes of the user's "worst of
- * both worlds" complaint addressed. */
+/* Ordered activity group. The normal reading state is one quiet line;
+ * expansion reveals a single joined list rather than a stack of tool chips. */
 .remote-bubble-tools {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
+  margin-top: 2px;
 }
 .remote-bubble-tools-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   background: transparent;
   border: 0;
-  padding: 2px 4px;
-  font-size: 12px;
-  font-family: var(--font-mono);
+  padding: 3px 0;
+  font-size: 13px;
+  font-family: var(--font-ui);
   color: var(--fg-dim);
   cursor: pointer;
   text-align: left;
 }
 .remote-bubble-tools-toggle:hover { color: var(--fg); }
-.remote-bubble-tools-summary { color: var(--fg-faint); }
+.remote-bubble-tools-summary { color: var(--fg-faint); font-size: 12px; }
+.remote-bubble-tools-caret { color: var(--fg-faint); font-size: 17px; line-height: 1; }
 .remote-bubble-tools-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 6px;
+  gap: 0;
+  margin-top: 5px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
 }
 .remote-bubble-tool-row { display: flex; flex-direction: column; }
+.remote-bubble-tool-row + .remote-bubble-tool-row { border-top: 1px solid var(--border); }
 .remote-bubble-tool {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  font-size: 12px;
-  font-family: var(--font-mono);
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg-elev-1);
+  font-size: 13px;
+  font-family: var(--font-ui);
   color: var(--fg-dim);
   max-width: 100%;
   cursor: pointer;
   text-align: left;
 }
-.remote-bubble-tool:hover { border-color: var(--accent); }
-.remote-bubble-tool-name {
-  color: var(--accent);
-  font-weight: 600;
-  flex-shrink: 0;
-}
+.remote-bubble-tool:hover { background: var(--bg-elev-2); color: var(--fg); }
 .remote-bubble-tool-input {
-  color: var(--fg-dim);
+  color: inherit;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2837,11 +2836,11 @@ button:active:not(:disabled),
   color: var(--accent);
 }
 .remote-bubble-tool-detail {
-  margin: 4px 0 6px 12px;
-  padding: 6px 10px;
-  background: var(--bg-elev-1);
-  border-left: 2px solid var(--accent);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin: 0;
+  padding: 8px 10px 10px;
+  background: var(--bg-base);
+  border-top: 1px solid var(--border);
+  border-radius: 0;
   font-size: 12px;
   font-family: var(--font-mono);
 }
