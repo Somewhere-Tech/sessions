@@ -4,6 +4,24 @@ Sessions treats a provider conversation as durable work and a runner as only
 one way of opening it. The Continue picker can reopen the original provider
 conversation or create a new conversation with the other supported agent.
 
+## Fork a live conversation
+
+You do not have to end a live Claude or Codex chat to branch it. From the live
+session menu, choose **Fork a copy in Claude/Codex** for the same provider or
+**Open a copy in Claude/Codex** for the other provider. The CLI equivalent is:
+
+```sh
+sessions fork <live-session-id>
+sessions fork <live-session-id> --with codex
+sessions fork <live-session-id> --with claude
+```
+
+Sessions waits until the current turn is finished, takes one stable authored
+history snapshot, and creates a new Rich conversation beneath the source in
+the session tree. The original runtime, provider conversation, and working
+state stay live and unchanged. This is a branch, not a resume: it never marks
+the source as superseded and never needs a force flag.
+
 ## Same-provider Continue
 
 Continuing Claude with Claude, or Codex with Codex, uses the provider's native
@@ -61,6 +79,8 @@ and make no model call.
 
 - Cross-provider Continue requires a complete local authored transcript.
   A prompt-only provider index is not enough.
+- Live forks require the current turn to be idle so Sessions never copies a
+  partial assistant response.
 - The preview supports Claude and Codex Rich sessions. It does not translate
   shell/PTY screen history.
 - Imported bundles are local mode-0600 sidecars and are capped at 8 MiB.

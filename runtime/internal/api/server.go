@@ -48,7 +48,7 @@ const (
 // Version is stamped into sessionsd at build time and reported by both health
 // endpoints. Keep the source fallback aligned with the current app version so
 // an un-stamped development build is still honest.
-var Version = "0.2.14"
+var Version = "0.2.15"
 
 type Server struct {
 	config               state.Config
@@ -428,7 +428,8 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if s.handleLanesRoute(response, request, corsOrigin) {
 		return
 	}
-	if path == "/api/recovery" || path == "/api/recovery/reopen" || path == "/api/recovery/adopt" {
+	if path == "/api/recovery" || path == "/api/recovery/reopen" ||
+		path == "/api/recovery/adopt" || path == "/api/recovery/fork" {
 		s.handleRecovery(response, request, corsOrigin)
 		return
 	}

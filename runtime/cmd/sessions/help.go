@@ -228,6 +228,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal --remote-control", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex", "sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001"}, run: (*app).cmdContinue,
 	},
 	{
+		name: "fork", usage: "fork <live-session> [--with claude|codex]",
+		summary: "copy a live conversation without stopping it", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Create a new Rich conversation from a stable authored-history snapshot while the original session remains live and unchanged. Omit --with to fork into the same provider, or select Claude/Codex to open a copy in the other provider. Sessions copies user and assistant messages only; tool output, credentials, attachments, provider internals, and the source runtime are never modified. Wait for the current turn to finish before forking.",
+		examples: []string{"sessions fork 0123abcd", "sessions fork 0123abcd --with codex", "sessions --json fork 0123abcd --with claude"}, run: (*app).cmdFork,
+	},
+	{
 		name: "model", usage: "model <session> <model> [--effort LEVEL]",
 		summary: "set the next-turn model for a Rich session", group: modelCommandGroup, localJSON: true,
 		longHelp: "Set the model, and optionally effort, used by the next turn of an idle Rich Claude or Rich Codex session. The daemon validates the choice and updates the durable runner; Terminal sessions keep their provider's own model controls. Omitting --effort preserves the current effort.",

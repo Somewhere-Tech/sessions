@@ -68,6 +68,7 @@ interface Props {
   onNew: () => void;
   onContinue: () => void;
   onResumeSession: (session: SessionInfo, destinationProvider?: 'claude' | 'codex') => void;
+  onForkSession: (session: SessionInfo, destinationProvider: 'claude' | 'codex') => Promise<void>;
   onStartLinked: (sessionId: string) => void;
   openSessionIds: string[];
   onCloseView: (id: string) => void;
@@ -82,6 +83,7 @@ export function SessionNavigator({
   onNew,
   onContinue,
   onResumeSession,
+  onForkSession,
   onStartLinked,
   openSessionIds,
   onCloseView,
@@ -113,6 +115,23 @@ export function SessionNavigator({
   const [movePickerId, setMovePickerId] = useState<string | null>(null);
   const [actionMenuId, setActionMenuId] = useState<string | null>(null);
   const [endingId, setEndingId] = useState<string | null>(null);
+  const [copyingId, setCopyingId] = useState<string | null>(null);
+
+  const copyConversation = async (
+    session: SessionInfo,
+    destinationProvider: 'claude' | 'codex'
+  ): Promise<void> => {
+    setCopyingId(session.id);
+    setMoveError(null);
+    setActionMenuId(null);
+    try {
+      await onForkSession(session, destinationProvider);
+    } catch (error) {
+      setMoveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCopyingId(null);
+    }
+  };
 
   const sessionIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
   const endedSessionIds = useMemo(() => new Set(sessions.filter((session) => session.exited).map((session) => session.id)), [sessions]);
@@ -504,9 +523,26 @@ export function SessionNavigator({
                     onOpen={() => setActionMenuId(null)}
                   />
                 ) : null}
-                {!session.exited && otherProvider ? (
+                {!session.exited && otherProvider && providerName ? (
                   <>
-                    <button type="button" role="menuitem" aria-disabled="true">Continue with {otherProviderLabel}… <small>end first</small></button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={copyingId !== null}
+                      onClick={() => void copyConversation(session, otherProvider)}
+                    >
+                      {copyingId === session.id ? 'Copying conversation…' : `Open a copy in ${otherProviderLabel}…`}
+                      <small>original keeps running</small>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={copyingId !== null}
+                      onClick={() => void copyConversation(session, providerName)}
+                    >
+                      Fork a copy in {providerName === 'claude' ? 'Claude' : 'Codex'}…
+                      <small>original keeps running</small>
+                    </button>
                     <button type="button" role="menuitem" aria-disabled="true">Continue on another machine… <small>end first</small></button>
                   </>
                 ) : null}

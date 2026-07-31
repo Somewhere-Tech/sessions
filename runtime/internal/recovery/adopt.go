@@ -50,6 +50,8 @@ type AdoptResult struct {
 	DestinationProvider string              `json:"destinationProvider,omitempty"`
 	Mode                string              `json:"mode,omitempty"`
 	ImportedMessages    int                 `json:"importedMessages,omitempty"`
+	ForkedFromSessionID string              `json:"forkedFromSessionId,omitempty"`
+	SourceUntouched     bool                `json:"sourceUntouched,omitempty"`
 }
 
 type AdoptAnnotation string

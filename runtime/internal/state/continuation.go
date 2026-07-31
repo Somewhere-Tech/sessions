@@ -40,6 +40,7 @@ type ContinuationContext struct {
 	SourceRepo          string                `json:"sourceRepo,omitempty"`
 	DestinationProvider string                `json:"destinationProvider"`
 	Mode                string                `json:"mode"`
+	Fork                bool                  `json:"fork,omitempty"`
 	Messages            []ContinuationMessage `json:"messages"`
 	LocalHistoryReady   bool                  `json:"localHistoryReady,omitempty"`
 	ProviderContext     string                `json:"providerContext,omitempty"`
@@ -58,7 +59,7 @@ func (c ContinuationContext) Validate() error {
 	if c.DestinationProvider != "claude" && c.DestinationProvider != "codex" {
 		return fmt.Errorf("unsupported continuation destination provider %q", c.DestinationProvider)
 	}
-	if c.SourceProvider == c.DestinationProvider {
+	if c.SourceProvider == c.DestinationProvider && !c.Fork {
 		return errors.New("cross-provider continuation requires different source and destination providers")
 	}
 	if c.Mode != ContinuationNativeImport && c.Mode != ContinuationLinkedSearch {

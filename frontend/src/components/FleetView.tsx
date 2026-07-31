@@ -58,6 +58,7 @@ const INITIAL_SNAPSHOT: ServerSnapshot = {
 
 interface FleetViewProps {
   onOpenSession: (serverId: string, sessionId: string) => void;
+  onOpenMachine: (serverId: string) => void;
 }
 
 interface DiscoveredPeer {
@@ -77,7 +78,7 @@ interface PendingMachineAccess {
 // Fleet is deliberately client-side aggregation: each group owns its own
 // polling loop and talks straight to its configured sessionsd. A slow or dead
 // machine therefore cannot delay updates from any other machine.
-export function FleetView({ onOpenSession }: FleetViewProps): JSX.Element {
+export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX.Element {
   const servers = useServers((state) => state.servers);
   const [includeExited, setIncludeExited] = useState(false);
   const [machineVersions, setMachineVersions] = useState<Record<string, string>>({});
@@ -272,6 +273,7 @@ export function FleetView({ onOpenSession }: FleetViewProps): JSX.Element {
             localVersion={localVersion}
             onVersion={rememberVersion}
             onOpenSession={(sessionId) => onOpenSession(server.id, sessionId)}
+            onOpenMachine={() => onOpenMachine(server.id)}
           />
         ))}
         <CloudFleetCard />
@@ -325,13 +327,15 @@ function FleetServerGroup({
   includeExited,
   localVersion,
   onVersion,
-  onOpenSession
+  onOpenSession,
+  onOpenMachine
 }: {
   server: ServerConfig;
   includeExited: boolean;
   localVersion?: string;
   onVersion: (serverId: string, version: string) => void;
   onOpenSession: (sessionId: string) => void;
+  onOpenMachine: () => void;
 }): JSX.Element {
   const [snapshot, setSnapshot] = useState<ServerSnapshot>(INITIAL_SNAPSHOT);
 
@@ -485,6 +489,11 @@ function FleetServerGroup({
           <div className="fleet-session-error">Latest session refresh failed: {snapshot.sessionsError}</div>
         ) : null}
       </div>
+      {!unavailable ? (
+        <button type="button" className="fleet-open-machine" onClick={onOpenMachine}>
+          Open all sessions on this machine <span aria-hidden>→</span>
+        </button>
+      ) : null}
     </section>
   );
 }

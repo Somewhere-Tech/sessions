@@ -660,6 +660,42 @@ another recoverable append failure remains `202`. A missing, ended, or
 provider-mismatched successor returns `409` and explicitly says that no session
 was started.
 
+### `POST /api/recovery/fork`
+
+Auth required. Creates a new Rich conversation from a stable authored-history
+snapshot while leaving the source runtime live:
+
+```json
+{"sourceSessionId":"<live Sessions id>","destinationProvider":"codex"}
+```
+
+`destinationProvider` is optional and defaults to the source provider. The
+source must be a live, idle Claude or Codex session with a complete local
+conversation. A working source returns `409`; clients should wait for its
+current turn to finish instead of copying a partial assistant response.
+
+Success returns `201`:
+
+```json
+{
+  "ok": true,
+  "laneId": "<new Rich session id>",
+  "sourceHistoryId": "<stable local history id>",
+  "sourceProvider": "claude",
+  "destinationProvider": "codex",
+  "mode": "native-import",
+  "importedMessages": 42,
+  "forkedFromSessionId": "<source Sessions id>",
+  "sourceUntouched": true
+}
+```
+
+Only user and assistant messages cross the boundary. Sessions does not copy
+credentials, tool output, attachments, diffs, or provider-internal events. The
+new session is displayed beneath the source as a branch; trusted creator
+provenance is not rewritten. The route never sends an end request, never marks
+the source as reopened, and never requires a force flag.
+
 ### `GET /api/directories`
 
 Auth required. Returns `200 {"directories":[...]}`. Each entry is:

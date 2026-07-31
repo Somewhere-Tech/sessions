@@ -1040,6 +1040,8 @@ export interface AdoptConversationResult {
   destinationProvider?: 'claude' | 'codex';
   mode?: 'native-import' | 'linked-search';
   importedMessages?: number;
+  forkedFromSessionId?: string;
+  sourceUntouched?: boolean;
 }
 
 export interface AdoptRepairRequest {
@@ -1084,6 +1086,18 @@ export async function repairAdoption(request: AdoptRepairRequest): Promise<Adopt
     })
   });
   return json<AdoptConversationResult>(r);
+}
+
+export async function forkConversation(
+  sourceSessionId: string,
+  destinationProvider: 'claude' | 'codex'
+): Promise<AdoptConversationResult> {
+  const r = await apiFetch(`${httpBase()}/api/recovery/fork`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sourceSessionId, destinationProvider })
+  });
+  return featureJSON<AdoptConversationResult>(r, 'Conversation copies');
 }
 
 export async function listDirectories(): Promise<DirectoryCandidate[]> {

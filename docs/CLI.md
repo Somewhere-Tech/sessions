@@ -50,6 +50,7 @@ Daily workflows:
   move                     continue an ended conversation on another machine
   adopt                    bind an existing conversation into Sessions
   continue                 continue one exact saved conversation
+  fork                     copy a live conversation without stopping it
 
 Models and interactive:
   model                    set the next-turn model for a Rich session
@@ -678,6 +679,24 @@ Examples:
   sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal --remote-control
   sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex
   sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions fork`
+
+```text
+Usage:
+  sessions fork <live-session> [--with claude|codex]
+
+copy a live conversation without stopping it
+
+Create a new Rich conversation from a stable authored-history snapshot while the original session remains live and unchanged. Omit --with to fork into the same provider, or select Claude/Codex to open a copy in the other provider. Sessions copies user and assistant messages only; tool output, credentials, attachments, provider internals, and the source runtime are never modified. Wait for the current turn to finish before forking.
+
+Examples:
+  sessions fork 0123abcd
+  sessions fork 0123abcd --with codex
+  sessions --json fork 0123abcd --with claude
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

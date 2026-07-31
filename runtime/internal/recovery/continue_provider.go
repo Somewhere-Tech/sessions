@@ -23,6 +23,33 @@ func ContinueAcrossProviders(
 	observations ledger.ObservationWriter,
 	source *AdoptSource,
 ) (AdoptResult, error) {
+	return createProviderCopy(ctx, continuation, name, creator, observations, source, false)
+}
+
+// ForkConversation creates a new Rich conversation from one stable authored
+// history snapshot. The source runtime remains live and is never marked as
+// reopened or superseded. Display hierarchy records the new conversation as a
+// child of the source so the branch is visible without rewriting provenance.
+func ForkConversation(
+	ctx context.Context,
+	continuation state.ContinuationContext,
+	name string,
+	creator SessionCreator,
+	source *AdoptSource,
+) (AdoptResult, error) {
+	continuation.Fork = true
+	return createProviderCopy(ctx, continuation, name, creator, nil, source, true)
+}
+
+func createProviderCopy(
+	ctx context.Context,
+	continuation state.ContinuationContext,
+	name string,
+	creator SessionCreator,
+	observations ledger.ObservationWriter,
+	source *AdoptSource,
+	fork bool,
+) (AdoptResult, error) {
 	if err := continuation.Validate(); err != nil {
 		return AdoptResult{}, err
 	}
@@ -38,10 +65,19 @@ func ContinueAcrossProviders(
 	description := ""
 	var tags map[string]string
 	var displayParent *string
+	profile := ""
+	configDir := ""
 	if source != nil {
 		description = source.Description
 		tags = state.CloneTags(source.Tags)
-		if source.DisplayParentSessionID != nil {
+		if fork && continuation.SourceProvider == continuation.DestinationProvider {
+			profile = source.Profile
+			configDir = source.ConfigDir
+		}
+		if fork && source.LaneID != "" {
+			parent := source.LaneID
+			displayParent = &parent
+		} else if source.DisplayParentSessionID != nil {
 			parent := *source.DisplayParentSessionID
 			displayParent = &parent
 		}
@@ -59,7 +95,8 @@ func ContinueAcrossProviders(
 	}
 	created, err := creator.Create(ctx, state.CreateSessionRequest{
 		Cmd: cmd, Cwd: continuation.SourceCWD, Name: name,
-		Description: description, Tags: tags, Kind: kind,
+		Description: description, Tags: tags, Kind: kind, Profile: profile,
+		ConfigDir:              configDir,
 		DisplayParentSessionID: displayParent, Continuation: &continuation,
 	})
 	if err != nil {
@@ -71,6 +108,13 @@ func ContinueAcrossProviders(
 		SourceProvider:      continuation.SourceProvider,
 		DestinationProvider: continuation.DestinationProvider,
 		Mode:                continuation.Mode, ImportedMessages: len(continuation.Messages),
+	}
+	if fork {
+		result.SourceUntouched = true
+		if source != nil {
+			result.ForkedFromSessionID = source.LaneID
+		}
+		return result, nil
 	}
 	if source != nil && source.LaneID != "" {
 		if observations == nil {

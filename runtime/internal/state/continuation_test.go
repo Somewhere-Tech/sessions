@@ -49,3 +49,19 @@ func TestContinuationRejectsProviderInternalRoles(t *testing.T) {
 		t.Fatal("expected tool-role continuation to be rejected")
 	}
 }
+
+func TestContinuationAllowsSameProviderOnlyForFork(t *testing.T) {
+	value := ContinuationContext{
+		SchemaVersion:   ContinuationSchemaVersion,
+		SourceHistoryID: "source", SourceProvider: "claude", SourceCWD: "/work",
+		DestinationProvider: "claude", Mode: ContinuationLinkedSearch,
+		Messages: []ContinuationMessage{{Role: "user", Text: "branch here"}},
+	}
+	if err := value.Validate(); err == nil {
+		t.Fatal("expected ordinary same-provider continuation to be rejected")
+	}
+	value.Fork = true
+	if err := value.Validate(); err != nil {
+		t.Fatalf("fork validation: %v", err)
+	}
+}
