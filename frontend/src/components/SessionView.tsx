@@ -18,6 +18,7 @@ import { SessionPopOutButton } from './SessionPopOutButton';
 import { MachineMark } from './MachineMark';
 import { readInitialSessionView, writeSessionView, type SessionViewMode } from '../lib/sessionViewPreference';
 import { LoadingShell } from './LoadingShell';
+import { ConversationForkButton } from './ConversationForkButton';
 
 import type { ActiveStatus } from '../App';
 
@@ -77,6 +78,7 @@ let terminalNoticeShownThisLaunch = false;
 function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onFork, onCloseView, onBack, preferFullTerminal = false }: Props): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>(() => readInitialSessionView(sessionId));
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [forkMode, setForkMode] = useState(false);
   const [terminalExpanded, setTerminalExpanded] = useState(false);
   const sessionViewRef = useRef<HTMLDivElement>(null);
   const terminalModePillRef = useRef<HTMLSpanElement>(null);
@@ -193,6 +195,10 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   useEffect(() => {
     writeSessionView(viewMode);
   }, [viewMode]);
+
+  useEffect(() => {
+    setForkMode(false);
+  }, [sessionId]);
 
   useEffect(() => {
     if (!terminalWarningKey) return;
@@ -493,6 +499,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             type="button"
             className={`view-toggle-btn terminal-drawer-toggle${effectiveView === 'terminal' ? ' is-active' : ''}`}
             onClick={() => {
+              setForkMode(false);
               if (effectiveView === 'terminal' && supportsConversation) {
                 setTerminalExpanded(false);
                 setViewMode('remote');
@@ -509,12 +516,27 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           </button>
         </div>
         {term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Reconnecting…' : 'Conversation stream unavailable'}</span> : null}
+        {supportsConversation && onFork ? (
+          <ConversationForkButton
+            active={forkMode}
+            onClick={() => {
+              const next = !forkMode;
+              setForkMode(next);
+              if (next) {
+                setDetailsOpen(false);
+                setTerminalExpanded(false);
+                setViewMode('remote');
+              }
+            }}
+          />
+        ) : null}
         {session ? (
           <button
             type="button"
             className={`details-inspector-button${detailsOpen ? ' is-active' : ''}`}
             onClick={() => {
               if (!detailsOpen && supportsConversation) {
+                setForkMode(false);
                 setTerminalExpanded(false);
                 setViewMode('remote');
               }
@@ -613,6 +635,8 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               ? continueInTerminal
               : undefined}
             onForkFromMessage={onFork ? forkFromVisibleMessage : undefined}
+            forkMode={forkMode}
+            onExitForkMode={() => setForkMode(false)}
           />
         </div>
         <div className="session-details-pane">

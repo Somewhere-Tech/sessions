@@ -88,9 +88,8 @@ export interface DispatchMessage {
   // under or alongside the message body.
   toolCalls?: ToolCall[];
   // For assistant messages: presence of a `thinking` content block.
-  // We don't display the raw reasoning (often signed/encrypted in
-  // recent Claude versions anyway) but a "💭 thought for …" badge
-  // tells the user Claude reasoned before answering.
+  // Raw reasoning is not shown; safe provider summaries, when present,
+  // are carried separately in reasoningSummary.
   hadThinking?: boolean;
   // Codex app-server exposes safe reasoning summaries and commentary as
   // first-class UI material. They stay separate from the final answer so a
