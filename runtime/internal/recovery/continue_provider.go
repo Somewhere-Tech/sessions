@@ -108,6 +108,8 @@ func createProviderCopy(
 		SourceProvider:      continuation.SourceProvider,
 		DestinationProvider: continuation.DestinationProvider,
 		Mode:                continuation.Mode, ImportedMessages: len(continuation.Messages),
+		ForkPointIndex:     continuation.ForkPointIndex,
+		ForkPointMessageID: continuation.ForkPointMessageID,
 	}
 	if fork {
 		result.SourceUntouched = true

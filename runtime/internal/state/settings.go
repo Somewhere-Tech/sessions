@@ -26,6 +26,11 @@ const (
 	ClaudeChoiceOn      = "on"
 	ClaudeChoiceOff     = "off"
 
+	OnboardingCurrentVersion      = 1
+	RemoteControlConsentPending   = "pending"
+	RemoteControlConsentEnabled   = "enabled"
+	RemoteControlConsentLocalOnly = "local-only"
+
 	ClaudePermissionManual      = "manual"
 	ClaudePermissionAcceptEdits = "acceptEdits"
 	ClaudePermissionAuto        = "auto"
@@ -74,12 +79,29 @@ type ClaudeSettings struct {
 
 func DefaultClaudeSettings() ClaudeSettings {
 	return ClaudeSettings{
-		RemoteControl:  ClaudeChoiceInherit,
+		// The native interactive CLI is Sessions' primary Claude runtime, but
+		// its outbound Remote Control connection is consent-gated separately.
+		// A missing, upgraded, or reset installation therefore stays local.
+		RemoteControl:  ClaudeChoiceOff,
 		PermissionMode: ClaudeChoiceInherit,
 		Effort:         ClaudeChoiceInherit,
 		Chrome:         ClaudeChoiceInherit,
 		SomewhereMCP:   ClaudeChoiceInherit,
 	}
+}
+
+// OnboardingSettings records only affirmative user choices made through a
+// user-facing Sessions surface. It is deliberately separate from Claude launch
+// defaults so an old "inherit" or "on" value cannot silently become consent.
+type OnboardingSettings struct {
+	Version              int    `json:"version"`
+	RemoteControlConsent string `json:"remoteControlConsent"`
+}
+
+type OnboardingState struct {
+	Version       int    `json:"version"`
+	Complete      bool   `json:"complete"`
+	RemoteControl string `json:"remoteControl"`
 }
 
 func NormalizeClaudeSettings(settings ClaudeSettings) (ClaudeSettings, error) {
@@ -257,11 +279,12 @@ func (n *NotifySettings) Set(kind string, enabled bool) error {
 // state. Additive fields keep this file easy to extend without changing its
 // location or format.
 type Settings struct {
-	LAN    bool            `json:"lan"`
-	Notify *NotifySettings `json:"notify,omitempty"`
-	Recap  *RecapSettings  `json:"recap,omitempty"`
-	AI     *AISettings     `json:"ai,omitempty"`
-	Claude *ClaudeSettings `json:"claude,omitempty"`
+	LAN        bool                `json:"lan"`
+	Notify     *NotifySettings     `json:"notify,omitempty"`
+	Recap      *RecapSettings      `json:"recap,omitempty"`
+	AI         *AISettings         `json:"ai,omitempty"`
+	Claude     *ClaudeSettings     `json:"claude,omitempty"`
+	Onboarding *OnboardingSettings `json:"onboarding,omitempty"`
 }
 
 func (s Settings) EffectiveNotify() NotifySettings {
@@ -286,10 +309,30 @@ func (s Settings) EffectiveAI() AISettings {
 }
 
 func (s Settings) EffectiveClaude() ClaudeSettings {
-	if s.Claude == nil {
-		return DefaultClaudeSettings()
+	effective := DefaultClaudeSettings()
+	if s.Claude != nil {
+		effective = *s.Claude
 	}
-	return *s.Claude
+	if s.EffectiveOnboarding().RemoteControl != RemoteControlConsentEnabled {
+		effective.RemoteControl = ClaudeChoiceOff
+	}
+	return effective
+}
+
+func (s Settings) EffectiveOnboarding() OnboardingState {
+	state := OnboardingState{
+		Version:       OnboardingCurrentVersion,
+		RemoteControl: RemoteControlConsentPending,
+	}
+	if s.Onboarding == nil || s.Onboarding.Version < OnboardingCurrentVersion {
+		return state
+	}
+	switch s.Onboarding.RemoteControlConsent {
+	case RemoteControlConsentEnabled, RemoteControlConsentLocalOnly:
+		state.Complete = true
+		state.RemoteControl = s.Onboarding.RemoteControlConsent
+	}
+	return state
 }
 
 func LoadSettings(path string) (Settings, error) {

@@ -25,6 +25,34 @@ them.
   access are separate capabilities. Enabling one never silently enables
   another or creates a general-purpose tunnel.
 
+## Claude Remote Control consent
+
+Claude Remote Control is an Anthropic capability on Claude's native
+interactive CLI. Sessions can make that same locally running conversation
+available on claude.ai and the Claude mobile app, using the user's existing
+Claude subscription. The connection goes directly from Claude Code to
+Anthropic; Somewhere is not a transcript relay.
+
+Sessions recommends the feature during first-run onboarding but does not enable
+it until the user explicitly chooses **Enable Remote Control**. Choosing
+**Keep sessions local** is equally complete onboarding. The choice is stored per
+Sessions machine and can be changed later in Settings. Fresh installs, upgraded
+installs, missing state, old `inherit` values, and old `on` values all remain
+local until this current consent record exists. Sessions also passes
+`remoteControlAtStartup: false` for a local-only managed launch.
+
+The daemon enforces this below the UI: general Claude settings, per-session
+overrides, continuations, delegates, and direct `--remote-control` launch
+arguments cannot enable the feature without the recorded choice. The
+authenticated `sessions onboarding` command exposes the state to people and
+agents but deliberately has no command that can grant consent. The user-facing
+write endpoint requires an explicit consent header; that is a product-surface
+guard, not a claim that another process already authorized with the local
+daemon token is cryptographically distinguishable from the app.
+
+Changing this setting affects only newly launched Claude processes. Sessions
+does not restart, terminate, or alter existing sessions.
+
 ## Review checklist for an outbound feature
 
 1. Is the destination allowlisted and is TLS/authentication fail-closed?

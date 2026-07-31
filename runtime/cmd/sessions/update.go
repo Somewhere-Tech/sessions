@@ -45,6 +45,23 @@ type nativeUpdateResult struct {
 	Detail         string `json:"detail"`
 }
 
+type updateConvergenceBaseline struct {
+	SessionIDs map[string]struct{}
+}
+
+type updateHealth struct {
+	OK          bool   `json:"ok"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Discovering bool   `json:"discovering"`
+}
+
+type updateSessions struct {
+	Sessions []struct {
+		ID string `json:"id"`
+	} `json:"sessions"`
+}
+
 type nativeUpdateManifest struct {
 	Version   string                          `json:"version"`
 	Platforms map[string]nativeUpdatePlatform `json:"platforms"`
@@ -78,15 +95,161 @@ func (a *app) cmdUpdate(args []string) error {
 	if os.Geteuid() == 0 {
 		return fail(2, "do not run `sessions update` with sudo; update from the macOS user who owns Sessions.app")
 	}
-	result, err := a.runUpdate(context.Background(), checkOnly)
+	ctx := context.Background()
+	baseline, baselineReady := a.captureUpdateConvergenceBaseline(ctx, checkOnly)
+	result, err := a.runUpdate(ctx, checkOnly)
 	if err != nil {
 		return err
+	}
+	if result.Updated && result.Reopened && baselineReady {
+		preserved, convergenceErr := a.waitForUpdateConvergence(ctx, result.LatestVersion, baseline)
+		if convergenceErr != nil {
+			return fail(
+				2,
+				"Sessions %s was installed and the app reopened, but the background update has not finished: %s. Existing runners were not stopped",
+				result.LatestVersion,
+				convergenceErr,
+			)
+		}
+		result.Detail = fmt.Sprintf(
+			"Updated Sessions %s → %s. The app, CLI, and background service are current; %d live sessions were preserved.",
+			result.CurrentVersion,
+			result.LatestVersion,
+			preserved,
+		)
 	}
 	if a.wantJSON {
 		return writeJSON(a.stdout, result, true)
 	}
 	_, err = fmt.Fprintln(a.stdout, result.Detail)
 	return err
+}
+
+func (a *app) captureUpdateConvergenceBaseline(
+	ctx context.Context,
+	checkOnly bool,
+) (updateConvergenceBaseline, bool) {
+	baseline := updateConvergenceBaseline{SessionIDs: make(map[string]struct{})}
+	if checkOnly || a.api == nil || !cliHostIsLoopback(a.host) {
+		return baseline, false
+	}
+	var health updateHealth
+	if err := a.getUpdateJSON(ctx, "/api/health", &health); err != nil ||
+		!health.OK || health.Name != "sessionsd" || health.Discovering {
+		return baseline, false
+	}
+	var sessions updateSessions
+	if err := a.getUpdateJSON(ctx, "/api/sessions", &sessions); err != nil {
+		return baseline, false
+	}
+	for _, session := range sessions.Sessions {
+		if strings.TrimSpace(session.ID) != "" {
+			baseline.SessionIDs[session.ID] = struct{}{}
+		}
+	}
+	return baseline, true
+}
+
+func (a *app) waitForUpdateConvergence(
+	ctx context.Context,
+	targetVersion string,
+	baseline updateConvergenceBaseline,
+) (int, error) {
+	timeout := 30*time.Second + time.Duration(len(baseline.SessionIDs))*2*time.Second
+	if timeout > 5*time.Minute {
+		timeout = 5 * time.Minute
+	}
+	now := a.now
+	if now == nil {
+		now = time.Now
+	}
+	sleep := a.sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	cliIsCurrent := a.cliIsCurrent
+	if cliIsCurrent == nil {
+		cliIsCurrent = installedCLIMatches
+	}
+	deadline := now().Add(timeout)
+	lastDetail := "the new background service has not answered yet"
+	for now().Before(deadline) {
+		var health updateHealth
+		if err := a.getUpdateJSON(ctx, "/api/health", &health); err != nil {
+			lastDetail = err.Error()
+		} else if !health.OK || health.Name != "sessionsd" {
+			lastDetail = "localhost is not answering as sessionsd"
+		} else if health.Version != targetVersion {
+			lastDetail = fmt.Sprintf("sessionsd still reports %s", health.Version)
+		} else if health.Discovering {
+			lastDetail = "sessionsd is still reconnecting to existing runners"
+		} else {
+			var sessions updateSessions
+			if err := a.getUpdateJSON(ctx, "/api/sessions", &sessions); err != nil {
+				lastDetail = err.Error()
+			} else {
+				current := make(map[string]struct{}, len(sessions.Sessions))
+				for _, session := range sessions.Sessions {
+					current[session.ID] = struct{}{}
+				}
+				missing := 0
+				for id := range baseline.SessionIDs {
+					if _, ok := current[id]; !ok {
+						missing++
+					}
+				}
+				switch {
+				case missing > 0:
+					lastDetail = fmt.Sprintf("sessionsd is still reconnecting to %d live sessions", missing)
+				case !cliIsCurrent(targetVersion):
+					lastDetail = "the Sessions CLI link is still converging"
+				default:
+					return len(baseline.SessionIDs), nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+			sleep(250 * time.Millisecond)
+		}
+	}
+	return 0, fmt.Errorf("%s after %s", lastDetail, timeout.Round(time.Second))
+}
+
+func (a *app) getUpdateJSON(ctx context.Context, path string, target any) error {
+	response, err := a.api.request(ctx, http.MethodGet, path, nil, 2*time.Second)
+	if err != nil {
+		return err
+	}
+	if response.status != http.StatusOK {
+		return fmt.Errorf("%s returned HTTP %d", path, response.status)
+	}
+	if err := json.Unmarshal(response.body, target); err != nil {
+		return fmt.Errorf("decode %s: %w", path, err)
+	}
+	return nil
+}
+
+func installedCLIMatches(targetVersion string) bool {
+	targetVersion = strings.TrimPrefix(strings.TrimSpace(targetVersion), "v")
+	for _, candidate := range []string{
+		"/opt/homebrew/bin/sessions",
+		"/usr/local/bin/sessions",
+		filepath.Join(os.Getenv("HOME"), ".local", "bin", "sessions"),
+	} {
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		output, err := exec.Command(candidate, "version").Output()
+		if err != nil ||
+			strings.TrimPrefix(strings.TrimSpace(string(output)), "v") != targetVersion {
+			return false
+		}
+	}
+	return true
 }
 
 func runNativeAppUpdate(ctx context.Context, checkOnly bool) (nativeUpdateResult, error) {

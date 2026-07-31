@@ -10,10 +10,9 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/migrate"
-	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
-func TestMigrateCreateStartsOneRichTargetAndRecordsSourceLineage(t *testing.T) {
+func TestMigrateCreateStartsOneInteractiveClaudeTargetAndRecordsSourceLineage(t *testing.T) {
 	daemon := newTestDaemon(t)
 	ledgerPath := filepath.Join(daemon.root, "ledger", "lanes.sqlite3")
 	t.Setenv("SESSIONS_LEDGER_PATH", ledgerPath)
@@ -37,8 +36,8 @@ func TestMigrateCreateStartsOneRichTargetAndRecordsSourceLineage(t *testing.T) {
 	}
 	var result migrate.CreateResult
 	decodeBody(t, response, &result)
-	if result.Session.ID == "" || result.Session.Kind != state.KindClaudeStructured ||
-		result.Session.ConversationID != provider || !result.LineageRecorded {
+	if result.Session.ID == "" || result.Session.Kind != "" ||
+		result.Session.ConversationID != "" || !result.LineageRecorded {
 		t.Fatalf("create result = %#v", result)
 	}
 	t.Cleanup(func() {

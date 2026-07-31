@@ -26,7 +26,6 @@ interface Props {
   preferredHistoryId?: string;
   preferredDestinationProvider?: 'claude' | 'codex';
   preferredRuntimeMode?: 'rich' | 'terminal';
-  preferredRemoteControl?: boolean;
   // Click handler if the user wants to abandon resume and start fresh.
   // App.tsx swaps to the New Session dialog so the user doesn't lose
   // their place if the picker turns out to be empty.
@@ -93,8 +92,7 @@ export function ResumeDialog({
   preferredSourceSessionId,
   preferredHistoryId,
   preferredDestinationProvider,
-  preferredRuntimeMode,
-  preferredRemoteControl
+  preferredRuntimeMode
 }: Props): JSX.Element {
   const refresh = useSessions((s) => s.refresh);
   const openSessions = useSessions((s) => s.sessions);
@@ -109,11 +107,9 @@ export function ResumeDialog({
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<ResumableSession | null>(null);
   const [destinationProvider, setDestinationProvider] = useState<'claude' | 'codex'>('claude');
-  const [runtimeMode, setRuntimeMode] = useState<'rich' | 'terminal'>('rich');
-  const [remoteControl, setRemoteControl] = useState(Boolean(preferredRemoteControl));
+  const [runtimeMode, setRuntimeMode] = useState<'rich' | 'terminal'>('terminal');
   const preferredDestinationApplied = useRef(false);
   const preferredRuntimeApplied = useRef(false);
-  const preferredRemoteControlApplied = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -216,17 +212,10 @@ export function ResumeDialog({
       preferredRuntimeApplied.current = true;
       setRuntimeMode(preferredRuntimeMode);
     } else if (!preferredRuntimeMode) {
-      setRuntimeMode('rich');
-    }
-    if (preferredRemoteControl && !preferredRemoteControlApplied.current) {
-      preferredRemoteControlApplied.current = true;
-      setRemoteControl(true);
-    } else if (!preferredRemoteControl) {
-      setRemoteControl(false);
+      setRuntimeMode(selected.tool === 'claude' ? 'terminal' : 'rich');
     }
   }, [
     preferredDestinationProvider,
-    preferredRemoteControl,
     preferredRuntimeMode,
     selected?.sessionId,
     selected?.tool
@@ -274,8 +263,7 @@ export function ResumeDialog({
         sourceSessionId,
         selected.historyId,
         destinationProvider,
-        runtimeMode,
-        destinationProvider === 'claude' && runtimeMode === 'terminal' && remoteControl
+        runtimeMode
       );
       await refresh();
       onResumed(result.laneId);
@@ -483,7 +471,10 @@ export function ResumeDialog({
                   role="radio"
                   aria-checked={destinationProvider === 'claude'}
                   className={destinationProvider === 'claude' ? 'is-active' : ''}
-                  onClick={() => { setDestinationProvider('claude'); if (selected.tool !== 'claude') setRuntimeMode('rich'); }}
+                  onClick={() => {
+                    setDestinationProvider('claude');
+                    setRuntimeMode(selected.tool === 'claude' ? 'terminal' : 'rich');
+                  }}
                   disabled={busy}
                 >Claude</button>
                 <button
@@ -491,7 +482,7 @@ export function ResumeDialog({
                   role="radio"
                   aria-checked={destinationProvider === 'codex'}
                   className={destinationProvider === 'codex' ? 'is-active' : ''}
-                  onClick={() => { setDestinationProvider('codex'); if (selected.tool !== 'codex') setRuntimeMode('rich'); }}
+                  onClick={() => { setDestinationProvider('codex'); setRuntimeMode('rich'); }}
                   disabled={busy}
                 >Codex</button>
               </div>
@@ -502,30 +493,15 @@ export function ResumeDialog({
                     ? 'Creates a Codex chat with authored history imported.'
                     : 'Creates a Claude chat linked to the exact searchable history.'}
               </small>
-              <div role="radiogroup" aria-label="Runtime">
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={runtimeMode === 'rich'}
-                  className={runtimeMode === 'rich' ? 'is-active' : ''}
-                  onClick={() => setRuntimeMode('rich')}
-                  disabled={busy}
-                >Rich</button>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={runtimeMode === 'terminal'}
-                  className={runtimeMode === 'terminal' ? 'is-active' : ''}
-                  onClick={() => setRuntimeMode('terminal')}
-                  disabled={busy || destinationProvider !== selected.tool}
-                  title={destinationProvider !== selected.tool ? 'Cross-provider continuation uses Rich mode' : 'Open the provider’s full terminal interface'}
-                >Terminal</button>
-              </div>
+              {destinationProvider === 'claude' && selected.tool === 'claude' ? (
+                <small>Continues the same Claude conversation with Conversation and Terminal available.</small>
+              ) : destinationProvider === 'codex' ? (
+                <small>Continues through Codex’s structured conversation runtime.</small>
+              ) : (
+                <small>Cross-provider continuation uses Claude’s structured import runtime.</small>
+              )}
               {destinationProvider === 'claude' && runtimeMode === 'terminal' ? (
-                <label className="resume-remote-control">
-                  <input type="checkbox" checked={remoteControl} onChange={(event) => setRemoteControl(event.currentTarget.checked)} disabled={busy} />
-                  <span><strong>Remote Control</strong><small>Start Claude with access from claude.ai and mobile.</small></span>
-                </label>
+                <small>Remote Control follows the explicit choice for the destination machine in Settings.</small>
               ) : null}
             </div>
           ) : null}

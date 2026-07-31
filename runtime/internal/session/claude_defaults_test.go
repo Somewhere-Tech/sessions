@@ -19,7 +19,7 @@ func TestClaudeDefaultsBecomeLaunchArguments(t *testing.T) {
 		Model: "opus", Effort: "high", Chrome: state.ClaudeChoiceOff,
 		SomewhereMCP: state.ClaudeSomewhereEnsure, RemoteControlNamePrefix: "sessions",
 	}
-	if err := state.SaveSettings(settingsPath, state.Settings{Claude: &settings}); err != nil {
+	if err := state.SaveSettings(settingsPath, settingsWithRemoteControlConsent(settings)); err != nil {
 		t.Fatal(err)
 	}
 	manager := &Manager{config: state.Config{SettingsPath: settingsPath}}
@@ -47,6 +47,55 @@ func TestClaudeDefaultsBecomeLaunchArguments(t *testing.T) {
 	}
 }
 
+func TestClaudeInteractiveDefaultsRemoteControlOffUntilConsent(t *testing.T) {
+	manager := &Manager{}
+	request, err := manager.applyClaudeDefaults(state.CreateSessionRequest{
+		Cmd: "claude", Args: []string{"--session-id", "fixture"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasAnyArg(request.Args, "--remote-control") {
+		t.Fatalf("interactive Claude launch enabled Remote Control without consent: %q", request.Args)
+	}
+	settingsIndex := slices.Index(request.Args, "--settings")
+	if settingsIndex < 0 || settingsIndex+1 >= len(request.Args) ||
+		!strings.Contains(request.Args[settingsIndex+1], `"remoteControlAtStartup":false`) {
+		t.Fatalf("interactive Claude launch did not explicitly keep Remote Control off: %q", request.Args)
+	}
+}
+
+func TestClaudePerSessionRemoteControlCannotBypassConsent(t *testing.T) {
+	manager := &Manager{}
+	for _, request := range []state.CreateSessionRequest{
+		{
+			Cmd: "claude", Args: []string{"--session-id", "fixture"},
+			Claude: &state.ClaudeSessionOptions{RemoteControl: state.ClaudeChoiceOn},
+		},
+		{
+			Cmd: "claude", Args: []string{"--session-id", "fixture", "--remote-control"},
+		},
+	} {
+		_, err := manager.applyClaudeDefaults(request)
+		if err == nil || !strings.Contains(err.Error(), "explicit user consent") {
+			t.Fatalf("Remote Control without consent error = %v", err)
+		}
+	}
+
+	request, err := manager.applyClaudeDefaults(state.CreateSessionRequest{
+		Cmd: "claude", Args: []string{"--session-id", "fixture"},
+		Claude: &state.ClaudeSessionOptions{RemoteControl: state.ClaudeChoiceInherit},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settingsIndex := slices.Index(request.Args, "--settings")
+	if settingsIndex < 0 || settingsIndex+1 >= len(request.Args) ||
+		!strings.Contains(request.Args[settingsIndex+1], `"remoteControlAtStartup":false`) {
+		t.Fatalf("inherit bypassed pending Remote Control consent: %q", request.Args)
+	}
+}
+
 func TestClaudeStructuredForcesRemoteControlOff(t *testing.T) {
 	settingsPath := filepath.Join(t.TempDir(), "settings.json")
 	settings := state.ClaudeSettings{
@@ -54,7 +103,7 @@ func TestClaudeStructuredForcesRemoteControlOff(t *testing.T) {
 		Effort: state.ClaudeChoiceInherit, Chrome: state.ClaudeChoiceInherit,
 		SomewhereMCP: state.ClaudeChoiceInherit, RemoteControlNamePrefix: "sessions",
 	}
-	if err := state.SaveSettings(settingsPath, state.Settings{Claude: &settings}); err != nil {
+	if err := state.SaveSettings(settingsPath, settingsWithRemoteControlConsent(settings)); err != nil {
 		t.Fatal(err)
 	}
 	manager := &Manager{config: state.Config{SettingsPath: settingsPath}}
@@ -94,7 +143,7 @@ func TestClaudePerSessionOverridesAndExistingSomewhereConfig(t *testing.T) {
 		RemoteControl: state.ClaudeChoiceOn, PermissionMode: state.ClaudePermissionBypass,
 		Model: "opus", Effort: "high", Chrome: state.ClaudeChoiceOn, SomewhereMCP: state.ClaudeSomewhereEnsure,
 	}
-	if err := state.SaveSettings(settingsPath, state.Settings{Claude: &settings}); err != nil {
+	if err := state.SaveSettings(settingsPath, settingsWithRemoteControlConsent(settings)); err != nil {
 		t.Fatal(err)
 	}
 	manager := &Manager{config: state.Config{SettingsPath: settingsPath}}
@@ -208,4 +257,14 @@ func containsArgSequence(args []string, sequence ...string) bool {
 		}
 	}
 	return false
+}
+
+func settingsWithRemoteControlConsent(claude state.ClaudeSettings) state.Settings {
+	return state.Settings{
+		Claude: &claude,
+		Onboarding: &state.OnboardingSettings{
+			Version:              state.OnboardingCurrentVersion,
+			RemoteControlConsent: state.RemoteControlConsentEnabled,
+		},
+	}
 }

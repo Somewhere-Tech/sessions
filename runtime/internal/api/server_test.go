@@ -71,12 +71,13 @@ func TestForkLiveConversationCreatesCopyWithoutEndingSource(t *testing.T) {
 	conversation := strings.Join([]string{
 		`{"type":"user","uuid":"u1","timestamp":"2026-07-30T17:01:00Z","message":{"role":"user","content":"Review the migration."}}`,
 		`{"type":"assistant","uuid":"a1","timestamp":"2026-07-30T17:01:02Z","message":{"role":"assistant","content":[{"type":"text","text":"The first pass is complete."}]}}`,
+		`{"type":"user","uuid":"u2","timestamp":"2026-07-30T17:02:00Z","message":{"role":"user","content":"Now change production."}}`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(conversationPath, []byte(conversation), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	body := strings.NewReader(`{"sourceSessionId":"` + created.ID + `","destinationProvider":"codex"}`)
+	body := strings.NewReader(`{"sourceSessionId":"` + created.ID + `","destinationProvider":"codex","sourceMessageIndex":1}`)
 	response := serve(
 		t, daemon.handler, http.MethodPost, "/api/recovery/fork", body, "127.0.0.1:1", nil,
 	)
@@ -88,7 +89,9 @@ func TestForkLiveConversationCreatesCopyWithoutEndingSource(t *testing.T) {
 	if !result.OK || !result.SourceUntouched ||
 		result.ForkedFromSessionID != created.ID ||
 		result.DestinationProvider != "codex" ||
-		result.ImportedMessages != 2 {
+		result.ImportedMessages != 2 ||
+		result.ForkPointIndex == nil || *result.ForkPointIndex != 1 ||
+		result.ForkPointMessageID == "" {
 		t.Fatalf("fork result = %+v", result)
 	}
 	source, live := daemon.registry.Get(created.ID)

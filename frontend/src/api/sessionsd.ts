@@ -487,6 +487,37 @@ export async function updateClaudeSettings(settings: ClaudeSettings): Promise<Cl
   return featureJSON<ClaudeSettings>(r, 'Claude defaults');
 }
 
+export interface OnboardingState {
+  version: number;
+  complete: boolean;
+  remoteControl: 'pending' | 'enabled' | 'local-only';
+  supported?: boolean;
+}
+
+export async function fetchOnboardingState(signal?: AbortSignal): Promise<OnboardingState> {
+  const r = await apiFetch(`${httpBase()}/api/onboarding`, { signal });
+  // Older daemons cannot enable Sessions' new Remote Control default, so
+  // allowing their UI through is safe and keeps mixed-version Fleet usable.
+  if (r.status === 404) {
+    return { version: 0, complete: true, remoteControl: 'local-only', supported: false };
+  }
+  return { ...(await json<OnboardingState>(r)), supported: true };
+}
+
+export async function updateOnboardingPreference(
+  remoteControl: 'enabled' | 'local-only'
+): Promise<OnboardingState> {
+  const r = await apiFetch(`${httpBase()}/api/onboarding`, {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/json',
+      'X-Sessions-User-Consent': 'remote-control'
+    },
+    body: JSON.stringify({ remoteControl })
+  });
+  return { ...(await featureJSON<OnboardingState>(r, 'Onboarding')), supported: true };
+}
+
 export async function planSmartSearch(query: string, signal?: AbortSignal): Promise<SmartSearchPlan> {
   const r = await apiFetch(`${httpBase()}/api/search/plan`, {
     method: 'POST',
@@ -1041,6 +1072,8 @@ export interface AdoptConversationResult {
   mode?: 'native-import' | 'linked-search';
   importedMessages?: number;
   forkedFromSessionId?: string;
+  forkPointIndex?: number;
+  forkPointMessageId?: string;
   sourceUntouched?: boolean;
 }
 
@@ -1056,8 +1089,8 @@ export async function adoptConversation(
   sourceSessionId?: string,
   historyId?: string,
   destinationProvider?: 'claude' | 'codex',
-  runtimeMode: 'rich' | 'terminal' = 'rich',
-  remoteControl = false
+  runtimeMode?: 'rich' | 'terminal',
+  remoteControl?: boolean
 ): Promise<AdoptConversationResult> {
   const r = await apiFetch(`${httpBase()}/api/recovery/adopt`, {
     method: 'POST',
@@ -1090,12 +1123,17 @@ export async function repairAdoption(request: AdoptRepairRequest): Promise<Adopt
 
 export async function forkConversation(
   sourceSessionId: string,
-  destinationProvider: 'claude' | 'codex'
+  destinationProvider: 'claude' | 'codex',
+  point?: { index: number; messageId: string }
 ): Promise<AdoptConversationResult> {
   const r = await apiFetch(`${httpBase()}/api/recovery/fork`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sourceSessionId, destinationProvider })
+    body: JSON.stringify({
+      sourceSessionId,
+      destinationProvider,
+      ...(point ? { sourceMessageIndex: point.index, sourceMessageId: point.messageId } : {})
+    })
   });
   return featureJSON<AdoptConversationResult>(r, 'Conversation copies');
 }

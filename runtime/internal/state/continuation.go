@@ -41,6 +41,8 @@ type ContinuationContext struct {
 	DestinationProvider string                `json:"destinationProvider"`
 	Mode                string                `json:"mode"`
 	Fork                bool                  `json:"fork,omitempty"`
+	ForkPointIndex      *int                  `json:"forkPointIndex,omitempty"`
+	ForkPointMessageID  string                `json:"forkPointMessageId,omitempty"`
 	Messages            []ContinuationMessage `json:"messages"`
 	LocalHistoryReady   bool                  `json:"localHistoryReady,omitempty"`
 	ProviderContext     string                `json:"providerContext,omitempty"`
@@ -61,6 +63,20 @@ func (c ContinuationContext) Validate() error {
 	}
 	if c.SourceProvider == c.DestinationProvider && !c.Fork {
 		return errors.New("cross-provider continuation requires different source and destination providers")
+	}
+	if c.ForkPointIndex != nil {
+		if !c.Fork {
+			return errors.New("continuation fork point requires fork mode")
+		}
+		if *c.ForkPointIndex < 0 {
+			return errors.New("continuation fork point index must be non-negative")
+		}
+		if strings.TrimSpace(c.ForkPointMessageID) == "" {
+			return errors.New("continuation fork point message id is required")
+		}
+	}
+	if c.ForkPointIndex == nil && strings.TrimSpace(c.ForkPointMessageID) != "" {
+		return errors.New("continuation fork point message id requires an index")
 	}
 	if c.Mode != ContinuationNativeImport && c.Mode != ContinuationLinkedSearch {
 		return fmt.Errorf("unsupported continuation mode %q", c.Mode)

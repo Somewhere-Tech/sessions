@@ -21,12 +21,15 @@ export function ContinueElsewhereButton({
   onOpen?: () => void;
 }): JSX.Element | null {
   const refresh = useSessions((state) => state.refresh);
+  const source = useSessions((state) => state.sessions.find((session) => session.id === sessionId)) ?? null;
   const [open, setOpen] = useState(false);
   const [machines, setMachines] = useState<NativeSavedMachine[]>([]);
   const [selected, setSelected] = useState('');
   const [plan, setPlan] = useState<NativeMovePlan | null>(null);
   const [allowDirty, setAllowDirty] = useState(false);
-  const [runtimeMode, setRuntimeMode] = useState<'rich' | 'terminal'>('rich');
+  const [runtimeMode, setRuntimeMode] = useState<'rich' | 'terminal'>(
+    source?.tool === 'claude-code' ? 'terminal' : 'rich'
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [complete, setComplete] = useState<NativeMovePlan | null>(null);
@@ -38,6 +41,7 @@ export function ContinueElsewhereButton({
     setPlan(null);
     setComplete(null);
     setError(null);
+    setRuntimeMode(source?.tool === 'claude-code' ? 'terminal' : 'rich');
     setBusy(true);
     try {
       const values = await listNativeMoveMachines();
@@ -142,22 +146,31 @@ export function ContinueElsewhereButton({
                   }} />
                   <span><strong>Include uncommitted Git work in a temporary checkpoint</strong><small>The original files and branch stay unchanged.</small></span>
                 </label>
-                <fieldset className="continue-elsewhere-runtime">
-                  <legend>Open as</legend>
-                  <label>
-                    <input type="radio" name="move-runtime" checked={runtimeMode === 'rich'} disabled={busy} onChange={() => { setRuntimeMode('rich'); setPlan(null); }} />
-                    <span><strong>Rich</strong><small>Recommended. Clean conversation, plans, tools, and model controls.</small></span>
-                  </label>
-                  <label>
-                    <input type="radio" name="move-runtime" checked={runtimeMode === 'terminal'} disabled={busy} onChange={() => { setRuntimeMode('terminal'); setPlan(null); }} />
-                    <span><strong>Terminal</strong><small>The provider’s full terminal interface, including slash commands and setup screens.</small></span>
-                  </label>
-                </fieldset>
+                {source?.tool === 'claude-code' ? (
+                  <div className="continue-elsewhere-runtime">
+                    <strong>Conversation + Terminal</strong>
+                    <small>Claude continues as one interactive session. The destination machine’s Remote Control setting decides whether it also appears on claude.ai and mobile.</small>
+                  </div>
+                ) : (
+                  <fieldset className="continue-elsewhere-runtime">
+                    <legend>Open as</legend>
+                    <label>
+                      <input type="radio" name="move-runtime" checked={runtimeMode === 'rich'} disabled={busy} onChange={() => { setRuntimeMode('rich'); setPlan(null); }} />
+                      <span><strong>Rich</strong><small>Recommended. Clean conversation, plans, tools, and model controls.</small></span>
+                    </label>
+                    <label>
+                      <input type="radio" name="move-runtime" checked={runtimeMode === 'terminal'} disabled={busy} onChange={() => { setRuntimeMode('terminal'); setPlan(null); }} />
+                      <span><strong>Terminal</strong><small>The provider’s full terminal interface and setup screens.</small></span>
+                    </label>
+                  </fieldset>
+                )}
                 {plan ? (
                   <div className="continue-elsewhere-plan">
                     <strong>Ready to continue</strong>
                     <span>{plan.tool === 'codex' ? 'Codex' : 'Claude'} · {(plan.conversation_bytes / 1024 / 1024).toFixed(1)} MB conversation</span>
-                    <span>{plan.runtime_mode === 'terminal' ? 'Terminal interface' : 'Rich conversation'}</span>
+                    <span>{plan.tool === 'claude-code'
+                      ? 'Conversation + Terminal'
+                      : plan.runtime_mode === 'terminal' ? 'Terminal interface' : 'Rich conversation'}</span>
                     <span>{plan.workspace.git ? `Git ${plan.workspace.branch || 'workspace'} at ${(plan.workspace.revision || '').slice(0, 8)}` : 'The same folder must already exist on the destination'}</span>
                     <span>Source history remains here</span>
                   </div>

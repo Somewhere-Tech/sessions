@@ -18,8 +18,14 @@ func TestClaudeSettingsRoundTrip(t *testing.T) {
 	}
 	var defaults state.ClaudeSettings
 	decodeBody(t, response, &defaults)
-	if defaults.PermissionMode != state.ClaudeChoiceInherit || defaults.RemoteControl != state.ClaudeChoiceInherit {
+	if defaults.PermissionMode != state.ClaudeChoiceInherit || defaults.RemoteControl != state.ClaudeChoiceOff {
 		t.Fatalf("defaults = %#v", defaults)
+	}
+	consentHeaders := http.Header{remoteControlConsentHeader: {"remote-control"}}
+	response = serve(t, daemon.handler, http.MethodPut, "/api/onboarding",
+		bytes.NewBufferString(`{"remoteControl":"enabled"}`), "127.0.0.1:1", consentHeaders)
+	if response.Code != http.StatusOK {
+		t.Fatalf("onboarding PUT status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	want := state.ClaudeSettings{

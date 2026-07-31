@@ -34,7 +34,7 @@ const (
 	clientOutboxFrames = 16
 )
 
-var version = "0.2.15"
+var version = "0.2.16"
 
 type config struct {
 	id                string

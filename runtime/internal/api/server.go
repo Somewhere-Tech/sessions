@@ -48,7 +48,7 @@ const (
 // Version is stamped into sessionsd at build time and reported by both health
 // endpoints. Keep the source fallback aligned with the current app version so
 // an un-stamped development build is still honest.
-var Version = "0.2.15"
+var Version = "0.2.16"
 
 type Server struct {
 	config               state.Config
@@ -411,6 +411,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if s.handleRecapRoute(response, request, corsOrigin) {
+		return
+	}
+	if s.handleOnboardingRoute(response, request, corsOrigin) {
 		return
 	}
 	if s.handleClaudeSettingsRoute(response, request, corsOrigin) {
@@ -901,7 +904,7 @@ func (s *Server) sendJSON(response http.ResponseWriter, status int, body any, co
 	}
 	response.Header().Set("Vary", "Origin")
 	response.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization, x-sessions-creator-session, x-sessions-owner-id, x-sessions-client, x-sessions-filename")
+	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization, x-sessions-creator-session, x-sessions-owner-id, x-sessions-client, x-sessions-filename, x-sessions-user-consent")
 	response.WriteHeader(status)
 	if status == http.StatusNoContent {
 		return

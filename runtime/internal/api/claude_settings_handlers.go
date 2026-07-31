@@ -29,6 +29,18 @@ func (s *Server) handleClaudeSettingsRoute(response http.ResponseWriter, request
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
 			return true
 		}
+		current, err := state.LoadSettings(s.lan.settingsPath)
+		if err != nil {
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
+			return true
+		}
+		if normalized.RemoteControl == state.ClaudeChoiceOn &&
+			current.EffectiveOnboarding().RemoteControl != state.RemoteControlConsentEnabled {
+			s.sendJSON(response, http.StatusForbidden, map[string]any{
+				"error": "Remote Control requires explicit user consent in Sessions onboarding or Settings",
+			}, corsOrigin)
+			return true
+		}
 		if err := state.UpdateSettings(s.lan.settingsPath, func(settings *state.Settings) error {
 			settings.Claude = &normalized
 			return nil

@@ -252,17 +252,21 @@ the generated FTS5 query locally (`runtime/internal/api/search_handlers.go`).
 Browser-origin checks are a separate CORS and WebSocket boundary, not a second
 authentication factor.
 
-Claude launch defaults live at `GET/PUT /api/claude/settings` and are resolved
+Machine-level onboarding and Claude launch defaults live at
+`GET/PUT /api/onboarding` and `GET/PUT /api/claude/settings`, then are resolved
 inside the session manager before the runner boundary
 (`runtime/internal/api/claude_settings_handlers.go`,
 `runtime/internal/session/claude_defaults.go`). Remote Control, permission
 mode, model, effort, Chrome, Remote Control naming, and the Somewhere MCP are
-typed rather than free-form startup commands. Explicit per-session choices win;
-`inherit` leaves Claude authoritative. Remote Control is applied only to
-Terminal Claude sessions: Claude's Rich `--print` interface has no interactive
-slash commands or `/rc`, so Rich launches explicitly disable it and the
-conversation composer offers a safe continuation into Terminal when a slash
-command is entered. Sessions never rewrites Claude's files.
+typed rather than free-form startup commands. New Claude sessions default to
+the native interactive CLI, but Remote Control stays explicitly off until the
+user chooses it in first-run onboarding or Settings. A legacy `on` value and a
+per-session override cannot count as consent. Once enabled, Sessions renders
+the provider's canonical JSONL in Conversation while Terminal, claude.ai, and
+mobile remain views of that same process. The explicit Rich `--print` runtime
+remains available for headless automation and disables Remote Control because
+it is a separate non-interactive process. Sessions never rewrites Claude's
+files.
 The Somewhere resolver recognizes the canonical HTTP registration or local
 `somewhere mcp` adapter, avoids an equivalent duplicate, and fails on a
 same-name/different-target conflict without copying a token into runner state.
@@ -417,9 +421,10 @@ explicit, unambiguous provider artifact (`runtime/internal/recovery/adopt.go`).
 The one prompt-index exception is still exact: an authenticated Claude history
 ID must supply a valid provider UUID and an existing recorded absolute
 workspace. Sessions launches only `claude --resume <uuid>` there and never
-searches for a similar folder or conversation. New Claude and Codex
-continuations default to Rich structured runtimes; an ended source preserves
-its explicitly chosen runtime kind.
+searches for a similar folder or conversation. Claude continuations default to
+the native interactive Conversation + Terminal runtime with the destination's
+Remote Control setting. Codex continuations default to its Rich app-server
+runtime. Explicit runtime choices remain available at the recovery boundary.
 
 `runtime/internal/recovery/continue_provider.go` owns the separate
 cross-provider creation boundary. The API normalizes the exact selected
@@ -432,12 +437,14 @@ tool output, diffs, or attachments. The public behavior and limitations are in
 [`docs/CONTINUATION.md`](CONTINUATION.md).
 
 The adjacent `POST /api/recovery/fork` boundary is deliberately
-non-lifecycle: it snapshots authored messages only after the current turn is
-idle, creates a fresh Rich provider conversation, and leaves the source runner
-live. Same-provider forks and cross-provider copies share the private
+non-lifecycle: it snapshots authored messages only after a live current turn is
+idle, optionally truncates at an exact normalized message index guarded by its
+stable message ID, creates a fresh provider conversation, and leaves the source
+unchanged. Same-provider forks and cross-provider copies share the private
 continuation sidecar, while `recovery.ForkConversation` skips the successor
 ledger mutation used by Continue and groups the copy beneath its source only
-through the display hierarchy.
+through the display hierarchy. The sidecar carries the selected fork point so
+lineage remains explicit after launch.
 
 ### Feedback and support
 

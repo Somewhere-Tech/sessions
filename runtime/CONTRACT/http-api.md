@@ -614,7 +614,7 @@ Auth required. Resolves one explicit provider conversation and creates its
 successor through the normal write-ahead session boundary:
 
 ```json
-{"target":"<provider UUID or conversation path>","sourceSessionId":"<optional ended Sessions id>","runtimeMode":"rich","force":false}
+{"target":"<provider UUID or conversation path>","sourceSessionId":"<optional ended Sessions id>","force":false}
 ```
 
 A complete adoption returns `201` with `ok: true`, the new `laneId`, and the
@@ -623,11 +623,14 @@ actor/provider/source-link annotations are appended. If one of those
 post-launch appends fails, the endpoint therefore returns `202`, not a false
 full failure:
 
-`runtimeMode` is optional and defaults to `rich`. `terminal` reopens the exact
-same provider conversation through the provider's terminal interface. It is
-accepted only for same-provider continuation; cross-provider continuation
-requires Rich mode because its imported/linked context is delivered through
-the structured runtime.
+`runtimeMode` is optional. Claude defaults to its native interactive runtime,
+where Sessions presents Conversation and Terminal for the same process and the
+destination's typed Claude setting enables Remote Control. Codex defaults to
+its Rich app-server runtime. Explicit `rich` selects the structured runtime;
+explicit `terminal` selects the provider terminal. Terminal is accepted only
+for same-provider continuation; cross-provider continuation requires Rich mode
+because its imported/linked context is delivered through the structured
+runtime.
 
 ```json
 {
@@ -662,8 +665,8 @@ was started.
 
 ### `POST /api/recovery/fork`
 
-Auth required. Creates a new Rich conversation from a stable authored-history
-snapshot while leaving the source runtime live:
+Auth required. Creates a new conversation from a stable authored-history
+snapshot while leaving the source unchanged:
 
 ```json
 {"sourceSessionId":"<live Sessions id>","destinationProvider":"codex"}
@@ -673,6 +676,22 @@ snapshot while leaving the source runtime live:
 source must be a live, idle Claude or Codex session with a complete local
 conversation. A working source returns `409`; clients should wait for its
 current turn to finish instead of copying a partial assistant response.
+
+To fork through one exact authored message, include its normalized transcript
+index and stable ID:
+
+```json
+{
+  "sourceSessionId": "<Sessions id>",
+  "destinationProvider": "claude",
+  "sourceMessageIndex": 42,
+  "sourceMessageId": "<stable transcript message id>"
+}
+```
+
+The index is zero-based. The ID is a concurrency guard: a mismatch returns
+`409` and no runtime is created. Omitting both fields forks from the latest
+stable authored snapshot.
 
 Success returns `201`:
 
@@ -686,6 +705,8 @@ Success returns `201`:
   "mode": "native-import",
   "importedMessages": 42,
   "forkedFromSessionId": "<source Sessions id>",
+  "forkPointIndex": 42,
+  "forkPointMessageId": "<stable transcript message id>",
   "sourceUntouched": true
 }
 ```
@@ -850,7 +871,33 @@ normalized choice in daemon settings, and returns it. Unknown providers or
 invalid JSON return 400; persistence errors return 500. Other methods return
 405.
 
-## Go runtime extension: Claude launch defaults
+## Go runtime extension: onboarding and Claude launch defaults
+
+### `GET /api/onboarding`
+
+Returns the current machine-level user choice:
+
+```json
+{"version":1,"complete":false,"remoteControl":"pending"}
+```
+
+`remoteControl` is `pending`, `enabled`, or `local-only`. A missing, legacy, or
+older-version onboarding record is always `pending`; provider settings do not
+implicitly migrate into consent.
+
+### `PUT /api/onboarding`
+
+The user-facing app submits either `{"remoteControl":"enabled"}` or
+`{"remoteControl":"local-only"}` with
+`X-Sessions-User-Consent: remote-control`. The daemon atomically records the
+current onboarding version and corresponding Claude launch default. A missing
+consent header returns 403; unknown choices and invalid JSON return 400.
+
+This is the only Sessions API that can grant Remote Control consent. The CLI
+exposes `sessions onboarding` as read-only status so an agent can inspect and
+explain the choice but cannot silently make it. All routes still require the
+normal daemon authorization. The extra header is a product-surface guard, not
+a second authentication factor.
 
 ### `GET /api/claude/settings`
 
@@ -858,34 +905,39 @@ Returns the effective typed defaults Sessions applies only to newly launched
 Claude sessions:
 
 ```json
-{"remoteControl":"inherit","permissionMode":"inherit","model":"","effort":"inherit","chrome":"inherit","somewhereMcp":"inherit","remoteControlNamePrefix":""}
+{"remoteControl":"off","permissionMode":"inherit","model":"","effort":"inherit","chrome":"inherit","somewhereMcp":"inherit","remoteControlNamePrefix":""}
 ```
 
 Remote Control and Chrome accept `inherit`, `on`, or `off`; permission mode
 accepts Claude's supported modes plus `inherit`; effort accepts `inherit`,
 `low`, `medium`, `high`, `xhigh`, or `max`; Somewhere MCP accepts `inherit` or
 `ensure`. Empty model and name-prefix fields preserve provider defaults.
-Remote Control is an interactive Claude capability: Sessions applies this
-default only to Terminal Claude sessions. Rich `claude-structured` sessions
-explicitly disable provider Remote Control because Claude's `--print`
-interface has no slash-command or `/rc` surface.
+Remote Control is an interactive Claude capability. The native Claude runtime
+is the default, but Remote Control stays `off` until the user explicitly
+enables it through onboarding or Settings. `off` starts the same Conversation
++ Terminal runtime without claude.ai/mobile connectivity. Explicit Rich
+`claude-structured` sessions disable provider Remote Control because Claude's
+`--print` interface cannot join the interactive Remote Control session.
 
 ### `PUT /api/claude/settings`
 
-Validates and atomically persists the complete object above. The daemon never
-edits Claude settings files or stores provider credentials. Unknown choices,
-control characters, overlong strings, invalid JSON, and unsupported methods
-return 400 or 405 as appropriate.
+Validates and atomically persists the complete object above. A request for
+`remoteControl: "on"` returns 403 until onboarding contains the current
+explicit enabled choice. The daemon never edits Claude settings files or
+stores provider credentials. Unknown choices, control characters, overlong
+strings, invalid JSON, and unsupported methods return 400 or 405 as
+appropriate.
 
 `POST /api/sessions` may include a `claude` object with the same fields.
-Non-empty values override the persisted Sessions defaults for that launch;
-explicit `inherit` defers that setting to Claude. The object is rejected for a
-non-Claude command. `somewhereMcp: "ensure"` adopts an equivalent existing
+Non-empty values override the persisted Sessions defaults for that launch,
+except Remote Control cannot override missing user consent; explicit `inherit`
+defers the other setting to Claude. The object is rejected for a non-Claude
+command. `somewhereMcp: "ensure"` adopts an equivalent existing
 registration or injects the local `somewhere mcp` stdio adapter; a conflicting
 server named `somewhere` fails closed rather than being overwritten.
-An explicit `--remote-control` argument is rejected for a
-`claude-structured` launch with an instructional 400 response; choose a
-Terminal runtime instead.
+An explicit `--remote-control` argument is rejected without recorded consent
+and is also rejected for a `claude-structured` launch with an instructional
+400 response; choose a Terminal runtime after the user enables the feature.
 
 `POST /api/recovery/adopt` accepts `remoteControl: true` only together with
 `runtimeMode: "terminal"` for a same-provider Claude continuation. It forwards

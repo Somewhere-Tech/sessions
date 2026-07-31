@@ -17,6 +17,7 @@ import { HomeView } from './components/HomeView';
 import { SettingsView } from './components/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
 import { SessionsWorkspaceSkeleton } from './components/LoadingShell';
+import { OnboardingDialog } from './components/OnboardingDialog';
 import { useSessions } from './store/sessions';
 import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer } from './lib/servers';
 import { SettingsMenu } from './components/SettingsMenu';
@@ -34,7 +35,14 @@ import { preloadDaily } from './lib/dailyCache';
 import { providerConversationId } from './lib/sessionStatus';
 import { effectiveParentId } from './lib/workingSet';
 import { preferNextSessionView } from './lib/sessionViewPreference';
-import { adoptConversation, forkConversation, repairAdoption } from './api/sessionsd';
+import {
+  adoptConversation,
+  fetchOnboardingState,
+  forkConversation,
+  repairAdoption,
+  updateOnboardingPreference,
+  type OnboardingState
+} from './api/sessionsd';
 import type { SessionInfo, SessionTool } from './types';
 
 const TOOL_ICONS: Record<SessionTool, string> = {
@@ -194,6 +202,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   const [theme, setTheme] = useState<ThemeMode>(readTheme);
   const [mobileSessionDetail, setMobileSessionDetail] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const activeServerId = useServers((s) => s.activeId);
+  const tokenRequiredServerId = useServers((s) => s.tokenRequiredServerId);
+  const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
+  const [onboardingBusy, setOnboardingBusy] = useState(false);
+  const [onboardingError, setOnboardingError] = useState<string | null>(null);
+  const onboardingPending = onboarding?.supported !== false && onboarding?.complete === false;
 
   const writeOpenTabs = useCallback((ids: string[]): void => {
     try { window.localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(ids)); } catch { /* non-fatal */ }
@@ -230,9 +244,10 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   }, []);
   const forkSession = useCallback(async (
     session: SessionInfo,
-    destinationProvider: 'claude' | 'codex'
+    destinationProvider: 'claude' | 'codex',
+    point?: { index: number; messageId: string }
   ): Promise<void> => {
-    const result = await forkConversation(session.id, destinationProvider);
+    const result = await forkConversation(session.id, destinationProvider, point);
     await refresh();
     openSession(result.laneId);
   }, [openSession, refresh]);
@@ -278,6 +293,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   useEffect(() => {
     if (single) return;
     const onKeyDown = (event: KeyboardEvent): void => {
+      if (onboardingPending) return;
       if (!(event.metaKey || event.ctrlKey)) return;
       const inTerminal = document.activeElement instanceof Element
         && document.activeElement.closest('.terminal-host') !== null;
@@ -298,7 +314,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [single]);
+  }, [onboardingPending, single]);
   useEffect(() => {
     try { window.localStorage.setItem(LAYOUT_KEY, layoutMode); } catch { /* ignore */ }
   }, [layoutMode]);
@@ -397,13 +413,47 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // signal is just for sessions we aren't currently attached to. Also
   // re-runs whenever the active server changes so switching servers
   // immediately repopulates the tab strip from the new sessionsd.
-  const activeServerId = useServers((s) => s.activeId);
-  const tokenRequiredServerId = useServers((s) => s.tokenRequiredServerId);
   useEffect(() => {
     void refresh();
     const id = window.setInterval(() => { void refresh(); }, 3000);
     return () => window.clearInterval(id);
   }, [refresh, activeServerId]);
+  useEffect(() => {
+    if (!activeServerId || single) return;
+    const controller = new AbortController();
+    setOnboarding(null);
+    setOnboardingError(null);
+    void fetchOnboardingState(controller.signal)
+      .then(setOnboarding)
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          // The daemon enforces the consent gate even if this read fails.
+          // Keep the app usable and conservatively describe the machine as
+          // local-only until the next reload or server switch.
+          setOnboarding({ version: 0, complete: true, remoteControl: 'local-only', supported: false });
+        }
+      });
+    return () => controller.abort();
+  }, [activeServerId, single]);
+  useEffect(() => {
+    if (!onboardingPending) return;
+    setDialogOpen(null);
+    setCommandPaletteOpen(false);
+  }, [onboardingPending]);
+  const chooseOnboardingPreference = useCallback(async (
+    choice: 'enabled' | 'local-only'
+  ): Promise<void> => {
+    if (onboardingBusy) return;
+    setOnboardingBusy(true);
+    setOnboardingError(null);
+    try {
+      setOnboarding(await updateOnboardingPreference(choice));
+    } catch (reason) {
+      setOnboardingError(reason instanceof Error ? reason.message : 'Could not save this choice.');
+    } finally {
+      setOnboardingBusy(false);
+    }
+  }, [onboardingBusy]);
 
   // Warm the local usage index as part of app startup. Usage is derived from
   // local provider files, so this stays on the selected machine and makes the
@@ -661,6 +711,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
                   isActive={s.id === activeId}
                   onStatusChange={s.id === activeId ? setActiveStatus : undefined}
                   onResume={resumeSession}
+                  onFork={forkSession}
                   onCloseView={closeTab}
                   onOpenSession={openSession}
                   onBack={isMobile ? () => setMobileSessionDetail(false) : undefined}
@@ -722,9 +773,6 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
           preferredRuntimeMode={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
             ? dialogOpen.runtimeMode
             : undefined}
-          preferredRemoteControl={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
-            ? dialogOpen.remoteControl
-            : undefined}
         />
       ) : null}
       {dialogOpen && typeof dialogOpen === 'object' && 'delegateFrom' in dialogOpen ? (
@@ -732,6 +780,14 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
           parentSession={sessions.find((session) => session.id === dialogOpen.delegateFrom) ?? null}
           onClose={() => setDialogOpen(null)}
           onStarted={openSession}
+        />
+      ) : null}
+      {onboarding && onboarding.supported !== false && !onboarding.complete ? (
+        <OnboardingDialog
+          machine={machine}
+          busy={onboardingBusy}
+          error={onboardingError}
+          onChoose={chooseOnboardingPreference}
         />
       ) : null}
     </div>

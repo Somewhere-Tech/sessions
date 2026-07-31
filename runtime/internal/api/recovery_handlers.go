@@ -51,6 +51,8 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			SourceSessionID     string `json:"sourceSessionId"`
 			DestinationProvider string `json:"destinationProvider,omitempty"`
 			Name                string `json:"name,omitempty"`
+			SourceMessageIndex  *int   `json:"sourceMessageIndex,omitempty"`
+			SourceMessageID     string `json:"sourceMessageId,omitempty"`
 		}
 		if err := readJSON(request, &body); err != nil {
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
@@ -62,19 +64,24 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		}
 		recoveryMutationMu.Lock()
 		defer recoveryMutationMu.Unlock()
+		sourceCandidates := s.registry.List(true)
 		sourceSession, live := s.registry.Get(body.SourceSessionID)
-		if !live {
+		var candidate state.SessionInfo
+		if live {
+			candidate = sourceSession.Info()
+		} else {
+			for _, item := range sourceCandidates {
+				if item.ID == body.SourceSessionID {
+					candidate = item
+					break
+				}
+			}
+		}
+		if candidate.ID == "" {
 			s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "source session not found"}, corsOrigin)
 			return
 		}
-		candidate := sourceSession.Info()
-		if candidate.Exited {
-			s.sendJSON(response, http.StatusConflict, map[string]any{
-				"error": "source session has ended; use Continue conversation instead",
-			}, corsOrigin)
-			return
-		}
-		if candidate.Working {
+		if live && candidate.Working {
 			s.sendJSON(response, http.StatusConflict, map[string]any{
 				"error": "wait for the current turn to finish before copying this conversation; the original is still running",
 			}, corsOrigin)
@@ -95,7 +102,6 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		if destination == "" {
 			destination = sourceProvider
 		}
-		sourceCandidates := s.registry.List(true)
 		history, historyErr := s.integrationEndpoints.LookupHistory(sourceCandidates, candidate.ID)
 		if historyErr != nil || !history.ConversationAvailable || history.PromptHistoryOnly {
 			s.sendJSON(response, http.StatusConflict, map[string]any{
@@ -123,7 +129,16 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			}, corsOrigin)
 			return
 		}
-		messages := continuationMessages(transcript.Messages)
+		selectedMessages, pointIndex, pointID, pointErr := forkTranscriptMessages(
+			transcript.Messages, body.SourceMessageIndex, body.SourceMessageID,
+		)
+		if pointErr != nil {
+			s.sendJSON(response, http.StatusConflict, map[string]any{
+				"error": pointErr.Error(),
+			}, corsOrigin)
+			return
+		}
+		messages := continuationMessages(selectedMessages)
 		mode := state.ContinuationLinkedSearch
 		if destination == "codex" {
 			mode = state.ContinuationNativeImport
@@ -134,6 +149,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			SourceProviderID: history.ProviderSessionID, SourceTitle: history.Name,
 			SourceCWD: history.CWD, DestinationProvider: destination,
 			Mode: mode, Fork: true, Messages: messages,
+			ForkPointIndex: pointIndex, ForkPointMessageID: pointID,
 			SourceWorktreePath: candidate.WorktreePath, SourceBranch: candidate.Branch,
 			SourceRepo: candidate.SourceRepo,
 		}
@@ -154,7 +170,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			RepairLaneID        string `json:"repairLaneId,omitempty"`
 			DestinationProvider string `json:"destinationProvider,omitempty"`
 			RuntimeMode         string `json:"runtimeMode,omitempty"`
-			RemoteControl       bool   `json:"remoteControl,omitempty"`
+			RemoteControl       *bool  `json:"remoteControl,omitempty"`
 			Force               bool   `json:"force,omitempty"`
 		}
 		if err := readJSON(request, &body); err != nil {
@@ -171,7 +187,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			return
 		}
 		body.RuntimeMode = runtimeMode
-		if body.RemoteControl && body.RuntimeMode != "terminal" {
+		if body.RemoteControl != nil && *body.RemoteControl && body.RuntimeMode != "terminal" {
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{
 				"error": "Remote Control requires runtimeMode terminal",
 			}, corsOrigin)
@@ -351,14 +367,18 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			source = adoptSourceFromSession(candidate)
 		}
 		var claudeOptions *state.ClaudeSessionOptions
-		if body.RemoteControl {
+		if body.RemoteControl != nil {
 			if adoption.Tool != string(state.ToolClaude) {
 				s.sendJSON(response, http.StatusBadRequest, map[string]any{
 					"error": "Remote Control is available only when continuing a Claude conversation in Terminal",
 				}, corsOrigin)
 				return
 			}
-			claudeOptions = &state.ClaudeSessionOptions{RemoteControl: state.ClaudeChoiceOn}
+			choice := state.ClaudeChoiceOff
+			if *body.RemoteControl {
+				choice = state.ClaudeChoiceOn
+			}
+			claudeOptions = &state.ClaudeSessionOptions{RemoteControl: choice}
 		}
 		if body.RepairLaneID != "" {
 			successorSession, live := s.registry.Get(body.RepairLaneID)
@@ -433,6 +453,36 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 	default:
 		s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": request.URL.Path}, corsOrigin)
 	}
+}
+
+func forkTranscriptMessages(
+	messages []integrations.TranscriptMessage,
+	requestedIndex *int,
+	requestedMessageID string,
+) ([]integrations.TranscriptMessage, *int, string, error) {
+	if requestedIndex == nil {
+		if strings.TrimSpace(requestedMessageID) != "" {
+			return nil, nil, "", errors.New("sourceMessageId requires sourceMessageIndex")
+		}
+		return messages, nil, "", nil
+	}
+	if *requestedIndex < 0 {
+		return nil, nil, "", errors.New("sourceMessageIndex must be non-negative")
+	}
+	for position, message := range messages {
+		if message.Index != *requestedIndex {
+			continue
+		}
+		if message.Role != "user" && message.Role != "assistant" {
+			return nil, nil, "", errors.New("fork point must be a user or agent message")
+		}
+		if expected := strings.TrimSpace(requestedMessageID); expected != "" && message.ID != expected {
+			return nil, nil, "", errors.New("the selected message changed; reload the conversation before forking")
+		}
+		point := *requestedIndex
+		return messages[:position+1], &point, message.ID, nil
+	}
+	return nil, nil, "", errors.New("the selected fork point is no longer available")
 }
 
 func normalizeContinuationProvider(value string) (string, error) {

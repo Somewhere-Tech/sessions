@@ -19,6 +19,7 @@ With no command, Sessions lists agent sessions and headless lanes. Session ids m
 Daily workflows:
   new                      create an interactive session
   profiles                 list Claude and Codex login profiles
+  onboarding               inspect user onboarding and Remote Control consent
   providers                inspect or update agent CLIs
   run                      run a command in a headless lane
   tags                     view or edit session tags
@@ -96,7 +97,7 @@ Usage:
 
 create an interactive session
 
-Create a session. --tool selects a built-in Claude, Codex, or shell preset; --cmd supplies a command directly. Claude defaults to Rich structured mode while retaining its normal permission behavior. Claude slash commands and Remote Control require its interactive Terminal runtime; use --pty-claude when those are part of the workflow. Codex defaults to its sandboxed terminal mode because Sessions cannot yet present app-server approval prompts; --codex-appserver therefore requires the explicit --full-access choice. --pty-claude and --pty-codex explicitly select the provider's terminal UI; --structured states the Claude Rich choice explicitly. --full-access disables the selected provider's approval and sandbox protections for this new session only. Existing sessions keep their original runtime and permission mode. --profile selects a private Claude or Codex login under the Sessions user state; first use opens the tool's own login flow. --description (alias --desc) records why the session exists. Repeat --tag key=value for product, client, team, cost center, or any user-defined dimension. --worktree creates sessions/<name> from the current branch (or --base REF), records its provenance, and runs the session there. Sessions does not create node_modules symlinks; install dependencies in the worktree when needed. Session controls include --model, --effort, --fast, --on-idle, --wait-ready, and --force.
+Create a session. --tool selects a built-in Claude, Codex, or shell preset; --cmd supplies a command directly. Claude defaults to its native interactive runtime, a clean Sessions Conversation view, and Terminal available for provider-only pickers. Remote Control is added only after the user enables it in first-run onboarding or Settings. --structured explicitly selects the headless structured Claude runtime for automation that does not need Remote Control or a terminal. --pty-claude is retained as a compatibility alias for the default interactive Claude runtime. Codex defaults to its sandboxed terminal mode because Sessions cannot yet present app-server approval prompts; --codex-appserver therefore requires the explicit --full-access choice. --pty-codex explicitly selects the provider's terminal UI. --full-access disables the selected provider's approval and sandbox protections for this new session only. Existing sessions keep their original runtime and permission mode. --profile selects a private Claude or Codex login under the Sessions user state; first use opens the tool's own login flow. --description (alias --desc) records why the session exists. Repeat --tag key=value for product, client, team, cost center, or any user-defined dimension. --worktree creates sessions/<name> from the current branch (or --base REF), records its provenance, and runs the session there. Sessions does not create node_modules symlinks; install dependencies in the worktree when needed. Session controls include --model, --effort, --fast, --on-idle, --wait-ready, and --force.
 
 Examples:
   sessions new --tool claude --cwd ~/work
@@ -121,6 +122,23 @@ List profile names, private config paths, active sessions, and last-use times. S
 Examples:
   sessions profiles
   sessions --json profiles
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions onboarding`
+
+```text
+Usage:
+  sessions onboarding
+
+inspect user onboarding and Remote Control consent
+
+Show whether this machine has completed Sessions onboarding and whether Claude Remote Control is enabled. This command is deliberately read-only: an agent can explain the state but cannot grant user consent. Open Sessions.app to make or change the choice.
+
+Examples:
+  sessions onboarding
+  sessions --json onboarding
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -635,7 +653,7 @@ Usage:
 
 continue an ended conversation on another machine
 
-Continue an ended Claude or Codex conversation on another Sessions machine while preserving the source history. --machine reads the saved per-device credential from its private file; no token appears in argv. Run --dry-run first to verify workspace and conversation identity. The target refuses to overwrite different provider history, creates one Rich runtime by default, and records both sides of the continuation link. --terminal explicitly reopens the provider's terminal interface instead. --to/--token remains a low-level endpoint escape hatch. --allow-dirty creates a Git checkpoint without deleting or changing the source worktree.
+Continue an ended Claude or Codex conversation on another Sessions machine while preserving the source history. --machine reads the saved per-device credential from its private file; no token appears in argv. Run --dry-run first to verify workspace and conversation identity. Claude continues in its native interactive runtime, with Remote Control determined by the destination machine's explicit onboarding/Settings choice. Codex continues in its Rich app-server runtime. The target refuses to overwrite different provider history and records both sides of the continuation link. --terminal explicitly selects the provider terminal and is retained for Codex compatibility. --to/--token remains a low-level endpoint escape hatch. --allow-dirty creates a Git checkpoint without deleting or changing the source worktree.
 
 Examples:
   sessions move 0123abcd --machine mini --dry-run
@@ -668,11 +686,11 @@ Examples:
 
 ```text
 Usage:
-  sessions continue <history-id> [--with claude|codex] [--terminal [--remote-control]] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
+  sessions continue <history-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
 
 continue one exact saved conversation
 
-Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. Rich is the default. --terminal explicitly opens the original provider's terminal interface and cannot be combined with a cross-provider continuation. --remote-control starts that Terminal Claude continuation with Claude Remote Control enabled. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.
+Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude resumes in its native interactive runtime by default, with Remote Control determined by this machine's explicit onboarding/Settings choice; Codex resumes in its Rich app-server runtime. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. --structured explicitly selects headless Rich Claude when automation requires it. --terminal explicitly selects the original provider's terminal interface and cannot be combined with a cross-provider continuation. --remote-control remains a compatibility flag for an explicit Terminal Claude continuation and is rejected until the user has granted consent. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.
 
 Examples:
   sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001
@@ -696,6 +714,7 @@ Create a new Rich conversation from a stable authored-history snapshot while the
 Examples:
   sessions fork 0123abcd
   sessions fork 0123abcd --with codex
+  sessions fork 0123abcd --at 42 --message-id a1b2c3
   sessions --json fork 0123abcd --with claude
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.

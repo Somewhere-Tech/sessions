@@ -50,11 +50,20 @@ func SessionRequest(request CreateRequest) (state.CreateSessionRequest, error) {
 	if err := ValidateCreateRequest(request); err != nil {
 		return state.CreateSessionRequest{}, err
 	}
-	kind := state.KindCodexAppServer
-	if canonicalTool(request.Tool, request.ResumeRecipe[0]) == string(state.ToolClaude) {
-		kind = state.KindClaudeStructured
-	}
-	if request.RuntimeMode == RuntimeTerminal {
+	tool := canonicalTool(request.Tool, request.ResumeRecipe[0])
+	kind := ""
+	switch request.RuntimeMode {
+	case "":
+		if tool == string(state.ToolCodex) {
+			kind = state.KindCodexAppServer
+		}
+	case RuntimeRich:
+		if tool == string(state.ToolClaude) {
+			kind = state.KindClaudeStructured
+		} else {
+			kind = state.KindCodexAppServer
+		}
+	case RuntimeTerminal:
 		kind = ""
 	}
 	conversationID := request.UUID

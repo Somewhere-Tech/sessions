@@ -72,6 +72,7 @@ type app struct {
 	api           *apiClient
 	listModels    func(context.Context) ([]codexapp.Model, error)
 	runUpdate     func(context.Context, bool) (nativeUpdateResult, error)
+	cliIsCurrent  func(string) bool
 	attachSupport func(context.Context, supportAttachmentRequest) (supportAttachmentReceipt, error)
 	commands      []commandSpec
 }
@@ -86,8 +87,9 @@ func newApp(arguments []string, stdin io.Reader, stdout, stderr io.Writer) (*app
 		stdin: stdin, stdout: stdout, stderr: stderr,
 		args: args, host: host, port: port, wantJSON: wantJSON,
 		home: home, now: time.Now, sleep: time.Sleep, listModels: listLiveCodexModels,
-		runUpdate: runNativeAppUpdate,
-		commands:  commandTable,
+		runUpdate:    runNativeAppUpdate,
+		cliIsCurrent: installedCLIMatches,
+		commands:     commandTable,
 	}
 	app.attachSupport = app.attachSupportWithSomewhere
 	tokenPath := ""

@@ -42,6 +42,10 @@ func ResolveSource(ctx context.Context, store *ledger.Store, source SourceSessio
 	}
 	switch tool {
 	case "claude-code":
+		// Claude continues through its native interactive runtime by default.
+		// sessionsd adds Remote Control from the destination machine's
+		// typed Claude settings without copying credentials in the transfer.
+		request.RuntimeMode = RuntimeTerminal
 		if providerUUID == "" || len(resumeRecipe) == 0 {
 			return ReceiveRequest{}, fmt.Errorf("resolve source: Claude provider identity is not bound yet")
 		}

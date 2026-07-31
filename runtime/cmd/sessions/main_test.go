@@ -451,6 +451,11 @@ func TestForceThreadsThroughConversationBindingCommands(t *testing.T) {
 			if test.name == "continue exact history" && posted["historyId"] != historyID {
 				t.Fatalf("posted body = %#v, want exact history id %q", posted, historyID)
 			}
+			if test.name == "continue exact history" {
+				if _, present := posted["runtimeMode"]; present {
+					t.Fatalf("posted body = %#v, default continuation must let the provider choose its native runtime", posted)
+				}
+			}
 		})
 	}
 }
@@ -514,12 +519,13 @@ func TestForkCopiesLiveConversationWithoutEndOrForce(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	if code := run(
-		[]string{"--host", server.URL, "fork", "source-lane", "--with", "codex"},
+		[]string{"--host", server.URL, "fork", "source-lane", "--with", "codex", "--at", "17", "--message-id", "message-hash"},
 		strings.NewReader(""), &stdout, &stderr,
 	); code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if posted["sourceSessionId"] != "source-lane" || posted["destinationProvider"] != "codex" {
+	if posted["sourceSessionId"] != "source-lane" || posted["destinationProvider"] != "codex" ||
+		posted["sourceMessageIndex"] != float64(17) || posted["sourceMessageId"] != "message-hash" {
 		t.Fatalf("posted body = %#v", posted)
 	}
 	if _, forced := posted["force"]; forced {
@@ -559,6 +565,38 @@ func TestContinueTerminalCanEnableClaudeRemoteControl(t *testing.T) {
 		t.Fatalf("posted body = %#v", posted)
 	}
 	if stdout.String() != "remote-lane\n" {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestContinueStructuredExplicitlyRequestsRichClaude(t *testing.T) {
+	historyID := "provider-history:claude:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	var posted map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/recovery/adopt" {
+			http.NotFound(response, request)
+			return
+		}
+		if err := json.NewDecoder(request.Body).Decode(&posted); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(response, `{"ok":true,"laneId":"structured-lane","adoption":{}}`)
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := run(
+		[]string{"--host", server.URL, "continue", historyID, "--structured"},
+		strings.NewReader(""), &stdout, &stderr,
+	); code != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if posted["historyId"] != historyID || posted["runtimeMode"] != "rich" {
+		t.Fatalf("posted body = %#v", posted)
+	}
+	if stdout.String() != "structured-lane\n" {
 		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
@@ -866,17 +904,17 @@ func TestCodexAppServerRequiresExplicitFullAccess(t *testing.T) {
 	}
 }
 
-func TestClaudeNewDefaultsRichAndKeepsTerminalExplicit(t *testing.T) {
+func TestClaudeNewDefaultsInteractiveAndKeepsStructuredExplicit(t *testing.T) {
 	tests := []struct {
 		name       string
 		args       []string
 		kind       string
 		fullAccess bool
 	}{
-		{name: "rich-default", kind: "claude-structured"},
+		{name: "interactive-default"},
 		{name: "structured-explicit", args: []string{"--structured"}, kind: "claude-structured"},
 		{name: "terminal-explicit", args: []string{"--pty-claude"}},
-		{name: "rich-full-access-explicit", args: []string{"--full-access"}, kind: "claude-structured", fullAccess: true},
+		{name: "interactive-full-access-explicit", args: []string{"--full-access"}, fullAccess: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -30,10 +30,13 @@ type RuntimeMode = 'rich' | 'terminal';
 
 function defaultRuntimeMode(tool: NewSessionTool, parent: SessionInfo | null, fullAccess: boolean): RuntimeMode {
   if (tool === 'shell') return 'terminal';
+  // Claude always starts in its native interactive runtime. Conversation,
+  // Terminal, claude.ai, and mobile then observe one provider session even
+  // when the delegate was created from an older structured parent.
+  if (tool === 'claude-code') return 'terminal';
   if (parent && parent.tool === tool) {
     return parent.kind === 'codex-app-server' || parent.kind === 'claude-structured' ? 'rich' : 'terminal';
   }
-  if (tool === 'claude-code') return 'rich';
   // Codex Rich cannot present app-server approval prompts yet. Until that UI
   // exists, only an explicit saved Full Access choice may default into Rich.
   return tool === 'codex' && fullAccess ? 'rich' : 'terminal';
@@ -436,9 +439,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         claude: tool === 'claude-code'
           ? claudeSafeMode
             ? { ...claudeOptions, remoteControl: 'off', chrome: 'off', somewhereMcp: 'inherit' }
-            : runtimeMode === 'rich'
-              ? { ...claudeOptions, remoteControl: 'off' }
-              : claudeOptions
+            : claudeOptions
           : undefined,
         creatorSessionId: parentSession?.id
       });
@@ -529,7 +530,12 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                 </button>
               ))}
             </div>
-            {tool !== 'shell' ? (
+            {tool === 'claude-code' ? (
+              <div className="launcher-claude-runtime-summary">
+                <span><strong>Conversation + Terminal</strong><em>Native Claude</em></span>
+                <small>Sessions opens Claude’s native interactive session. Remote Control follows the explicit choice for this machine in Settings.</small>
+              </div>
+            ) : tool === 'codex' ? (
                 <div className="field launcher-runtime-field">
                   <span className="field-label">How should it run?</span>
                   <div className="runtime-mode-selector" role="radiogroup" aria-label="Agent runtime experience">
@@ -538,13 +544,11 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                       if (tool === 'codex') setSkipPerms(true);
                     }}>
                       <span><strong>Rich</strong><em>{tool === 'codex' ? 'Full access' : 'Recommended'}</em></span>
-                      <small>{tool === 'codex'
-                        ? 'A clean conversation view with live plans, tools, and model controls. Best for everyday Codex work. Full Access is currently required.'
-                        : 'A clean conversation view with messages, plans, tools, and approvals. Best for everyday Claude work.'}</small>
+                      <small>A clean conversation view with live plans, tools, and model controls. Best for everyday Codex work. Full Access is currently required.</small>
                     </button>
                     <button type="button" role="radio" aria-checked={runtimeMode === 'terminal'} className={`runtime-mode-option${runtimeMode === 'terminal' ? ' is-active' : ''}`} onClick={() => setRuntimeMode('terminal')}>
                       <span><strong>Terminal</strong><em>Full terminal</em></span>
-                      <small>Runs {tool === 'claude-code' ? 'Claude' : 'Codex'} just as it appears in Terminal. Best for slash commands, setup screens, and the full provider interface.</small>
+                      <small>Runs Codex just as it appears in Terminal. Best for setup screens and the full provider interface.</small>
                     </button>
                   </div>
                 </div>
@@ -705,18 +709,13 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                       <option value="dontAsk">Don’t ask</option>
                       <option value="bypassPermissions">Bypass permissions</option>
                     </select></label>
-                    <label><span>Remote Control</span><select value={runtimeMode === 'rich' ? 'off' : claudeOptions.remoteControl ?? ''} disabled={runtimeMode === 'rich'} onChange={(event) => setClaudeOptions((current) => ({ ...current, remoteControl: event.currentTarget.value as ClaudeSessionOptions['remoteControl'] }))}>
-                      <option value="">Use Settings</option><option value="inherit">Claude default</option><option value="on">On</option><option value="off">Off</option>
-                    </select><small>{runtimeMode === 'rich' ? 'Choose Terminal for Claude slash commands and Remote Control.' : 'Available in Claude’s full interactive terminal.'}</small></label>
                     <label><span>Use Chrome</span><select value={claudeOptions.chrome ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, chrome: event.currentTarget.value as ClaudeSessionOptions['chrome'] }))}>
                       <option value="">Use Settings</option><option value="inherit">Claude default</option><option value="on">On</option><option value="off">Off</option>
                     </select></label>
                     <label><span>Somewhere tools</span><select value={claudeOptions.somewhereMcp ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, somewhereMcp: event.currentTarget.value as ClaudeSessionOptions['somewhereMcp'] }))}>
                       <option value="">Use Settings</option><option value="inherit">Use Claude configuration</option><option value="ensure">Make available</option>
                     </select></label>
-                    {claudeOptions.remoteControl === 'on' ? (
-                      <label className="is-wide"><span>Remote Control name</span><input value={claudeOptions.remoteControlNamePrefix ?? ''} maxLength={64} placeholder="Optional prefix" onChange={(event) => setClaudeOptions((current) => ({ ...current, remoteControlNamePrefix: event.currentTarget.value }))} /></label>
-                    ) : null}
+                    <div className="launcher-claude-option-note"><strong>Remote Control</strong><small>Uses this machine’s consent choice from Settings. A session cannot turn it on by itself.</small></div>
                   </div>
                 </details>
               ) : null}
