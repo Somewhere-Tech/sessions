@@ -97,6 +97,9 @@ command registry.
 | `sessions lanes` | List running and completed lanes |
 | `sessions status <id>` | Show compact session, git, activity, and verdict state |
 | `sessions recover [--reopen]` | Inspect or reopen unexpectedly lost lanes |
+| `sessions grep -C 3 "Google Ads"` | Search Claude and Codex history across every approved machine |
+| `sessions cat <machine::history-id>` | Read the complete durable conversation returned by search |
+| `sessions resurrect <machine::history-id>` | Continue the exact conversation on its source machine |
 | `sessions continue <history-id> [--with claude\|codex]` | Continue the original chat or start a cross-provider continuation |
 | `sessions fork <live-id> [--with claude\|codex]` | Branch a live chat without stopping the original |
 | `sessions remote enable\|status\|disable` | Manage early-access Tailscale HTTPS access |
@@ -104,9 +107,14 @@ command registry.
 | `sessions support [--diagnostics]` | Open feedback/support channels and preview a redacted local diagnostic summary |
 | `sessions kill <id> [<id>...]` | Explicitly terminate selected sessions |
 
+Fleet search is the default when no connection flag is supplied. Use global
+`--machine NAME` before a command to target only one approved machine. Search
+reports unreachable machines as partial coverage and never copies transcripts
+just to make them greppable.
+
 Also useful: `sessions snap`, `last`, `transcript`, `tail`, `keys`, `attach`,
 `verdict`, `doctor`, `docs`, and `help`. Global flags are `--json`, `--host`, and
-`--port` (or `SESSIONS_HOST` / `SESSIONS_PORT`).
+`--port`, and `--machine` (or `SESSIONS_HOST` / `SESSIONS_PORT`).
 
 ## Feedback and support
 

@@ -17,8 +17,15 @@ use serde_json::Value;
 #[cfg(desktop)]
 use std::fs;
 use std::{
-    collections::HashMap, env, io::Read, net::IpAddr, path::PathBuf, process::Command, sync::Mutex,
-    thread, time::Duration,
+    collections::HashMap,
+    env,
+    io::{Read, Write},
+    net::IpAddr,
+    path::PathBuf,
+    process::{Command, Stdio},
+    sync::Mutex,
+    thread,
+    time::Duration,
 };
 #[cfg(desktop)]
 use tauri::{
@@ -126,6 +133,17 @@ struct NativePairingClaim {
     device_id: String,
     token: String,
     name: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeAgentMachine {
+    alias: Option<String>,
+    machine_id: String,
+    name: String,
+    endpoint: String,
+    device_id: Option<String>,
+    token: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -737,6 +755,36 @@ async fn native_move_machines(app: AppHandle) -> Result<NativeConnectionCommand,
     })
     .await
     .map_err(|error| format!("saved-machine worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn native_agent_machines_sync(
+    app: AppHandle,
+    machines: Vec<NativeAgentMachine>,
+) -> Result<NativeConnectionCommand, String> {
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        let _ = machines;
+        return Ok(NativeConnectionCommand {
+            data: serde_json::json!({ "machines": [] }),
+            detail: String::new(),
+        });
+    }
+
+    #[cfg(desktop)]
+    tauri::async_runtime::spawn_blocking(move || {
+        let input = serde_json::to_vec(&serde_json::json!({ "machines": machines }))
+            .map_err(|error| format!("encode native machine registry: {error}"))?;
+        run_bundled_sessions_json_with_input(
+            &app,
+            &["machines".to_string(), "sync-native".to_string()],
+            "agent machine sync",
+            Some(&input),
+        )
+    })
+    .await
+    .map_err(|error| format!("agent machine sync worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1733,6 +1781,15 @@ fn run_bundled_sessions_json(
     command_args: &[String],
     response_kind: &str,
 ) -> Result<NativeConnectionCommand, String> {
+    run_bundled_sessions_json_with_input(app, command_args, response_kind, None)
+}
+
+fn run_bundled_sessions_json_with_input(
+    app: &AppHandle,
+    command_args: &[String],
+    response_kind: &str,
+    input: Option<&[u8]>,
+) -> Result<NativeConnectionCommand, String> {
     let port = *app
         .state::<RuntimeState>()
         .port
@@ -1764,9 +1821,28 @@ fn run_bundled_sessions_json(
         "PATH",
         format!("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:{inherited_path}"),
     );
-    let output = command
-        .output()
-        .map_err(|error| format!("run bundled Sessions CLI: {error}"))?;
+    let output = if let Some(input) = input {
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("run bundled Sessions CLI: {error}"))?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| "open bundled Sessions CLI input".to_string())?
+            .write_all(input)
+            .map_err(|error| format!("write bundled Sessions CLI input: {error}"))?;
+        child
+            .wait_with_output()
+            .map_err(|error| format!("wait for bundled Sessions CLI: {error}"))?
+    } else {
+        command
+            .output()
+            .map_err(|error| format!("run bundled Sessions CLI: {error}"))?
+    };
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if !output.status.success() {
@@ -2053,6 +2129,7 @@ pub fn run() {
             native_backup_action,
             native_support_preview,
             native_move_machines,
+            native_agent_machines_sync,
             native_move_session,
             native_machine_credentials_load,
             native_machine_credentials_save,

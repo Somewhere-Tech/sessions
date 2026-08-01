@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/migrate"
+	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
 func (a *app) cmdMove(args []string) error {
@@ -40,11 +40,10 @@ func (a *app) cmdMove(args []string) error {
 		if err != nil {
 			return err
 		}
-		encoded, err := os.ReadFile(savedMachineTokenPath(a.home, machine.MachineID))
+		token, err = tokenstore.ReadSecret(savedMachineTokenPath(a.home, machine.MachineID))
 		if err != nil {
 			return fail(2, "read saved credential for %q: %s", machine.Alias, err)
 		}
-		token = strings.TrimSpace(string(encoded))
 		if token == "" {
 			return fail(2, "saved credential for %q is empty; forget and reconnect this machine", machine.Alias)
 		}

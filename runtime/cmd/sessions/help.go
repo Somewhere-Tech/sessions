@@ -138,9 +138,15 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions last 0123abcd", "sessions last 0123abcd --role assistant -n 1", "sessions --json last 0123abcd"}, run: (*app).cmdLastDispatch,
 	},
 	{
+		name: "grep", usage: "grep [options] <query>",
+		summary: "search every approved machine", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Search normalized Claude and Codex history across this machine and every machine approved in Sessions.app or with `sessions machines connect`. Familiar -i and -C N flags are accepted; matching is already case-insensitive. Results carry durable machine::history-id references, duplicate copies of the same provider message are collapsed, and an offline machine produces a partial-result warning instead of hiding reachable history. Use --machine before the command to scope one machine.",
+		examples: []string{"sessions grep -i -C 3 'Google Ads'", "sessions grep --tool claude --role user bolo", "sessions --json grep 'release decision'"}, run: (*app).cmdGrep,
+	},
+	{
 		name: "search", usage: "search <query> [--session ID[,ID...]] [--role user|assistant|tool] [--tool claude|codex|shell] [--name GLOB] [--cwd PATH] [--since DATE] [--until DATE] [--context N] [--timeline] [-n N] [--exact | --regex | --ranked] [--json]",
 		summary: "search normalized session chat history", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Search chat history across every live and persisted session known to the daemon. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --timeline merges matching moments chronologically. Filters are evaluated by the daemon, so --host can search a remote Sessions instance.",
+		longHelp: "Search chat history across every live and persisted session on this machine and every approved machine by default. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --timeline merges matching moments chronologically. Use global --machine or --host before the command to search only one daemon.",
 		examples: []string{"sessions search 'drafts rollout' --role user --since 2026-07-23", "sessions search 'hello world' --role user --context 3", `sessions search 'near(draft,egress,8) OR "stable session"' --timeline`, "sessions search '{{first_name}}' --exact --session 0123abcd --json"}, run: (*app).cmdSearch,
 	},
 	{
@@ -186,6 +192,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions tail 0123abcd", "sessions tail 0123abcd -n 200 -f"}, run: (*app).cmdTail,
 	},
 	{
+		name: "cat", usage: "cat <machine::history-id>",
+		summary: "print one durable conversation", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Print the complete normalized conversation identified by a fleet-search reference. The machine qualifier selects the approved per-device credential without putting a token in argv. The conversation is read from its source machine; Sessions does not create a second transcript copy merely for search.",
+		examples: []string{"sessions cat 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'", "sessions --json cat 'local::provider:codex:00000000-0000-4000-8000-000000000001'"}, run: (*app).cmdCat,
+	},
+	{
 		name: "transcript", usage: "transcript <id>",
 		summary: "print the full conversation transcript", group: dailyCommandGroup, localJSON: true,
 		longHelp: "Print all user and assistant turns decoded from the session event log. Use the global --json flag for structured turns.",
@@ -228,10 +240,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions adopt 00000000-0000-4000-8000-000000000001", "sessions adopt ~/.claude/projects/example/session.jsonl --force", "sessions adopt 00000000-0000-4000-8000-000000000001 --repair 0123abcd --source 4567cdef"}, run: (*app).cmdAdopt,
 	},
 	{
-		name: "continue", usage: "continue <history-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]",
+		name: "continue", aliases: []string{"resurrect"}, usage: "continue <[machine::]history-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]",
 		summary: "continue one exact saved conversation", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude resumes in its native interactive runtime by default, with Remote Control determined by this machine's explicit onboarding/Settings choice; Codex resumes in its Rich app-server runtime. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. --structured explicitly selects headless Rich Claude when automation requires it. --terminal explicitly selects the original provider's terminal interface and cannot be combined with a cross-provider continuation. --remote-control remains a compatibility flag for an explicit Terminal Claude continuation and is rejected until the user has granted consent. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.",
-		examples: []string{"sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal --remote-control", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex", "sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001"}, run: (*app).cmdContinue,
+		longHelp: "Continue an exact conversation returned by Sessions history. `resurrect` is an approachable alias. A machine::history-id reference returned by fleet search selects the approved source machine automatically; the authenticated history id supplies provider identity and workspace. Claude resumes in its native interactive runtime by default, with Remote Control determined by that machine's explicit onboarding/Settings choice; Codex resumes in its Rich app-server runtime. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. --structured explicitly selects headless Rich Claude when automation requires it. --terminal explicitly selects the original provider's terminal interface and cannot be combined with a cross-provider continuation. --remote-control remains a compatibility flag for an explicit Terminal Claude continuation and is rejected until the user has granted consent. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.",
+		examples: []string{"sessions resurrect 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal --remote-control", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex", "sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001"}, run: (*app).cmdContinue,
 	},
 	{
 		name: "fork", usage: "fork <live-session> [--with claude|codex]",

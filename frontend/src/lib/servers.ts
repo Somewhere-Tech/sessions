@@ -4,6 +4,7 @@ import {
   isTauri,
   loadNativeMachineCredentials,
   saveNativeMachineCredentials,
+  syncNativeAgentMachines,
   type NativeMachineCredential
 } from './tauriBridge';
 import { readWindowScope } from './windowScope';
@@ -22,6 +23,8 @@ export interface ServerConfig {
   // A machine can have LAN and Tailscale endpoints without becoming two fleet
   // entries; endpoint URLs are access paths, not machine identity.
   machineId?: string;
+  // The host-side revocation identity returned with a successful pairing.
+  deviceId?: string;
   name: string;
   host: string;
   port: number;
@@ -557,6 +560,24 @@ export async function hydrateNativeMachineCredentials(): Promise<void> {
 export function blockNativeMachineCredentialPersistence(detail: string): void {
   nativeCredentialStoreEnabled = false;
   nativeCredentialStoreBlockedError = new Error(detail);
+}
+
+// Keep the native UI and the agent-facing CLI on one approved-machine list.
+// Only paired machines have a stable identity and device credential; manual
+// endpoint drafts remain UI-local until the host approves them.
+export async function syncNativeAgentMachineAccess(): Promise<void> {
+  if (!isTauri()) return;
+  const machines = useServers.getState().servers.flatMap((server) => {
+    if (server.isDefault || !server.machineId || !server.token) return [];
+    return [{
+      machineId: server.machineId,
+      name: server.name,
+      endpoint: `${server.scheme ?? 'http'}://${server.host}:${server.port}`,
+      ...(server.deviceId ? { deviceId: server.deviceId } : {}),
+      token: server.token
+    }];
+  });
+  await syncNativeAgentMachines(machines);
 }
 
 // Non-reactive accessor for use inside api/sessionsd.ts and similar — those

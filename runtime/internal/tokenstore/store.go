@@ -16,6 +16,19 @@ func ReadOrCreate(path string) (string, error) {
 	return readOrCreate(path)
 }
 
+// ReadSecret returns a previously stored per-device credential. Unlike Read,
+// it accepts the opaque token shapes issued by pairing rather than requiring
+// the daemon's fixed master-token shape.
+func ReadSecret(path string) (string, error) {
+	return readSecret(path)
+}
+
+// WriteSecret durably stores an opaque per-device credential through the same
+// platform protection boundary used by Sessions' local authentication state.
+func WriteSecret(path, value string) error {
+	return writeSecret(path, value)
+}
+
 // Valid reports whether value is the daemon's stable 32-byte hex token shape.
 func Valid(value string) bool {
 	if len(value) != 64 {

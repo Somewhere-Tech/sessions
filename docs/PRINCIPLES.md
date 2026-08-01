@@ -18,6 +18,22 @@ clear native UI. An agent may inspect and operate Sessions with the user's
 authority, but it does not bypass approvals, credentials, or destructive-action
 boundaries.
 
+## History is an agent-native memory layer
+
+Sessions is not only a window manager. It is the durable index over Claude and
+Codex conversations that lets a user or agent find prior work without knowing
+which provider or approved machine holds it. Fleet search returns stable,
+machine-qualified references; those same references can be read or continued
+through the CLI and JSON contract. A temporarily offline machine is reported as
+partial coverage, never silently presented as an empty history.
+
+Search does not create a second transcript store. Provider history stays on its
+source machine until the user opts into backup or explicitly moves work. When a
+conversation is continued, Sessions preserves the source and records the new
+runtime as linked history. “Resurrect” means reconstructing a supported
+conversation from durable provider history—not pretending to restore process
+memory or uncommitted filesystem state.
+
 ## Local by default
 
 The daemon listens on loopback by default. LAN, tailnet, backup, notification,

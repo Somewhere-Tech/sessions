@@ -35,6 +35,7 @@ Daily workflows:
   ask                      send, wait, and print the reply
   wait                     wait for session idle or lane exit
   last                     print recent conversation or lane output
+  grep                     search every approved machine
   search                   search normalized session chat history
   usage                    report local Claude and Codex token usage
   status                   show a compact session status card
@@ -43,6 +44,7 @@ Daily workflows:
   recall                   inspect integration recall data
   snap                     print the current terminal buffer
   tail                     print or follow recent terminal lines
+  cat                      print one durable conversation
   transcript               print the full conversation transcript
   input                    alias for send
   keys                     send a named key to a session
@@ -50,7 +52,7 @@ Daily workflows:
   verdict                  read or emit an explicit producer verdict
   move                     continue an ended conversation on another machine
   adopt                    bind an existing conversation into Sessions
-  continue                 continue one exact saved conversation
+  continue (resurrect)     continue one exact saved conversation
   fork                     copy a live conversation without stopping it
 
 Models and interactive:
@@ -418,6 +420,24 @@ Examples:
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
+## `sessions grep`
+
+```text
+Usage:
+  sessions grep [options] <query>
+
+search every approved machine
+
+Search normalized Claude and Codex history across this machine and every machine approved in Sessions.app or with `sessions machines connect`. Familiar -i and -C N flags are accepted; matching is already case-insensitive. Results carry durable machine::history-id references, duplicate copies of the same provider message are collapsed, and an offline machine produces a partial-result warning instead of hiding reachable history. Use --machine before the command to scope one machine.
+
+Examples:
+  sessions grep -i -C 3 'Google Ads'
+  sessions grep --tool claude --role user bolo
+  sessions --json grep 'release decision'
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
 ## `sessions search`
 
 ```text
@@ -426,7 +446,7 @@ Usage:
 
 search normalized session chat history
 
-Search chat history across every live and persisted session known to the daemon. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --timeline merges matching moments chronologically. Filters are evaluated by the daemon, so --host can search a remote Sessions instance.
+Search chat history across every live and persisted session on this machine and every approved machine by default. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --timeline merges matching moments chronologically. Use global --machine or --host before the command to search only one daemon.
 
 Examples:
   sessions search 'drafts rollout' --role user --since 2026-07-23
@@ -562,6 +582,23 @@ Examples:
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
+## `sessions cat`
+
+```text
+Usage:
+  sessions cat <machine::history-id>
+
+print one durable conversation
+
+Print the complete normalized conversation identified by a fleet-search reference. The machine qualifier selects the approved per-device credential without putting a token in argv. The conversation is read from its source machine; Sessions does not create a second transcript copy merely for search.
+
+Examples:
+  sessions cat 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'
+  sessions --json cat 'local::provider:codex:00000000-0000-4000-8000-000000000001'
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
 ## `sessions transcript`
 
 ```text
@@ -686,13 +723,14 @@ Examples:
 
 ```text
 Usage:
-  sessions continue <history-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
+  sessions continue <[machine::]history-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
 
 continue one exact saved conversation
 
-Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude resumes in its native interactive runtime by default, with Remote Control determined by this machine's explicit onboarding/Settings choice; Codex resumes in its Rich app-server runtime. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. --structured explicitly selects headless Rich Claude when automation requires it. --terminal explicitly selects the original provider's terminal interface and cannot be combined with a cross-provider continuation. --remote-control remains a compatibility flag for an explicit Terminal Claude continuation and is rejected until the user has granted consent. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.
+Continue an exact conversation returned by Sessions history. `resurrect` is an approachable alias. A machine::history-id reference returned by fleet search selects the approved source machine automatically; the authenticated history id supplies provider identity and workspace. Claude resumes in its native interactive runtime by default, with Remote Control determined by that machine's explicit onboarding/Settings choice; Codex resumes in its Rich app-server runtime. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. --structured explicitly selects headless Rich Claude when automation requires it. --terminal explicitly selects the original provider's terminal interface and cannot be combined with a cross-provider continuation. --remote-control remains a compatibility flag for an explicit Terminal Claude continuation and is rejected until the user has granted consent. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.
 
 Examples:
+  sessions resurrect 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'
   sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001
   sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal --remote-control
   sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex

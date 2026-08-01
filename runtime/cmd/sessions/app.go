@@ -60,32 +60,34 @@ type app struct {
 	stdout io.Writer
 	stderr io.Writer
 
-	args          []string
-	sub           string
-	host          string
-	port          string
-	wantJSON      bool
-	exitCode      int
-	home          string
-	now           func() time.Time
-	sleep         func(time.Duration)
-	api           *apiClient
-	listModels    func(context.Context) ([]codexapp.Model, error)
-	runUpdate     func(context.Context, bool) (nativeUpdateResult, error)
-	cliIsCurrent  func(string) bool
-	attachSupport func(context.Context, supportAttachmentRequest) (supportAttachmentReceipt, error)
-	commands      []commandSpec
+	args           []string
+	sub            string
+	host           string
+	port           string
+	wantJSON       bool
+	exitCode       int
+	home           string
+	now            func() time.Time
+	sleep          func(time.Duration)
+	api            *apiClient
+	explicitTarget bool
+	listModels     func(context.Context) ([]codexapp.Model, error)
+	runUpdate      func(context.Context, bool) (nativeUpdateResult, error)
+	cliIsCurrent   func(string) bool
+	attachSupport  func(context.Context, supportAttachmentRequest) (supportAttachmentReceipt, error)
+	commands       []commandSpec
 }
 
 func newApp(arguments []string, stdin io.Reader, stdout, stderr io.Writer) (*app, error) {
 	args, host, port, wantJSON := parseGlobalArgs(arguments)
+	explicitTarget := hasExplicitConnectionTarget(arguments)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve home directory: %w", err)
 	}
 	app := &app{
 		stdin: stdin, stdout: stdout, stderr: stderr,
-		args: args, host: host, port: port, wantJSON: wantJSON,
+		args: args, host: host, port: port, wantJSON: wantJSON, explicitTarget: explicitTarget,
 		home: home, now: time.Now, sleep: time.Sleep, listModels: listLiveCodexModels,
 		runUpdate:    runNativeAppUpdate,
 		cliIsCurrent: installedCLIMatches,
@@ -122,6 +124,29 @@ func newApp(arguments []string, stdin io.Reader, stdout, stderr io.Writer) (*app
 	}
 	app.api = client
 	return app, nil
+}
+
+func hasExplicitConnectionTarget(arguments []string) bool {
+	if _, set := os.LookupEnv("SESSIONS_HOST"); set {
+		return true
+	}
+	if _, set := os.LookupEnv("SESSIONS_PORT"); set {
+		return true
+	}
+	for _, argument := range arguments {
+		if argument == "--" {
+			return false
+		}
+		switch argument {
+		case "--host", "--port", "--machine":
+			return true
+		case "--json":
+			continue
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func (a *app) close() {

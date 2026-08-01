@@ -19,9 +19,11 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/discovery"
+	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
 const machineRegistryVersion = 1
+const nativeAppMachineSource = "native-app"
 
 type savedMachine struct {
 	Alias       string    `json:"alias"`
@@ -31,11 +33,30 @@ type savedMachine struct {
 	Transport   string    `json:"transport"`
 	DeviceID    string    `json:"device_id"`
 	ConnectedAt time.Time `json:"connected_at"`
+	Source      string    `json:"source,omitempty"`
 }
 
 type machineRegistry struct {
 	Version  int            `json:"version"`
 	Machines []savedMachine `json:"machines"`
+}
+
+type nativeMachineSyncItem struct {
+	Alias     string `json:"alias,omitempty"`
+	MachineID string `json:"machineId"`
+	Name      string `json:"name"`
+	Endpoint  string `json:"endpoint"`
+	DeviceID  string `json:"deviceId,omitempty"`
+	Token     string `json:"token"`
+}
+
+type nativeMachineSyncRequest struct {
+	Machines []nativeMachineSyncItem `json:"machines"`
+}
+
+type preparedNativeMachine struct {
+	Machine savedMachine
+	Token   string
 }
 
 type accessRequest struct {
@@ -104,9 +125,90 @@ func (a *app) cmdMachines(args []string) error {
 		return a.connectMachine(args[1:])
 	case "forget":
 		return a.forgetMachine(args[1:])
+	case "sync-native":
+		return a.syncNativeMachines(args[1:])
 	default:
 		return fail(1, "usage: sessions machines <discover|connect|list|forget>")
 	}
+}
+
+func (a *app) syncNativeMachines(args []string) error {
+	if len(args) != 0 {
+		return fail(1, "usage: sessions machines sync-native < JSON")
+	}
+	var request nativeMachineSyncRequest
+	decoder := json.NewDecoder(io.LimitReader(a.stdin, 256*1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return fail(1, "read native machine registry: %s", err)
+	}
+	if len(request.Machines) > 100 {
+		return fail(1, "native machine registry cannot contain more than 100 machines")
+	}
+	seen := make(map[string]bool, len(request.Machines))
+	prepared := make([]preparedNativeMachine, 0, len(request.Machines))
+	for _, item := range request.Machines {
+		item.MachineID = strings.TrimSpace(item.MachineID)
+		item.Name = strings.TrimSpace(item.Name)
+		item.DeviceID = strings.TrimSpace(item.DeviceID)
+		item.Token = strings.TrimSpace(item.Token)
+		if item.MachineID == "" || len(item.MachineID) > 128 || strings.ContainsAny(item.MachineID, "\r\n") {
+			return fail(1, "native machine has an invalid stable id")
+		}
+		if seen[item.MachineID] {
+			return fail(1, "native machine registry contains duplicate machine %s", item.MachineID)
+		}
+		if item.Token == "" || len(item.Token) > 512 || strings.ContainsAny(item.Token, "\r\n") {
+			return fail(1, "native machine %s has an invalid device credential", item.Name)
+		}
+		seen[item.MachineID] = true
+		endpoint, transport, err := validateMachineEndpoint(item.Endpoint)
+		if err != nil {
+			return fail(1, "native machine %s: %s", item.Name, err)
+		}
+		prepared = append(prepared, preparedNativeMachine{Machine: savedMachine{
+			Alias: item.Alias, MachineID: item.MachineID, Name: item.Name,
+			Endpoint: endpoint, Transport: transport, DeviceID: item.DeviceID,
+			ConnectedAt: a.now().UTC(), Source: nativeAppMachineSource,
+		}, Token: item.Token})
+	}
+
+	synced := make([]savedMachine, 0, len(prepared))
+	for _, item := range prepared {
+		record, err := saveMachine(a.home, item.Machine, item.Token)
+		if err != nil {
+			return fail(2, "save native machine %s: %s", item.Machine.Name, err)
+		}
+		synced = append(synced, record)
+	}
+
+	registry, err := readMachineRegistry(a.home)
+	if err != nil {
+		return fail(2, "read saved machines: %s", err)
+	}
+	kept := registry.Machines[:0]
+	removedTokenPaths := make([]string, 0)
+	for _, machine := range registry.Machines {
+		if machine.Source == nativeAppMachineSource && !seen[machine.MachineID] {
+			removedTokenPaths = append(removedTokenPaths, savedMachineTokenPath(a.home, machine.MachineID))
+			continue
+		}
+		kept = append(kept, machine)
+	}
+	registry.Machines = kept
+	if err := writeMachineRegistry(a.home, registry); err != nil {
+		return fail(2, "finish native machine sync: %s", err)
+	}
+	for _, tokenPath := range removedTokenPaths {
+		_ = os.Remove(tokenPath)
+	}
+	if a.wantJSON {
+		return writeJSON(a.stdout, struct {
+			Machines []savedMachine `json:"machines"`
+		}{Machines: synced}, true)
+	}
+	_, err = fmt.Fprintf(a.stdout, "Synced %d native Sessions machine(s) for agent access.\n", len(synced))
+	return err
 }
 
 func (a *app) discoverMachines(args []string) error {
@@ -596,7 +698,15 @@ func saveMachine(home string, machine savedMachine, token string) (savedMachine,
 		return savedMachine{}, err
 	}
 	if strings.TrimSpace(machine.Alias) == "" {
-		machine.Alias = uniqueMachineAlias(registry.Machines, machine.Name)
+		for _, existing := range registry.Machines {
+			if existing.MachineID == machine.MachineID {
+				machine.Alias = existing.Alias
+				break
+			}
+		}
+		if machine.Alias == "" {
+			machine.Alias = uniqueMachineAlias(registry.Machines, machine.Name)
+		}
 	} else {
 		machine.Alias = sanitizeMachineAlias(machine.Alias)
 		if machine.Alias == "" {
@@ -611,6 +721,16 @@ func saveMachine(home string, machine savedMachine, token string) (savedMachine,
 	replaced := false
 	for index := range registry.Machines {
 		if registry.Machines[index].MachineID == machine.MachineID {
+			// A machine paired explicitly through the CLI remains CLI-owned even
+			// when the native app refreshes its endpoint and credential. Removing
+			// it from the app must not silently forget an independently approved
+			// CLI connection.
+			if registry.Machines[index].Source == "" && machine.Source == nativeAppMachineSource {
+				machine.Source = ""
+			}
+			if machine.DeviceID == "" {
+				machine.DeviceID = registry.Machines[index].DeviceID
+			}
 			registry.Machines[index] = machine
 			replaced = true
 			break
@@ -623,16 +743,16 @@ func saveMachine(home string, machine savedMachine, token string) (savedMachine,
 		return registry.Machines[i].Alias < registry.Machines[j].Alias
 	})
 	tokenPath := savedMachineTokenPath(home, machine.MachineID)
-	previousToken, previousTokenErr := os.ReadFile(tokenPath)
-	if previousTokenErr != nil && !errors.Is(previousTokenErr, os.ErrNotExist) {
+	previousToken, previousTokenErr := tokenstore.ReadSecret(tokenPath)
+	if previousTokenErr != nil {
 		return savedMachine{}, previousTokenErr
 	}
-	if err := writePrivateFile(tokenPath, []byte(token+"\n")); err != nil {
+	if err := tokenstore.WriteSecret(tokenPath, token); err != nil {
 		return savedMachine{}, err
 	}
 	if err := writeMachineRegistry(home, registry); err != nil {
-		if previousTokenErr == nil {
-			_ = writePrivateFile(tokenPath, previousToken)
+		if previousToken != "" {
+			_ = tokenstore.WriteSecret(tokenPath, previousToken)
 		} else {
 			_ = os.Remove(tokenPath)
 		}

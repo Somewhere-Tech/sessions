@@ -139,11 +139,7 @@ func (c *apiClient) readToken() (string, error) {
 	if c.localToken {
 		return tokenstore.Read(c.tokenPath)
 	}
-	encoded, err := os.ReadFile(c.tokenPath)
-	if err != nil {
-		return "", nil
-	}
-	return strings.TrimSpace(string(encoded)), nil
+	return tokenstore.ReadSecret(c.tokenPath)
 }
 
 func (c *apiClient) tokenForRequest() (string, error) {

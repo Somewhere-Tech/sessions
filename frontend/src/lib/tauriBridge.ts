@@ -104,6 +104,26 @@ export interface NativeSavedMachine {
   connected_at: string;
 }
 
+export interface NativeAgentMachine {
+  alias?: string;
+  machineId: string;
+  name: string;
+  endpoint: string;
+  deviceId?: string;
+  token: string;
+}
+
+export async function syncNativeAgentMachines(
+  machines: NativeAgentMachine[]
+): Promise<NativeSavedMachine[]> {
+  if (!isTauri()) return [];
+  const result = await invoke<NativeConnectionCommand<{ machines: NativeSavedMachine[] }>>(
+    'native_agent_machines_sync',
+    { machines }
+  );
+  return result.data.machines ?? [];
+}
+
 export interface NativeMovePlan {
   source_id: string;
   target_id?: string;

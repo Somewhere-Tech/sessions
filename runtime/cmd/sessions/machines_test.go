@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
 func TestMachineRegistryKeepsCredentialsOutOfMetadataAndUsesPrivateModes(t *testing.T) {
@@ -41,6 +43,37 @@ func TestMachineRegistryKeepsCredentialsOutOfMetadataAndUsesPrivateModes(t *test
 		if info.Mode().Perm() != 0o600 {
 			t.Fatalf("mode(%s) = %04o", path, info.Mode().Perm())
 		}
+	}
+}
+
+func TestNativeMachineSyncSharesApprovedMachinesWithAgents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	payload := `{"machines":[{"machineId":"native-machine","name":"Mac mini","endpoint":"https://mini.example.ts.net","deviceId":"native-device","token":"native-device-token"}]}`
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--json", "machines", "sync-native"}, strings.NewReader(payload), &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("sync exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	registry, err := readMachineRegistry(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registry.Machines) != 1 || registry.Machines[0].Alias != "mac-mini" || registry.Machines[0].Source != nativeAppMachineSource {
+		t.Fatalf("registry = %#v", registry)
+	}
+	token, err := tokenstore.ReadSecret(savedMachineTokenPath(home, "native-machine"))
+	if err != nil || token != "native-device-token" {
+		t.Fatalf("saved token=%q err=%v", token, err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--json", "machines", "sync-native"}, strings.NewReader(`{"machines":[]}`), &stdout, &stderr); code != 0 {
+		t.Fatalf("clear exit=%d stderr=%q", code, stderr.String())
+	}
+	registry, err = readMachineRegistry(home)
+	if err != nil || len(registry.Machines) != 0 {
+		t.Fatalf("cleared registry=%#v err=%v", registry, err)
 	}
 }
 

@@ -3,6 +3,7 @@ import {
   assertServerPersisted,
   captureServerSelection,
   restoreServerSelection,
+  syncNativeAgentMachineAccess,
   useServers,
   type ServerConfig
 } from './servers';
@@ -29,6 +30,7 @@ function scrubFragment(): void {
 interface RememberServerOptions {
   name?: string;
   machineId?: string;
+  deviceId?: string;
   token?: string | null;
   select?: boolean;
   allowPrivateHTTP?: boolean;
@@ -67,6 +69,7 @@ export async function rememberServerEndpoint(
     await store.updateServer(existing.id, {
       ...endpoint,
       ...(machineId ? { machineId } : {}),
+      ...(options.deviceId ? { deviceId: options.deviceId } : {}),
       ...tokenUpdate,
       ...(name ? { name } : {})
     });
@@ -92,6 +95,7 @@ export async function rememberServerEndpoint(
   const created = await store.addServer({
     name: name || endpoint.host,
     ...(machineId ? { machineId } : {}),
+    ...(options.deviceId ? { deviceId: options.deviceId } : {}),
     ...endpoint,
     ...tokenUpdate
   });
@@ -109,10 +113,12 @@ export async function claimNativeMachinePairing(
     server = await rememberServerEndpoint(claim.endpoint, {
       name: claim.machineName,
       machineId: claim.machineId,
+      deviceId: claim.deviceId,
       token: claim.token,
       allowPrivateHTTP: true
     });
     await assertServerPersisted(server);
+    await syncNativeAgentMachineAccess();
   } catch {
     await restoreServerSelection(previous).catch(() => { /* keep the original save failure */ });
     // Avoid leaving an invisible live credential on the source machine when
@@ -145,10 +151,12 @@ export async function rememberNativeMachineClaim(
     server = await rememberServerEndpoint(claim.endpoint, {
       name: claim.machineName,
       machineId: claim.machineId,
+      deviceId: claim.deviceId,
       token: claim.token,
       allowPrivateHTTP: claim.endpoint.toLowerCase().startsWith('http://')
     });
     await assertServerPersisted(server);
+    await syncNativeAgentMachineAccess();
     if (options.select === false) useServers.getState().setActive(previous.activeId);
   } catch {
     await restoreServerSelection(previous).catch(() => { /* keep the original save failure */ });

@@ -17,6 +17,9 @@ func (a *app) cmdContinue(args []string) error {
 	if len(args) != 1 || args[0] == "" {
 		return fail(1, "usage: sessions continue <history-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
 	}
+	if _, err := a.useQualifiedHistoryReference(&args[0]); err != nil {
+		return err
+	}
 	if repairSet && repairLaneID == "" {
 		return fail(1, "--repair requires the existing live successor id")
 	}

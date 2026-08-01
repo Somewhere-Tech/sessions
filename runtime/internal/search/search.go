@@ -65,11 +65,24 @@ type Match struct {
 	CreatorID         string                           `json:"creator_id,omitempty"`
 	ContextBefore     []integrations.TranscriptMessage `json:"context_before,omitempty"`
 	ContextAfter      []integrations.TranscriptMessage `json:"context_after,omitempty"`
+	MachineAlias      string                           `json:"machine_alias,omitempty"`
+	Reference         string                           `json:"reference,omitempty"`
+	AvailableOn       []string                         `json:"available_on,omitempty"`
 }
 
 type Response struct {
-	Matches []Match `json:"matches"`
-	Total   int     `json:"total"`
+	Matches  []Match        `json:"matches"`
+	Total    int            `json:"total"`
+	Machines []MachineState `json:"machines,omitempty"`
+	Partial  bool           `json:"partial,omitempty"`
+}
+
+type MachineState struct {
+	Alias    string `json:"alias"`
+	Name     string `json:"name"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Status   string `json:"status"`
+	Error    string `json:"error,omitempty"`
 }
 
 type HistorySource interface {
