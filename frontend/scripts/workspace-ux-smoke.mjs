@@ -29,6 +29,11 @@ assert.match(picker, /Use exact model ID/);
 assert.doesNotMatch(picker, /<button[\s\S]{0,1200}<button[\s\S]{0,300}★/);
 assert.match(launcher, /launcher-composer-footer/);
 assert.match(launcher, /<ModelPicker/);
+assert.match(launcher, /What should we work on in/);
+assert.match(launcher, /launcher-workspace-bar/);
+assert.match(launcher, /aria-label="Agent"/);
+assert.match(launcher, /aria-label="Computer"/);
+assert.doesNotMatch(launcher, /worktree|Developer isolation|Git copy/);
 assert.match(sessionView, /has-terminal-drawer/);
 assert.match(sessionView, /Exact provider view/);
 assert.match(sessionView, /terminal-drawer-expanded/);
@@ -71,6 +76,40 @@ try {
   assert.ok(bounds.drawerHeight > 160 && bounds.drawerHeight < 440, `terminal drawer should stay bounded, got ${bounds.drawerHeight}`);
   assert.ok(bounds.drawerBottom <= bounds.viewportHeight, 'terminal drawer must stay on screen');
   assert.ok(bounds.conversationHeight > bounds.drawerHeight, 'conversation must remain the primary surface behind the drawer');
+
+  await page.setViewport({ width: 1100, height: 760 });
+  await page.setContent(`
+    <style>${styles}</style>
+    <div class="dialog-backdrop">
+      <form class="dialog dialog-wide new-session-launcher">
+        <header class="dialog-head launcher-compact-head"><div class="launcher-breadcrumb"><span class="workspace-folder-icon"></span><span>Sessions</span><span>/</span><strong>New session</strong></div></header>
+        <div id="launcher-body" class="dialog-body">
+          <section id="launcher-hero" class="launcher-hero"><span>This computer</span><h2>What should we work on in <strong>Sessions</strong>?</h2></section>
+          <div id="launcher-composer" class="field launcher-task-field launcher-composer">
+            <textarea rows="6" placeholder="Ask an agent to work"></textarea>
+            <div class="launcher-composer-footer"><div class="launcher-composer-context">
+              <label class="launcher-select-control is-agent"><select><option>Claude</option></select></label>
+              <label class="launcher-select-control is-machine"><select><option>This computer</option></select></label>
+              <label class="launcher-effort-chip"><select><option>Default effort</option></select></label>
+            </div><div class="launcher-composer-actions"><button class="btn btn-primary launcher-composer-start">↑</button></div></div>
+          </div>
+          <section id="launcher-workspace" class="launcher-workspace-shell"><div class="launcher-workspace-bar"><span class="workspace-folder-icon"></span><span class="launcher-workspace-copy"><strong>Sessions</strong><small>/Users/example/Sessions</small></span><span class="launcher-workspace-machine">This computer</span><button class="btn btn-ghost">Change</button></div></section>
+        </div>
+      </form>
+    </div>
+  `);
+  const launcherBounds = await page.evaluate(() => {
+    const body = document.querySelector('#launcher-body').getBoundingClientRect();
+    const hero = document.querySelector('#launcher-hero').getBoundingClientRect();
+    const composer = document.querySelector('#launcher-composer').getBoundingClientRect();
+    const workspace = document.querySelector('#launcher-workspace').getBoundingClientRect();
+    return { bodyWidth: body.width, heroBottom: hero.bottom, composerTop: composer.top, composerHeight: composer.height, workspaceTop: workspace.top, workspaceRight: workspace.right, bodyRight: body.right };
+  });
+  assert.ok(launcherBounds.bodyWidth <= 780, `launcher content should stay focused, got ${launcherBounds.bodyWidth}px`);
+  assert.ok(launcherBounds.heroBottom <= launcherBounds.composerTop, 'the prompt must follow the workspace question');
+  assert.ok(launcherBounds.composerHeight >= 218, `the prompt must remain the primary control, got ${launcherBounds.composerHeight}px`);
+  assert.ok(launcherBounds.workspaceTop >= launcherBounds.composerTop + launcherBounds.composerHeight, 'the project picker must sit below the prompt');
+  assert.ok(launcherBounds.workspaceRight <= launcherBounds.bodyRight, 'the project picker must not overflow the launcher');
 } finally {
   await browser.close();
 }

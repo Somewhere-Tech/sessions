@@ -80,10 +80,10 @@ function fallbackWorkspaces(path: string): DirectoryCandidate[] {
   ];
 }
 
-function AgentMark({ tool }: { tool: NewSessionTool }): JSX.Element {
-  if (tool === 'claude-code') return <ProviderMark provider="claude" size={38} />;
-  if (tool === 'codex') return <ProviderMark provider="codex" size={38} />;
-  return <span className="provider-mark is-shell" aria-hidden>$</span>;
+function AgentMark({ tool, size = 38 }: { tool: NewSessionTool; size?: number }): JSX.Element {
+  if (tool === 'claude-code') return <ProviderMark provider="claude" size={size} />;
+  if (tool === 'codex') return <ProviderMark provider="codex" size={size} />;
+  return <span className="provider-mark is-shell" style={{ width: size, height: size, fontSize: Math.max(12, size / 2) }} aria-hidden>$</span>;
 }
 
 const NEW_PROFILE = '__new_profile__';
@@ -226,7 +226,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const [tags, setTags] = useState<Record<string, string>>(parentSession?.tags ?? initialDefaults.tags);
   const [task, setTask] = useState('');
   const [recentWorkspaces, setRecentWorkspaces] = useState<DirectoryCandidate[]>([]);
-  const [makeWorktree, setMakeWorktree] = useState(false);
   const [profiles, setProfiles] = useState<AccountProfile[]>([]);
   const [profileChoice, setProfileChoice] = useState(() => inheritedProfile(parentSession, tool));
   const [newProfile, setNewProfile] = useState('');
@@ -442,7 +441,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         description: task.trim() || undefined,
         tags,
         profile: selectedProfile || undefined,
-        worktree: !parentSession && makeWorktree,
         // A newly isolated provider home starts in its login flow. Readiness
         // cannot distinguish that prompt from the agent composer, so never
         // inject an initial task until the user has authenticated explicitly.
@@ -486,7 +484,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     void startSession(null);
   };
 
-  const showSkipPerms = tool === 'codex';
   const isDelegate = parentSession !== null;
   const selectedTool = TOOLS.find((item) => item.id === tool) ?? TOOLS[0];
   const selectedModel = tool === 'claude-code' ? (claudeOptions.model ?? '') : codexModel;
@@ -510,146 +507,64 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     }
     setCodexEffort(nextEffort);
   };
+  const chooseTool = (nextTool: NewSessionTool): void => {
+    setTool(nextTool);
+    setRuntimeMode(defaultRuntimeMode(nextTool, parentSession, skipPerms));
+  };
+  const selectedWorkspace = recentWorkspaces.find((item) => item.path === cwd)
+    ?? displayedWorkspaces.find((item) => item.path === cwd);
+  const workspaceTitle = selectedWorkspace?.label
+    ?? cwd.split('/').filter(Boolean).pop()
+    ?? 'this project';
+  const machineTitle = selectedMachine?.isDefault && isLocalServer(selectedMachine)
+    ? 'This computer'
+    : selectedMachine?.name ?? 'Choose computer';
 
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <form className="dialog dialog-wide new-session-launcher" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
-        <header className="dialog-head">
-          <div><span className="dialog-kicker">{isDelegate ? `Linked to ${parentSession ? sessionLabel(parentSession) : 'this session'}` : 'Start work anywhere in your fleet'}</span><h2 className="dialog-title">{isDelegate ? 'Start linked work' : 'Start a session'}</h2></div>
+        <header className="dialog-head launcher-compact-head">
+          <div className="launcher-breadcrumb">
+            <span className="workspace-folder-icon" aria-hidden />
+            <span>{isDelegate ? sessionLabel(parentSession as SessionInfo) : workspaceTitle}</span>
+            <span aria-hidden>/</span>
+            <strong>{isDelegate ? 'Linked session' : 'New session'}</strong>
+          </div>
           <div className="launcher-head-actions">
             {onOpenResume && !isDelegate && selectedProfile === '' ? (
-              <button type="button" className="dialog-head-link" onClick={() => onOpenResume()}>Resume instead</button>
+              <button type="button" className="dialog-head-link" onClick={() => onOpenResume()}>Continue an earlier chat</button>
             ) : null}
             <button type="button" className="launcher-close" onClick={onClose} aria-label="Close new session">×</button>
           </div>
         </header>
         <div className="dialog-body">
-          <section className="launcher-step launcher-agent-step">
-            <div className="launcher-step-heading">
-              <span className="launcher-step-number">1</span>
-              <span><strong>Who should work on this?</strong><small>Choose the agent. Model and effort can change later.</small></span>
-            </div>
-            <div className="tool-selector">
-              {TOOLS.map((t) => (
-                <button key={t.id} type="button" className={`tool-option${tool === t.id ? ' is-active' : ''}`} onClick={() => {
-                  setTool(t.id);
-                  setRuntimeMode(defaultRuntimeMode(t.id, parentSession, skipPerms));
-                }}>
-                  <AgentMark tool={t.id} />
-                  <span className="tool-choice-radio" aria-hidden />
-                  <span className="tool-name">{t.name}</span>
-                  <span className="tool-description">{t.description}</span>
-                </button>
-              ))}
-            </div>
-            {tool === 'claude-code' ? (
-              <div className="launcher-claude-runtime-summary">
-                <span><strong>Conversation + Terminal</strong><em>Native Claude</em></span>
-                <small>Sessions opens Claude’s native interactive session. Remote Control follows the explicit choice for this machine in Settings.</small>
-              </div>
-            ) : tool === 'codex' ? (
-                <div className="field launcher-runtime-field">
-                  <span className="field-label">How should it run?</span>
-                  <div className="runtime-mode-selector" role="radiogroup" aria-label="Agent runtime experience">
-                    <button type="button" role="radio" aria-checked={runtimeMode === 'rich'} className={`runtime-mode-option${runtimeMode === 'rich' ? ' is-active' : ''}`} onClick={() => {
-                      setRuntimeMode('rich');
-                      if (tool === 'codex') setSkipPerms(true);
-                    }}>
-                      <span><strong>Rich</strong><em>{tool === 'codex' ? 'Full access' : 'Recommended'}</em></span>
-                      <small>A clean conversation view with live plans, tools, and model controls. Best for everyday Codex work. Full Access is currently required.</small>
-                    </button>
-                    <button type="button" role="radio" aria-checked={runtimeMode === 'terminal'} className={`runtime-mode-option${runtimeMode === 'terminal' ? ' is-active' : ''}`} onClick={() => setRuntimeMode('terminal')}>
-                      <span><strong>Terminal</strong><em>Full terminal</em></span>
-                      <small>Runs Codex just as it appears in Terminal. Best for setup screens and the full provider interface.</small>
-                    </button>
-                  </div>
-                </div>
-            ) : null}
+          <section className="launcher-hero">
+            <span>{isDelegate ? `Linked to ${parentSession ? sessionLabel(parentSession) : 'this session'}` : machineTitle}</span>
+            <h2>{isDelegate ? 'What should this helper do?' : <>What should we work on in <strong>{workspaceTitle}</strong>?</>}</h2>
           </section>
-          {isDelegate ? (
-            <div className="launcher-inherited"><span>Machine & folder</span><strong>{cwd}</strong><small>{getActiveServer().name} · inherited from {parentSession ? sessionLabel(parentSession) : 'the parent session'}</small></div>
-          ) : (
-            <section className="launcher-step launcher-machine-step">
-              <div className="launcher-step-heading">
-                <span className="launcher-step-number">2</span>
-                <span><strong>Where should it run?</strong><small>This computer is ready by default; choose another connected machine when the files live there.</small></span>
-              </div>
-              <div className="launcher-machine-selector" role="radiogroup" aria-label="Machine">
-                {configuredMachines.map((machine) => {
-                  const local = machine.isDefault && isLocalServer(machine);
-                  return (
-                    <button
-                      key={machine.id}
-                      type="button"
-                      role="radio"
-                      aria-checked={machine.id === machineId}
-                      className={machine.id === machineId ? 'is-active' : ''}
-                      onClick={() => chooseMachine(machine.id)}
-                    >
-                      <span className="launcher-machine-icon" aria-hidden />
-                      <span><strong>{local ? 'This computer' : machine.name}</strong><small>{local ? 'Runs on this device' : 'Paired machine'}</small></span>
-                      <span className="workspace-radio" aria-hidden />
-                    </button>
-                  );
-                })}
-              </div>
-              {liveOnSelectedMachine >= 8 ? (
-                <div className="launcher-capacity-note">
-                  <strong>This machine already has {liveOnSelectedMachine} live sessions</strong>
-                  <span>{workingOnSelectedMachine} working now. Starting another is allowed; Sessions never stops or queues existing work automatically.</span>
-                </div>
-              ) : null}
-            </section>
-          )}
-          {!isDelegate ? (
-            <section className="launcher-step launcher-workspace-field">
-              <div className="launcher-section-head">
-                <div className="launcher-step-heading">
-                  <span className="launcher-step-number">3</span>
-                  <span><strong>Choose the project</strong><small>Somewhere projects and recent work from {selectedMachine?.name ?? 'this machine'} appear first.</small></span>
-                </div>
-                <details className="workspace-browser-disclosure" open={browserOpen} onToggle={(event) => setBrowserOpen(event.currentTarget.open)}>
-                  <summary>Choose another…</summary>
-                  {browserOpen ? (
-                    <div className="workspace-browser-panel">
-                      <input className="field-input workspace-path-input" value={cwd} onChange={(event) => setCwd(event.currentTarget.value)} placeholder="/path/to/project" />
-                      <DirectoryBrowser value={cwd} onChange={(path, confirmed) => { setCwd(path); if (confirmed) setBrowserOpen(false); }} />
-                    </div>
-                  ) : null}
-                </details>
-              </div>
-              {displayedWorkspaces.length > 0 ? (
-                <div className="recent-workspaces">
-                  {displayedWorkspaces.map((item) => (
-                    <button
-                      type="button"
-                      key={item.path}
-                      className={`${cwd === item.path ? 'is-active' : ''}${item.kind === 'somewhere' ? ' is-somewhere' : ''}`}
-                      onClick={() => setCwd(item.path)}
-                    >
-                      <span className="workspace-folder-icon" aria-hidden />
-                      <span className="workspace-card-copy">
-                        <strong>{item.label}</strong>
-                        <small>{workspaceKind(item.kind)}</small>
-                      </span>
-                      <span className="workspace-radio" aria-hidden />
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              <span className="launcher-somewhere-note">Somewhere projects use the selected machine’s local checkout and its existing agent login.</span>
-              <div className="workspace-selection"><span className="workspace-status-dot" aria-hidden /><strong>{selectedMachine?.name ?? 'Machine'}</strong><span>·</span><code>{cwd || 'Choose a folder'}</code></div>
-              {cwd === homeWorkspace ? <span className="field-help">Choosing a project folder avoids macOS prompts for unrelated protected folders such as Music and cloud drives.</span> : null}
-            </section>
-          ) : null}
           <div className="field launcher-task-field launcher-composer">
-            <span className="field-label">{isDelegate ? 'What should this helper do?' : 'What should it do first?'} <span className="field-optional">optional</span></span>
-            <textarea value={task} onChange={(event) => setTask(event.currentTarget.value)} placeholder={isDelegate ? 'What should this linked session work on?' : 'Describe a task, ask a question, or leave blank to start…'} rows={5} />
+            <span className="sr-only">First request (optional)</span>
+            <textarea autoFocus value={task} onChange={(event) => setTask(event.currentTarget.value)} placeholder={isDelegate ? 'Describe the work for this linked session…' : 'Ask an agent to work, or leave blank to open a conversation…'} rows={6} />
             <div className="launcher-composer-footer">
               <div className="launcher-composer-context" aria-label="New session configuration">
-                <span className="launcher-context-chip" title={`Agent: ${selectedTool.name}`}><AgentMark tool={tool} />{selectedTool.name}</span>
-                <span className="launcher-context-chip" title={`Machine: ${selectedMachine?.name ?? 'This computer'}`}><span className="launcher-machine-icon" aria-hidden />{selectedMachine?.isDefault && isLocalServer(selectedMachine) ? 'This computer' : selectedMachine?.name ?? 'Machine'}</span>
-                <span className="launcher-context-chip is-folder" title={cwd}>⌑ {cwd.split('/').filter(Boolean).pop() || 'Choose folder'}</span>
+                <label className="launcher-select-control is-agent" title={`Agent: ${selectedTool.name}`}>
+                  <AgentMark tool={tool} size={20} />
+                  <select value={tool} onChange={(event) => chooseTool(event.currentTarget.value as NewSessionTool)} aria-label="Agent">
+                    {TOOLS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  </select>
+                </label>
+                {!isDelegate ? (
+                  <label className="launcher-select-control is-machine" title={`Computer: ${machineTitle}`}>
+                    <span className="launcher-machine-icon" aria-hidden />
+                    <select value={machineId} onChange={(event) => chooseMachine(event.currentTarget.value)} aria-label="Computer">
+                      {configuredMachines.map((machine) => (
+                        <option key={machine.id} value={machine.id}>{machine.isDefault && isLocalServer(machine) ? 'This computer' : machine.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <span className="launcher-context-chip" title={`${getActiveServer().name} · ${cwd}`}><span className="launcher-machine-icon" aria-hidden />Inherited</span>
+                )}
                 {tool !== 'shell' ? (
                   <>
                     <ModelPicker
@@ -671,18 +586,96 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                     </label>
                   </>
                 ) : null}
+                {tool === 'claude-code' ? (
+                  <label className="launcher-select-control">
+                    <span className="sr-only">Approvals</span>
+                    <select value={claudeOptions.permissionMode ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, permissionMode: event.currentTarget.value as ClaudeSessionOptions['permissionMode'] }))} aria-label="Approvals">
+                      <option value="">Settings approvals</option>
+                      <option value="manual">Ask every time</option>
+                      <option value="acceptEdits">Accept edits</option>
+                      <option value="auto">Auto</option>
+                      <option value="plan">Plan only</option>
+                      <option value="dontAsk">Don’t ask</option>
+                      <option value="bypassPermissions">Full access</option>
+                    </select>
+                  </label>
+                ) : tool === 'codex' ? (
+                  <label className="launcher-select-control">
+                    <span className="sr-only">Permissions</span>
+                    <select value={skipPerms ? 'full' : 'safe'} onChange={(event) => {
+                      const fullAccess = event.currentTarget.value === 'full';
+                      setSkipPerms(fullAccess);
+                      if (!fullAccess && runtimeMode === 'rich') setRuntimeMode('terminal');
+                    }} aria-label="Permissions">
+                      <option value="safe">Ask when needed</option>
+                      <option value="full">Full access</option>
+                    </select>
+                  </label>
+                ) : null}
+                {tool === 'codex' ? (
+                  <label className="launcher-select-control">
+                    <span className="sr-only">View</span>
+                    <select value={runtimeMode} onChange={(event) => {
+                      const nextMode = event.currentTarget.value as RuntimeMode;
+                      setRuntimeMode(nextMode);
+                      if (nextMode === 'rich') setSkipPerms(true);
+                    }} aria-label="Session view">
+                      <option value="rich">Conversation</option>
+                      <option value="terminal">Terminal</option>
+                    </select>
+                  </label>
+                ) : tool === 'claude-code' ? (
+                  <span className="launcher-context-chip" title="Claude's native session is available as both a conversation and a terminal">Conversation + Terminal</span>
+                ) : null}
               </div>
               <div className="launcher-composer-actions">
-                <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
-                <button type={createdWithDeliveryError ? 'button' : 'submit'} className="btn btn-primary launcher-composer-start" disabled={!createdWithDeliveryError && (busy || !cwd.trim() || !profileValid)} onClick={createdWithDeliveryError ? onClose : undefined}>
-                  {createdWithDeliveryError ? 'View session' : busy ? 'Starting…' : 'Start session'}
+                <button type={createdWithDeliveryError ? 'button' : 'submit'} className={`btn btn-primary launcher-composer-start${createdWithDeliveryError ? ' is-wide' : ''}`} disabled={!createdWithDeliveryError && (busy || !cwd.trim() || !profileValid)} onClick={createdWithDeliveryError ? onClose : undefined} aria-label={createdWithDeliveryError ? 'View session' : 'Start session'} title={createdWithDeliveryError ? 'View session' : 'Start session'}>
+                  {createdWithDeliveryError ? 'View session' : busy ? '…' : '↑'}
                 </button>
               </div>
             </div>
-            <span className="field-help">{requiresProviderLogin ? 'A new account must finish login first. This request will stay here for copying; Sessions will not queue or paste it into the login flow.' : isDelegate ? `Starts in ${parentSession?.cwd} and stays grouped under ${parentSession ? sessionLabel(parentSession) : 'the current session'}.` : 'Leave this blank to open an empty conversation. You can change the model and effort later.'}</span>
+            {requiresProviderLogin ? <span className="field-help">Finish the new account login first. Sessions will keep this request here instead of sending it into a login screen.</span> : null}
           </div>
+          {isDelegate ? (
+            <div className="launcher-inherited"><span>Runs with its parent</span><strong>{cwd}</strong><small>{getActiveServer().name} · grouped under {parentSession ? sessionLabel(parentSession) : 'the current session'}</small></div>
+          ) : (
+            <section className="launcher-workspace-shell">
+              <div className="launcher-workspace-bar">
+                <span className="workspace-folder-icon" aria-hidden />
+                <span className="launcher-workspace-copy"><strong>{workspaceTitle}</strong><small>{cwd || 'Choose a project folder'}</small></span>
+                <span className="launcher-workspace-machine">{machineTitle}</span>
+                <button type="button" className="btn btn-ghost" onClick={() => setBrowserOpen((open) => !open)} aria-expanded={browserOpen}>{browserOpen ? 'Done' : 'Change'}</button>
+              </div>
+              {browserOpen ? (
+                <div className="launcher-workspace-picker">
+                  {displayedWorkspaces.length > 0 ? (
+                    <div className="recent-workspaces">
+                      {displayedWorkspaces.map((item) => (
+                        <button type="button" key={item.path} className={`${cwd === item.path ? 'is-active' : ''}${item.kind === 'somewhere' ? ' is-somewhere' : ''}`} onClick={() => { setCwd(item.path); setBrowserOpen(false); }}>
+                          <span className="workspace-folder-icon" aria-hidden />
+                          <span className="workspace-card-copy"><strong>{item.label}</strong><small>{workspaceKind(item.kind)}</small></span>
+                          <span className="workspace-radio" aria-hidden />
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="launcher-directory-picker">
+                    <input className="field-input workspace-path-input" value={cwd} onChange={(event) => setCwd(event.currentTarget.value)} placeholder="/path/to/project" aria-label="Project folder" />
+                    <DirectoryBrowser value={cwd} onChange={(path, confirmed) => { setCwd(path); if (confirmed) setBrowserOpen(false); }} />
+                  </div>
+                </div>
+              ) : null}
+              {cwd === homeWorkspace ? <span className="field-help">A project folder also avoids unrelated macOS prompts for protected folders such as Music and cloud drives.</span> : null}
+            </section>
+          )}
+          {liveOnSelectedMachine >= 8 ? (
+            <div className="launcher-capacity-note">
+              <strong>{machineTitle} already has {liveOnSelectedMachine} live sessions</strong>
+              <span>{workingOnSelectedMachine} working now. Starting another is fine; Sessions will not stop or queue existing work.</span>
+            </div>
+          ) : null}
           <details className="launcher-advanced">
-            <summary><strong>Advanced</strong><span>Accounts, isolation, and integrations</span></summary>
+            <summary><strong>Advanced</strong><span>Account, tags, and provider settings</span></summary>
             <div className="launcher-advanced-body">
               {profileTool ? (
                 <div className="field launcher-advanced-card account-profile-field">
@@ -719,18 +712,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                   ) : null}
                 </div>
               ) : null}
-              {!isDelegate ? (
-                <details className="launcher-advanced-subsection">
-                  <summary>Developer isolation <span>Optional separate copy</span></summary>
-                  <label className="field-checkbox">
-                    <input type="checkbox" checked={makeWorktree} onChange={(event) => setMakeWorktree(event.currentTarget.checked)} />
-                    <span className="field-checkbox-body">
-                      <span>Give this session its own Git copy</span>
-                      <span className="field-hint">Useful when two agents may edit the same project at once. Sessions manages the worktree automatically.</span>
-                    </span>
-                  </label>
-                </details>
-              ) : null}
               <details className="launcher-advanced-subsection">
                 <summary>Tags <span>Optional organization</span></summary>
                 <TagEditor value={tags} onChange={setTags} disabled={busy} />
@@ -739,16 +720,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                 <details className="launcher-advanced-subsection">
                   <summary>Claude options <span>Uses Settings by default</span></summary>
                   <div className="launcher-claude-options">
-                    <label><span>Approvals</span><select value={claudeOptions.permissionMode ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, permissionMode: event.currentTarget.value as ClaudeSessionOptions['permissionMode'] }))}>
-                      <option value="">Use Settings</option>
-                      <option value="inherit">Claude default</option>
-                      <option value="manual">Ask every time</option>
-                      <option value="acceptEdits">Accept edits</option>
-                      <option value="auto">Auto</option>
-                      <option value="plan">Plan only</option>
-                      <option value="dontAsk">Don’t ask</option>
-                      <option value="bypassPermissions">Bypass permissions</option>
-                    </select></label>
                     <label><span>Use Chrome</span><select value={claudeOptions.chrome ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, chrome: event.currentTarget.value as ClaudeSessionOptions['chrome'] }))}>
                       <option value="">Use Settings</option><option value="inherit">Claude default</option><option value="on">On</option><option value="off">Off</option>
                     </select></label>
@@ -770,25 +741,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                     </span>
                   </label>
                 </details>
-              ) : null}
-              {showSkipPerms ? (
-                <label className="field-checkbox launcher-advanced-card">
-                  <input
-                    type="checkbox"
-                    checked={skipPerms}
-                    onChange={(e) => {
-                      const enabled = e.target.checked;
-                      setSkipPerms(enabled);
-                      if (!enabled && tool === 'codex' && runtimeMode === 'rich') setRuntimeMode('terminal');
-                    }}
-                  />
-                  <span className="field-checkbox-body">
-                    <span>Full Access</span>
-                    <span className="field-hint">
-                      Lets Codex work without approval or sandbox checks. Use only for a workspace and task you trust.
-                    </span>
-                  </span>
-                </label>
               ) : null}
             </div>
           </details>
