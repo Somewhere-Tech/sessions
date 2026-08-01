@@ -201,7 +201,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
       <div className="fleet-view-heading">
         <div>
           <h1>Fleet</h1>
-          <p>Live sessions across {servers.length} {servers.length === 1 ? 'machine' : 'machines'}</p>
+          <p>Every configured machine stays visible here, including when it is offline.</p>
         </div>
         <div className="fleet-heading-actions">
           <label className="fleet-history-toggle">
@@ -337,7 +337,15 @@ function FleetServerGroup({
   onOpenSession: (sessionId: string) => void;
   onOpenMachine: () => void;
 }): JSX.Element {
+  const updateServer = useServers((state) => state.updateServer);
   const [snapshot, setSnapshot] = useState<ServerSnapshot>(INITIAL_SNAPSHOT);
+  const [renaming, setRenaming] = useState(false);
+  const [machineName, setMachineName] = useState(server.name);
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!renaming) setMachineName(server.name);
+  }, [renaming, server.name]);
 
   useEffect(() => {
     let stopped = false;
@@ -437,6 +445,22 @@ function FleetServerGroup({
     server.isDefault ? 'is-local' : '',
     unavailable ? 'is-unreachable' : ''
   ].filter(Boolean).join(' ');
+  const defaultMachineName = server.isDefault ? localMachineName(platform) : server.name;
+  const displayMachineName = server.name === 'This machine' ? defaultMachineName : server.name;
+  const saveMachineName = async (): Promise<void> => {
+    const name = machineName.trim().replace(/\s+/g, ' ').slice(0, 48);
+    if (!name) {
+      setRenameError('Add a name for this machine.');
+      return;
+    }
+    setRenameError(null);
+    try {
+      await updateServer(server.id, { name });
+      setRenaming(false);
+    } catch (reason) {
+      setRenameError(reason instanceof Error ? reason.message : 'Could not save this machine name.');
+    }
+  };
 
   return (
     <section className={cardClasses}>
@@ -444,8 +468,22 @@ function FleetServerGroup({
         <span className={`fleet-platform-mark is-${platform}`} aria-hidden><PlatformIcon platform={platform} /></span>
         <div className="fleet-server-identity">
           <div className="fleet-machine-title">
-            <h2 title={server.name}>{server.isDefault ? localMachineName(platform) : server.name}</h2>
+            {renaming ? (
+              <form className="fleet-machine-rename" onSubmit={(event) => { event.preventDefault(); void saveMachineName(); }}>
+                <input autoFocus value={machineName} maxLength={48} aria-label="Machine name" onChange={(event) => setMachineName(event.target.value)} />
+                <button type="submit">Save</button>
+                <button type="button" onClick={() => { setRenaming(false); setRenameError(null); setMachineName(server.name); }}>Cancel</button>
+              </form>
+            ) : (
+              <>
+                <h2 title={`${displayMachineName} · ${formatServerEndpoint(server)}`}>{displayMachineName}</h2>
+                <button type="button" className="fleet-machine-rename-button" aria-label={`Rename ${displayMachineName}`} title="Name this machine" onClick={() => setRenaming(true)}>
+                  <svg viewBox="0 0 24 24" aria-hidden><path d="M4 16.5V20h3.5L18 9.5 14.5 6 4 16.5Zm16.7-9.8a1 1 0 0 0 0-1.4l-2-2a1 1 0 0 0-1.4 0l-1.6 1.6 3.5 3.5 1.5-1.7Z" /></svg>
+                </button>
+              </>
+            )}
           </div>
+          {renameError ? <span className="fleet-machine-rename-error">{renameError}</span> : null}
           <span className={`fleet-machine-status is-${snapshot.reachability}`}><span className={`fleet-reachability-dot is-${snapshot.reachability}`} aria-hidden />{reachabilityLabel}</span>
         </div>
         <span className="fleet-machine-count"><strong>{activeCount} live</strong><span>{snapshot.sessions.length} total</span></span>

@@ -39,7 +39,7 @@ try {
     define: { 'import.meta.env.BASE_URL': '"/"' },
     entryNames: 'app',
     assetNames: 'asset-[hash]',
-    external: ['/claude.png'],
+    external: ['/claude-icon.svg'],
     loader: { '.svg': 'dataurl', '.png': 'dataurl' },
     logLevel: 'silent'
   });
@@ -52,7 +52,7 @@ try {
   server = createServer(async (request, response) => {
     const name = request.url === '/' ? 'index.html' : request.url.slice(1);
     try {
-      const source = name === 'openai-icon.svg' || name === 'claude.png'
+      const source = name === 'openai-icon.svg' || name === 'claude-icon.svg'
         ? join(publicDir, name)
         : join(work, name);
       const body = await readFile(source);

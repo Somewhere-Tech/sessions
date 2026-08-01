@@ -788,6 +788,23 @@ export interface UsageRow {
   missingPricingEntries: number;
 }
 
+export interface UsageEvent {
+  eventKey: string;
+  groupKey: string;
+  start?: string;
+  provider: string;
+  providerSessionId?: string;
+  sessionId?: string;
+  tags?: Record<string, string>;
+  model?: string;
+  tokens: UsageTokens;
+  costUSD: number;
+  recordedCostUSD: number;
+  calculatedCostUSD: number;
+  hasRecordedCost: boolean;
+  missingPricing: boolean;
+}
+
 export interface UsageReport {
   schemaVersion: number;
   machine: string;
@@ -799,6 +816,8 @@ export interface UsageReport {
   scan: { filesSeen: number; filesRead: number; linesRead: number; entriesSeen: number };
   rows: UsageRow[];
   totals: UsageRow;
+  eventsIncluded?: boolean;
+  events?: UsageEvent[];
 }
 
 export interface UsageOptions {
@@ -808,6 +827,7 @@ export interface UsageOptions {
   since?: string;
   until?: string;
   dimension?: string;
+  includeEvents?: boolean;
 }
 
 export async function fetchUsage(options: UsageOptions, signal?: AbortSignal): Promise<UsageReport> {
@@ -824,6 +844,7 @@ export async function fetchUsageForServer(
   if (options.since) query.set('since', options.since);
   if (options.until) query.set('until', options.until);
   if (options.dimension) query.set('dimension', options.dimension);
+	if (options.includeEvents) query.set('events', '1');
 	const r = await serverFetch(server, `${httpBaseForServer(server)}/api/usage?${query.toString()}`, { signal });
 	return featureJSON<UsageReport>(r, 'Usage');
 }

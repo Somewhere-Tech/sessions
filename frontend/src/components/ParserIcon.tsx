@@ -13,7 +13,7 @@ interface Props {
 }
 
 const IMG_BY_EMOJI: Record<string, { src: string; alt: string }> = {
-  '🟠': { src: `${import.meta.env.BASE_URL}claude.png`,      alt: 'Claude' },
+  '🟠': { src: `${import.meta.env.BASE_URL}claude-icon.svg`, alt: 'Claude' },
   '🟢': { src: `${import.meta.env.BASE_URL}openai-icon.svg`, alt: 'OpenAI' }
 };
 

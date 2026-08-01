@@ -65,7 +65,8 @@ owns the permanent Home/Sessions/Daily/Search/Fleet/Usage/Settings rail;
 builds the manager/child tree from normalized `SessionInfo` provenance fields.
 `FleetView.tsx` independently polls every configured daemon, uses the optional
 `system.os`/`system.arch` health metadata to choose a platform mark, reports
-each daemon version, and keeps older daemons compatible with a conservative
+each daemon version, persists a user-defined local alias for each configured
+machine, and keeps older daemons compatible with a conservative
 client-side fallback. It compares release versions only to render advisory
 older/newer/different-build notices; a different version is not itself an API
 failure. An advertised `compatibility.api` range is authoritative: native
@@ -536,7 +537,12 @@ snapshot followed by new child work: copied parent turns are neither rebilled
 nor re-dated, and physical-log provenance cannot be replaced by an equal replay.
 Aggregation exposes schema-versioned daily, weekly,
 monthly, session, tag, provider, and model views; session tags are joined from
-current runner metadata at query time (`runtime/internal/usage/report.go`).
+current runner metadata at query time (`runtime/internal/usage/report.go`). The
+desktop separates the requested time window from those grouping dimensions and
+queries every configured machine directly. Fleet reports can include stable,
+content-free event identities so the client deduplicates copied histories
+without uploading transcript contents; mixed-version fleets are visibly
+reported as a machine sum until every daemon supports exact deduplication.
 Pricing is an explicit pinned `ccusage`-compatible table: recorded costs remain
 distinguishable from estimates, and unknown models remain visibly unpriced
 (`runtime/internal/usage/pricing.go`).

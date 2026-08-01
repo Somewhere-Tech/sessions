@@ -52,6 +52,27 @@ type ReportOptions struct {
 	Until     time.Time
 	Provider  string
 	Dimension string
+	// IncludeEvents exposes the stable, content-free usage event identities
+	// needed by trusted Fleet clients to combine machine-local reports without
+	// double-counting provider history copied between machines.
+	IncludeEvents bool
+}
+
+type ReportEvent struct {
+	EventKey          string            `json:"eventKey"`
+	GroupKey          string            `json:"groupKey"`
+	Start             string            `json:"start,omitempty"`
+	Provider          string            `json:"provider"`
+	ProviderSessionID string            `json:"providerSessionId,omitempty"`
+	SessionID         string            `json:"sessionId,omitempty"`
+	Tags              map[string]string `json:"tags,omitempty"`
+	Model             string            `json:"model,omitempty"`
+	Tokens            Tokens            `json:"tokens"`
+	CostUSD           float64           `json:"costUSD"`
+	RecordedCostUSD   float64           `json:"recordedCostUSD"`
+	CalculatedCostUSD float64           `json:"calculatedCostUSD"`
+	HasRecordedCost   bool              `json:"hasRecordedCost"`
+	MissingPricing    bool              `json:"missingPricing"`
 }
 
 type ReportRow struct {
@@ -71,16 +92,18 @@ type ReportRow struct {
 }
 
 type Report struct {
-	SchemaVersion int               `json:"schemaVersion"`
-	Machine       string            `json:"machine"`
-	GeneratedAt   string            `json:"generatedAt"`
-	Group         string            `json:"group"`
-	Mode          string            `json:"mode"`
-	Dimension     string            `json:"dimension,omitempty"`
-	Pricing       PricingProvenance `json:"pricing"`
-	Scan          ScanStats         `json:"scan"`
-	Rows          []ReportRow       `json:"rows"`
-	Totals        ReportRow         `json:"totals"`
+	SchemaVersion  int               `json:"schemaVersion"`
+	Machine        string            `json:"machine"`
+	GeneratedAt    string            `json:"generatedAt"`
+	Group          string            `json:"group"`
+	Mode           string            `json:"mode"`
+	Dimension      string            `json:"dimension,omitempty"`
+	Pricing        PricingProvenance `json:"pricing"`
+	Scan           ScanStats         `json:"scan"`
+	Rows           []ReportRow       `json:"rows"`
+	Totals         ReportRow         `json:"totals"`
+	EventsIncluded bool              `json:"eventsIncluded"`
+	Events         []ReportEvent     `json:"events,omitempty"`
 }
 
 // ObservedSession ties a provider conversation to the physical local logs

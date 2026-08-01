@@ -71,6 +71,13 @@ func TestReportIndexesClaudeAndCodexIncrementallyWithTags(t *testing.T) {
 	if report.Totals.RecordedCostUSD != .15 || report.Totals.CostUSD <= .15 {
 		t.Fatalf("daily costs = recorded %.6f selected %.6f", report.Totals.RecordedCostUSD, report.Totals.CostUSD)
 	}
+	withEvents, err := service.Report(context.Background(), ReportOptions{Group: "daily", Mode: ModeAuto, IncludeEvents: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !withEvents.EventsIncluded || len(withEvents.Events) != 2 || withEvents.Events[0].EventKey == "" || withEvents.Events[0].GroupKey != "2026-07-20" {
+		t.Fatalf("fleet usage events = %#v", withEvents.Events)
+	}
 	db, err := service.database(context.Background())
 	if err != nil {
 		t.Fatal(err)

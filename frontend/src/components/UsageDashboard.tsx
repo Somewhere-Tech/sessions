@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { type UsageOptions, type UsageReport, type UsageRow, type UsageTokens } from '../api/sessionsd';
 import { useServers } from '../lib/servers';
-import { DEFAULT_USAGE_OPTIONS, getCachedUsage, requestUsageReport } from '../lib/usageCache';
+import { getCachedUsage, requestUsageReport } from '../lib/usageCache';
+import { combineFleetUsage, type FleetUsageSummary } from '../lib/fleetUsage';
 import { useSessions } from '../store/sessions';
 import { TagEditor } from './TagEditor';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
@@ -9,6 +10,8 @@ import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 type Group = UsageReport['group'];
 type Mode = UsageReport['mode'];
 type Provider = 'all' | 'claude' | 'codex';
+type Period = 'today' | 'week' | 'month' | 'all' | 'custom';
+type Scope = 'fleet' | 'machine';
 
 interface SavedUsageView {
   id: string;
@@ -19,18 +22,49 @@ interface SavedUsageView {
   dimension: string;
   since: string;
   until: string;
+  period: Period;
+  scope: Scope;
 }
 
 const SAVED_VIEWS_KEY = 'sessions:usage-saved-views:v1';
 const GROUPS: Array<{ id: Group; label: string }> = [
-  { id: 'daily', label: 'Daily' },
-  { id: 'weekly', label: 'Weekly' },
-  { id: 'monthly', label: 'Monthly' },
+  { id: 'daily', label: 'By day' },
+  { id: 'weekly', label: 'By week' },
+  { id: 'monthly', label: 'By month' },
   { id: 'session', label: 'Sessions' },
   { id: 'tag', label: 'Tags' },
   { id: 'model', label: 'Models' },
   { id: 'provider', label: 'Providers' }
 ];
+
+const PERIODS: Array<{ id: Period; label: string }> = [
+  { id: 'today', label: 'Today' },
+  { id: 'week', label: 'This week' },
+  { id: 'month', label: 'This month' },
+  { id: 'all', label: 'All time' },
+  { id: 'custom', label: 'Custom' }
+];
+
+function localDate(value: Date): string {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function periodDates(period: Period, since: string, until: string): { since?: string; until?: string } {
+  if (period === 'custom') return { since: since || undefined, until: until || undefined };
+  if (period === 'all') return {};
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (period === 'week') {
+    const mondayOffset = (start.getDay() + 6) % 7;
+    start.setDate(start.getDate() - mondayOffset);
+  } else if (period === 'month') {
+    start.setDate(1);
+  }
+  return { since: localDate(start), until: localDate(now) };
+}
 
 function totalTokens(tokens: UsageTokens): number {
   return tokens.inputTokens + tokens.outputTokens + tokens.cacheCreationTokens + tokens.cacheReadTokens;
@@ -51,11 +85,15 @@ function readSavedViews(): SavedUsageView[] {
     return parsed.filter((item): item is SavedUsageView => {
       if (!item || typeof item !== 'object') return false;
       const view = item as Partial<SavedUsageView>;
-      return typeof view.id === 'string' && typeof view.name === 'string'
+      const valid = typeof view.id === 'string' && typeof view.name === 'string'
         && GROUPS.some((group) => group.id === view.group)
         && (view.mode === 'auto' || view.mode === 'calculate' || view.mode === 'display')
         && (view.provider === 'all' || view.provider === 'claude' || view.provider === 'codex')
         && typeof view.dimension === 'string' && typeof view.since === 'string' && typeof view.until === 'string';
+      if (!valid) return false;
+      view.period = PERIODS.some((period) => period.id === view.period) ? view.period : (view.since || view.until ? 'custom' : 'all');
+      view.scope = view.scope === 'machine' ? 'machine' : 'fleet';
+      return true;
     }).slice(0, 20);
   } catch {
     return [];
@@ -68,7 +106,10 @@ function writeSavedViews(views: SavedUsageView[]): void {
 
 export function UsageDashboard(): JSX.Element {
   const activeServerId = useServers((state) => state.activeId);
+  const servers = useServers((state) => state.servers);
   const [group, setGroup] = useState<Group>('daily');
+  const [period, setPeriod] = useState<Period>('today');
+  const [scope, setScope] = useState<Scope>('fleet');
   const [mode, setMode] = useState<Mode>('auto');
   const [provider, setProvider] = useState<Provider>('all');
   const [dimension, setDimension] = useState('product');
@@ -77,39 +118,61 @@ export function UsageDashboard(): JSX.Element {
   const [savedViews, setSavedViews] = useState<SavedUsageView[]>(readSavedViews);
   const [activeSavedId, setActiveSavedId] = useState('');
   const [viewName, setViewName] = useState('');
-  const [report, setReport] = useState<UsageReport | null>(() => activeServerId ? getCachedUsage(activeServerId, DEFAULT_USAGE_OPTIONS) : null);
-  const [loading, setLoading] = useState(() => report === null);
+  const [report, setReport] = useState<UsageReport | null>(null);
+  const [fleetSummary, setFleetSummary] = useState<FleetUsageSummary | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
 
 	useEffect(() => {
-		if (!activeServerId) {
+		const selectedServers = scope === 'fleet'
+			? servers
+			: servers.filter((server) => server.id === activeServerId);
+		if (selectedServers.length === 0) {
 			setReport(null);
+			setFleetSummary(null);
 			setLoading(false);
 			return;
 		}
 		let alive = true;
+		const dates = periodDates(period, since, until);
 		const options: UsageOptions = {
 			group,
 			mode,
 			provider: provider === 'all' ? undefined : provider,
 			dimension: group === 'tag' ? dimension.trim().toLowerCase() || 'product' : undefined,
-			since: since || undefined,
-			until: until || undefined
+			since: dates.since,
+			until: dates.until,
+			includeEvents: scope === 'fleet'
 		};
-		setReport(getCachedUsage(activeServerId, options));
+		const cached = selectedServers.map((server) => ({
+			serverId: server.id,
+			serverName: server.name,
+			report: getCachedUsage(server.id, options) ?? undefined
+		}));
+		const cachedSummary = combineFleetUsage(cached);
+		setReport(cachedSummary.report);
+		setFleetSummary(cachedSummary);
 		setLoading(true);
 		setError(null);
 		const timer = window.setTimeout(() => {
-			void requestUsageReport(activeServerId, options, refreshToken > 0)
-        .then((value) => { if (alive) setReport(value); })
-        .catch((reason: unknown) => {
-          if (alive) setError(reason instanceof Error ? reason.message : 'Usage report failed');
-        })
+			void Promise.all(selectedServers.map(async (server) => {
+				try {
+					return { serverId: server.id, serverName: server.name, report: await requestUsageReport(server.id, options, refreshToken > 0) };
+				} catch (reason) {
+					return { serverId: server.id, serverName: server.name, error: reason instanceof Error ? reason.message : 'Usage unavailable' };
+				}
+			})).then((sources) => {
+				if (!alive) return;
+				const summary = combineFleetUsage(sources);
+				setFleetSummary(summary);
+				setReport(summary.report);
+				setError(summary.reportingMachines === 0 ? sources.map((source) => `${source.serverName}: ${source.error ?? 'unavailable'}`).join(' · ') : null);
+			})
         .finally(() => { if (alive) setLoading(false); });
     }, group === 'tag' ? 250 : 0);
     return () => { alive = false; window.clearTimeout(timer); };
-  }, [activeServerId, group, mode, provider, dimension, since, until, refreshToken]);
+  }, [activeServerId, servers, scope, period, group, mode, provider, dimension, since, until, refreshToken]);
 
   // While the dashboard is open, an inexpensive incremental sync keeps newly
   // appended provider usage visible without making ingestion a daemon hot path.
@@ -127,14 +190,14 @@ export function UsageDashboard(): JSX.Element {
     const view = savedViews.find((candidate) => candidate.id === id);
     if (!view) return;
     setGroup(view.group); setMode(view.mode); setProvider(view.provider); setDimension(view.dimension);
-    setSince(view.since); setUntil(view.until);
+    setSince(view.since); setUntil(view.until); setPeriod(view.period); setScope(view.scope);
   };
   const saveCurrentView = (): void => {
     const name = viewName.trim();
     if (!name) return;
     const view: SavedUsageView = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      name: name.slice(0, 60), group, mode, provider, dimension: dimension.trim().toLowerCase() || 'product', since, until
+      name: name.slice(0, 60), group, mode, provider, dimension: dimension.trim().toLowerCase() || 'product', since, until, period, scope
     };
     const next = [...savedViews.filter((candidate) => candidate.name.toLowerCase() !== view.name.toLowerCase()), view].slice(-20);
     setSavedViews(next); setActiveSavedId(view.id); setViewName(''); writeSavedViews(next);
@@ -151,7 +214,7 @@ export function UsageDashboard(): JSX.Element {
         <header className="usage-heading">
           <div>
             <h1>Usage</h1>
-            <p>Local Claude and Codex activity{report?.machine ? ` on ${report.machine}` : ''}. Nothing leaves this machine.</p>
+            <p>{scope === 'fleet' ? 'Claude and Codex usage across every configured machine.' : `Usage on ${report?.machine || 'the selected machine'}`} Reports are requested directly from each machine.</p>
           </div>
           <button type="button" className="btn btn-ghost" disabled={loading} onClick={() => setRefreshToken((value) => value + 1)}>
             {loading ? 'Indexing…' : 'Refresh'}
@@ -171,10 +234,26 @@ export function UsageDashboard(): JSX.Element {
         </div>
 
         <div className="usage-controls">
-          <div className="usage-segmented" role="tablist" aria-label="Usage grouping">
-            {GROUPS.map((item) => (
-              <button key={item.id} type="button" className={group === item.id ? 'is-active' : ''} onClick={() => selectGroup(item.id)}>{item.label}</button>
-            ))}
+          <div className="usage-control-group">
+            <span>Scope</span>
+            <div className="usage-segmented" role="tablist" aria-label="Usage scope">
+              <button type="button" className={scope === 'fleet' ? 'is-active' : ''} onClick={() => { setScope('fleet'); setActiveSavedId(''); }}>Entire fleet</button>
+              <button type="button" className={scope === 'machine' ? 'is-active' : ''} onClick={() => { setScope('machine'); setActiveSavedId(''); }}>Selected machine</button>
+            </div>
+          </div>
+          <div className="usage-control-group">
+            <span>Time range</span>
+            <div className="usage-segmented" role="tablist" aria-label="Usage time range">
+              {PERIODS.map((item) => <button key={item.id} type="button" className={period === item.id ? 'is-active' : ''} onClick={() => { setPeriod(item.id); setActiveSavedId(''); }}>{item.label}</button>)}
+            </div>
+          </div>
+          <div className="usage-control-group">
+            <span>Group by</span>
+            <div className="usage-segmented" role="tablist" aria-label="Usage grouping">
+              {GROUPS.map((item) => (
+                <button key={item.id} type="button" className={group === item.id ? 'is-active' : ''} onClick={() => selectGroup(item.id)}>{item.label}</button>
+              ))}
+            </div>
           </div>
           <label>Provider
             <select value={provider} onChange={(event) => { setProvider(event.target.value as Provider); setActiveSavedId(''); }}>
@@ -189,9 +268,17 @@ export function UsageDashboard(): JSX.Element {
           {group === 'tag' ? (
             <label>Tag key<input value={dimension} onChange={(event) => { setDimension(event.target.value); setActiveSavedId(''); }} placeholder="product" /></label>
           ) : null}
-          <label>Since<input type="date" value={since} onChange={(event) => { setSince(event.target.value); setActiveSavedId(''); }} /></label>
-          <label>Until<input type="date" value={until} onChange={(event) => { setUntil(event.target.value); setActiveSavedId(''); }} /></label>
+          {period === 'custom' ? <><label>Since<input type="date" value={since} onChange={(event) => { setSince(event.target.value); setActiveSavedId(''); }} /></label>
+          <label>Until<input type="date" value={until} onChange={(event) => { setUntil(event.target.value); setActiveSavedId(''); }} /></label></> : null}
         </div>
+
+        {fleetSummary ? (
+          <div className="usage-fleet-status">
+            <strong>{scope === 'fleet' ? `${fleetSummary.reportingMachines} of ${fleetSummary.configuredMachines} machines reporting` : 'Selected machine'}</strong>
+            {scope === 'fleet' ? <span>{fleetSummary.exactDeduplication ? `Copied history deduplicated${fleetSummary.duplicatesRemoved > 0 ? ` · ${fleetSummary.duplicatesRemoved} duplicate events removed` : ''}.` : 'Machine totals are combined; update older machines for exact copied-history deduplication.'}</span> : null}
+            {fleetSummary.unavailableMachines.length > 0 ? <span>Unavailable: {fleetSummary.unavailableMachines.join(', ')}</span> : null}
+          </div>
+        ) : null}
 
         {error ? <div className="usage-error">{error}</div> : null}
         {report ? (
@@ -206,10 +293,10 @@ export function UsageDashboard(): JSX.Element {
 
             <section className="usage-panel">
               <header><h2>{GROUPS.find((item) => item.id === group)?.label} breakdown</h2><span>{report.rows.length} rows · schema v{report.schemaVersion}</span></header>
-              {report.rows.length === 0 ? <div className="usage-empty">No local usage matched these filters.</div> : (
+              {report.rows.length === 0 ? <div className="usage-empty">No usage matched this scope, time range, and filter set.</div> : (
                 <div className="usage-row-list">
                   {report.rows.map((row) => (
-                    <UsageReportRow key={row.key} row={row} maxTokens={maxTokens} editable={group === 'session'} onTagsSaved={() => setRefreshToken((value) => value + 1)} />
+                    <UsageReportRow key={row.key} row={row} maxTokens={maxTokens} editable={scope === 'machine' && group === 'session'} onTagsSaved={() => setRefreshToken((value) => value + 1)} />
                   ))}
                 </div>
               )}

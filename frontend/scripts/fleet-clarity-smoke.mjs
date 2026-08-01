@@ -19,6 +19,8 @@ assert.doesNotMatch(fleet, /className="fleet-session-tags"/);
 assert.match(fleet, /reported\.includes\('windows'\)/);
 assert.match(fleet, /if \(platform === 'windows'\) return 'This PC'/);
 assert.match(fleet, /Sessions \$\{version\}/);
+assert.match(fleet, /Name this machine/);
+assert.match(fleet, /updateServer\(server\.id, \{ name \}\)/);
 assert.match(styles, /grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(420px,\s*100%\),\s*1fr\)\)/);
 assert.match(styles, /\.fleet-session-state\s*\{[\s\S]*?white-space:\s*nowrap;/);
 assert.doesNotMatch(styles, /\.fleet-session-state\s*\{[^}]*font-family:\s*var\(--font-mono\)/);

@@ -24,7 +24,7 @@ export function ProviderMark({ provider, size = 32 }: { provider: Provider; size
       aria-hidden
     >
       {provider === 'claude' ? (
-        <img src={`${import.meta.env.BASE_URL}claude.png`} alt="" draggable={false} />
+        <img src={`${import.meta.env.BASE_URL}claude-icon.svg`} alt="" draggable={false} />
       ) : (
         <img className="provider-mark-openai" src={`${import.meta.env.BASE_URL}openai-icon.svg`} alt="" draggable={false} />
       )}

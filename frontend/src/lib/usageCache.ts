@@ -20,7 +20,8 @@ function requestKey(serverId: string, options: UsageOptions): string {
     options.provider ?? '',
     options.since ?? '',
     options.until ?? '',
-    options.dimension ?? ''
+    options.dimension ?? '',
+    options.includeEvents ? 'events' : ''
   ]);
 }
 
