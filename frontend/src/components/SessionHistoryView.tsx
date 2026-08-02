@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchServerHistoryTranscript, type HistoryTranscript } from '../api/sessionsd';
-import { getActiveServer, useServers } from '../lib/servers';
+import { getActiveServer, serverDisplayName, useServers } from '../lib/servers';
 import { sessionLabel, useTabLabel } from '../lib/tabLabels';
 import { useSessions } from '../store/sessions';
 import type { SessionInfo } from '../types';
@@ -137,7 +137,7 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
           <div className="session-active-title-row"><h1>{label}</h1><span className={`session-live-pill ${continuationIsLive ? 'is-completed' : 'is-finished'}`}>{lifecycleLabel}</span><span className={`session-runtime-badge${sessionMode(session) === 'terminal' && session.tool !== 'claude-code' ? ' is-terminal' : ''}`} title={sessionModeName(session)}>{sessionModeShort(session)}</span></div>
           <div className="session-active-meta">
             {provider ? <ProviderBadge provider={provider} compact /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}
-            <span>{session.profile || 'Default profile'}</span><span>Saved on {getActiveServer().name}</span><span title={session.cwd}>{session.cwd}</span>
+            <span>{session.profile || 'Default profile'}</span><span>Saved on {serverDisplayName(getActiveServer(), true)}</span><span title={session.cwd}>{session.cwd}</span>
           </div>
         </div>
         <div className="session-active-actions">

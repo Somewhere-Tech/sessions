@@ -4927,6 +4927,103 @@ button.model-picker-option { display: flex; align-items: center; justify-content
 .new-session-launcher .launcher-inherited { margin: -2px 22px 0; }
 .new-session-launcher .resume-hint { justify-self: center; }
 
+/* The global launcher is the empty state of the conversation pane, not a
+ * modal floating above it. Starting the session swaps this surface for the
+ * live SessionView in the same place, so the composer feels continuous. */
+.new-session-surface {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-base);
+}
+.dialog.new-session-launcher.is-embedded {
+  width: 100%;
+  max-width: none;
+  min-height: 100%;
+  max-height: none;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg-base);
+  box-shadow: none;
+}
+.new-session-launcher.is-embedded .dialog-head {
+  position: sticky;
+  z-index: 3;
+  top: 0;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--bg-base) 94%, transparent);
+  backdrop-filter: blur(18px);
+}
+.new-session-launcher.is-embedded .dialog-body {
+  justify-content: center;
+  flex: 1 0 auto;
+  width: min(840px, calc(100% - 48px));
+  min-height: calc(100% - 58px);
+  padding: clamp(34px, 7vh, 72px) 0 34px;
+}
+.new-session-launcher.is-embedded .launcher-hero { margin-bottom: 4px; }
+.new-session-launcher.is-embedded .launcher-composer {
+  min-height: 0;
+  padding: 0;
+  background: var(--bg-elev-2);
+  box-shadow: var(--shadow-1);
+}
+.new-session-launcher.is-embedded .launcher-composer:focus-within {
+  border-color: color-mix(in srgb, var(--fg-dim) 58%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fg) 5%, transparent);
+}
+.new-session-launcher.is-embedded .launcher-composer textarea {
+  min-height: 94px;
+  padding: 15px 16px 8px !important;
+  font-size: 14px !important;
+  line-height: 1.5;
+}
+.new-session-launcher.is-embedded .launcher-composer-footer {
+  min-height: 46px;
+  padding: 4px 7px 7px 9px;
+  border-top: 0;
+}
+.new-session-launcher.is-embedded .launcher-composer-context {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.new-session-launcher.is-embedded .launcher-composer-context::-webkit-scrollbar { display: none; }
+.new-session-launcher.is-embedded .launcher-select-control,
+.new-session-launcher.is-embedded .launcher-context-chip,
+.new-session-launcher.is-embedded .launcher-effort-chip,
+.new-session-launcher.is-embedded .model-picker.is-compact .model-picker-trigger {
+  border-color: transparent;
+  background: transparent;
+}
+.new-session-launcher.is-embedded .launcher-select-control:hover,
+.new-session-launcher.is-embedded .launcher-context-chip:hover,
+.new-session-launcher.is-embedded .launcher-effort-chip:hover,
+.new-session-launcher.is-embedded .model-picker.is-compact .model-picker-trigger:hover {
+  background: var(--bg-elev-3);
+}
+.launcher-workspace-machine {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+.launcher-workspace-machine select {
+  max-width: 210px;
+  height: 29px;
+  padding: 0 22px 0 2px;
+  overflow: hidden;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  text-overflow: ellipsis;
+}
+
 .command-palette-backdrop {
   position: fixed;
   z-index: 600;
@@ -5102,9 +5199,19 @@ button.model-picker-option { display: flex; align-items: center; justify-content
   .launcher-composer-context { max-height: 112px; overflow-y: auto; }
   .launcher-composer-actions { align-self: flex-end; justify-content: flex-end; }
   .launcher-workspace-bar { grid-template-columns: 24px minmax(0, 1fr) auto; margin-inline: 8px; }
-  .launcher-workspace-machine { display: none; }
+  .launcher-workspace-machine { grid-column: 2 / -1; }
+  .launcher-workspace-machine select { max-width: min(250px, 62vw); }
   .new-session-launcher .launcher-advanced,
   .new-session-launcher .launcher-inherited { margin-inline: 8px; }
+  .new-session-launcher.is-embedded .dialog-body {
+    justify-content: flex-start;
+    width: 100%;
+    min-height: calc(100% - 70px);
+    padding: 28px 16px calc(env(safe-area-inset-bottom, 0px) + 24px);
+  }
+  .new-session-launcher.is-embedded .launcher-composer { min-height: 0; }
+  .new-session-launcher.is-embedded .launcher-composer textarea { min-height: 106px; }
+  .new-session-launcher.is-embedded .launcher-composer-context { max-height: none; overflow-x: auto; overflow-y: hidden; }
   .launcher-select-control select { max-width: 130px; }
   .launcher-context-chip.is-folder { max-width: 150px; }
   .model-picker-popover { position: fixed; right: 12px; bottom: 76px; left: 12px; width: auto; }

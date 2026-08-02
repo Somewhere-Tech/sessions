@@ -20,7 +20,7 @@ import {
   type FleetSearchResult,
   type SearchConversationGroup
 } from '../lib/searchConversations';
-import { useServers, type ServerConfig } from '../lib/servers';
+import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
 import { ProviderBadge, normalizeProvider, type Provider } from './ProviderBadge';
 import { ParserIcon } from './ParserIcon';
@@ -180,20 +180,20 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
             historyMatches,
             filterTitleSearchResumable(resumable, { speaker, tool, sessionName, cwd, since: dates.since, until: dates.until }),
             query,
-            server.name
+            serverDisplayName(server, true)
           );
           return {
             matches: matches.map((match) => ({
               ...match,
               serverId: server.id,
-              serverName: server.name
+              serverName: serverDisplayName(server, true)
             })),
             error: null
           };
         } catch (reason) {
           return {
             matches: [] as Result[],
-            error: `${server.name}: ${reason instanceof Error ? reason.message : 'unavailable'}`
+            error: `${serverDisplayName(server, true)}: ${reason instanceof Error ? reason.message : 'unavailable'}`
           };
         }
       })).then((responses) => {
@@ -932,7 +932,7 @@ function compactMachineName(value: string): string {
   const clean = value.trim().replace(/\.local$/i, '');
   if (/^mac[-\s]?mini(?:[-\s]?\d+)?$/i.test(clean)) return 'Mac mini';
   if (/^macbook(?:[-\s]?pro)?(?:[-\s]?\d+)?$/i.test(clean)) return 'MacBook';
-  return clean.replace(/-/g, ' ') || 'This machine';
+  return clean.replace(/-/g, ' ') || 'Unknown computer';
 }
 
 function managedSourceSessionID(result: SearchMatch): string | undefined {

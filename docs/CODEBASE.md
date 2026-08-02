@@ -66,6 +66,12 @@ The desktop workspace begins in `frontend/src/App.tsx`. `ProductSidebar.tsx`
 owns the permanent Home/Sessions/Daily/Search/Fleet/Usage/Settings rail;
 `HomeView.tsx` summarizes the operational inbox; and `SessionNavigator.tsx`
 builds the manager/child tree from normalized `SessionInfo` provenance fields.
+The global `NewSessionDialog.tsx` launcher is embedded as the empty state of
+the right-hand conversation pane rather than mounted as a modal. Its prompt
+composer shares the live conversation composer's visual structure; starting a
+session replaces that surface with `SessionView.tsx` in place. Linked-session
+creation remains a deliberate overlay because it is scoped to its visible
+parent.
 `FleetView.tsx` independently polls every configured daemon, uses the optional
 `system.os`/`system.arch` health metadata to choose a platform mark, reports
 each daemon version, persists a user-defined local alias for each configured
@@ -698,6 +704,13 @@ token; forwarding headers disable the loopback shortcut
 (`runtime/internal/api/auth.go`). The `open` sentinel is an explicit
 compatibility bypass, and static UI/health routing is distinct from
 authenticated API routes (`runtime/internal/api/server.go`).
+
+After authentication, `GET /api/machine` returns the daemon's durable machine
+ID and its current operating-system hostname. The ID survives a computer
+rename, while clients refresh the hostname and keep any explicit Fleet nickname
+as a separate override. Local UI labels use the real current name followed by
+`(this machine)`; they do not use that phrase as the machine's identity
+(`runtime/internal/api/server.go`, `frontend/src/lib/servers.ts`).
 
 `sessions lan enable` adds and persists a listener on the selected private
 network address and starts its Bonjour advertisement

@@ -33,6 +33,8 @@ assert.match(launcher, /What should we work on in/);
 assert.match(launcher, /launcher-workspace-bar/);
 assert.match(launcher, /aria-label="Agent"/);
 assert.match(launcher, /aria-label="Computer"/);
+assert.match(app, /<NewSessionDialog\s+embedded/,
+  'the global launcher must render inside the conversation workspace');
 assert.doesNotMatch(launcher, /worktree|Developer isolation|Git copy/);
 assert.match(sessionView, /has-terminal-drawer/);
 assert.match(sessionView, /Exact provider view/);
@@ -80,34 +82,51 @@ try {
   await page.setViewport({ width: 1100, height: 760 });
   await page.setContent(`
     <style>${styles}</style>
-    <div class="dialog-backdrop">
-      <form class="dialog dialog-wide new-session-launcher">
+    <main id="launcher-surface" class="new-session-surface" style="width:1080px;height:740px">
+      <form id="launcher" class="dialog dialog-wide new-session-launcher is-embedded">
         <header class="dialog-head launcher-compact-head"><div class="launcher-breadcrumb"><span class="workspace-folder-icon"></span><span>Sessions</span><span>/</span><strong>New session</strong></div></header>
         <div id="launcher-body" class="dialog-body">
-          <section id="launcher-hero" class="launcher-hero"><span>This computer</span><h2>What should we work on in <strong>Sessions</strong>?</h2></section>
-          <div id="launcher-composer" class="field launcher-task-field launcher-composer">
-            <textarea rows="6" placeholder="Ask an agent to work"></textarea>
-            <div class="launcher-composer-footer"><div class="launcher-composer-context">
+          <section id="launcher-hero" class="launcher-hero"><span>Mac mini (this machine)</span><h2>What should we work on in <strong>Sessions</strong>?</h2></section>
+          <div id="launcher-composer" class="field launcher-task-field launcher-composer input-composer">
+            <textarea class="input-textarea" rows="6" placeholder="Ask an agent to work"></textarea>
+            <div class="launcher-composer-footer input-composer-footer"><div class="launcher-composer-context">
               <label class="launcher-select-control is-agent"><select><option>Claude</option></select></label>
-              <label class="launcher-select-control is-machine"><select><option>This computer</option></select></label>
+              <button class="model-picker-trigger">Default</button>
               <label class="launcher-effort-chip"><select><option>Default effort</option></select></label>
             </div><div class="launcher-composer-actions"><button class="btn btn-primary launcher-composer-start">↑</button></div></div>
           </div>
-          <section id="launcher-workspace" class="launcher-workspace-shell"><div class="launcher-workspace-bar"><span class="workspace-folder-icon"></span><span class="launcher-workspace-copy"><strong>Sessions</strong><small>/Users/example/Sessions</small></span><span class="launcher-workspace-machine">This computer</span><button class="btn btn-ghost">Change</button></div></section>
+          <section id="launcher-workspace" class="launcher-workspace-shell"><div class="launcher-workspace-bar"><span class="workspace-folder-icon"></span><span class="launcher-workspace-copy"><strong>Sessions</strong><small>/Users/example/Sessions</small></span><label class="launcher-workspace-machine"><span class="launcher-machine-icon"></span><select><option>Mac mini (this machine)</option></select></label><button class="btn btn-ghost">Change</button></div></section>
         </div>
       </form>
-    </div>
+    </main>
   `);
   const launcherBounds = await page.evaluate(() => {
+    const surface = document.querySelector('#launcher-surface').getBoundingClientRect();
+    const launcher = document.querySelector('#launcher').getBoundingClientRect();
     const body = document.querySelector('#launcher-body').getBoundingClientRect();
     const hero = document.querySelector('#launcher-hero').getBoundingClientRect();
     const composer = document.querySelector('#launcher-composer').getBoundingClientRect();
     const workspace = document.querySelector('#launcher-workspace').getBoundingClientRect();
-    return { bodyWidth: body.width, heroBottom: hero.bottom, composerTop: composer.top, composerHeight: composer.height, workspaceTop: workspace.top, workspaceRight: workspace.right, bodyRight: body.right };
+    return {
+      surfaceWidth: surface.width,
+      launcherWidth: launcher.width,
+      launcherHeight: launcher.height,
+      borderRadius: getComputedStyle(document.querySelector('#launcher')).borderRadius,
+      bodyWidth: body.width,
+      heroBottom: hero.bottom,
+      composerTop: composer.top,
+      composerHeight: composer.height,
+      workspaceTop: workspace.top,
+      workspaceRight: workspace.right,
+      bodyRight: body.right
+    };
   });
-  assert.ok(launcherBounds.bodyWidth <= 780, `launcher content should stay focused, got ${launcherBounds.bodyWidth}px`);
+  assert.equal(launcherBounds.launcherWidth, launcherBounds.surfaceWidth, 'launcher must fill the conversation pane');
+  assert.ok(launcherBounds.launcherHeight >= 740, 'launcher must fill the conversation pane height');
+  assert.equal(launcherBounds.borderRadius, '0px', 'embedded launcher must not look like a modal card');
+  assert.ok(launcherBounds.bodyWidth <= 840, `launcher content should stay focused, got ${launcherBounds.bodyWidth}px`);
   assert.ok(launcherBounds.heroBottom <= launcherBounds.composerTop, 'the prompt must follow the workspace question');
-  assert.ok(launcherBounds.composerHeight >= 218, `the prompt must remain the primary control, got ${launcherBounds.composerHeight}px`);
+  assert.ok(launcherBounds.composerHeight >= 135, `the prompt must remain the primary control, got ${launcherBounds.composerHeight}px`);
   assert.ok(launcherBounds.workspaceTop >= launcherBounds.composerTop + launcherBounds.composerHeight, 'the project picker must sit below the prompt');
   assert.ok(launcherBounds.workspaceRight <= launcherBounds.bodyRight, 'the project picker must not overflow the launcher');
 } finally {

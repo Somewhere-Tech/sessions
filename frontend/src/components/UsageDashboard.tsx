@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { type UsageOptions, type UsageReport, type UsageRow, type UsageTokens } from '../api/sessionsd';
-import { useServers } from '../lib/servers';
+import { serverDisplayName, useServers } from '../lib/servers';
 import { getCachedUsage, requestUsageReport } from '../lib/usageCache';
 import { combineFleetUsage, type FleetUsageSummary } from '../lib/fleetUsage';
 import { useSessions } from '../store/sessions';
@@ -147,7 +147,7 @@ export function UsageDashboard(): JSX.Element {
 		};
 		const cached = selectedServers.map((server) => ({
 			serverId: server.id,
-			serverName: server.name,
+			serverName: serverDisplayName(server, true),
 			report: getCachedUsage(server.id, options) ?? undefined
 		}));
 		const cachedSummary = combineFleetUsage(cached);
@@ -158,9 +158,9 @@ export function UsageDashboard(): JSX.Element {
 		const timer = window.setTimeout(() => {
 			void Promise.all(selectedServers.map(async (server) => {
 				try {
-					return { serverId: server.id, serverName: server.name, report: await requestUsageReport(server.id, options, refreshToken > 0) };
+					return { serverId: server.id, serverName: serverDisplayName(server, true), report: await requestUsageReport(server.id, options, refreshToken > 0) };
 				} catch (reason) {
-					return { serverId: server.id, serverName: server.name, error: reason instanceof Error ? reason.message : 'Usage unavailable' };
+					return { serverId: server.id, serverName: serverDisplayName(server, true), error: reason instanceof Error ? reason.message : 'Usage unavailable' };
 				}
 			})).then((sources) => {
 				if (!alive) return;

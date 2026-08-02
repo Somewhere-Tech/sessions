@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { SessionInfo } from '../types';
-import { getActiveServer } from '../lib/servers';
+import { getActiveServer, serverDisplayName } from '../lib/servers';
 import { getTabLabel, sessionLabel } from '../lib/tabLabels';
 import { canContinueSession, endedAtLabel, endedSummary, isDegradedSession } from '../lib/sessionStatus';
 import { sessionModeName } from '../lib/sessionMode';
@@ -55,7 +55,7 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
           {session.sourceRepo ? <Row label="Repository" value={session.sourceRepo}/> : null}
         </DetailsCard>
         <DetailsCard title="Runtime">
-          <Row label="Machine" value={getActiveServer().name}/>
+          <Row label="Machine" value={serverDisplayName(getActiveServer(), true)}/>
           <Row label="Started" value={new Date(session.createdAt).toLocaleString()}/>
           {end ? (
             <>

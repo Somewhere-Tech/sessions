@@ -19,7 +19,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { SessionsWorkspaceSkeleton } from './components/LoadingShell';
 import { OnboardingDialog } from './components/OnboardingDialog';
 import { useSessions } from './store/sessions';
-import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer } from './lib/servers';
+import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer, serverDisplayName } from './lib/servers';
 import { SettingsMenu } from './components/SettingsMenu';
 import { TailnetAccessInbox } from './components/TailnetAccessInbox';
 import { useIsMobile } from './hooks/useMediaQuery';
@@ -38,6 +38,7 @@ import { preferNextSessionView } from './lib/sessionViewPreference';
 import { handleExternalLinkClick } from './lib/externalLinks';
 import {
   adoptConversation,
+  fetchServerMachineIdentity,
   fetchOnboardingState,
   forkConversation,
   repairAdoption,
@@ -124,6 +125,15 @@ export function App(): JSX.Element {
   const servers = useServers((state) => state.servers);
   const pairingError = useServers((state) => state.pairingError);
   const credentialError = useServers((state) => state.credentialError);
+  const updateServer = useServers((state) => state.updateServer);
+  const identityRefreshKey = servers.map((server) => [
+    server.id,
+    server.scheme ?? 'http',
+    server.host,
+    server.port,
+    server.machineId ?? '',
+    server.systemName ?? ''
+  ].join('|')).join('\n');
   useEffect(() => {
     if (!isTauri()) return;
     let active = true;
@@ -142,6 +152,30 @@ export function App(): JSX.Element {
   useEffect(() => {
     void syncTrayServers(servers);
   }, [servers]);
+  useEffect(() => {
+    if (!nativeHydrated) return;
+    const controllers = servers.map(() => new AbortController());
+    servers.forEach((server, index) => {
+      void fetchServerMachineIdentity(server, controllers[index].signal)
+        .then(async (identity) => {
+          const current = useServers.getState().servers.find((candidate) => candidate.id === server.id);
+          if (!current) return;
+          // A paired endpoint changing stable identity is not a rename. Keep
+          // the approved record unchanged until the user pairs the new host.
+          if (current.machineId && current.machineId !== identity.machineId) return;
+          if (current.machineId === identity.machineId && current.systemName === identity.name) return;
+          await updateServer(current.id, {
+            machineId: current.machineId || identity.machineId,
+            systemName: identity.name,
+            // Keep legacy consumers current while systemName/customName
+            // remain the explicit source of truth for new UI.
+            name: current.customName || identity.name
+          });
+        })
+        .catch(() => { /* older/offline hosts keep their last known label */ });
+    });
+    return () => controllers.forEach((controller) => controller.abort());
+  }, [identityRefreshKey, nativeHydrated, updateServer]);
   if (!nativeHydrated) return <div className="native-hydration">Connecting to the Sessions runtime…</div>;
   return activeServerId && !pairingError && !credentialError
     ? <ConnectedApp nativeClientOnly={nativeClientOnly} />
@@ -299,6 +333,11 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // useful on phones and narrow Mac windows, so the mobile nav keeps them.
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(readStoredLayout);
   const effectiveLayout: LayoutMode = isMobile && layoutMode === 'grid' ? 'tabs' : layoutMode;
+  const openNewSession = useCallback((): void => {
+    setLayoutMode('tabs');
+    setMobileSessionDetail(true);
+    setDialogOpen('new');
+  }, []);
   useEffect(() => {
     if (single) return;
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -318,12 +357,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         event.preventDefault();
         event.stopPropagation();
         setCommandPaletteOpen(false);
-        setDialogOpen('new');
+        openNewSession();
       }
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [onboardingPending, single]);
+  }, [onboardingPending, openNewSession, single]);
   useEffect(() => {
     try { window.localStorage.setItem(LAYOUT_KEY, layoutMode); } catch { /* ignore */ }
   }, [layoutMode]);
@@ -559,7 +598,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     );
   }
 
-  const machine = getActiveServer().name;
+  const machine = serverDisplayName(getActiveServer(), true);
   const liveSessions = sessions.filter((session) => !session.exited);
   const sessionWorkspace = effectiveLayout === 'tabs' || effectiveLayout === 'grid';
   const openedSessions = sessions.filter((session) => openTabIds.includes(session.id));
@@ -593,7 +632,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
 
   return (
     <div className={`app-shell operations-shell text-size-${textSize.toLowerCase()}`} data-theme={theme} onClickCapture={handleExternalLinkClick}>
-      {!isMobile ? <ProductSidebar active={productView} theme={theme} onNavigate={navigateProduct} onNewSession={() => setDialogOpen('new')} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} /> : null}
+      {!isMobile ? <ProductSidebar active={productView} theme={theme} onNavigate={navigateProduct} onNewSession={openNewSession} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} /> : null}
       <div className="operations-frame">
         {sessionWorkspace && !isMobile ? (
           <SessionNavigator
@@ -601,7 +640,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             activeId={activeId}
             machine={machine}
             onOpen={openSession}
-            onNew={() => setDialogOpen('new')}
+            onNew={openNewSession}
             onContinue={() => setDialogOpen('resume')}
             onResumeSession={resumeSession}
             onForkSession={forkSession}
@@ -621,13 +660,13 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
                 statusBySession={statusBySession}
                 iconBySession={iconBySession}
                 onSwitch={openSession}
-                onAdd={() => setDialogOpen('new')}
+                onAdd={openNewSession}
                 onClose={closeTab}
                 onReorder={reorderTab}
               />
               {!isMobile ? <div className="session-layout-switch"><button type="button" className={effectiveLayout === 'tabs' ? 'is-active' : ''} onClick={() => setLayoutMode('tabs')}>Tabs</button><button type="button" className={effectiveLayout === 'grid' ? 'is-active' : ''} onClick={() => setLayoutMode('grid')}>Grid</button></div> : null}
               <ConnectionStatus machine={machine} hydrated={sessionsHydrated} error={sessionsError} />
-              <SettingsMenu textSize={textSize} onTextSizeChange={changeTextSize} onNewSession={() => setDialogOpen('new')} onOpenConnections={() => setLayoutMode('settings')} />
+              <SettingsMenu textSize={textSize} onTextSizeChange={changeTextSize} onNewSession={openNewSession} onOpenConnections={() => setLayoutMode('settings')} />
             </header>
           ) : null}
 
@@ -639,13 +678,20 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
           />
         ) : sessionWorkspace && sessions.length === 0 && !sessionsHydrated && !sessionsError ? (
           <SessionsWorkspaceSkeleton />
+        ) : sessionWorkspace && dialogOpen === 'new' ? (
+          <NewSessionDialog
+            embedded
+            onClose={() => setDialogOpen(null)}
+            onStarted={openSession}
+            onOpenResume={(providerId) => setDialogOpen(providerId ? { resumeProviderId: providerId } : 'resume')}
+          />
         ) : sessionWorkspace && isMobile && !mobileSessionDetail ? (
           <SessionNavigator
             sessions={sessions}
             activeId={activeId}
             machine={machine}
             onOpen={openSession}
-            onNew={() => setDialogOpen('new')}
+            onNew={openNewSession}
             onContinue={() => setDialogOpen('resume')}
             onResumeSession={resumeSession}
             onForkSession={forkSession}
@@ -655,7 +701,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             onReparent={updateDisplayParent}
           />
         ) : effectiveLayout === 'home' ? (
-          <HomeView sessions={sessions} machine={machine} onOpen={openSession} onNew={() => setDialogOpen('new')} onNavigate={(view) => setLayoutMode(view)} />
+          <HomeView sessions={sessions} machine={machine} onOpen={openSession} onNew={openNewSession} onNavigate={(view) => setLayoutMode(view)} />
         ) : effectiveLayout === 'fleet' ? (
           <FleetView onOpenSession={openFleetSession} onOpenMachine={openFleetMachine} />
         ) : effectiveLayout === 'today' ? (
@@ -689,15 +735,15 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
           ) : sessionsError && !sessionsHydrated ? (
             <DaemonBanner error={sessionsError} onRetry={() => void refresh()} />
           ) : (
-            <EmptyState onNew={() => setDialogOpen("new")} />
+            <EmptyState onNew={openNewSession} />
           )
         ) : openedSessions.length === 0 ? (
           sessionsError && !sessionsHydrated ? (
             <DaemonBanner error={sessionsError} onRetry={() => void refresh()} />
           ) : sessions.length > 0 ? (
-            <div className="session-workspace-empty"><span>Operations inbox</span><h1>Select a session</h1><p>Choose a manager or child from the navigator. It will open here without resuming or restarting anything.</p><button type="button" className="btn btn-primary" onClick={() => setDialogOpen('new')}>＋ New Session</button></div>
+            <div className="session-workspace-empty"><span>Operations inbox</span><h1>Select a session</h1><p>Choose a manager or child from the navigator. It will open here without resuming or restarting anything.</p><button type="button" className="btn btn-primary" onClick={openNewSession}>＋ New Session</button></div>
           ) : (
-            <EmptyState onNew={() => setDialogOpen("new")} />
+            <EmptyState onNew={openNewSession} />
           )
         ) : (
           // Mount a SessionView only for the LIVE set (active + a few
@@ -751,23 +797,16 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         sessions={sessions}
         onClose={() => setCommandPaletteOpen(false)}
         onNavigate={navigateProduct}
-        onNewSession={() => setDialogOpen('new')}
+        onNewSession={openNewSession}
         onContinue={() => setDialogOpen('resume')}
         onOpenSession={openSession}
       />
 
-      {dialogOpen === 'new' ? (
-        <NewSessionDialog
-          onClose={() => setDialogOpen(null)}
-          onStarted={openSession}
-          onOpenResume={(providerId) => setDialogOpen(providerId ? { resumeProviderId: providerId } : 'resume')}
-        />
-      ) : null}
       {dialogOpen === 'resume' || (dialogOpen && typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen) ? (
         <ResumeDialog
           onClose={() => setDialogOpen(null)}
           onResumed={(laneId) => openSession(laneId)}
-          onStartNew={() => setDialogOpen('new')}
+          onStartNew={openNewSession}
           preferredProviderId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
             ? dialogOpen.resumeProviderId
             : undefined}

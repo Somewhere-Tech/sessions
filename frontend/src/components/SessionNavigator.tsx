@@ -19,7 +19,7 @@ import {
 import { useSessions } from '../store/sessions';
 import { MachineMark } from './MachineMark';
 import { ContinueElsewhereButton } from './ContinueElsewhereButton';
-import { useServers } from '../lib/servers';
+import { serverDisplayName, useServers } from '../lib/servers';
 
 type PrimaryFilter = 'all' | 'needs' | 'working' | 'later' | 'quiet';
 type ProviderFilter = 'all' | 'claude' | 'codex' | 'shell';
@@ -708,11 +708,11 @@ export function SessionNavigator({
             key={configured.id}
             className={configured.id === activeMachineId ? 'is-active' : undefined}
             aria-pressed={configured.id === activeMachineId}
-            title={`Show sessions on ${configured.name}`}
+            title={`Show sessions on ${serverDisplayName(configured, true)}`}
             onClick={() => selectMachine(configured.id)}
           >
-            <MachineMark machine={configured.name} size={16} />
-            <span>{configured.name}</span>
+            <MachineMark machine={serverDisplayName(configured, true)} size={16} />
+            <span>{serverDisplayName(configured, true)}</span>
           </button>
         ))}
       </div>
@@ -727,7 +727,7 @@ export function SessionNavigator({
           <summary aria-label="More filters">⋯</summary>
           <div className="session-filter-popover">
             <label>Provider<select value={provider} onChange={(event) => setProvider(event.currentTarget.value as ProviderFilter)}><option value="all">All providers</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="shell">Shell</option></select></label>
-            <label>Computer<select value={activeMachineId ?? ''} onChange={(event) => selectMachine(event.currentTarget.value)}>{configuredMachines.map((configured) => <option key={configured.id} value={configured.id}>{configured.name}</option>)}</select></label>
+            <label>Computer<select value={activeMachineId ?? ''} onChange={(event) => selectMachine(event.currentTarget.value)}>{configuredMachines.map((configured) => <option key={configured.id} value={configured.id}>{serverDisplayName(configured, true)}</option>)}</select></label>
             <label>Project<select value={project} onChange={(event) => setProject(event.currentTarget.value)}><option value="all">All projects</option>{projects.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>Date<select value={date} onChange={(event) => setDate(event.currentTarget.value as DateFilter)}><option value="all">Any time</option><option value="today">Today</option><option value="week">Past 7 days</option></select></label>
           </div>
@@ -795,7 +795,7 @@ export function SessionNavigator({
             </>
           ) : null}
         </div> : null}
-        {sessions.length === 0 ? <div className="session-tree-empty">No sessions on this machine.</div> : null}
+        {sessions.length === 0 ? <div className="session-tree-empty">No sessions on {machine}.</div> : null}
       </div>
       {movePickerSession ? (
         <div className="session-move-sheet" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setMovePickerId(null); }}>

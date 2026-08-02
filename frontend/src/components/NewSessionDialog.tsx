@@ -15,7 +15,7 @@ import { readNewSessionDefaults, type NewSessionTool } from '../lib/newSessionDe
 import { randomUUID } from '../lib/uuid';
 import { TagEditor } from './TagEditor';
 import type { ClaudeSessionOptions, DirectoryCandidate, SessionInfo } from '../types';
-import { getActiveServer, isLocalServer, useServers } from '../lib/servers';
+import { getActiveServer, isLocalServer, serverDisplayName, useServers } from '../lib/servers';
 import { sessionLabel } from '../lib/tabLabels';
 import { ProviderMark } from './ProviderBadge';
 import { CLAUDE_MODEL_OPTIONS, ModelPicker, type ModelPickerOption } from './ModelPicker';
@@ -118,6 +118,7 @@ interface Props {
   // supplied, but the dialog still performs the durable adopt.
   onOpenResume?: (providerId?: string) => void;
   parentSession?: SessionInfo | null;
+  embedded?: boolean;
 }
 
 // Resolve the (cmd, args) sessionsd should spawn for the selected tool.
@@ -188,7 +189,7 @@ function extractClaudeSessionId(args: string[]): string | null {
   return null;
 }
 
-export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSession = null }: Props): JSX.Element {
+export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSession = null, embedded = false }: Props): JSX.Element {
   const create = useSessions((s) => s.create);
   const openSessions = useSessions((s) => s.sessions);
   const activeId = useSessions((s) => s.activeId);
@@ -516,13 +517,12 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const workspaceTitle = selectedWorkspace?.label
     ?? cwd.split('/').filter(Boolean).pop()
     ?? 'this project';
-  const machineTitle = selectedMachine?.isDefault && isLocalServer(selectedMachine)
-    ? 'This computer'
-    : selectedMachine?.name ?? 'Choose computer';
+  const machineTitle = selectedMachine
+    ? serverDisplayName(selectedMachine, true)
+    : 'Choose computer';
 
-  return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <form className="dialog dialog-wide new-session-launcher" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+  const launcher = (
+      <form className={`dialog dialog-wide new-session-launcher${embedded ? ' is-embedded' : ''}`} onClick={(e) => e.stopPropagation()} onSubmit={submit}>
         <header className="dialog-head launcher-compact-head">
           <div className="launcher-breadcrumb">
             <span className="workspace-folder-icon" aria-hidden />
@@ -542,10 +542,10 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
             <span>{isDelegate ? `Linked to ${parentSession ? sessionLabel(parentSession) : 'this session'}` : machineTitle}</span>
             <h2>{isDelegate ? 'What should this helper do?' : <>What should we work on in <strong>{workspaceTitle}</strong>?</>}</h2>
           </section>
-          <div className="field launcher-task-field launcher-composer">
+          <div className="field launcher-task-field launcher-composer input-composer">
             <span className="sr-only">First request (optional)</span>
-            <textarea autoFocus value={task} onChange={(event) => setTask(event.currentTarget.value)} placeholder={isDelegate ? 'Describe the work for this linked session…' : 'Ask an agent to work, or leave blank to open a conversation…'} rows={6} />
-            <div className="launcher-composer-footer">
+            <textarea className="input-textarea" autoFocus value={task} onChange={(event) => setTask(event.currentTarget.value)} placeholder={isDelegate ? 'Describe the work for this linked session…' : 'Ask an agent to work, or leave blank to open a conversation…'} rows={6} />
+            <div className="launcher-composer-footer input-composer-footer">
               <div className="launcher-composer-context" aria-label="New session configuration">
                 <label className="launcher-select-control is-agent" title={`Agent: ${selectedTool.name}`}>
                   <AgentMark tool={tool} size={20} />
@@ -553,18 +553,9 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                     {TOOLS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                   </select>
                 </label>
-                {!isDelegate ? (
-                  <label className="launcher-select-control is-machine" title={`Computer: ${machineTitle}`}>
-                    <span className="launcher-machine-icon" aria-hidden />
-                    <select value={machineId} onChange={(event) => chooseMachine(event.currentTarget.value)} aria-label="Computer">
-                      {configuredMachines.map((machine) => (
-                        <option key={machine.id} value={machine.id}>{machine.isDefault && isLocalServer(machine) ? 'This computer' : machine.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                ) : (
-                  <span className="launcher-context-chip" title={`${getActiveServer().name} · ${cwd}`}><span className="launcher-machine-icon" aria-hidden />Inherited</span>
-                )}
+                {isDelegate ? (
+                  <span className="launcher-context-chip" title={`${serverDisplayName(getActiveServer(), true)} · ${cwd}`}><span className="launcher-machine-icon" aria-hidden />Inherited</span>
+                ) : null}
                 {tool !== 'shell' ? (
                   <>
                     <ModelPicker
@@ -612,21 +603,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                     </select>
                   </label>
                 ) : null}
-                {tool === 'codex' ? (
-                  <label className="launcher-select-control">
-                    <span className="sr-only">View</span>
-                    <select value={runtimeMode} onChange={(event) => {
-                      const nextMode = event.currentTarget.value as RuntimeMode;
-                      setRuntimeMode(nextMode);
-                      if (nextMode === 'rich') setSkipPerms(true);
-                    }} aria-label="Session view">
-                      <option value="rich">Conversation</option>
-                      <option value="terminal">Terminal</option>
-                    </select>
-                  </label>
-                ) : tool === 'claude-code' ? (
-                  <span className="launcher-context-chip" title="Claude's native session is available as both a conversation and a terminal">Conversation + Terminal</span>
-                ) : null}
               </div>
               <div className="launcher-composer-actions">
                 <button type={createdWithDeliveryError ? 'button' : 'submit'} className={`btn btn-primary launcher-composer-start${createdWithDeliveryError ? ' is-wide' : ''}`} disabled={!createdWithDeliveryError && (busy || !cwd.trim() || !profileValid)} onClick={createdWithDeliveryError ? onClose : undefined} aria-label={createdWithDeliveryError ? 'View session' : 'Start session'} title={createdWithDeliveryError ? 'View session' : 'Start session'}>
@@ -637,13 +613,20 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
             {requiresProviderLogin ? <span className="field-help">Finish the new account login first. Sessions will keep this request here instead of sending it into a login screen.</span> : null}
           </div>
           {isDelegate ? (
-            <div className="launcher-inherited"><span>Runs with its parent</span><strong>{cwd}</strong><small>{getActiveServer().name} · grouped under {parentSession ? sessionLabel(parentSession) : 'the current session'}</small></div>
+            <div className="launcher-inherited"><span>Runs with its parent</span><strong>{cwd}</strong><small>{serverDisplayName(getActiveServer(), true)} · grouped under {parentSession ? sessionLabel(parentSession) : 'the current session'}</small></div>
           ) : (
             <section className="launcher-workspace-shell">
               <div className="launcher-workspace-bar">
                 <span className="workspace-folder-icon" aria-hidden />
                 <span className="launcher-workspace-copy"><strong>{workspaceTitle}</strong><small>{cwd || 'Choose a project folder'}</small></span>
-                <span className="launcher-workspace-machine">{machineTitle}</span>
+                <label className="launcher-workspace-machine" title={`Computer: ${machineTitle}`}>
+                  <span className="launcher-machine-icon" aria-hidden />
+                  <select value={machineId} onChange={(event) => chooseMachine(event.currentTarget.value)} aria-label="Computer">
+                    {configuredMachines.map((machine) => (
+                      <option key={machine.id} value={machine.id}>{serverDisplayName(machine, true)}</option>
+                    ))}
+                  </select>
+                </label>
                 <button type="button" className="btn btn-ghost" onClick={() => setBrowserOpen((open) => !open)} aria-expanded={browserOpen}>{browserOpen ? 'Done' : 'Change'}</button>
               </div>
               {browserOpen ? (
@@ -730,6 +713,22 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                   </div>
                 </details>
               ) : null}
+              {tool === 'codex' ? (
+                <div className="field launcher-advanced-card launcher-experience-field">
+                  <span className="field-label">Experience</span>
+                  <select className="field-input" value={runtimeMode} onChange={(event) => {
+                    const nextMode = event.currentTarget.value as RuntimeMode;
+                    setRuntimeMode(nextMode);
+                    if (nextMode === 'rich') setSkipPerms(true);
+                  }} aria-label="Session experience">
+                    <option value="rich">Conversation</option>
+                    <option value="terminal">Terminal</option>
+                  </select>
+                  <span className="field-help">Conversation is the normal Sessions view. Terminal opens Codex exactly as it appears in a shell.</span>
+                </div>
+              ) : tool === 'claude-code' ? (
+                <div className="launcher-runtime-note"><strong>Conversation + Terminal</strong><span>One Claude session; switch views whenever you need the exact terminal.</span></div>
+              ) : null}
               {tool === 'claude-code' ? (
                 <details className="launcher-advanced-subsection launcher-troubleshooting">
                   <summary>Troubleshooting <span>Start without Claude customizations</span></summary>
@@ -771,6 +770,8 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
           {error ? <div className="dialog-error">{error}</div> : null}
         </div>
       </form>
-    </div>
   );
+  return embedded
+    ? <section className="new-session-surface">{launcher}</section>
+    : <div className="dialog-backdrop" onClick={onClose}>{launcher}</div>;
 }

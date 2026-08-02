@@ -132,7 +132,7 @@ assert.match(view, />Okay<\/button>/);
 assert.match(view, />Don’t show again<\/button>/);
 assert.match(view, /session\.tool === 'codex'[\s\S]*!richSession/);
 assert.doesNotMatch(view, /reading \{session\.tool === 'claude-code'/);
-assert.match(view, /<MachineMark machine=\{getActiveServer\(\)\.name\} size=\{18\} \/>/);
+assert.match(view, /<MachineMark machine=\{serverDisplayName\(getActiveServer\(\), true\)\} size=\{18\} \/>/);
 assert.doesNotMatch(view, /session-parser/);
 assert.match(view, /sessions:terminal-notice-ack:/);
 assert.match(view, /setTimeout\(\(\) => \{[\s\S]*setTerminalNoticeOpen\(true\);[\s\S]*\}, 400\)/);
@@ -178,12 +178,12 @@ const launcherComposer = newSession.indexOf('launcher-task-field launcher-compos
 const agentControl = newSession.indexOf('aria-label="Agent"');
 const machineControl = newSession.indexOf('aria-label="Computer"');
 const folderControl = newSession.indexOf('launcher-workspace-shell');
-assert.ok(launcherHero > 0 && launcherHero < launcherComposer && launcherComposer < agentControl && agentControl < machineControl && machineControl < folderControl,
-  'new-session must lead with one prompt, then compact Agent and Computer controls, then the project picker');
+assert.ok(launcherHero > 0 && launcherHero < launcherComposer && launcherComposer < agentControl && agentControl < folderControl && folderControl < machineControl,
+  'new-session must lead with one prompt, keep agent controls in its composer, and put the computer with the project picker');
 assert.match(newSession, /Somewhere project/);
 assert.doesNotMatch(newSession, /worktree|Developer isolation|Git copy/);
 assert.match(newSession, /Sessions will not stop or queue existing work/);
-assert.match(newSession, /This computer/);
+assert.match(newSession, /serverDisplayName\(selectedMachine, true\)/);
 assert.match(newSession, /configuredMachines\.find\(\(machine\) => machine\.isDefault && isLocalServer\(machine\)\)/);
 assert.match(newSession, /<ModelPicker[\s\S]*options=\{modelOptions\}/);
 assert.match(newSession, /CLAUDE_MODEL_OPTIONS/);

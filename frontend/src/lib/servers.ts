@@ -25,6 +25,11 @@ export interface ServerConfig {
   machineId?: string;
   // The host-side revocation identity returned with a successful pairing.
   deviceId?: string;
+  // The hostname most recently reported by the authenticated daemon. It may
+  // change while machineId stays stable (for example after renaming a Mac).
+  systemName?: string;
+  // A user-assigned Fleet label is separate from the reported hostname.
+  customName?: string;
   name: string;
   host: string;
   port: number;
@@ -36,6 +41,17 @@ export interface ServerConfig {
   // Transport scheme.  Defaults to 'http' so existing stored configs
   // (which have no scheme field) continue to work without migration.
   scheme?: 'http' | 'https';
+}
+
+export function serverDisplayName(server: ServerConfig, annotateLocal = false): string {
+  const reported = server.systemName?.trim();
+  const custom = server.customName?.trim();
+  const legacy = server.name?.trim();
+  const base = custom || reported || (legacy && legacy !== 'This machine' ? legacy : '') || 'This machine';
+  if (annotateLocal && server.isDefault && isLocalServer(server) && base !== 'This machine' && !/\(this machine\)$/i.test(base)) {
+    return `${base} (this machine)`;
+  }
+  return base;
 }
 
 const STORAGE_KEY = 'sessions:servers';
@@ -571,7 +587,7 @@ export async function syncNativeAgentMachineAccess(): Promise<void> {
     if (server.isDefault || !server.machineId || !server.token) return [];
     return [{
       machineId: server.machineId,
-      name: server.name,
+      name: serverDisplayName(server),
       endpoint: `${server.scheme ?? 'http'}://${server.host}:${server.port}`,
       ...(server.deviceId ? { deviceId: server.deviceId } : {}),
       token: server.token

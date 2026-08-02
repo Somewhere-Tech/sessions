@@ -29,6 +29,7 @@ function scrubFragment(): void {
 
 interface RememberServerOptions {
   name?: string;
+  systemName?: string;
   machineId?: string;
   deviceId?: string;
   token?: string | null;
@@ -64,6 +65,7 @@ export async function rememberServerEndpoint(
     ? {}
     : { token: options.token?.trim() || undefined };
   const name = options.name?.trim();
+  const systemName = options.systemName?.trim();
 
   if (existing) {
     await store.updateServer(existing.id, {
@@ -71,7 +73,8 @@ export async function rememberServerEndpoint(
       ...(machineId ? { machineId } : {}),
       ...(options.deviceId ? { deviceId: options.deviceId } : {}),
       ...tokenUpdate,
-      ...(name ? { name } : {})
+      ...(name ? { name, customName: name } : {}),
+      ...(systemName ? { systemName, ...(!existing.customName ? { name: systemName } : {}) } : {})
     });
     // A pre-identity/manual entry can match the endpoint while another entry
     // already carries this machine ID. Collapse both access paths into the
@@ -93,7 +96,9 @@ export async function rememberServerEndpoint(
   }
 
   const created = await store.addServer({
-    name: name || endpoint.host,
+    name: name || systemName || endpoint.host,
+    ...(name ? { customName: name } : {}),
+    ...(systemName ? { systemName } : {}),
     ...(machineId ? { machineId } : {}),
     ...(options.deviceId ? { deviceId: options.deviceId } : {}),
     ...endpoint,
@@ -111,7 +116,7 @@ export async function claimNativeMachinePairing(
   let server: ServerConfig;
   try {
     server = await rememberServerEndpoint(claim.endpoint, {
-      name: claim.machineName,
+      systemName: claim.machineName,
       machineId: claim.machineId,
       deviceId: claim.deviceId,
       token: claim.token,
@@ -149,7 +154,7 @@ export async function rememberNativeMachineClaim(
   let server: ServerConfig;
   try {
     server = await rememberServerEndpoint(claim.endpoint, {
-      name: claim.machineName,
+      systemName: claim.machineName,
       machineId: claim.machineId,
       deviceId: claim.deviceId,
       token: claim.token,

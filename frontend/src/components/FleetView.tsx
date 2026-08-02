@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchServerHealth, listServerProfiles, listServerSessions, type AccountProfile, type ServerHealth } from '../api/sessionsd';
 import { rememberNativeMachineClaim } from '../lib/hostedBootstrap';
 import { formatServerEndpoint } from '../lib/serverEndpoint';
-import { useServers, type ServerConfig } from '../lib/servers';
+import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { tailnetClientID } from '../lib/tailnetClient';
 import {
   claimNativeNearbyAccess,
@@ -338,14 +338,15 @@ function FleetServerGroup({
   onOpenMachine: () => void;
 }): JSX.Element {
   const updateServer = useServers((state) => state.updateServer);
+  const localServer = useServers((state) => state.servers.find((candidate) => candidate.isDefault));
   const [snapshot, setSnapshot] = useState<ServerSnapshot>(INITIAL_SNAPSHOT);
   const [renaming, setRenaming] = useState(false);
-  const [machineName, setMachineName] = useState(server.name);
+  const [machineName, setMachineName] = useState(server.customName ?? serverDisplayName(server));
   const [renameError, setRenameError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!renaming) setMachineName(server.name);
-  }, [renaming, server.name]);
+    if (!renaming) setMachineName(server.customName ?? serverDisplayName(server));
+  }, [renaming, server.customName, server.systemName, server.name]);
 
   useEffect(() => {
     let stopped = false;
@@ -439,14 +440,19 @@ function FleetServerGroup({
   const platformText = platformLabel(platform);
   const fullVersion = snapshot.health?.version;
   const version = shortVersion(fullVersion);
-  const versionState = machineVersionState(snapshot.health?.version, localVersion, server.isDefault);
+  const versionState = machineVersionState(
+    snapshot.health?.version,
+    localVersion,
+    server.isDefault,
+    serverDisplayName(server),
+    localServer ? serverDisplayName(localServer) : 'the local computer'
+  );
   const cardClasses = [
     'fleet-server-group',
     server.isDefault ? 'is-local' : '',
     unavailable ? 'is-unreachable' : ''
   ].filter(Boolean).join(' ');
-  const defaultMachineName = server.isDefault ? localMachineName(platform) : server.name;
-  const displayMachineName = server.name === 'This machine' ? defaultMachineName : server.name;
+  const displayMachineName = serverDisplayName(server, true);
   const saveMachineName = async (): Promise<void> => {
     const name = machineName.trim().replace(/\s+/g, ' ').slice(0, 48);
     if (!name) {
@@ -455,7 +461,7 @@ function FleetServerGroup({
     }
     setRenameError(null);
     try {
-      await updateServer(server.id, { name });
+      await updateServer(server.id, { name, customName: name });
       setRenaming(false);
     } catch (reason) {
       setRenameError(reason instanceof Error ? reason.message : 'Could not save this machine name.');
@@ -472,7 +478,7 @@ function FleetServerGroup({
               <form className="fleet-machine-rename" onSubmit={(event) => { event.preventDefault(); void saveMachineName(); }}>
                 <input autoFocus value={machineName} maxLength={48} aria-label="Machine name" onChange={(event) => setMachineName(event.target.value)} />
                 <button type="submit">Save</button>
-                <button type="button" onClick={() => { setRenaming(false); setRenameError(null); setMachineName(server.name); }}>Cancel</button>
+                <button type="button" onClick={() => { setRenaming(false); setRenameError(null); setMachineName(server.customName ?? serverDisplayName(server)); }}>Cancel</button>
               </form>
             ) : (
               <>
@@ -529,7 +535,7 @@ function FleetServerGroup({
       </div>
       {!unavailable ? (
         <button type="button" className="fleet-open-machine" onClick={onOpenMachine}>
-          Open all sessions on this machine <span aria-hidden>→</span>
+          Open all sessions on {displayMachineName} <span aria-hidden>→</span>
         </button>
       ) : null}
     </section>
@@ -539,7 +545,9 @@ function FleetServerGroup({
 function machineVersionState(
   machineVersion: string | undefined,
   localVersion: string | undefined,
-  isLocal: boolean
+  isLocal: boolean,
+  machineName: string,
+  localMachineName: string
 ): { tone: 'older' | 'newer' | 'different'; title: string; detail: string; fullDetail: string } | null {
   if (isLocal || !machineVersion || !localVersion || machineVersion === localVersion) return null;
   const comparison = compareReleaseVersions(machineVersion, localVersion);
@@ -548,7 +556,7 @@ function machineVersionState(
       tone: 'older',
       title: 'Update available',
       detail: `${shortVersion(machineVersion)} → ${shortVersion(localVersion)} · Compatible`,
-      fullDetail: `This machine runs ${machineVersion}; this computer runs ${localVersion}. Their API ranges are compatible, so it can update when convenient.`
+      fullDetail: `${machineName} runs ${machineVersion}; ${localMachineName} runs ${localVersion}. Their API ranges are compatible, so it can update when convenient.`
     };
   }
   if (comparison === 1) {
@@ -556,14 +564,14 @@ function machineVersionState(
       tone: 'newer',
       title: 'Newer version',
       detail: `${shortVersion(machineVersion)} here · ${shortVersion(localVersion)} locally`,
-      fullDetail: `This machine runs ${machineVersion}; this computer runs ${localVersion}. Their API ranges are compatible.`
+      fullDetail: `${machineName} runs ${machineVersion}; ${localMachineName} runs ${localVersion}. Their API ranges are compatible.`
     };
   }
   return {
     tone: 'different',
     title: 'Different build',
     detail: `${shortVersion(machineVersion)} here · Compatible`,
-    fullDetail: `This machine runs ${machineVersion}; this computer runs ${localVersion}. Their API ranges are compatible.`
+    fullDetail: `${machineName} runs ${machineVersion}; ${localMachineName} runs ${localVersion}. Their API ranges are compatible.`
   };
 }
 
@@ -606,12 +614,6 @@ function platformFor(server: ServerConfig, health: ServerHealth | null): Platfor
 
 function platformLabel(platform: Platform): string {
   return platform === 'macos' ? 'macOS' : platform === 'windows' ? 'Windows' : platform === 'linux' ? 'Linux' : 'Sessions host';
-}
-
-function localMachineName(platform: Platform): string {
-  if (platform === 'macos') return 'This Mac';
-  if (platform === 'windows') return 'This PC';
-  return 'This computer';
 }
 
 function shortVersion(version: string | undefined): string {

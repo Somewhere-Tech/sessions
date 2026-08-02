@@ -266,6 +266,26 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, principal))
+	if path == "/api/machine" && request.Method == http.MethodGet {
+		if s.identityError != nil || s.identity.ID == "" {
+			detail := "machine identity is unavailable"
+			if s.identityError != nil {
+				detail = s.identityError.Error()
+			}
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": detail}, corsOrigin)
+			return
+		}
+		name, err := os.Hostname()
+		name = truncateMachineName(name)
+		if err != nil || name == "" {
+			name = s.identity.Name
+		}
+		s.sendJSON(response, http.StatusOK, map[string]any{
+			"machine_id": s.identity.ID,
+			"name":       name,
+		}, corsOrigin)
+		return
+	}
 	if path == "/ws" {
 		if !allowedOrigin(origin, s.config.Host, s.lan.activeHost()) {
 			s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")

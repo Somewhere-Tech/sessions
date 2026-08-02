@@ -3,8 +3,10 @@ import { readFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-const [fleet, styles] = await Promise.all([
+const [fleet, servers, api, styles] = await Promise.all([
   source('src/components/FleetView.tsx'),
+  source('src/lib/servers.ts'),
+  source('src/api/sessionsd.ts'),
   source('src/styles/globals.css')
 ]);
 
@@ -17,10 +19,16 @@ assert.doesNotMatch(fleet, /className="fleet-session-cwd"/);
 assert.doesNotMatch(fleet, /className="fleet-session-summary"/);
 assert.doesNotMatch(fleet, /className="fleet-session-tags"/);
 assert.match(fleet, /reported\.includes\('windows'\)/);
-assert.match(fleet, /if \(platform === 'windows'\) return 'This PC'/);
 assert.match(fleet, /Sessions \$\{version\}/);
 assert.match(fleet, /Name this machine/);
-assert.match(fleet, /updateServer\(server\.id, \{ name \}\)/);
+assert.match(fleet, /updateServer\(server\.id, \{ name, customName: name \}\)/);
+assert.match(fleet, /serverDisplayName\(server, true\)/);
+assert.match(servers, /custom \|\| reported \|\|/,
+  'a custom Fleet label must override a renamed system hostname');
+assert.match(servers, /`\$\{base\} \(this machine\)`/,
+  'the local annotation must follow the actual machine name');
+assert.match(api, /\/api\/machine/,
+  'clients must refresh the authenticated stable machine identity');
 assert.match(styles, /grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(420px,\s*100%\),\s*1fr\)\)/);
 assert.match(styles, /\.fleet-session-state\s*\{[\s\S]*?white-space:\s*nowrap;/);
 assert.doesNotMatch(styles, /\.fleet-session-state\s*\{[^}]*font-family:\s*var\(--font-mono\)/);

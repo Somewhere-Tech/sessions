@@ -210,6 +210,29 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedMachineIdentityUsesStableIDAndCurrentName(t *testing.T) {
+	daemon := newTestDaemon(t)
+	unauthorized := serve(t, daemon.handler, http.MethodGet, "/api/machine", nil, "198.51.100.25:5555", nil)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("remote machine identity status = %d, body = %s", unauthorized.Code, unauthorized.Body.String())
+	}
+	response := serve(t, daemon.handler, http.MethodGet, "/api/machine", nil, "127.0.0.1:4321", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("machine identity status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		MachineID string `json:"machine_id"`
+		Name      string `json:"name"`
+	}
+	decodeBody(t, response, &body)
+	if body.MachineID != daemon.handler.identity.ID {
+		t.Fatalf("machine id = %q, want %q", body.MachineID, daemon.handler.identity.ID)
+	}
+	if body.Name == "" {
+		t.Fatal("machine name is empty")
+	}
+}
+
 func TestKnownMutationRoutesReturnMethodNotAllowed(t *testing.T) {
 	daemon := newTestDaemon(t)
 	for _, path := range []string{

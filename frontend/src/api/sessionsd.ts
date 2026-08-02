@@ -1,5 +1,5 @@
 import type { ClaudeSettings, CreateSessionRequest, SessionInfo, DirectoryCandidate } from '../types';
-import { getActiveServer, isLocalServer, useServers, type ServerConfig } from '../lib/servers';
+import { getActiveServer, isLocalServer, serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
 
 // Thrown when the daemon returns HTTP 401 (token required / wrong token).
@@ -351,6 +351,27 @@ export async function fetchServerHealth(
   return validateServerHealth(await json<ServerHealth>(r));
 }
 
+export interface ServerMachineIdentity {
+  machineId: string;
+  name: string;
+}
+
+export async function fetchServerMachineIdentity(
+  server: ServerConfig,
+  signal?: AbortSignal
+): Promise<ServerMachineIdentity> {
+  const r = await serverFetch(
+    server,
+    `${httpBaseForServer(server)}/api/machine`,
+    { signal }
+  );
+  const body = await json<{ machine_id?: string; machineId?: string; name: string }>(r);
+  const machineId = (body.machineId ?? body.machine_id ?? '').trim();
+  const name = body.name?.trim();
+  if (!machineId || !name) throw new Error('machine identity response was incomplete');
+  return { machineId, name };
+}
+
 export async function listServerSessions(
   server: ServerConfig,
   signal?: AbortSignal
@@ -648,7 +669,7 @@ export async function fetchServerHistoryTranscript(
     try {
       const parsed = JSON.parse(body) as { error?: string };
       if (parsed.error === 'history session not found') {
-        throw new Error(`This conversation is no longer available on ${server.name}.`);
+        throw new Error(`This conversation is no longer available on ${serverDisplayName(server, true)}.`);
       }
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('This conversation')) throw error;

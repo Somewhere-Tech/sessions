@@ -9,7 +9,7 @@ import { classifySnapshotComposerState } from '../lib/detectMultiChoice';
 import { requestSnapshot } from '../lib/wsMux';
 import { SessionDetails } from './SessionDetails';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
-import { getActiveServer } from '../lib/servers';
+import { getActiveServer, serverDisplayName } from '../lib/servers';
 import { sessionLabel, useTabLabel } from '../lib/tabLabels';
 import { SessionHistoryView } from './SessionHistoryView';
 import { isCrashedSession, isDegradedSession } from '../lib/sessionStatus';
@@ -483,7 +483,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           </div>
           <div className="session-active-meta">
             {provider ? <ProviderBadge provider={provider} compact size={20} /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}
-            <MachineMark machine={getActiveServer().name} size={18} />
+            <MachineMark machine={serverDisplayName(getActiveServer(), true)} size={18} />
             {session?.profile ? <span>{session.profile}</span> : null}
             <span title={session?.cwd}>{workspaceName}</span>
           </div>
@@ -668,7 +668,7 @@ function SessionViewRouter(props: Props): JSX.Element {
     return (
       <div className="session-missing-shell" role="status">
         <span>Session unavailable</span>
-        <h2>This session is no longer on this machine</h2>
+        <h2>This session is no longer available here</h2>
         <p>It may have been archived, moved, or removed since this view opened.</p>
         {props.onBack ? <button type="button" className="btn btn-secondary" onClick={props.onBack}>Back to Sessions</button> : null}
       </div>
