@@ -54,7 +54,12 @@ is_running() {
   pgrep -x "${PROCESS_NAME}" >/dev/null 2>&1
 }
 
-if is_running && [[ "$RESTART" -eq 1 ]]; then
+WAS_RUNNING=0
+if is_running; then
+  WAS_RUNNING=1
+fi
+
+if [[ "$WAS_RUNNING" -eq 1 && "$RESTART" -eq 1 ]]; then
   echo "→ --restart given, quitting ${APP_NAME}…"
   osascript -e "tell application \"${APP_NAME}\" to quit" 2>/dev/null || true
   # Give the OS a beat to release file handles inside the .app bundle.
@@ -65,8 +70,11 @@ elif is_running; then
 fi
 
 # Build only the .app — skip dmg (saves 30s and avoids bundle_dmg.sh).
+# Local dogfood installs do not publish an updater archive, so they do not
+# require the private updater signing key used by the release workflow. The
+# installed app still keeps the production updater's pinned verification key.
 echo "→ building ${APP_NAME}.app (release)…"
-npx tauri build --bundles app
+npx tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 if [[ ! -d "$SRC" ]]; then
   echo "✗ build finished but ${SRC} is missing. Aborting." >&2
@@ -100,7 +108,7 @@ echo "✓ shipped ${DST}"
 SIZE_HUMAN="$(du -sh "$DST" | awk '{print $1}')"
 echo "  size: ${SIZE_HUMAN}"
 
-if is_running && [[ "$RESTART" -eq 1 ]]; then
+if [[ "$WAS_RUNNING" -eq 1 && "$RESTART" -eq 1 ]]; then
   echo "→ relaunching ${APP_NAME}…"
   open "$DST"
 elif is_running; then
