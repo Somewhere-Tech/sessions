@@ -18,6 +18,7 @@ import type { ClaudeSessionOptions, DirectoryCandidate, SessionInfo } from '../t
 import { getActiveServer, isLocalServer, serverDisplayName, useServers } from '../lib/servers';
 import { sessionLabel } from '../lib/tabLabels';
 import { ProviderMark } from './ProviderBadge';
+import { MachineMark } from './MachineMark';
 import { CLAUDE_MODEL_OPTIONS, ModelPicker, type ModelPickerOption } from './ModelPicker';
 
 interface ToolDef {
@@ -539,20 +540,43 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         </header>
         <div className="dialog-body">
           <section className="launcher-hero">
-            <span>{isDelegate ? `Linked to ${parentSession ? sessionLabel(parentSession) : 'this session'}` : machineTitle}</span>
-            <h2>{isDelegate ? 'What should this helper do?' : <>What should we work on in <strong>{workspaceTitle}</strong>?</>}</h2>
+            <span>{isDelegate ? 'Linked session' : 'New session'}</span>
+            <h2 className="launcher-intent">
+              <span>Start a</span>
+              <label className="launcher-intent-control is-agent" title={`Agent: ${selectedTool.name}`}>
+                <AgentMark tool={tool} size={20} />
+                <select value={tool} onChange={(event) => chooseTool(event.currentTarget.value as NewSessionTool)} aria-label="Agent">
+                  {TOOLS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>
+              <span>{isDelegate ? 'helper for' : 'session on'}</span>
+              {isDelegate ? (
+                <strong>{parentSession ? sessionLabel(parentSession) : 'this session'}</strong>
+              ) : (
+                <>
+                  <label className="launcher-intent-control is-machine" title={`Computer: ${machineTitle}`}>
+                    <MachineMark machine={machineTitle} size={18} />
+                    <select value={machineId} onChange={(event) => chooseMachine(event.currentTarget.value)} aria-label="Computer">
+                      {configuredMachines.map((machine) => (
+                        <option key={machine.id} value={machine.id}>{serverDisplayName(machine, true)}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <span>in</span>
+                  <button type="button" className="launcher-intent-control is-workspace" title={cwd || 'Choose a project folder'} onClick={() => setBrowserOpen((open) => !open)} aria-expanded={browserOpen}>
+                    <span className="workspace-folder-icon" aria-hidden />
+                    <strong>{workspaceTitle}</strong>
+                  </button>
+                </>
+              )}
+            </h2>
+            <p>{isDelegate ? 'Give it one focused job. It stays grouped with its parent.' : 'Describe the work below, or leave it blank and start with an empty conversation.'}</p>
           </section>
           <div className="field launcher-task-field launcher-composer input-composer">
             <span className="sr-only">First request (optional)</span>
             <textarea className="input-textarea" autoFocus value={task} onChange={(event) => setTask(event.currentTarget.value)} placeholder={isDelegate ? 'Describe the work for this linked session…' : 'Ask an agent to work, or leave blank to open a conversation…'} rows={6} />
             <div className="launcher-composer-footer input-composer-footer">
               <div className="launcher-composer-context" aria-label="New session configuration">
-                <label className="launcher-select-control is-agent" title={`Agent: ${selectedTool.name}`}>
-                  <AgentMark tool={tool} size={20} />
-                  <select value={tool} onChange={(event) => chooseTool(event.currentTarget.value as NewSessionTool)} aria-label="Agent">
-                    {TOOLS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                  </select>
-                </label>
                 {isDelegate ? (
                   <span className="launcher-context-chip" title={`${serverDisplayName(getActiveServer(), true)} · ${cwd}`}><span className="launcher-machine-icon" aria-hidden />Inherited</span>
                 ) : null}
@@ -577,32 +601,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                     </label>
                   </>
                 ) : null}
-                {tool === 'claude-code' ? (
-                  <label className="launcher-select-control">
-                    <span className="sr-only">Approvals</span>
-                    <select value={claudeOptions.permissionMode ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, permissionMode: event.currentTarget.value as ClaudeSessionOptions['permissionMode'] }))} aria-label="Approvals">
-                      <option value="">Settings approvals</option>
-                      <option value="manual">Ask every time</option>
-                      <option value="acceptEdits">Accept edits</option>
-                      <option value="auto">Auto</option>
-                      <option value="plan">Plan only</option>
-                      <option value="dontAsk">Don’t ask</option>
-                      <option value="bypassPermissions">Full access</option>
-                    </select>
-                  </label>
-                ) : tool === 'codex' ? (
-                  <label className="launcher-select-control">
-                    <span className="sr-only">Permissions</span>
-                    <select value={skipPerms ? 'full' : 'safe'} onChange={(event) => {
-                      const fullAccess = event.currentTarget.value === 'full';
-                      setSkipPerms(fullAccess);
-                      if (!fullAccess && runtimeMode === 'rich') setRuntimeMode('terminal');
-                    }} aria-label="Permissions">
-                      <option value="safe">Ask when needed</option>
-                      <option value="full">Full access</option>
-                    </select>
-                  </label>
-                ) : null}
               </div>
               <div className="launcher-composer-actions">
                 <button type={createdWithDeliveryError ? 'button' : 'submit'} className={`btn btn-primary launcher-composer-start${createdWithDeliveryError ? ' is-wide' : ''}`} disabled={!createdWithDeliveryError && (busy || !cwd.trim() || !profileValid)} onClick={createdWithDeliveryError ? onClose : undefined} aria-label={createdWithDeliveryError ? 'View session' : 'Start session'} title={createdWithDeliveryError ? 'View session' : 'Start session'}>
@@ -616,19 +614,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
             <div className="launcher-inherited"><span>Runs with its parent</span><strong>{cwd}</strong><small>{serverDisplayName(getActiveServer(), true)} · grouped under {parentSession ? sessionLabel(parentSession) : 'the current session'}</small></div>
           ) : (
             <section className="launcher-workspace-shell">
-              <div className="launcher-workspace-bar">
-                <span className="workspace-folder-icon" aria-hidden />
-                <span className="launcher-workspace-copy"><strong>{workspaceTitle}</strong><small>{cwd || 'Choose a project folder'}</small></span>
-                <label className="launcher-workspace-machine" title={`Computer: ${machineTitle}`}>
-                  <span className="launcher-machine-icon" aria-hidden />
-                  <select value={machineId} onChange={(event) => chooseMachine(event.currentTarget.value)} aria-label="Computer">
-                    {configuredMachines.map((machine) => (
-                      <option key={machine.id} value={machine.id}>{serverDisplayName(machine, true)}</option>
-                    ))}
-                  </select>
-                </label>
-                <button type="button" className="btn btn-ghost" onClick={() => setBrowserOpen((open) => !open)} aria-expanded={browserOpen}>{browserOpen ? 'Done' : 'Change'}</button>
-              </div>
               {browserOpen ? (
                 <div className="launcher-workspace-picker">
                   {displayedWorkspaces.length > 0 ? (
@@ -658,7 +643,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
             </div>
           ) : null}
           <details className="launcher-advanced">
-            <summary><strong>Advanced</strong><span>Account, tags, and provider settings</span></summary>
+            <summary><strong>Advanced</strong><span>Account, permissions, tags, and provider settings</span></summary>
             <div className="launcher-advanced-body">
               {profileTool ? (
                 <div className="field launcher-advanced-card account-profile-field">
@@ -694,6 +679,34 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                     </>
                   ) : null}
                 </div>
+              ) : null}
+              {tool === 'claude-code' ? (
+                <label className="field launcher-advanced-card launcher-permissions-field">
+                  <span className="field-label">Permissions</span>
+                  <select className="field-input" value={claudeOptions.permissionMode ?? ''} onChange={(event) => setClaudeOptions((current) => ({ ...current, permissionMode: event.currentTarget.value as ClaudeSessionOptions['permissionMode'] }))} aria-label="Permissions">
+                    <option value="">Settings default</option>
+                    <option value="manual">Ask every time</option>
+                    <option value="acceptEdits">Accept edits</option>
+                    <option value="auto">Auto</option>
+                    <option value="plan">Plan only</option>
+                    <option value="dontAsk">Don’t ask</option>
+                    <option value="bypassPermissions">Full access</option>
+                  </select>
+                  <span className="field-help">Uses your Claude default from Settings unless you override it here.</span>
+                </label>
+              ) : tool === 'codex' ? (
+                <label className="field launcher-advanced-card launcher-permissions-field">
+                  <span className="field-label">Permissions</span>
+                  <select className="field-input" value={skipPerms ? 'full' : 'safe'} onChange={(event) => {
+                    const fullAccess = event.currentTarget.value === 'full';
+                    setSkipPerms(fullAccess);
+                    if (!fullAccess && runtimeMode === 'rich') setRuntimeMode('terminal');
+                  }} aria-label="Permissions">
+                    <option value="safe">Ask when needed</option>
+                    <option value="full">Full access</option>
+                  </select>
+                  <span className="field-help">Uses your Full access default from Settings. You can change it for this session.</span>
+                </label>
               ) : null}
               <details className="launcher-advanced-subsection">
                 <summary>Tags <span>Optional organization</span></summary>

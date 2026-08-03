@@ -29,10 +29,12 @@ assert.match(picker, /Use exact model ID/);
 assert.doesNotMatch(picker, /<button[\s\S]{0,1200}<button[\s\S]{0,300}★/);
 assert.match(launcher, /launcher-composer-footer/);
 assert.match(launcher, /<ModelPicker/);
-assert.match(launcher, /What should we work on in/);
-assert.match(launcher, /launcher-workspace-bar/);
+assert.match(launcher, /<span>Start a<\/span>/);
+assert.match(launcher, /launcher-intent-control is-workspace/);
 assert.match(launcher, /aria-label="Agent"/);
 assert.match(launcher, /aria-label="Computer"/);
+assert.ok(launcher.indexOf('launcher-advanced') < launcher.indexOf('aria-label="Permissions"'),
+  'permissions belong in Advanced rather than the primary composer');
 assert.match(app, /<NewSessionDialog\s+embedded/,
   'the global launcher must render inside the conversation workspace');
 assert.doesNotMatch(launcher, /worktree|Developer isolation|Git copy/);
@@ -86,16 +88,15 @@ try {
       <form id="launcher" class="dialog dialog-wide new-session-launcher is-embedded">
         <header class="dialog-head launcher-compact-head"><div class="launcher-breadcrumb"><span class="workspace-folder-icon"></span><span>Sessions</span><span>/</span><strong>New session</strong></div></header>
         <div id="launcher-body" class="dialog-body">
-          <section id="launcher-hero" class="launcher-hero"><span>Mac mini (this machine)</span><h2>What should we work on in <strong>Sessions</strong>?</h2></section>
+          <section id="launcher-hero" class="launcher-hero"><span>New session</span><h2 class="launcher-intent"><span>Start a</span><label class="launcher-intent-control is-agent"><span></span><select><option>Claude</option></select></label><span>session on</span><label class="launcher-intent-control is-machine"><span></span><select><option>Mac mini (this machine)</option></select></label><span>in</span><button class="launcher-intent-control is-workspace"><span class="workspace-folder-icon"></span><strong>Sessions</strong></button></h2><p>Describe the work below, or leave it blank.</p></section>
           <div id="launcher-composer" class="field launcher-task-field launcher-composer input-composer">
             <textarea class="input-textarea" rows="6" placeholder="Ask an agent to work"></textarea>
             <div class="launcher-composer-footer input-composer-footer"><div class="launcher-composer-context">
-              <label class="launcher-select-control is-agent"><select><option>Claude</option></select></label>
-              <button class="model-picker-trigger">Default</button>
-              <label class="launcher-effort-chip"><select><option>Default effort</option></select></label>
+              <span class="model-picker is-compact"><button id="launcher-model" class="model-picker-trigger">Default</button></span>
+              <label class="launcher-effort-chip"><select id="launcher-effort"><option>Default effort</option></select></label>
             </div><div class="launcher-composer-actions"><button class="btn btn-primary launcher-composer-start">↑</button></div></div>
           </div>
-          <section id="launcher-workspace" class="launcher-workspace-shell"><div class="launcher-workspace-bar"><span class="workspace-folder-icon"></span><span class="launcher-workspace-copy"><strong>Sessions</strong><small>/Users/example/Sessions</small></span><label class="launcher-workspace-machine"><span class="launcher-machine-icon"></span><select><option>Mac mini (this machine)</option></select></label><button class="btn btn-ghost">Change</button></div></section>
+          <section id="launcher-workspace" class="launcher-workspace-shell"><div class="launcher-workspace-picker"><div class="launcher-directory-picker"><input value="/Users/example/Sessions"></div></div></section>
         </div>
       </form>
     </main>
@@ -118,7 +119,10 @@ try {
       composerHeight: composer.height,
       workspaceTop: workspace.top,
       workspaceRight: workspace.right,
-      bodyRight: body.right
+      bodyRight: body.right,
+      heroFontSize: Number.parseFloat(getComputedStyle(document.querySelector('#launcher-hero h2')).fontSize),
+      modelFontSize: getComputedStyle(document.querySelector('#launcher-model')).fontSize,
+      effortFontSize: getComputedStyle(document.querySelector('#launcher-effort')).fontSize
     };
   });
   assert.equal(launcherBounds.launcherWidth, launcherBounds.surfaceWidth, 'launcher must fill the conversation pane');
@@ -126,6 +130,8 @@ try {
   assert.equal(launcherBounds.borderRadius, '0px', 'embedded launcher must not look like a modal card');
   assert.ok(launcherBounds.bodyWidth <= 840, `launcher content should stay focused, got ${launcherBounds.bodyWidth}px`);
   assert.ok(launcherBounds.heroBottom <= launcherBounds.composerTop, 'the prompt must follow the workspace question');
+  assert.ok(launcherBounds.heroFontSize <= 25, `launcher sentence should stay conversational, got ${launcherBounds.heroFontSize}px`);
+  assert.equal(launcherBounds.modelFontSize, launcherBounds.effortFontSize, 'model and effort controls must use one font size');
   assert.ok(launcherBounds.composerHeight >= 135, `the prompt must remain the primary control, got ${launcherBounds.composerHeight}px`);
   assert.ok(launcherBounds.workspaceTop >= launcherBounds.composerTop + launcherBounds.composerHeight, 'the project picker must sit below the prompt');
   assert.ok(launcherBounds.workspaceRight <= launcherBounds.bodyRight, 'the project picker must not overflow the launcher');

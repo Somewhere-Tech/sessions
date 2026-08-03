@@ -173,13 +173,18 @@ assert.match(machineMark, /aria-label=\{machine\}/);
 assert.match(styles, /\.remote-message-actions\.is-agent\s*\{\s*justify-content:\s*flex-start;/);
 assert.doesNotMatch(styles, /\.remote-bubble-assistant\s*\{[^}]*cursor:\s*copy;/);
 assert.match(newSession, /\{browserOpen \? \([\s\S]*<DirectoryBrowser[\s\S]*\) : null\}/);
-const launcherHero = newSession.indexOf('What should we work on in');
-const launcherComposer = newSession.indexOf('launcher-task-field launcher-composer');
+const launcherHero = newSession.indexOf('<span>Start a</span>');
 const agentControl = newSession.indexOf('aria-label="Agent"');
 const machineControl = newSession.indexOf('aria-label="Computer"');
+const workspaceControl = newSession.indexOf('launcher-intent-control is-workspace');
+const launcherComposer = newSession.indexOf('launcher-task-field launcher-composer');
 const folderControl = newSession.indexOf('launcher-workspace-shell');
-assert.ok(launcherHero > 0 && launcherHero < launcherComposer && launcherComposer < agentControl && agentControl < folderControl && folderControl < machineControl,
-  'new-session must lead with one prompt, keep agent controls in its composer, and put the computer with the project picker');
+const advancedControl = newSession.indexOf('launcher-advanced');
+const permissionsControl = newSession.indexOf('aria-label="Permissions"');
+assert.ok(launcherHero > 0 && launcherHero < agentControl && agentControl < machineControl && machineControl < workspaceControl && workspaceControl < launcherComposer && launcherComposer < folderControl,
+  'new-session must read as one agent, computer, and workspace sentence before the prompt');
+assert.ok(advancedControl > launcherComposer && advancedControl < permissionsControl,
+  'permissions belong under Advanced rather than in the primary composer');
 assert.match(newSession, /Somewhere project/);
 assert.doesNotMatch(newSession, /worktree|Developer isolation|Git copy/);
 assert.match(newSession, /Sessions will not stop or queue existing work/);

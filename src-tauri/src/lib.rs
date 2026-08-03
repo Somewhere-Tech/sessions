@@ -2229,10 +2229,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        io::Write as _,
-        net::{TcpListener, TcpStream},
-    };
+    use std::net::{TcpListener, TcpStream};
 
     fn read_test_http_request(stream: &mut TcpStream) -> String {
         stream
