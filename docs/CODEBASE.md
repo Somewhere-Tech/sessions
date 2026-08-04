@@ -98,6 +98,12 @@ status remain separate daemon/ledger truth. `SessionView.tsx` keeps Conversation
 as the primary agent surface; terminal-backed agents open the exact provider
 terminal as a bounded drawer, while shell sessions and single-session pop-outs
 retain the full terminal. Details stays a separate inspector.
+The navigator's **All machines** scope uses
+`frontend/src/hooks/useFleetSessions.ts` to poll each already-configured daemon
+independently and groups live and ended rows by computer. It does not introduce
+a relay or share credentials between hosts: selecting a row switches to that
+row's authenticated machine before opening the session. Individual machine
+chips retain the full hierarchy and management controls.
 `SessionDetails.tsx` renders
 runtime, workspace, recovery, relationship, usage, and destructive controls;
 closing `SessionTabs.tsx` only closes a view. The navigator's row menu keeps

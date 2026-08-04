@@ -20,6 +20,7 @@ import { useSessions } from '../store/sessions';
 import { MachineMark } from './MachineMark';
 import { ContinueElsewhereButton } from './ContinueElsewhereButton';
 import { serverDisplayName, useServers } from '../lib/servers';
+import { useFleetSessions, type FleetSessionSnapshot } from '../hooks/useFleetSessions';
 
 type PrimaryFilter = 'all' | 'needs' | 'working' | 'ended';
 type ProviderFilter = 'all' | 'claude' | 'codex' | 'shell';
@@ -27,6 +28,10 @@ type DateFilter = 'all' | 'today' | 'week';
 
 const RECENTLY_ENDED_DAYS = 7;
 const RECENTLY_ENDED_LIMIT = 20;
+const MACHINE_SCOPE_KEY = 'sessions:navigator-machine-scope';
+const ALL_MACHINES_SCOPE = 'all-machines';
+
+type MachineScope = typeof ALL_MACHINES_SCOPE | string;
 
 function lastActivity(session: SessionInfo): number {
   return Math.max(session.lastDataAt || 0, session.exitedAt ?? 0, session.createdAt || 0);
@@ -61,11 +66,65 @@ function needsYou(session: SessionInfo): boolean {
   return false;
 }
 
+function readMachineScope(activeMachineId: string | null): MachineScope {
+  try {
+    return window.localStorage.getItem(MACHINE_SCOPE_KEY) || activeMachineId || ALL_MACHINES_SCOPE;
+  } catch {
+    return activeMachineId || ALL_MACHINES_SCOPE;
+  }
+}
+
+function writeMachineScope(scope: MachineScope): void {
+  try { window.localStorage.setItem(MACHINE_SCOPE_KEY, scope); } catch { /* preference only */ }
+}
+
+function aggregateSessionStatus(session: SessionInfo): { label: string; tone: string } {
+  if (isCrashedSession(session) || isDegradedSession(session)) return { label: 'Needs attention', tone: 'is-attention' };
+  if (session.exited) return { label: 'Ended', tone: 'is-ended' };
+  if (needsYou(session)) return { label: 'Needs you', tone: 'is-needs' };
+  if (session.working) return { label: 'Working', tone: 'is-working' };
+  return { label: 'Ready', tone: 'is-ready' };
+}
+
+function orderedMachineRows(sessions: SessionInfo[]): Array<{ session: SessionInfo; depth: number }> {
+  const ids = new Set(sessions.map((session) => session.id));
+  const children = new Map<string, SessionInfo[]>();
+  const roots: SessionInfo[] = [];
+  const sort = (items: SessionInfo[]): SessionInfo[] => items.sort((left, right) => lastActivity(right) - lastActivity(left));
+
+  for (const session of sessions) {
+    const parentId = effectiveParentId(session);
+    if (!parentId || !ids.has(parentId)) {
+      roots.push(session);
+      continue;
+    }
+    const nested = children.get(parentId) ?? [];
+    nested.push(session);
+    children.set(parentId, nested);
+  }
+  children.forEach(sort);
+
+  const rows: Array<{ session: SessionInfo; depth: number }> = [];
+  const visited = new Set<string>();
+  const append = (session: SessionInfo, depth: number): void => {
+    if (visited.has(session.id)) return;
+    visited.add(session.id);
+    rows.push({ session, depth });
+    for (const child of children.get(session.id) ?? []) append(child, depth + 1);
+  };
+  for (const root of sort(roots)) append(root, 0);
+  // Corrupt or cyclic legacy parentage must remain discoverable rather than
+  // disappearing from the aggregate inbox.
+  for (const session of sort([...sessions])) append(session, 0);
+  return rows;
+}
+
 interface Props {
   sessions: SessionInfo[];
   activeId: string | null;
   machine: string;
   onOpen: (id: string) => void;
+  onOpenMachineSession: (serverId: string, sessionId: string) => void;
   onNew: () => void;
   onContinue: () => void;
   onResumeSession: (session: SessionInfo, destinationProvider?: 'claude' | 'codex') => void;
@@ -81,6 +140,7 @@ export function SessionNavigator({
   activeId,
   machine,
   onOpen,
+  onOpenMachineSession,
   onNew,
   onContinue,
   onResumeSession,
@@ -95,6 +155,9 @@ export function SessionNavigator({
   const configuredMachines = useServers((state) => state.servers);
   const activeMachineId = useServers((state) => state.activeId);
   const selectMachine = useServers((state) => state.setActive);
+  const [machineScope, setMachineScopeState] = useState<MachineScope>(() => readMachineScope(activeMachineId));
+  const showingAllMachines = machineScope === ALL_MACHINES_SCOPE;
+  const fleetSnapshots = useFleetSessions(configuredMachines, showingAllMachines);
   const [primary, setPrimary] = useState<PrimaryFilter>('all');
   const [provider, setProvider] = useState<ProviderFilter>('all');
   const [project, setProject] = useState('all');
@@ -120,6 +183,23 @@ export function SessionNavigator({
   const [endingId, setEndingId] = useState<string | null>(null);
   const [endConfirmId, setEndConfirmId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
+
+  const selectMachineScope = (scope: MachineScope): void => {
+    setMachineScopeState(scope);
+    writeMachineScope(scope);
+    if (scope !== ALL_MACHINES_SCOPE) selectMachine(scope);
+  };
+
+  useEffect(() => {
+    if (machineScope === ALL_MACHINES_SCOPE) return;
+    const stillConfigured = configuredMachines.some((server) => server.id === machineScope);
+    const next = stillConfigured && activeMachineId
+      ? activeMachineId
+      : activeMachineId ?? configuredMachines[0]?.id ?? ALL_MACHINES_SCOPE;
+    if (next === machineScope) return;
+    setMachineScopeState(next);
+    writeMachineScope(next);
+  }, [activeMachineId, configuredMachines, machineScope]);
 
   const copyConversation = async (
     session: SessionInfo,
@@ -230,12 +310,19 @@ export function SessionNavigator({
   const liveRoots = sortRoots([...grouped.runningRoots, ...grouped.setAsideRoots]
     .filter((session, index, items) => items.findIndex((item) => item.id === session.id) === index));
 
-  const projects = useMemo(() => [...new Set(sessions.map(projectName).filter(Boolean))].sort(), [sessions]);
+  const fleetSessions = useMemo(
+    () => fleetSnapshots.flatMap((snapshot) => snapshot.sessions),
+    [fleetSnapshots]
+  );
+  const scopedSessions = showingAllMachines ? fleetSessions : sessions;
+  const projects = useMemo(() => [...new Set(scopedSessions.map(projectName).filter(Boolean))].sort(), [scopedSessions]);
   const counts = useMemo(() => ({
-    needs: sessions.filter(needsYou).length,
-    live: sessions.filter((session) => liveIds.has(session.id)).length,
-    working: sessions.filter((session) => session.working && !session.exited).length
-  }), [liveIds, sessions]);
+    needs: scopedSessions.filter(needsYou).length,
+    live: showingAllMachines
+      ? scopedSessions.filter((session) => !session.exited).length
+      : sessions.filter((session) => liveIds.has(session.id)).length,
+    working: scopedSessions.filter((session) => session.working && !session.exited).length
+  }), [liveIds, scopedSessions, sessions, showingAllMachines]);
 
   const matches = (session: SessionInfo): boolean => {
     if (primary === 'needs' && !needsYou(session)) return false;
@@ -271,9 +358,20 @@ export function SessionNavigator({
   const browsingAllEnded = showAllEnded || primary === 'ended' || query.trim() !== '';
   const visibleEnded = browsingAllEnded ? filteredEnded : recentEnded;
   const hasOlderEnded = filteredEnded.length > recentEnded.length;
+  const filteredFleetEnded = fleetSessions
+    .filter((session) => session.exited && matches(session))
+    .sort((left, right) => lastActivity(right) - lastActivity(left));
+  const filteredFleetLiveCount = fleetSessions.filter((session) => !session.exited && matches(session)).length;
+  const recentFleetEnded = filteredFleetEnded
+    .filter((session) => lastActivity(session) >= recentCutoff)
+    .slice(0, RECENTLY_ENDED_LIMIT);
+  const visibleFleetEnded = browsingAllEnded ? filteredFleetEnded : recentFleetEnded;
+  const visibleFleetEndedRows = new Set(visibleFleetEnded);
+  const hasOlderFleetEnded = filteredFleetEnded.length > recentFleetEnded.length;
+  const scopedEndedCount = showingAllMachines ? filteredFleetEnded.length : filteredEnded.length;
   useEffect(() => {
-    if (counts.live === 0 && filteredEnded.length > 0) setEndedOpen(true);
-  }, [counts.live, filteredEnded.length]);
+    if (counts.live === 0 && scopedEndedCount > 0) setEndedOpen(true);
+  }, [counts.live, scopedEndedCount]);
   const toggleEndedSelection = (id: string): void => setSelectedEnded((current) => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -629,6 +727,53 @@ export function SessionNavigator({
       </div>
     );
   };
+
+  const renderFleetMachineGroup = (
+    snapshot: FleetSessionSnapshot,
+    ended: boolean
+  ): JSX.Element | null => {
+    const eligible = snapshot.sessions.filter((session) => (
+      session.exited === ended
+      && matches(session)
+      && (!ended || visibleFleetEndedRows.has(session))
+    ));
+    if (eligible.length === 0 && !snapshot.loading && !snapshot.error) return null;
+    const machineName = serverDisplayName(snapshot.server, true);
+    return (
+      <section className={`session-fleet-machine${snapshot.error ? ' is-unreachable' : ''}`} key={`${ended ? 'ended' : 'live'}:${snapshot.server.id}`}>
+        <header>
+          <span><MachineMark machine={machineName} size={16} /><strong>{machineName}</strong></span>
+          <small>{eligible.length}</small>
+        </header>
+        {orderedMachineRows(eligible).map(({ session, depth }) => {
+          const status = aggregateSessionStatus(session);
+          const providerName = normalizeProvider(session.tool);
+          return (
+            <button
+              type="button"
+              className="session-fleet-row"
+              key={`${snapshot.server.id}:${session.id}`}
+              style={{ '--tree-depth': Math.min(depth, 5) } as React.CSSProperties}
+              onClick={() => onOpenMachineSession(snapshot.server.id, session.id)}
+              title={`Open on ${machineName}`}
+            >
+              <span className="session-fleet-provider">
+                {providerName ? <ProviderMark provider={providerName} size={18} /> : <span aria-label="Shell">⌘</span>}
+              </span>
+              <span className="session-fleet-copy">
+                <strong>{getTabLabel(session.id) ?? sessionLabel(session)}</strong>
+                <small>{projectName(session)}</small>
+              </span>
+              <span className={`session-fleet-state ${status.tone}`}><i aria-hidden />{status.label}</span>
+              <time>{relativeTime(lastActivity(session))}</time>
+            </button>
+          );
+        })}
+        {snapshot.loading ? <div className="session-fleet-machine-note">Checking sessions…</div> : null}
+        {snapshot.error ? <div className="session-fleet-machine-note is-error">Can’t reach this computer right now.</div> : null}
+      </section>
+    );
+  };
   const movePickerSession = movePickerId ? sessions.find((session) => session.id === movePickerId) ?? null : null;
   const endConfirmSession = endConfirmId ? sessions.find((session) => session.id === endConfirmId) ?? null : null;
   const movePickerParentID = movePickerSession ? effectiveParentId(movePickerSession) : null;
@@ -648,14 +793,24 @@ export function SessionNavigator({
         </div>
       </header>
       <div className="session-machine-filter" role="toolbar" aria-label="Connected computers">
+        <button
+          type="button"
+          className={showingAllMachines ? 'is-active' : undefined}
+          aria-pressed={showingAllMachines}
+          title="Show sessions from every connected computer"
+          onClick={() => selectMachineScope(ALL_MACHINES_SCOPE)}
+        >
+          <span className="session-all-machines-mark" aria-hidden><i /><i /><i /></span>
+          <span>All machines</span>
+        </button>
         {configuredMachines.map((configured) => (
           <button
             type="button"
             key={configured.id}
-            className={configured.id === activeMachineId ? 'is-active' : undefined}
-            aria-pressed={configured.id === activeMachineId}
+            className={configured.id === machineScope ? 'is-active' : undefined}
+            aria-pressed={configured.id === machineScope}
             title={`Show sessions on ${serverDisplayName(configured, true)}`}
-            onClick={() => selectMachine(configured.id)}
+            onClick={() => selectMachineScope(configured.id)}
           >
             <MachineMark machine={serverDisplayName(configured, true)} size={16} />
             <span>{serverDisplayName(configured, true)}</span>
@@ -672,7 +827,7 @@ export function SessionNavigator({
           <summary aria-label="More filters">⋯</summary>
           <div className="session-filter-popover">
             <label>Provider<select value={provider} onChange={(event) => setProvider(event.currentTarget.value as ProviderFilter)}><option value="all">All providers</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="shell">Shell</option></select></label>
-            <label>Computer<select value={activeMachineId ?? ''} onChange={(event) => selectMachine(event.currentTarget.value)}>{configuredMachines.map((configured) => <option key={configured.id} value={configured.id}>{serverDisplayName(configured, true)}</option>)}</select></label>
+            <label>Computer<select value={machineScope} onChange={(event) => selectMachineScope(event.currentTarget.value)}><option value={ALL_MACHINES_SCOPE}>All machines</option>{configuredMachines.map((configured) => <option key={configured.id} value={configured.id}>{serverDisplayName(configured, true)}</option>)}</select></label>
             <label>Project<select value={project} onChange={(event) => setProject(event.currentTarget.value)}><option value="all">All projects</option>{projects.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>Date<select value={date} onChange={(event) => setDate(event.currentTarget.value as DateFilter)}><option value="all">Any time</option><option value="today">Today</option><option value="week">Past 7 days</option></select></label>
           </div>
@@ -681,14 +836,14 @@ export function SessionNavigator({
       <div className="session-tree" role="tree">
         {moveError ? <div className="session-move-error" role="alert">{moveError}</div> : null}
         {archiveError ? <div className="session-move-error" role="alert">{archiveError}</div> : null}
-        {selectingEnded ? (
+        {!showingAllMachines && selectingEnded ? (
           <div className="session-bulk-actions">
             <strong>{selectedEnded.size} selected</strong>
             <button type="button" disabled={archiveBusy || selectedEnded.size === 0} onClick={() => void archiveSelected()}>{archiveBusy ? 'Archiving…' : 'Archive'}</button>
             <button type="button" onClick={() => { setSelectingEnded(false); setSelectedEnded(new Set()); }}>Cancel</button>
           </div>
         ) : null}
-        {draggingId ? (
+        {!showingAllMachines && draggingId ? (
           <div
             className={`session-root-drop${dropTargetId === '__root__' ? ' is-drop-target' : ''}`}
             onDragOver={(event) => dragOverTarget(event, null)}
@@ -698,7 +853,35 @@ export function SessionNavigator({
             Drop here to make this a manager session
           </div>
         ) : null}
-        {primary !== 'ended' ? <div className="session-tree-group">
+        {showingAllMachines && primary !== 'ended' ? <div className="session-tree-group session-fleet-scope-group">
+          <button type="button" className="session-tree-group-head" onClick={() => setRunningOpen((current) => !current)}>
+            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Live across your fleet</span><strong>{counts.live}</strong>
+          </button>
+          {runningOpen ? (
+            <>
+              {fleetSnapshots.map((snapshot) => renderFleetMachineGroup(snapshot, false))}
+              {filteredFleetLiveCount === 0 && fleetSnapshots.every((snapshot) => !snapshot.loading && !snapshot.error)
+                ? <div className="session-tree-empty is-compact">No matching live sessions.</div>
+                : null}
+            </>
+          ) : null}
+        </div> : null}
+        {showingAllMachines && primary !== 'working' && primary !== 'needs' ? <div className="session-tree-group session-fleet-scope-group">
+          <button type="button" className="session-tree-group-head" onClick={() => setEndedOpen((current) => !current)}>
+            <span className="session-group-disclosure"><DisclosureChevron open={endedOpen} /> Ended across your fleet</span><strong>{filteredFleetEnded.length}</strong>
+          </button>
+          {endedOpen ? (
+            <>
+              {fleetSnapshots.map((snapshot) => renderFleetMachineGroup(snapshot, true))}
+              {!browsingAllEnded && hasOlderFleetEnded ? <button type="button" className="session-all-ended" onClick={() => setShowAllEnded(true)}>All ended sessions →</button> : null}
+              {showAllEnded && primary !== 'ended' && query.trim() === '' ? <button type="button" className="session-all-ended" onClick={() => setShowAllEnded(false)}>Show recent only</button> : null}
+              {filteredFleetEnded.length === 0 && fleetSnapshots.every((snapshot) => !snapshot.loading && !snapshot.error)
+                ? <div className="session-tree-empty is-compact">No matching ended sessions.</div>
+                : null}
+            </>
+          ) : null}
+        </div> : null}
+        {!showingAllMachines && primary !== 'ended' ? <div className="session-tree-group">
           <button type="button" className="session-tree-group-head" onClick={() => setRunningOpen((current) => !current)}>
             <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Live</span><strong>{counts.live}</strong>
           </button>
@@ -709,7 +892,7 @@ export function SessionNavigator({
             </>
           ) : null}
         </div> : null}
-        {primary !== 'working' && primary !== 'needs' ? <div className="session-tree-group">
+        {!showingAllMachines && primary !== 'working' && primary !== 'needs' ? <div className="session-tree-group">
           <div className="session-tree-group-head">
             <button type="button" onClick={() => setEndedOpen((current) => !current)}><span className="session-group-disclosure"><DisclosureChevron open={endedOpen} /> Ended</span><strong>{visibleEnded.length}</strong></button>
             {filteredEnded.length > 0 ? <button type="button" className="session-select-ended" onClick={() => { setSelectingEnded((current) => !current); setEndedOpen(true); }}>Select</button> : null}
@@ -723,7 +906,8 @@ export function SessionNavigator({
             </>
           ) : null}
         </div> : null}
-        {sessions.length === 0 ? <div className="session-tree-empty">No sessions on {machine}.</div> : null}
+        {!showingAllMachines && sessions.length === 0 ? <div className="session-tree-empty">No sessions on {machine}.</div> : null}
+        {showingAllMachines && configuredMachines.length === 0 ? <div className="session-tree-empty">Connect a computer to see its sessions here.</div> : null}
       </div>
       {movePickerSession ? (
         <div className="session-move-sheet" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setMovePickerId(null); }}>

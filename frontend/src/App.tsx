@@ -713,6 +713,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             activeId={activeId}
             machine={machine}
             onOpen={openSession}
+            onOpenMachineSession={openFleetSession}
             onNew={openNewSession}
             onContinue={() => setDialogOpen('resume')}
             onResumeSession={resumeSession}
@@ -778,6 +779,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             activeId={activeId}
             machine={machine}
             onOpen={openSession}
+            onOpenMachineSession={openFleetSession}
             onNew={openNewSession}
             onContinue={() => setDialogOpen('resume')}
             onResumeSession={resumeSession}

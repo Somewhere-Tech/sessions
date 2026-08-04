@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-const [app, palette, picker, launcher, sessionView, preference, sidebar, navigator, styles] = await Promise.all([
+const [app, palette, picker, launcher, sessionView, preference, sidebar, navigator, fleetSessions, styles] = await Promise.all([
   source('src/App.tsx'),
   source('src/components/CommandPalette.tsx'),
   source('src/components/ModelPicker.tsx'),
@@ -12,6 +12,7 @@ const [app, palette, picker, launcher, sessionView, preference, sidebar, navigat
   source('src/lib/sessionViewPreference.ts'),
   source('src/components/ProductSidebar.tsx'),
   source('src/components/SessionNavigator.tsx'),
+  source('src/hooks/useFleetSessions.ts'),
   source('src/styles/globals.css')
 ]);
 
@@ -49,8 +50,16 @@ assert.match(sidebar, /Find or run…/);
 assert.match(app, /onClickCapture=\{handleExternalLinkClick\}/,
   'the native app shell must delegate external links to the operating system');
 assert.match(navigator, /aria-label="Connected computers"/);
-assert.match(navigator, /selectMachine\(configured\.id\)/,
-  'connected computers must be visible as one-click session filters');
+assert.match(navigator, />All machines</,
+  'the navigator must expose one aggregate fleet scope');
+assert.match(navigator, /selectMachineScope\(configured\.id\)/,
+  'connected computers must remain visible as one-click session filters');
+assert.match(navigator, /onOpenMachineSession\(snapshot\.server\.id, session\.id\)/,
+  'an aggregate row must retain its machine scope when opened');
+assert.match(fleetSessions, /listServerSessions\(server, controller\.signal\)/,
+  'the aggregate inbox must query each already-configured machine directly');
+assert.match(fleetSessions, /Slow\/offline machines poll[\s\S]*independently/,
+  'one unreachable computer must not block the aggregate inbox');
 assert.match(styles, /\.scroll-to-bottom-anchor\s*\{[^}]*justify-content:\s*center/s,
   'scroll-to-latest must stay centered away from the composer send controls');
 
@@ -142,6 +151,43 @@ try {
   assert.ok(launcherBounds.composerHeight >= 135, `the prompt must remain the primary control, got ${launcherBounds.composerHeight}px`);
   assert.ok(launcherBounds.workspaceTop >= launcherBounds.composerTop + launcherBounds.composerHeight, 'the project picker must sit below the prompt');
   assert.ok(launcherBounds.workspaceRight <= launcherBounds.bodyRight, 'the project picker must not overflow the launcher');
+
+  await page.setViewport({ width: 420, height: 320 });
+  await page.setContent(`
+    <style>${styles}</style>
+    <aside class="session-navigator" style="--session-nav-w:360px;width:360px;height:300px">
+      <header id="nav-head" class="session-navigator-head"><div><span>Operations inbox</span><strong>Sessions</strong></div><div class="session-navigator-actions"><button>Resume</button><button>New</button></div></header>
+      <div id="machine-filter" class="session-machine-filter"><button class="is-active"><span class="session-all-machines-mark"><i></i><i></i><i></i></span><span>All machines</span></button><button><span>Mac mini</span></button></div>
+      <div id="nav-search" class="session-nav-search"><span>⌕</span><input placeholder="Filter sessions"></div>
+      <div id="nav-filters" class="session-filter-row"><button class="is-active">All</button><button>Needs you</button><button>Working</button></div>
+      <div id="nav-tree" class="session-tree"><div style="height:800px">many sessions</div></div>
+    </aside>
+  `);
+  const navigatorBounds = await page.evaluate(() => {
+    const head = document.querySelector('#nav-head').getBoundingClientRect();
+    const machines = document.querySelector('#machine-filter').getBoundingClientRect();
+    const search = document.querySelector('#nav-search').getBoundingClientRect();
+    const filters = document.querySelector('#nav-filters').getBoundingClientRect();
+    const tree = document.querySelector('#nav-tree').getBoundingClientRect();
+    return {
+      headBottom: head.bottom,
+      machineTop: machines.top,
+      machineBottom: machines.bottom,
+      machineHeight: machines.height,
+      searchTop: search.top,
+      searchBottom: search.bottom,
+      filtersTop: filters.top,
+      filtersBottom: filters.bottom,
+      treeTop: tree.top,
+      treeHeight: tree.height
+    };
+  });
+  assert.ok(navigatorBounds.machineHeight >= 30, `machine selector must not shrink out of view, got ${navigatorBounds.machineHeight}px`);
+  assert.ok(navigatorBounds.machineTop >= navigatorBounds.headBottom, 'machine selector must sit below the inbox header');
+  assert.ok(navigatorBounds.machineBottom <= navigatorBounds.searchTop, 'machine selector must not hide behind search');
+  assert.ok(navigatorBounds.searchBottom <= navigatorBounds.filtersTop, 'search must not overlap status filters');
+  assert.ok(navigatorBounds.filtersBottom <= navigatorBounds.treeTop, 'status filters must remain above the scrollable tree');
+  assert.ok(navigatorBounds.treeHeight > 0, 'the session tree must absorb remaining height instead of shrinking controls');
 } finally {
   await browser.close();
 }
