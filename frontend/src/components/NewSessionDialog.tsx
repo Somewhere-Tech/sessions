@@ -479,46 +479,35 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         </header>
         <div className="dialog-body">
           <section className="launcher-hero">
-            <span>{isDelegate ? 'Linked session' : 'Ready when you are'}</span>
-            <h2>{isDelegate ? 'Start a linked session' : 'Start a new session'}</h2>
-            <p>{isDelegate ? 'Give it one focused job. It stays grouped with its parent.' : 'Choose where it runs, then tell the agent what you want to work on.'}</p>
-          </section>
-          <section className={`launcher-setup-grid${isDelegate ? ' is-delegate' : ''}`} aria-label="Session setup">
-            <label className="launcher-setup-control" title={`Agent: ${selectedTool.name}`}>
-              <small>Agent</small>
-              <span>
-                <AgentMark tool={tool} size={20} />
+            <span>{isDelegate ? 'Linked session' : 'New session'}</span>
+            <h2 className="launcher-intent" aria-label={isDelegate ? 'Start a new linked session' : 'Start a new session'}>
+              <span>Start a new</span>
+              <label className="launcher-intent-control is-agent" title={`Agent: ${selectedTool.name}`}>
+                <AgentMark tool={tool} size={17} />
                 <select value={tool} onChange={(event) => chooseTool(event.currentTarget.value as NewSessionTool)} aria-label="Agent">
                   {TOOLS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>
-              </span>
-            </label>
-            {isDelegate ? (
-              <div className="launcher-setup-control">
-                <small>Linked to</small>
-                <span><strong>{parentSession ? sessionLabel(parentSession) : 'This session'}</strong></span>
-              </div>
-            ) : (
-              <label className="launcher-setup-control" title={`Computer: ${machineTitle}`}>
-                <small>Computer</small>
-                <span>
-                  <MachineMark machine={machineTitle} size={18} />
+              </label>
+              <span>{isDelegate ? 'session linked to' : 'session on'}</span>
+              {isDelegate ? (
+                <strong>{parentSession ? sessionLabel(parentSession) : 'this session'}</strong>
+              ) : (
+                <label className="launcher-intent-control is-machine" title={`Computer: ${machineTitle}`}>
+                  <MachineMark machine={machineTitle} size={16} />
                   <select value={machineId} onChange={(event) => chooseMachine(event.currentTarget.value)} aria-label="Computer">
                     {configuredMachines.map((machine) => (
                       <option key={machine.id} value={machine.id}>{serverDisplayName(machine, true)}</option>
                     ))}
                   </select>
-                </span>
-              </label>
-            )}
-            <button type="button" className="launcher-setup-control is-workspace" title={cwd || 'Choose a project folder'} onClick={() => setBrowserOpen((open) => !open)} aria-expanded={browserOpen}>
-              <small>Folder</small>
-              <span>
+                </label>
+              )}
+              <span>in</span>
+              <button type="button" className="launcher-intent-control is-workspace" title={cwd || 'Choose a project folder'} onClick={() => setBrowserOpen((open) => !open)} aria-expanded={browserOpen}>
                 <span className="workspace-folder-icon" aria-hidden />
                 <strong>{workspaceTitle}</strong>
-                <span className="launcher-setup-change">Change</span>
-              </span>
-            </button>
+              </button>
+            </h2>
+            <p>{isDelegate ? 'Give it one focused job. It stays grouped with its parent.' : 'Describe the work below, or leave it blank to open an empty conversation.'}</p>
           </section>
           <div className="field launcher-task-field launcher-composer input-composer">
             <span className="sr-only">First request (optional)</span>

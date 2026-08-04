@@ -30,9 +30,9 @@ assert.match(picker, /Use exact model ID/);
 assert.doesNotMatch(picker, /<button[\s\S]{0,1200}<button[\s\S]{0,300}★/);
 assert.match(launcher, /launcher-composer-footer/);
 assert.match(launcher, /<ModelPicker/);
-assert.match(launcher, /'Start a new session'/);
-assert.match(launcher, /launcher-setup-grid/);
-assert.match(launcher, /launcher-setup-control is-workspace/);
+assert.match(launcher, /<span>Start a new<\/span>/);
+assert.match(launcher, /launcher-intent/);
+assert.match(launcher, /launcher-intent-control is-workspace/);
 assert.match(launcher, /aria-label="Agent"/);
 assert.match(launcher, /aria-label="Computer"/);
 assert.doesNotMatch(launcher, /already has \{liveOnSelectedMachine\} live sessions/);
@@ -99,8 +99,7 @@ try {
       <form id="launcher" class="dialog dialog-wide new-session-launcher is-embedded">
         <header class="dialog-head launcher-compact-head"><div class="launcher-breadcrumb"><span class="workspace-folder-icon"></span><span>Sessions</span><span>/</span><strong>New session</strong></div></header>
         <div id="launcher-body" class="dialog-body">
-          <section id="launcher-hero" class="launcher-hero"><span>Ready when you are</span><h2>Start a new session</h2><p>Choose where it runs, then tell the agent what you want to work on.</p></section>
-          <section id="launcher-setup" class="launcher-setup-grid"><label class="launcher-setup-control"><small>Agent</small><span><select><option>Claude</option></select></span></label><label class="launcher-setup-control"><small>Computer</small><span><select><option>Mac mini (this machine)</option></select></span></label><button class="launcher-setup-control is-workspace"><small>Folder</small><span><span class="workspace-folder-icon"></span><strong>Sessions</strong><span class="launcher-setup-change">Change</span></span></button></section>
+          <section id="launcher-hero" class="launcher-hero"><span>New session</span><h2 id="launcher-intent" class="launcher-intent"><span>Start a new</span><label id="launcher-agent" class="launcher-intent-control is-agent"><select><option>Claude</option></select></label><span>session on</span><label id="launcher-machine" class="launcher-intent-control is-machine"><select><option>Mac mini (this machine)</option></select></label><span>in</span><button id="launcher-workspace-control" class="launcher-intent-control is-workspace"><span class="workspace-folder-icon"></span><strong>Sessions</strong></button></h2><p>Describe the work below, or leave it blank to open an empty conversation.</p></section>
           <div id="launcher-composer" class="field launcher-task-field launcher-composer input-composer">
             <textarea class="input-textarea" rows="6" placeholder="Ask an agent to work"></textarea>
             <div class="launcher-composer-footer input-composer-footer"><div class="launcher-composer-context">
@@ -118,7 +117,10 @@ try {
     const launcher = document.querySelector('#launcher').getBoundingClientRect();
     const body = document.querySelector('#launcher-body').getBoundingClientRect();
     const hero = document.querySelector('#launcher-hero').getBoundingClientRect();
-    const setup = document.querySelector('#launcher-setup').getBoundingClientRect();
+    const intent = document.querySelector('#launcher-intent').getBoundingClientRect();
+    const agentControl = document.querySelector('#launcher-agent').getBoundingClientRect();
+    const machineControl = document.querySelector('#launcher-machine').getBoundingClientRect();
+    const workspaceControl = document.querySelector('#launcher-workspace-control').getBoundingClientRect();
     const composer = document.querySelector('#launcher-composer').getBoundingClientRect();
     const workspace = document.querySelector('#launcher-workspace').getBoundingClientRect();
     return {
@@ -127,9 +129,14 @@ try {
       launcherHeight: launcher.height,
       borderRadius: getComputedStyle(document.querySelector('#launcher')).borderRadius,
       bodyWidth: body.width,
+      heroTop: hero.top,
       heroBottom: hero.bottom,
-      setupTop: setup.top,
-      setupBottom: setup.bottom,
+      intentTop: intent.top,
+      intentBottom: intent.bottom,
+      intentLineHeight: Number.parseFloat(getComputedStyle(document.querySelector('#launcher-intent')).lineHeight),
+      agentControlHeight: agentControl.height,
+      machineControlHeight: machineControl.height,
+      workspaceControlHeight: workspaceControl.height,
       composerTop: composer.top,
       composerHeight: composer.height,
       workspaceTop: workspace.top,
@@ -144,8 +151,11 @@ try {
   assert.ok(launcherBounds.launcherHeight >= 740, 'launcher must fill the conversation pane height');
   assert.equal(launcherBounds.borderRadius, '0px', 'embedded launcher must not look like a modal card');
   assert.ok(launcherBounds.bodyWidth <= 880, `launcher content should stay focused, got ${launcherBounds.bodyWidth}px`);
-  assert.ok(launcherBounds.heroBottom <= launcherBounds.setupTop, 'the setup controls must follow the invitation');
-  assert.ok(launcherBounds.setupBottom <= launcherBounds.composerTop, 'the prompt must follow the setup controls');
+  assert.ok(launcherBounds.intentTop >= launcherBounds.heroTop && launcherBounds.intentBottom <= launcherBounds.heroBottom, 'the inline setup belongs inside the invitation');
+  assert.ok(launcherBounds.heroBottom <= launcherBounds.composerTop, 'the prompt must follow the invitation');
+  assert.ok(launcherBounds.agentControlHeight <= launcherBounds.intentLineHeight, 'agent control must not stand taller than the invitation text');
+  assert.ok(launcherBounds.machineControlHeight <= launcherBounds.intentLineHeight, 'computer control must not stand taller than the invitation text');
+  assert.ok(launcherBounds.workspaceControlHeight <= launcherBounds.intentLineHeight, 'folder control must not stand taller than the invitation text');
   assert.ok(launcherBounds.heroFontSize <= 31, `launcher title should stay inviting rather than oversized, got ${launcherBounds.heroFontSize}px`);
   assert.equal(launcherBounds.modelFontSize, launcherBounds.effortFontSize, 'model and effort controls must use one font size');
   assert.ok(launcherBounds.composerHeight >= 135, `the prompt must remain the primary control, got ${launcherBounds.composerHeight}px`);
