@@ -5,6 +5,7 @@ const css = fs.readFileSync(new URL('../src/styles/globals.css', import.meta.url
 const native = fs.readFileSync(new URL('../../src-tauri/src/lib.rs', import.meta.url), 'utf8');
 const lifecycle = fs.readFileSync(new URL('../../src-tauri/src/lifecycle.rs', import.meta.url), 'utf8');
 const connect = fs.readFileSync(new URL('../src/components/ConnectScreen.tsx', import.meta.url), 'utf8');
+const sessionsStore = fs.readFileSync(new URL('../src/store/sessions.ts', import.meta.url), 'utf8');
 
 function requireSource(source, pattern, message) {
   if (!pattern.test(source)) throw new Error(message);
@@ -26,10 +27,18 @@ requireSource(native, /let runtime_status = lifecycle::startup_status\(\);[\s\S]
   'native setup must publish a first-frame status before background runtime reconciliation');
 requireSource(lifecycle, /agent sessions keep running/,
   'runtime reconciliation status must explain that agents keep running');
-requireSource(connect, /Reconnecting to your sessions/,
+requireSource(connect, /Recovering your sessions/,
   'daemon reconciliation needs a visible, non-alarming recovery state');
 requireSource(connect, /messages stay disabled and drafts are never sent until the connection returns/,
   'recovery copy must state honest message-delivery behavior');
+requireSource(connect, /Quitting this window does not stop agents or erase session history/,
+  'recovery needs a safe exit whose lifecycle semantics are explicit');
+requireSource(connect, /will not be mixed with sessions from another computer/,
+  'remote-machine recovery must explain that cached rows stay machine-scoped');
+requireSource(sessionsStore, /serverId: string \| null/,
+  'the session cache must record which machine produced its rows');
+requireSource(sessionsStore, /if \(get\(\)\.serverId !== serverId\) return/,
+  'in-flight session refreshes must not cross machine scopes');
 
 for (const forbidden of ['killSession(', 'endSession(', 'RequestKill(', '/api/sessions/end']) {
   if (main.includes(forbidden)) {

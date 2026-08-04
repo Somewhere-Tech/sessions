@@ -112,6 +112,10 @@ function tagsEqual(
 }
 
 interface SessionsState {
+  // The daemon whose rows currently occupy this store. Session ids are only
+  // meaningful inside that machine. Keeping the scope explicit prevents a
+  // failed machine switch from relabelling the previous machine's cache.
+  serverId: string | null;
   sessions: SessionInfo[];
   activeId: string | null;
   // Whether the store has rendered with at least one fresh refresh()
@@ -121,7 +125,8 @@ interface SessionsState {
   hydrated: boolean;
   loading: boolean;
   error: string | null;
-  refresh: () => Promise<void>;
+  setServerScope: (serverId: string) => void;
+  refresh: (serverId?: string) => Promise<void>;
   create: (req: CreateSessionRequest) => Promise<SessionInfo>;
   kill: (id: string, reason?: string) => Promise<void>;
   archive: (ids: string[]) => Promise<api.ArchiveResult>;
@@ -138,8 +143,7 @@ interface SessionsState {
 // We only stash what the UI needs to draw a plausible first frame —
 // not the full SessionInfo (working/lastDataAt are stale within
 // seconds anyway). On refresh() the live data overwrites everything.
-const CACHE_KEY = 'sessions:sessions-cache:v1';
-const ACTIVE_KEY = 'sessions:active-session:v1';
+const CACHE_KEY = 'sessions:sessions-cache:v2';
 
 interface CachedSession {
   id: string;
@@ -207,11 +211,21 @@ interface CachedSession {
   claudeAiTitle?: string;
 }
 
-function readCache(): { sessions: SessionInfo[]; activeId: string | null } {
+interface CachedSessionEnvelope {
+  serverId: string;
+  sessions: CachedSession[];
+  activeId: string | null;
+}
+
+function readCache(): { serverId: string | null; sessions: SessionInfo[]; activeId: string | null } {
   try {
     const raw = window.localStorage.getItem(CACHE_KEY);
-    const sessions: SessionInfo[] = filterSessionsForWindow(raw
-        ? (JSON.parse(raw) as CachedSession[]).map((c) => ({
+    const parsed = raw ? JSON.parse(raw) as CachedSessionEnvelope : null;
+    if (!parsed || typeof parsed.serverId !== 'string' || !Array.isArray(parsed.sessions)) {
+      return { serverId: null, sessions: [], activeId: null };
+    }
+    const sessions: SessionInfo[] = filterSessionsForWindow(parsed.sessions
+        .map((c) => ({
           ...c,
           args: Array.isArray(c.args) ? c.args : [],
           // Fill the live fields with neutral defaults — they'll be
@@ -226,19 +240,19 @@ function readCache(): { sessions: SessionInfo[]; activeId: string | null } {
           exitSignal: c.exitSignal ?? null,
           exitReason: c.exitReason,
           exitedAt: c.exitedAt ?? null
-        }))
-      : [], windowScope);
-    const savedActiveId = window.localStorage.getItem(ACTIVE_KEY);
+        })), windowScope);
+    const savedActiveId = parsed.activeId;
     const activeId = savedActiveId && sessions.some((session) => session.id === savedActiveId)
       ? savedActiveId
       : (sessions[0]?.id ?? null);
-    return { sessions, activeId };
+    return { serverId: parsed.serverId, sessions, activeId };
   } catch {
-    return { sessions: [], activeId: null };
+    return { serverId: null, sessions: [], activeId: null };
   }
 }
 
-function writeCache(sessions: SessionInfo[], activeId: string | null): void {
+function writeCache(serverId: string | null, sessions: SessionInfo[], activeId: string | null): void {
+  if (!serverId) return;
   try {
     const stripped: CachedSession[] = sessions.map((s) => ({
       id: s.id,
@@ -304,9 +318,8 @@ function writeCache(sessions: SessionInfo[], activeId: string | null): void {
       claudeCustomTitle: s.claudeCustomTitle,
       claudeAiTitle: s.claudeAiTitle
     }));
-    window.localStorage.setItem(CACHE_KEY, JSON.stringify(stripped));
-    if (activeId) window.localStorage.setItem(ACTIVE_KEY, activeId);
-    else window.localStorage.removeItem(ACTIVE_KEY);
+    const envelope: CachedSessionEnvelope = { serverId, sessions: stripped, activeId };
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify(envelope));
   } catch {
     // quota / private mode — drop the cache silently
   }
@@ -315,16 +328,37 @@ function writeCache(sessions: SessionInfo[], activeId: string | null): void {
 const initial = readCache();
 
 export const useSessions = create<SessionsState>((set, get) => ({
+  serverId: initial.serverId,
   sessions: initial.sessions,
   activeId: initial.activeId,
   hydrated: false,
   loading: false,
   error: null,
 
-  refresh: async () => {
+  setServerScope: (serverId) => {
+    if (get().serverId === serverId) return;
+    set({
+      serverId,
+      sessions: [],
+      activeId: null,
+      hydrated: false,
+      loading: false,
+      error: null
+    });
+  },
+
+  refresh: async (requestedServerId) => {
+    const serverId = requestedServerId ?? get().serverId;
+    if (!serverId) return;
+    if (get().serverId !== serverId) {
+      get().setServerScope(serverId);
+    }
     set({ loading: true, error: null });
     try {
-      const fresh = filterSessionsForWindow(await api.listSessions(), windowScope);
+      const fresh = filterSessionsForWindow(await api.listSessions(serverId), windowScope);
+      // The active endpoint may have changed while this request was in
+      // flight. Never commit one machine's response into another scope.
+      if (get().serverId !== serverId) return;
       reconcileDurableTabLabels(fresh);
       const sessions = reconcileSessions(get().sessions, fresh);
       const active = get().activeId;
@@ -335,12 +369,12 @@ export const useSessions = create<SessionsState>((set, get) => ({
         ? null
         : (sessions.find((session) => !session.exited)?.id ?? sessions[0]?.id ?? null);
       set({ sessions, loading: false, hydrated: true, activeId: nextActive });
-      writeCache(sessions, nextActive);
+      writeCache(serverId, sessions, nextActive);
     } catch (err) {
+      if (get().serverId !== serverId) return;
       set({ loading: false, error: (err as Error).message });
-      // Don't clear the cached sessions on a transient fetch failure —
-      // the user keeps seeing their last-known tabs while reconnect
-      // attempts happen in the background.
+      // Keep only this machine's last-known rows on a transient failure.
+      // Cross-machine rows are cleared synchronously by setServerScope().
     }
   },
 
@@ -349,7 +383,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
     set((s) => {
       if (!sessionMatchesWindowScope(info, windowScope)) return s;
       const sessions = [...s.sessions, info];
-      writeCache(sessions, info.id);
+      writeCache(s.serverId, sessions, info.id);
       return { sessions, activeId: info.id };
     });
     return info;
@@ -375,7 +409,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
       const sessions = state.sessions.map((session) => (
         session.id === id ? { ...session, name } : session
       ));
-      writeCache(sessions, state.activeId);
+      writeCache(state.serverId, sessions, state.activeId);
       return { sessions };
     });
   },
@@ -386,7 +420,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
       const sessions = state.sessions.map((session) => (
         session.id === id ? { ...session, tags } : session
       ));
-      writeCache(sessions, state.activeId);
+      writeCache(state.serverId, sessions, state.activeId);
       return { sessions };
     });
   },
@@ -397,7 +431,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
       const sessions = state.sessions.map((session) => (
         session.id === id ? { ...session, ...updated } : session
       ));
-      writeCache(sessions, state.activeId);
+      writeCache(state.serverId, sessions, state.activeId);
       return { sessions };
     });
   },
@@ -408,7 +442,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
       const sessions = state.sessions.map((session) => (
         session.id === id ? { ...session, displayParentSessionId } : session
       ));
-      writeCache(sessions, state.activeId);
+      writeCache(state.serverId, sessions, state.activeId);
       return { sessions };
     });
   },
@@ -419,16 +453,14 @@ export const useSessions = create<SessionsState>((set, get) => ({
       const sessions = state.sessions.map((session) => (
         session.id === id ? { ...session, setAsideAt } : session
       ));
-      writeCache(sessions, state.activeId);
+      writeCache(state.serverId, sessions, state.activeId);
       return { sessions };
     });
   },
 
   setActive: (id) => {
     set({ activeId: id });
-    try {
-      if (id) window.localStorage.setItem(ACTIVE_KEY, id);
-      else window.localStorage.removeItem(ACTIVE_KEY);
-    } catch { /* ignore */ }
+    const state = get();
+    writeCache(state.serverId, state.sessions, id);
   }
 }));

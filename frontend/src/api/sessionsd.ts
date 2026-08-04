@@ -1,5 +1,5 @@
 import type { ClaudeSettings, CreateSessionRequest, SessionInfo, DirectoryCandidate } from '../types';
-import { getActiveServer, isLocalServer, serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
+import { getActiveServer, getServer, isLocalServer, serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
 
 // Thrown when the daemon returns HTTP 401 (token required / wrong token).
@@ -111,11 +111,15 @@ async function featureJSON<T>(res: Response, feature: string): Promise<T> {
   return json<T>(res);
 }
 
-export async function listSessions(): Promise<SessionInfo[]> {
+export async function listSessions(serverId?: string): Promise<SessionInfo[]> {
   // The operations inbox is a lifecycle/history surface, not only a live
   // process switcher. Exited sessions are required for Finished/Failed
   // filters and for preserving parent-child provenance after a parent ends.
-  const r = await apiFetch(`${httpBase()}/api/sessions?include_exited=1`);
+  const server = serverId ? getServer(serverId) : getActiveServer();
+  const r = await serverFetch(
+    server,
+    `${httpBaseForServer(server)}/api/sessions?include_exited=1`
+  );
   const body = await json<{ sessions: SessionInfo[] }>(r);
   return body.sessions.map(normalizeSessionInfo);
 }

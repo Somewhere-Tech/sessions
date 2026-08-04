@@ -537,6 +537,39 @@ button:active:not(:disabled),
 .connect-status { border: 1px solid var(--accent-border-soft); background: var(--accent-bg-soft); color: var(--accent); }
 .connect-error { border: 1px solid rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.08); color: #fca5a5; }
 .connect-setup { margin-top: 18px; padding: 20px; box-shadow: none; }
+.connect-recovery-copy {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.connect-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+.connect-recovery-actions .connect-submit {
+  grid-column: auto;
+  min-width: 120px;
+  padding: 0 18px;
+}
+.connect-recovery-actions .btn {
+  min-height: 44px;
+  padding: 0 16px;
+}
+.connect-recovery-detail {
+  margin-top: 14px;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg-dim);
+  background: var(--bg-elev-1);
+  font-size: 12px;
+}
+.connect-recovery-detail summary { cursor: pointer; color: var(--fg); font-weight: 650; }
+.connect-recovery-detail p { margin: 9px 0 0; overflow-wrap: anywhere; font-family: var(--font-mono); line-height: 1.55; }
+.connect-recovery-note { margin: 10px 0 0; color: var(--fg-faint); font-size: 12px; }
 .connect-setup ol { display: grid; gap: 15px; margin: 0; padding-left: 24px; }
 .connect-setup li { padding-left: 7px; color: var(--fg-dim); font-size: 13px; line-height: 1.5; }
 .connect-setup li::marker { color: var(--accent); font-family: var(--font-mono); }

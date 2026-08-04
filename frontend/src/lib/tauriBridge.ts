@@ -579,3 +579,12 @@ export async function installNativeUpdate(
   const { relaunch } = await import('@tauri-apps/plugin-process');
   await relaunch();
 }
+
+// Quitting the viewer never ends the daemon or any runner. Recovery screens
+// use this as the calm escape hatch when the user does not want to wait for
+// the machine view to reconnect.
+export async function quitNativeApp(): Promise<void> {
+  if (!isTauri()) return;
+  const { exit } = await import('@tauri-apps/plugin-process');
+  await exit(0);
+}

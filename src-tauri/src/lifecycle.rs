@@ -472,7 +472,10 @@ fn install_runtime(config: &RuntimeConfig) -> LifecycleResult<(InstallOutcome, S
 
     let outcome = if loaded {
         if previous_plist.as_deref() == Some(plist.as_bytes()) {
-            wait_until_ready(config, &BTreeSet::new())?;
+            // Nothing is being replaced in this branch. The daemon can serve
+            // the UI as soon as it is listening while retained runners finish
+            // re-attaching in the background.
+            wait_until_listening(config)?;
             InstallOutcome::Current
         } else {
             let old_plist = previous_plist.as_ref().ok_or_else(|| {
@@ -999,7 +1002,11 @@ fn install_unloaded_service(
 ) -> LifecycleResult<()> {
     prepare_service_directories(config)?;
     write_atomic(&config.plist_path, new_plist, 0o644)?;
-    let start_result = bootstrap(config).and_then(|_| wait_until_ready(config, &BTreeSet::new()));
+    // A cold boot has no captured pre-update baseline to preserve. Treat the
+    // daemon as installed once its API is listening; discovery may take
+    // minutes on a machine with a large retained fleet and must not make a
+    // healthy service time out, get booted out, and disappear again.
+    let start_result = bootstrap(config).and_then(|_| wait_until_listening(config));
     if let Err(start_error) = start_result {
         let _ = bootout_if_loaded(config);
         let restore_result = restore_plist(config, previous_plist);
@@ -1113,6 +1120,29 @@ fn prepare_service_directories(config: &RuntimeConfig) -> LifecycleResult<()> {
 fn capture_baseline(config: &RuntimeConfig) -> LifecycleResult<BTreeSet<String>> {
     wait_until_ready(config, &BTreeSet::new())?;
     fetch_sessions(config)
+}
+
+fn wait_until_listening(config: &RuntimeConfig) -> LifecycleResult<()> {
+    let timeout = config.health_timeout;
+    let deadline = Instant::now() + timeout;
+    let mut last_error = "no response".to_string();
+    while Instant::now() < deadline {
+        match health_once(config) {
+            Ok(health) if health.ok && health.name == "sessionsd" => return Ok(()),
+            Ok(health) => {
+                last_error = format!("unexpected health response from {:?}", health.name);
+            }
+            Err(error) => last_error = error,
+        }
+        thread::sleep(config.poll_interval);
+    }
+    Err(format!(
+        "background service did not start listening at {} within {}s: {} (logs: {})",
+        config.health_url(),
+        timeout.as_secs(),
+        last_error,
+        config.log_path.display()
+    ))
 }
 
 fn wait_until_ready(config: &RuntimeConfig, baseline: &BTreeSet<String>) -> LifecycleResult<()> {
@@ -1477,6 +1507,30 @@ mod tests {
         assert_eq!(readiness_timeout(&config, 9), Duration::from_secs(165));
         assert_eq!(readiness_timeout(&config, 19), Duration::from_secs(300));
         assert_eq!(readiness_timeout(&config, 10_000), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn cold_start_accepts_a_healthy_daemon_while_runner_discovery_continues() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let body = r#"{"ok":true,"name":"sessionsd","discovering":true}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(), body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let root = env::temp_dir().join("sessions-cold-start-listening-test");
+        let mut config = fixture_config(&root, "tech.somewhere.sessions.cold-start", port);
+        config.health_timeout = Duration::from_secs(1);
+        config.poll_interval = Duration::from_millis(25);
+
+        wait_until_listening(&config).unwrap();
+        server.join().unwrap();
     }
 
     #[test]

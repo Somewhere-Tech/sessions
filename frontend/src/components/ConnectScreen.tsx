@@ -7,6 +7,7 @@ import { tailnetClientID } from '../lib/tailnetClient';
 import {
   claimNativeMachineAccess,
   discoverNativeMachines,
+  quitNativeApp,
   requestNativeMachineAccess,
   type NativeMachinePeer,
   type NativeTailnetRequest
@@ -18,17 +19,23 @@ const HEALTH_TIMEOUT_MS = 8_000;
 interface ConnectScreenProps {
   clientOnly?: boolean;
   localDaemonUnavailable?: boolean;
+  unavailableMachine?: string;
+  localAlternative?: string;
   reconnecting?: boolean;
   detail?: string;
   onRetry?: () => void;
+  onUseLocal?: () => void;
 }
 
 export function ConnectScreen({
   clientOnly = false,
   localDaemonUnavailable = false,
+  unavailableMachine,
+  localAlternative,
   reconnecting = false,
   detail,
-  onRetry
+  onRetry,
+  onUseLocal
 }: ConnectScreenProps = {}): JSX.Element {
   const servers = useServers((state) => state.servers);
   const setActive = useServers((state) => state.setActive);
@@ -146,37 +153,44 @@ export function ConnectScreen({
     };
   }, [accessRequest]);
 
-  if (localDaemonUnavailable) {
+  if (localDaemonUnavailable || unavailableMachine) {
+    const remote = Boolean(unavailableMachine);
+    const machine = unavailableMachine ?? localAlternative ?? 'This computer';
     return (
       <main className="connect-screen" data-testid="connect-screen">
         <section className="connect-panel" aria-labelledby="connect-title">
           <div className="connect-brand">Sessions</div>
-          <p className="connect-kicker">native window → local background service</p>
+          <p className="connect-kicker">{remote ? `${machine} → reconnecting` : 'automatic session recovery'}</p>
           <h1 id="connect-title">
-            {reconnecting ? 'Reconnecting to your sessions…' : 'Sessions isn\'t running yet.'}
+            {remote
+              ? `${machine} is unavailable.`
+              : reconnecting
+              ? 'Recovering your sessions…'
+              : 'Sessions lost its background service.'}
           </h1>
           <p className="connect-lede">
-            {reconnecting
-              ? 'Your agents are still running. Sessions is rebuilding its view of them; messages stay disabled and drafts are never sent until the connection returns.'
-              : 'The app is only a window onto the local background service. Your sessions stay separate from the app and keep running when you quit it.'}
+            {remote
+              ? `Sessions cannot currently reach ${machine}. Its last-known sessions will not be mixed with sessions from another computer.`
+              : 'This computer restarted or its Sessions service stopped. Sessions is recovering the saved runners automatically; messages stay disabled and drafts are never sent until the connection returns.'}
           </p>
           <section className="connect-setup" aria-labelledby="setup-title">
-            <h2 id="setup-title">Background service</h2>
-            <ol>
-              <li>
-                <span>
-                  {reconnecting
-                    ? 'This can take a little longer on a machine with a large retained history. This screen updates automatically.'
-                    : 'Sessions installs and starts its signed local runtime automatically.'}
-                </span>
-                <code>~/Library/Logs/Sessions/sessionsd.log</code>
-              </li>
-            </ol>
+            <h2 id="setup-title">What happens now</h2>
+            <p className="connect-recovery-copy">
+              {remote
+                ? 'Sessions will keep checking this machine. You can wait here, try again now, or use this computer instead. Starting elsewhere never silently duplicates a prompt.'
+                : 'The app is rebuilding its view while each agent and its history remain separate from the window. A large retained fleet can take a little longer to reappear.'}
+            </p>
+            {!remote ? <code>~/Library/Logs/Sessions/sessionsd.log</code> : null}
           </section>
-          {detail ? <p className="connect-error" role="alert">{detail}</p> : null}
-          <button type="button" className="connect-submit" onClick={onRetry}>
-            {reconnecting ? 'Check again' : 'Try again'}
-          </button>
+          {detail ? <details className="connect-recovery-detail"><summary>Technical details</summary><p>{detail}</p></details> : null}
+          <div className="connect-recovery-actions">
+            <button type="button" className="connect-submit" onClick={onRetry}>Check now</button>
+            {remote && onUseLocal && localAlternative ? (
+              <button type="button" className="btn" onClick={onUseLocal}>Use {localAlternative}</button>
+            ) : null}
+            <button type="button" className="btn" onClick={() => void quitNativeApp()}>Quit Sessions</button>
+          </div>
+          <p className="connect-recovery-note">Quitting this window does not stop agents or erase session history.</p>
         </section>
       </main>
     );

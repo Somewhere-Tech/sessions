@@ -19,7 +19,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { SessionsWorkspaceSkeleton } from './components/LoadingShell';
 import { OnboardingDialog } from './components/OnboardingDialog';
 import { useSessions } from './store/sessions';
-import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer, serverDisplayName } from './lib/servers';
+import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer, isLocalServer, serverDisplayName } from './lib/servers';
 import { SettingsMenu } from './components/SettingsMenu';
 import { TailnetAccessInbox } from './components/TailnetAccessInbox';
 import { useIsMobile } from './hooks/useMediaQuery';
@@ -183,21 +183,34 @@ export function App(): JSX.Element {
 }
 
 function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean }): JSX.Element {
-  const rawSessions = useSessions((s) => s.sessions);
-  const activeId = useSessions((s) => s.activeId);
+  const activeServerId = useServers((s) => s.activeId);
+  const servers = useServers((s) => s.servers);
+  const selectedServer = servers.find((server) => server.id === activeServerId) ?? null;
+  const sessionsServerId = useSessions((s) => s.serverId);
+  const serverScopeMatches = Boolean(activeServerId) && sessionsServerId === activeServerId;
+  const storedSessions = useSessions((s) => s.sessions);
+  const storedActiveId = useSessions((s) => s.activeId);
+  const rawSessions = serverScopeMatches ? storedSessions : [];
+  const activeId = serverScopeMatches ? storedActiveId : null;
   const setActive = useSessions((s) => s.setActive);
+  const setServerScope = useSessions((s) => s.setServerScope);
   const refresh = useSessions((s) => s.refresh);
   const kill = useSessions((s) => s.kill);
   const updateDisplayParent = useSessions((s) => s.updateDisplayParent);
   const updateSetAside = useSessions((s) => s.updateSetAside);
   // Track whether the session list has ever successfully loaded. While
   // hydrated is false, any error means we can't reach the daemon.
-  const sessionsError = useSessions((s) => s.error);
-  const sessionsHydrated = useSessions((s) => s.hydrated);
+  const storedSessionsError = useSessions((s) => s.error);
+  const storedSessionsHydrated = useSessions((s) => s.hydrated);
+  const sessionsError = serverScopeMatches ? storedSessionsError : null;
+  const sessionsHydrated = serverScopeMatches && storedSessionsHydrated;
+  const localRuntimeSelected = Boolean(
+    selectedServer?.isDefault && isLocalServer(selectedServer) && !nativeClientOnly
+  );
   const [nativeRuntimeError, setNativeRuntimeError] = useState<string | null>(null);
   const [nativeRuntimeReconnecting, setNativeRuntimeReconnecting] = useState(false);
   useEffect(() => {
-    if (!isTauri() || !sessionsError || sessionsHydrated) {
+    if (!isTauri() || !localRuntimeSelected || !sessionsError || sessionsHydrated) {
       setNativeRuntimeError(null);
       setNativeRuntimeReconnecting(false);
       return;
@@ -211,7 +224,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         setNativeRuntimeError(null);
         setNativeRuntimeReconnecting(false);
       });
-  }, [sessionsError, sessionsHydrated]);
+  }, [localRuntimeSelected, sessionsError, sessionsHydrated]);
 
   // User-defined tab order. Persisted in localStorage so the order
   // survives reloads. Server's session list comes back in creation
@@ -245,7 +258,6 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   const [theme, setTheme] = useState<ThemeMode>(readTheme);
   const [mobileSessionDetail, setMobileSessionDetail] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const activeServerId = useServers((s) => s.activeId);
   const tokenRequiredServerId = useServers((s) => s.tokenRequiredServerId);
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
@@ -400,14 +412,16 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
 
   const openFleetSession = useCallback((serverId: string, sessionId: string): void => {
     useServers.getState().setActive(serverId);
+    setServerScope(serverId);
     openSession(sessionId);
-  }, [openSession]);
+  }, [openSession, setServerScope]);
   const openFleetMachine = useCallback((serverId: string): void => {
     useServers.getState().setActive(serverId);
+    setServerScope(serverId);
     setActive(null);
     setLayoutMode('tabs');
     setMobileSessionDetail(false);
-  }, [setActive]);
+  }, [setActive, setServerScope]);
   const continueExactConversation = useCallback(async (
     serverId: string,
     providerSessionId: string,
@@ -415,6 +429,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     historyId?: string
   ): Promise<void> => {
     useServers.getState().setActive(serverId);
+    setServerScope(serverId);
     let result = await adoptConversation(providerSessionId, sourceSessionId, historyId);
     if (result.partial && result.repair) {
       try {
@@ -425,14 +440,14 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         console.warn('Sessions continued the conversation but could not finish its history annotations.', reason);
       }
     }
-    await refresh();
+    await refresh(serverId);
     // Same-provider continuation may immediately show an old-session,
     // trust, update, or model picker that only exists in the provider TUI.
     // Show that exact terminal first; the Conversation view remains one click
     // away once the provider is ready.
     preferNextSessionView(result.laneId, 'terminal');
     openSession(result.laneId);
-  }, [openSession, refresh]);
+  }, [openSession, refresh, setServerScope]);
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
     const onMessage = (event: MessageEvent<unknown>): void => {
@@ -462,10 +477,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // re-runs whenever the active server changes so switching servers
   // immediately repopulates the tab strip from the new sessionsd.
   useEffect(() => {
-    void refresh();
-    const id = window.setInterval(() => { void refresh(); }, 3000);
+    if (!activeServerId) return;
+    setServerScope(activeServerId);
+    void refresh(activeServerId);
+    const id = window.setInterval(() => { void refresh(activeServerId); }, 3000);
     return () => window.clearInterval(id);
-  }, [refresh, activeServerId]);
+  }, [refresh, activeServerId, setServerScope]);
   useEffect(() => {
     if (!activeServerId || single) return;
     const controller = new AbortController();
@@ -587,13 +604,21 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   }
 
   if (isTauri() && sessionsError && !sessionsHydrated) {
+    const localServer = servers.find((server) => server.isDefault && isLocalServer(server));
+    const selectedName = selectedServer ? serverDisplayName(selectedServer, true) : 'Selected machine';
     return (
       <ConnectScreen
         clientOnly={nativeClientOnly}
-        localDaemonUnavailable={!nativeClientOnly}
+        localDaemonUnavailable={localRuntimeSelected}
+        unavailableMachine={localRuntimeSelected ? undefined : selectedName}
+        localAlternative={localServer ? serverDisplayName(localServer, true) : undefined}
         reconnecting={nativeRuntimeReconnecting}
         detail={nativeRuntimeError ?? sessionsError}
         onRetry={() => void refresh()}
+        onUseLocal={localServer ? () => {
+          useServers.getState().setActive(localServer.id);
+          setServerScope(localServer.id);
+        } : undefined}
       />
     );
   }
