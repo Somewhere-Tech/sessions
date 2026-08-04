@@ -7,7 +7,6 @@ import { tailnetClientID } from '../lib/tailnetClient';
 import {
   claimNativeMachineAccess,
   discoverNativeMachines,
-  quitNativeApp,
   requestNativeMachineAccess,
   type NativeMachinePeer,
   type NativeTailnetRequest
@@ -18,24 +17,12 @@ const HEALTH_TIMEOUT_MS = 8_000;
 
 interface ConnectScreenProps {
   clientOnly?: boolean;
-  localDaemonUnavailable?: boolean;
-  unavailableMachine?: string;
-  localAlternative?: string;
-  reconnecting?: boolean;
-  detail?: string;
   onRetry?: () => void;
-  onUseLocal?: () => void;
 }
 
 export function ConnectScreen({
   clientOnly = false,
-  localDaemonUnavailable = false,
-  unavailableMachine,
-  localAlternative,
-  reconnecting = false,
-  detail,
-  onRetry,
-  onUseLocal
+  onRetry
 }: ConnectScreenProps = {}): JSX.Element {
   const servers = useServers((state) => state.servers);
   const setActive = useServers((state) => state.setActive);
@@ -152,49 +139,6 @@ export function ConnectScreen({
       window.clearInterval(interval);
     };
   }, [accessRequest]);
-
-  if (localDaemonUnavailable || unavailableMachine) {
-    const remote = Boolean(unavailableMachine);
-    const machine = unavailableMachine ?? localAlternative ?? 'This computer';
-    return (
-      <main className="connect-screen" data-testid="connect-screen">
-        <section className="connect-panel" aria-labelledby="connect-title">
-          <div className="connect-brand">Sessions</div>
-          <p className="connect-kicker">{remote ? `${machine} → reconnecting` : 'automatic session recovery'}</p>
-          <h1 id="connect-title">
-            {remote
-              ? `${machine} is unavailable.`
-              : reconnecting
-              ? 'Recovering your sessions…'
-              : 'Sessions lost its background service.'}
-          </h1>
-          <p className="connect-lede">
-            {remote
-              ? `Sessions cannot currently reach ${machine}. Its last-known sessions will not be mixed with sessions from another computer.`
-              : 'This computer restarted or its Sessions service stopped. Sessions is recovering the saved runners automatically; messages stay disabled and drafts are never sent until the connection returns.'}
-          </p>
-          <section className="connect-setup" aria-labelledby="setup-title">
-            <h2 id="setup-title">What happens now</h2>
-            <p className="connect-recovery-copy">
-              {remote
-                ? 'Sessions will keep checking this machine. You can wait here, try again now, or use this computer instead. Starting elsewhere never silently duplicates a prompt.'
-                : 'The app is rebuilding its view while each agent and its history remain separate from the window. A large retained fleet can take a little longer to reappear.'}
-            </p>
-            {!remote ? <code>~/Library/Logs/Sessions/sessionsd.log</code> : null}
-          </section>
-          {detail ? <details className="connect-recovery-detail"><summary>Technical details</summary><p>{detail}</p></details> : null}
-          <div className="connect-recovery-actions">
-            <button type="button" className="connect-submit" onClick={onRetry}>Check now</button>
-            {remote && onUseLocal && localAlternative ? (
-              <button type="button" className="btn" onClick={onUseLocal}>Use {localAlternative}</button>
-            ) : null}
-            <button type="button" className="btn" onClick={() => void quitNativeApp()}>Quit Sessions</button>
-          </div>
-          <p className="connect-recovery-note">Quitting this window does not stop agents or erase session history.</p>
-        </section>
-      </main>
-    );
-  }
 
   const probe = async (server: ServerConfig): Promise<void> => {
     if (credentialError) {
@@ -425,9 +369,9 @@ export function ConnectScreen({
         </div>
 
         {message ? <p className="connect-status" role="status">{message}</p> : null}
-        {credentialError || error || pairingError || detail ? (
+        {credentialError || error || pairingError ? (
           <p className="connect-error" role="alert">
-            {credentialError ?? error ?? pairingError ?? detail}
+            {credentialError ?? error ?? pairingError}
           </p>
         ) : null}
 

@@ -570,6 +570,22 @@ fn runtime_status(app: AppHandle) -> Result<lifecycle::RuntimeStatus, String> {
         .map_err(|error| error.to_string())
 }
 
+// Reconcile the local service without touching runner lifetimes. The
+// lifecycle installer repairs or restarts sessionsd; existing runners remain
+// independently supervised and are re-adopted by the daemon when it returns.
+#[tauri::command]
+async fn recover_runtime(app: AppHandle) -> Result<lifecycle::RuntimeStatus, String> {
+    let worker = app.clone();
+    let status = tauri::async_runtime::spawn_blocking(move || lifecycle::install_for_app(&worker))
+        .await
+        .map_err(|error| format!("runtime recovery worker failed: {error}"))?;
+    *app.state::<RuntimeState>()
+        .status
+        .lock()
+        .map_err(|error| error.to_string())? = status.clone();
+    Ok(status)
+}
+
 #[tauri::command]
 fn native_connection_settings(app: AppHandle) -> Result<NativeConnectionSettings, String> {
     let state = app.state::<RuntimeState>();
@@ -2116,6 +2132,7 @@ pub fn run() {
             open_scoped_window,
             set_tray_servers,
             runtime_status,
+            recover_runtime,
             native_connection_settings,
             set_runtime_port,
             native_connection_action,

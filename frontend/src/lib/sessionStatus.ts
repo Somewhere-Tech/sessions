@@ -109,8 +109,8 @@ export function endedSummary(session: SessionInfo, allSessions: SessionInfo[] = 
   }
   if (reason === 'runner-lost' || session.provenanceStatus === 'lost') {
     return {
-      label: 'Live connection ended',
-      detail: 'Sessions lost contact with the running process. Saved conversation history and captured output are kept.',
+      label: 'Ready to continue',
+      detail: 'The live runner stopped, but this conversation and its captured output are saved. Continue it here or on another computer whenever you’re ready.',
       tone: 'attention'
     };
   }

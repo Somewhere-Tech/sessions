@@ -143,7 +143,8 @@ interface SessionsState {
 // We only stash what the UI needs to draw a plausible first frame —
 // not the full SessionInfo (working/lastDataAt are stale within
 // seconds anyway). On refresh() the live data overwrites everything.
-const CACHE_KEY = 'sessions:sessions-cache:v2';
+const CACHE_KEY = 'sessions:sessions-cache:v3';
+const LEGACY_CACHE_KEY = 'sessions:sessions-cache:v2';
 
 interface CachedSession {
   id: string;
@@ -217,14 +218,58 @@ interface CachedSessionEnvelope {
   activeId: string | null;
 }
 
-function readCache(): { serverId: string | null; sessions: SessionInfo[]; activeId: string | null } {
+interface CachedSessionMachine {
+  sessions: CachedSession[];
+  activeId: string | null;
+}
+
+interface CachedSessionFleet {
+  version: 3;
+  lastServerId: string | null;
+  machines: Record<string, CachedSessionMachine>;
+}
+
+function emptyCache(): CachedSessionFleet {
+  return { version: 3, lastServerId: null, machines: {} };
+}
+
+function readCacheFile(): CachedSessionFleet {
   try {
     const raw = window.localStorage.getItem(CACHE_KEY);
-    const parsed = raw ? JSON.parse(raw) as CachedSessionEnvelope : null;
-    if (!parsed || typeof parsed.serverId !== 'string' || !Array.isArray(parsed.sessions)) {
-      return { serverId: null, sessions: [], activeId: null };
+    const parsed = raw ? JSON.parse(raw) as CachedSessionFleet : null;
+    if (parsed?.version === 3 && parsed.machines && typeof parsed.machines === 'object') {
+      return parsed;
     }
-    const sessions: SessionInfo[] = filterSessionsForWindow(parsed.sessions
+
+    // Migrate the previous single-machine cache without ever relabelling it
+    // as another computer. The first v3 write keeps this entry alongside the
+    // other machines the user visits.
+    const legacyRaw = window.localStorage.getItem(LEGACY_CACHE_KEY);
+    const legacy = legacyRaw ? JSON.parse(legacyRaw) as CachedSessionEnvelope : null;
+    if (legacy && typeof legacy.serverId === 'string' && Array.isArray(legacy.sessions)) {
+      return {
+        version: 3,
+        lastServerId: legacy.serverId,
+        machines: {
+          [legacy.serverId]: { sessions: legacy.sessions, activeId: legacy.activeId }
+        }
+      };
+    }
+  } catch {
+    // Corrupt or unavailable localStorage is equivalent to an empty cache.
+  }
+  return emptyCache();
+}
+
+function hydrateCachedMachine(
+  serverId: string,
+  cached: CachedSessionMachine | undefined
+): { serverId: string; sessions: SessionInfo[]; activeId: string | null } {
+  try {
+    if (!cached || !Array.isArray(cached.sessions)) {
+      return { serverId, sessions: [], activeId: null };
+    }
+    const sessions: SessionInfo[] = filterSessionsForWindow(cached.sessions
         .map((c) => ({
           ...c,
           args: Array.isArray(c.args) ? c.args : [],
@@ -241,14 +286,21 @@ function readCache(): { serverId: string | null; sessions: SessionInfo[]; active
           exitReason: c.exitReason,
           exitedAt: c.exitedAt ?? null
         })), windowScope);
-    const savedActiveId = parsed.activeId;
+    const savedActiveId = cached.activeId;
     const activeId = savedActiveId && sessions.some((session) => session.id === savedActiveId)
       ? savedActiveId
       : (sessions[0]?.id ?? null);
-    return { serverId: parsed.serverId, sessions, activeId };
+    return { serverId, sessions, activeId };
   } catch {
-    return { serverId: null, sessions: [], activeId: null };
+    return { serverId, sessions: [], activeId: null };
   }
+}
+
+function readCache(serverId?: string): { serverId: string | null; sessions: SessionInfo[]; activeId: string | null } {
+  const cache = readCacheFile();
+  const target = serverId ?? cache.lastServerId;
+  if (!target) return { serverId: null, sessions: [], activeId: null };
+  return hydrateCachedMachine(target, cache.machines[target]);
 }
 
 function writeCache(serverId: string | null, sessions: SessionInfo[], activeId: string | null): void {
@@ -318,8 +370,10 @@ function writeCache(serverId: string | null, sessions: SessionInfo[], activeId: 
       claudeCustomTitle: s.claudeCustomTitle,
       claudeAiTitle: s.claudeAiTitle
     }));
-    const envelope: CachedSessionEnvelope = { serverId, sessions: stripped, activeId };
-    window.localStorage.setItem(CACHE_KEY, JSON.stringify(envelope));
+    const cache = readCacheFile();
+    cache.lastServerId = serverId;
+    cache.machines[serverId] = { sessions: stripped, activeId };
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
   } catch {
     // quota / private mode — drop the cache silently
   }
@@ -337,10 +391,11 @@ export const useSessions = create<SessionsState>((set, get) => ({
 
   setServerScope: (serverId) => {
     if (get().serverId === serverId) return;
+    const cached = readCache(serverId);
     set({
       serverId,
-      sessions: [],
-      activeId: null,
+      sessions: cached.sessions,
+      activeId: cached.activeId,
       hydrated: false,
       loading: false,
       error: null

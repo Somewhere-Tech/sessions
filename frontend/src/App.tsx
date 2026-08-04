@@ -22,13 +22,14 @@ import { useSessions } from './store/sessions';
 import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer, isLocalServer, serverDisplayName } from './lib/servers';
 import { SettingsMenu } from './components/SettingsMenu';
 import { TailnetAccessInbox } from './components/TailnetAccessInbox';
+import { MachineRecoveryNotice } from './components/MachineRecoveryNotice';
 import { useIsMobile } from './hooks/useMediaQuery';
 import { ParserIcon } from './components/ParserIcon';
 import { ConnectScreen } from './components/ConnectScreen';
 import { formatServerEndpoint } from './lib/serverEndpoint';
 import { readTabOrder, writeTabOrder, applyOrder, moveBefore } from './lib/tabOrder';
 import { useTabLabel } from './lib/tabLabels';
-import { getNativeConnectionSettings, getNativeRuntimeStatus, isTauri, notify, syncTrayServers } from './lib/tauriBridge';
+import { getNativeConnectionSettings, getNativeRuntimeStatus, isTauri, notify, recoverNativeRuntime, syncTrayServers } from './lib/tauriBridge';
 import { readTextSize, writeTextSize, type TextSize } from './lib/textSize';
 import { preloadUsage } from './lib/usageCache';
 import { preloadDaily } from './lib/dailyCache';
@@ -39,11 +40,13 @@ import { handleExternalLinkClick } from './lib/externalLinks';
 import {
   adoptConversation,
   fetchServerMachineIdentity,
+  fetchServerHealth,
   fetchOnboardingState,
   forkConversation,
   repairAdoption,
   updateOnboardingPreference,
-  type OnboardingState
+  type OnboardingState,
+  type ServerHealth
 } from './api/sessionsd';
 import type { SessionInfo, SessionTool } from './types';
 
@@ -209,8 +212,11 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   );
   const [nativeRuntimeError, setNativeRuntimeError] = useState<string | null>(null);
   const [nativeRuntimeReconnecting, setNativeRuntimeReconnecting] = useState(false);
+  const [serverHealth, setServerHealth] = useState<ServerHealth | null>(null);
+  const [knownSessionCount, setKnownSessionCount] = useState(rawSessions.length);
+  const [manualRecoveryBusy, setManualRecoveryBusy] = useState(false);
   useEffect(() => {
-    if (!isTauri() || !localRuntimeSelected || !sessionsError || sessionsHydrated) {
+    if (!isTauri() || !localRuntimeSelected || !sessionsError) {
       setNativeRuntimeError(null);
       setNativeRuntimeReconnecting(false);
       return;
@@ -224,7 +230,41 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         setNativeRuntimeError(null);
         setNativeRuntimeReconnecting(false);
       });
-  }, [localRuntimeSelected, sessionsError, sessionsHydrated]);
+  }, [localRuntimeSelected, sessionsError]);
+  useEffect(() => {
+    setServerHealth(null);
+    setKnownSessionCount(rawSessions.length);
+  // Capture only the selected machine's first cached frame. Later refreshes
+  // can increase this count but never borrow another machine's total.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeServerId]);
+  useEffect(() => {
+    // Health polling is a recovery diagnostic, not another permanent network
+    // surface. The normal session-list request is enough while connected.
+    if (!selectedServer || !sessionsError) {
+      setServerHealth(null);
+      return;
+    }
+    let disposed = false;
+    let controller: AbortController | null = null;
+    const probe = (): void => {
+      controller?.abort();
+      controller = new AbortController();
+      void fetchServerHealth(selectedServer, controller.signal)
+        .then((health) => { if (!disposed) setServerHealth(health); })
+        .catch(() => { if (!disposed) setServerHealth(null); });
+    };
+    probe();
+    const interval = window.setInterval(probe, 3_000);
+    return () => {
+      disposed = true;
+      controller?.abort();
+      window.clearInterval(interval);
+    };
+  }, [activeServerId, selectedServer, sessionsError]);
+  useEffect(() => {
+    setKnownSessionCount((current) => Math.max(current, rawSessions.length, serverHealth?.sessionsLoaded ?? 0));
+  }, [rawSessions.length, serverHealth?.sessionsLoaded]);
 
   // User-defined tab order. Persisted in localStorage so the order
   // survives reloads. Server's session list comes back in creation
@@ -350,6 +390,33 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     setMobileSessionDetail(true);
     setDialogOpen('new');
   }, []);
+  const localServer = servers.find((server) => server.isDefault && isLocalServer(server)) ?? null;
+  const selectedMachineName = selectedServer ? serverDisplayName(selectedServer, true) : 'this machine';
+  const recoveryVisible = Boolean(sessionsError || serverHealth?.discovering);
+  const recoverSelectedMachine = useCallback(async (): Promise<void> => {
+    if (!activeServerId || manualRecoveryBusy) return;
+    setManualRecoveryBusy(true);
+    try {
+      if (localRuntimeSelected && isTauri()) {
+        const status = await recoverNativeRuntime();
+        setNativeRuntimeError(status.state === 'error' ? status.detail : null);
+        setNativeRuntimeReconnecting(status.state === 'starting');
+      }
+      await refresh(activeServerId);
+    } catch (reason) {
+      setNativeRuntimeError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setManualRecoveryBusy(false);
+    }
+  }, [activeServerId, localRuntimeSelected, manualRecoveryBusy, refresh]);
+  const startOnLocalMachine = useCallback((): void => {
+    if (!localServer) return;
+    useServers.getState().setActive(localServer.id);
+    setServerScope(localServer.id);
+    setLayoutMode('tabs');
+    setMobileSessionDetail(true);
+    setDialogOpen('new');
+  }, [localServer, setServerScope]);
   useEffect(() => {
     if (single) return;
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -603,26 +670,6 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     );
   }
 
-  if (isTauri() && sessionsError && !sessionsHydrated) {
-    const localServer = servers.find((server) => server.isDefault && isLocalServer(server));
-    const selectedName = selectedServer ? serverDisplayName(selectedServer, true) : 'Selected machine';
-    return (
-      <ConnectScreen
-        clientOnly={nativeClientOnly}
-        localDaemonUnavailable={localRuntimeSelected}
-        unavailableMachine={localRuntimeSelected ? undefined : selectedName}
-        localAlternative={localServer ? serverDisplayName(localServer, true) : undefined}
-        reconnecting={nativeRuntimeReconnecting}
-        detail={nativeRuntimeError ?? sessionsError}
-        onRetry={() => void refresh()}
-        onUseLocal={localServer ? () => {
-          useServers.getState().setActive(localServer.id);
-          setServerScope(localServer.id);
-        } : undefined}
-      />
-    );
-  }
-
   const machine = serverDisplayName(getActiveServer(), true);
   const liveSessions = sessions.filter((session) => !session.exited);
   const sessionWorkspace = effectiveLayout === 'tabs' || effectiveLayout === 'grid';
@@ -677,6 +724,20 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         ) : null}
         <section className="operations-content">
           <TailnetAccessInbox />
+          {recoveryVisible ? (
+            <MachineRecoveryNotice
+              machine={selectedMachineName}
+              local={localRuntimeSelected}
+              discovering={Boolean(serverHealth?.discovering)}
+              recovered={serverHealth?.sessionsLoaded ?? rawSessions.length}
+              expected={knownSessionCount}
+              busy={manualRecoveryBusy || nativeRuntimeReconnecting}
+              detail={nativeRuntimeError ?? sessionsError}
+              localAlternative={!localRuntimeSelected && localServer ? serverDisplayName(localServer, true) : undefined}
+              onRecover={() => void recoverSelectedMachine()}
+              onStartLocal={!localRuntimeSelected && localServer ? startOnLocalMachine : undefined}
+            />
+          ) : null}
           {sessionWorkspace && showManagerTabs && (!isMobile || mobileSessionDetail) ? (
             <header className="app-header operations-tabs-header">
               <SessionTabs
@@ -701,8 +762,6 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             error="sessionsd: authentication required (401)"
             onRetry={() => void refresh()}
           />
-        ) : sessionWorkspace && sessions.length === 0 && !sessionsHydrated && !sessionsError ? (
-          <SessionsWorkspaceSkeleton />
         ) : sessionWorkspace && dialogOpen === 'new' ? (
           <NewSessionDialog
             embedded
@@ -710,6 +769,8 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             onStarted={openSession}
             onOpenResume={(providerId) => setDialogOpen(providerId ? { resumeProviderId: providerId } : 'resume')}
           />
+        ) : sessionWorkspace && sessions.length === 0 && !sessionsHydrated ? (
+          <SessionsWorkspaceSkeleton />
         ) : sessionWorkspace && isMobile && !mobileSessionDetail ? (
           <SessionNavigator
             sessions={sessions}
@@ -757,14 +818,14 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
               // input rather than switching to tabs view.
               onExpand={(id) => { setActive(id); setLayoutMode('tabs'); }}
             />
-          ) : sessionsError && !sessionsHydrated ? (
-            <DaemonBanner error={sessionsError} onRetry={() => void refresh()} />
+          ) : recoveryVisible ? (
+            <SessionsWorkspaceSkeleton />
           ) : (
             <EmptyState onNew={openNewSession} />
           )
         ) : openedSessions.length === 0 ? (
-          sessionsError && !sessionsHydrated ? (
-            <DaemonBanner error={sessionsError} onRetry={() => void refresh()} />
+          recoveryVisible ? (
+            <SessionsWorkspaceSkeleton />
           ) : sessions.length > 0 ? (
             <div className="session-workspace-empty"><span>Operations inbox</span><h1>Select a session</h1><p>Choose a manager or child from the navigator. It will open here without resuming or restarting anything.</p><button type="button" className="btn btn-primary" onClick={openNewSession}>＋ New Session</button></div>
           ) : (

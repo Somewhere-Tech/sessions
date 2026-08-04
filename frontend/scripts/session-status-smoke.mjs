@@ -85,6 +85,15 @@ try {
   assert.equal(endedSummary(crashed).tone, 'attention');
   assert.match(endedSummary(crashed).detail, /Saved history is still available/);
 
+  const runnerLost = {
+    ...explicitlyEnded,
+    id: 'runner-lost',
+    exitReason: 'runner-lost',
+    provenanceStatus: 'lost'
+  };
+  assert.equal(endedSummary(runnerLost).label, 'Ready to continue');
+  assert.match(endedSummary(runnerLost).detail, /conversation and its captured output are saved/);
+
   const endedWithContinuation = {
     ...explicitlyEnded,
     id: 'original-runtime',

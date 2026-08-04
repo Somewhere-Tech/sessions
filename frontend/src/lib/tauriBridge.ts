@@ -402,6 +402,11 @@ export async function getNativeRuntimeStatus(): Promise<NativeRuntimeStatus | nu
   return invoke<NativeRuntimeStatus>('runtime_status');
 }
 
+export async function recoverNativeRuntime(): Promise<NativeRuntimeStatus> {
+  if (!isTauri()) throw new Error('Runtime recovery is available in Sessions.app');
+  return invoke<NativeRuntimeStatus>('recover_runtime');
+}
+
 export interface SomewhereCLIStatus {
   installed: boolean;
   installedVersion: string | null;
