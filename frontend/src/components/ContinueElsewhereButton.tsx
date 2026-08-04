@@ -8,6 +8,7 @@ import {
   type NativeSavedMachine
 } from '../lib/tauriBridge';
 import { useSessions } from '../store/sessions';
+import { isLocalServer, useServers } from '../lib/servers';
 
 export function ContinueElsewhereButton({
   sessionId,
@@ -21,7 +22,10 @@ export function ContinueElsewhereButton({
   onOpen?: () => void;
 }): JSX.Element | null {
   const refresh = useSessions((state) => state.refresh);
+  const endSession = useSessions((state) => state.kill);
+  const serverId = useSessions((state) => state.serverId);
   const source = useSessions((state) => state.sessions.find((session) => session.id === sessionId)) ?? null;
+  const sourceServer = useServers((state) => state.servers.find((server) => server.id === serverId)) ?? null;
   const [open, setOpen] = useState(false);
   const [machines, setMachines] = useState<NativeSavedMachine[]>([]);
   const [selected, setSelected] = useState('');
@@ -34,7 +38,7 @@ export function ContinueElsewhereButton({
   const [error, setError] = useState<string | null>(null);
   const [complete, setComplete] = useState<NativeMovePlan | null>(null);
 
-  if (!isTauri()) return null;
+  if (!isTauri() || !sourceServer || !isLocalServer(sourceServer)) return null;
 
   const show = async (): Promise<void> => {
     setOpen(true);
@@ -59,6 +63,9 @@ export function ContinueElsewhereButton({
     setBusy(true);
     setError(null);
     try {
+      if (source && !source.exited) {
+        await endSession(sessionId, 'Moved to another computer through Sessions');
+      }
       setPlan(await moveNativeSession(sessionId, selected, { dryRun: true, allowDirty, runtimeMode }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not prepare this continuation.');
@@ -93,7 +100,7 @@ export function ContinueElsewhereButton({
           void show();
         }}
       >
-        Continue on another machine{appearance === 'menuitem' ? '…' : ''}
+        Move to another computer{appearance === 'menuitem' ? '…' : ''}
       </button>
       {open ? createPortal((
         <div className="dialog-backdrop continue-elsewhere-backdrop" onMouseDown={(event) => {
@@ -102,14 +109,14 @@ export function ContinueElsewhereButton({
           <section className="dialog continue-elsewhere-dialog" role="dialog" aria-modal="true" aria-labelledby="continue-elsewhere-title">
             <header>
               <div>
-                <span className="dialog-kicker">Cross-machine continuation</span>
-                <h2 id="continue-elsewhere-title">Continue “{label}” elsewhere</h2>
+                <span className="dialog-kicker">Move conversation</span>
+                <h2 id="continue-elsewhere-title">Move “{label}”</h2>
               </div>
               <button type="button" className="dialog-close" aria-label="Close" disabled={busy} onClick={() => setOpen(false)}>×</button>
             </header>
             {complete ? (
               <div className="continue-elsewhere-complete">
-                <strong>Conversation continued on {machines.find((machine) => machine.alias === selected)?.name || selected}.</strong>
+                <strong>Conversation moved to {machines.find((machine) => machine.alias === selected)?.name || selected}.</strong>
                 <p>The original history remains on this machine. Sessions linked it to the new runtime <code>{complete.target_id?.slice(0, 8)}</code>.</p>
                 {complete.warning ? <p className="dialog-warning">{complete.warning}</p> : null}
                 <button type="button" className="btn btn-primary" onClick={() => setOpen(false)}>Done</button>
@@ -117,7 +124,9 @@ export function ContinueElsewhereButton({
             ) : (
               <>
                 <p className="continue-elsewhere-explainer">
-                  Sessions copies only the provider conversation file and a verified workspace reference. It does not move credentials, attachments, or a live process, and it never deletes the source history.
+                  {source && !source.exited
+                    ? 'Moving stops this session here, then starts its conversation on the computer you choose. The source history stays here so nothing is deleted.'
+                    : 'Sessions starts this conversation on the computer you choose. The source history stays here so nothing is deleted.'}
                 </p>
                 {machines.length > 0 ? (
                   <label className="continue-elsewhere-machine">
@@ -166,7 +175,7 @@ export function ContinueElsewhereButton({
                 )}
                 {plan ? (
                   <div className="continue-elsewhere-plan">
-                    <strong>Ready to continue</strong>
+                    <strong>Ready to move</strong>
                     <span>{plan.tool === 'codex' ? 'Codex' : 'Claude'} · {(plan.conversation_bytes / 1024 / 1024).toFixed(1)} MB conversation</span>
                     <span>{plan.tool === 'claude-code'
                       ? 'Conversation + Terminal'
@@ -180,11 +189,11 @@ export function ContinueElsewhereButton({
                   <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
                   {plan ? (
                     <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void execute()}>
-                      {busy ? 'Continuing…' : `Continue on ${machines.find((machine) => machine.alias === selected)?.name || selected}`}
+                      {busy ? 'Moving…' : `Move to ${machines.find((machine) => machine.alias === selected)?.name || selected}`}
                     </button>
                   ) : (
                     <button type="button" className="btn btn-primary" disabled={busy || !selected} onClick={() => void review()}>
-                      {busy ? 'Checking…' : 'Review continuation'}
+                      {busy ? 'Checking…' : source && !source.exited ? 'End here and review move' : 'Review move'}
                     </button>
                   )}
                 </footer>

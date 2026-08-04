@@ -35,8 +35,8 @@ assert.match(launcher, /launcher-setup-control is-workspace/);
 assert.match(launcher, /aria-label="Agent"/);
 assert.match(launcher, /aria-label="Computer"/);
 assert.doesNotMatch(launcher, /already has \{liveOnSelectedMachine\} live sessions/);
-assert.ok(launcher.indexOf('launcher-advanced') < launcher.indexOf('aria-label="Permissions"'),
-  'permissions belong in Advanced rather than the primary composer');
+assert.ok(launcher.indexOf('aria-label="Permissions"') < launcher.indexOf('launcher-advanced'),
+  'permissions belong in the primary composer before Advanced');
 assert.match(app, /<NewSessionDialog\s+embedded/,
   'the global launcher must render inside the conversation workspace');
 assert.doesNotMatch(launcher, /worktree|Developer isolation|Git copy/);

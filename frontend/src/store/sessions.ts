@@ -127,7 +127,7 @@ interface SessionsState {
   error: string | null;
   setServerScope: (serverId: string) => void;
   refresh: (serverId?: string) => Promise<void>;
-  create: (req: CreateSessionRequest) => Promise<SessionInfo>;
+  create: (req: CreateSessionRequest, serverId?: string) => Promise<SessionInfo>;
   kill: (id: string, reason?: string) => Promise<void>;
   archive: (ids: string[]) => Promise<api.ArchiveResult>;
   updateName: (id: string, name: string) => Promise<void>;
@@ -433,9 +433,12 @@ export const useSessions = create<SessionsState>((set, get) => ({
     }
   },
 
-  create: async (req) => {
-    const info = await api.createSession(req);
+  create: async (req, requestedServerId) => {
+    const serverId = requestedServerId ?? get().serverId;
+    if (!serverId) throw new Error('Choose a computer before starting a session.');
+    const info = await api.createSession(req, serverId);
     set((s) => {
+      if (s.serverId !== serverId) return s;
       if (!sessionMatchesWindowScope(info, windowScope)) return s;
       const sessions = [...s.sessions, info];
       writeCache(s.serverId, sessions, info.id);
@@ -445,11 +448,13 @@ export const useSessions = create<SessionsState>((set, get) => ({
   },
 
   kill: async (id, reason) => {
-    await api.killSession(id, reason);
+    const serverId = get().serverId;
+    if (!serverId) throw new Error('The session computer is not selected.');
+    await api.killSession(id, reason, serverId);
     // Ending a process is not deleting its history. Refresh immediately so
     // the row moves to Finished/Failed while its transcript and lineage stay
     // available in the operations inbox.
-    await get().refresh();
+    await get().refresh(serverId);
   },
 
   archive: async (ids) => {

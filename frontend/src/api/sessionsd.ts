@@ -52,6 +52,10 @@ function httpBase(): string {
   return httpBaseForServer(getActiveServer());
 }
 
+function requestedServer(serverId?: string): ServerConfig {
+  return serverId ? getServer(serverId) : getActiveServer();
+}
+
 function wsBase(): string {
   const s = getActiveServer();
   if (useSameOriginDaemon(s)) {
@@ -409,8 +413,8 @@ async function profilesForServer(server: ServerConfig, signal?: AbortSignal): Pr
   return body.profiles;
 }
 
-export async function fetchProfiles(signal?: AbortSignal): Promise<AccountProfile[]> {
-  return profilesForServer(getActiveServer(), signal);
+export async function fetchProfiles(signal?: AbortSignal, serverId?: string): Promise<AccountProfile[]> {
+  return profilesForServer(requestedServer(serverId), signal);
 }
 
 export async function listServerProfiles(
@@ -686,9 +690,10 @@ export async function fetchServerHistoryTranscript(
   return normalizeHistoryTranscript(await json<HistoryTranscript>(r));
 }
 
-export async function createSession(req: CreateSessionRequest): Promise<SessionInfo> {
+export async function createSession(req: CreateSessionRequest, serverId?: string): Promise<SessionInfo> {
   const { creatorSessionId, ...body } = req;
-  const r = await apiFetch(`${httpBase()}/api/sessions`, {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -777,8 +782,9 @@ export interface SessionModelOption {
   supportedReasoningEfforts: Array<{ reasoningEffort: string; description: string }>;
 }
 
-export async function listNewSessionCodexModels(signal?: AbortSignal): Promise<SessionModelOption[]> {
-  const r = await apiFetch(`${httpBase()}/api/models/codex`, { signal });
+export async function listNewSessionCodexModels(signal?: AbortSignal, serverId?: string): Promise<SessionModelOption[]> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/models/codex`, { signal });
   const body = await featureJSON<{ models?: SessionModelOption[] }>(r, 'Codex model choices');
   return body.models ?? [];
 }
@@ -1189,8 +1195,9 @@ export async function forkConversation(
   return featureJSON<AdoptConversationResult>(r, 'Conversation copies');
 }
 
-export async function listDirectories(): Promise<DirectoryCandidate[]> {
-  const r = await apiFetch(`${httpBase()}/api/directories`);
+export async function listDirectories(serverId?: string): Promise<DirectoryCandidate[]> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/directories`);
   const body = await json<{ directories: DirectoryCandidate[] }>(r);
   return body.directories;
 }
@@ -1209,18 +1216,18 @@ export interface FsListing {
 // Direct filesystem listing — the DirectoryBrowser walks this. No
 // curation, no "project-shape" filtering; every child the sessionsd
 // process can stat shows up. Default to $HOME when path is omitted.
-export async function listFs(path?: string): Promise<FsListing> {
-  // httpBase() now always returns an absolute URL (scheme://host:port),
-  // so we can use it directly with new URL().
-  const base = httpBase() || window.location.origin;
+export async function listFs(path?: string, serverId?: string): Promise<FsListing> {
+  const server = requestedServer(serverId);
+  const base = httpBaseForServer(server) || window.location.origin;
   const url = new URL(`${base}/api/fs/list`);
   if (path) url.searchParams.set('path', path);
-  const r = await apiFetch(url);
+  const r = await serverFetch(server, url);
   return json<FsListing>(r);
 }
 
-export async function killSession(id: string, reason = ''): Promise<void> {
-  const r = await apiFetch(`${httpBase()}/api/sessions/${encodeURIComponent(id)}`, {
+export async function killSession(id: string, reason = '', serverId?: string): Promise<void> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(id)}`, {
     method: 'DELETE',
     headers: {
       'content-type': 'application/json',
@@ -1235,8 +1242,9 @@ export async function killSession(id: string, reason = ''): Promise<void> {
 // forwarding — no per-cell WebSocket, just a single HTTP POST per
 // keystroke. The 2-second poll on each cell already reflects the
 // result back into the reflowed thumbnail.
-export async function sendInput(sessionId: string, data: string): Promise<void> {
-  const r = await apiFetch(`${httpBase()}/api/sessions/${encodeURIComponent(sessionId)}/input`, {
+export async function sendInput(sessionId: string, data: string, serverId?: string): Promise<void> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/input`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ data })

@@ -8,9 +8,9 @@ const view = fs.readFileSync(new URL('../src/components/SessionView.tsx', import
 const forkButton = fs.readFileSync(new URL('../src/components/ConversationForkButton.tsx', import.meta.url), 'utf8');
 
 for (const text of [
-  'Open a copy in ${otherProviderLabel}',
-  "Fork a copy in {providerName === 'claude' ? 'Claude' : 'Codex'}",
-  'original keeps running'
+  '<summary>Fork <small>original stays here</small></summary>',
+  "copyConversation(session, 'claude')",
+  "copyConversation(session, 'codex')"
 ]) {
   if (!navigator.includes(text)) throw new Error(`missing live-copy UI contract: ${text}`);
 }
