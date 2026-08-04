@@ -54,6 +54,8 @@ type statusOutput struct {
 	EndReason         string                   `json:"end_reason,omitempty"`
 	EndOperationID    string                   `json:"end_operation_id,omitempty"`
 	SetAsideAtMS      *int64                   `json:"set_aside_at_ms,omitempty"`
+	Permissions       string                   `json:"permissions,omitempty"`
+	Lifecycle         string                   `json:"lifecycle,omitempty"`
 }
 
 func (a *app) cmdStatus(args []string) error {
@@ -129,6 +131,7 @@ func (a *app) cmdStatus(args []string) error {
 		EndedByName: current.EndedByName, EndedByClient: current.EndedByClient, EndReason: current.EndReason,
 		EndOperationID: current.EndOperationID,
 		SetAsideAtMS:   current.SetAsideAt,
+		Permissions:    current.Permissions, Lifecycle: current.Lifecycle,
 	}
 	if current.Exited {
 		output.ExitCode = current.ExitCode
@@ -319,6 +322,16 @@ func (a *app) writeStatusCard(output statusOutput, lastActivityAt int64) error {
 	}
 	if output.IdleReason != "" {
 		if _, err := fmt.Fprintf(a.stdout, "  reason   %s\n", output.IdleReason); err != nil {
+			return err
+		}
+	}
+	if output.Permissions != "" {
+		if _, err := fmt.Fprintf(a.stdout, "  access   %s\n", output.Permissions); err != nil {
+			return err
+		}
+	}
+	if output.Lifecycle != "" {
+		if _, err := fmt.Fprintf(a.stdout, "  lifecycle %s\n", output.Lifecycle); err != nil {
 			return err
 		}
 	}

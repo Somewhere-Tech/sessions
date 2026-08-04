@@ -85,6 +85,8 @@ func newSession(ctx context.Context, info proto.RunnerInfo, runner proto.Runner,
 			DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 			SetAsideAt:             cloneInt64Pointer(metadata.SetAsideAt),
 			DelegationKind:         metadata.DelegationKind,
+			Permissions:            metadata.Permissions,
+			Lifecycle:              metadata.Lifecycle,
 		},
 		nextSeq: 1,
 		subs:    make(map[uint64]chan proto.Event),
@@ -516,6 +518,20 @@ func (s *Session) SetIdleResult(reason, detail, summary string, at int64) {
 	if summary != "" {
 		s.info.LastSummary = summary
 	}
+}
+
+// ClearIdleResult records that new input invalidated the previous idle outcome.
+// LastSummary remains available as the last completed result, but a scheduled
+// task cleanup must no longer treat the session as completed.
+func (s *Session) ClearIdleResult() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.info.Exited {
+		return
+	}
+	s.info.IdleReason = ""
+	s.info.IdleDetail = ""
+	s.info.IdleSince = nil
 }
 
 // RecordClaudeEvent adds one watcher-derived structured event to the same log

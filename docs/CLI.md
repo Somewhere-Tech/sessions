@@ -19,7 +19,7 @@ With no command, Sessions lists agent sessions and headless lanes. Session ids m
 Daily workflows:
   new                      create an interactive session
   profiles                 list Claude and Codex login profiles
-  onboarding               inspect user onboarding and Remote Control consent
+  onboarding               inspect user consent and delegated access
   providers                inspect or update agent CLIs
   run                      run a command in a headless lane
   tags                     view or edit session tags
@@ -95,17 +95,17 @@ Run `sessions help <command>` for one command or `sessions docs` for the complet
 
 ```text
 Usage:
-  sessions new [--tool claude|codex|shell] [--structured|--pty-claude|--codex-appserver|--pty-codex] [--full-access] [--profile NAME] [--cwd P] [--name L] [--description PURPOSE] [--tag KEY=VALUE ...] [--worktree [--base REF]] [options] [args...]
+  sessions new [--tool claude|codex|shell] [--permissions inherit|constrained|full] [--lifecycle task|session] [--profile NAME] [--cwd P] [--name L] [options] [args...]
 
 create an interactive session
 
-Create a session. --tool selects a built-in Claude, Codex, or shell preset; --cmd supplies a command directly. Claude defaults to its native interactive runtime, a clean Sessions Conversation view, and Terminal available for provider-only pickers. Remote Control is added only after the user enables it in first-run onboarding or Settings. --structured explicitly selects the headless structured Claude runtime for automation that does not need Remote Control or a terminal. --pty-claude is retained as a compatibility alias for the default interactive Claude runtime. Codex defaults to its sandboxed terminal mode because Sessions cannot yet present app-server approval prompts; --codex-appserver therefore requires the explicit --full-access choice. --pty-codex explicitly selects the provider's terminal UI. --full-access disables the selected provider's approval and sandbox protections for this new session only. Existing sessions keep their original runtime and permission mode. --profile selects a private Claude or Codex login under the Sessions user state; first use opens the tool's own login flow. --description (alias --desc) records why the session exists. Repeat --tag key=value for product, client, team, cost center, or any user-defined dimension. --worktree creates sessions/<name> from the current branch (or --base REF), records its provenance, and runs the session there. Sessions does not create node_modules symlinks; install dependencies in the worktree when needed. Session controls include --model, --effort, --fast, --on-idle, --wait-ready, and --force.
+Create a session. --tool selects Claude, Codex, or shell. Agent-created children inherit their manager's resolved permission policy by default; when the user has explicitly enabled autonomous delegated work, those children use full access instead. A child cannot escalate itself. --permissions makes the policy explicit, while --full-access remains an alias for --permissions full. Agent-created children default to the task lifecycle and close after a successful final response; --lifecycle session or --keep-alive creates a long-lived manager. User-created sessions remain long-lived. Approval questions become needs-input state and are never blindly accepted. Existing sessions keep their original runtime and permission mode. Claude defaults to its native interactive runtime; Codex defaults to its sandboxed terminal mode unless full access selects app-server. Remote Control remains separately consent-gated. --profile selects a private provider login. --description and repeated --tag values record purpose and dimensions. --worktree creates a Sessions-owned worktree.
 
 Examples:
   sessions new --tool claude --cwd ~/work
-  sessions new --tool claude --pty-claude --name terminal-debug
-  sessions new --tool codex --pty-codex
-  sessions new --tool codex --codex-appserver --full-access
+  sessions new --tool codex --permissions inherit --name focused-worker
+  sessions new --tool codex --permissions full --lifecycle task
+  sessions new --tool claude --keep-alive --name manager
   sessions new --cmd /bin/zsh
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -134,9 +134,9 @@ Examples:
 Usage:
   sessions onboarding
 
-inspect user onboarding and Remote Control consent
+inspect user consent and delegated access
 
-Show whether this machine has completed Sessions onboarding and whether Claude Remote Control is enabled. This command is deliberately read-only: an agent can explain the state but cannot grant user consent. Open Sessions.app to make or change the choice.
+Show whether this machine has completed Sessions onboarding, whether Claude Remote Control is enabled, and whether agent-created task workers inherit or receive autonomous access. This command is deliberately read-only: an agent can explain the state but cannot grant user consent. Open Sessions.app to make or change either choice.
 
 Examples:
   sessions onboarding
@@ -690,11 +690,13 @@ Usage:
 
 continue an ended conversation on another machine
 
-Continue an ended Claude or Codex conversation on another Sessions machine while preserving the source history. --machine reads the saved per-device credential from its private file; no token appears in argv. Run --dry-run first to verify workspace and conversation identity. Claude continues in its native interactive runtime, with Remote Control determined by the destination machine's explicit onboarding/Settings choice. Codex continues in its Rich app-server runtime. The target refuses to overwrite different provider history and records both sides of the continuation link. --terminal explicitly selects the provider terminal and is retained for Codex compatibility. --to/--token remains a low-level endpoint escape hatch. --allow-dirty creates a Git checkpoint without deleting or changing the source worktree.
+Continue an ended Claude or Codex conversation on another Sessions machine while preserving the source history. Put a global --machine before move when the source is another approved computer; the --machine after the session selects the destination. The client reads each saved per-device credential from its private file and sends neither credential to the other daemon. Run --dry-run first to verify workspace and conversation identity. Claude continues in its native interactive runtime, with Remote Control determined by the destination machine's explicit onboarding/Settings choice. Codex continues in its Rich app-server runtime. The target refuses to overwrite different provider history and records both sides of the continuation link. --terminal explicitly selects the provider terminal and is retained for Codex compatibility. --to/--token remains a low-level endpoint escape hatch. --allow-dirty creates a Git checkpoint without deleting or changing the source worktree.
 
 Examples:
   sessions move 0123abcd --machine mini --dry-run
   sessions move 0123abcd --machine mini
+  sessions --machine mini move 0123abcd --machine macbook --dry-run
+  sessions --machine mini move 0123abcd --machine macbook
   sessions move 0123abcd --machine mini --terminal
   sessions move 0123abcd --to https://mini.tailnet.ts.net --dry-run
 

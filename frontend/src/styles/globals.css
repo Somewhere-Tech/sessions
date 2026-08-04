@@ -8277,7 +8277,7 @@ details[open] > summary > .sessions-command-disclosure {
 .onboarding-brand > span:last-child { display: grid; line-height: 1.05; }
 .onboarding-brand strong { color: var(--accent); font-size: 12px; }
 .onboarding-brand em { color: var(--fg); font-size: 14px; font-style: normal; font-weight: 700; }
-.onboarding-progress { display: flex; width: 68px; gap: 6px; margin-bottom: 28px; }
+.onboarding-progress { display: flex; width: 105px; gap: 6px; margin-bottom: 28px; }
 .onboarding-progress span { width: 31px; height: 3px; border-radius: 999px; background: var(--border-strong); }
 .onboarding-progress span.is-active { background: var(--accent); }
 .onboarding-kicker {

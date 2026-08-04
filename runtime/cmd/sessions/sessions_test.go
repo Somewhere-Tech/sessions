@@ -149,6 +149,28 @@ func TestSessionTablesAddProfileColumnOnlyWhenNeeded(t *testing.T) {
 	}
 }
 
+func TestWaitReturnsProviderPromptWithoutTerminalBabysitting(t *testing.T) {
+	id := "23000000-0000-4000-8000-000000000001"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		if request.URL.Path != "/api/sessions" {
+			http.NotFound(response, request)
+			return
+		}
+		_, _ = response.Write([]byte(`{"sessions":[{"id":"` + id + `","cmd":"codex","cwd":"/tmp","createdAt":1,"pid":1,"tool":"codex","working":false,"idleReason":"needs-input","idleDetail":"Allow the focused regression test to open its local IPC socket?","lastSummary":"Waiting for approval."}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"--host", server.URL, "wait", id, "--idle", "1h", "--timeout", "1h", "--summary"},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if code != 0 || stderr.String() != "" || !strings.Contains(stdout.String(), "needs-input — Allow the focused regression test") {
+		t.Fatalf("wait prompt exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestKillExitedLaneUsesDurableManifestAsCleanNoop(t *testing.T) {
 	id := "21000000-0000-4000-8000-000000000001"
 	deleteRequests := 0

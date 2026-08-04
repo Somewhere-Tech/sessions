@@ -54,6 +54,9 @@ type session struct {
 	CreatorKind        string            `json:"creator_kind,omitempty"`
 	CreatorID          string            `json:"creator_id,omitempty"`
 	ParentSessionID    string            `json:"parent_session_id,omitempty"`
+	DelegationKind     string            `json:"delegation_kind,omitempty"`
+	Permissions        string            `json:"permissions,omitempty"`
+	Lifecycle          string            `json:"lifecycle,omitempty"`
 	SetAsideAt         *int64            `json:"setAsideAt,omitempty"`
 	CreatorAncestry    []string          `json:"creator_ancestry,omitempty"`
 	RootCreatorKind    string            `json:"root_creator_kind,omitempty"`

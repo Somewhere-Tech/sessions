@@ -57,6 +57,9 @@ func (a *app) cmdMove(args []string) error {
 	if err != nil {
 		return err
 	}
+	if a.explicitTarget && !a.api.localToken {
+		return a.moveRemoteSource(context.Background(), id, client, dryRun, allowDirty, terminal)
+	}
 	sessions, err := a.listSessions(true)
 	if err != nil {
 		return err
@@ -159,6 +162,69 @@ func (a *app) cmdMove(args []string) error {
 		}
 	}
 	_, err = fmt.Fprintln(a.stdout, "source history was preserved on this machine")
+	return err
+}
+
+func (a *app) moveRemoteSource(
+	ctx context.Context,
+	id string,
+	client *migrate.Client,
+	dryRun bool,
+	allowDirty bool,
+	terminal bool,
+) error {
+	runtimeMode := migrate.RuntimeRich
+	if terminal {
+		runtimeMode = migrate.RuntimeTerminal
+	}
+	var exported migrate.ExportResult
+	if err := a.postJSON("/api/migrate/export", migrate.ExportRequest{
+		SessionID: id, SourceEndpoint: localEndpoint(a), RuntimeMode: runtimeMode,
+		DryRun: dryRun, AllowDirty: allowDirty,
+	}, &exported, 2); err != nil {
+		return err
+	}
+	result := exported.Plan
+	result.TargetEndpoint = client.Endpoint()
+	if dryRun {
+		if a.wantJSON {
+			return writeJSON(a.stdout, result, true)
+		}
+		return writeMovePlan(a, result)
+	}
+	received, err := client.Receive(ctx, exported.Request)
+	if err != nil {
+		return fail(2, "%s", err)
+	}
+	created, err := client.Create(ctx, exported.Request)
+	if err != nil {
+		return fail(2, "conversation received but target resume failed: %s", err)
+	}
+	result.TargetID = created.Session.ID
+	result.Receive = received
+	result.TargetLineageRecorded = created.LineageRecorded
+	result.Warning = created.Warning
+	if err := a.postJSON("/api/migrate/complete", migrate.CompleteRequest{
+		SourceID: id, TargetEndpoint: client.Endpoint(), TargetID: created.Session.ID,
+		CheckpointRef: exported.Request.Workspace.CheckpointRef,
+	}, &map[string]any{}, 2); err != nil {
+		return fail(2, "target continued as %s but source lineage write failed: %s", created.Session.ID, err)
+	}
+	if a.wantJSON {
+		return writeJSON(a.stdout, result, true)
+	}
+	if _, err := fmt.Fprintf(a.stdout, "continued %s on %s as %s (%s)\n", id, client.Endpoint(), created.Session.ID, exported.Request.RuntimeMode); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(a.stdout, "conversation: %d bytes transferred\n", len(exported.Request.ConversationBytes)); err != nil {
+		return err
+	}
+	if created.Warning != "" {
+		if _, err := fmt.Fprintf(a.stdout, "warning: %s\n", created.Warning); err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprintln(a.stdout, "source history was preserved on its original machine")
 	return err
 }
 

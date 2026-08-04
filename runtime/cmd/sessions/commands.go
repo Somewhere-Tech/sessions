@@ -72,6 +72,8 @@ type createSessionRequest struct {
 	WaitReady   bool              `json:"waitReady,omitempty"`
 	Kind        string            `json:"kind,omitempty"`
 	Force       bool              `json:"force,omitempty"`
+	Permissions string            `json:"permissions,omitempty"`
+	Lifecycle   string            `json:"lifecycle,omitempty"`
 }
 
 type agentControls struct {
@@ -308,6 +310,33 @@ func (a *app) cmdNew(args []string) error {
 	body.WaitReady = removeFirst(&args, "--wait-ready")
 	tool, hasTool := pluck(&args, "--tool")
 	fullAccess := removeFirst(&args, "--full-access")
+	if value, present := pluck(&args, "--permissions"); present {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != state.PermissionsInherit && value != state.PermissionsConstrained && value != state.PermissionsFull {
+			return fail(1, "--permissions must be inherit, constrained, or full")
+		}
+		body.Permissions = value
+	}
+	if fullAccess {
+		if body.Permissions != "" && body.Permissions != state.PermissionsFull {
+			return fail(1, "--full-access conflicts with --permissions %s", body.Permissions)
+		}
+		body.Permissions = state.PermissionsFull
+	}
+	fullAccess = body.Permissions == state.PermissionsFull
+	if value, present := pluck(&args, "--lifecycle"); present {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != state.LifecycleTask && value != state.LifecycleSession {
+			return fail(1, "--lifecycle must be task or session")
+		}
+		body.Lifecycle = value
+	}
+	if removeFirst(&args, "--keep-alive") {
+		if body.Lifecycle == state.LifecycleTask {
+			return fail(1, "--keep-alive conflicts with --lifecycle task")
+		}
+		body.Lifecycle = state.LifecycleSession
+	}
 	// Compatibility for scripts written before constrained execution became
 	// the public default. It is now an explicit no-op, not a mode switch.
 	noSkipPermissions := removeFirst(&args, "--no-skip-perms")
@@ -614,6 +643,28 @@ func (a *app) cmdWait(args []string) error {
 				}{true, "gone"}, false)
 			}
 			_, err := io.WriteString(a.stdout, "gone\n")
+			return err
+		}
+		if !current.Working && (current.IdleReason == state.IdleReasonNeedsInput || current.IdleReason == state.IdleReasonFailed) {
+			if a.wantJSON {
+				return writeJSON(a.stdout, struct {
+					OK         bool   `json:"ok"`
+					Session    string `json:"session,omitempty"`
+					Reason     string `json:"reason"`
+					IdleReason string `json:"idleReason"`
+					Detail     string `json:"detail,omitempty"`
+					Summary    string `json:"summary,omitempty"`
+					Working    bool   `json:"working"`
+				}{true, current.ID, current.IdleReason, current.IdleReason, current.IdleDetail, current.LastSummary, false}, false)
+			}
+			message := current.LastSummary
+			if current.IdleReason == state.IdleReasonNeedsInput && current.IdleDetail != "" {
+				message = current.IdleDetail
+			}
+			if message == "" {
+				message = current.IdleReason
+			}
+			_, err := fmt.Fprintf(a.stdout, "%s — %s\n", current.IdleReason, message)
 			return err
 		}
 		idleFor := time.Duration(0)

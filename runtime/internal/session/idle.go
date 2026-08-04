@@ -182,7 +182,42 @@ func (m *Manager) handleIdle(session *state.Session, duration time.Duration) Idl
 	m.writeIdleSentinel(info)
 	m.runHook(info.OnIdle, info, hookContext, false)
 	m.runHook(m.hooks.OnIdle, info, hookContext, true)
+	if classification.Outcome == IdleDone && info.Lifecycle == state.LifecycleTask && summary != "" {
+		m.scheduleTaskCompletion(info.ID)
+	}
 	return classification
+}
+
+func (m *Manager) scheduleTaskCompletion(id string) {
+	m.startWorker(func() {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+		session, ok := m.registry.Get(id)
+		if !ok {
+			return
+		}
+		info := session.Info()
+		if info.Exited || info.Working || info.IdleReason != state.IdleReasonCompleted || info.Lifecycle != state.LifecycleTask {
+			return
+		}
+		provenance := m.withProvenance(context.Background(), []state.SessionInfo{info})[0]
+		if provenance.ParentSessionID == "" {
+			return
+		}
+		if err := m.RequestKillAttributed(context.Background(), id, false, state.EndSessionRequest{
+			InitiatorKind: string(ledger.CreatorSession),
+			InitiatorID:   provenance.ParentSessionID,
+			Client:        "sessionsd-task-lifecycle",
+			Reason:        "Delegated task completed",
+		}); err != nil {
+			// Completion remains visible and resumable if the durable end
+			// boundary cannot be recorded. Never trade history for cleanup.
+			return
+		}
+	})
 }
 
 func (m *Manager) runHook(script string, info state.SessionInfo, hook idleHookContext, timeout bool) {

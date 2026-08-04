@@ -15,7 +15,9 @@ including quirks; it is not a redesign.
   - `Vary: Origin`
   - `Access-Control-Allow-Methods: GET,POST,PUT,DELETE,OPTIONS` in the Go runtime
     (`GET,POST,DELETE,OPTIONS` in the retained Node compatibility fixture)
-  - `Access-Control-Allow-Headers: content-type, authorization`
+  - `Access-Control-Allow-Headers: content-type, authorization,
+    x-sessions-creator-session, x-sessions-owner-id, x-sessions-client,
+    x-sessions-filename, x-sessions-user-consent`
   - `Access-Control-Allow-Origin: <request Origin>` only when the Origin is
     allowed as described below.
 - Every `OPTIONS` request, regardless of path, returns 204 before auth or route
@@ -120,6 +122,8 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `fast` | boolean, optional | present as `true` for Codex priority service tier; otherwise omitted |
 | `setAsideAt` | number, optional | Unix epoch milliseconds when the live session was removed from the native app's default working set; this is organization, not lifecycle |
 | `delegation_kind` | `"user" \| "agent"`, optional | presentation provenance for a child session: explicitly started by the user or created by its parent agent |
+| `permissions` | `"constrained" \| "full"`, optional | daemon-resolved access class for this runtime; provider-specific approval and sandbox arguments remain visible in `args` |
+| `lifecycle` | `"task" \| "session"`, optional | `task` workers retire after a successful final response; `session` conversations remain live until explicitly ended |
 
 Exited sessions remain in the daemon map for 30 seconds. They are omitted from
 the default list but can be requested with `include_exited=1` during that grace
@@ -247,7 +251,7 @@ Auth required. Every request field is optional:
 | Field | JSON type | Source behavior/default |
 | --- | --- | --- |
 | `cmd` | string | `$SHELL`, else `/bin/bash` |
-| `args` | string[] | `[]`; Claude/Codex full-access defaults may be appended |
+| `args` | string[] | `[]`; the daemon resolves provider-specific constrained or full-access arguments |
 | `cwd` | string | `$HOME`, else OS home; must exist and be a directory |
 | `cols` | number | 300 |
 | `rows` | number | 50 |
@@ -259,13 +263,25 @@ Auth required. Every request field is optional:
 | `onIdle` | string | trimmed; empty becomes absent |
 | `waitReady` | boolean | only literal `true` waits for readiness, capped at 30 seconds |
 | `delegationKind` | `"user" \| "agent"` | optional child presentation provenance; requires a validated `X-Sessions-Creator-Session` parent |
+| `permissions` | `"inherit" \| "constrained" \| "full"` | optional requested access; `inherit` requires a parent, and a child cannot exceed its parent unless the user explicitly enabled autonomous delegated work |
+| `lifecycle` | `"task" \| "session"` | optional runtime lifetime; agent-created children default to `task`, while user-created sessions default to `session` |
 
 `RUNNER_*`, `NODE_OPTIONS`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, and
-`LD_PRELOAD` caller keys are stripped. Known Claude/Codex commands receive
-default full-access arguments unless any explicit mode flag is already present.
-Success is 201 with a bare `SessionInfo` object, not an envelope. Any caught
-failure is `400 {"error":"<message>"}`. Creating a session invokes launchd;
-there is no non-launchd create path in the normative implementation.
+`LD_PRELOAD` caller keys are stripped. User-created Claude/Codex sessions are
+constrained unless full access is explicitly requested. An agent-created child
+inherits the parent's exact Claude permission mode or Codex sandbox and
+approval flags. The daemon rejects self-escalation. A machine-level autonomous
+delegation choice can make new agent-created children full-access; only the
+explicit user-facing onboarding/Settings route can grant that choice. Success
+is 201 with a bare `SessionInfo` object, not an envelope. Any caught failure is
+`400 {"error":"<message>"}`. Creating a session invokes the platform runner
+supervisor; there is no unmanaged create path in the normative implementation.
+
+When a `task` worker produces a successful final response and becomes idle,
+the daemon records the normal durable end boundary and closes its runtime. Its
+transcript, parent/child lineage, and workspace stay available. A worker in
+`needs-input` or `failed` state is never auto-ended and Sessions never accepts
+its prompt by blindly sending Enter.
 
 Profile directories are created mode `0700` below
 `<UserStateRoot>/profiles/<tool>/<name>`. A profiled Claude launch receives
@@ -719,6 +735,76 @@ new session is displayed beneath the source as a branch; trusted creator
 provenance is not rewritten. The route never sends an end request, never marks
 the source as reopened, and never requires a force flag.
 
+### Cross-machine continuation
+
+Cross-machine continuation is client-mediated. The native app or CLI
+authenticates to the source and destination independently; neither daemon
+receives the other daemon's bearer credential. The source provider history is
+copied rather than deleted, and both ledgers record the continuation link only
+after the target runtime starts. Only ended Claude and Codex sessions using the
+default provider store are eligible. Isolated profile credentials, arbitrary
+attachments, usage data, PTY history, and the full Sessions ledger are never
+transferred.
+
+#### `POST /api/migrate/export`
+
+Auth required on the source. Body:
+
+```json
+{
+  "session_id": "<ended source id>",
+  "source_endpoint": "https://source.example.ts.net",
+  "runtime_mode": "rich",
+  "dry_run": true,
+  "allow_dirty": false
+}
+```
+
+`runtime_mode` is optional and must be `rich` or `terminal`. The route resolves
+the exact provider conversation and safe resume recipe from the source's own
+ledger and provider files. It rejects a live source with 409, an unsupported or
+profiled source with 400, and a missing session with 404. `dry_run` computes the
+plan without creating a checkpoint or writing a ledger event. A successful
+response contains `request`, the authenticated handoff the client will carry to
+the target, and `plan`, the operator review object. Conversation bytes are
+bounded to 64 MiB.
+
+#### `POST /api/migrate/receive`
+
+Auth required on the destination. It accepts the `request` returned by export,
+verifies the minimal provider resume recipe and conversation identity, prepares
+or validates the destination workspace, and writes a new mode-0600 provider
+history file. An identical existing file is idempotent; a different file at the
+same provider identity is never overwritten. This route does not start a
+runtime.
+
+#### `POST /api/migrate/create`
+
+Auth required on the destination. It accepts the same handoff metadata after a
+successful receive, validates it again, starts exactly one target runtime
+through the normal write-ahead create boundary, and records `moved_from`
+provenance. It returns 201 with the new `SessionInfo`, lineage status, and any
+recoverable annotation warning.
+
+#### `POST /api/migrate/complete`
+
+Auth required on the source. Body:
+
+```json
+{
+  "source_id": "<ended source id>",
+  "target_endpoint": "https://target.example.ts.net",
+  "target_id": "<new target id>",
+  "checkpoint_ref": "<optional Git checkpoint>"
+}
+```
+
+The client calls this only after target creation succeeds. It verifies that the
+source is still a known ended session, validates the target endpoint, and
+records `moved_to` on the source. Failure does not remove the target or source
+provider history; the returned error identifies that the target is live but the
+source lineage annotation needs repair.
+
 ### `GET /api/directories`
 
 Auth required. Returns `200 {"directories":[...]}`. Each entry is:
@@ -883,26 +969,32 @@ invalid JSON return 400; persistence errors return 500. Other methods return
 Returns the current machine-level user choice:
 
 ```json
-{"version":1,"complete":false,"remoteControl":"pending"}
+{"version":2,"complete":false,"remoteControl":"pending","delegatedAccess":"pending"}
 ```
 
 `remoteControl` is `pending`, `enabled`, or `local-only`. A missing, legacy, or
 older-version onboarding record is always `pending`; provider settings do not
-implicitly migrate into consent.
+implicitly migrate into consent. `delegatedAccess` is `pending`, `inherit`, or
+`autonomous`. `inherit` gives an agent-created child its manager's exact
+provider permission mode. `autonomous` is explicit user consent for newly
+created delegated children to use full access; it does not alter an existing
+runtime.
 
 ### `PUT /api/onboarding`
 
-The user-facing app submits either `{"remoteControl":"enabled"}` or
-`{"remoteControl":"local-only"}` with
-`X-Sessions-User-Consent: remote-control`. The daemon atomically records the
-current onboarding version and corresponding Claude launch default. A missing
-consent header returns 403; unknown choices and invalid JSON return 400.
+The user-facing app submits both choices, for example
+`{"remoteControl":"enabled","delegatedAccess":"inherit"}`, with
+`X-Sessions-User-Consent: onboarding`. A v1 client that omits
+`delegatedAccess` receives the conservative `inherit` behavior. The daemon
+atomically records the current onboarding version, corresponding Claude launch
+default, and delegated-access setting. A missing consent header returns 403;
+unknown choices and invalid JSON return 400.
 
-This is the only Sessions API that can grant Remote Control consent. The CLI
-exposes `sessions onboarding` as read-only status so an agent can inspect and
-explain the choice but cannot silently make it. All routes still require the
-normal daemon authorization. The extra header is a product-surface guard, not
-a second authentication factor.
+This is the only Sessions API that can grant Remote Control or autonomous
+delegation consent. The CLI exposes `sessions onboarding` as read-only status
+so an agent can inspect and explain either choice but cannot silently make it.
+All routes still require the normal daemon authorization. The extra header is a
+product-surface guard, not a second authentication factor.
 
 ### `GET /api/claude/settings`
 

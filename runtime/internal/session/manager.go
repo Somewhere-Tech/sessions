@@ -877,6 +877,10 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 	} else if request.DelegationKind != "" {
 		return state.SessionInfo{}, errors.New("delegation kind requires a parent session")
 	}
+	request, err = m.resolveDelegatedExecution(ctx, request, creatorKind, creatorID)
+	if err != nil {
+		return state.SessionInfo{}, fmt.Errorf("resolve delegated execution: %w", err)
+	}
 
 	providerUUID, _ := ledger.ExistingProviderResume(request.Cmd, request.Args)
 	var takeover *ledger.LiveBinding
@@ -1160,6 +1164,7 @@ func (m *Manager) InputAttributed(ctx context.Context, id, data string, attribut
 	if !m.registry.Input(ctx, id, data) {
 		return &MessageInputUnavailableError{SessionID: id}
 	}
+	m.clearIdleAfterInput(id)
 	exact := sha256.Sum256([]byte(data))
 	normalizedText := strings.TrimSpace(data)
 	normalized := sha256.Sum256([]byte(normalizedText))
@@ -1175,6 +1180,7 @@ func (m *Manager) InputAttributed(ctx context.Context, id, data string, attribut
 }
 
 func (m *Manager) afterInput(ctx context.Context, id, data string, source ledger.ActivitySource) {
+	m.clearIdleAfterInput(id)
 	if current, ok := m.registry.Get(id); ok && current.Info().SetAsideAt != nil {
 		if _, err := m.registry.UpdateSetAside(id, false); err != nil {
 			log.Printf("[working-set] bring back %s after input: %v", id, err)
@@ -1186,6 +1192,12 @@ func (m *Manager) afterInput(ctx context.Context, id, data string, source ledger
 			Meta: ledger.Meta{LaneID: id}, Source: source,
 		})
 	})
+}
+
+func (m *Manager) clearIdleAfterInput(id string) {
+	if current, ok := m.registry.Get(id); ok {
+		current.ClearIdleResult()
+	}
 }
 
 // MessageRelays returns the content-free attribution facts for one target

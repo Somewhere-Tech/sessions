@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   fetchAISettings,
   fetchClaudeSettings,
+  fetchOnboardingState,
   fetchProfiles,
   fetchProviderStatuses,
   fetchRecapSettings,
@@ -74,6 +75,10 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange,
   const [claudeBusy, setClaudeBusy] = useState(false);
   const [claudeAvailable, setClaudeAvailable] = useState(true);
   const [claudeMessage, setClaudeMessage] = useState<string | null>(null);
+  const [delegatedAccess, setDelegatedAccess] = useState<'inherit' | 'autonomous'>('inherit');
+  const [delegationBusy, setDelegationBusy] = useState(false);
+  const [delegationAvailable, setDelegationAvailable] = useState(true);
+  const [delegationMessage, setDelegationMessage] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<AccountProfile[]>([]);
   const [updateInfo, setUpdateInfo] = useState<NativeUpdateInfo | null>(null);
   const [updateProgress, setUpdateProgress] = useState<NativeUpdateProgress | null>(null);
@@ -111,6 +116,21 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange,
         if (!controller.signal.aborted && claudeGeneration.current === nextClaude) {
           setClaudeAvailable(false);
           setClaudeMessage('Claude defaults require a current Sessions runtime.');
+        }
+      });
+    setDelegationBusy(false);
+    setDelegationAvailable(true);
+    setDelegationMessage(null);
+    void fetchOnboardingState(controller.signal)
+      .then((value) => {
+        setDelegatedAccess(value.delegatedAccess === 'autonomous' ? 'autonomous' : 'inherit');
+        setDelegationAvailable(value.supported !== false);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setDelegatedAccess('inherit');
+          setDelegationAvailable(false);
+          setDelegationMessage('Delegated access requires a current Sessions runtime.');
         }
       });
     if (!native) return () => controller.abort();
@@ -226,7 +246,7 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange,
     setClaudeSettings({ ...previous, remoteControl: enabled ? 'on' : 'off' });
     setClaudeMessage(null);
     try {
-      await updateOnboardingPreference(enabled ? 'enabled' : 'local-only');
+      await updateOnboardingPreference(enabled ? 'enabled' : 'local-only', delegatedAccess);
       const saved = await fetchClaudeSettings();
       if (claudeGeneration.current !== generation) return;
       setClaudeSettings(saved);
@@ -240,6 +260,28 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange,
       }
     } finally {
       if (claudeGeneration.current === generation) setClaudeBusy(false);
+    }
+  };
+
+  const saveDelegatedAccess = async (access: 'inherit' | 'autonomous'): Promise<void> => {
+    if (delegationBusy || !delegationAvailable) return;
+    const previous = delegatedAccess;
+    setDelegationBusy(true);
+    setDelegatedAccess(access);
+    setDelegationMessage(null);
+    try {
+      await updateOnboardingPreference(
+        claudeSettings.remoteControl === 'on' ? 'enabled' : 'local-only',
+        access
+      );
+      setDelegationMessage(access === 'autonomous'
+        ? 'Agent-created task workers may use full access. Existing sessions are unchanged.'
+        : 'Agent-created children inherit their manager’s permissions.');
+    } catch (error) {
+      setDelegatedAccess(previous);
+      setDelegationMessage(error instanceof Error ? error.message : 'Could not save delegated access.');
+    } finally {
+      setDelegationBusy(false);
     }
   };
 
@@ -332,10 +374,15 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange,
             claudeBusy={claudeBusy}
             claudeAvailable={claudeAvailable}
             claudeMessage={claudeMessage}
+            delegatedAccess={delegatedAccess}
+            delegationBusy={delegationBusy}
+            delegationAvailable={delegationAvailable}
+            delegationMessage={delegationMessage}
             onAIProvider={saveAIProvider}
             onRecapProvider={saveRecapProvider}
             onClaudeSettings={saveClaudeSettings}
             onRemoteControl={saveRemoteControlPreference}
+            onDelegatedAccess={saveDelegatedAccess}
             onClaudeDraft={setClaudeSettings}
           />
         ) : section === 'accounts' ? (
@@ -441,8 +488,13 @@ interface AgentSettingsProps {
   claudeBusy: boolean;
   claudeAvailable: boolean;
   claudeMessage: string | null;
+  delegatedAccess: 'inherit' | 'autonomous';
+  delegationBusy: boolean;
+  delegationAvailable: boolean;
+  delegationMessage: string | null;
   onClaudeSettings: (settings: ClaudeSettings) => Promise<void>;
   onRemoteControl: (enabled: boolean) => Promise<void>;
+  onDelegatedAccess: (access: 'inherit' | 'autonomous') => Promise<void>;
   onClaudeDraft: (settings: ClaudeSettings) => void;
 }
 
@@ -464,6 +516,13 @@ function AgentSettings(props: AgentSettingsProps): JSX.Element {
         <label className="settings-select-row"><span><strong>Somewhere MCP</strong><small>Adopts an existing equivalent registration; otherwise launches the local `somewhere mcp` adapter without copying its credential.</small></span><select value={props.claudeSettings.somewhereMcp} disabled={props.claudeBusy || !props.claudeAvailable} onChange={(event) => void props.onClaudeSettings({ ...props.claudeSettings, somewhereMcp: event.currentTarget.value as ClaudeSettings['somewhereMcp'] })}><option value="inherit">Use Claude configuration</option><option value="ensure">Ensure enabled</option></select></label>
         <label className="settings-select-row"><span><strong>Remote Control name prefix</strong><small>Optional label prefix for sessions visible on claude.ai.</small></span><input value={props.claudeSettings.remoteControlNamePrefix} disabled={props.claudeBusy || !props.claudeAvailable} maxLength={64} placeholder="This Mac" onChange={(event) => props.onClaudeDraft({ ...props.claudeSettings, remoteControlNamePrefix: event.currentTarget.value })} onBlur={() => void props.onClaudeSettings(props.claudeSettings)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>
         {props.claudeMessage ? <div className="settings-message" role="status">{props.claudeMessage}</div> : null}
+      </div>
+      <div className="settings-card">
+        <h2>Delegated task access</h2>
+        <p>Applies only when one Sessions agent starts another. It never changes an existing session or lets a child escalate itself.</p>
+        <label className="settings-select-row"><span><strong>Child-agent permissions</strong><small>Inherited keeps each worker inside its manager’s access. Autonomous is an explicit opt-in for unattended delegated work.</small></span><select value={props.delegatedAccess} disabled={props.delegationBusy || !props.delegationAvailable} onChange={(event) => void props.onDelegatedAccess(event.currentTarget.value as 'inherit' | 'autonomous')}><option value="inherit">Inherit manager permissions</option><option value="autonomous">Autonomous delegated work</option></select></label>
+        <div className="settings-message">Agent-created workers close after a successful final response. Approval questions stay open as Needs you and are never accepted automatically.</div>
+        {props.delegationMessage ? <div className="settings-message" role="status">{props.delegationMessage}</div> : null}
       </div>
       <div className="settings-card">
         <h2>Smart search</h2>

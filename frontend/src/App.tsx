@@ -562,7 +562,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
           // The daemon enforces the consent gate even if this read fails.
           // Keep the app usable and conservatively describe the machine as
           // local-only until the next reload or server switch.
-          setOnboarding({ version: 0, complete: true, remoteControl: 'local-only', supported: false });
+          setOnboarding({ version: 0, complete: true, remoteControl: 'local-only', delegatedAccess: 'inherit', supported: false });
         }
       });
     return () => controller.abort();
@@ -573,13 +573,14 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     setCommandPaletteOpen(false);
   }, [onboardingPending]);
   const chooseOnboardingPreference = useCallback(async (
-    choice: 'enabled' | 'local-only'
+    remoteControl: 'enabled' | 'local-only',
+    delegatedAccess: 'inherit' | 'autonomous'
   ): Promise<void> => {
     if (onboardingBusy) return;
     setOnboardingBusy(true);
     setOnboardingError(null);
     try {
-      setOnboarding(await updateOnboardingPreference(choice));
+      setOnboarding(await updateOnboardingPreference(remoteControl, delegatedAccess));
     } catch (reason) {
       setOnboardingError(reason instanceof Error ? reason.message : 'Could not save this choice.');
     } finally {

@@ -13,18 +13,24 @@ const resume = source('src/components/ResumeDialog.tsx');
 assert.match(app, /fetchOnboardingState/);
 assert.match(app, /onboarding\.supported !== false && !onboarding\.complete/);
 assert.match(app, /<OnboardingDialog/);
-assert.match(api, /X-Sessions-User-Consent': 'remote-control'/);
+assert.match(api, /X-Sessions-User-Consent': 'onboarding'/);
 assert.match(api, /remoteControl: 'pending' \| 'enabled' \| 'local-only'/);
+assert.match(api, /delegatedAccess: 'pending' \| 'inherit' \| 'autonomous'/);
 
 assert.match(onboarding, /Enable Remote Control/);
 assert.match(onboarding, /Keep sessions local/);
 assert.match(onboarding, /connect directly to Anthropic/);
 assert.match(onboarding, /Sessions does not relay that conversation through Somewhere/);
 assert.match(onboarding, /cannot grant it for you/);
+assert.match(onboarding, /Inherit manager permissions/);
+assert.match(onboarding, /Allow autonomous delegated work/);
+assert.match(onboarding, /An agent cannot enable autonomous access for itself/);
 assert.doesNotMatch(onboarding, /onClick=\{onClose\}|launcher-close|dialog-head-link/);
 
 assert.match(settings, /updateOnboardingPreference/);
 assert.match(settings, /Keep sessions local/);
+assert.match(settings, /Delegated task access/);
+assert.match(settings, /Approval questions stay open as Needs you and are never accepted automatically/);
 assert.doesNotMatch(settings, /<option value="inherit">Use Claude’s setting<\/option>/);
 assert.doesNotMatch(newSession, /<span>Remote Control<\/span><select/);
 assert.match(newSession, /A session cannot turn it on by itself/);

@@ -26,7 +26,7 @@ const (
 	ClaudeChoiceOn      = "on"
 	ClaudeChoiceOff     = "off"
 
-	OnboardingCurrentVersion      = 1
+	OnboardingCurrentVersion      = 2
 	RemoteControlConsentPending   = "pending"
 	RemoteControlConsentEnabled   = "enabled"
 	RemoteControlConsentLocalOnly = "local-only"
@@ -94,14 +94,26 @@ func DefaultClaudeSettings() ClaudeSettings {
 // user-facing Sessions surface. It is deliberately separate from Claude launch
 // defaults so an old "inherit" or "on" value cannot silently become consent.
 type OnboardingSettings struct {
-	Version              int    `json:"version"`
-	RemoteControlConsent string `json:"remoteControlConsent"`
+	Version                int    `json:"version"`
+	RemoteControlConsent   string `json:"remoteControlConsent"`
+	DelegatedAccessConsent string `json:"delegatedAccessConsent,omitempty"`
 }
 
 type OnboardingState struct {
-	Version       int    `json:"version"`
-	Complete      bool   `json:"complete"`
-	RemoteControl string `json:"remoteControl"`
+	Version         int    `json:"version"`
+	Complete        bool   `json:"complete"`
+	RemoteControl   string `json:"remoteControl"`
+	DelegatedAccess string `json:"delegatedAccess"`
+}
+
+const (
+	DelegatedAccessConsentPending    = "pending"
+	DelegatedAccessConsentInherited  = "inherit"
+	DelegatedAccessConsentAutonomous = "autonomous"
+)
+
+type DelegationSettings struct {
+	Access string `json:"access"`
 }
 
 func NormalizeClaudeSettings(settings ClaudeSettings) (ClaudeSettings, error) {
@@ -284,6 +296,7 @@ type Settings struct {
 	Recap      *RecapSettings      `json:"recap,omitempty"`
 	AI         *AISettings         `json:"ai,omitempty"`
 	Claude     *ClaudeSettings     `json:"claude,omitempty"`
+	Delegation *DelegationSettings `json:"delegation,omitempty"`
 	Onboarding *OnboardingSettings `json:"onboarding,omitempty"`
 }
 
@@ -319,19 +332,37 @@ func (s Settings) EffectiveClaude() ClaudeSettings {
 	return effective
 }
 
+func (s Settings) EffectiveDelegation() DelegationSettings {
+	value := DelegationSettings{Access: DelegatedAccessConsentInherited}
+	if s.Delegation != nil && (s.Delegation.Access == DelegatedAccessConsentInherited || s.Delegation.Access == DelegatedAccessConsentAutonomous) {
+		value = *s.Delegation
+	}
+	if s.EffectiveOnboarding().DelegatedAccess != DelegatedAccessConsentAutonomous {
+		value.Access = DelegatedAccessConsentInherited
+	}
+	return value
+}
+
 func (s Settings) EffectiveOnboarding() OnboardingState {
 	state := OnboardingState{
-		Version:       OnboardingCurrentVersion,
-		RemoteControl: RemoteControlConsentPending,
+		Version:         OnboardingCurrentVersion,
+		RemoteControl:   RemoteControlConsentPending,
+		DelegatedAccess: DelegatedAccessConsentPending,
 	}
 	if s.Onboarding == nil || s.Onboarding.Version < OnboardingCurrentVersion {
 		return state
 	}
-	switch s.Onboarding.RemoteControlConsent {
-	case RemoteControlConsentEnabled, RemoteControlConsentLocalOnly:
-		state.Complete = true
+	if oneOf(s.Onboarding.RemoteControlConsent, RemoteControlConsentEnabled, RemoteControlConsentLocalOnly) {
 		state.RemoteControl = s.Onboarding.RemoteControlConsent
 	}
+	if oneOf(s.Onboarding.DelegatedAccessConsent, DelegatedAccessConsentInherited, DelegatedAccessConsentAutonomous) {
+		state.DelegatedAccess = s.Onboarding.DelegatedAccessConsent
+	} else if s.Onboarding.Version >= OnboardingCurrentVersion {
+		// Conservative compatibility for v2 settings written by an early
+		// client that knew only about Remote Control.
+		state.DelegatedAccess = DelegatedAccessConsentInherited
+	}
+	state.Complete = state.RemoteControl != RemoteControlConsentPending && state.DelegatedAccess != DelegatedAccessConsentPending
 	return state
 }
 

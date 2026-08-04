@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,6 +19,7 @@ import (
 func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
+	config.SettingsPath = filepath.Join(root, "settings.json")
 	store, err := ledger.Open(context.Background(), ledger.Options{Path: filepath.Join(root, "ledger", "lanes.sqlite3")})
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +60,12 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 	if child.DelegationKind != "agent" || grandchild.DelegationKind != "agent" {
 		t.Fatalf("agent-created child presentation provenance = child %q grandchild %q", child.DelegationKind, grandchild.DelegationKind)
 	}
+	if parent.Permissions != state.PermissionsConstrained || parent.Lifecycle != state.LifecycleSession {
+		t.Fatalf("root execution policy = permissions %q lifecycle %q", parent.Permissions, parent.Lifecycle)
+	}
+	if child.Permissions != state.PermissionsConstrained || child.Lifecycle != state.LifecycleTask {
+		t.Fatalf("delegated execution policy = permissions %q lifecycle %q", child.Permissions, child.Lifecycle)
+	}
 	userChild, err := manager.Create(context.Background(), state.CreateSessionRequest{
 		Cmd: "/bin/sh", Cwd: root, Name: "Explicit helper", CreatorSessionID: parent.ID, DelegationKind: "user",
 	})
@@ -66,6 +74,79 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 	}
 	if userChild.DelegationKind != "user" {
 		t.Fatalf("user-created child presentation provenance = %q, want user", userChild.DelegationKind)
+	}
+	if userChild.Lifecycle != state.LifecycleSession {
+		t.Fatalf("user-created child lifecycle = %q, want session", userChild.Lifecycle)
+	}
+	if _, createErr := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "codex", Cwd: root, CreatorSessionID: parent.ID, Permissions: state.PermissionsFull,
+	}); createErr == nil || !strings.Contains(createErr.Error(), "cannot exceed its parent's permissions") {
+		t.Fatalf("child permission escalation err=%v", createErr)
+	}
+	if err := state.SaveSettings(config.SettingsPath, state.Settings{
+		Delegation: &state.DelegationSettings{Access: state.DelegatedAccessConsentAutonomous},
+		Onboarding: &state.OnboardingSettings{
+			Version: state.OnboardingCurrentVersion, RemoteControlConsent: state.RemoteControlConsentLocalOnly,
+			DelegatedAccessConsent: state.DelegatedAccessConsentAutonomous,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	autonomous, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "codex", Cwd: root, CreatorSessionID: parent.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if autonomous.Permissions != state.PermissionsFull || !slices.Contains(autonomous.Args, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("autonomous delegated execution = %#v", autonomous)
+	}
+	task, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/sh", Cwd: root, CreatorSessionID: parent.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskSession, ok := manager.registry.Get(task.ID)
+	if !ok {
+		t.Fatal("delegated task was not registered")
+	}
+	taskSession.SetIdleResult(state.IdleReasonCompleted, "", "Focused work finished.", time.Now().UnixMilli())
+	manager.scheduleTaskCompletion(task.ID)
+	awaitCondition(t, func() bool {
+		current, present := manager.registry.Get(task.ID)
+		return present && current.Info().Exited
+	})
+	taskEvents, err := store.Events(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskState := ledger.Fold(taskEvents)[0]
+	if taskState.EndInitiatorID != parent.ID || taskState.EndClient != "sessionsd-task-lifecycle" || taskState.EndReason != "Delegated task completed" {
+		t.Fatalf("automatic task end = %#v", taskState)
+	}
+	followup, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/sh", Cwd: root, CreatorSessionID: parent.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	followupSession, ok := manager.registry.Get(followup.ID)
+	if !ok {
+		t.Fatal("follow-up task was not registered")
+	}
+	followupSession.SetIdleResult(state.IdleReasonCompleted, "", "First result.", time.Now().UnixMilli())
+	manager.scheduleTaskCompletion(followup.ID)
+	if !manager.Input(context.Background(), followup.ID, "please continue\r") {
+		t.Fatal("follow-up input was not accepted")
+	}
+	time.Sleep(1200 * time.Millisecond)
+	current, present := manager.registry.Get(followup.ID)
+	if !present {
+		t.Fatal("new input did not cancel task cleanup: session disappeared")
+	}
+	if info := current.Info(); info.Exited || info.IdleReason != "" {
+		t.Fatalf("new input did not cancel task cleanup: %#v", info)
 	}
 	if grandchild.ParentSessionID != child.ID ||
 		!reflect.DeepEqual(grandchild.CreatorAncestry, []string{child.ID, parent.ID}) ||

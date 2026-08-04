@@ -10,6 +10,7 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/migrate"
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 func TestMigrateCreateStartsOneInteractiveClaudeTargetAndRecordsSourceLineage(t *testing.T) {
@@ -58,5 +59,59 @@ func TestMigrateCreateStartsOneInteractiveClaudeTargetAndRecordsSourceLineage(t 
 		states[0].MovedFromMachine != "http://source-machine" ||
 		states[0].MovedFromLaneID != "source-lane" {
 		t.Fatalf("target lineage = %#v", states)
+	}
+}
+
+func TestMigrateExportRefusesLiveSourceWithoutChangingIt(t *testing.T) {
+	daemon := newTestDaemon(t)
+	created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/sh", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = daemon.registry.RequestKill(context.Background(), created.ID, false) })
+	encoded, _ := json.Marshal(migrate.ExportRequest{SessionID: created.ID, SourceEndpoint: "http://source"})
+	response := serve(
+		t, daemon.handler, http.MethodPost, "/api/migrate/export",
+		bytes.NewReader(encoded), "198.51.100.20:7000",
+		http.Header{"Authorization": {"Bearer " + testToken}, "Content-Type": {"application/json"}},
+	)
+	if response.Code != http.StatusConflict || !bytes.Contains(response.Body.Bytes(), []byte("still live")) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	current, ok := daemon.registry.Get(created.ID)
+	if !ok || current.Info().Exited {
+		t.Fatal("export changed the live source")
+	}
+}
+
+func TestMigrateCompleteRejectsInvalidTargetEndpoint(t *testing.T) {
+	daemon := newTestDaemon(t)
+	encoded, _ := json.Marshal(migrate.CompleteRequest{
+		SourceID: "source", TargetID: "target", TargetEndpoint: "file:///tmp/not-a-daemon",
+	})
+	response := serve(
+		t, daemon.handler, http.MethodPost, "/api/migrate/complete",
+		bytes.NewReader(encoded), "198.51.100.20:7000",
+		http.Header{"Authorization": {"Bearer " + testToken}, "Content-Type": {"application/json"}},
+	)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestMigrateCompleteRequiresKnownEndedSource(t *testing.T) {
+	daemon := newTestDaemon(t)
+	encoded, _ := json.Marshal(migrate.CompleteRequest{
+		SourceID: "missing-source", TargetID: "target", TargetEndpoint: "https://target.example.ts.net",
+	})
+	response := serve(
+		t, daemon.handler, http.MethodPost, "/api/migrate/complete",
+		bytes.NewReader(encoded), "198.51.100.20:7000",
+		http.Header{"Authorization": {"Bearer " + testToken}, "Content-Type": {"application/json"}},
+	)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }

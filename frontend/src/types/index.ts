@@ -75,6 +75,8 @@ export interface SessionInfo {
   // Whether a child was explicitly delegated by a person or created by an
   // agent session. Legacy children omit this and stay fully visible.
   delegationKind?: 'user' | 'agent';
+  permissions?: 'constrained' | 'full';
+  lifecycle?: 'task' | 'session';
   // User-controlled visual grouping. Undefined preserves trusted creator
   // lineage; an empty string deliberately promotes the session to a root.
   displayParentSessionId?: string;
@@ -120,6 +122,8 @@ export interface CreateSessionRequest {
   // JSON body and sends it through the daemon's trusted creator header.
   creatorSessionId?: string;
   delegationKind?: 'user' | 'agent';
+  permissions?: 'inherit' | 'constrained' | 'full';
+  lifecycle?: 'task' | 'session';
 }
 
 export type ClaudeToggle = 'inherit' | 'on' | 'off';

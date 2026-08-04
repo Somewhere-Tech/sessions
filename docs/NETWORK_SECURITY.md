@@ -53,6 +53,41 @@ daemon token is cryptographically distinguishable from the app.
 Changing this setting affects only newly launched Claude processes. Sessions
 does not restart, terminate, or alter existing sessions.
 
+## Delegated task access
+
+The same user-facing onboarding/Settings surface asks whether agent-created
+children should inherit a manager's exact permission mode or receive autonomous
+full access. Inheritance is the default. The daemon resolves the choice below
+the UI and CLI, rejects child self-escalation, and applies it only to newly
+created children. The authenticated CLI exposes the current state read-only;
+an agent cannot grant autonomous consent through the normal command surface.
+
+Autonomous delegated access does not create a Sessions-owned network path. It
+changes the provider sandbox or approval mode for the child process, so that
+process and its tools may use whatever network access the provider and operating
+system allow. The product labels that authority explicitly and never treats
+automatic prompt acceptance as equivalent consent. A constrained child waiting
+for approval is reported as `needs-input` with the prompt reason; Sessions does
+not send Enter on its behalf.
+
+## Cross-machine continuation
+
+Moving a Claude or Codex conversation between approved computers is
+client-mediated. The native app or CLI authenticates to source and destination
+independently using each saved per-device credential. It never puts either
+credential in argv, the webview, the provider transcript, or a request to the
+other daemon. The source exports only the selected provider history, safe resume
+recipe, bounded workspace metadata, and lineage identifiers. The destination
+validates and receives that data before starting one new runtime; source
+completion is recorded only after target creation succeeds.
+
+The source provider file is preserved. Sessions does not transfer isolated
+profile credentials, environment variables, arbitrary attachments, PTY bytes,
+usage databases, or the full ledger. Transport security remains the selected
+machine connection's responsibility: prefer Tailscale Serve HTTPS for remote or
+untrusted networks, and use plain LAN HTTP only on a private network the user
+trusts.
+
 ## Review checklist for an outbound feature
 
 1. Is the destination allowlisted and is TLS/authentication fail-closed?

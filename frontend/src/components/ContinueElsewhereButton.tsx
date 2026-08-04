@@ -8,7 +8,7 @@ import {
   type NativeSavedMachine
 } from '../lib/tauriBridge';
 import { useSessions } from '../store/sessions';
-import { isLocalServer, useServers } from '../lib/servers';
+import { isLocalServer, serverDisplayName, useServers } from '../lib/servers';
 
 export function ContinueElsewhereButton({
   sessionId,
@@ -26,9 +26,11 @@ export function ContinueElsewhereButton({
   const serverId = useSessions((state) => state.serverId);
   const source = useSessions((state) => state.sessions.find((session) => session.id === sessionId)) ?? null;
   const sourceServer = useServers((state) => state.servers.find((server) => server.id === serverId)) ?? null;
+  const localServer = useServers((state) => state.servers.find((server) => server.isDefault && isLocalServer(server))) ?? null;
   const [open, setOpen] = useState(false);
   const [machines, setMachines] = useState<NativeSavedMachine[]>([]);
   const [selected, setSelected] = useState('');
+  const [sourceMachine, setSourceMachine] = useState('');
   const [plan, setPlan] = useState<NativeMovePlan | null>(null);
   const [allowDirty, setAllowDirty] = useState(false);
   const [runtimeMode, setRuntimeMode] = useState<'rich' | 'terminal'>(
@@ -38,7 +40,8 @@ export function ContinueElsewhereButton({
   const [error, setError] = useState<string | null>(null);
   const [complete, setComplete] = useState<NativeMovePlan | null>(null);
 
-  if (!isTauri() || !sourceServer || !isLocalServer(sourceServer)) return null;
+  if (!isTauri() || !sourceServer) return null;
+  const sourceLabel = serverDisplayName(sourceServer, true);
 
   const show = async (): Promise<void> => {
     setOpen(true);
@@ -49,8 +52,24 @@ export function ContinueElsewhereButton({
     setBusy(true);
     try {
       const values = await listNativeMoveMachines();
-      setMachines(values);
-      setSelected((current) => current || values[0]?.alias || '');
+      const remoteSource = !isLocalServer(sourceServer);
+      const normalizedSourceEndpoint = `${sourceServer.scheme ?? 'http'}://${sourceServer.host}:${sourceServer.port}`.replace(/\/$/, '');
+      const matchedSource = remoteSource
+        ? values.find((machine) => machine.machine_id === sourceServer.machineId || machine.endpoint.replace(/\/$/, '') === normalizedSourceEndpoint)
+        : undefined;
+      if (remoteSource && !matchedSource) {
+        throw new Error('This source computer is not in the protected native machine registry. Reconnect it from Fleet, then try again.');
+      }
+      setSourceMachine(matchedSource?.alias ?? '');
+      const destinations = values.filter((machine) => machine.machine_id !== matchedSource?.machine_id);
+      if (remoteSource && localServer) {
+        destinations.unshift({
+          alias: '__local__', machine_id: 'local', name: serverDisplayName(localServer, true),
+          endpoint: `http://127.0.0.1:${localServer.port}`, transport: 'local', device_id: '', connected_at: ''
+        });
+      }
+      setMachines(destinations);
+      setSelected((current) => destinations.some((machine) => machine.alias === current) ? current : destinations[0]?.alias || '');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not load saved machines.');
     } finally {
@@ -66,7 +85,7 @@ export function ContinueElsewhereButton({
       if (source && !source.exited) {
         await endSession(sessionId, 'Moved to another computer through Sessions');
       }
-      setPlan(await moveNativeSession(sessionId, selected, { dryRun: true, allowDirty, runtimeMode }));
+      setPlan(await moveNativeSession(sessionId, selected, { dryRun: true, allowDirty, runtimeMode, sourceMachine }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not prepare this continuation.');
     } finally {
@@ -79,7 +98,7 @@ export function ContinueElsewhereButton({
     setBusy(true);
     setError(null);
     try {
-      const result = await moveNativeSession(sessionId, selected, { dryRun: false, allowDirty, runtimeMode });
+      const result = await moveNativeSession(sessionId, selected, { dryRun: false, allowDirty, runtimeMode, sourceMachine });
       setComplete(result);
       await refresh();
     } catch (reason) {
@@ -117,7 +136,7 @@ export function ContinueElsewhereButton({
             {complete ? (
               <div className="continue-elsewhere-complete">
                 <strong>Conversation moved to {machines.find((machine) => machine.alias === selected)?.name || selected}.</strong>
-                <p>The original history remains on this machine. Sessions linked it to the new runtime <code>{complete.target_id?.slice(0, 8)}</code>.</p>
+                <p>The original history remains on {sourceLabel}. Sessions linked it to the new runtime <code>{complete.target_id?.slice(0, 8)}</code>.</p>
                 {complete.warning ? <p className="dialog-warning">{complete.warning}</p> : null}
                 <button type="button" className="btn btn-primary" onClick={() => setOpen(false)}>Done</button>
               </div>
@@ -125,8 +144,8 @@ export function ContinueElsewhereButton({
               <>
                 <p className="continue-elsewhere-explainer">
                   {source && !source.exited
-                    ? 'Moving stops this session here, then starts its conversation on the computer you choose. The source history stays here so nothing is deleted.'
-                    : 'Sessions starts this conversation on the computer you choose. The source history stays here so nothing is deleted.'}
+                    ? `Moving stops this session on ${sourceLabel}, then starts its conversation on the computer you choose. The source history stays there so nothing is deleted.`
+                    : `Sessions starts this conversation on the computer you choose. The source history stays on ${sourceLabel} so nothing is deleted.`}
                 </p>
                 {machines.length > 0 ? (
                   <label className="continue-elsewhere-machine">
@@ -145,7 +164,7 @@ export function ContinueElsewhereButton({
                 ) : !busy ? (
                   <div className="continue-elsewhere-empty">
                     <strong>No saved machines yet.</strong>
-                    <p>Pair one with <code>sessions machines connect</code>. The app then uses that private device credential without placing it in a command or the web view.</p>
+                    <p>Pair another computer from Fleet. The app uses protected device credentials without placing them in a command or the web view.</p>
                   </div>
                 ) : null}
                 <label className="continue-elsewhere-dirty">
@@ -181,7 +200,7 @@ export function ContinueElsewhereButton({
                       ? 'Conversation + Terminal'
                       : plan.runtime_mode === 'terminal' ? 'Terminal interface' : 'Rich conversation'}</span>
                     <span>{plan.workspace.git ? `Git ${plan.workspace.branch || 'workspace'} at ${(plan.workspace.revision || '').slice(0, 8)}` : 'The same folder must already exist on the destination'}</span>
-                    <span>Source history remains here</span>
+                    <span>Source history remains on {sourceLabel}</span>
                   </div>
                 ) : null}
                 {error ? <div className="dialog-error" role="alert">{error}</div> : null}

@@ -18,6 +18,20 @@ clear native UI. An agent may inspect and operate Sessions with the user's
 authority, but it does not bypass approvals, credentials, or destructive-action
 boundaries.
 
+Delegation is explicit authority, not a loophole. A child inherits its
+manager's exact provider permission mode by default and cannot promote itself.
+The user may opt into autonomous delegated work at the machine level, with that
+choice visible in Settings and applied only to newly created children. Provider
+approval prompts are durable `needs-input` state for users and agents; Sessions
+does not clear them by blindly typing into a terminal.
+
+Short-lived agent workers should finish without becoming clutter. An
+agent-created task runtime may close after a successful final response, while
+its transcript, lineage, workspace, and usage remain durable. User-led sessions
+and explicitly long-lived manager sessions remain open until somebody ends
+them. A failed or blocked task stays visible because cleanup must never hide an
+unresolved decision.
+
 ## History is an agent-native memory layer
 
 Sessions is not only a window manager. It is the durable index over Claude and
@@ -33,6 +47,11 @@ conversation is continued, Sessions preserves the source and records the new
 runtime as linked history. “Resurrect” means reconstructing a supported
 conversation from durable provider history—not pretending to restore process
 memory or uncommitted filesystem state.
+
+Provider helper and subagent messages remain searchable when they are present in
+the provider's durable conversation. Search must keep their authorship distinct
+from the person's messages so callers can filter or interpret them without
+pretending every provider-side event came directly from the user.
 
 ## Local by default
 

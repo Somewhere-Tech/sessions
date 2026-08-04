@@ -85,6 +85,8 @@ type Metadata struct {
 	DisplayParentSessionID *string           `json:"display_parent_session_id,omitempty"`
 	SetAsideAt             *int64            `json:"set_aside_at,omitempty"`
 	DelegationKind         string            `json:"delegation_kind,omitempty"`
+	Permissions            string            `json:"permissions,omitempty"`
+	Lifecycle              string            `json:"lifecycle,omitempty"`
 }
 
 // CompletionManifest is the durable terminal fact emitted by a headless lane.

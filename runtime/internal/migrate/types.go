@@ -106,3 +106,26 @@ type ReceiveOptions struct {
 	Home string
 	Now  func() time.Time
 }
+
+// ExportRequest is evaluated on the source daemon. The client then carries
+// the returned handoff to the destination, so neither daemon ever receives
+// the other daemon's long-lived device credential.
+type ExportRequest struct {
+	SessionID      string `json:"session_id"`
+	SourceEndpoint string `json:"source_endpoint"`
+	RuntimeMode    string `json:"runtime_mode,omitempty"`
+	DryRun         bool   `json:"dry_run,omitempty"`
+	AllowDirty     bool   `json:"allow_dirty,omitempty"`
+}
+
+type ExportResult struct {
+	Request ReceiveRequest `json:"request"`
+	Plan    MoveResult     `json:"plan"`
+}
+
+type CompleteRequest struct {
+	SourceID       string `json:"source_id"`
+	TargetEndpoint string `json:"target_endpoint"`
+	TargetID       string `json:"target_id"`
+	CheckpointRef  string `json:"checkpoint_ref,omitempty"`
+}

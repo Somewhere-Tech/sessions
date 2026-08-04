@@ -31,6 +31,8 @@ var (
 
 	inputPromptRE            = regexp.MustCompile(`(?i)\b(?:y/n|yes/no|do you want)\b|\[[yn]/[yn]\]|\b(?:continue|proceed)\s*\?|\?\s*$`)
 	permissionPromptRE       = regexp.MustCompile(`(?i)^\s*[❯›]\s*(?:approve|allow|trust)\b|\b(?:approve|allow|trust)\b.*(?:\?|:)\s*$`)
+	confirmationFooterRE     = regexp.MustCompile(`(?i)\bpress\s+enter\s+to\s+(?:confirm|continue|approve|allow)\b|\benter\s+to\s+(?:confirm|continue|approve|allow)\b.*\besc\s+to\s+(?:cancel|go\s+back)\b`)
+	promptReasonRE           = regexp.MustCompile(`(?i)^\s*reason\s*:\s*(.+)$`)
 	choicePromptRE           = regexp.MustCompile(`(?i)\b(?:which|select|choose)\b.*(?:\?|:)\s*$`)
 	numberedChoiceRE         = regexp.MustCompile(`^\s*(?:[>❯›^]\s*)?\d+[.)]\s+\S`)
 	selectedNumberedChoiceRE = regexp.MustCompile(`^\s*[>❯›^]\s*\d+[.)]\s+\S`)
@@ -89,6 +91,14 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 	}
 	for i := len(trailing) - 1; i >= 0; i-- {
 		line := trailing[i]
+		if confirmationFooterRE.MatchString(line) {
+			for previous := i - 1; previous >= 0; previous-- {
+				if match := promptReasonRE.FindStringSubmatch(trailing[previous]); len(match) == 2 {
+					return IdleClassification{Outcome: IdleBlocked, Line: displayLine(match[1])}
+				}
+			}
+			return IdleClassification{Outcome: IdleBlocked, Line: displayLine(line)}
+		}
 		if inputPromptRE.MatchString(line) || permissionPromptRE.MatchString(line) || choicePromptRE.MatchString(line) {
 			return IdleClassification{Outcome: IdleBlocked, Line: displayLine(line)}
 		}

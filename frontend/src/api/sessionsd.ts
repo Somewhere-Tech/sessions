@@ -522,6 +522,7 @@ export interface OnboardingState {
   version: number;
   complete: boolean;
   remoteControl: 'pending' | 'enabled' | 'local-only';
+  delegatedAccess: 'pending' | 'inherit' | 'autonomous';
   supported?: boolean;
 }
 
@@ -530,21 +531,22 @@ export async function fetchOnboardingState(signal?: AbortSignal): Promise<Onboar
   // Older daemons cannot enable Sessions' new Remote Control default, so
   // allowing their UI through is safe and keeps mixed-version Fleet usable.
   if (r.status === 404) {
-    return { version: 0, complete: true, remoteControl: 'local-only', supported: false };
+    return { version: 0, complete: true, remoteControl: 'local-only', delegatedAccess: 'inherit', supported: false };
   }
   return { ...(await json<OnboardingState>(r)), supported: true };
 }
 
 export async function updateOnboardingPreference(
-  remoteControl: 'enabled' | 'local-only'
+  remoteControl: 'enabled' | 'local-only',
+  delegatedAccess: 'inherit' | 'autonomous'
 ): Promise<OnboardingState> {
   const r = await apiFetch(`${httpBase()}/api/onboarding`, {
     method: 'PUT',
     headers: {
       'content-type': 'application/json',
-      'X-Sessions-User-Consent': 'remote-control'
+      'X-Sessions-User-Consent': 'onboarding'
     },
-    body: JSON.stringify({ remoteControl })
+    body: JSON.stringify({ remoteControl, delegatedAccess })
   });
   return { ...(await featureJSON<OnboardingState>(r, 'Onboarding')), supported: true };
 }

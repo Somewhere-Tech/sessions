@@ -4,17 +4,137 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/migrate"
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 func (s *Server) handleMoveRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
-	if request.URL.Path != "/api/migrate/receive" && request.URL.Path != "/api/migrate/create" {
+	if request.URL.Path != "/api/migrate/export" && request.URL.Path != "/api/migrate/complete" && request.URL.Path != "/api/migrate/receive" && request.URL.Path != "/api/migrate/create" {
 		return false
 	}
 	if request.Method != http.MethodPost {
 		s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+		return true
+	}
+	if request.URL.Path == "/api/migrate/export" {
+		var body migrate.ExportRequest
+		if err := readJSON(request, &body); err != nil {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+			return true
+		}
+		body.SessionID = strings.TrimSpace(body.SessionID)
+		if body.SessionID == "" {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "session_id is required"}, corsOrigin)
+			return true
+		}
+		var source *state.SessionInfo
+		for _, candidate := range s.registry.List(true) {
+			if candidate.ID == body.SessionID {
+				value := candidate
+				source = &value
+				break
+			}
+		}
+		if source == nil {
+			s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "session not found"}, corsOrigin)
+			return true
+		}
+		if !source.Exited {
+			s.sendJSON(response, http.StatusConflict, map[string]any{"error": "session is still live; end it before moving"}, corsOrigin)
+			return true
+		}
+		if source.Tool != state.ToolClaude && source.Tool != state.ToolCodex {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "only Claude and Codex conversations can move"}, corsOrigin)
+			return true
+		}
+		if source.Profile != "" || source.ConfigDir != "" {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "isolated provider profiles cannot move between machines yet"}, corsOrigin)
+			return true
+		}
+		store, err := ledger.Open(request.Context(), ledger.Options{})
+		if err != nil {
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": "open source ledger: " + err.Error()}, corsOrigin)
+			return true
+		}
+		defer store.Close()
+		handoff, err := migrate.ResolveSource(request.Context(), store, migrate.SourceSession{
+			ID: source.ID, Name: source.Name, Tool: string(source.Tool), Cmd: source.Cmd,
+			Args: source.Args, Cwd: source.Cwd, CreatedAt: source.CreatedAt,
+		})
+		if err != nil {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+			return true
+		}
+		workspace, err := migrate.PrepareWorkspace(request.Context(), source.Cwd, source.ID, migrate.WorkspaceOptions{
+			AllowDirty: body.AllowDirty, DryRun: body.DryRun,
+		})
+		if err != nil {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+			return true
+		}
+		handoff.Workspace = workspace
+		handoff.SourceEndpoint = strings.TrimSpace(body.SourceEndpoint)
+		if body.RuntimeMode != "" {
+			if body.RuntimeMode != migrate.RuntimeRich && body.RuntimeMode != migrate.RuntimeTerminal {
+				s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "runtime_mode must be rich or terminal"}, corsOrigin)
+				return true
+			}
+			handoff.RuntimeMode = body.RuntimeMode
+		}
+		result := migrate.ExportResult{Request: handoff, Plan: migrate.MoveResult{
+			SourceID: source.ID, Tool: handoff.Tool, Cwd: handoff.Cwd,
+			ResumeRecipe: append([]string(nil), handoff.ResumeRecipe...), RuntimeMode: handoff.RuntimeMode,
+			Workspace: workspace, ConversationSize: len(handoff.ConversationBytes), DryRun: body.DryRun,
+		}}
+		s.sendJSON(response, http.StatusOK, result, corsOrigin)
+		return true
+	}
+	if request.URL.Path == "/api/migrate/complete" {
+		var body migrate.CompleteRequest
+		if err := readJSON(request, &body); err != nil {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+			return true
+		}
+		if strings.TrimSpace(body.SourceID) == "" || strings.TrimSpace(body.TargetID) == "" || strings.TrimSpace(body.TargetEndpoint) == "" {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "source_id, target_id, and target_endpoint are required"}, corsOrigin)
+			return true
+		}
+		if _, err := migrate.NewClient(body.TargetEndpoint, ""); err != nil {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+			return true
+		}
+		var source *state.SessionInfo
+		for _, candidate := range s.registry.List(true) {
+			if candidate.ID == body.SourceID {
+				value := candidate
+				source = &value
+				break
+			}
+		}
+		if source == nil {
+			s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "source session not found"}, corsOrigin)
+			return true
+		}
+		if !source.Exited {
+			s.sendJSON(response, http.StatusConflict, map[string]any{"error": "source session is still live; no move was recorded"}, corsOrigin)
+			return true
+		}
+		store, err := ledger.Open(request.Context(), ledger.Options{})
+		if err == nil {
+			defer store.Close()
+			err = store.Migrations().RecordMovedTo(request.Context(), ledger.MovedTo{
+				Meta: ledger.Meta{LaneID: body.SourceID}, TargetEndpoint: body.TargetEndpoint,
+				NewLaneID: body.TargetID, CheckpointRef: body.CheckpointRef,
+			})
+		}
+		if err != nil {
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
+			return true
+		}
+		s.sendJSON(response, http.StatusOK, map[string]any{"ok": true}, corsOrigin)
 		return true
 	}
 	if request.URL.Path == "/api/migrate/create" {

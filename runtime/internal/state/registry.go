@@ -55,6 +55,8 @@ type PreparedSession struct {
 	WorktreeBase      string
 	SourceRepo        string
 	DelegationKind    string
+	Permissions       string
+	Lifecycle         string
 }
 
 type SessionMetadata struct {
@@ -65,6 +67,8 @@ type SessionMetadata struct {
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
 	DelegationKind         string
+	Permissions            string
+	Lifecycle              string
 	OnIdle                 string
 	Kind                   string
 	SpecPath               string
@@ -245,7 +249,7 @@ func (r *Registry) CreateWithLifecycle(
 		Profile: profile, ConfigDir: configDir,
 		WorktreePath: request.WorktreePath, WorktreeBranch: request.WorktreeBranch,
 		WorktreeBase: request.WorktreeBase, SourceRepo: request.SourceRepo,
-		DelegationKind: request.DelegationKind,
+		DelegationKind: request.DelegationKind, Permissions: request.Permissions, Lifecycle: request.Lifecycle,
 	}
 	if prepared.Name != "" {
 		launchRequest.Env["RUNNER_NAME"] = prepared.Name
@@ -291,6 +295,7 @@ func (r *Registry) CreateWithLifecycle(
 		Tags: CloneTags(prepared.Tags), DisplayParentSessionID: cloneStringPointer(request.DisplayParentSessionID),
 		OnIdle: strings.TrimSpace(request.OnIdle), Kind: prepared.Kind, SpecPath: prepared.SpecPath,
 		Profile: prepared.Profile, ConfigDir: prepared.ConfigDir, DelegationKind: prepared.DelegationKind,
+		Permissions: prepared.Permissions, Lifecycle: prepared.Lifecycle,
 	}
 	if request.Continuation != nil {
 		continuation := *request.Continuation
@@ -434,6 +439,7 @@ func (r *Registry) RegisterMetadata(ctx context.Context, runner proto.Runner, me
 		Name: metadata.Name, Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), DelegationKind: metadata.DelegationKind,
+		Permissions: metadata.Permissions, Lifecycle: metadata.Lifecycle,
 		OnIdle: onIdle, Kind: metadata.Kind, SpecPath: metadata.SpecPath,
 		Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
@@ -871,6 +877,7 @@ func writeMetadata(dir string, info proto.RunnerInfo, sessionMetadata SessionMet
 		DescriptionSource: sessionMetadata.DescriptionSource, Kind: sessionMetadata.Kind, SpecPath: sessionMetadata.SpecPath,
 		Tags: CloneTags(sessionMetadata.Tags), DisplayParentSessionID: cloneStringPointer(sessionMetadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(sessionMetadata.SetAsideAt), DelegationKind: sessionMetadata.DelegationKind,
+		Permissions: sessionMetadata.Permissions, Lifecycle: sessionMetadata.Lifecycle,
 		Profile: sessionMetadata.Profile, ConfigDir: sessionMetadata.ConfigDir,
 		ContinuedFromHistoryID: sessionMetadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  sessionMetadata.ContinuedFromProvider,
@@ -898,6 +905,8 @@ type RunnerMetadata struct {
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
 	DelegationKind         string
+	Permissions            string
+	Lifecycle              string
 	Kind                   string
 	SpecPath               string
 	Profile                string
@@ -935,6 +944,7 @@ func parseRunnerMetadata(encoded []byte) (RunnerMetadata, error) {
 		Name: metadata.Name, Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), DelegationKind: metadata.DelegationKind,
+		Permissions: metadata.Permissions, Lifecycle: metadata.Lifecycle,
 		Kind: metadata.Kind, SpecPath: metadata.SpecPath, Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  metadata.ContinuedFromProvider,

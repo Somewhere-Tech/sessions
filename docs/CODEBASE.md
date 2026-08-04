@@ -284,6 +284,17 @@ The Somewhere resolver recognizes the canonical HTTP registration or local
 `somewhere mcp` adapter, avoids an equivalent duplicate, and fails on a
 same-name/different-target conflict without copying a token into runner state.
 
+The same onboarding boundary records the user's delegated-task access choice.
+`runtime/internal/session/delegation.go` resolves it below every UI and CLI
+caller. A user-created session is constrained unless full access is explicit.
+An agent-created child inherits the parent's exact Claude permission mode or
+Codex sandbox and approval flags; it cannot ask the daemon to promote itself.
+Explicit autonomous consent permits full-access agent children without changing
+already-running sessions. Agent children default to `task` lifecycle, while
+user-created conversations default to `session` lifecycle. A successful idle
+task is durably ended by `runtime/internal/session/idle.go`; failed or
+needs-input tasks remain visible and resumable.
+
 ### `agentcall`
 
 `agentcall` is the shared one-shot boundary for explicitly requested AI
@@ -379,9 +390,14 @@ workspace transfer policy is isolated in `runtime/internal/migrate/workspace.go`
 `runtime/internal/migrate/create.go` independently validates the exact source
 identity, minimal recipe, absolute workspace, and Claude/Codex provider before
 creating a Rich target runtime. Both daemons append provenance links, while the
-source provider file remains in place. The native app uses a saved machine
-credential through the bundled CLI and requires a dry-run review; the low-level
-endpoint/token CLI form remains an explicit escape hatch. The transfer does not
+source provider file remains in place. The native app uses saved source and
+destination machine credentials through the bundled CLI and requires a dry-run
+review; the low-level endpoint/token CLI form remains an explicit escape hatch.
+The transfer is client-mediated: the client authenticates to each daemon
+independently and never sends either machine credential to the other daemon. A
+remote source exports the bounded handoff, the destination receives and creates
+it, and only then does the client record source completion
+(`runtime/internal/api/move_handlers.go`). The transfer does not
 carry the full Sessions ledger, tags, isolated profile credentials, attachments,
 usage database, or PTY history. The transfer boundary is checksum-verified and
 client-mediated. Public behavior is described by `runtime/internal/migrate/`
@@ -623,6 +639,14 @@ while `embedui` builds embed the built SPA and provide guarded route fallback
    an explicit kill is ledgered before the kill request
    (`runtime/internal/session/manager.go`,
    `runtime/internal/state/registry.go`).
+
+Idle classification treats a provider approval or confirmation footer as
+`needs-input` and preserves its actual `Reason:` line. That state flows through
+status, list, Fleet, notifications, JSON, and `sessions wait --summary`; no
+watcher sends Enter on the user's behalf. A task-lifecycle child with a
+successful final summary is the one exception to indefinite runtime lifetime:
+the manager records an attributed end boundary and closes the process while
+retaining transcript, lineage, and workspace.
 
 The binding check in `runtime/internal/session/manager.go` prevents two live
 sessions from resuming the same provider conversation. The runner keeps exited

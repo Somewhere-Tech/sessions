@@ -6,9 +6,10 @@ import (
 )
 
 type onboardingStatus struct {
-	Version       int    `json:"version"`
-	Complete      bool   `json:"complete"`
-	RemoteControl string `json:"remoteControl"`
+	Version         int    `json:"version"`
+	Complete        bool   `json:"complete"`
+	RemoteControl   string `json:"remoteControl"`
+	DelegatedAccess string `json:"delegatedAccess"`
 }
 
 func (a *app) cmdOnboarding(args []string) error {
@@ -26,7 +27,7 @@ func (a *app) cmdOnboarding(args []string) error {
 	if status.Complete {
 		completion = "complete"
 	}
-	if _, err := fmt.Fprintf(a.stdout, "Onboarding: %s\nClaude Remote Control: %s\n", completion, status.RemoteControl); err != nil {
+	if _, err := fmt.Fprintf(a.stdout, "Onboarding: %s\nClaude Remote Control: %s\nDelegated task access: %s\n", completion, status.RemoteControl, status.DelegatedAccess); err != nil {
 		return err
 	}
 	if !status.Complete {

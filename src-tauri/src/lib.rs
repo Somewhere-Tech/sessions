@@ -808,10 +808,16 @@ async fn native_move_session(
     app: AppHandle,
     session_id: String,
     machine: String,
+    source_machine: Option<String>,
     dry_run: bool,
     allow_dirty: bool,
     runtime_mode: String,
 ) -> Result<NativeConnectionCommand, String> {
+    let local_port = *app
+        .state::<RuntimeState>()
+        .port
+        .lock()
+        .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         let session_id = session_id.trim();
         let machine = machine.trim();
@@ -823,12 +829,20 @@ async fn native_move_session(
                 "session id and saved machine must not contain control characters".to_string(),
             );
         }
-        let mut args = vec![
-            "move".to_string(),
-            session_id.to_string(),
-            "--machine".to_string(),
-            machine.to_string(),
-        ];
+        let source_machine = source_machine.unwrap_or_default();
+        if source_machine.chars().any(char::is_control) {
+            return Err("source machine must not contain control characters".to_string());
+        }
+        let mut args = Vec::new();
+        if !source_machine.trim().is_empty() {
+            args.extend(["--machine".to_string(), source_machine.trim().to_string()]);
+        }
+        args.extend(["move".to_string(), session_id.to_string()]);
+        if machine == "__local__" {
+            args.extend(["--to".to_string(), format!("http://127.0.0.1:{local_port}")]);
+        } else {
+            args.extend(["--machine".to_string(), machine.to_string()]);
+        }
         if dry_run {
             args.push("--dry-run".to_string());
         }
