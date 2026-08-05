@@ -181,6 +181,10 @@ func (a *app) cmdTranscript(args []string) error {
 	if err != nil {
 		return err
 	}
+	return a.writeSessionTranscript(id)
+}
+
+func (a *app) writeSessionTranscript(id string) error {
 	var response eventsResponse
 	if err := a.getJSON("/api/sessions/"+escapeID(id)+"/events", &response); err != nil {
 		return err

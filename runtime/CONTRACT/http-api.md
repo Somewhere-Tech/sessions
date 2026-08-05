@@ -558,6 +558,20 @@ Successful input clears `setAsideAt` best-effort after the runner accepts the
 bytes. Failure to persist that organizational change is logged but does not
 turn accepted input into an error.
 
+### `POST /api/sessions/:id/submit`
+
+Auth required. Body is `{"data":"<one complete composer message>"}`. The
+daemon serializes logical submissions across callers, writes `data`, waits for
+the provider TUI to settle, and writes carriage return as a second PTY frame.
+This is the message boundary used by the CLI and desktop composer: concurrent
+agents cannot interleave one message's text with another message's Enter.
+Terminal keys and paste-without-submit continue to use `/input`.
+
+Success is `200 {"ok":true}`. Unknown/exited targets return `404`. If text was
+accepted but Enter could not be delivered, the error includes
+`{"delivered":true,"retry":false}` so an automated caller does not duplicate
+the prompt.
+
 ### `POST /api/sessions/:id/upload`
 
 Auth required. The request body is raw bytes, not JSON. Optional header

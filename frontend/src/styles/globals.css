@@ -2310,13 +2310,13 @@ button:active:not(:disabled),
 .session-runtime-anchor { position: relative; display: inline-flex; flex: 0 0 auto; }
 .session-runtime-anchor > .session-runtime-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .terminal-runtime-notice {
-  position: absolute;
+  position: fixed;
   z-index: 40;
-  top: calc(100% + 10px);
-  right: -8px;
+  top: 104px;
+  right: 24px;
   display: grid;
   gap: 8px;
-  width: min(320px, calc(100vw - 28px));
+  width: min(320px, calc(100vw - 48px));
   padding: 14px;
   border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border-strong));
   border-radius: 12px;
@@ -2327,16 +2327,7 @@ button:active:not(:disabled),
   line-height: 1.45;
 }
 .terminal-runtime-notice::before {
-  position: absolute;
-  top: -6px;
-  right: 18px;
-  width: 10px;
-  height: 10px;
-  border-top: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border-strong));
-  border-left: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border-strong));
-  background: color-mix(in srgb, var(--bg-elev-2) 96%, var(--warn));
-  content: '';
-  transform: rotate(45deg);
+  display: none;
 }
 .terminal-runtime-notice strong { font-size: 13px; line-height: 1.3; }
 .terminal-runtime-notice p { margin: 0; color: var(--fg-dim); }

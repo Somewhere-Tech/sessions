@@ -10,7 +10,10 @@ import (
 	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
-const fleetRequestTimeout = 5 * time.Second
+const (
+	fleetRequestTimeout      = 5 * time.Second
+	localFleetRequestTimeout = 60 * time.Second
+)
 
 type fleetTarget struct {
 	Alias    string
@@ -18,6 +21,15 @@ type fleetTarget struct {
 	Endpoint string
 	Client   *apiClient
 	Owned    bool
+}
+
+func fleetTargetTimeout(target fleetTarget) time.Duration {
+	if target.Endpoint == "local" {
+		// The first local search may need to build or upgrade a sizeable index.
+		// Remote peers stay tightly bounded so one stale machine cannot stall the fleet.
+		return localFleetRequestTimeout
+	}
+	return fleetRequestTimeout
 }
 
 func qualifiedHistoryReference(alias, historyID string) string {

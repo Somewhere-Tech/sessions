@@ -172,10 +172,20 @@ func (m *Manager) handleIdle(session *state.Session, duration time.Duration) Idl
 	if info.Exited {
 		return IdleClassification{Outcome: IdleDone}
 	}
+	classification, summary := inspectIdle(session)
+	return m.publishIdle(session, duration, classification, summary)
+}
+
+func (m *Manager) handleCompletedTurn(session *state.Session, duration time.Duration) IdleClassification {
+	summary := FinalAssistantSummary(session.ClaudeEventLog())
+	return m.publishIdle(session, duration, IdleClassification{Outcome: IdleDone}, summary)
+}
+
+func (m *Manager) publishIdle(session *state.Session, duration time.Duration, classification IdleClassification, summary string) IdleClassification {
+	info := session.Info()
 	m.observe(context.Background(), "idle", func(writer ledger.ObservationWriter) error {
 		return writer.RecordIdle(context.Background(), ledger.Observation{Meta: ledger.Meta{LaneID: info.ID}})
 	})
-	classification, summary := inspectIdle(session)
 	session.SetIdleResult(idleReason(classification.Outcome), classification.Line, summary, time.Now().UnixMilli())
 	info = session.Info()
 	hookContext := idleHookContext{Summary: summary, Outcome: classification.Outcome, DurationMS: duration.Milliseconds()}

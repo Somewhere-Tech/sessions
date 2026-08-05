@@ -225,6 +225,26 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer) {
 					"sessionId": message.SessionID, "ok": written,
 				})
 			}
+		case "submit":
+			s.submitMu.Lock()
+			written := s.registry.Input(ctx, message.SessionID, message.Data)
+			if written {
+				timer := time.NewTimer(submitSettleDelay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					written = false
+				case <-timer.C:
+					written = s.registry.Input(ctx, message.SessionID, "\r")
+				}
+			}
+			s.submitMu.Unlock()
+			if message.RequestID != "" {
+				_ = peer.send(ctx, map[string]any{
+					"type": "submitAck", "requestId": message.RequestID,
+					"sessionId": message.SessionID, "ok": written,
+				})
+			}
 		case "resize":
 			if session, ok := s.registry.Get(message.SessionID); ok {
 				session.Resize(ctx, clampDimension(message.Cols, 40, 500), clampDimension(message.Rows, 10, 200))

@@ -190,6 +190,7 @@ export type ServerMsg =
       sessionId: string;
     }
   | { type: 'inputAck'; requestId: string; ok: boolean; sessionId: string }
+  | { type: 'submitAck'; requestId: string; ok: boolean; sessionId: string }
   // Claude Code's structured session events. Sourced server-side from
   // ~/.claude/projects/<encoded-cwd>/<id>.jsonl. RemoteView consumes
   // these instead of the parser-derived blocks — far more reliable
@@ -214,6 +215,7 @@ export type MuxClientMsg =
   | { type: 'attach'; sessionId: string; lastSeq?: number; claudeEventsSince?: number; outputReplay?: boolean; claudeReplay?: boolean; claudeLive?: boolean }
   | { type: 'detach'; sessionId: string }
   | { type: 'input'; data: string; sessionId: string; requestId?: string }
+  | { type: 'submit'; data: string; sessionId: string; requestId: string }
   | { type: 'resize'; cols: number; rows: number; sessionId: string }
   | { type: 'snapshot'; requestId: string; sessionId: string; cols?: number }
   | { type: 'events'; requestId: string; sessionId: string; since?: number; tail?: number };

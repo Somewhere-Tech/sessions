@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -334,6 +335,85 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	if spa.Code != http.StatusOK || !strings.Contains(spa.Body.String(), "sessions test ui") {
 		t.Fatalf("SPA fallback: status=%d body=%q", spa.Code, spa.Body.String())
 	}
+}
+
+func TestConcurrentSubmitKeepsEachMessageWithItsTarget(t *testing.T) {
+	daemon := newTestDaemon(t)
+	recorder := &recordingSessionInput{sessionService: daemon.registry}
+	daemon.handler.registry = recorder
+	targets := make(map[string]string)
+	for _, text := range []string{"ALPHA", "BRAVO", "CHARLIE"} {
+		created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+			Cmd: "/bin/bash", Cwd: daemon.root,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets[created.ID] = text
+	}
+	server := httptest.NewServer(daemon.handler)
+	defer server.Close()
+
+	var wait sync.WaitGroup
+	errorsByID := make(chan string, len(targets))
+	for id, text := range targets {
+		id, text := id, text
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			body := strings.NewReader(`{"data":"` + text + `"}`)
+			response, err := http.Post(server.URL+"/api/sessions/"+id+"/submit", "application/json", body)
+			if err != nil {
+				errorsByID <- id + ": " + err.Error()
+				return
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				encoded, _ := io.ReadAll(response.Body)
+				errorsByID <- id + ": " + response.Status + " " + string(encoded)
+			}
+		}()
+	}
+	wait.Wait()
+	close(errorsByID)
+	for message := range errorsByID {
+		t.Error(message)
+	}
+	for id, text := range targets {
+		got := daemon.launcher.Runner(id).Inputs()
+		if len(got) != 2 || got[0] != text || got[1] != "\r" {
+			t.Fatalf("runner %s inputs = %q, want [%q CR]", id, got, text)
+		}
+	}
+	recorder.mu.Lock()
+	calls := append([]recordedSessionInput(nil), recorder.calls...)
+	recorder.mu.Unlock()
+	if len(calls) != len(targets)*2 {
+		t.Fatalf("global input calls = %#v", calls)
+	}
+	for index := 0; index < len(calls); index += 2 {
+		if calls[index].id != calls[index+1].id || calls[index+1].data != "\r" {
+			t.Fatalf("submit calls interleaved at %d: %#v", index, calls)
+		}
+	}
+}
+
+type recordedSessionInput struct {
+	id   string
+	data string
+}
+
+type recordingSessionInput struct {
+	sessionService
+	mu    sync.Mutex
+	calls []recordedSessionInput
+}
+
+func (r *recordingSessionInput) Input(ctx context.Context, id, data string) bool {
+	r.mu.Lock()
+	r.calls = append(r.calls, recordedSessionInput{id: id, data: data})
+	r.mu.Unlock()
+	return r.sessionService.Input(ctx, id, data)
 }
 
 func TestAuthenticatedMachineIdentityUsesStableIDAndCurrentName(t *testing.T) {
@@ -953,6 +1033,15 @@ func TestWebSocketSingleMuxAndHandshakePolicy(t *testing.T) {
 	message = readWS(t, ctx, mux)
 	if message["type"] != "inputAck" || message["ok"] != true {
 		t.Fatalf("mux input ack = %#v", message)
+	}
+	writeWS(t, ctx, mux, map[string]any{"type": "submit", "requestId": "submit-1", "sessionId": info.ID, "data": "atomic message"})
+	message = readWS(t, ctx, mux)
+	if message["type"] != "submitAck" || message["ok"] != true {
+		t.Fatalf("mux submit ack = %#v", message)
+	}
+	inputs := runner.Inputs()
+	if len(inputs) < 2 || inputs[len(inputs)-2] != "atomic message" || inputs[len(inputs)-1] != "\r" {
+		t.Fatalf("mux submit inputs = %q", inputs)
 	}
 	writeWS(t, ctx, mux, map[string]any{"type": "events", "requestId": "events-1", "sessionId": "missing", "tail": 4})
 	message = readWS(t, ctx, mux)

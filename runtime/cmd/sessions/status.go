@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -206,7 +208,20 @@ func inspectGit(cwd string) (*gitStatus, error) {
 	if strings.TrimSpace(string(probeOutput)) != "true" {
 		return nil, nil
 	}
-	command := exec.CommandContext(ctx, "git", "-C", cwd, "status", "--porcelain=v2", "--branch", "--untracked-files=normal")
+	rootOutput, err := exec.CommandContext(ctx, "git", "-C", cwd, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return nil, err
+	}
+	root := strings.TrimSpace(string(rootOutput))
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		absHome, homeAbsErr := filepath.Abs(home)
+		absCWD, cwdAbsErr := filepath.Abs(cwd)
+		absRoot, rootAbsErr := filepath.Abs(root)
+		if homeAbsErr == nil && cwdAbsErr == nil && rootAbsErr == nil && absHome == absRoot && absCWD == absRoot {
+			return nil, nil
+		}
+	}
+	command := exec.CommandContext(ctx, "git", "-C", cwd, "status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--", ".")
 	encoded, err := command.Output()
 	if err != nil {
 		return nil, err

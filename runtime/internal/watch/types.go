@@ -28,6 +28,7 @@ type FileWatcher struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
 	closeOnce sync.Once
+	input     chan string
 	pathMu    sync.RWMutex
 	path      string
 }
@@ -46,8 +47,24 @@ func newFileWatcher() (*FileWatcher, context.Context) {
 		errors:  errors,
 		cancel:  cancel,
 		done:    make(chan struct{}),
+		input:   make(chan string, 16),
 	}
 	return w, ctx
+}
+
+// ExpectInput gives a provider watcher the exact logical user message which
+// was just submitted to its terminal. Fresh Codex processes can create several
+// same-CWD rollout files at nearly the same time; matching the provider-owned
+// user record is the only safe way to bind without guessing by timestamp.
+// Watchers which do not need the hint simply ignore it.
+func (w *FileWatcher) ExpectInput(text string) {
+	if w == nil || text == "" {
+		return
+	}
+	select {
+	case w.input <- text:
+	case <-w.done:
+	}
 }
 
 // Path returns the file currently being followed, or an empty string while

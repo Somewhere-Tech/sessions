@@ -745,6 +745,7 @@ func (r *runner) completionManifest(info exitInfo) state.CompletionManifest {
 
 type gitWorktreeState struct {
 	root  string
+	scope string
 	head  string
 	paths map[string]string
 }
@@ -767,6 +768,10 @@ func captureGitWorktreeState(cwd string) gitWorktreeState {
 	if root == "" {
 		return gitWorktreeState{}
 	}
+	scope, ok := gitWorkspaceScope(cwd, root)
+	if !ok {
+		return gitWorktreeState{}
+	}
 	head := ""
 	if headOutput, headErr := exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD").Output(); headErr == nil {
 		head = strings.TrimSpace(string(headOutput))
@@ -778,12 +783,14 @@ func captureGitWorktreeState(cwd string) gitWorktreeState {
 			head = strings.TrimSpace(string(emptyTreeOutput))
 		}
 	}
-	status := exec.Command("git", "-C", root, "status", "--porcelain=v2", "-z", "--untracked-files=all")
+	status := exec.Command(
+		"git", "-C", root, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--", scope,
+	)
 	output, err := status.Output()
 	if err != nil {
 		return gitWorktreeState{}
 	}
-	result := gitWorktreeState{root: root, head: head, paths: make(map[string]string)}
+	result := gitWorktreeState{root: root, scope: scope, head: head, paths: make(map[string]string)}
 	skipRenameSource := false
 	for _, encoded := range bytes.Split(output, []byte{0}) {
 		if len(encoded) == 0 {
@@ -812,6 +819,47 @@ func captureGitWorktreeState(cwd string) gitWorktreeState {
 		result.paths[path] = record + "\x00" + worktreePathSignature(filepath.Join(root, filepath.FromSlash(path)))
 	}
 	return result
+}
+
+// gitWorkspaceScope keeps automatic files_changed accounting inside the
+// directory the user selected. A Git repository rooted at the home directory
+// must never turn a small lane into a recursive scan of Desktop, Documents,
+// cloud drives, media libraries, or other protected siblings.
+func gitWorkspaceScope(cwd, root string) (string, bool) {
+	absCWD, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", false
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", false
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(absCWD); resolveErr == nil {
+		absCWD = resolved
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(absRoot); resolveErr == nil {
+		absRoot = resolved
+	}
+	relative, err := filepath.Rel(absRoot, absCWD)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	if relative == "." {
+		if home, homeErr := os.UserHomeDir(); homeErr == nil {
+			absHome, absErr := filepath.Abs(home)
+			if resolved, resolveErr := filepath.EvalSymlinks(absHome); resolveErr == nil {
+				absHome = resolved
+			}
+			if absErr == nil && absHome == absRoot {
+				return "", false
+			}
+		}
+		if filepath.Dir(absRoot) == absRoot {
+			return "", false
+		}
+		return ".", true
+	}
+	return filepath.ToSlash(relative), true
 }
 
 func porcelainPath(record string, fields int) string {
@@ -853,7 +901,7 @@ func gitFilesChangedSince(cwd string, before gitWorktreeState) *int {
 		return nil
 	}
 	after := captureGitWorktreeState(cwd)
-	if after.root == "" || after.root != before.root {
+	if after.root == "" || after.root != before.root || after.scope != before.scope {
 		return nil
 	}
 	paths := make(map[string]struct{}, len(before.paths)+len(after.paths))
@@ -865,7 +913,7 @@ func gitFilesChangedSince(cwd string, before gitWorktreeState) *int {
 	}
 	if before.head != "" && after.head != "" && before.head != after.head {
 		command := exec.Command(
-			"git", "-C", before.root, "diff", "--name-only", "-z", before.head, after.head, "--",
+			"git", "-C", before.root, "diff", "--name-only", "-z", before.head, after.head, "--", before.scope,
 		)
 		output, err := command.Output()
 		if err != nil {

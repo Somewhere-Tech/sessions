@@ -66,16 +66,14 @@ func TestClaudeSubmitSequenceMatchesNodeCLI(t *testing.T) {
 				})
 			}
 			_ = json.NewEncoder(response).Encode(map[string]any{"events": events, "nextIndex": len(events)})
-		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/input":
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/submit":
 			var body map[string]string
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 				http.Error(response, err.Error(), http.StatusBadRequest)
 				return
 			}
-			inputs = append(inputs, body["data"])
-			if body["data"] == "\r" {
-				submitted = true
-			}
+			inputs = append(inputs, body["data"], "\r")
+			submitted = true
 			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
 		default:
 			http.NotFound(response, request)
@@ -101,7 +99,7 @@ func TestClaudeSubmitSequenceMatchesNodeCLI(t *testing.T) {
 	if want := []string{text, "\r"}; !reflect.DeepEqual(inputs, want) {
 		t.Fatalf("input sequence = %q, want %q", inputs, want)
 	}
-	if want := []time.Duration{sendTextSettleDelay}; !reflect.DeepEqual(sleeps, want) {
+	if want := []time.Duration(nil); !reflect.DeepEqual(sleeps, want) {
 		t.Fatalf("sleeps = %v, want %v", sleeps, want)
 	}
 }
@@ -132,12 +130,13 @@ func TestClaudeEnterRetriesRequireTextStillInComposer(t *testing.T) {
 				case request.Method == http.MethodGet && request.URL.Path == "/api/sessions/"+id+"/snapshot":
 					response.Header().Set("Content-Type", "text/plain")
 					_, _ = io.WriteString(response, test.snapshot)
-				case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/input":
+				case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/submit":
 					var body map[string]string
 					_ = json.NewDecoder(request.Body).Decode(&body)
-					if body["data"] == "\r" {
-						enters++
-					}
+					enters++
+					_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
+				case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/input":
+					enters++
 					_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
 				default:
 					http.NotFound(response, request)
@@ -186,7 +185,7 @@ func TestNodeCLIGoldenOutputShapes(t *testing.T) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
 			fmt.Fprintf(response, `{"sessions":%s}`, bytes.TrimSpace(lsFixture))
-		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/input":
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/submit":
 			_, _ = io.Copy(io.Discard, request.Body)
 			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
 		default:
@@ -923,15 +922,13 @@ func TestCodexRichNewSendsPositionalRequestImmediately(t *testing.T) {
 				})
 			}
 			_ = json.NewEncoder(response).Encode(map[string]any{"events": events, "nextIndex": len(events)})
-		case httpRequest.Method == http.MethodPost && httpRequest.URL.Path == "/api/sessions/"+id+"/input":
+		case httpRequest.Method == http.MethodPost && httpRequest.URL.Path == "/api/sessions/"+id+"/submit":
 			var body map[string]string
 			if err := json.NewDecoder(httpRequest.Body).Decode(&body); err != nil {
 				t.Errorf("decode input request: %v", err)
 			}
-			inputs = append(inputs, body["data"])
-			if body["data"] == "\r" {
-				submitted = true
-			}
+			inputs = append(inputs, body["data"], "\r")
+			submitted = true
 			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
 		default:
 			http.NotFound(response, httpRequest)

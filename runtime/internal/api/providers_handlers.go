@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -58,7 +59,7 @@ func (s *Server) handleProvidersRoute(response http.ResponseWriter, request *htt
 		s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "unknown provider"}, corsOrigin)
 		return true
 	}
-	path, err := exec.LookPath(id)
+	path, err := providerExecutable(id)
 	if err != nil {
 		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": id + " is not installed"}, corsOrigin)
 		return true
@@ -99,7 +100,7 @@ func localProviderStatus(parent context.Context, id string) providerStatus {
 		name = "Codex"
 	}
 	status := providerStatus{ID: id, Name: name}
-	path, err := exec.LookPath(id)
+	path, err := providerExecutable(id)
 	if err != nil {
 		return status
 	}
@@ -142,6 +143,37 @@ func localProviderStatus(parent context.Context, id string) providerStatus {
 		}
 	}
 	return status
+}
+
+// providerExecutable mirrors the interactive user's common installation
+// locations. sessionsd is normally launched by a per-user service whose PATH
+// is intentionally smaller than the user's shell PATH.
+func providerExecutable(id string) (string, error) {
+	if path, err := exec.LookPath(id); err == nil {
+		return path, nil
+	}
+	names := []string{id}
+	if runtime.GOOS == "windows" {
+		names = append(names, id+".exe", id+".cmd")
+	}
+	directories := []string{"/opt/homebrew/bin", "/usr/local/bin"}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		directories = append([]string{filepath.Join(home, ".local", "bin"), filepath.Join(home, "bin")}, directories...)
+	}
+	for _, directory := range directories {
+		for _, name := range names {
+			candidate := filepath.Join(directory, name)
+			info, err := os.Stat(candidate)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+				continue
+			}
+			return candidate, nil
+		}
+	}
+	return "", exec.ErrNotFound
 }
 
 func readSmallJSON(path string, target any) error {

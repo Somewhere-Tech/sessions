@@ -72,6 +72,50 @@ func TestGitFilesChangedSinceCountsFirstCommitInUnbornRepository(t *testing.T) {
 	}
 }
 
+func TestGitFilesChangedSinceNeverLeavesSelectedNestedWorkspace(t *testing.T) {
+	repository := t.TempDir()
+	runGit(t, repository, "init")
+	runGit(t, repository, "config", "user.email", "sessions@example.test")
+	runGit(t, repository, "config", "user.name", "Sessions Test")
+	workspace := filepath.Join(repository, "workspace")
+	sibling := filepath.Join(repository, "protected-sibling")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sibling, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(workspace, "tracked.txt"), "initial\n")
+	writeTestFile(t, filepath.Join(sibling, "private.txt"), "private\n")
+	runGit(t, repository, "add", "workspace/tracked.txt")
+	runGit(t, repository, "commit", "-m", "initial")
+
+	before := captureGitWorktreeState(workspace)
+	if before.scope != "workspace" {
+		t.Fatalf("workspace scope = %q, want workspace", before.scope)
+	}
+	if _, included := before.paths["protected-sibling/private.txt"]; included {
+		t.Fatal("automatic Git accounting escaped the selected workspace")
+	}
+	writeTestFile(t, filepath.Join(sibling, "private.txt"), "changed outside workspace\n")
+	if got := gitFilesChangedSince(workspace, before); got == nil || *got != 0 {
+		t.Fatalf("outside-workspace delta = %v, want 0", got)
+	}
+	writeTestFile(t, filepath.Join(workspace, "tracked.txt"), "changed inside workspace\n")
+	if got := gitFilesChangedSince(workspace, before); got == nil || *got != 1 {
+		t.Fatalf("inside-workspace delta = %v, want 1", got)
+	}
+}
+
+func TestGitWorktreeStateSkipsWholeHomeRepository(t *testing.T) {
+	repository := t.TempDir()
+	t.Setenv("HOME", repository)
+	runGit(t, repository, "init")
+	if state := captureGitWorktreeState(repository); state.root != "" {
+		t.Fatalf("whole-home Git scan was enabled: %#v", state)
+	}
+}
+
 func writeTestFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {

@@ -16,6 +16,36 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/proto/prototest"
 )
 
+type failingReapLauncher struct {
+	*prototest.Launcher
+	reaped []string
+}
+
+func (l *failingReapLauncher) Reap(id string) error {
+	l.reaped = append(l.reaped, id)
+	return nil
+}
+
+func TestCreateReapsOnlyItsFailedLaunchRegistration(t *testing.T) {
+	root := t.TempDir()
+	launcher := &failingReapLauncher{Launcher: prototest.NewLauncher()}
+	launcher.Err = errors.New("runner did not create socket")
+	registry := NewRegistry(Config{
+		DefaultShell: "/bin/bash", DefaultCwd: root, DefaultCols: 300, DefaultRows: 50,
+		RunnerStateDir: filepath.Join(root, "runners"), LaunchAgentsDir: filepath.Join(root, "agents"),
+	}, launcher)
+	_, err := registry.Create(context.Background(), CreateSessionRequest{Cmd: "/bin/sh", Cwd: root})
+	if err == nil || !strings.Contains(err.Error(), "runner did not create socket") {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if len(launcher.reaped) != 1 || launcher.reaped[0] == "" {
+		t.Fatalf("failed launch cleanup = %#v, want its one generated id", launcher.reaped)
+	}
+	if sessions := registry.List(true); len(sessions) != 0 {
+		t.Fatalf("failed launch registered sessions = %#v", sessions)
+	}
+}
+
 func TestDiscoveryAttachesKnownSocketsAndPreservesUnknownOnes(t *testing.T) {
 	root := t.TempDir()
 	config := Config{

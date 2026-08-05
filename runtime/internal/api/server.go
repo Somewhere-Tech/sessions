@@ -17,6 +17,7 @@ import (
 	goruntime "runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -43,6 +44,7 @@ const (
 	apiProtocolVersion   = 1
 	minimumAPIClient     = 1
 	maximumAPIClient     = apiProtocolVersion
+	submitSettleDelay    = 150 * time.Millisecond
 )
 
 // Version is stamped into sessionsd at build time and reported by both health
@@ -65,6 +67,7 @@ type Server struct {
 	smartSearch          *smartsearch.Service
 	identity             machineIdentity
 	identityError        error
+	submitMu             sync.Mutex
 }
 
 type authPrincipal struct {
@@ -863,7 +866,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		}, corsOrigin)
 		return
 	}
-	if suffix == "/input" && request.Method == http.MethodPost {
+	if (suffix == "/input" || suffix == "/submit") && request.Method == http.MethodPost {
 		var body struct {
 			Data string `json:"data"`
 		}
@@ -876,41 +879,42 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
 			return
 		}
-		if attributed {
-			service, supported := s.registry.(attributedInputService)
-			if !supported {
-				s.sendJSON(response, http.StatusNotImplemented, map[string]any{"error": "message attribution is unavailable"}, corsOrigin)
-				return
-			}
-			err := service.InputAttributed(request.Context(), id, body.Data, attribution)
-			if err != nil {
-				var invalid *sessionruntime.InvalidMessageSourceError
-				var invalidInput *sessionruntime.InvalidAttributedInputError
-				var unavailable *sessionruntime.MessageInputUnavailableError
-				var committed *sessionruntime.MessageAttributionCommitError
-				switch {
-				case errors.As(err, &invalid), errors.As(err, &invalidInput):
-					s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-				case errors.As(err, &unavailable):
-					s.sendJSON(response, http.StatusNotFound, map[string]any{"error": err.Error()}, corsOrigin)
-				case errors.As(err, &committed):
-					s.sendJSON(response, http.StatusInternalServerError, map[string]any{
-						"error": err.Error(), "delivered": true, "retry": false,
-					}, corsOrigin)
-				default:
-					s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
-				}
-				return
-			}
-			s.sendJSON(response, http.StatusOK, map[string]any{"ok": true, "attributed": true}, corsOrigin)
-			return
+		if suffix == "/submit" {
+			s.submitMu.Lock()
+			defer s.submitMu.Unlock()
 		}
-		result := ok && s.registry.Input(request.Context(), id, body.Data)
-		if !result {
+		if !ok {
 			s.sendJSON(response, http.StatusNotFound, map[string]any{"ok": false}, corsOrigin)
 			return
 		}
-		s.sendJSON(response, http.StatusOK, map[string]any{"ok": true}, corsOrigin)
+		if err := s.writeSessionInput(request.Context(), id, body.Data, attribution, attributed); err != nil {
+			var unavailable *sessionruntime.MessageInputUnavailableError
+			if !attributed && errors.As(err, &unavailable) {
+				s.sendJSON(response, http.StatusNotFound, map[string]any{"ok": false}, corsOrigin)
+				return
+			}
+			s.sendInputError(response, err, corsOrigin)
+			return
+		}
+		if suffix == "/submit" {
+			timer := time.NewTimer(submitSettleDelay)
+			select {
+			case <-request.Context().Done():
+				timer.Stop()
+				s.sendJSON(response, http.StatusRequestTimeout, map[string]any{
+					"error": request.Context().Err().Error(), "delivered": true, "retry": false,
+				}, corsOrigin)
+				return
+			case <-timer.C:
+			}
+			if !s.registry.Input(request.Context(), id, "\r") {
+				s.sendJSON(response, http.StatusConflict, map[string]any{
+					"error": "message text was delivered but Enter could not be sent", "delivered": true, "retry": false,
+				}, corsOrigin)
+				return
+			}
+		}
+		s.sendJSON(response, http.StatusOK, map[string]any{"ok": true, "attributed": attributed}, corsOrigin)
 		return
 	}
 	if suffix == "/upload" && request.Method == http.MethodPost {
@@ -989,6 +993,48 @@ func captureInputAttribution(request *http.Request) (state.InputAttribution, boo
 		return state.InputAttribution{}, false, errors.New("X-Sessions-Client is invalid")
 	}
 	return state.InputAttribution{SourceSessionID: sessionID, Client: client}, true, nil
+}
+
+func (s *Server) writeSessionInput(
+	ctx context.Context,
+	id, data string,
+	attribution state.InputAttribution,
+	attributed bool,
+) error {
+	if !attributed {
+		if s.registry.Input(ctx, id, data) {
+			return nil
+		}
+		return &sessionruntime.MessageInputUnavailableError{SessionID: id}
+	}
+	service, supported := s.registry.(attributedInputService)
+	if !supported {
+		return errors.New("message attribution is unavailable")
+	}
+	return service.InputAttributed(ctx, id, data, attribution)
+}
+
+func (s *Server) sendInputError(response http.ResponseWriter, err error, corsOrigin string) {
+	var invalid *sessionruntime.InvalidMessageSourceError
+	var invalidInput *sessionruntime.InvalidAttributedInputError
+	var unavailable *sessionruntime.MessageInputUnavailableError
+	var committed *sessionruntime.MessageAttributionCommitError
+	switch {
+	case errors.As(err, &invalid), errors.As(err, &invalidInput):
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+	case errors.As(err, &unavailable):
+		s.sendJSON(response, http.StatusNotFound, map[string]any{"error": err.Error()}, corsOrigin)
+	case errors.As(err, &committed):
+		s.sendJSON(response, http.StatusInternalServerError, map[string]any{
+			"error": err.Error(), "delivered": true, "retry": false,
+		}, corsOrigin)
+	default:
+		status := http.StatusInternalServerError
+		if err.Error() == "message attribution is unavailable" {
+			status = http.StatusNotImplemented
+		}
+		s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
+	}
 }
 
 func captureEndRequest(request *http.Request, reason, operationID string) (state.EndSessionRequest, error) {

@@ -202,7 +202,7 @@ func (a *app) searchApprovedFleet(
 				defer targets[index].Client.close()
 			}
 			outcomes[index].err = getJSONFromClient(
-				targets[index].Client, path, &outcomes[index].response, fleetRequestTimeout,
+				targets[index].Client, path, &outcomes[index].response, fleetTargetTimeout(targets[index]),
 			)
 		}(index)
 	}

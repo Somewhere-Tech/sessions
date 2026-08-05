@@ -174,6 +174,7 @@ type runtimeSession struct {
 	pushWorkingObserved        bool
 	workingStartedAt           time.Time
 	structuredDone             bool
+	terminalTurnDone           bool
 	waitingTimer               *time.Timer
 	waitingGeneration          uint64
 	stopped                    bool
@@ -183,6 +184,7 @@ type runtimeSession struct {
 	structuredEventArrived     chan struct{}
 	firstMessageInput          []byte
 	firstMessageDone           bool
+	providerInput              []byte
 }
 
 func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...ManagerOptions) *Manager {
@@ -1181,6 +1183,12 @@ func (m *Manager) InputAttributed(ctx context.Context, id, data string, attribut
 
 func (m *Manager) afterInput(ctx context.Context, id, data string, source ledger.ActivitySource) {
 	m.clearIdleAfterInput(id)
+	m.mu.Lock()
+	runtime := m.runtimes[id]
+	m.mu.Unlock()
+	if runtime != nil {
+		runtime.observeProviderInput(data)
+	}
 	if current, ok := m.registry.Get(id); ok && current.Info().SetAsideAt != nil {
 		if _, err := m.registry.UpdateSetAside(id, false); err != nil {
 			log.Printf("[working-set] bring back %s after input: %v", id, err)
@@ -1192,6 +1200,43 @@ func (m *Manager) afterInput(ctx context.Context, id, data string, source ledger
 			Meta: ledger.Meta{LaneID: id}, Source: source,
 		})
 	})
+}
+
+const providerInputLimit = 1024 * 1024
+
+func (r *runtimeSession) observeProviderInput(data string) {
+	if r.session.Info().Tool != state.ToolCodex || data == "" {
+		return
+	}
+	r.mu.Lock()
+	for _, value := range []byte(data) {
+		switch value {
+		case '\r':
+			prompt := normalizedTerminalPrompt(string(r.providerInput))
+			r.providerInput = r.providerInput[:0]
+			watcher := r.watcher
+			r.mu.Unlock()
+			if watcher != nil && prompt != "" {
+				watcher.ExpectInput(prompt)
+			}
+			return
+		case 0x7f:
+			if len(r.providerInput) > 0 {
+				r.providerInput = r.providerInput[:len(r.providerInput)-1]
+			}
+		default:
+			if len(r.providerInput) < providerInputLimit {
+				r.providerInput = append(r.providerInput, value)
+			}
+		}
+	}
+	r.mu.Unlock()
+}
+
+func normalizedTerminalPrompt(value string) string {
+	value = strings.ReplaceAll(value, "\x1b[200~", "")
+	value = strings.ReplaceAll(value, "\x1b[201~", "")
+	return strings.TrimSpace(value)
 }
 
 func (m *Manager) clearIdleAfterInput(id string) {
@@ -1433,13 +1478,17 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 		runtime.recentBytes += len(event.Data)
 	}
 	if !session.Info().Working && (len(attachment.Replay.Events) > 0 || len(attachment.ClaudeEvents) > 0) {
-		classification, summary := inspectIdle(session)
-		session.SetIdleResult(
-			idleReason(classification.Outcome),
-			classification.Line,
-			summary,
-			session.Info().LastDataAt,
-		)
+		if supportsTurnLifecycle(session.Info()) {
+			classification, summary := inspectIdle(session)
+			session.SetIdleResult(
+				idleReason(classification.Outcome),
+				classification.Line,
+				summary,
+				session.Info().LastDataAt,
+			)
+		} else {
+			session.ClearIdleResult()
+		}
 	}
 	m.runtimes[info.ID] = runtime
 	m.mu.Unlock()
@@ -1628,6 +1677,7 @@ func (r *runtimeSession) setWorking(next bool) {
 	if !previous && next {
 		r.workingStartedAt = now
 		r.structuredDone = false
+		r.terminalTurnDone = false
 		r.cancelWaitingLocked()
 		r.manager.removeIdleSentinel(r.session.Info().ID)
 	}
@@ -1644,6 +1694,8 @@ func (r *runtimeSession) setWorking(next bool) {
 	r.workingStartedAt = time.Time{}
 	suppressWaiting := r.structuredDone
 	r.structuredDone = false
+	authoritativeDone := r.terminalTurnDone
+	r.terminalTurnDone = false
 	r.cancelWaitingLocked()
 	r.mu.Unlock()
 	if exited {
@@ -1656,7 +1708,17 @@ func (r *runtimeSession) setWorking(next bool) {
 			duration = 0
 		}
 	}
-	classification := r.manager.handleIdle(r.session, duration)
+	classification := IdleClassification{Outcome: IdleDone}
+	if authoritativeDone {
+		classification = r.manager.handleCompletedTurn(r.session, duration)
+	} else {
+		classification = r.manager.handleIdle(r.session, duration)
+	}
+	if !supportsTurnLifecycle(r.session.Info()) && classification.Outcome == IdleDone {
+		// Shells have an idle edge for hooks and notifications, but remaining
+		// alive at a prompt is not a completed session lifecycle state.
+		r.session.ClearIdleResult()
+	}
 	if !suppressWaiting && classification.Outcome == IdleDone {
 		r.notifyDone()
 	} else if !suppressWaiting {
@@ -1689,6 +1751,7 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 		}
 		watcher = watch.WatchCodexRollout(watch.CodexWatcherOptions{
 			CWD: info.Cwd, Args: info.Args, CreatedAt: time.UnixMilli(info.CreatedAt), SessionsDir: sessionsDir,
+			RequireInputMatch: true,
 		})
 	default:
 		return
@@ -1711,6 +1774,9 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 				if !ok {
 					return
 				}
+				if !working {
+					r.markTerminalTurnDone()
+				}
 				r.mu.Lock()
 				value := working
 				r.structuredLifecycleWorking = &value
@@ -1727,6 +1793,10 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 	}) {
 		watcher.Close()
 	}
+}
+
+func supportsTurnLifecycle(info state.SessionInfo) bool {
+	return info.Tool == state.ToolClaude || info.Tool == state.ToolCodex
 }
 
 func (m *Manager) waitReady(ctx context.Context, runtime *runtimeSession) {

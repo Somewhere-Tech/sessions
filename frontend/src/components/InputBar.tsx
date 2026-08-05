@@ -7,6 +7,7 @@ interface Props {
   // Acknowledged sender from useTerminal. Messages are never queued while the
   // connection is down; a failed send leaves the draft visible for retry.
   send: (data: string) => Promise<void>;
+  submitMessage: (data: string) => Promise<void>;
   // Status from useTerminal — disable when not open.
   connected: boolean;
   // Session id — needed for file uploads so the server knows which
@@ -58,6 +59,7 @@ function quotePath(p: string): string {
 // next snapshot without a separate live-typing diff.
 export function InputBar({
   send,
+  submitMessage,
   connected,
   sessionId,
   onSubmitted,
@@ -187,22 +189,10 @@ export function InputBar({
     setSubmitting(true);
     try {
       if (text) {
-        // Two-step submit:
-        //   1. Send the text wrapped in bracketed-paste markers so
-        //      Claude Code's TUI (Ink + bracketed-paste mode) knows
-        //      this is paste, not a fast keystroke storm. The end
-        //      marker \x1b[201~ tells it where the paste finishes.
-        //   2. After a tiny delay, send \r as its OWN WS message.
-        //      That arrives at the runner as a separate pty.write,
-        //      which Ink's input loop reads as a fresh keystroke.
-        //      Without the delay, Ink processes the paste-end marker
-        //      AND the trailing \r in the same read() call — the \r
-        //      gets buffered and doesn't fire submit until the next
-        //      keystroke arrives. (That's why a second Enter "fixed"
-        //      it: the second Enter's \r came in cleanly on its own.)
-        await send('\x1b[200~' + text + '\x1b[201~');
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 30));
-        await send('\r');
+        // The daemon owns text + Enter as one atomic operation. It still
+        // writes two PTY frames (needed by Ink), but concurrent agents cannot
+        // interleave their messages between those frames.
+        await submitMessage('\x1b[200~' + text + '\x1b[201~');
       } else {
         // Empty buffer — just an Enter, e.g. to accept a y/n prompt.
         await send('\r');

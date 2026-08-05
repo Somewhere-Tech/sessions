@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // between "instant tap-to-content" and "wait for the terminal lib to
 // download even though you didn't open Terminal view."
 import { wsMuxUrl, snapshot as fetchServerSnapshot, fetchClaudeEvents } from '../api/sessionsd';
-import { attachSession, sendSessionInput, type SessionChannel, type MuxStatus } from '../lib/wsMux';
+import { attachSession, sendSessionInput, submitSessionMessage, type SessionChannel, type MuxStatus } from '../lib/wsMux';
 import { useServers } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
 import { terminalRenderer } from '../lib/terminalRenderer';
@@ -27,6 +27,7 @@ interface UseTerminalResult {
   // keystrokes, they are never queued through a reconnect: failure leaves the
   // user's draft in place so delivery is explicit and retryable.
   sendConfirmedInputRef: { current: (data: string) => Promise<void> };
+  submitMessageRef: { current: (data: string) => Promise<void> };
   // Scroll position state for the floating "scroll to latest" button.
   // True when xterm's viewport is parked at the live tail; flips false
   // as soon as the user scrolls up. Driven by xterm's onScroll event.
@@ -98,6 +99,9 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
   isActiveRef.current = isActive;
   const sendInputRef = useRef<(data: string) => void>(() => {});
   const sendConfirmedInputRef = useRef<(data: string) => Promise<void>>(() =>
+    Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'))
+  );
+  const submitMessageRef = useRef<(data: string) => Promise<void>>(() =>
     Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'))
   );
   const scrollTerminalToBottomRef = useRef<() => void>(() => {});
@@ -236,6 +240,8 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       };
       sendConfirmedInputRef.current = (data: string): Promise<void> =>
         sendSessionInput(wsMuxUrl(), sessionId, data);
+      submitMessageRef.current = (data: string): Promise<void> =>
+        submitSessionMessage(wsMuxUrl(), sessionId, data);
 
       setExitInfo(null);
       setResumedFromSeq(null);
@@ -659,6 +665,8 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         sendInputRef.current = (): void => {};
         sendConfirmedInputRef.current = (): Promise<void> =>
           Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'));
+        submitMessageRef.current = (): Promise<void> =>
+          Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'));
         channel = null;
         const tailPromise = active ? loadClaudeTail() : Promise.resolve(false);
         if (active && term) await prefillTerminalSnapshot();
@@ -721,6 +729,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
     resumedFromSeq,
     sendInputRef,
     sendConfirmedInputRef,
+    submitMessageRef,
     terminalAtBottom,
     scrollTerminalToBottomRef,
     focusTerminalRef,

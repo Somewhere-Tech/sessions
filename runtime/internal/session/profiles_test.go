@@ -169,13 +169,17 @@ func TestProfileConfigRootsReachLiveClaudeAndCodexWatchers(t *testing.T) {
 	}
 	lines := []string{
 		`{"timestamp":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","type":"session_meta","payload":{"cwd":"` + root + `","timestamp":"` + time.Now().UTC().Format(time.RFC3339Nano) + `"}}`,
+		`{"timestamp":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"profile prompt"}]}}`,
 		`{"timestamp":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"profile codex watched"}]}}`,
 	}
 	if err := os.WriteFile(codexPath, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if !manager.Input(context.Background(), codex.ID, "profile prompt") || !manager.Input(context.Background(), codex.ID, "\r") {
+		t.Fatal("submit profile prompt")
+	}
 	awaitCondition(t, func() bool {
 		current, ok := manager.Get(codex.ID)
-		return ok && current.ClaudeEventCount() == 1
+		return ok && current.ClaudeEventCount() == 2
 	})
 }

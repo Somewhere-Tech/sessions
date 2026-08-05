@@ -147,7 +147,7 @@ class MuxManager {
 
   request(msg: MuxClientMsg & { requestId: string }, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<RpcResponse> {
     this.cancelIdleShutdown();
-    if (msg.type === 'input' && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
+    if ((msg.type === 'input' || msg.type === 'submit') && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
       if (!this.ws || this.ws.readyState >= WebSocket.CLOSING) {
         if (this.reconnectTimer === null) this.connect();
       }
@@ -477,4 +477,17 @@ export async function sendSessionInput(
   });
   if (msg.type !== 'inputAck') throw new Error(`unexpected mux response: ${msg.type}`);
   if (!msg.ok) throw new Error(`unknown session ${sessionId}`);
+}
+
+export async function submitSessionMessage(
+  muxUrl: string,
+  sessionId: string,
+  data: string
+): Promise<void> {
+  const requestId = newRequestId();
+  const msg = await managerFor(muxUrl).request({
+    type: 'submit', requestId, sessionId, data
+  });
+  if (msg.type !== 'submitAck') throw new Error(`unexpected mux response: ${msg.type}`);
+  if (!msg.ok) throw new Error(`session ${sessionId} could not accept the message`);
 }

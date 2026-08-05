@@ -11,9 +11,14 @@ import (
 
 func (a *app) cmdCat(args []string) error {
 	if len(args) != 1 || args[0] == "" {
-		return fail(1, "usage: sessions cat <machine::history-id>")
+		return fail(1, "usage: sessions cat <session-id|machine::history-id>")
 	}
 	reference := args[0]
+	if _, _, qualified := splitQualifiedHistoryReference(reference); !qualified {
+		if id, resolveErr := a.resolveSessionID(reference); resolveErr == nil {
+			return a.writeSessionTranscript(id)
+		}
+	}
 	if _, err := a.useQualifiedHistoryReference(&reference); err != nil {
 		return err
 	}

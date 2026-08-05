@@ -166,6 +166,51 @@ func TestCodexWatcherPreservesPartialRecordAtHandoff(t *testing.T) {
 	assertNoEvent(t, watcher.Events, 100*time.Millisecond)
 }
 
+func TestConcurrentCodexWatchersBindByTheirOwnSubmittedMessage(t *testing.T) {
+	root := t.TempDir()
+	sessionsDir := filepath.Join(root, "sessions")
+	now := time.Date(2026, time.August, 5, 13, 30, 0, 0, time.Local)
+	cwd := "/tmp/shared-codex-cwd"
+	one := filepath.Join(codexDateDir(sessionsDir, now), "rollout-one.jsonl")
+	two := filepath.Join(codexDateDir(sessionsDir, now), "rollout-two.jsonl")
+	writeRolloutFixtureWithPrompt(t, one, cwd, now, "Reply only: ONE")
+	writeRolloutFixtureWithPrompt(t, two, cwd, now.Add(time.Millisecond), "Reply only: TWO")
+
+	watchOne := WatchCodexRollout(CodexWatcherOptions{
+		CWD: cwd, CreatedAt: now.Add(-time.Second), SessionsDir: sessionsDir,
+		InitialDelay: time.Millisecond, PollInterval: 10 * time.Millisecond, RequireInputMatch: true,
+		Now: func() time.Time { return now },
+	})
+	defer watchOne.Close()
+	watchTwo := WatchCodexRollout(CodexWatcherOptions{
+		CWD: cwd, CreatedAt: now.Add(-time.Second), SessionsDir: sessionsDir,
+		InitialDelay: time.Millisecond, PollInterval: 10 * time.Millisecond, RequireInputMatch: true,
+		Now: func() time.Time { return now },
+	})
+	defer watchTwo.Close()
+
+	time.Sleep(30 * time.Millisecond)
+	if watchOne.Path() != "" || watchTwo.Path() != "" {
+		t.Fatalf("fresh watchers guessed before input: one=%q two=%q", watchOne.Path(), watchTwo.Path())
+	}
+	watchOne.ExpectInput("Reply only: ONE")
+	watchTwo.ExpectInput("Reply only: TWO")
+	awaitWatcherPath(t, watchOne, one)
+	awaitWatcherPath(t, watchTwo, two)
+}
+
+func awaitWatcherPath(t *testing.T, watcher *FileWatcher, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if watcher.Path() == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("watcher path = %q, want %q", watcher.Path(), want)
+}
+
 func codexAssistantRecord(t *testing.T, text string) []byte {
 	t.Helper()
 	record, err := json.Marshal(map[string]any{

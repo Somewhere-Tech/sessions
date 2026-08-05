@@ -58,7 +58,7 @@ func (a *app) resolveHistoryReference(value string) (historyResolution, error) {
 			outcomes[index].target = targets[index]
 			outcomes[index].err = getJSONFromClient(
 				targets[index].Client, "/api/history?summary=true",
-				&outcomes[index].history, fleetRequestTimeout,
+				&outcomes[index].history, fleetTargetTimeout(targets[index]),
 			)
 		}(index)
 	}

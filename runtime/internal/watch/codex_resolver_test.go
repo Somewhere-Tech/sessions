@@ -100,6 +100,40 @@ func TestResolveCodexRolloutReasons(t *testing.T) {
 	})
 }
 
+func TestResolveCodexRolloutMatchesExpectedInputInsteadOfSharedTimestampWindow(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, time.August, 5, 13, 30, 0, 0, time.Local)
+	createdAt := now.Add(-time.Second)
+	cwd := "/tmp/shared-codex-cwd"
+	one := filepath.Join(codexDateDir(root, now), "rollout-one.jsonl")
+	two := filepath.Join(codexDateDir(root, now), "rollout-two.jsonl")
+	writeRolloutFixtureWithPrompt(t, one, cwd, now, "Reply only: ONE")
+	writeRolloutFixtureWithPrompt(t, two, cwd, now.Add(time.Millisecond), "Reply only: TWO")
+
+	got := ResolveCodexRolloutPath(CodexResolveOptions{
+		CWD: cwd, CreatedAt: createdAt, SessionsDir: root, Now: now,
+		ExpectedInput: "\x1b[200~Reply only: TWO\x1b[201~",
+	})
+	if got.Path != two || got.Reason != CodexInputMatch {
+		t.Fatalf("resolution = %+v, want input-bound path %q", got, two)
+	}
+}
+
+func TestResolveCodexRolloutRefusesDuplicateExpectedInput(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, time.August, 5, 13, 30, 0, 0, time.Local)
+	cwd := "/tmp/shared-codex-cwd"
+	writeRolloutFixtureWithPrompt(t, filepath.Join(codexDateDir(root, now), "rollout-one.jsonl"), cwd, now, "same")
+	writeRolloutFixtureWithPrompt(t, filepath.Join(codexDateDir(root, now), "rollout-two.jsonl"), cwd, now.Add(time.Millisecond), "same")
+
+	got := ResolveCodexRolloutPath(CodexResolveOptions{
+		CWD: cwd, CreatedAt: now.Add(-time.Second), SessionsDir: root, Now: now, ExpectedInput: "same",
+	})
+	if got.Path != "" || got.Reason != CodexInputAmbiguous || got.AmbiguousCount != 2 {
+		t.Fatalf("resolution = %+v, want safe ambiguous refusal", got)
+	}
+}
+
 func TestResolveCodexRolloutNormalizesCWDRealpaths(t *testing.T) {
 	fixtureRoot := t.TempDir()
 	realCWD := filepath.Join(fixtureRoot, "private", "tmp")
@@ -236,6 +270,26 @@ func writeRolloutFixture(t *testing.T, path, cwd string, timestamp time.Time, pa
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeRolloutFixtureWithPrompt(t *testing.T, path, cwd string, timestamp time.Time, prompt string) {
+	t.Helper()
+	writeRolloutFixture(t, path, cwd, timestamp, "")
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := json.NewEncoder(file).Encode(map[string]any{
+		"timestamp": timestamp.Format(time.RFC3339Nano),
+		"type":      "response_item",
+		"payload": map[string]any{
+			"type": "message", "role": "user",
+			"content": []any{map[string]any{"type": "input_text", "text": prompt}},
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

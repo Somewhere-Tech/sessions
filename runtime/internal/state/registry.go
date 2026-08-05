@@ -338,8 +338,15 @@ func (r *Registry) CreateWithLifecycle(
 
 	runner, err := r.launcher.Launch(ctx, launchRequest)
 	if err != nil {
-		// Preserve the TS daemon's diagnostic posture: a failed launch leaves
-		// its plist and state metadata available for inspection/recovery.
+		// A failed create has no registered session that can own a lingering
+		// service. Remove only this exact launch registration so a runner that
+		// never published its socket cannot keep spinning invisibly. Metadata
+		// and logs remain available for diagnosis and recovery.
+		if reaper, ok := r.launcher.(interface{ Reap(string) error }); ok {
+			if reapErr := reaper.Reap(id); reapErr != nil {
+				return SessionInfo{}, errors.Join(err, fmt.Errorf("stop failed runner %s: %w", id, reapErr))
+			}
+		}
 		return SessionInfo{}, err
 	}
 	actual := runner.Info()

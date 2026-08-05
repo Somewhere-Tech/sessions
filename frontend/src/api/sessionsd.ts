@@ -1257,6 +1257,16 @@ export async function sendInput(sessionId: string, data: string, serverId?: stri
   await json<{ ok: boolean }>(r);
 }
 
+export async function submitMessage(sessionId: string, data: string, serverId?: string): Promise<void> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/submit`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ data })
+  });
+  await json<{ ok: boolean }>(r);
+}
+
 // Upload a file to the sessionsd host's uploads dir. Returns the absolute
 // path on the server. Matches the macOS Terminal drag-drop convention
 // — the InputBar pastes that path as text after a successful upload so

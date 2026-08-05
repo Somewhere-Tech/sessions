@@ -49,6 +49,31 @@ func TestCatAndResurrectUseFleetSearchReference(t *testing.T) {
 	}
 }
 
+func TestCatAcceptsLiveSessionsIDLikeTranscript(t *testing.T) {
+	const id = "9cd94e86-2222-4333-8444-555555555555"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{{
+				"id": id, "name": "review", "tool": "codex", "cwd": "/work",
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions/"+id+"/events":
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": []map[string]any{{
+				"type": "user", "message": map[string]any{"role": "user", "content": "Review this."},
+			}}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "cat", id[:8]}, strings.NewReader(""), &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "Review this.") {
+		t.Fatalf("cat exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestResumeResolvesFriendlySessionsTitle(t *testing.T) {
 	const historyID = "762c779a-b891-4966-9e05-26eb796f5208"
 	var resumed string

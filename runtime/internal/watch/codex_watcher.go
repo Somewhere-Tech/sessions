@@ -26,6 +26,10 @@ type CodexWatcherOptions struct {
 	InitialDelay time.Duration
 	PollInterval time.Duration
 	Now          func() time.Time
+	// RequireInputMatch prevents a fresh same-CWD process from guessing which
+	// provider rollout belongs to it. Resume IDs and explicit RolloutPath values
+	// remain authoritative without a submitted-message hint.
+	RequireInputMatch bool
 }
 
 type codexTail struct {
@@ -34,11 +38,12 @@ type codexTail struct {
 	hints   *notifyHints
 	options CodexWatcherOptions
 
-	path      string
-	fileInfo  os.FileInfo
-	offset    int64
-	buffer    string
-	lineIndex int
+	path          string
+	fileInfo      os.FileInfo
+	offset        int64
+	buffer        string
+	lineIndex     int
+	expectedInput string
 }
 
 // WatchCodexRollout starts a backfilling Codex rollout watcher.
@@ -80,6 +85,9 @@ func (tail *codexTail) run() {
 			tail.tick()
 		case <-poll.C:
 			tail.tick()
+		case input := <-tail.watcher.input:
+			tail.expectedInput = normalizedCodexInput(input)
+			tail.tick()
 		case event, ok := <-tail.hints.events():
 			if !ok {
 				continue
@@ -111,14 +119,18 @@ func (tail *codexTail) tick() {
 		tail.attach(tail.options.RolloutPath)
 	} else {
 		resolution := ResolveCodexRolloutPath(CodexResolveOptions{
-			CWD:         tail.options.CWD,
-			Args:        tail.options.Args,
-			CreatedAt:   tail.options.CreatedAt,
-			SessionsDir: tail.options.SessionsDir,
-			Now:         now,
+			CWD:           tail.options.CWD,
+			Args:          tail.options.Args,
+			CreatedAt:     tail.options.CreatedAt,
+			SessionsDir:   tail.options.SessionsDir,
+			Now:           now,
+			ExpectedInput: tail.expectedInput,
 		})
-		if resolution.Path != "" && (tail.path == "" ||
-			(tail.path != resolution.Path && resolution.Reason == CodexResumeMatch)) {
+		if tail.options.RequireInputMatch && ExtractCodexResumeID(tail.options.Args) == "" && tail.expectedInput == "" {
+			resolution.Path = ""
+		}
+		if resolution.Path != "" && (tail.path == "" || tail.path != resolution.Path &&
+			(resolution.Reason == CodexResumeMatch || resolution.Reason == CodexInputMatch)) {
 			tail.attach(resolution.Path)
 		}
 	}

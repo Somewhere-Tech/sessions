@@ -58,6 +58,50 @@ func TestDurableExitReasonRequiresCleanExitEvidence(t *testing.T) {
 	}
 }
 
+func TestInteractiveShellIdleDoesNotClaimCompletion(t *testing.T) {
+	root := t.TempDir()
+	launcher := prototest.NewLauncher()
+	manager := NewManager(testConfig(root), launcher, ManagerOptions{DisableWatchers: true})
+	t.Cleanup(manager.Close)
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{Cmd: "/bin/bash", Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.setWorking(true)
+	runtime.setWorking(false)
+	info, _ := manager.Get(created.ID)
+	if got := info.Info().IdleReason; got != "" {
+		t.Fatalf("live shell idle reason = %q, want no completed/failed claim", got)
+	}
+}
+
+func TestTerminalCodexTaskCompleteOverridesStaleScreenError(t *testing.T) {
+	root := t.TempDir()
+	launcher := prototest.NewLauncher()
+	manager := NewManager(testConfig(root), launcher, ManagerOptions{
+		DisableWatchers: true, Notify: func(PushPayload) {},
+	})
+	t.Cleanup(manager.Close)
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{Cmd: "codex", Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.setWorking(true)
+	launcher.Runner(created.ID).AddOutput("old fatal error text still visible\n")
+	runtime.markTerminalTurnDone()
+	runtime.setWorking(false)
+	info, _ := manager.Get(created.ID)
+	if got := info.Info().IdleReason; got != state.IdleReasonCompleted {
+		t.Fatalf("Codex task_complete idle reason = %q, want %q", got, state.IdleReasonCompleted)
+	}
+}
+
 func TestCodexAppServerStructuredHistoryAndLifecycleAreAuthoritative(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
@@ -166,6 +210,13 @@ func TestCodexAppServerConversationPersistsInMetadataAndLedger(t *testing.T) {
 	lanes := ledger.Fold(events)
 	if len(lanes) != 1 || lanes[0].ProviderUUID != "019f7181-cb32-76e0-952d-2f5f7862e668" {
 		t.Fatalf("ledger state = %#v", lanes)
+	}
+}
+
+func TestNormalizedTerminalPromptRemovesBracketedPaste(t *testing.T) {
+	got := normalizedTerminalPrompt("\x1b[200~line one\nline two\x1b[201~")
+	if got != "line one\nline two" {
+		t.Fatalf("normalized prompt = %q", got)
 	}
 }
 

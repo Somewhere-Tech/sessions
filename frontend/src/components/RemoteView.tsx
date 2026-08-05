@@ -33,6 +33,7 @@ interface Props {
   // Composer sends use the acknowledged path. Raw terminal keystrokes stay
   // inside SessionView and are never used for conversation dispatch.
   sendConfirmed: (data: string) => Promise<void>;
+  submitMessage: (data: string) => Promise<void>;
   connected: boolean;
   hasEarlierClaudeEvents: boolean;
   loadingEarlierClaudeEvents: boolean;
@@ -78,6 +79,7 @@ export function RemoteView({
   events,
   historyPending,
   sendConfirmed,
+  submitMessage,
   connected,
   hasEarlierClaudeEvents,
   loadingEarlierClaudeEvents,
@@ -528,6 +530,7 @@ export function RemoteView({
       <div className="remote-input-wrap">
         <InputBar
           send={sendConfirmed}
+          submitMessage={submitMessage}
           connected={connected}
           sessionId={sessionId}
           onSubmitted={recordSent}

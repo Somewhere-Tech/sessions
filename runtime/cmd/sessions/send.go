@@ -67,9 +67,8 @@ var (
 )
 
 const (
-	sendTextSettleDelay = 150 * time.Millisecond
-	sendPollInterval    = 300 * time.Millisecond
-	maxEnterRetries     = 2
+	sendPollInterval = 300 * time.Millisecond
+	maxEnterRetries  = 2
 )
 
 func getComposerLines(snapshot string) []string {
@@ -310,9 +309,9 @@ func firstValue(value map[string]any, keys ...string) any {
 	return nil
 }
 
-// submitComposer matches sessionsd/bin/sessions.cjs: preserve the text payload
-// exactly (including an existing bracketed-paste envelope), wait for the TUI
-// to register it, then send CR as a separate discrete keystroke.
+// submitComposer sends one logical message through the daemon's atomic submit
+// boundary. Raw terminal keystrokes still use /input; message text and Enter
+// must never be interleaved with another agent's concurrent submission.
 func (a *app) submitComposer(inputPath, text, sourceSessionID string) error {
 	headers := make(http.Header)
 	if sourceSessionID == "" {
@@ -321,11 +320,8 @@ func (a *app) submitComposer(inputPath, text, sourceSessionID string) error {
 	if sourceSessionID != "" {
 		headers.Set("X-Sessions-Creator-Session", sourceSessionID)
 	}
-	if err := a.postJSONWithHeaders(inputPath, map[string]string{"data": text}, &map[string]any{}, 1, headers); err != nil {
-		return err
-	}
-	a.sleep(sendTextSettleDelay)
-	return a.pressComposerEnter(inputPath)
+	submitPath := strings.TrimSuffix(inputPath, "/input") + "/submit"
+	return a.postJSONWithHeaders(submitPath, map[string]string{"data": text}, &map[string]any{}, 1, headers)
 }
 
 func (a *app) pressComposerEnter(inputPath string) error {
@@ -595,10 +591,7 @@ func (a *app) cmdSend(args []string) error {
 			io.WriteString(a.stderr, "  (the tool may still be picking it up, or the session may be confused)\n")
 		}
 		if result.ComposerTail != "" {
-			io.WriteString(a.stderr, "  composer tail:\n")
-			for _, line := range strings.Split(result.ComposerTail, "\n") {
-				fmt.Fprintf(a.stderr, "    %s\n", line)
-			}
+			fmt.Fprintf(a.stderr, "  inspect the terminal with `sessions snap %s` if the provider is showing a picker or prompt\n", id)
 		}
 	}
 	return status(result.ExitCode)

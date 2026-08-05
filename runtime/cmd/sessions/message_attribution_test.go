@@ -26,7 +26,7 @@ func TestSendFromAttributesTextButNotEnter(t *testing.T) {
 				map[string]any{"id": target, "name": "target", "tool": "terminal"},
 				map[string]any{"id": source, "name": "source", "tool": "terminal"},
 			}})
-		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+target+"/input":
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+target+"/submit":
 			var body map[string]string
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 				http.Error(response, err.Error(), http.StatusBadRequest)
@@ -35,6 +35,7 @@ func TestSendFromAttributesTextButNotEnter(t *testing.T) {
 			inputs = append(inputs, received{
 				data: body["data"], source: request.Header.Get("X-Sessions-Creator-Session"),
 			})
+			inputs = append(inputs, received{data: "\r"})
 			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
 		default:
 			http.NotFound(response, request)

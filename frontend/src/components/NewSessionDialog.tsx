@@ -5,7 +5,7 @@ import {
   fetchProfiles,
   listDirectories,
   listNewSessionCodexModels,
-  sendInput,
+  submitMessage,
   type AccountProfile,
   type SessionModelOption
 } from '../api/sessionsd';
@@ -89,13 +89,7 @@ function inheritedProfile(parent: SessionInfo | null, tool: NewSessionTool): str
 }
 
 async function submitInitialRequest(sessionId: string, text: string, serverId: string): Promise<void> {
-  // Match the proven composer path exactly. Ink-based TUIs can buffer a
-  // carriage return when it arrives in the same PTY write as pasted text,
-  // leaving the request unsent until the next keystroke. A bracketed paste
-  // followed by a separate Enter avoids that ambiguity.
-  await sendInput(sessionId, `\x1b[200~${text}\x1b[201~`, serverId);
-  await new Promise<void>((resolve) => window.setTimeout(resolve, 30));
-  await sendInput(sessionId, '\r', serverId);
+  await submitMessage(sessionId, `\x1b[200~${text}\x1b[201~`, serverId);
 }
 
 interface Props {
