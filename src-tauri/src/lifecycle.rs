@@ -433,7 +433,6 @@ enum InstallOutcome {
 struct HealthResponse {
     ok: bool,
     name: String,
-    discovering: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1151,25 +1150,20 @@ fn wait_until_ready(config: &RuntimeConfig, baseline: &BTreeSet<String>) -> Life
     let mut last_error = "no response".to_string();
     while Instant::now() < deadline {
         match health_once(config) {
-            Ok(health) if health.ok && health.name == "sessionsd" && !health.discovering => {
-                match fetch_sessions(config) {
-                    Ok(current) => {
-                        let missing = baseline.difference(&current).cloned().collect::<Vec<_>>();
-                        if missing.is_empty() {
-                            return Ok(());
-                        }
-                        last_error = format!(
-                            "{} live sessions were not re-adopted: {}",
-                            missing.len(),
-                            missing.join(", ")
-                        );
+            Ok(health) if health.ok && health.name == "sessionsd" => match fetch_sessions(config) {
+                Ok(current) => {
+                    let missing = baseline.difference(&current).cloned().collect::<Vec<_>>();
+                    if missing.is_empty() {
+                        return Ok(());
                     }
-                    Err(error) => last_error = error,
+                    last_error = format!(
+                        "{} live sessions were not re-adopted: {}",
+                        missing.len(),
+                        missing.join(", ")
+                    );
                 }
-            }
-            Ok(health) if health.discovering => {
-                last_error = "daemon is healthy but discovery is still running".to_string();
-            }
+                Err(error) => last_error = error,
+            },
             Ok(health) => {
                 last_error = format!("unexpected health response from {:?}", health.name);
             }
@@ -1530,6 +1524,38 @@ mod tests {
         config.poll_interval = Duration::from_millis(25);
 
         wait_until_listening(&config).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn update_accepts_complete_baseline_while_unrelated_discovery_continues() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let count = stream.read(&mut request).unwrap_or_default();
+                let request = String::from_utf8_lossy(&request[..count]);
+                let body = if request.starts_with("GET /api/sessions ") {
+                    r#"{"sessions":[{"id":"alpha"},{"id":"beta"}]}"#
+                } else {
+                    r#"{"ok":true,"name":"sessionsd","discovering":true}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let root = env::temp_dir().join("sessions-update-discovery-baseline-test");
+        let mut config = fixture_config(&root, "tech.somewhere.sessions.update-discovery", port);
+        config.health_timeout = Duration::from_secs(1);
+        config.poll_interval = Duration::from_millis(25);
+        let baseline = BTreeSet::from(["alpha".to_string(), "beta".to_string()]);
+
+        wait_until_ready(&config, &baseline).unwrap();
         server.join().unwrap();
     }
 
