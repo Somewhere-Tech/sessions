@@ -176,6 +176,16 @@ func (l claudeStructuredBoundLauncher) Launch(ctx context.Context, request proto
 	return l.Launcher.Launch(ctx, request)
 }
 
+type reapRecordingLauncher struct {
+	*prototest.Launcher
+	reaped []string
+}
+
+func (l *reapRecordingLauncher) Reap(id string) error {
+	l.reaped = append(l.reaped, id)
+	return nil
+}
+
 func TestClaudeStructuredHistoryLifecycleMetadataLedgerAndAuth(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
@@ -1101,7 +1111,8 @@ func TestDiscoveryPreservesUnreachableLivePID(t *testing.T) {
 	if err := os.WriteFile(metadata, []byte(encoded), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+	launcher := &reapRecordingLauncher{Launcher: prototest.NewLauncher()}
+	manager := NewManager(config, launcher, ManagerOptions{
 		DisableWatchers: true, DiscoveryRetries: 1, DiscoveryDelay: time.Millisecond,
 		ProcessAlive: func(int) bool { return true }, ProcessCommand: func(int) string { return "" },
 	})
@@ -1113,6 +1124,9 @@ func TestDiscoveryPreservesUnreachableLivePID(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("discovery removed sacred state %s: %v", path, err)
 		}
+	}
+	if len(launcher.reaped) != 0 {
+		t.Fatalf("discovery reaped unreachable live runner: %v", launcher.reaped)
 	}
 }
 

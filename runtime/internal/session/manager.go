@@ -1931,6 +1931,8 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 				command := m.options.ProcessCommand(metadata.Info.PID)
 				if runnerCommandMatches(command, id, metadata.Info.Cmd, metadata.Kind) {
 					log.Printf("[discover] runner %s unreachable but pid %d alive — leaving it alone", id, metadata.Info.PID)
+					delete(candidates, id)
+					delete(deadArtifacts, id)
 					continue
 				}
 				log.Printf("[discover] runner %s pid %d is PID reuse (%s) — treating as dead", id, metadata.Info.PID, truncate(command, 60))
