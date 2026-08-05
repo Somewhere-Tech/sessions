@@ -204,9 +204,18 @@ command table rather than a copied list.
 
 ## Internal packages
 
-There are 23 production packages under `runtime/internal/`. The neighboring
+There are 27 production packages under `runtime/internal/`. The neighboring
 `runtime/internal/interop/` directory is a compatibility test fixture, not a
 production package (`runtime/internal/interop/cutover_test.go`).
+
+The sections below describe the packages that carry product behavior. Five
+supporting packages have no section of their own: `discovery` (Bonjour
+advertisement and browsing), `ipc` (the local runner socket, including the
+Windows named-pipe owner check), `tokenstore` (master-token and device
+credential storage), and the Windows-only `winconpty` and `winprocess`. The
+Unix implementation in `tokenstore/store_unix.go` currently has no test file
+while its Windows counterpart does; `.github/workflows/windows-preview.yml`
+covers the Windows side.
 
 ### `api`
 
@@ -421,11 +430,13 @@ by this package rather than by API clients.
 ### `proto`
 
 `proto` defines the framed runner protocol and the daemon-side socket client
-(`runtime/internal/proto/proto.go`, `runtime/internal/proto/client.go`). Version
-1 requires server-first HELLO, bounds frame size, and distinguishes replay from
-live traffic. The daemon accepts protocol 0 for immutable legacy runners whose
-HELLO omitted the field, accepts protocol 1, and rejects an unknown future
-version before replay or control frames. HELLO also reports the runner's
+(`runtime/internal/proto/proto.go`, `runtime/internal/proto/client.go`). The
+current revision is protocol 2, which added the model request/response frames;
+every revision requires server-first HELLO, bounds frame size, and distinguishes
+replay from live traffic. The daemon accepts protocol 0 for immutable legacy
+runners whose HELLO omitted the field, accepts every revision through the
+current one, and rejects an unknown future version before replay or control
+frames (`MinimumCompatibleVersion`, `MaximumCompatibleVersion`). HELLO also reports the runner's
 runtime release when known; semantic runner capabilities are exposed through
 `runtime/internal/proto/runner.go`. Structured provider events use the protocol's
 extension frame instead of masquerading as terminal output.

@@ -23,9 +23,9 @@ agent CLI you want to run separately.
 
 ## Install
 
-Sessions.app is the primary macOS package. The signed, notarized Apple Silicon
-v0.1.0 release is available from
-[GitHub Releases](https://github.com/somewhere-tech/sessions/releases/tag/v0.1.0) or
+Sessions.app is the primary macOS package. The current signed, notarized Apple
+Silicon build is available from
+[GitHub Releases](https://github.com/somewhere-tech/sessions/releases/latest) or
 Homebrew:
 
 ```sh

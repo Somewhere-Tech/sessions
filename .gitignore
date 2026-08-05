@@ -18,6 +18,11 @@ node_modules
 node_modules/
 runtime/dist-go/
 /runtime/*.exe
+# `go build ./cmd/<name>` from runtime/ drops the binary in the working
+# directory. These are the three the documented build commands produce.
+/runtime/sessions
+/runtime/sessionsd
+/runtime/sessions-runner
 /src-tauri/runtime/*
 !/src-tauri/runtime/.gitkeep
 /release/out/

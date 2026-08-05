@@ -42,6 +42,7 @@ disagree, the code wins.
 - Open-source boundary:
   [`docs/OPEN_SOURCE_BOUNDARY.md`](docs/OPEN_SOURCE_BOUNDARY.md).
 - Implementation orientation: [`docs/CODEBASE.md`](docs/CODEBASE.md).
+- Process, protocol, and state topology: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - Generated command reference: [`docs/CLI.md`](docs/CLI.md).
 - Broad public direction: [`ROADMAP.md`](ROADMAP.md).
 

@@ -37,9 +37,14 @@ and scoped windows. The v2 release gate bundles the three Go binaries, installs
 or upgrades the per-user daemon, rolls back failed upgrades, and adds a signed,
 notarized updater. See [`docs/NATIVE_APP.md`](docs/NATIVE_APP.md).
 
-All production Go builds use `CGO_ENABLED=0`. The daemon embeds the React UI,
-so the browser and native shells share one frontend and end users do not need
-Node, npm, Vite, or a separate static-file server.
+All production Go builds use `CGO_ENABLED=0`. The daemon embeds the React UI, so
+end users do not need Node, npm, Vite, or a separate static-file server.
+
+The embedded browser surface is an implemented compatibility path, not a peer of
+the native client. Product direction deprecates interactive browser terminal and
+agent control, and that surface must not grow new features of either kind; see
+[`docs/NATIVE_APP.md`](docs/NATIVE_APP.md). Do not infer a browser feature
+commitment from the presence of the embedded assets.
 
 ## Compatibility boundary
 

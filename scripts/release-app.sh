@@ -50,12 +50,39 @@ fi
 CONFIG_VERSION="$(node -p "require('$ROOT/src-tauri/tauri.conf.json').version")"
 FRONTEND_VERSION="$(node -p "require('$ROOT/frontend/package.json').version")"
 CARGO_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/src-tauri/Cargo.toml" | head -1)"
-for pair in "tauri.conf.json:$CONFIG_VERSION" "frontend/package.json:$FRONTEND_VERSION" "Cargo.toml:$CARGO_VERSION"; do
+ROOT_PACKAGE_VERSION="$(node -p "require('$ROOT/package.json').version")"
+for pair in "tauri.conf.json:$CONFIG_VERSION" "frontend/package.json:$FRONTEND_VERSION" \
+            "Cargo.toml:$CARGO_VERSION" "package.json:$ROOT_PACKAGE_VERSION"; do
   if [[ "${pair#*:}" != "$VERSION" ]]; then
     echo "error: ${pair%%:*} is ${pair#*:}, expected $VERSION" >&2
     exit 1
   fi
 done
+
+# The Go binaries report their version through -ldflags at build time, but the
+# in-source defaults are what a `go build ./...` developer runs and what shows
+# up in bug reports, so they must not drift either.
+while IFS= read -r go_version_file; do
+  go_version="$(sed -n 's/^var version = "\([^"]*\)"/\1/p' "$go_version_file" | head -1)"
+  if [[ -n "$go_version" && "$go_version" != "$VERSION" ]]; then
+    echo "error: ${go_version_file#$ROOT/} declares version $go_version, expected $VERSION" >&2
+    exit 1
+  fi
+done < <(grep -rl '^var version = "' "$ROOT/runtime/cmd" --include='*.go')
+
+# Release notes must exist before the tag is published, not after.
+if [[ ! -f "$ROOT/release/notes-v${VERSION}.md" ]]; then
+  echo "error: release/notes-v${VERSION}.md is missing; write the notes before releasing" >&2
+  exit 1
+fi
+
+# The download links users actually click live in site/. A release that leaves
+# them pointing at an older build ships a working app nobody can find.
+if ! grep -q "v${VERSION}/" "$ROOT/site/index.html"; then
+  echo "error: site/index.html does not link to v${VERSION}; update the download links" >&2
+  echo "       (this is the check that would have caught the site sitting on an older release)" >&2
+  exit 1
+fi
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
   echo "error: the current release lane produces notarized darwin-aarch64 artifacts" >&2

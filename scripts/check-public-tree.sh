@@ -90,11 +90,26 @@ docs/RUNBOOKS.md
 frontend/CONNECT_NOTES.md
 '
 
+# git grep exits 1 for "no match" and 128 for a real failure. Collapsing both to
+# success would let this guard report "passed" when it never actually ran, so
+# every scan below distinguishes them explicitly.
+scan() {
+  scan_status=0
+  scan_output="$("$@" 2>&1)" || scan_status=$?
+  if [ "$scan_status" -gt 1 ]; then
+    printf 'public-tree check could not run (exit %s):\n%s\n' \
+      "$scan_status" "$scan_output" >&2
+    exit 2
+  fi
+  [ "$scan_status" -eq 0 ] || scan_output=""
+}
+
 while IFS= read -r path; do
   [ -n "$path" ] || continue
-  refs="$(git grep -n -F "$path" -- \
+  scan git grep -n -F "$path" -- \
     ':!.gitignore' \
-    ':!scripts/check-public-tree.sh' 2>/dev/null || true)"
+    ':!scripts/check-public-tree.sh'
+  refs="$scan_output"
   if [ -n "$refs" ]; then
     stale="${stale}${refs}
 "
@@ -103,10 +118,11 @@ done <<EOF
 $reference_forbidden
 EOF
 
-external_design_refs="$(git grep -n -i -E \
+scan git grep -n -i -E \
   '(^|[^[:alnum:]_])(t3([ -]?code)?|happier|sessions-tmux|spotify)([^[:alnum:]_]|$)' -- \
   ':!.gitignore' \
-  ':!scripts/check-public-tree.sh' 2>/dev/null || true)"
+  ':!scripts/check-public-tree.sh'
+external_design_refs="$scan_output"
 
 if [ -n "$bad" ]; then
   printf '%s\n' "private product artifacts are tracked in the public tree:" >&2

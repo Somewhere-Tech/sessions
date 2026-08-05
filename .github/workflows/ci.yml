@@ -67,6 +67,13 @@ jobs:
           go vet ./...
           go test ./...
 
+      # The daemon is heavily concurrent: runners, watchers, the discovery loop,
+      # and every attached client share session state. Ordinary `go test` cannot
+      # see the data races that produces, so the detector runs as its own step.
+      - name: Verify Go runtime under the race detector
+        working-directory: runtime
+        run: go test -race ./...
+
       - name: Verify generated CLI reference
         run: |
           bash runtime/scripts/gen-cli-docs.sh
@@ -75,6 +82,7 @@ jobs:
       - name: Verify frontend
         run: |
           npm --prefix frontend run typecheck
+          npm --prefix frontend run lint
           npm --prefix frontend run build
           npm --prefix frontend run test:smoke
 

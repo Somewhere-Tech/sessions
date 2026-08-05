@@ -1,10 +1,12 @@
 # Install Sessions
 
-Sessions.app is the primary macOS package. Its bundled-runtime installer and
-signed updater shipped publicly as v0.1.0. The release is Developer ID signed,
-notarized, stapled, and backed by an immutable updater artifact. The standalone
-instructions below remain useful for agents, developers, and headless installs.
-Do not use them to change the production mini.
+Sessions.app is the primary macOS package, carrying a bundled-runtime installer
+and a signed updater. Public releases are Developer ID signed, notarized,
+stapled, and backed by an immutable updater artifact; see
+[GitHub Releases](https://github.com/somewhere-tech/sessions/releases/latest)
+for the current version. The standalone instructions below remain useful for
+agents, developers, and headless installs. Do not use them to change the
+production mini.
 
 The standalone runtime ships as three static Go binaries:
 
@@ -75,9 +77,9 @@ sessions install
 open http://localhost:8787
 ```
 
-The public `somewhere-tech/homebrew-tap` repository pins the immutable v0.1.0 URLs and
-SHA-256 digests. It installs native binaries directly; Node and npm are not
-runtime dependencies.
+The public `somewhere-tech/homebrew-tap` repository pins immutable release URLs
+and their SHA-256 digests. It installs native binaries directly; Node and npm
+are not runtime dependencies.
 
 `sessions install` writes
 `~/Library/LaunchAgents/tech.somewhere.sessions.dev.daemon.plist`, starts the per-user
@@ -105,7 +107,9 @@ With GitHub CLI, agents can select an immutable tag without parsing a web page.
 private; no repository checkout, npm, Node, or install script is involved:
 
 ```sh
-VERSION=0.1.0
+# Resolve the current release, then pin it for the rest of the install.
+VERSION="$(gh release view --repo somewhere-tech/sessions --json tagName -q .tagName)"
+VERSION="${VERSION#v}"
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 DOWNLOAD_DIR="$(mktemp -d)"
 gh release download "v${VERSION}" --repo somewhere-tech/sessions \
@@ -125,7 +129,9 @@ For a public repository, the same command works without authentication. Agents
 that do not have `gh` can use the direct HTTPS form:
 
 ```sh
-VERSION=0.1.0
+# Substitute the version you intend to install. The releases page always shows
+# the current one: https://github.com/somewhere-tech/sessions/releases/latest
+VERSION=0.2.16
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}.sha256"
