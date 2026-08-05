@@ -185,7 +185,7 @@ func (r *claudeStructuredRunner) writeMetadata() error {
 }
 
 func (r *claudeStructuredRunner) writeMetadataLocked() error {
-	return state.WriteMetadata(r.paths.Meta, state.Metadata{
+	return state.WriteRunnerMetadata(r.paths.Meta, state.Metadata{
 		ID: r.cfg.id, Name: r.cfg.name, Description: r.cfg.description,
 		DescriptionSource: r.cfg.descriptionSource, Kind: r.cfg.kind, SpecPath: r.cfg.specPath,
 		Profile: r.cfg.profile, ConfigDir: r.cfg.configDir,

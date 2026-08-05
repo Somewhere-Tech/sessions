@@ -253,7 +253,7 @@ func (r *codexAppRunner) writeMetadata() error {
 }
 
 func (r *codexAppRunner) writeMetadataLocked() error {
-	return state.WriteMetadata(r.paths.Meta, state.Metadata{
+	return state.WriteRunnerMetadata(r.paths.Meta, state.Metadata{
 		ID: r.cfg.id, Name: r.cfg.name, Description: r.cfg.description,
 		DescriptionSource: r.cfg.descriptionSource, Kind: r.cfg.kind, SpecPath: r.cfg.specPath,
 		Profile: r.cfg.profile, ConfigDir: r.cfg.configDir,
@@ -441,6 +441,7 @@ func (r *codexAppRunner) handleInput(data string) {
 		return
 	}
 	r.mu.Lock()
+	var rejected []json.RawMessage
 	parts := strings.Split(data, "\r")
 	for index, part := range parts {
 		r.composer.WriteString(part)
@@ -449,13 +450,29 @@ func (r *codexAppRunner) handleInput(data string) {
 		}
 		text := cleanComposerInput(r.composer.String())
 		r.composer.Reset()
-		if text == "" || r.active {
+		if text == "" {
+			continue
+		}
+		if r.active {
+			// The composer has already been emptied, so silently dropping the
+			// text would destroy the message with no trace anywhere.
+			event, err := codexapp.InputRejectedEvent(
+				r.conversationID,
+				"Codex is still working. This message was not sent or queued; send it again after the turn finishes.",
+				time.Now(),
+			)
+			if err == nil {
+				rejected = append(rejected, event)
+			}
 			continue
 		}
 		r.active = true
 		go r.runTurn(text)
 	}
 	r.mu.Unlock()
+	for _, event := range rejected {
+		r.appendStructured(event)
+	}
 }
 
 func isCodexInterruptInput(data string) bool {

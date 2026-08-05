@@ -32,7 +32,20 @@ import (
 const (
 	idleShutdown       = 30 * time.Second
 	clientOutboxFrames = 16
+	maximumTail        = 4 * 1024
+
+	// laneInterruptedExitCode is the conventional 128+SIGTERM encoding. A lane
+	// stopped by logout, reboot, or a launchd unload never reports success, so
+	// no reader can mistake an unfinished command for a completed one.
+	laneInterruptedExitCode = 143
 )
+
+// laneInterruptedNotice marks the terminal record of a lane that shutdown
+// ended first. The manifest is what stops the command from running a second
+// time at the next login, so the record has to say plainly that the work did
+// not finish and that nothing re-ran it.
+const laneInterruptedNotice = "\r\n[sessions: this lane was stopped by shutdown before its command finished. " +
+	"It was not re-run at the next login; start it again if the work still needs to happen.]\r\n"
 
 var version = "0.2.16"
 
@@ -228,6 +241,7 @@ type runner struct {
 	idle     *time.Timer
 
 	shutdownOnce sync.Once
+	manifestOnce sync.Once
 	readDone     chan struct{}
 	jsonlMissing bool
 	gitBaseline  gitWorktreeState
@@ -273,6 +287,9 @@ func run() int {
 	}
 	if cfg.kind == state.KindClaudeStructured {
 		return runClaudeStructured(cfg, paths, logger)
+	}
+	if code, guarded := guardCompletedLane(cfg, paths, logger); guarded {
+		return code
 	}
 
 	spawnArgs, jsonlMissing := respawnArgs(cfg, paths.Events)
@@ -337,7 +354,9 @@ func run() int {
 		Cols: cfg.cols, Rows: cfg.rows, CreatedAt: r.createdAt,
 		PID: process.PID(), SockPath: paths.Socket,
 	}
-	if err := state.WriteMetadata(paths.Meta, meta); err != nil {
+	// A PTY runner rebuilds metadata from its launch config too, so a launchd
+	// restart of a tagged or set-aside session must not drop those fields.
+	if err := state.WriteRunnerMetadata(paths.Meta, meta); err != nil {
 		logger.Printf("write metadata failed: %v", err)
 		r.shutdown(false, 1)
 	}
@@ -361,12 +380,55 @@ func run() int {
 	go func() {
 		<-term
 		r.mu.Lock()
-		permanent := r.exited && !r.jsonlMissing
+		exited := r.exited
+		permanent := exited && !r.jsonlMissing
 		r.mu.Unlock()
+		if !exited {
+			// Shutdown is reaching this lane before its command finished.
+			// waitChild will never run, so this is the only chance to leave a
+			// terminal record — and without one, RunAtLoad starts the command
+			// again at the next login.
+			r.writeLaneManifest(r.interruptedManifest)
+		}
 		r.shutdown(permanent, 0)
 	}()
 
 	select {}
+}
+
+// guardCompletedLane keeps a lane's command from running twice. The runner's
+// launchd job carries RunAtLoad, so a lane interrupted by a reboot is started
+// again at the next login; without this check a deploy, migration, or any
+// other one-shot command would silently repeat. A completion manifest is the
+// durable proof that this lane already reached a terminal record, so the
+// runner leaves that record alone and exits successfully.
+//
+// This does not block the KeepAlive{SuccessfulExit:false} restart of a crashed
+// runner: a runner that dies before its lane finishes never wrote a manifest,
+// so the guard does not fire. It fires only after the terminal record exists,
+// where re-running the command would be the wrong answer anyway.
+func guardCompletedLane(cfg config, paths state.Paths, logger *log.Logger) (int, bool) {
+	if cfg.kind != state.KindLane {
+		return 0, false
+	}
+	_, err := os.Stat(paths.Manifest)
+	if err == nil {
+		logger.Printf(
+			"lane %s already finished and recorded %s; not running %q again — read the record, or create a new lane to run the command again",
+			cfg.id, paths.Manifest, cfg.cmd,
+		)
+		return 0, true
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, false
+	}
+	// An unreadable record cannot prove the command has not already run, and
+	// re-running a user's command is the one outcome that cannot be undone.
+	logger.Printf(
+		"read lane completion record %s failed: %v; not running %q because a repeat run cannot be taken back — fix or remove the record, then create a new lane",
+		paths.Manifest, err, cfg.cmd,
+	)
+	return 0, true
 }
 
 func configFromEnv() (config, string, error) {
@@ -544,6 +606,10 @@ func (r *runner) serveClient(conn net.Conn) {
 	r.streamMu.Lock()
 	r.mu.Lock()
 	r.clients[c] = struct{}{}
+	// The post-exit grace period exists so a reconnecting daemon can still
+	// replay. Disarm it here or the timer deletes the durable event file part
+	// way through that replay; removeClient re-arms it on disconnect.
+	r.cancelIdleShutdownLocked()
 	h := r.helloLocked()
 	exit := r.exit
 	r.mu.Unlock()
@@ -693,12 +759,7 @@ func (r *runner) waitChild() {
 	if err := r.persistent.Sync(); err != nil {
 		r.logger.Printf("persistent.sync before exit failed: %v", err)
 	}
-	if r.cfg.kind == state.KindLane {
-		manifest := r.completionManifest(info)
-		if writeErr := state.WriteCompletionManifest(r.paths.Manifest, manifest); writeErr != nil {
-			r.logger.Printf("write completion manifest failed: %v", writeErr)
-		}
-	}
+	r.writeLaneManifest(func() state.CompletionManifest { return r.completionManifest(info) })
 	r.streamMu.Lock()
 	info.Seq = r.log.CurrentSeq()
 	r.mu.Lock()
@@ -722,25 +783,64 @@ func (r *runner) waitChild() {
 	}
 }
 
+// writeLaneManifest publishes a lane's terminal record exactly once. Shutdown
+// can reach the SIGTERM path while waitChild is still draining the child, so
+// the first durable record wins and the loser never overwrites it with a less
+// informed account of the same lane.
+func (r *runner) writeLaneManifest(build func() state.CompletionManifest) {
+	if r.cfg.kind != state.KindLane {
+		return
+	}
+	r.manifestOnce.Do(func() {
+		if err := state.WriteCompletionManifest(r.paths.Manifest, build()); err != nil {
+			r.logger.Printf(
+				"write lane completion record %s failed: %v; this lane may run its command again at the next login — check what the command already did before starting it again",
+				r.paths.Manifest, err,
+			)
+		}
+	})
+}
+
 func (r *runner) completionManifest(info exitInfo) state.CompletionManifest {
 	code := 0
 	if info.Code != nil {
 		code = *info.Code
 	}
+	return state.CompletionManifest{
+		ExitCode: code, Signal: info.Signal, DurationMS: r.laneDuration(),
+		LastOutputTail: r.manifestTail(), SpecPath: r.cfg.specPath,
+		FilesChanged: gitFilesChangedSince(r.cfg.cwd, r.gitBaseline),
+	}
+}
+
+// interruptedManifest is the terminal record for a lane that logout, reboot,
+// or a launchd unload ended before its command finished. It deliberately skips
+// the Git comparison that completionManifest performs: shutdown is time-boxed,
+// and a second worktree scan can outlast the grace period, which would leave
+// the lane with no record at all and re-run the command at the next login.
+func (r *runner) interruptedManifest() state.CompletionManifest {
+	signal := "SIGTERM"
+	return state.CompletionManifest{
+		ExitCode: laneInterruptedExitCode, Signal: &signal, DurationMS: r.laneDuration(),
+		LastOutputTail: r.manifestTail() + laneInterruptedNotice,
+		SpecPath:       r.cfg.specPath,
+	}
+}
+
+func (r *runner) manifestTail() string {
 	tail := r.snapshotLocked()
-	const maximumTail = 4 * 1024
 	if len(tail) > maximumTail {
 		tail = tail[len(tail)-maximumTail:]
 	}
+	return string(tail)
+}
+
+func (r *runner) laneDuration() int64 {
 	duration := time.Since(time.UnixMilli(r.createdAt)).Milliseconds()
 	if duration < 0 {
-		duration = 0
+		return 0
 	}
-	return state.CompletionManifest{
-		ExitCode: code, Signal: info.Signal, DurationMS: duration,
-		LastOutputTail: string(tail), SpecPath: r.cfg.specPath,
-		FilesChanged: gitFilesChangedSince(r.cfg.cwd, r.gitBaseline),
-	}
+	return duration
 }
 
 type gitWorktreeState struct {
@@ -986,8 +1086,30 @@ func (r *runner) scheduleIdleShutdown() {
 		return
 	}
 	r.idle = time.AfterFunc(idleShutdown, func() {
-		r.shutdown(!r.jsonlMissing, 0)
+		r.mu.Lock()
+		r.idle = nil
+		reconnected := !r.exited || len(r.clients) > 0
+		permanent := !r.jsonlMissing
+		r.mu.Unlock()
+		if reconnected {
+			// A client connected while this callback was already scheduled.
+			// Stop cannot recall a fired timer, so the decision is re-checked
+			// here; the next disconnect schedules a fresh grace period.
+			return
+		}
+		r.shutdown(permanent, 0)
 	})
+}
+
+// cancelIdleShutdownLocked disarms the post-exit grace period. The caller
+// holds r.mu; Stop never waits for a running callback, so this cannot deadlock
+// against a callback that is itself trying to take r.mu.
+func (r *runner) cancelIdleShutdownLocked() {
+	if r.idle == nil {
+		return
+	}
+	r.idle.Stop()
+	r.idle = nil
 }
 
 func (r *runner) shutdown(permanent bool, code int) {
