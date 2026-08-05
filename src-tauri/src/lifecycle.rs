@@ -351,7 +351,10 @@ impl RuntimeConfig {
             // fleet size.
             health_timeout: Duration::from_secs(30),
             health_timeout_per_session: Duration::from_secs(15),
-            health_timeout_cap: Duration::from_secs(5 * 60),
+            // A manager machine can legitimately retain dozens of live
+            // runners. Keep a hard bound, but do not cut off the measured
+            // per-session budget before a fleet-sized restart can finish.
+            health_timeout_cap: Duration::from_secs(15 * 60),
             poll_interval: Duration::from_millis(200),
         })
     }
@@ -1495,12 +1498,13 @@ mod tests {
         let mut config = fixture_config(&root, "tech.somewhere.sessions.readiness", 47_869);
         config.health_timeout = Duration::from_secs(30);
         config.health_timeout_per_session = Duration::from_secs(15);
-        config.health_timeout_cap = Duration::from_secs(5 * 60);
+        config.health_timeout_cap = Duration::from_secs(15 * 60);
         assert_eq!(readiness_timeout(&config, 0), Duration::from_secs(30));
         assert_eq!(readiness_timeout(&config, 7), Duration::from_secs(135));
         assert_eq!(readiness_timeout(&config, 9), Duration::from_secs(165));
-        assert_eq!(readiness_timeout(&config, 19), Duration::from_secs(300));
-        assert_eq!(readiness_timeout(&config, 10_000), Duration::from_secs(300));
+        assert_eq!(readiness_timeout(&config, 19), Duration::from_secs(315));
+        assert_eq!(readiness_timeout(&config, 58), Duration::from_secs(900));
+        assert_eq!(readiness_timeout(&config, 10_000), Duration::from_secs(900));
     }
 
     #[test]
