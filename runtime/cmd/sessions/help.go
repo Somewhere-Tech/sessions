@@ -28,9 +28,9 @@ const (
 // top-level help, and per-command help. Keep the daily path first.
 var commandTable = []commandSpec{
 	{
-		name: "new", usage: "new [--tool claude|codex|shell] [--permissions inherit|constrained|full] [--lifecycle task|session] [--profile NAME] [--cwd P] [--name L] [options] [args...]",
+		name: "new", usage: "new [--tool claude|codex|shell] [--permissions inherit|constrained|full] [--lifecycle task|session] [--profile NAME] [--cwd P] [--name L] [--model M] [--effort LEVEL] [--fast] [--structured] [--wait-ready] [--on-idle CMD] [--owner ID [--detach]] [--force] [--worktree [--base REF]] [--cmd PATH] [options] [args...]",
 		summary: "create an interactive session", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Create a session. --tool selects Claude, Codex, or shell. For Claude and Codex, positional text after the options is sent immediately as the first request. Agent-created children inherit their manager's resolved permission policy by default; when the user has explicitly enabled autonomous delegated work, those children use full access instead. A child cannot escalate itself. --permissions makes the policy explicit, while --full-access remains an alias for --permissions full. Agent-created children default to the task lifecycle and close after a successful final response; --lifecycle session or --keep-alive creates a long-lived manager. User-created sessions remain long-lived. Approval questions become needs-input state and are never blindly accepted. Existing sessions keep their original runtime and permission mode. Claude defaults to its native interactive runtime; Codex defaults to its sandboxed terminal mode unless full access selects app-server. Remote Control remains separately consent-gated. --profile selects a private provider login. --description and repeated --tag values record purpose and dimensions. --worktree creates a Sessions-owned worktree.",
+		longHelp: "Create a session. --tool selects Claude, Codex, or shell. For Claude and Codex, positional text after the options is sent immediately as the first request. Agent-created children inherit their manager's resolved permission policy by default; when the user has explicitly enabled autonomous delegated work, those children use full access instead. A child cannot escalate itself. --permissions makes the policy explicit, while --full-access remains an alias for --permissions full. Agent-created children default to the task lifecycle and close after a successful final response; --lifecycle session or --keep-alive creates a long-lived manager. User-created sessions remain long-lived. Approval questions become needs-input state and are never blindly accepted. Existing sessions keep their original runtime and permission mode. Claude defaults to its native interactive runtime; Codex defaults to its sandboxed terminal mode unless full access selects app-server. Remote Control remains separately consent-gated. --profile selects a private provider login. --description and repeated --tag values record purpose and dimensions. --worktree creates a Sessions-owned worktree, and --base picks its starting ref.\n\nAgent controls: --model chooses the provider model for the new session and --effort its reasoning effort; both are validated by the provider and are only valid for Claude or Codex. --fast requests the Codex priority service tier and is refused for Claude, which has no service tier. Explicit provider arguments you pass yourself always win over these controls.\n\nRuntime and lifecycle options: --structured creates a Rich structured Claude session instead of the interactive terminal, --pty-claude keeps the terminal explicitly, and --codex-appserver or --pty-codex select the Codex runtime; app-server currently requires full access. --wait-ready holds the create call until the new agent runtime has produced its first structured event or a short settle timeout expires, so an immediately following send is not lost. --on-idle registers a shell command the daemon runs in the session's working directory every time the session becomes idle. --force overrides the live or moved conversation guard. --no-skip-perms is an accepted no-op kept for scripts written before constrained execution became the default, and it cannot be combined with full access. --cmd runs an explicit executable instead of a tool preset.\n\nOwnership: --owner records an external principal as the creator instead of the inherited Sessions ancestry, and --detach is required with it when this process already belongs to a session, creating an external root rather than a child.",
 		examples: []string{"sessions new --tool claude --cwd ~/work", "sessions new --tool codex --permissions inherit --name focused-worker", "sessions new --tool codex --permissions full --lifecycle task 'Review this repository'", "sessions new --tool claude --keep-alive --name manager", "sessions new --cmd /bin/zsh"},
 		run:      (*app).cmdNew,
 	},
@@ -53,9 +53,9 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions providers", "sessions providers update codex", "sessions --json providers"}, run: (*app).cmdProviders,
 	},
 	{
-		name: "run", usage: "run [--name N] [--description PURPOSE] [--tag KEY=VALUE ...] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--wait [--output]] -- <cmd args...>",
+		name: "run", usage: "run [--name N] [--description PURPOSE] [--tag KEY=VALUE ...] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--owner ID [--detach]] [--wait [--output]] -- <cmd args...>",
 		summary: "run a command in a headless lane", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Create a headless lane for the command following the first -- separator. --description (alias --desc) records why the lane exists. --worktree creates an isolated Sessions-owned worktree; it does not symlink node_modules. Every child argument after the separator is passed unchanged. Without --wait, print the lane id and return. --wait blocks for completion and propagates the child exit code; --output prints the captured output tail.",
+		longHelp: "Create a headless lane for the command following the first -- separator. --description (alias --desc) records why the lane exists. --worktree creates an isolated Sessions-owned worktree; it does not symlink node_modules. Every child argument after the separator is passed unchanged. Without --wait, print the lane id and return. --wait blocks for completion and propagates the child exit code; --output prints the captured output tail. --owner records an external principal as the creator instead of the inherited Sessions ancestry, and --detach is required with it when this process already belongs to a session, creating an external root rather than a child.",
 		examples: []string{"sessions run -- make test", "sessions run --name lint --worktree --wait --output -- npm run lint", "sessions --json run --wait -- sh -c 'exit 3'"},
 		run:      (*app).cmdRun,
 	},
@@ -78,10 +78,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions worktrees", "sessions --json worktrees", "sessions worktrees clean --dry-run", "sessions worktrees clean"}, run: (*app).cmdWorktrees,
 	},
 	{
-		name: "gc", usage: "gc [--older-than DURATION] [--apply]",
+		name: "gc", usage: "gc [--older-than DURATION] [--apply | --dry-run]",
 		summary: "archive old closed records safely", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. Live runners and ancestors with retained descendants are never archived. Recovery history, transcripts, and worktrees are preserved.",
-		examples: []string{"sessions gc", "sessions gc --older-than 7d", "sessions gc --older-than 30d --apply", "sessions --json gc"}, run: (*app).cmdGC,
+		longHelp: "Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. --dry-run only states that default explicitly and changes nothing; it cannot be combined with --apply. Live runners and ancestors with retained descendants are never archived. Recovery history, transcripts, and worktrees are preserved.",
+		examples: []string{"sessions gc", "sessions gc --older-than 7d", "sessions gc --older-than 7d --dry-run", "sessions gc --older-than 30d --apply", "sessions --json gc"}, run: (*app).cmdGC,
 	},
 	{
 		name: "archive", usage: "archive <session> [session...]",
@@ -114,10 +114,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions lanes", "sessions lanes --mine", "sessions lanes --subtree 0123abcd --direct"}, run: (*app).cmdLanes,
 	},
 	{
-		name: "send", usage: "send <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] <text...>",
+		name: "send", usage: "send <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] [--] <text...>",
 		summary: "send text and Enter to a session", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Send a message and Enter. Claude and Codex sessions wait for receipt confirmation by default; --no-wait uses fire-and-forget behavior and --file reads the message body from a UTF-8 file. --from records a durable, content-free source-lane attribution; agents running inside Sessions inherit their source lane automatically.",
-		examples: []string{"sessions send 0123abcd 'Run the focused tests.'", "sessions send 0123abcd --from 89abcdef 'Please review this result.'", "sessions send 0123abcd --file prompt.md"}, run: (*app).cmdSend,
+		longHelp: "Send a message and Enter. Claude and Codex sessions wait for receipt confirmation by default; --no-wait uses fire-and-forget behavior and --file reads the message body from a UTF-8 file. --from records a durable, content-free source-lane attribution; agents running inside Sessions inherit their source lane automatically. An unrecognized option in front of the message is refused rather than typed into the session; put -- before a message that must begin with dashes.",
+		examples: []string{"sessions send 0123abcd 'Run the focused tests.'", "sessions send 0123abcd --from 89abcdef 'Please review this result.'", "sessions send 0123abcd --file prompt.md", "sessions send 0123abcd -- --json is a flag, not output"}, run: (*app).cmdSend,
 	},
 	{
 		name: "ask", usage: "ask <id> [--timeout D] [--idle D] [--wait-timeout D] <text...>",
@@ -144,9 +144,9 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions grep -i -C 3 'Google Ads'", "sessions grep --tool claude --role user bolo", "sessions --json grep 'release decision'"}, run: (*app).cmdGrep,
 	},
 	{
-		name: "search", usage: "search <query> [--session ID[,ID...]] [--role user|assistant|tool] [--tool claude|codex|shell] [--name GLOB] [--cwd PATH] [--since DATE] [--until DATE] [--context N] [--timeline] [-n N] [--exact | --regex | --ranked] [--json]",
+		name: "search", usage: "search <query> [--session ID[,ID...]] [--role user|assistant|tool] [--tool claude|codex|shell] [--name GLOB | --lane GLOB] [--cwd PATH] [--since DATE] [--until DATE] [--context N] [--timeline] [-n N] [--exact | --regex | --ranked] [--json]",
 		summary: "search normalized session chat history", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Search chat history across every live and persisted session on this machine and every approved machine by default. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --timeline merges matching moments chronologically. Use global --machine or --host before the command to search only one daemon.",
+		longHelp: "Search chat history across every live and persisted session on this machine and every approved machine by default. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --lane is an accepted alias of --name; supplying both is refused. --timeline merges matching moments chronologically. Use global --machine or --host before the command to search only one daemon.",
 		examples: []string{"sessions search 'drafts rollout' --role user --since 2026-07-23", "sessions search 'hello world' --role user --context 3", `sessions search 'near(draft,egress,8) OR "stable session"' --timeline`, "sessions search '{{first_name}}' --exact --session 0123abcd --json"}, run: (*app).cmdSearch,
 	},
 	{
@@ -163,9 +163,9 @@ var commandTable = []commandSpec{
 	},
 	{
 		name: "kill", usage: "kill <id> [<id>...] [--reason <text>] [--force]",
-		summary: "terminate sessions or lanes", group: dailyCommandGroup,
-		longHelp: "Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit.",
-		examples: []string{"sessions kill 0123abcd", `sessions kill 0123abcd 89abcdef --reason "completed rollout batch"`}, run: (*app).cmdKill,
+		summary: "terminate sessions or lanes", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit.\n\nResults are reported per target from what the daemon confirmed, never assumed. Each target is killed, already-exited for a lane that had already finished, failed when the daemon refused or did not confirm it, or unconfirmed when the daemon accepted the request without saying which sessions ended. The command exits 1 when any target failed and 2 when any target could not be confirmed, so a partially refused batch is never reported as success. --json prints {\"items\":[{\"id\",\"status\",\"reason\"}],\"operation_id\"} on stdout with the same statuses, matching the per-target shape used by archive and aside.",
+		examples: []string{"sessions kill 0123abcd", `sessions kill 0123abcd 89abcdef --reason "completed rollout batch"`, "sessions --json kill 0123abcd", "sessions kill --json 0123abcd 89abcdef"}, run: (*app).cmdKill,
 	},
 	{
 		name: "recover", usage: "recover [--all | --reopen [--force]]",
@@ -192,16 +192,16 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions snap 0123abcd", "sessions snap 0123abcd --raw"}, run: (*app).cmdSnap,
 	},
 	{
-		name: "tail", usage: "tail <id> [-f] [-n N]",
+		name: "tail", usage: "tail <id> [-f | --follow] [-n N | --lines N]",
 		summary: "print or follow recent terminal lines", group: dailyCommandGroup,
-		longHelp: "Print the last N terminal lines, defaulting to 50. -f keeps following new output.",
-		examples: []string{"sessions tail 0123abcd", "sessions tail 0123abcd -n 200 -f"}, run: (*app).cmdTail,
+		longHelp: "Print the last N terminal lines, defaulting to 50. -n and --lines are the same option and take a positive integer. -f and --follow are the same option and keep streaming new output until interrupted.",
+		examples: []string{"sessions tail 0123abcd", "sessions tail 0123abcd -n 200 -f", "sessions tail 0123abcd --lines 200 --follow"}, run: (*app).cmdTail,
 	},
 	{
-		name: "cat", usage: "cat <machine::history-id>",
+		name: "cat", usage: "cat <session-id | machine::history-id>",
 		summary: "print one durable conversation", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Print the complete normalized conversation identified by a fleet-search reference. The machine qualifier selects the approved per-device credential without putting a token in argv. The conversation is read from its source machine; Sessions does not create a second transcript copy merely for search.",
-		examples: []string{"sessions cat 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'", "sessions --json cat 'local::provider:codex:00000000-0000-4000-8000-000000000001'"}, run: (*app).cmdCat,
+		longHelp: "Print the complete normalized conversation identified by a live session id, a unique session-id prefix, or a fleet-search reference. An unqualified argument that resolves to a session on this daemon prints that session's transcript; otherwise it is treated as a history reference. The machine qualifier selects the approved per-device credential without putting a token in argv. The conversation is read from its source machine; Sessions does not create a second transcript copy merely for search.",
+		examples: []string{"sessions cat 0123abcd", "sessions cat 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'", "sessions --json cat 'local::provider:codex:00000000-0000-4000-8000-000000000001'"}, run: (*app).cmdCat,
 	},
 	{
 		name: "transcript", usage: "transcript <id>",
@@ -210,10 +210,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions transcript 0123abcd", "sessions --json transcript 0123abcd"}, run: (*app).cmdTranscript,
 	},
 	{
-		name: "input", usage: "input <id> [send options] <text...>",
-		summary: "alias for send", group: dailyCommandGroup,
-		longHelp: "Send text and Enter using the same confirmation behavior and options as sessions send.",
-		examples: []string{"sessions input 0123abcd 'Continue.'"}, run: (*app).cmdSend,
+		name: "input", usage: "input <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] [--] <text...>",
+		summary: "alias for send", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Send text and Enter using the same confirmation behavior, options, JSON result, and unknown-option refusal as sessions send.",
+		examples: []string{"sessions input 0123abcd 'Continue.'", "sessions --json input 0123abcd 'Continue.'", "sessions input 0123abcd --json 'Continue.'"}, run: (*app).cmdSend,
 	},
 	{
 		name: "keys", usage: "keys <id> <esc|up|down|left|right|^c|^d|enter|tab>",
@@ -252,9 +252,9 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions resume db-final-review-sol", "sessions resume PM", "sessions resume 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'", "sessions resume db-final-review-sol --with claude", "sessions --json resume provider:codex:00000000-0000-4000-8000-000000000001"}, run: (*app).cmdContinue,
 	},
 	{
-		name: "fork", usage: "fork <live-session> [--with claude|codex]",
+		name: "fork", usage: "fork <live-session> [--with claude|codex] [--at MESSAGE_INDEX [--message-id ID]]",
 		summary: "copy a live conversation without stopping it", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Create a new Rich conversation from a stable authored-history snapshot while the original session remains live and unchanged. Omit --with to fork into the same provider, or select Claude/Codex to open a copy in the other provider. Sessions copies user and assistant messages only; tool output, credentials, attachments, provider internals, and the source runtime are never modified. Wait for the current turn to finish before forking.",
+		longHelp: "Create a new Rich conversation from a stable authored-history snapshot while the original session remains live and unchanged. Omit --with to fork into the same provider, or select Claude/Codex to open a copy in the other provider. --at forks at one non-negative authored-message index, copying that user or agent message and everything before it instead of the whole history; --message-id is only valid with --at and pins the expected message identity, so a conversation that moved on is refused instead of forked from the wrong point. Sessions copies user and assistant messages only; tool output, credentials, attachments, provider internals, and the source runtime are never modified. Wait for the current turn to finish before forking.",
 		examples: []string{"sessions fork 0123abcd", "sessions fork 0123abcd --with codex", "sessions fork 0123abcd --at 42 --message-id a1b2c3", "sessions --json fork 0123abcd --with claude"}, run: (*app).cmdFork,
 	},
 	{

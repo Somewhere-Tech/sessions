@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -385,4 +386,173 @@ func runOwnershipCLI(t *testing.T, host string, args ...string) (string, string,
 	var stdout, stderr bytes.Buffer
 	code := run(arguments, strings.NewReader(""), &stdout, &stderr)
 	return stdout.String(), stderr.String(), code
+}
+
+// killStubServer answers the daemon routes cmdKill needs and returns whatever
+// the batch responder produces, so tests can model a daemon that refuses,
+// partially ends, or silently accepts a batch.
+func killStubServer(t *testing.T, ids []string, batch func(http.ResponseWriter)) *httptest.Server {
+	t.Helper()
+	listed := make([]string, 0, len(ids))
+	for _, id := range ids {
+		listed = append(listed, `{"id":"`+id+`","cmd":"/bin/sh"}`)
+	}
+	sessionsBody := `{"sessions":[` + strings.Join(listed, ",") + `]}`
+	return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/lanes":
+			_, _ = response.Write([]byte(`{"lanes":[],"user_creator_id":"uid:424242"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_, _ = response.Write([]byte(sessionsBody))
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/end-batch":
+			_, _ = io.Copy(io.Discard, request.Body)
+			batch(response)
+		case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/api/sessions/"):
+			_, _ = io.Copy(io.Discard, request.Body)
+			_, _ = response.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+}
+
+func TestKillBatchReportsOnlyTargetsTheDaemonConfirmed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	targetA := "24000000-0000-4000-8000-000000000001"
+	targetB := "24000000-0000-4000-8000-000000000002"
+	server := killStubServer(t, []string{targetA, targetB}, func(response http.ResponseWriter) {
+		_, _ = response.Write([]byte(`{"ok":true,"ids":["` + targetA + `"]}`))
+	})
+	defer server.Close()
+
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "kill", targetA, targetB)
+	if code != 1 {
+		t.Fatalf("partial batch exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "killed "+targetA) || strings.Contains(stdout, "killed "+targetB) {
+		t.Fatalf("partial batch claimed an unconfirmed kill: stdout=%q", stdout)
+	}
+	if !strings.Contains(stderr, targetB) || !strings.Contains(stderr, "did not end") {
+		t.Fatalf("partial batch stderr=%q", stderr)
+	}
+
+	stdout, stderr, code = runOwnershipCLI(t, server.URL, "--json", "kill", targetA, targetB)
+	if code != 1 {
+		t.Fatalf("partial batch JSON exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var result killResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode kill JSON: %v\n%s", err, stdout)
+	}
+	if len(result.Items) != 2 || result.OperationID == "" {
+		t.Fatalf("kill JSON = %#v", result)
+	}
+	if result.Items[0].ID != targetA || result.Items[0].Status != killStatusKilled {
+		t.Fatalf("first item = %#v", result.Items[0])
+	}
+	if result.Items[1].ID != targetB || result.Items[1].Status != killStatusFailed || result.Items[1].Reason == "" {
+		t.Fatalf("second item = %#v", result.Items[1])
+	}
+}
+
+func TestKillBatchWithoutConfirmationIsAmbiguousNotSuccess(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	targetA := "24000000-0000-4000-8000-000000000003"
+	targetB := "24000000-0000-4000-8000-000000000004"
+	server := killStubServer(t, []string{targetA, targetB}, func(response http.ResponseWriter) {
+		_, _ = response.Write([]byte(`{}`))
+	})
+	defer server.Close()
+
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "kill", targetA, targetB)
+	if code != 2 {
+		t.Fatalf("unconfirmed batch exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "killed ") {
+		t.Fatalf("unconfirmed batch claimed a kill: stdout=%q", stdout)
+	}
+	if !strings.Contains(stderr, "could not confirm") {
+		t.Fatalf("unconfirmed batch stderr=%q", stderr)
+	}
+
+	server.Close()
+	explicitlyRefused := killStubServer(t, []string{targetA, targetB}, func(response http.ResponseWriter) {
+		_, _ = response.Write([]byte(`{"ok":false,"error":"guarded batch refused"}`))
+	})
+	defer explicitlyRefused.Close()
+	stdout, stderr, code = runOwnershipCLI(t, explicitlyRefused.URL, "kill", targetA, targetB)
+	if code != 1 || strings.Contains(stdout, "killed ") || !strings.Contains(stderr, "guarded batch refused") {
+		t.Fatalf("refused batch exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestKillEmitsJSONForOneTargetBeforeOrAfterTheCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	target := "24000000-0000-4000-8000-000000000005"
+	server := killStubServer(t, []string{target}, func(response http.ResponseWriter) {
+		http.Error(response, `{"error":"batch end requires at least two session ids"}`, http.StatusBadRequest)
+	})
+	defer server.Close()
+
+	for _, arguments := range [][]string{{"--json", "kill", target}, {"kill", "--json", target}} {
+		stdout, stderr, code := runOwnershipCLI(t, server.URL, arguments...)
+		if code != 0 || stderr != "" {
+			t.Fatalf("%v exit=%d stdout=%q stderr=%q", arguments, code, stdout, stderr)
+		}
+		var result killResult
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("decode %v JSON: %v\n%s", arguments, err, stdout)
+		}
+		if len(result.Items) != 1 || result.Items[0].ID != target || result.Items[0].Status != killStatusKilled {
+			t.Fatalf("%v result = %#v", arguments, result)
+		}
+		if result.OperationID != "" {
+			t.Fatalf("single kill invented a batch operation id: %#v", result)
+		}
+	}
+}
+
+func TestKillUnknownSessionReportsFailureInBothModes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	target := "24000000-0000-4000-8000-000000000006"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/lanes":
+			_, _ = response.Write([]byte(`{"lanes":[],"user_creator_id":"uid:424242"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_, _ = response.Write([]byte(`{"sessions":[{"id":"` + target + `","cmd":"/bin/sh"}]}`))
+		case request.Method == http.MethodDelete && request.URL.Path == "/api/sessions/"+target:
+			response.WriteHeader(http.StatusNotFound)
+			_, _ = response.Write([]byte(`{"error":"session not found"}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "kill", target)
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "no session matching") {
+		t.Fatalf("unknown kill exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	stdout, stderr, code = runOwnershipCLI(t, server.URL, "--json", "kill", target)
+	if code != 1 {
+		t.Fatalf("unknown kill JSON exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var result killResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode unknown kill JSON: %v\n%s", err, stdout)
+	}
+	if len(result.Items) != 1 || result.Items[0].Status != killStatusFailed {
+		t.Fatalf("unknown kill result = %#v", result)
+	}
 }

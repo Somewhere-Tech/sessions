@@ -96,11 +96,17 @@ Run `sessions help <command>` for one command or `sessions docs` for the complet
 
 ```text
 Usage:
-  sessions new [--tool claude|codex|shell] [--permissions inherit|constrained|full] [--lifecycle task|session] [--profile NAME] [--cwd P] [--name L] [options] [args...]
+  sessions new [--tool claude|codex|shell] [--permissions inherit|constrained|full] [--lifecycle task|session] [--profile NAME] [--cwd P] [--name L] [--model M] [--effort LEVEL] [--fast] [--structured] [--wait-ready] [--on-idle CMD] [--owner ID [--detach]] [--force] [--worktree [--base REF]] [--cmd PATH] [options] [args...]
 
 create an interactive session
 
-Create a session. --tool selects Claude, Codex, or shell. For Claude and Codex, positional text after the options is sent immediately as the first request. Agent-created children inherit their manager's resolved permission policy by default; when the user has explicitly enabled autonomous delegated work, those children use full access instead. A child cannot escalate itself. --permissions makes the policy explicit, while --full-access remains an alias for --permissions full. Agent-created children default to the task lifecycle and close after a successful final response; --lifecycle session or --keep-alive creates a long-lived manager. User-created sessions remain long-lived. Approval questions become needs-input state and are never blindly accepted. Existing sessions keep their original runtime and permission mode. Claude defaults to its native interactive runtime; Codex defaults to its sandboxed terminal mode unless full access selects app-server. Remote Control remains separately consent-gated. --profile selects a private provider login. --description and repeated --tag values record purpose and dimensions. --worktree creates a Sessions-owned worktree.
+Create a session. --tool selects Claude, Codex, or shell. For Claude and Codex, positional text after the options is sent immediately as the first request. Agent-created children inherit their manager's resolved permission policy by default; when the user has explicitly enabled autonomous delegated work, those children use full access instead. A child cannot escalate itself. --permissions makes the policy explicit, while --full-access remains an alias for --permissions full. Agent-created children default to the task lifecycle and close after a successful final response; --lifecycle session or --keep-alive creates a long-lived manager. User-created sessions remain long-lived. Approval questions become needs-input state and are never blindly accepted. Existing sessions keep their original runtime and permission mode. Claude defaults to its native interactive runtime; Codex defaults to its sandboxed terminal mode unless full access selects app-server. Remote Control remains separately consent-gated. --profile selects a private provider login. --description and repeated --tag values record purpose and dimensions. --worktree creates a Sessions-owned worktree, and --base picks its starting ref.
+
+Agent controls: --model chooses the provider model for the new session and --effort its reasoning effort; both are validated by the provider and are only valid for Claude or Codex. --fast requests the Codex priority service tier and is refused for Claude, which has no service tier. Explicit provider arguments you pass yourself always win over these controls.
+
+Runtime and lifecycle options: --structured creates a Rich structured Claude session instead of the interactive terminal, --pty-claude keeps the terminal explicitly, and --codex-appserver or --pty-codex select the Codex runtime; app-server currently requires full access. --wait-ready holds the create call until the new agent runtime has produced its first structured event or a short settle timeout expires, so an immediately following send is not lost. --on-idle registers a shell command the daemon runs in the session's working directory every time the session becomes idle. --force overrides the live or moved conversation guard. --no-skip-perms is an accepted no-op kept for scripts written before constrained execution became the default, and it cannot be combined with full access. --cmd runs an explicit executable instead of a tool preset.
+
+Ownership: --owner records an external principal as the creator instead of the inherited Sessions ancestry, and --detach is required with it when this process already belongs to a session, creating an external root rather than a child.
 
 Examples:
   sessions new --tool claude --cwd ~/work
@@ -168,11 +174,11 @@ Examples:
 
 ```text
 Usage:
-  sessions run [--name N] [--description PURPOSE] [--tag KEY=VALUE ...] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--wait [--output]] -- <cmd args...>
+  sessions run [--name N] [--description PURPOSE] [--tag KEY=VALUE ...] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--owner ID [--detach]] [--wait [--output]] -- <cmd args...>
 
 run a command in a headless lane
 
-Create a headless lane for the command following the first -- separator. --description (alias --desc) records why the lane exists. --worktree creates an isolated Sessions-owned worktree; it does not symlink node_modules. Every child argument after the separator is passed unchanged. Without --wait, print the lane id and return. --wait blocks for completion and propagates the child exit code; --output prints the captured output tail.
+Create a headless lane for the command following the first -- separator. --description (alias --desc) records why the lane exists. --worktree creates an isolated Sessions-owned worktree; it does not symlink node_modules. Every child argument after the separator is passed unchanged. Without --wait, print the lane id and return. --wait blocks for completion and propagates the child exit code; --output prints the captured output tail. --owner records an external principal as the creator instead of the inherited Sessions ancestry, and --detach is required with it when this process already belongs to a session, creating an external root rather than a child.
 
 Examples:
   sessions run -- make test
@@ -241,15 +247,16 @@ Examples:
 
 ```text
 Usage:
-  sessions gc [--older-than DURATION] [--apply]
+  sessions gc [--older-than DURATION] [--apply | --dry-run]
 
 archive old closed records safely
 
-Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. Live runners and ancestors with retained descendants are never archived. Recovery history, transcripts, and worktrees are preserved.
+Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. --dry-run only states that default explicitly and changes nothing; it cannot be combined with --apply. Live runners and ancestors with retained descendants are never archived. Recovery history, transcripts, and worktrees are preserved.
 
 Examples:
   sessions gc
   sessions gc --older-than 7d
+  sessions gc --older-than 7d --dry-run
   sessions gc --older-than 30d --apply
   sessions --json gc
 
@@ -354,16 +361,17 @@ Examples:
 
 ```text
 Usage:
-  sessions send <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] <text...>
+  sessions send <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] [--] <text...>
 
 send text and Enter to a session
 
-Send a message and Enter. Claude and Codex sessions wait for receipt confirmation by default; --no-wait uses fire-and-forget behavior and --file reads the message body from a UTF-8 file. --from records a durable, content-free source-lane attribution; agents running inside Sessions inherit their source lane automatically.
+Send a message and Enter. Claude and Codex sessions wait for receipt confirmation by default; --no-wait uses fire-and-forget behavior and --file reads the message body from a UTF-8 file. --from records a durable, content-free source-lane attribution; agents running inside Sessions inherit their source lane automatically. An unrecognized option in front of the message is refused rather than typed into the session; put -- before a message that must begin with dashes.
 
 Examples:
   sessions send 0123abcd 'Run the focused tests.'
   sessions send 0123abcd --from 89abcdef 'Please review this result.'
   sessions send 0123abcd --file prompt.md
+  sessions send 0123abcd -- --json is a flag, not output
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -443,11 +451,11 @@ Examples:
 
 ```text
 Usage:
-  sessions search <query> [--session ID[,ID...]] [--role user|assistant|tool] [--tool claude|codex|shell] [--name GLOB] [--cwd PATH] [--since DATE] [--until DATE] [--context N] [--timeline] [-n N] [--exact | --regex | --ranked] [--json]
+  sessions search <query> [--session ID[,ID...]] [--role user|assistant|tool] [--tool claude|codex|shell] [--name GLOB | --lane GLOB] [--cwd PATH] [--since DATE] [--until DATE] [--context N] [--timeline] [-n N] [--exact | --regex | --ranked] [--json]
 
 search normalized session chat history
 
-Search chat history across every live and persisted session on this machine and every approved machine by default. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --timeline merges matching moments chronologically. Use global --machine or --host before the command to search only one daemon.
+Search chat history across every live and persisted session on this machine and every approved machine by default. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --lane is an accepted alias of --name; supplying both is refused. --timeline merges matching moments chronologically. Use global --machine or --host before the command to search only one daemon.
 
 Examples:
   sessions search 'drafts rollout' --role user --since 2026-07-23
@@ -506,9 +514,13 @@ terminate sessions or lanes
 
 Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit.
 
+Results are reported per target from what the daemon confirmed, never assumed. Each target is killed, already-exited for a lane that had already finished, failed when the daemon refused or did not confirm it, or unconfirmed when the daemon accepted the request without saying which sessions ended. The command exits 1 when any target failed and 2 when any target could not be confirmed, so a partially refused batch is never reported as success. --json prints {"items":[{"id","status","reason"}],"operation_id"} on stdout with the same statuses, matching the per-target shape used by archive and aside.
+
 Examples:
   sessions kill 0123abcd
   sessions kill 0123abcd 89abcdef --reason "completed rollout batch"
+  sessions --json kill 0123abcd
+  sessions kill --json 0123abcd 89abcdef
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -589,15 +601,16 @@ Examples:
 
 ```text
 Usage:
-  sessions tail <id> [-f] [-n N]
+  sessions tail <id> [-f | --follow] [-n N | --lines N]
 
 print or follow recent terminal lines
 
-Print the last N terminal lines, defaulting to 50. -f keeps following new output.
+Print the last N terminal lines, defaulting to 50. -n and --lines are the same option and take a positive integer. -f and --follow are the same option and keep streaming new output until interrupted.
 
 Examples:
   sessions tail 0123abcd
   sessions tail 0123abcd -n 200 -f
+  sessions tail 0123abcd --lines 200 --follow
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -606,13 +619,14 @@ Examples:
 
 ```text
 Usage:
-  sessions cat <machine::history-id>
+  sessions cat <session-id | machine::history-id>
 
 print one durable conversation
 
-Print the complete normalized conversation identified by a fleet-search reference. The machine qualifier selects the approved per-device credential without putting a token in argv. The conversation is read from its source machine; Sessions does not create a second transcript copy merely for search.
+Print the complete normalized conversation identified by a live session id, a unique session-id prefix, or a fleet-search reference. An unqualified argument that resolves to a session on this daemon prints that session's transcript; otherwise it is treated as a history reference. The machine qualifier selects the approved per-device credential without putting a token in argv. The conversation is read from its source machine; Sessions does not create a second transcript copy merely for search.
 
 Examples:
+  sessions cat 0123abcd
   sessions cat 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'
   sessions --json cat 'local::provider:codex:00000000-0000-4000-8000-000000000001'
 
@@ -640,14 +654,16 @@ Examples:
 
 ```text
 Usage:
-  sessions input <id> [send options] <text...>
+  sessions input <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] [--] <text...>
 
 alias for send
 
-Send text and Enter using the same confirmation behavior and options as sessions send.
+Send text and Enter using the same confirmation behavior, options, JSON result, and unknown-option refusal as sessions send.
 
 Examples:
   sessions input 0123abcd 'Continue.'
+  sessions --json input 0123abcd 'Continue.'
+  sessions input 0123abcd --json 'Continue.'
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -765,11 +781,11 @@ Examples:
 
 ```text
 Usage:
-  sessions fork <live-session> [--with claude|codex]
+  sessions fork <live-session> [--with claude|codex] [--at MESSAGE_INDEX [--message-id ID]]
 
 copy a live conversation without stopping it
 
-Create a new Rich conversation from a stable authored-history snapshot while the original session remains live and unchanged. Omit --with to fork into the same provider, or select Claude/Codex to open a copy in the other provider. Sessions copies user and assistant messages only; tool output, credentials, attachments, provider internals, and the source runtime are never modified. Wait for the current turn to finish before forking.
+Create a new Rich conversation from a stable authored-history snapshot while the original session remains live and unchanged. Omit --with to fork into the same provider, or select Claude/Codex to open a copy in the other provider. --at forks at one non-negative authored-message index, copying that user or agent message and everything before it instead of the whole history; --message-id is only valid with --at and pins the expected message identity, so a conversation that moved on is refused instead of forked from the wrong point. Sessions copies user and assistant messages only; tool output, credentials, attachments, provider internals, and the source runtime are never modified. Wait for the current turn to finish before forking.
 
 Examples:
   sessions fork 0123abcd

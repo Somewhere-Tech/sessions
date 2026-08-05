@@ -201,3 +201,84 @@ func TestClientIDIsStableAndPrivate(t *testing.T) {
 		t.Fatalf("client id mode = %04o", info.Mode().Perm())
 	}
 }
+
+func TestMachineIDValidationKeepsCredentialsInsideTheClientDirectory(t *testing.T) {
+	escape := "../../../../../../tmp/sessions-escape/probe"
+	for _, hostile := range []string{
+		"", "   ", escape, "..", ".", ".hidden", "a/b", `a\b`,
+		"has space", "id\r\n", "id\x00", strings.Repeat("x", maxMachineIDLength+1),
+	} {
+		if err := validateMachineID(hostile); err == nil {
+			t.Fatalf("validateMachineID(%q) accepted a hostile id", hostile)
+		}
+	}
+	for _, allowed := range []string{
+		"11111111-1111-4111-8111-111111111111", "native-machine", "mac_mini.local", "a",
+	} {
+		if err := validateMachineID(allowed); err != nil {
+			t.Fatalf("validateMachineID(%q) = %v", allowed, err)
+		}
+	}
+
+	home := t.TempDir()
+	if _, err := saveMachine(home, savedMachine{
+		MachineID: escape, Name: "Hostile", Endpoint: "http://192.168.1.20:8787",
+		Transport: "nearby", DeviceID: "device", ConnectedAt: time.Now(),
+	}, "device-token"); err == nil {
+		t.Fatal("saveMachine accepted a path-escaping machine id")
+	}
+	if _, err := os.Stat(savedMachineTokenPath(home, escape)); !os.IsNotExist(err) {
+		t.Fatalf("credential written outside the client directory: %v", err)
+	}
+	if _, err := os.Stat(machineRegistryPath(home)); !os.IsNotExist(err) {
+		t.Fatal("registry was written for a rejected machine id")
+	}
+}
+
+func TestNativeMachineSyncRejectsPathEscapingMachineIDs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	escape := "../../../../../../tmp/sessions-escape/native"
+	payload := `{"machines":[{"machineId":"` + escape + `","name":"Hostile","endpoint":"https://mini.example.ts.net","deviceId":"d","token":"t"}]}`
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"machines", "sync-native"}, strings.NewReader(payload), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("sync-native exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "invalid stable id") || !strings.Contains(stderr.String(), "parent-directory reference") {
+		t.Fatalf("sync-native stderr=%q", stderr.String())
+	}
+	if _, err := os.Stat(savedMachineTokenPath(home, escape)); !os.IsNotExist(err) {
+		t.Fatalf("sync-native wrote a credential outside the client directory: %v", err)
+	}
+}
+
+func TestForgetSkipsCredentialRemovalForAPoisonedRegistryEntry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	victim := filepath.Join(home, "victim.token")
+	if err := os.WriteFile(victim, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A registry written by an older, unvalidated build must not turn forget
+	// into an arbitrary file deletion.
+	poisoned := machineRegistry{Version: machineRegistryVersion, Machines: []savedMachine{{
+		Alias: "poisoned", MachineID: "../../../../victim", Name: "Poisoned",
+		Endpoint: "http://192.168.1.20:8787", Transport: "nearby", DeviceID: "device",
+		ConnectedAt: time.Now().UTC(),
+	}}}
+	if err := writeMachineRegistry(home, poisoned); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"machines", "forget", "poisoned"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("forget exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("forget deleted a file outside the client directory: %v", err)
+	}
+	registry, err := readMachineRegistry(home)
+	if err != nil || len(registry.Machines) != 0 {
+		t.Fatalf("registry = %#v err=%v", registry, err)
+	}
+}

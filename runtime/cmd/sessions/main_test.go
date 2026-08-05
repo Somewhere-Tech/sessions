@@ -1121,3 +1121,78 @@ func assertJSONEqual(t *testing.T, actual, expected string) {
 		t.Fatalf("JSON mismatch\nactual:   %s\nexpected: %s", actual, expected)
 	}
 }
+
+func TestInputIsSendIncludingJSONAndUnknownOptionRefusal(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	id := "25000000-0000-4000-8000-000000000001"
+	submitted := make([]string, 0, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_, _ = response.Write([]byte(`{"sessions":[{"id":"` + id + `","cmd":"/bin/sh"}]}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/submit":
+			var body struct {
+				Data string `json:"data"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode submit body: %v", err)
+			}
+			submitted = append(submitted, body.Data)
+			_, _ = response.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	// --json is a flag for input exactly as it is for send, never message text.
+	for _, arguments := range [][]string{
+		{"--host", server.URL, "input", id, "--json", "hi"},
+		{"--host", server.URL, "--json", "input", id, "hi"},
+		{"--host", server.URL, "--json", "send", id, "hi"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(arguments, strings.NewReader(""), &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+			t.Fatalf("%v exit=%d stdout=%q stderr=%q", arguments, code, stdout.String(), stderr.String())
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+			t.Fatalf("%v did not print JSON: %v\n%s", arguments, err, stdout.String())
+		}
+		if decoded["confidence"] != "unconfirmed" {
+			t.Fatalf("%v JSON = %v", arguments, decoded)
+		}
+	}
+	if !slices.Equal(submitted, []string{"hi", "hi", "hi"}) {
+		t.Fatalf("submitted text = %#v", submitted)
+	}
+
+	// An unknown leading option is refused instead of typed into the session.
+	submitted = submitted[:0]
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--host", server.URL, "input", id, "--nope", "hi"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "unknown send option --nope") {
+		t.Fatalf("unknown option exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if len(submitted) != 0 {
+		t.Fatalf("refused send still submitted %#v", submitted)
+	}
+
+	// -- sends dashed text verbatim, and a flag inside the message stays text.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--host", server.URL, "input", id, "--", "--json", "please"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("separator exit=%d stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--host", server.URL, "send", id, "run make", "--fast"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("trailing flag-like word exit=%d stderr=%q", code, stderr.String())
+	}
+	if !slices.Equal(submitted, []string{"--json please", "run make --fast"}) {
+		t.Fatalf("submitted text = %#v", submitted)
+	}
+}

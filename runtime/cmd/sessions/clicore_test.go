@@ -335,3 +335,46 @@ func TestRunOutputRequiresWait(t *testing.T) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
+
+// TestCommandTableDocumentsTheFlagsParsersAccept keeps `sessions help`,
+// `sessions docs`, and docs/CLI.md honest: a flag the parser accepts must be
+// discoverable offline, because agents have no other contract to read.
+func TestCommandTableDocumentsTheFlagsParsersAccept(t *testing.T) {
+	documented := map[string][]string{
+		"new": {
+			"--model", "--effort", "--fast", "--structured", "--pty-claude",
+			"--codex-appserver", "--pty-codex", "--wait-ready", "--on-idle",
+			"--force", "--no-skip-perms", "--owner", "--detach", "--cmd", "--base",
+		},
+		"run":    {"--owner", "--detach", "--spec", "--base"},
+		"tail":   {"--follow", "--lines", "-f", "-n"},
+		"search": {"--lane"},
+		"gc":     {"--dry-run", "--apply", "--older-than"},
+		"fork":   {"--at", "--message-id"},
+		"kill":   {"--json", "--reason", "--force"},
+		"send":   {"--from", "--timeout", "--no-wait", "--file"},
+		"input":  {"--from", "--timeout", "--no-wait", "--file"},
+	}
+	for name, flags := range documented {
+		command, ok := lookupCommand(name)
+		if !ok {
+			t.Fatalf("command %q is missing from the table", name)
+		}
+		reference := command.usage + "\n" + command.longHelp
+		for _, flag := range flags {
+			if !strings.Contains(reference, flag) {
+				t.Errorf("`sessions %s` help never documents %s", name, flag)
+			}
+		}
+	}
+	if command, _ := lookupCommand("cat"); !strings.Contains(command.usage, "session-id") {
+		t.Errorf("cat usage still hides that a live session id works: %q", command.usage)
+	}
+	// Every destructive or state-changing lifecycle verb owes agents JSON.
+	for _, name := range []string{"new", "kill", "archive", "aside", "move", "adopt", "fork", "resize", "input", "send"} {
+		command, ok := lookupCommand(name)
+		if !ok || !command.localJSON {
+			t.Errorf("command %q does not accept --json among its own options", name)
+		}
+	}
+}

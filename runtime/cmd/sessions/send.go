@@ -507,6 +507,18 @@ func (a *app) cmdSend(args []string) error {
 	if hasFile && filePath == "" {
 		return fail(1, "--file needs a path")
 	}
+	// An unrecognized option in the leading position is a mistake, not message
+	// text: silently typing `--json` into someone's agent session is worse than
+	// refusing it. Later words are left alone so a message may still contain a
+	// flag, and an explicit `--` sends the rest verbatim.
+	if len(args) > 0 {
+		if args[0] == "--" {
+			args = args[1:]
+		} else if strings.HasPrefix(args[0], "--") {
+			return fail(1, "unknown send option %s — valid options are --from, --timeout, --no-wait, and --file; to send it as text use `sessions send <id> -- %s ...`",
+				args[0], args[0])
+		}
+	}
 	text := strings.Join(args, " ")
 	if hasFile {
 		if len(args) > 0 {

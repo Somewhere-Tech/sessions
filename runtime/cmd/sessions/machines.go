@@ -152,8 +152,8 @@ func (a *app) syncNativeMachines(args []string) error {
 		item.Name = strings.TrimSpace(item.Name)
 		item.DeviceID = strings.TrimSpace(item.DeviceID)
 		item.Token = strings.TrimSpace(item.Token)
-		if item.MachineID == "" || len(item.MachineID) > 128 || strings.ContainsAny(item.MachineID, "\r\n") {
-			return fail(1, "native machine has an invalid stable id")
+		if err := validateMachineID(item.MachineID); err != nil {
+			return fail(1, "native machine %q has an invalid stable id: %s", item.Name, err)
 		}
 		if seen[item.MachineID] {
 			return fail(1, "native machine registry contains duplicate machine %s", item.MachineID)
@@ -190,7 +190,11 @@ func (a *app) syncNativeMachines(args []string) error {
 	removedTokenPaths := make([]string, 0)
 	for _, machine := range registry.Machines {
 		if machine.Source == nativeAppMachineSource && !seen[machine.MachineID] {
-			removedTokenPaths = append(removedTokenPaths, savedMachineTokenPath(a.home, machine.MachineID))
+			// Drop the record either way; only remove a file whose path this
+			// machine id is allowed to name.
+			if tokenPath, err := machineTokenPathFor(a.home, machine.MachineID); err == nil {
+				removedTokenPaths = append(removedTokenPaths, tokenPath)
+			}
 			continue
 		}
 		kept = append(kept, machine)
@@ -352,6 +356,9 @@ connected:
 	if claim.Token == "" || claim.MachineID == "" || claim.DeviceID == "" {
 		return fail(2, "the other machine returned an incomplete credential")
 	}
+	if err := validateMachineID(claim.MachineID); err != nil {
+		return fail(2, "the other machine sent an unusable stable id, so no credential was saved: %s", err)
+	}
 	health, err := verifyMachineCredential(endpoint, claim.Token)
 	if err != nil {
 		return fail(2, "verify the issued machine credential: %s", err)
@@ -418,9 +425,12 @@ func (a *app) forgetMachine(args []string) error {
 	if err := writeMachineRegistry(a.home, registry); err != nil {
 		return fail(2, "update saved machines: %s", err)
 	}
-	tokenPath := savedMachineTokenPath(a.home, forgotten.MachineID)
-	if err := os.Remove(tokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fail(2, "remove saved credential: %s", err)
+	// Forget always drops the registry record. It removes a credential file only
+	// when the saved id is one Sessions could legitimately have written.
+	if tokenPath, pathErr := machineTokenPathFor(a.home, forgotten.MachineID); pathErr == nil {
+		if err := os.Remove(tokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fail(2, "remove saved credential: %s", err)
+		}
 	}
 	if a.wantJSON {
 		return writeJSON(a.stdout, struct {
@@ -601,8 +611,63 @@ func machineRegistryPath(home string) string {
 	return filepath.Join(home, ".local", "state", "sessions", "clients.json")
 }
 
+// maxMachineIDLength bounds a peer-supplied stable id. Real ids are UUIDs or
+// short stable names; anything longer is a malformed or hostile registration.
+const maxMachineIDLength = 128
+
+// validateMachineID rejects any peer-supplied stable id that could steer a
+// saved credential outside the Sessions client directory. The id becomes a
+// filename in savedMachineTokenPath, and forget/sync-native later remove that
+// same computed path, so a separator, a parent reference, or a control
+// character here is a filesystem escape rather than a naming preference. Alias
+// input is already normalized by sanitizeMachineAlias; this holds the id to the
+// same standard.
+func validateMachineID(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("machine id is empty; the other machine must send a stable non-empty id")
+	}
+	if value != strings.TrimSpace(value) {
+		return fmt.Errorf("machine id %q has leading or trailing whitespace; expected a plain id such as a UUID", value)
+	}
+	if len(value) > maxMachineIDLength {
+		return fmt.Errorf("machine id is %d characters; keep it within %d characters such as a UUID", len(value), maxMachineIDLength)
+	}
+	if value == "." || value == ".." || strings.Contains(value, "..") {
+		return fmt.Errorf("machine id %q contains a parent-directory reference; expected a plain id such as a UUID", value)
+	}
+	if strings.HasPrefix(value, ".") {
+		return fmt.Errorf("machine id %q starts with a dot; expected a plain id such as a UUID", value)
+	}
+	for _, character := range value {
+		switch {
+		case character == '/' || character == '\\':
+			return fmt.Errorf("machine id %q contains a path separator; expected a plain id such as a UUID", value)
+		case character < 0x20 || character == 0x7f:
+			return fmt.Errorf("machine id contains a control character; expected a plain id such as a UUID")
+		case character >= 'a' && character <= 'z',
+			character >= 'A' && character <= 'Z',
+			character >= '0' && character <= '9',
+			character == '-' || character == '_' || character == '.':
+		default:
+			return fmt.Errorf("machine id %q contains %q; use only letters, digits, dot, dash, and underscore", value, string(character))
+		}
+	}
+	return nil
+}
+
 func savedMachineTokenPath(home, machineID string) string {
 	return filepath.Join(home, ".local", "state", "sessions", "clients", machineID+".token")
+}
+
+// machineTokenPathFor is the only safe way to compute a credential path: it
+// refuses to build a path for an id that never should have been saved, so a
+// poisoned registry cannot make Sessions write or delete outside its own
+// client directory.
+func machineTokenPathFor(home, machineID string) (string, error) {
+	if err := validateMachineID(machineID); err != nil {
+		return "", err
+	}
+	return savedMachineTokenPath(home, machineID), nil
 }
 
 func clientIDPath(home string) string {
@@ -639,7 +704,11 @@ func loadSavedMachine(home, reference string) (savedMachine, error) {
 		return savedMachine{}, err
 	}
 	machine := registry.Machines[index]
-	if _, err := os.Stat(savedMachineTokenPath(home, machine.MachineID)); err != nil {
+	tokenPath, err := machineTokenPathFor(home, machine.MachineID)
+	if err != nil {
+		return savedMachine{}, fail(2, "saved machine %q has an unusable stable id: %s; run `sessions machines forget %s` and reconnect it", machine.Alias, err, machine.Alias)
+	}
+	if _, err := os.Stat(tokenPath); err != nil {
 		return savedMachine{}, fail(2, "saved credential for %q is missing; forget and reconnect this machine", machine.Alias)
 	}
 	return machine, nil
@@ -693,6 +762,9 @@ func saveMachine(home string, machine savedMachine, token string) (savedMachine,
 	if machine.MachineID == "" || token == "" {
 		return savedMachine{}, errors.New("machine id and token are required")
 	}
+	if err := validateMachineID(machine.MachineID); err != nil {
+		return savedMachine{}, err
+	}
 	registry, err := readMachineRegistry(home)
 	if err != nil {
 		return savedMachine{}, err
@@ -742,7 +814,10 @@ func saveMachine(home string, machine savedMachine, token string) (savedMachine,
 	sort.Slice(registry.Machines, func(i, j int) bool {
 		return registry.Machines[i].Alias < registry.Machines[j].Alias
 	})
-	tokenPath := savedMachineTokenPath(home, machine.MachineID)
+	tokenPath, err := machineTokenPathFor(home, machine.MachineID)
+	if err != nil {
+		return savedMachine{}, err
+	}
 	previousToken, previousTokenErr := tokenstore.ReadSecret(tokenPath)
 	if previousTokenErr != nil {
 		return savedMachine{}, previousTokenErr

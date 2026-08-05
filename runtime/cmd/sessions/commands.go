@@ -503,6 +503,137 @@ func (a *app) cmdModel(args []string) error {
 	return err
 }
 
+const (
+	killStatusKilled        = "killed"
+	killStatusAlreadyExited = "already-exited"
+	killStatusFailed        = "failed"
+	killStatusUnconfirmed   = "unconfirmed"
+)
+
+// killItem and killResult mirror the per-target result shape already used by
+// archive and aside so agents parse one termination contract, not three.
+type killItem struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type killResult struct {
+	Items       []killItem `json:"items"`
+	OperationID string     `json:"operation_id,omitempty"`
+}
+
+// killBatchResponse is the /api/sessions/end-batch success contract: the
+// daemon confirms the batch with ok and echoes the ids it actually ended.
+// Anything it does not confirm is reported as such instead of assumed dead.
+type killBatchResponse struct {
+	OK    *bool    `json:"ok"`
+	IDs   []string `json:"ids"`
+	Error string   `json:"error,omitempty"`
+}
+
+func (r killBatchResponse) classify(targets []string) []killItem {
+	items := make([]killItem, 0, len(targets))
+	switch {
+	case r.OK != nil && !*r.OK:
+		reason := strings.TrimSpace(r.Error)
+		if reason == "" {
+			reason = "the daemon reported the batch termination as unsuccessful"
+		}
+		for _, id := range targets {
+			items = append(items, killItem{ID: id, Status: killStatusFailed, Reason: reason})
+		}
+	case len(r.IDs) > 0:
+		confirmed := make(map[string]struct{}, len(r.IDs))
+		for _, id := range r.IDs {
+			confirmed[id] = struct{}{}
+		}
+		for _, id := range targets {
+			if _, ok := confirmed[id]; ok {
+				items = append(items, killItem{ID: id, Status: killStatusKilled})
+				continue
+			}
+			items = append(items, killItem{
+				ID: id, Status: killStatusFailed,
+				Reason: "the daemon did not report this session as ended",
+			})
+		}
+	case r.OK != nil && *r.OK:
+		for _, id := range targets {
+			items = append(items, killItem{ID: id, Status: killStatusKilled})
+		}
+	default:
+		for _, id := range targets {
+			items = append(items, killItem{
+				ID: id, Status: killStatusUnconfirmed,
+				Reason: "the daemon accepted the batch without confirming which sessions ended",
+			})
+		}
+	}
+	return items
+}
+
+// reportKill prints per-target truth and fails when a requested termination
+// was refused (exit 1) or could not be confirmed at all (exit 2).
+func (a *app) reportKill(result killResult) error {
+	failed := make([]killItem, 0, len(result.Items))
+	unconfirmed := make([]killItem, 0, len(result.Items))
+	for _, item := range result.Items {
+		switch item.Status {
+		case killStatusFailed:
+			failed = append(failed, item)
+		case killStatusUnconfirmed:
+			unconfirmed = append(unconfirmed, item)
+		}
+	}
+	// One bad target explains itself in the failure message; a mixed batch needs
+	// a line per target so the caller can tell which ids still need attention.
+	detailed := len(failed)+len(unconfirmed) > 1
+	if a.wantJSON {
+		if err := writeJSON(a.stdout, result, true); err != nil {
+			return err
+		}
+	} else {
+		for _, item := range result.Items {
+			switch item.Status {
+			case killStatusKilled:
+				fmt.Fprintf(a.stdout, "killed %s\n", item.ID)
+			case killStatusAlreadyExited:
+				fmt.Fprintf(a.stdout, "lane %s already exited; nothing to kill\n", item.ID)
+			default:
+				if detailed {
+					fmt.Fprintf(a.stderr, "%s %s: %s\n", item.Status, item.ID, item.Reason)
+				}
+			}
+		}
+	}
+	if len(failed) == 1 && len(unconfirmed) == 0 {
+		return fail(1, "kill did not end %s: %s — run `sessions ls`, then retry `sessions kill %s`",
+			failed[0].ID, failed[0].Reason, failed[0].ID)
+	}
+	if len(unconfirmed) == 1 && len(failed) == 0 {
+		return fail(2, "kill could not confirm %s: %s — run `sessions ls` to see whether it ended before retrying",
+			unconfirmed[0].ID, unconfirmed[0].Reason)
+	}
+	if len(failed) > 0 {
+		return fail(1, "kill did not end %d of %d target(s): %s — run `sessions status <id>` on each one, then retry `sessions kill <id>`",
+			len(failed), len(result.Items), strings.Join(killItemIDs(failed), " "))
+	}
+	if len(unconfirmed) > 0 {
+		return fail(2, "kill could not confirm %d of %d target(s): %s — run `sessions ls` to see whether they ended before retrying",
+			len(unconfirmed), len(result.Items), strings.Join(killItemIDs(unconfirmed), " "))
+	}
+	return nil
+}
+
+func killItemIDs(items []killItem) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
 func (a *app) cmdKill(ids []string) error {
 	reason, hasReason := pluck(&ids, "--reason")
 	force := removeFirst(&ids, "--force")
@@ -528,6 +659,7 @@ func (a *app) cmdKill(ids []string) error {
 			return fail(2, "create batch operation id: %s", err)
 		}
 	}
+	result := killResult{Items: make([]killItem, 0, len(ids)), OperationID: operationID}
 	resolved := make([]string, 0, len(ids))
 	for _, idArg := range ids {
 		laneID, isLane, err := a.resolveLaneID(idArg)
@@ -540,7 +672,7 @@ func (a *app) cmdKill(ids []string) error {
 				return err
 			}
 			if statusCode == http.StatusOK {
-				fmt.Fprintf(a.stdout, "lane %s already exited; nothing to kill\n", laneID)
+				result.Items = append(result.Items, killItem{ID: laneID, Status: killStatusAlreadyExited})
 				continue
 			}
 		}
@@ -563,7 +695,7 @@ func (a *app) cmdKill(ids []string) error {
 			}
 		}
 		if alreadyExitedLane {
-			fmt.Fprintf(a.stdout, "lane %s already exited; nothing to kill\n", id)
+			result.Items = append(result.Items, killItem{ID: id, Status: killStatusAlreadyExited})
 			continue
 		}
 		if !slices.Contains(resolved, id) {
@@ -571,20 +703,18 @@ func (a *app) cmdKill(ids []string) error {
 		}
 	}
 	if len(resolved) == 0 {
-		return nil
+		return a.reportKill(result)
 	}
 	if len(resolved) > 1 {
-		var result map[string]any
+		var response killBatchResponse
 		err := a.postJSON("/api/sessions/end-batch", map[string]any{
 			"ids": resolved, "reason": reason, "operationId": operationID, "force": force,
-		}, &result, 2)
+		}, &response, 2)
 		if err != nil {
 			return err
 		}
-		for _, id := range resolved {
-			fmt.Fprintf(a.stdout, "killed %s\n", id)
-		}
-		return nil
+		result.Items = append(result.Items, response.classify(resolved)...)
+		return a.reportKill(result)
 	}
 	path := "/api/sessions/" + escapeID(resolved[0])
 	if force {
@@ -597,11 +727,13 @@ func (a *app) cmdKill(ids []string) error {
 		return err
 	}
 	if !ok {
-		fmt.Fprintln(a.stderr, unknownSessionMessage(resolved[0]))
-		return status(1)
+		result.Items = append(result.Items, killItem{
+			ID: resolved[0], Status: killStatusFailed, Reason: unknownSessionMessage(resolved[0]),
+		})
+		return a.reportKill(result)
 	}
-	fmt.Fprintf(a.stdout, "killed %s\n", resolved[0])
-	return nil
+	result.Items = append(result.Items, killItem{ID: resolved[0], Status: killStatusKilled})
+	return a.reportKill(result)
 }
 
 func (a *app) cmdWait(args []string) error {
