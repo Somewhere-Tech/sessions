@@ -37,13 +37,28 @@ unresolved decision.
 Sessions is not only a window manager. It is the durable index over Claude and
 Codex conversations that lets a user or agent find prior work without knowing
 which provider or approved machine holds it. Fleet search returns stable,
-machine-qualified references; those same references can be read or continued
+machine-qualified references; those same references can be read or resumed
 through the CLI and JSON contract. A temporarily offline machine is reported as
 partial coverage, never silently presented as an empty history.
 
+Provider history is first-class Sessions history whether or not Sessions
+started the conversation. Opening Sessions on an existing machine should
+immediately discover the user's available Claude and Codex conversations—there
+is no migration ceremony and no requirement to have launched them through the
+Sessions UI or CLI. A conversation started in a provider app, terminal, or
+another compatible client must still be searchable, readable, organizable, and
+resumable from Sessions whenever its provider history remains available.
+
+Starting work through Sessions is the enhanced path, not the admission price.
+Sessions-launched work can carry richer live status, ownership, parent/child
+lineage, machine identity, grouping, movement, recovery, and usage metadata.
+Those additions should make Sessions more useful from the first new session
+without making older or externally opened conversations second-class. The
+product's time-to-value starts with the history the user already has.
+
 Search does not create a second transcript store. Provider history stays on its
 source machine until the user opts into backup or explicitly moves work. When a
-conversation is continued, Sessions preserves the source and records the new
+conversation is resumed, Sessions preserves the source and records the new
 runtime as linked history. “Resurrect” means reconstructing a supported
 conversation from durable provider history—not pretending to restore process
 memory or uncommitted filesystem state.
@@ -70,8 +85,8 @@ identified and must not silently turn into a tunnel to a user's local machine.
 
 Routine states such as finished, resumable, archived, or temporarily offline
 are not emergencies. Red and blocking confirmation are reserved for meaningful
-danger or irreversible loss. Labels such as Close tab, Set aside, End session, Continue,
-Move, and Archive must describe their actual effect.
+danger or irreversible loss. Labels such as Close tab, Set aside, End session,
+Resume, Move, and Archive must describe their actual effect.
 
 ## Compatibility over forced lockstep
 
