@@ -4,7 +4,7 @@ import { useSessionSidebar } from '../hooks/useSessionSidebar';
 import { RemoteView } from './RemoteView';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import { useSessions } from '../store/sessions';
-import { fetchServerHistoryTranscript, wsMuxUrl } from '../api/sessionsd';
+import { fetchOnboardingState, fetchServerHistoryTranscript, wsMuxUrl } from '../api/sessionsd';
 import { classifySnapshotComposerState } from '../lib/detectMultiChoice';
 import { requestSnapshot } from '../lib/wsMux';
 import { SessionDetails } from './SessionDetails';
@@ -32,8 +32,7 @@ interface Props {
   onResume?: (
     session: import('../types').SessionInfo,
     destinationProvider?: 'claude' | 'codex',
-    runtimeMode?: 'rich' | 'terminal',
-    remoteControl?: boolean
+    runtimeMode?: 'rich' | 'terminal'
   ) => void;
   onFork?: (
     session: import('../types').SessionInfo,
@@ -325,13 +324,33 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     if (session.working) {
       throw new Error('Claude is still working. Wait for this turn to finish; your draft will stay in the composer.');
     }
+    if (enableRemoteControl) {
+      // Remote Control is a machine-level consent boundary, not a per-session
+      // switch: the resumed Terminal session gets it only because this machine
+      // already opted in (Settings → Claude), and the daemon refuses to start
+      // one otherwise (runtime/internal/session/claude_defaults.go). Check
+      // before the ledgered termination — ending the Rich runtime first would
+      // spend an irreversible action on a request that cannot be honored, and
+      // leave the user with neither the session nor Remote Control.
+      const onboarding = await fetchOnboardingState();
+      if (onboarding.supported !== false && onboarding.remoteControl !== 'enabled') {
+        throw new Error(
+          'This machine keeps Claude sessions local, so nothing was changed and this session is still running. '
+          + 'Turn Remote Control on in Settings → Claude first, then continue in Terminal.'
+        );
+      }
+    }
     await endSession(
       session.id,
       enableRemoteControl
         ? 'Continuing the same Claude conversation in Terminal with Remote Control.'
         : 'Continuing the same Claude conversation in Terminal for slash commands.'
     );
-    onResume(session, 'claude', 'terminal', enableRemoteControl);
+    // No Remote Control argument: the resumed session inherits this machine's
+    // Settings choice, which the check above has already confirmed. Passing a
+    // per-resume flag here would be ignored — ResumeDialog deliberately has no
+    // such input — and would misrepresent where the decision is made.
+    onResume(session, 'claude', 'terminal');
   }, [endSession, onResume, richSession, session]);
 
   const forkFromVisibleMessage = useCallback(async (
@@ -659,15 +678,19 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
 function SessionViewRouter(props: Props): JSX.Element {
   const session = useSessions((state) => state.sessions.find((item) => item.id === props.sessionId)) ?? null;
   const hydrated = useSessions((state) => state.hydrated);
+  // Read off `props` once: depending on the props object itself would re-run
+  // this on every parent render, and the deps below already name the only
+  // values the effect reads.
+  const { onStatusChange } = props;
   useEffect(() => {
-    if (!session?.exited || !props.onStatusChange) return;
-    props.onStatusChange({
+    if (!session?.exited || !onStatusChange) return;
+    onStatusChange({
       isWorking: false,
       parserIcon: session.tool === 'claude-code' ? '🟠' : session.tool === 'codex' ? '🟢' : '⬛',
       parserName: session.tool === 'claude-code' ? 'Claude' : session.tool === 'codex' ? 'Codex' : 'Terminal',
       terminalStatus: 'closed'
     });
-  }, [props.onStatusChange, session?.exited, session?.tool]);
+  }, [onStatusChange, session?.exited, session?.tool]);
   if (!session && !hydrated) return <LoadingShell label="Loading this session" />;
   if (!session) {
     return (

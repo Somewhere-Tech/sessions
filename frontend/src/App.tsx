@@ -91,6 +91,12 @@ function readSingleModeParams(): { sessionId: string } | null {
 // Persisted per-window in localStorage so each window remembers its
 // last choice. Grid is best when N ≥ 2 and the window is wide.
 type LayoutMode = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'settings' | 'feedback' | 'connections' | 'grid';
+// Shared empty list for "the loaded sessions belong to a different machine".
+// A `[]` literal in that position is a new array identity on every render,
+// which made every memo, callback, and effect derived from the session list
+// re-run continuously while the scope was mismatched.
+const NO_SESSIONS: SessionInfo[] = [];
+
 const LAYOUT_KEY = 'sessions:layout-mode';
 const OPEN_TABS_KEY = 'sessions:open-tabs:v1';
 const THEME_KEY = 'sessions:theme:v1';
@@ -129,11 +135,18 @@ export function App(): JSX.Element {
   const pairingError = useServers((state) => state.pairingError);
   const credentialError = useServers((state) => state.credentialError);
   const updateServer = useServers((state) => state.updateServer);
+  // Credentials are part of the endpoint's identity. Saving or replacing a
+  // token changes nothing else here, so without it a machine that answered 401
+  // would stay unnamed forever — identity is never re-fetched once it becomes
+  // reachable. Presence alone is not enough: swapping a rejected token for a
+  // working one has to re-probe too. This value is only ever an effect
+  // dependency; it is never rendered, logged, or sent anywhere.
   const identityRefreshKey = servers.map((server) => [
     server.id,
     server.scheme ?? 'http',
     server.host,
     server.port,
+    server.token ?? '',
     server.machineId ?? '',
     server.systemName ?? ''
   ].join('|')).join('\n');
@@ -178,6 +191,12 @@ export function App(): JSX.Element {
         .catch(() => { /* older/offline hosts keep their last known label */ });
     });
     return () => controllers.forEach((controller) => controller.abort());
+  // `servers` is intentionally not a dependency: the store hands back a new
+  // array on every write, so depending on it would abort and re-issue an
+  // identity probe to every configured machine on unrelated state changes.
+  // identityRefreshKey is the value-equal summary of exactly the fields these
+  // probes read, and it is kept in sync with them at its declaration above.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identityRefreshKey, nativeHydrated, updateServer]);
   if (!nativeHydrated) return <div className="native-hydration">Connecting to the Sessions runtime…</div>;
   return activeServerId && !pairingError && !credentialError
@@ -193,7 +212,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   const serverScopeMatches = Boolean(activeServerId) && sessionsServerId === activeServerId;
   const storedSessions = useSessions((s) => s.sessions);
   const storedActiveId = useSessions((s) => s.activeId);
-  const rawSessions = serverScopeMatches ? storedSessions : [];
+  const rawSessions = serverScopeMatches ? storedSessions : NO_SESSIONS;
   const activeId = serverScopeMatches ? storedActiveId : null;
   const setActive = useSessions((s) => s.setActive);
   const setServerScope = useSessions((s) => s.setServerScope);
@@ -290,7 +309,6 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       historyId?: string;
       destinationProvider?: 'claude' | 'codex';
       runtimeMode?: 'rich' | 'terminal';
-      remoteControl?: boolean;
     }
   >(null);
   const [activeStatus, setActiveStatus] = useState<ActiveStatus>(INITIAL_STATUS);
@@ -324,13 +342,11 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     setMobileSessionDetail(true);
   // setLayoutMode is a stable React setter declared below; callbacks run only
   // after the component has completed initialization.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawSessions, setActive, updateSetAside, writeOpenTabs]);
   const resumeSession = useCallback((
     session: SessionInfo,
     destinationProvider?: 'claude' | 'codex',
-    runtimeMode?: 'rich' | 'terminal',
-    remoteControl?: boolean
+    runtimeMode?: 'rich' | 'terminal'
   ): void => {
     const providerId = providerConversationId(session);
     setDialogOpen({
@@ -341,8 +357,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       sourceSessionId: session.id,
       historyId: providerId ? undefined : session.id,
       destinationProvider,
-      runtimeMode: providerId ? runtimeMode : 'rich',
-      remoteControl
+      runtimeMode: providerId ? runtimeMode : 'rich'
     });
   }, []);
   const forkSession = useCallback(async (

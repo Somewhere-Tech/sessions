@@ -169,7 +169,7 @@ export function InputBar({
           ? 'Remote Control needs a Terminal session'
           : `${command} needs a Terminal session`,
         detail: command === '/rc'
-          ? 'Claude exposes Remote Control only from its interactive terminal. This command was not sent as a chat message.'
+          ? 'Claude exposes Remote Control only from its interactive terminal, and only when this machine has it turned on in Settings → Claude. This command was not sent as a chat message.'
           : 'Claude slash commands run in its interactive terminal. This command was not sent as a chat message.',
         canContinueInTerminal: Boolean(onContinueInTerminal),
         enableRemoteControl: command === '/rc'
@@ -377,7 +377,11 @@ export function InputBar({
                   : continuingInTerminal
                     ? 'Preparing…'
                     : composerNotice.enableRemoteControl
-                      ? 'End Rich & open Remote Control…'
+                      // Says what the button does, in the order it happens.
+                      // "Open Remote Control" implied this button turned it
+                      // on; it does not — this machine's Settings choice does,
+                      // and the handler checks it before ending anything.
+                      ? 'End Rich & continue in Terminal with Remote Control…'
                       : 'End Rich & continue in Terminal…'}
               </button>
             ) : null}

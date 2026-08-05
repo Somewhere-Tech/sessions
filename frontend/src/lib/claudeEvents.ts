@@ -428,10 +428,30 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
     }
 
     const subtype = event.subtype ?? '';
-    const turnID = event.turnId || latestTurnID;
     if (subtype === 'turn_started') {
       if (event.turnId) latestTurnID = event.turnId;
       ensureTurn(event.turnId ?? '', at);
+      continue;
+    }
+
+    // A message the user typed while Codex was mid-turn. The runner refuses
+    // it rather than queuing it, so the only honest thing the UI can do is
+    // show that it was not sent. Handled here, ahead of the turn projection
+    // below, because a rejection carries no turnId: routed through
+    // ensureTurn it would either be folded into whichever turn happened to be
+    // latest or dropped outright when none was. Mirrors the Claude branch in
+    // eventsToMessages so a rejection reads the same for both providers.
+    if (event.type === 'system' && subtype === 'input_rejected') {
+      const rejection = (event as Record<string, unknown>).error;
+      if (typeof rejection !== 'string' || !rejection.trim()) continue;
+      out.push({
+        id: event.uuid ?? `codex-input-rejected-${out.length}`,
+        role: 'assistant',
+        content: '',
+        status: 'sent',
+        createdAt: at,
+        errorResponse: rejection
+      });
       continue;
     }
 

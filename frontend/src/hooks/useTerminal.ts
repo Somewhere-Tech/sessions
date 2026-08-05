@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // On a fresh Android install over cellular, this is the difference
 // between "instant tap-to-content" and "wait for the terminal lib to
 // download even though you didn't open Terminal view."
-import { wsMuxUrl, snapshot as fetchServerSnapshot, fetchClaudeEvents } from '../api/sessionsd';
+import { muxEndpointKey, snapshot as fetchServerSnapshot, fetchClaudeEvents } from '../api/sessionsd';
 import { attachSession, sendSessionInput, submitSessionMessage, type SessionChannel, type MuxStatus } from '../lib/wsMux';
 import { useServers } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
@@ -114,12 +114,20 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
   const reattachRef = useRef<(active: boolean) => void>(() => {});
   const fitTerminalRef = useRef<() => void>(() => {});
   const [terminalAtBottom, setTerminalAtBottom] = useState(true);
-  // Re-attach whenever the active server flips. Same effect-key pattern
-  // as sessionId — no need to share buffers across servers.
-  const activeServerId = useServers((s) => s.activeId);
+  // Re-attach whenever the mux endpoint changes. Same effect-key pattern as
+  // sessionId — no need to share buffers across servers. This is the full
+  // socket URL rather than the server id because the auth token is carried in
+  // the query string: pasting a token for the machine you are already on keeps
+  // the id identical while changing the endpoint this stream must bind to.
+  // The selector re-runs on every servers-store change and the hook only
+  // re-renders when the resulting URL actually differs.
+  const muxUrl = useServers(() => muxEndpointKey());
 
   useEffect(() => {
     if (!sessionId) return;
+    // No machine configured yet — nothing to bind a stream to. The effect
+    // re-runs as soon as one is, because muxUrl is a dependency.
+    if (!muxUrl) return;
 
     // We do the entire setup in an async IIFE so we can `await` the
     // dynamic-import of xterm. The cleanup function returned from
@@ -238,10 +246,14 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       sendInputRef.current = (data: string): void => {
         channel?.sendInput(data);
       };
+      // Bound to the same `muxUrl` this effect attached with, never
+      // re-derived at send time. Re-deriving let a composer send open a
+      // second socket on a newly-saved token while the stream stayed on the
+      // old one — the composer looked healthy while the terminal was dead.
       sendConfirmedInputRef.current = (data: string): Promise<void> =>
-        sendSessionInput(wsMuxUrl(), sessionId, data);
+        sendSessionInput(muxUrl, sessionId, data);
       submitMessageRef.current = (data: string): Promise<void> =>
-        submitSessionMessage(wsMuxUrl(), sessionId, data);
+        submitSessionMessage(muxUrl, sessionId, data);
 
       setExitInfo(null);
       setResumedFromSeq(null);
@@ -672,7 +684,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         if (active && term) await prefillTerminalSnapshot();
         if (active) await tailPromise;
         if (disposed) return;
-        channel = attachSession(wsMuxUrl(), sessionId, { onMessage, onStatus, getResume });
+        channel = attachSession(muxUrl, sessionId, { onMessage, onStatus, getResume });
       };
       // Re-subscribe with flags recomputed for current activeness. Becoming
       // active → prefill (the terminal was frozen while hidden) + the
@@ -700,7 +712,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       disposed = true;
       if (runCleanup) runCleanup();
     };
-  }, [sessionId, activeServerId, mountTerminal]);
+  }, [sessionId, muxUrl, mountTerminal]);
 
   // Activeness changes are NOT a mount-effect dependency (that would
   // dispose + rebuild xterm on every tab switch). Instead, re-subscribe

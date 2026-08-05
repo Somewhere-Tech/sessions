@@ -6,7 +6,6 @@ import {
   listServerSessions,
   planSmartSearch,
   searchServer,
-  type HistoryMessage,
   type HistoryTranscript,
   type ResumableSession,
   type SearchMatch,

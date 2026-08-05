@@ -23,7 +23,7 @@ export class AuthError extends Error {
 // embedded-daemon build). A hosted shell selecting http://localhost:8787
 // must keep that exact target; substituting window.location would send API
 // calls to sessions.somewhere.tech instead of the user's daemon.
-function useSameOriginDaemon(s: ServerConfig): boolean {
+function isSameOriginDaemon(s: ServerConfig): boolean {
   if (isTauri()) return false;
   const pageScheme = window.location.protocol === 'https:' ? 'https' : 'http';
   const pagePort = window.location.port
@@ -39,7 +39,7 @@ function hostForUrl(host: string): string {
 }
 
 function httpBaseForServer(s: ServerConfig): string {
-  if (useSameOriginDaemon(s)) {
+  if (isSameOriginDaemon(s)) {
     return window.location.origin;
   }
   // Honour the selected endpoint exactly. Falling back to HTTP keeps older
@@ -58,7 +58,7 @@ function requestedServer(serverId?: string): ServerConfig {
 
 function wsBase(): string {
   const s = getActiveServer();
-  if (useSameOriginDaemon(s)) {
+  if (isSameOriginDaemon(s)) {
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
     return `${scheme}://${window.location.host}`;
   }
@@ -88,7 +88,7 @@ async function serverFetch(
   };
   const res = await fetch(input, merged);
   if (res.status === 401) {
-    if (server.isDefault && useSameOriginDaemon(server)) {
+    if (server.isDefault && isSameOriginDaemon(server)) {
       useServers.getState().markTokenRequired(server.id);
     }
     throw new AuthError();
@@ -1358,4 +1358,16 @@ export function wsMuxUrl(): string {
   const params = new URLSearchParams({ mux: '1' });
   if (s.token) params.set('token', s.token);
   return `${wsBase()}/ws?${params.toString()}`;
+}
+
+// Identity of the mux endpoint a live stream is bound to. Because the token
+// lives in the URL, saving a credential for the already-selected machine
+// produces a different socket without changing the active server id. Effects
+// that own a mux subscription must key on this, not on the id alone —
+// otherwise the terminal stays attached to the old tokenless URL and
+// reconnects forever with a credential the daemon rejects. Returns '' while no
+// server is configured so it is safe to call during render.
+export function muxEndpointKey(): string {
+  try { return wsMuxUrl(); }
+  catch { return ''; }
 }

@@ -26,6 +26,11 @@ interface Props {
   preferredHistoryId?: string;
   preferredDestinationProvider?: 'claude' | 'codex';
   preferredRuntimeMode?: 'rich' | 'terminal';
+  // There is deliberately no per-resume Remote Control preference. It was
+  // removed when Remote Control became a machine-level consent boundary
+  // (Settings → Claude); a resume cannot grant it. `adoptConversation` still
+  // accepts the flag for callers that own that consent decision, and
+  // lifecycle-clarity-smoke asserts this dialog is not one of them.
   // Click handler if the user wants to abandon resume and start fresh.
   // App.tsx swaps to the New Session dialog so the user doesn't lose
   // their place if the picker turns out to be empty.
@@ -223,6 +228,12 @@ export function ResumeDialog({
     } else if (!preferredRuntimeMode) {
       setRuntimeMode(selected.transcriptRecovery ? 'rich' : selected.tool === 'claude' ? 'terminal' : 'rich');
     }
+  // `selected` itself is deliberately not a dependency. The list is refetched
+  // in the background and hands back new row objects for the same
+  // conversation; depending on the object identity would re-run this and
+  // overwrite a destination or runtime the user had just chosen by hand. The
+  // identifying fields below are what actually decide the defaults.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     preferredDestinationProvider,
     preferredRuntimeMode,

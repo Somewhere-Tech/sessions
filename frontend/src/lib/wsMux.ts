@@ -120,11 +120,18 @@ class MuxManager {
     }
   };
 
+  // True once this manager has gone idle and given up its window-level
+  // subscription and its slot in the module map. A stale reference can still
+  // be used afterwards; `reacquire` puts it back rather than leaving a
+  // half-live manager whose visibilitychange reconnect no longer fires.
+  private released = false;
+
   constructor(private readonly url: string) {
     document.addEventListener('visibilitychange', this.onVis);
   }
 
   attach(sessionId: string, handlers: SessionHandlers): SessionChannel {
+    this.reacquire();
     this.cancelIdleShutdown();
     this.sessions.set(sessionId, handlers);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -146,6 +153,7 @@ class MuxManager {
   }
 
   request(msg: MuxClientMsg & { requestId: string }, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<RpcResponse> {
+    this.reacquire();
     this.cancelIdleShutdown();
     if ((msg.type === 'input' || msg.type === 'submit') && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
       if (!this.ws || this.ws.readyState >= WebSocket.CLOSING) {
@@ -238,8 +246,29 @@ class MuxManager {
       this.idleShutdownTimer = null;
       if (this.sessions.size === 0 && this.requests.size === 0 && this.outbox.length === 0) {
         this.shutdownSocket();
+        this.release();
       }
     }, IDLE_SHUTDOWN_MS);
+  }
+
+  // Give up the document listener and the module-map slot once this endpoint
+  // has been idle. Without this an endpoint's manager lived for the life of
+  // the page: the map key is the full socket URL including the auth token, so
+  // every credential change created a new manager while the previous one
+  // stayed subscribed to visibilitychange and kept waking up to reconnect with
+  // a credential the daemon had already rejected.
+  private release(): void {
+    if (this.released) return;
+    this.released = true;
+    document.removeEventListener('visibilitychange', this.onVis);
+    if (managers.get(this.url) === this) managers.delete(this.url);
+  }
+
+  private reacquire(): void {
+    if (!this.released) return;
+    this.released = false;
+    document.addEventListener('visibilitychange', this.onVis);
+    if (!managers.has(this.url)) managers.set(this.url, this);
   }
 
   private sendAttach(sessionId: string, handlers: SessionHandlers): void {
