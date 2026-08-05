@@ -293,6 +293,15 @@ func (s *Server) handleLANRoute(response http.ResponseWriter, request *http.Requ
 	case http.MethodGet:
 		s.sendJSON(response, http.StatusOK, s.lan.state(), corsOrigin)
 	case http.MethodPost:
+		// Opening the plaintext-HTTP LAN listener and its Bonjour
+		// advertisement is a separate capability from remote API access, and
+		// docs/NETWORK_SECURITY.md requires that enabling one never silently
+		// enables another. Match /api/pair/ticket, /api/devices, and
+		// /api/access/requests: only a principal on this machine may change
+		// it. Reading the state stays available to any authorized caller.
+		if !s.requireLocalPrincipal(response, request, corsOrigin, "LAN access administration") {
+			return true
+		}
 		var body struct {
 			Enabled *bool `json:"enabled"`
 		}

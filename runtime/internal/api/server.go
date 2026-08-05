@@ -230,25 +230,6 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		}, corsOrigin)
 		return
 	}
-	if path == "/api/health/deep" && request.Method == http.MethodGet {
-		s.sendJSON(response, http.StatusOK, map[string]any{
-			"ok": true, "name": "sessionsd", "version": Version,
-			"access": map[string]any{"open": s.openAccessEnabled()},
-			"compatibility": map[string]any{
-				"api": map[string]any{
-					"current": apiProtocolVersion, "minimumClient": minimumAPIClient, "maximumClient": maximumAPIClient,
-				},
-				"runner": map[string]any{
-					"current": proto.ProtocolVersion, "minimum": proto.MinimumCompatibleVersion, "maximum": proto.MaximumCompatibleVersion,
-				},
-			},
-			"discovering":    s.registry.IsDiscovering(),
-			"sessionsLoaded": len(s.registry.List(true)),
-			"uptimeSec":      int64(math.Round(s.registry.Uptime().Seconds())),
-			"sessions":       s.registry.DeepDiagnostics(),
-		}, corsOrigin)
-		return
-	}
 	if s.handlePairClaimRoute(response, request, corsOrigin) {
 		return
 	}
@@ -269,6 +250,31 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, principal))
+	// Deep health is dispatched after authorization, unlike plain /api/health.
+	// It reports live session UUIDs and host PIDs, so an unauthenticated peer
+	// on the LAN listener or the Tailscale Serve frontend could otherwise
+	// enumerate the user's running work. Its first-party caller is
+	// `sessions doctor`, which reaches the daemon over loopback (or with a
+	// per-device token when targeting another machine).
+	if path == "/api/health/deep" && request.Method == http.MethodGet {
+		s.sendJSON(response, http.StatusOK, map[string]any{
+			"ok": true, "name": "sessionsd", "version": Version,
+			"access": map[string]any{"open": s.openAccessEnabled()},
+			"compatibility": map[string]any{
+				"api": map[string]any{
+					"current": apiProtocolVersion, "minimumClient": minimumAPIClient, "maximumClient": maximumAPIClient,
+				},
+				"runner": map[string]any{
+					"current": proto.ProtocolVersion, "minimum": proto.MinimumCompatibleVersion, "maximum": proto.MaximumCompatibleVersion,
+				},
+			},
+			"discovering":    s.registry.IsDiscovering(),
+			"sessionsLoaded": len(s.registry.List(true)),
+			"uptimeSec":      int64(math.Round(s.registry.Uptime().Seconds())),
+			"sessions":       s.registry.DeepDiagnostics(),
+		}, corsOrigin)
+		return
+	}
 	if path == "/api/machine" && request.Method == http.MethodGet {
 		if s.identityError != nil || s.identity.ID == "" {
 			detail := "machine identity is unavailable"
@@ -294,7 +300,12 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
 			return
 		}
-		s.serveWebSocket(response, request)
+		writes, err := s.websocketWritesAllowed(request)
+		if err != nil {
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
+			return
+		}
+		s.serveWebSocket(response, request, writes)
 		return
 	}
 	if s.handleLANRoute(response, request, corsOrigin) {

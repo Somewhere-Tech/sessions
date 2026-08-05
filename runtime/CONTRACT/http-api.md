@@ -33,8 +33,11 @@ including quirks; it is not a redesign.
 
 ## Authentication
 
-`GET /api/health`, `GET /api/health/deep`, every `OPTIONS` request, and static
-GETs are exempt. Every other HTTP route requires either:
+`GET /api/health`, every `OPTIONS` request, and static GETs are exempt.
+`GET /api/health/deep` was previously exempt but now requires authentication:
+it enumerates live session identifiers and host process IDs, which must not be
+readable by an unauthenticated LAN or tailnet peer. Every other HTTP route
+requires either:
 
 - `Authorization: Bearer <token>`, or
 - `?token=<token>`.
@@ -170,7 +173,7 @@ grace period. The deep-health response carries the same compatibility object.
 
 ### `GET /api/health/deep`
 
-No auth. Returns 200:
+Requires authentication (loopback peers are already authorized). Returns 200:
 
 ```json
 {

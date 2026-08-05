@@ -147,6 +147,54 @@ func TestLANRouteRequiresAuthorizationFromNonLoopbackPeer(t *testing.T) {
 	}
 }
 
+// Enabling LAN access opens a plaintext-HTTP listener on the user's private
+// network and advertises it over Bonjour. docs/NETWORK_SECURITY.md keeps LAN,
+// pairing, and tailnet access separate capabilities, so holding a remote
+// credential must not be enough to turn one of them on. This mirrors the
+// existing local-only gate on /api/pair/ticket and /api/devices.
+func TestLANEnableRequiresALocalPrincipal(t *testing.T) {
+	daemon := newTestDaemon(t)
+	daemon.handler.lan.pickIP = func() (net.IP, error) {
+		t.Fatal("a remote caller reached the LAN listener bind path")
+		return nil, nil
+	}
+	claimed := claimPairingTicket(t, daemon.handler, mintPairingTicket(t, daemon.handler, "Phone").Ticket, "", http.StatusCreated)
+
+	for _, test := range []struct {
+		name    string
+		headers http.Header
+	}{
+		{name: "paired device token", headers: http.Header{"Authorization": {"Bearer " + claimed.Token}}},
+		{name: "master token from a remote peer", headers: http.Header{"Authorization": {"Bearer " + testToken}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := serve(t, daemon.handler, http.MethodPost, "/api/lan",
+				strings.NewReader(`{"enabled":true}`), externalPairingPeer, test.headers)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("remote LAN enable status = %d, want %d; body=%s",
+					response.Code, http.StatusForbidden, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), "available only on this machine") {
+				t.Fatalf("remote LAN enable body = %s", response.Body.String())
+			}
+			if current := daemon.handler.lan.state(); current.Enabled || current.URL != nil {
+				t.Fatalf("remote caller changed LAN state: %#v", current)
+			}
+			settings, err := state.LoadSettings(daemon.handler.lan.settingsPath)
+			if err == nil && settings.LAN {
+				t.Fatalf("remote caller persisted LAN access: %#v", settings)
+			}
+		})
+
+		t.Run(test.name+" may still read LAN state", func(t *testing.T) {
+			response := serve(t, daemon.handler, http.MethodGet, "/api/lan", nil, externalPairingPeer, test.headers)
+			if response.Code != http.StatusOK {
+				t.Fatalf("remote LAN status = %d, body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestLANActiveHostDoesNotWaitForBonjour(t *testing.T) {
 	config := state.Config{Port: 0, SettingsPath: t.TempDir() + "/settings.json"}
 	listener := newLANListener(config, http.NotFoundHandler(), machineIdentity{Name: "test", ID: "test-machine"})

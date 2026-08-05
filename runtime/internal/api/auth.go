@@ -19,6 +19,18 @@ var hostedShellOrigins = map[string]struct{}{
 	"https://sessions.somewhere.site": {},
 }
 
+// nativeShellOrigins are the origins the Tauri webview reports. macOS uses the
+// custom tauri:// scheme, whose hostname happens to be "localhost"; Windows and
+// Android report tauri.localhost, which is not a loopback hostname and so is not
+// matched by the generic checks below. trustedAmbientWriteOrigin already grants
+// these write authority, so omitting them here refused the native client's
+// WebSocket upgrade outright on those platforms.
+var nativeShellOrigins = map[string]struct{}{
+	"tauri://localhost":       {},
+	"http://tauri.localhost":  {},
+	"https://tauri.localhost": {},
+}
+
 type tokenStore struct {
 	path string
 	mu   sync.Mutex
@@ -106,6 +118,9 @@ func allowedOrigin(origin, bindHost string, additionalHosts ...string) bool {
 	if _, allowed := hostedShellOrigins[normalized]; allowed {
 		return true
 	}
+	if _, allowed := nativeShellOrigins[normalized]; allowed {
+		return true
+	}
 	hostname := strings.ToLower(parsed.Hostname())
 	if hostname == "127.0.0.1" || hostname == "localhost" || hostname == "::1" {
 		return true
@@ -141,9 +156,10 @@ func trustedAmbientWriteOrigin(origin, bindHost string, bindPort int, additional
 		return false
 	}
 	normalized := normalizedOrigin(parsed)
-	switch normalized {
-	case "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost":
+	if _, native := nativeShellOrigins[normalized]; native {
 		return true
+	}
+	switch normalized {
 	case "http://localhost:5273", "http://127.0.0.1:5273":
 		// The checked-in Tauri development URL. Production uses the native
 		// origins above, so no arbitrary localhost port receives ambient trust.
@@ -167,6 +183,66 @@ func trustedAmbientWriteOrigin(origin, bindHost string, bindPort int, additional
 		}
 	}
 	return false
+}
+
+// websocketWritesAllowed reports whether a `/ws` upgrade may carry the frames
+// that reach a live runner: `input`, `submit`, `resize`, and the raw binary /
+// non-JSON text frames of single-session mode.
+//
+// An upgrade is a GET, so the state-changing-method guard in ServeHTTP never
+// fires for it, and a loopback peer is authorized() without a credential.
+// allowedOrigin then admits any origin whose hostname is loopback with no port
+// comparison, so without this check a page on an arbitrary localhost port could
+// open ws://127.0.0.1:<port>/ws?mux=1 with no credential and type into the
+// user's sessions. That is exactly the ambient authority
+// trustedAmbientWriteOrigin denies over HTTP.
+//
+// Reading stays governed by allowedOrigin so the upgrade itself keeps its
+// current outcome for every pinned origin; only write authority narrows.
+func (s *Server) websocketWritesAllowed(request *http.Request) (bool, error) {
+	origin := request.Header.Get("Origin")
+	if origin == "" {
+		// Not a browser upgrade. The CLI, native shells, and runner tooling
+		// send no Origin, so there is no ambient page authority to contain;
+		// authorized() already decided this request.
+		return true, nil
+	}
+	if trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost()) {
+		return true, nil
+	}
+	return s.presentedCredential(request)
+}
+
+// presentedCredential reports whether the request carried a token that actually
+// verifies. Mere presence is not enough here, unlike the HTTP Authorization
+// check in ServeHTTP: a browser cannot set headers on a WebSocket at all, so
+// `?token=` is a channel a hostile page can use too. Only a verifying token
+// distinguishes a real client from ambient browser authority.
+func (s *Server) presentedCredential(request *http.Request) (bool, error) {
+	expected, err := s.tokens.token()
+	if err != nil {
+		return false, err
+	}
+	candidates := make([]string, 0, 2)
+	if authorization := request.Header.Get("Authorization"); strings.HasPrefix(authorization, "Bearer ") {
+		candidates = append(candidates, strings.TrimPrefix(authorization, "Bearer "))
+	}
+	if provided := request.URL.Query().Get("token"); provided != "" {
+		candidates = append(candidates, provided)
+	}
+	for _, candidate := range candidates {
+		if tokenEqual(candidate, expected) {
+			return true, nil
+		}
+		_, authorized, err := s.pair.devices.authenticate(candidate)
+		if err != nil {
+			return false, err
+		}
+		if authorized {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func effectiveOriginPort(parsed *url.URL) int {

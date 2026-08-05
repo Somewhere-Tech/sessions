@@ -36,7 +36,30 @@ func (p *wsPeer) send(ctx context.Context, value any) error {
 	return p.connection.Write(writeCtx, websocket.MessageText, encoded)
 }
 
-func (s *Server) serveWebSocket(response http.ResponseWriter, request *http.Request) {
+// deniedWriteReason is sent to a socket that may observe sessions but has no
+// authority to drive them. Keep it instructional: the client learns the frame
+// was refused and how to become authorized instead of losing keystrokes.
+const deniedWriteReason = "this connection may not send input; reconnect with a Sessions token"
+
+// denyWrite answers a refused write frame, preferring the acknowledgement shape
+// the caller is already waiting on so a pending request does not hang.
+func denyWrite(ctx context.Context, peer *wsPeer, message clientMessage) {
+	if message.RequestID != "" {
+		switch message.Type {
+		case "input", "submit":
+			_ = peer.send(ctx, map[string]any{
+				"type": message.Type + "Ack", "requestId": message.RequestID,
+				"sessionId": message.SessionID, "ok": false, "error": deniedWriteReason,
+			})
+			return
+		}
+	}
+	refusal := map[string]any{"type": "error", "code": "forbidden", "message": deniedWriteReason}
+	addSessionID(refusal, message.SessionID)
+	_ = peer.send(ctx, refusal)
+}
+
+func (s *Server) serveWebSocket(response http.ResponseWriter, request *http.Request, writes bool) {
 	connection, err := websocket.Accept(response, request, &websocket.AcceptOptions{
 		InsecureSkipVerify: true, // Origin was checked against config.ts parity above.
 		CompressionMode:    websocket.CompressionDisabled,
@@ -47,13 +70,13 @@ func (s *Server) serveWebSocket(response http.ResponseWriter, request *http.Requ
 	connection.SetReadLimit(websocketReadLimit)
 	peer := &wsPeer{connection: connection}
 	if request.URL.Query().Get("mux") == "1" {
-		s.handleMux(request.Context(), peer)
+		s.handleMux(request.Context(), peer, writes)
 		return
 	}
-	s.handleSingle(request.Context(), peer, request)
+	s.handleSingle(request.Context(), peer, request, writes)
 }
 
-func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *http.Request) {
+func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *http.Request, writes bool) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	defer peer.connection.CloseNow()
@@ -98,12 +121,22 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 		if err != nil {
 			return
 		}
+		// Binary frames and unparsed text frames are raw PTY input in this
+		// mode, so they need the same write authority as an `input` message.
 		if messageType == websocket.MessageBinary {
+			if !writes {
+				denyWrite(ctx, peer, clientMessage{Type: "input", SessionID: id})
+				continue
+			}
 			s.registry.Input(ctx, id, string(payload))
 			continue
 		}
 		var message clientMessage
 		if err := json.Unmarshal(payload, &message); err != nil {
+			if !writes {
+				denyWrite(ctx, peer, clientMessage{Type: "input", SessionID: id})
+				continue
+			}
 			s.registry.Input(ctx, id, string(payload))
 			continue
 		}
@@ -111,8 +144,16 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 		case "ping":
 			_ = peer.send(ctx, map[string]any{"type": "pong"})
 		case "input":
+			if !writes {
+				denyWrite(ctx, peer, message)
+				continue
+			}
 			s.registry.Input(ctx, id, message.Data)
 		case "resize":
+			if !writes {
+				denyWrite(ctx, peer, message)
+				continue
+			}
 			session.Resize(ctx, clampDimension(message.Cols, 40, 500), clampDimension(message.Rows, 10, 200))
 		}
 	}
@@ -122,7 +163,7 @@ type muxAttachment struct {
 	cancel func()
 }
 
-func (s *Server) handleMux(parent context.Context, peer *wsPeer) {
+func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	defer peer.connection.CloseNow()
@@ -218,6 +259,10 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer) {
 		case "events":
 			s.handleMuxEvents(ctx, peer, message)
 		case "input":
+			if !writes {
+				denyWrite(ctx, peer, message)
+				continue
+			}
 			written := s.registry.Input(ctx, message.SessionID, message.Data)
 			if message.RequestID != "" {
 				_ = peer.send(ctx, map[string]any{
@@ -226,6 +271,10 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer) {
 				})
 			}
 		case "submit":
+			if !writes {
+				denyWrite(ctx, peer, message)
+				continue
+			}
 			s.submitMu.Lock()
 			written := s.registry.Input(ctx, message.SessionID, message.Data)
 			if written {
@@ -246,6 +295,10 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer) {
 				})
 			}
 		case "resize":
+			if !writes {
+				denyWrite(ctx, peer, message)
+				continue
+			}
 			if session, ok := s.registry.Get(message.SessionID); ok {
 				session.Resize(ctx, clampDimension(message.Cols, 40, 500), clampDimension(message.Rows, 10, 200))
 			}

