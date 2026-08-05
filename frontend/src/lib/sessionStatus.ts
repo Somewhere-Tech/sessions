@@ -110,7 +110,7 @@ export function endedSummary(session: SessionInfo, allSessions: SessionInfo[] = 
   if (reason === 'runner-lost' || session.provenanceStatus === 'lost') {
     return {
       label: 'Ready to continue',
-      detail: 'The live runner stopped, but this conversation and its captured output are saved. Continue it here or on another computer whenever you’re ready.',
+      detail: 'The live runner stopped, but this conversation and its captured output are saved. Resume it here or on another computer whenever you’re ready.',
       tone: 'attention'
     };
   }
@@ -183,8 +183,7 @@ export function endedAtLabel(session: SessionInfo): string {
 export function canContinueSession(session: SessionInfo): boolean {
   return session.tool !== 'terminal'
     && !session.reopenedAs
-    && !session.movedToSessionId
-    && Boolean(providerConversationId(session));
+    && !session.movedToSessionId;
 }
 
 export function providerConversationId(session: SessionInfo): string | null {

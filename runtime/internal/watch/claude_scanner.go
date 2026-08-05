@@ -19,18 +19,19 @@ const (
 // ResumableSession is the exact metadata shape returned by the TypeScript
 // /api/claude-sessions route.
 type ResumableSession struct {
-	SessionID         string         `json:"sessionId"`
-	Tool              string         `json:"tool"`
-	Origin            string         `json:"origin,omitempty"`
-	Title             string         `json:"title,omitempty"`
-	HistoryID         string         `json:"historyId,omitempty"`
-	PromptHistoryOnly bool           `json:"promptHistoryOnly,omitempty"`
-	Runs              []ResumableRun `json:"runs,omitempty"`
-	Cwd               string         `json:"cwd"`
-	ModifiedAt        float64        `json:"modifiedAt"`
-	FirstUserMessage  string         `json:"firstUserMessage"`
-	SizeBytes         int64          `json:"sizeBytes"`
-	SourcePath        string         `json:"-"`
+	SessionID          string         `json:"sessionId"`
+	Tool               string         `json:"tool"`
+	Origin             string         `json:"origin,omitempty"`
+	Title              string         `json:"title,omitempty"`
+	HistoryID          string         `json:"historyId,omitempty"`
+	PromptHistoryOnly  bool           `json:"promptHistoryOnly,omitempty"`
+	TranscriptRecovery bool           `json:"transcriptRecovery,omitempty"`
+	Runs               []ResumableRun `json:"runs,omitempty"`
+	Cwd                string         `json:"cwd"`
+	ModifiedAt         float64        `json:"modifiedAt"`
+	FirstUserMessage   string         `json:"firstUserMessage"`
+	SizeBytes          int64          `json:"sizeBytes"`
+	SourcePath         string         `json:"-"`
 }
 
 type ResumableRun struct {

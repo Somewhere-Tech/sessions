@@ -61,3 +61,16 @@ func TestMergeResumableConversationsIncludesClaudePromptIndexOnlyHistory(t *test
 		t.Fatalf("prompt-index conversation = %#v", got[0])
 	}
 }
+
+func TestMergeResumableConversationsIncludesTranscriptRecoveryWithoutProviderHandle(t *testing.T) {
+	got := mergeResumableConversations(nil, []integrations.HistorySession{{
+		ID: "db-final-review-sol-id", Name: "db-final-review-sol", Tool: "codex",
+		CWD: "/workspace", CreatedAt: 100, LastActivityAt: 123,
+		ConversationAvailable: true,
+	}})
+	if len(got) != 1 || !got[0].TranscriptRecovery ||
+		got[0].HistoryID != "db-final-review-sol-id" || got[0].Title != "db-final-review-sol" ||
+		got[0].Origin != "Sessions recovery" {
+		t.Fatalf("transcript recovery conversation = %#v", got)
+	}
+}

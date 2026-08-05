@@ -333,9 +333,17 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     remoteControl?: boolean
   ): void => {
     const providerId = providerConversationId(session);
-    setDialogOpen(providerId
-      ? { resumeProviderId: providerId, sourceSessionId: session.id, destinationProvider, runtimeMode, remoteControl }
-      : 'resume');
+    setDialogOpen({
+      // A Sessions history id is a valid recovery target even when an older
+      // runner did not persist the provider UUID. Keep the exact row the user
+      // clicked instead of falling back to an unrelated generic picker.
+      resumeProviderId: providerId ?? session.id,
+      sourceSessionId: session.id,
+      historyId: providerId ? undefined : session.id,
+      destinationProvider,
+      runtimeMode: providerId ? runtimeMode : 'rich',
+      remoteControl
+    });
   }, []);
   const forkSession = useCallback(async (
     session: SessionInfo,
@@ -504,15 +512,19 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       } catch (reason) {
         // The first response already created the one live successor. Repair is
         // record-only; never turn an annotation failure into a second runtime.
-        console.warn('Sessions continued the conversation but could not finish its history annotations.', reason);
+        console.warn('Sessions resumed the conversation but could not finish its history annotations.', reason);
       }
     }
     await refresh(serverId);
-    // Same-provider continuation may immediately show an old-session,
-    // trust, update, or model picker that only exists in the provider TUI.
-    // Show that exact terminal first; the Conversation view remains one click
-    // away once the provider is ready.
-    preferNextSessionView(result.laneId, 'terminal');
+    // Native Claude resume can immediately show a provider-only picker in its
+    // terminal. Imported Codex and Sessions transcript recovery are authored
+    // conversations, so open their Conversation view instead.
+    preferNextSessionView(
+      result.laneId,
+      result.transcriptRecovery || result.destinationProvider === 'codex' || result.mode
+        ? 'remote'
+        : 'terminal'
+    );
     openSession(result.laneId);
   }, [openSession, refresh, setServerScope]);
   useEffect(() => {

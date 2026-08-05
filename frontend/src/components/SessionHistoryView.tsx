@@ -189,12 +189,12 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
                 {continuation && onOpenSession ? (
                   <button type="button" className="btn btn-primary" onClick={() => onOpenSession(continuation.id)}>Open {continuationIsLive ? 'live ' : ''}continuation <span aria-hidden>→</span></button>
                 ) : canContinueSession(session) ? (
-                  <button type="button" className="btn btn-primary" onClick={() => onResume?.(session)}>Continue conversation <span aria-hidden>→</span></button>
+                  <button type="button" className="btn btn-primary" onClick={() => onResume?.(session)}>Resume conversation <span aria-hidden>→</span></button>
                 ) : hasContinuation ? (
                   <span>The continuation is recorded on another machine.</span>
                 ) : (
                   <span>{supportsConversation
-                    ? 'This runtime ended before Sessions recorded an agent conversation ID.'
+                    ? 'Sessions could not find a readable conversation history for this runtime.'
                     : 'Shell sessions do not have an agent conversation to resume.'}</span>
                 )}
                 {canContinueSession(session) ? <ContinueElsewhereButton sessionId={session.id} label={label} /> : null}

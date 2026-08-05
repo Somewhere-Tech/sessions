@@ -126,7 +126,7 @@ assert.match(app, /sessionId=\{sessionId\}[\s\S]*isActive[\s\S]*onStatusChange=\
 assert.match(popout, />Pop out<\/span>/);
 assert.match(popout, /mode'\) === 'single'/);
 assert.match(view, /No terminal for this Rich session/);
-assert.match(view, /choose Continue conversation, then select Terminal/);
+assert.match(view, /choose Resume conversation, then select Terminal/);
 assert.match(view, /terminalAvailable=\{!richSession\}/);
 assert.match(view, /Continuing the same Claude conversation in Terminal with Remote Control/);
 assert.match(view, /Continuing the same Claude conversation in Terminal for slash commands/);
@@ -181,7 +181,7 @@ assert.match(newSession, /\{browserOpen \? \([\s\S]*<DirectoryBrowser[\s\S]*\) :
 const launcherHero = newSession.indexOf("'Start a new session'");
 const agentControl = newSession.indexOf('aria-label="Agent"');
 const machineControl = newSession.indexOf('aria-label="Computer"');
-const workspaceControl = newSession.indexOf('launcher-setup-control is-workspace');
+const workspaceControl = newSession.indexOf('launcher-intent-control is-workspace');
 const launcherComposer = newSession.indexOf('launcher-task-field launcher-composer');
 const folderControl = newSession.indexOf('launcher-workspace-shell');
 const advancedControl = newSession.indexOf('launcher-advanced');
@@ -225,7 +225,7 @@ assert.match(settingsView, /Help shape Sessions/);
 assert.match(settingsView, /Share an idea or win/);
 assert.match(settingsView, /Report a bug/);
 assert.doesNotMatch(settingsView, /Reporting from an agent/);
-assert.match(resumeDialog, /Continue an earlier chat/);
+assert.match(resumeDialog, /Resume a conversation/);
 assert.match(resumeDialog, /\(\['all', 'claude', 'codex'\] as const\)/);
 assert.match(resumeDialog, /s\.title\?\.toLowerCase\(\)\.includes\(q\)/);
 assert.match(resumeDialog, /const title = session\.title\?\.trim\(\) \|\| msg/);
@@ -278,7 +278,7 @@ try {
       <p>The provider finished normally and the exact conversation is still available.</p>
       <p class="session-ended-read-only">Viewing does not resume or send anything.</p>
       <div class="session-ended-actions">
-        <button class="btn btn-primary">Continue conversation →</button>
+        <button class="btn btn-primary">Resume conversation →</button>
         <button class="btn btn-secondary">Archive from list</button>
       </div>
     </section>

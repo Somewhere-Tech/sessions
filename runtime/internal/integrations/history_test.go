@@ -119,6 +119,58 @@ func TestHistoryNormalizesCodexRolloutThroughWatchContract(t *testing.T) {
 	}
 }
 
+func TestHistoryRecoversCodexProviderIdentityFromResolvedRollout(t *testing.T) {
+	root := t.TempDir()
+	runnerDir := filepath.Join(root, "runners")
+	sessionsDir := filepath.Join(root, "codex-sessions")
+	cwd := filepath.Join(root, "worktree")
+	for _, dir := range []string{runnerDir, sessionsDir, cwd} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, time.August, 4, 18, 0, 0, 0, time.UTC)
+	laneID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	providerID := "01234567-89ab-4cde-8fab-0123456789ab"
+	if err := state.WriteMetadata(filepath.Join(runnerDir, laneID+".json"), state.Metadata{
+		ID: laneID, Name: "db-final-review-sol", Cmd: "codex", Cwd: cwd,
+		CreatedAt: now.Add(-time.Minute).UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rolloutPath := filepath.Join(sessionsDir, "2026", "08", "04", "rollout-"+providerID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rolloutPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conversation := strings.Join([]string{
+		`{"timestamp":"2026-08-04T17:59:00Z","type":"session_meta","payload":{"id":"` + providerID + `","cwd":"` + cwd + `","timestamp":"2026-08-04T17:59:00Z"}}`,
+		`{"timestamp":"2026-08-04T18:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Final cold review"}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(rolloutPath, []byte(conversation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewHistoryStore(HistoryOptions{
+		RunnerStateDir: runnerDir, CodexSessionsDir: sessionsDir, Machine: "fixture-mac",
+		Now: func() time.Time { return now },
+	})
+	history, err := store.Lookup(nil, laneID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if history.ProviderSessionID != providerID || !history.ConversationAvailable {
+		t.Fatalf("history = %#v", history)
+	}
+	source, err := store.Source(nil, laneID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.SourcePath != rolloutPath || source.SourceKind != "provider-jsonl" ||
+		!source.RawAvailable || !source.TextAvailable || source.RawBytes != int64(len(conversation)) {
+		t.Fatalf("source = %#v", source)
+	}
+}
+
 func TestHistoryUsesHumanTitleAndProviderConversationIdentity(t *testing.T) {
 	claudeID := "11111111-2222-4333-8444-555555555555"
 	codexID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"

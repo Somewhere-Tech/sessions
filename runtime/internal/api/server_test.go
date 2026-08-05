@@ -113,6 +113,132 @@ func TestForkLiveConversationCreatesCopyWithoutEndingSource(t *testing.T) {
 	}
 }
 
+func TestResumeRestoresCodexTranscriptWhenNativeHandleWasNeverRecorded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	daemon := newTestDaemon(t)
+	profileRoot := filepath.Join(home, ".codex-work")
+	created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "codex", Cwd: daemon.root, Kind: state.KindCodexAppServer,
+		Name: "db-final-review-sol", Profile: "work", ConfigDir: profileRoot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceRunner := daemon.launcher.Runner(created.ID)
+	if sourceRunner == nil {
+		t.Fatal("source runner was not launched")
+	}
+	if err := sourceRunner.Kill(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	awaitSessionExited(t, daemon.registry, created.ID)
+
+	createdAt := time.UnixMilli(created.CreatedAt).UTC()
+	rolloutPath := filepath.Join(
+		profileRoot, "sessions", createdAt.Format("2006"), createdAt.Format("01"),
+		createdAt.Format("02"), "rollout-missing-provider-id.jsonl",
+	)
+	if err := os.MkdirAll(filepath.Dir(rolloutPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conversation := strings.Join([]string{
+		`{"timestamp":"` + createdAt.Format(time.RFC3339Nano) + `","type":"session_meta","payload":{"cwd":"` + daemon.root + `","timestamp":"` + createdAt.Format(time.RFC3339Nano) + `"}}`,
+		`{"timestamp":"` + createdAt.Add(time.Second).Format(time.RFC3339Nano) + `","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Final cold review"}]}}`,
+		`{"timestamp":"` + createdAt.Add(2*time.Second).Format(time.RFC3339Nano) + `","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Do not ship yet"}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(rolloutPath, []byte(conversation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	body := strings.NewReader(`{"target":"` + created.ID + `","historyId":"` + created.ID + `"}`)
+	response := serve(
+		t, daemon.handler, http.MethodPost, "/api/recovery/adopt", body, "127.0.0.1:1", nil,
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("resume status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result recovery.AdoptResult
+	decodeBody(t, response, &result)
+	if !result.OK || !result.TranscriptRecovery || result.ImportedMessages != 2 ||
+		result.SourceHistoryID != created.ID || result.DestinationProvider != "codex" {
+		t.Fatalf("resume result = %+v", result)
+	}
+	resumed, live := daemon.registry.Get(result.LaneID)
+	if !live {
+		t.Fatalf("resumed session %s is not live", result.LaneID)
+	}
+	info := resumed.Info()
+	if info.Profile != "work" || info.ConfigDir != profileRoot ||
+		info.ContinuedFromHistoryID != created.ID || info.ImportedMessageCount != 2 {
+		t.Fatalf("resumed session = %+v", info)
+	}
+	if len(daemon.launcher.Launches) != 2 {
+		t.Fatalf("launch count = %d, want ended source + one successor", len(daemon.launcher.Launches))
+	}
+}
+
+func TestResumeUsesCodexSessionMetaWhenOnlySessionsRowMissesNativeHandle(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	daemon := newTestDaemon(t)
+	profileRoot := filepath.Join(home, ".codex-work")
+	created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "codex", Cwd: daemon.root, Kind: state.KindCodexAppServer,
+		Name: "db-final-review-sol", Profile: "work", ConfigDir: profileRoot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceRunner := daemon.launcher.Runner(created.ID)
+	if err := sourceRunner.Kill(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	awaitSessionExited(t, daemon.registry, created.ID)
+
+	providerID := "01234567-89ab-4cde-8fab-0123456789ab"
+	createdAt := time.UnixMilli(created.CreatedAt).UTC()
+	rolloutPath := filepath.Join(
+		profileRoot, "sessions", createdAt.Format("2006"), createdAt.Format("01"),
+		createdAt.Format("02"), "rollout-"+providerID+".jsonl",
+	)
+	if err := os.MkdirAll(filepath.Dir(rolloutPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conversation := strings.Join([]string{
+		`{"timestamp":"` + createdAt.Format(time.RFC3339Nano) + `","type":"session_meta","payload":{"id":"` + providerID + `","cwd":"` + daemon.root + `","timestamp":"` + createdAt.Format(time.RFC3339Nano) + `"}}`,
+		`{"timestamp":"` + createdAt.Add(time.Second).Format(time.RFC3339Nano) + `","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Final cold review"}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(rolloutPath, []byte(conversation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	body := strings.NewReader(`{"target":"` + created.ID + `","historyId":"` + created.ID + `"}`)
+	response := serve(
+		t, daemon.handler, http.MethodPost, "/api/recovery/adopt", body, "127.0.0.1:1", nil,
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("resume status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result recovery.AdoptResult
+	decodeBody(t, response, &result)
+	if !result.OK || result.TranscriptRecovery || result.Adoption.ProviderUUID != providerID ||
+		result.LaneID == "" {
+		t.Fatalf("resume result = %+v", result)
+	}
+	resumed, live := daemon.registry.Get(result.LaneID)
+	if !live {
+		t.Fatalf("resumed session %s is not live", result.LaneID)
+	}
+	info := resumed.Info()
+	if info.Profile != "work" || info.ConfigDir != profileRoot || info.ConversationID != providerID {
+		t.Fatalf("resumed session = %+v", info)
+	}
+	if len(daemon.launcher.Launches) != 2 {
+		t.Fatalf("launch count = %d, want ended source + one successor", len(daemon.launcher.Launches))
+	}
+}
+
 type testDaemon struct {
 	config   state.Config
 	registry *state.Registry
@@ -908,6 +1034,24 @@ func awaitRunnerChange(t *testing.T, runner *prototest.Runner, condition func() 
 		case <-runner.Changes():
 		case <-t.Context().Done():
 			t.Fatal("test ended before fake runner state changed")
+		}
+	}
+}
+
+func awaitSessionExited(t *testing.T, registry *state.Registry, id string) {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if session, ok := registry.Get(id); ok && session.Info().Exited {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("session %s did not exit", id)
 		}
 	}
 }

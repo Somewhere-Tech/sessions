@@ -67,6 +67,23 @@ func TestContinuationAllowsSameProviderOnlyForFork(t *testing.T) {
 	}
 }
 
+func TestContinuationAllowsSameProviderTranscriptRecoveryOnlyWithoutProviderHandle(t *testing.T) {
+	value := ContinuationContext{
+		SchemaVersion:   ContinuationSchemaVersion,
+		SourceHistoryID: "source", SourceProvider: "codex", SourceCWD: "/work",
+		DestinationProvider: "codex", Mode: ContinuationNativeImport,
+		TranscriptRecovery: true,
+		Messages:           []ContinuationMessage{{Role: "user", Text: "Recover this review."}},
+	}
+	if err := value.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	value.SourceProviderID = "provider-still-exists"
+	if err := value.Validate(); err == nil {
+		t.Fatal("transcript recovery accepted a native provider handle")
+	}
+}
+
 func TestContinuationValidatesExactForkPoint(t *testing.T) {
 	point := 3
 	value := ContinuationContext{

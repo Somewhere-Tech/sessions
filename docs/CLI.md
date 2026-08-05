@@ -42,6 +42,7 @@ Daily workflows:
   kill                     terminate sessions or lanes
   recover                  inspect or reopen recoverable sessions
   recall                   inspect integration recall data
+  source                   locate or read a saved conversation
   snap                     print the current terminal buffer
   tail                     print or follow recent terminal lines
   cat                      print one durable conversation
@@ -52,7 +53,7 @@ Daily workflows:
   verdict                  read or emit an explicit producer verdict
   move                     continue an ended conversation on another machine
   adopt                    bind an existing conversation into Sessions
-  continue (resurrect)     continue one exact saved conversation
+  resume (continue, resurrect) resume one saved conversation
   fork                     copy a live conversation without stopping it
 
 Models and interactive:
@@ -548,6 +549,25 @@ Examples:
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
+## `sessions source`
+
+```text
+Usage:
+  sessions source <[machine::]name-or-id> [--text | --raw]
+
+locate or read a saved conversation
+
+Resolve a durable Sessions title, full id, id prefix, or machine::history-id across every approved machine. With no read flag, show the authoritative provider-owned JSONL path, provider, machine, workspace, size, and exact follow-up commands. --text streams the normalized user and agent conversation; --raw streams the untouched provider source. Ambiguous titles are never guessed. Sessions does not create or modify a transcript copy.
+
+Examples:
+  sessions source PM
+  sessions source db-final-review-sol --text
+  sessions source 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001' --raw
+  sessions --json source PM
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
 ## `sessions snap`
 
 ```text
@@ -721,22 +741,22 @@ Examples:
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
-## `sessions continue`
+## `sessions resume`
 
 ```text
 Usage:
-  sessions continue <[machine::]history-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
+  sessions resume <[machine::]name-or-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
 
-continue one exact saved conversation
+resume one saved conversation
 
-Continue an exact conversation returned by Sessions history. `resurrect` is an approachable alias. A machine::history-id reference returned by fleet search selects the approved source machine automatically; the authenticated history id supplies provider identity and workspace. Claude resumes in its native interactive runtime by default, with Remote Control determined by that machine's explicit onboarding/Settings choice; Codex resumes in its Rich app-server runtime. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. --structured explicitly selects headless Rich Claude when automation requires it. --terminal explicitly selects the original provider's terminal interface and cannot be combined with a cross-provider continuation. --remote-control remains a compatibility flag for an explicit Terminal Claude continuation and is rejected until the user has granted consent. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.
+Resume a conversation by its durable Sessions title, full id, id prefix, or exact machine::history-id across the approved fleet. Sessions first recovers a missing Codex identity from the provider's session_meta, then uses the native provider resume. If the provider handle is truly gone but the authored transcript remains, Sessions creates one linked same-provider successor from that transcript instead of losing the conversation. `continue` and `resurrect` remain compatibility aliases. Claude resumes in its native interactive runtime by default; Codex resumes in its Rich app-server runtime. --with creates a linked copy in the other provider. --source links the ended Sessions runtime, and --repair only completes missing records for an already-live successor.
 
 Examples:
-  sessions resurrect 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'
-  sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001
-  sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal --remote-control
-  sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex
-  sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001
+  sessions resume db-final-review-sol
+  sessions resume PM
+  sessions resume 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'
+  sessions resume db-final-review-sol --with claude
+  sessions --json resume provider:codex:00000000-0000-4000-8000-000000000001
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

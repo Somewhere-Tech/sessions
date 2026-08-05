@@ -58,6 +58,16 @@ type HistoryResponse struct {
 	Sessions      []HistorySession `json:"sessions"`
 }
 
+type HistorySource struct {
+	SchemaVersion int            `json:"schemaVersion"`
+	Session       HistorySession `json:"session"`
+	SourceKind    string         `json:"source_kind"`
+	SourcePath    string         `json:"source_path,omitempty"`
+	RawBytes      int64          `json:"raw_bytes,omitempty"`
+	RawAvailable  bool           `json:"raw_available"`
+	TextAvailable bool           `json:"text_available"`
+}
+
 type TranscriptMessage struct {
 	Index     int            `json:"index"`
 	ID        string         `json:"id"`
@@ -158,6 +168,41 @@ func (h *HistoryStore) Lookup(live []state.SessionInfo, id string) (HistorySessi
 	}
 	session, _, _, err := h.describeSource(source, false)
 	return session, err
+}
+
+// Source describes the provider-owned source behind one Sessions history
+// record. The authenticated endpoint is deliberately separate from History so
+// routine lists do not disclose local paths. It is read-only.
+func (h *HistoryStore) Source(live []state.SessionInfo, id string) (HistorySource, error) {
+	source, ok := h.find(live, strings.TrimSpace(id))
+	if !ok {
+		return HistorySource{}, ErrHistoryNotFound
+	}
+	if source.archived != nil {
+		session := h.describeArchived(*source.archived)
+		return HistorySource{
+			SchemaVersion: SchemaVersion, Session: session,
+			SourceKind: "prompt-index", SourcePath: h.options.ClaudeHistoryPath,
+			RawAvailable: false, TextAvailable: session.ConversationAvailable,
+		}, nil
+	}
+	session, path, _, err := h.describeSource(source, false)
+	if err != nil {
+		return HistorySource{}, err
+	}
+	result := HistorySource{
+		SchemaVersion: SchemaVersion, Session: session,
+		SourceKind: "provider-jsonl", SourcePath: path,
+		RawAvailable: path != "", TextAvailable: session.ConversationAvailable,
+	}
+	if path == "" {
+		result.SourceKind = "missing"
+		return result, nil
+	}
+	if info, statErr := os.Stat(path); statErr == nil && info.Mode().IsRegular() {
+		result.RawBytes = info.Size()
+	}
+	return result, nil
 }
 
 func (h *HistoryStore) list(live []state.SessionInfo, countMessages bool) ([]HistorySession, error) {
@@ -441,6 +486,21 @@ func (h *HistoryStore) describe(source backup.Session, countMessages bool) (Hist
 	if !info.Mode().IsRegular() {
 		return result, "", tool, nil
 	}
+	// Older Codex runners sometimes exited after the provider created its
+	// rollout but before the app-server thread id reached Sessions metadata.
+	// The provider's immutable session_meta remains the authoritative recovery
+	// handle, so recover it directly from the already-resolved source.
+	if tool == "codex" && result.ProviderSessionID == "" {
+		if providerID, _, identityErr := watch.ReadCodexConversationIdentity(path); identityErr == nil {
+			result.ProviderSessionID = providerID
+		}
+	}
+	if tool == "claude" && result.ProviderSessionID == "" {
+		providerID := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		if isProviderUUID(providerID) {
+			result.ProviderSessionID = providerID
+		}
+	}
 	result.ConversationAvailable = true
 	result.LastActivityAt = max(result.LastActivityAt, info.ModTime().UnixMilli())
 	result.SourceFingerprint = historySourceFingerprint(path, info)
@@ -505,6 +565,13 @@ func (h *HistoryStore) providerConversations() []watch.ResumableSession {
 	h.providerCache = watch.ScanResumableConversationsIn(h.options.ClaudeProjectsDir, h.options.CodexSessionsDir)
 	h.providerCachedAt = now
 	return append([]watch.ResumableSession(nil), h.providerCache...)
+}
+
+// ResumableProviderConversations returns the same short-lived provider scan
+// used by History. Resume surfaces call this after History so one request does
+// not recursively scan every Claude and Codex file twice.
+func (h *HistoryStore) ResumableProviderConversations() []watch.ResumableSession {
+	return h.providerConversations()
 }
 
 func (h *HistoryStore) archivedClaudeConversations() []watch.ArchivedClaudeConversation {
@@ -655,6 +722,24 @@ func extractCodexConversationID(args []string) string {
 		}
 	}
 	return ""
+}
+
+func isProviderUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if character != '-' {
+				return false
+			}
+			continue
+		}
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func historySourceFingerprint(path string, info os.FileInfo) string {

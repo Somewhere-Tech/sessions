@@ -227,7 +227,7 @@ async function assertFinishedSessionIsReadOnly() {
       copy: node.textContent,
       popOut: Boolean(node.querySelector('.session-popout-view')),
       resumeButtons: [...node.querySelectorAll('button')]
-        .filter((button) => button.textContent?.trim().startsWith('Continue conversation'))
+        .filter((button) => button.textContent?.trim().startsWith('Resume conversation'))
         .length,
       archiveButtons: [...node.querySelectorAll('button')]
         .filter((button) => button.textContent?.trim() === 'Archive from list')

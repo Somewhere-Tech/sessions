@@ -16,6 +16,7 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
+	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
 
 type ErrorInput struct {
@@ -232,6 +233,14 @@ func (s *Service) SearchSessions(live []state.SessionInfo) ([]HistorySession, er
 
 func (s *Service) LookupHistory(live []state.SessionInfo, id string) (HistorySession, error) {
 	return s.history.Lookup(live, id)
+}
+
+func (s *Service) Source(live []state.SessionInfo, id string) (HistorySource, error) {
+	return s.history.Source(live, id)
+}
+
+func (s *Service) ResumableProviderConversations() []watch.ResumableSession {
+	return s.history.ResumableProviderConversations()
 }
 
 func (s *Service) Transcript(live []state.SessionInfo, id string) (TranscriptResponse, error) {

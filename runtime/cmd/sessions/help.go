@@ -180,6 +180,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions recall", "sessions recall 00000000-0000-4000-8000-000000000001 --raw"}, run: (*app).cmdRecall,
 	},
 	{
+		name: "source", usage: "source <[machine::]name-or-id> [--text | --raw]",
+		summary: "locate or read a saved conversation", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Resolve a durable Sessions title, full id, id prefix, or machine::history-id across every approved machine. With no read flag, show the authoritative provider-owned JSONL path, provider, machine, workspace, size, and exact follow-up commands. --text streams the normalized user and agent conversation; --raw streams the untouched provider source. Ambiguous titles are never guessed. Sessions does not create or modify a transcript copy.",
+		examples: []string{"sessions source PM", "sessions source db-final-review-sol --text", "sessions source 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001' --raw", "sessions --json source PM"}, run: (*app).cmdSource,
+	},
+	{
 		name: "snap", usage: "snap <id> [--raw]",
 		summary: "print the current terminal buffer", group: dailyCommandGroup,
 		longHelp: "Print the current terminal snapshot. The default cleans terminal control sequences; --raw preserves the daemon response.",
@@ -240,10 +246,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions adopt 00000000-0000-4000-8000-000000000001", "sessions adopt ~/.claude/projects/example/session.jsonl --force", "sessions adopt 00000000-0000-4000-8000-000000000001 --repair 0123abcd --source 4567cdef"}, run: (*app).cmdAdopt,
 	},
 	{
-		name: "continue", aliases: []string{"resurrect"}, usage: "continue <[machine::]history-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]",
-		summary: "continue one exact saved conversation", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Continue an exact conversation returned by Sessions history. `resurrect` is an approachable alias. A machine::history-id reference returned by fleet search selects the approved source machine automatically; the authenticated history id supplies provider identity and workspace. Claude resumes in its native interactive runtime by default, with Remote Control determined by that machine's explicit onboarding/Settings choice; Codex resumes in its Rich app-server runtime. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. --structured explicitly selects headless Rich Claude when automation requires it. --terminal explicitly selects the original provider's terminal interface and cannot be combined with a cross-provider continuation. --remote-control remains a compatibility flag for an explicit Terminal Claude continuation and is rejected until the user has granted consent. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.",
-		examples: []string{"sessions resurrect 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal --remote-control", "sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex", "sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001"}, run: (*app).cmdContinue,
+		name: "resume", aliases: []string{"continue", "resurrect"}, usage: "resume <[machine::]name-or-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]",
+		summary: "resume one saved conversation", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Resume a conversation by its durable Sessions title, full id, id prefix, or exact machine::history-id across the approved fleet. Sessions first recovers a missing Codex identity from the provider's session_meta, then uses the native provider resume. If the provider handle is truly gone but the authored transcript remains, Sessions creates one linked same-provider successor from that transcript instead of losing the conversation. `continue` and `resurrect` remain compatibility aliases. Claude resumes in its native interactive runtime by default; Codex resumes in its Rich app-server runtime. --with creates a linked copy in the other provider. --source links the ended Sessions runtime, and --repair only completes missing records for an already-live successor.",
+		examples: []string{"sessions resume db-final-review-sol", "sessions resume PM", "sessions resume 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'", "sessions resume db-final-review-sol --with claude", "sessions --json resume provider:codex:00000000-0000-4000-8000-000000000001"}, run: (*app).cmdContinue,
 	},
 	{
 		name: "fork", usage: "fork <live-session> [--with claude|codex]",

@@ -54,6 +54,7 @@ type AdoptResult struct {
 	ForkPointIndex      *int                `json:"forkPointIndex,omitempty"`
 	ForkPointMessageID  string              `json:"forkPointMessageId,omitempty"`
 	SourceUntouched     bool                `json:"sourceUntouched,omitempty"`
+	TranscriptRecovery  bool                `json:"transcriptRecovery,omitempty"`
 }
 
 type AdoptAnnotation string
@@ -351,12 +352,14 @@ func Adopt(
 	description := ""
 	var tags map[string]string
 	profile := ""
+	configDir := ""
 	kind := ""
 	var displayParent *string
 	if selected.Source != nil {
 		description = selected.Source.Description
 		tags = state.CloneTags(selected.Source.Tags)
 		profile = selected.Source.Profile
+		configDir = selected.Source.ConfigDir
 		if selected.Source.DisplayParentSessionID != nil {
 			parent := *selected.Source.DisplayParentSessionID
 			displayParent = &parent
@@ -391,7 +394,7 @@ func Adopt(
 	created, err := creator.Create(ctx, state.CreateSessionRequest{
 		Cmd: adoption.Cmd, Args: append([]string(nil), adoption.Args...),
 		Cwd: adoption.Cwd, Name: name, Description: description, Tags: tags,
-		Profile: profile, Kind: kind, ConversationID: conversationID,
+		Profile: profile, ConfigDir: configDir, Kind: kind, ConversationID: conversationID,
 		DisplayParentSessionID: displayParent, Force: selected.Force,
 		Claude: selected.Claude,
 	})

@@ -62,6 +62,7 @@ type rolloutCandidate struct {
 }
 
 type codexSessionMeta struct {
+	id        string
 	cwd       string
 	timestamp time.Time
 }
@@ -249,7 +250,21 @@ func readCodexSessionMeta(path string) *codexSessionMeta {
 	if err != nil {
 		return nil
 	}
-	return &codexSessionMeta{cwd: cwd, timestamp: parsed}
+	id, _ := payload["id"].(string)
+	return &codexSessionMeta{id: strings.TrimSpace(id), cwd: cwd, timestamp: parsed}
+}
+
+// ReadCodexConversationIdentity returns the provider-owned identity recorded
+// in a rollout's session_meta line. Sessions uses this as a recovery fallback
+// when an older runner exited before copying the Codex thread id into its own
+// metadata. Reading the provider source is sufficient; the file is never
+// rewritten.
+func ReadCodexConversationIdentity(path string) (sessionID, cwd string, err error) {
+	meta := readCodexSessionMeta(path)
+	if meta == nil {
+		return "", "", errors.New("Codex rollout has no readable session_meta")
+	}
+	return meta.id, meta.cwd, nil
 }
 
 func resolveResumedCodex(root string, args []string) (CodexResolution, bool) {

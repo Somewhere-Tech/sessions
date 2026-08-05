@@ -102,7 +102,7 @@ export function ContinueElsewhereButton({
       setComplete(result);
       await refresh();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not continue this conversation.');
+      setError(reason instanceof Error ? reason.message : 'Could not resume this conversation.');
     } finally {
       setBusy(false);
     }

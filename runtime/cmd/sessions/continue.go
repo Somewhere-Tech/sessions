@@ -15,8 +15,13 @@ func (a *app) cmdContinue(args []string) error {
 	structured := removeFirst(&args, "--structured")
 	remoteControl := removeFirst(&args, "--remote-control")
 	if len(args) != 1 || args[0] == "" {
-		return fail(1, "usage: sessions continue <history-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
+		return fail(1, "usage: sessions resume <name-or-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
 	}
+	resolution, err := a.resolveHistoryReference(args[0])
+	if err != nil {
+		return err
+	}
+	args[0] = resolution.Reference
 	if _, err := a.useQualifiedHistoryReference(&args[0]); err != nil {
 		return err
 	}
@@ -79,7 +84,7 @@ func (a *app) cmdContinue(args []string) error {
 	if result.Mode != "" {
 		fmt.Fprintf(
 			a.stderr,
-			"sessions: continued %d authored messages from %s to %s (%s); the source was not modified\n",
+			"sessions: resumed %d authored messages from %s to %s (%s); the source was not modified\n",
 			result.ImportedMessages, result.SourceProvider, result.DestinationProvider, result.Mode,
 		)
 	}
@@ -90,7 +95,7 @@ func (a *app) cmdContinue(args []string) error {
 			if historyID == "" {
 				historyID = args[0]
 			}
-			command := []string{"sessions", "continue", historyID, "--repair", result.Repair.LaneID}
+			command := []string{"sessions", "resume", historyID, "--repair", result.Repair.LaneID}
 			if result.Repair.SourceSessionID != "" {
 				command = append(command, "--source", result.Repair.SourceSessionID)
 			}

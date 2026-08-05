@@ -97,8 +97,9 @@ export function ResumeDialog({
   const refresh = useSessions((s) => s.refresh);
   const openSessions = useSessions((s) => s.sessions);
 
-  const [resumable, setResumable] = useState<ResumableSession[] | null>([]);
+  const [resumable, setResumable] = useState<ResumableSession[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [partialResult, setPartialResult] = useState<AdoptConversationResult | null>(null);
@@ -114,6 +115,7 @@ export function ResumeDialog({
   useEffect(() => {
     let alive = true;
     setLoading(true);
+    setLoadError(null);
     void fetchResumableSessions()
       .then((s) => {
         if (!alive) return;
@@ -134,7 +136,8 @@ export function ResumeDialog({
                 modifiedAt: source.exitedAt ?? source.lastDataAt,
                 firstUserMessage: source.description || source.name || 'Resumable conversation',
                 sizeBytes: 0,
-                historyId: preferredHistoryId
+                historyId: preferredHistoryId,
+                transcriptRecovery: Boolean(preferredHistoryId)
               };
               available = [preferred, ...available];
             }
@@ -144,7 +147,13 @@ export function ResumeDialog({
         setResumable(available);
         setLoading(false);
       })
-      .catch(() => { if (alive) { setResumable(null); setLoading(false); } });
+      .catch((loadErr) => {
+        if (alive) {
+          setResumable(null);
+          setLoadError((loadErr as Error).message);
+          setLoading(false);
+        }
+      });
     return () => { alive = false; };
   }, [preferredProviderId, preferredSourceSessionId, preferredHistoryId]);
 
@@ -212,7 +221,7 @@ export function ResumeDialog({
       preferredRuntimeApplied.current = true;
       setRuntimeMode(preferredRuntimeMode);
     } else if (!preferredRuntimeMode) {
-      setRuntimeMode(selected.tool === 'claude' ? 'terminal' : 'rich');
+      setRuntimeMode(selected.transcriptRecovery ? 'rich' : selected.tool === 'claude' ? 'terminal' : 'rich');
     }
   }, [
     preferredDestinationProvider,
@@ -310,13 +319,13 @@ export function ResumeDialog({
         className="dialog dialog-wide resume-dialog"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Bring an existing conversation into Sessions"
+        aria-label="Resume an existing conversation in Sessions"
       >
         <header className="resume-dialog-head">
           <div className="resume-dialog-title-row">
             <div>
               <span className="dialog-kicker">Your Claude and Codex history</span>
-              <h2 className="resume-dialog-title">Continue an earlier chat</h2>
+              <h2 className="resume-dialog-title">Resume a conversation</h2>
             </div>
             <div className="resume-dialog-view-toggle" role="tablist" aria-label="Sort order">
               <button
@@ -358,7 +367,7 @@ export function ResumeDialog({
                 key={provider}
               >
                 {provider === 'all' ? 'All chats' : provider === 'claude' ? 'Claude' : 'Codex'}
-                <span>{providerCounts[provider]}</span>
+                <span>{loading ? '…' : providerCounts[provider]}</span>
               </button>
             ))}
           </div>
@@ -366,13 +375,23 @@ export function ResumeDialog({
 
         <div className="resume-dialog-body">
           <div className="resume-safety-note">
-            <strong>Continue the same chat.</strong>
-            <span>Sessions groups every prior runtime under one provider conversation. Chats already open elsewhere are hidden so two apps cannot write to the same history at once.</span>
+            <strong>Pick up where you left off.</strong>
+            <span>Sessions uses the provider’s native history when it can. If that handle is missing, it restores the authored conversation from Sessions history instead of losing it.</span>
           </div>
           {loading ? (
-            <div className="resume-empty">Loading sessions…</div>
+            <div className="resume-loading" role="status" aria-live="polite">
+              <strong>Finding your saved conversations…</strong>
+              <span>Checking Sessions history and native Claude and Codex history.</span>
+              <div className="resume-loading-cards" aria-hidden>
+                <i /><i /><i />
+              </div>
+            </div>
           ) : resumable === null ? (
-            <div className="resume-empty">Could not load sessions.</div>
+            <div className="resume-empty">
+              <p>Sessions could not load saved conversations from this machine.</p>
+              {loadError ? <small>{loadError}</small> : null}
+              <button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>
+            </div>
           ) : flatList.length === 0 ? (
             <div className="resume-empty">
               <p>
@@ -464,7 +483,7 @@ export function ResumeDialog({
           </button>
           {selected ? (
             <div className="resume-destination">
-              <span>Continue with</span>
+              <span>Resume with</span>
               <div role="radiogroup" aria-label="Destination agent">
                 <button
                   type="button"
@@ -473,7 +492,7 @@ export function ResumeDialog({
                   className={destinationProvider === 'claude' ? 'is-active' : ''}
                   onClick={() => {
                     setDestinationProvider('claude');
-                    setRuntimeMode(selected.tool === 'claude' ? 'terminal' : 'rich');
+                    setRuntimeMode(selected.transcriptRecovery ? 'rich' : selected.tool === 'claude' ? 'terminal' : 'rich');
                   }}
                   disabled={busy}
                 >Claude</button>
@@ -487,7 +506,9 @@ export function ResumeDialog({
                 >Codex</button>
               </div>
               <small>
-                {destinationProvider === selected.tool
+                {destinationProvider === selected.tool && selected.transcriptRecovery
+									? 'Restores a linked conversation from Sessions’ authored history because the native handle is missing.'
+									: destinationProvider === selected.tool
                   ? 'Resumes the original provider conversation.'
                   : destinationProvider === 'codex'
                     ? 'Creates a Codex chat with authored history imported.'
@@ -509,10 +530,10 @@ export function ResumeDialog({
             {partialResult
               ? 'Live successor opened'
               : busy
-                ? 'Continuing…'
+                ? 'Resuming…'
                 : selected
-                  ? `Continue with ${destinationProvider === 'codex' ? 'Codex' : 'Claude'}`
-                  : 'Choose a conversation'}
+                  ? `Resume with ${destinationProvider === 'codex' ? 'Codex' : 'Claude'}`
+                  : loading ? 'Loading history…' : 'Choose a conversation'}
           </button>
         </footer>
       </div>
@@ -566,6 +587,9 @@ function ResumeCard({ session, selected, onPick, disabled, hideFolder }: CardPro
         {session.promptHistoryOnly ? (
           <span className="resume-card-chain">Claude prompt index · Claude will restore the full chat if the provider still retains it</span>
         ) : null}
+				{session.transcriptRecovery ? (
+					<span className="resume-card-chain">Sessions history is intact · native provider handle missing</span>
+				) : null}
       </div>
       <span className="resume-card-choice" aria-hidden>{selected ? '✓' : '›'}</span>
     </button>

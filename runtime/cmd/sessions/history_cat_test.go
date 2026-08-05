@@ -48,3 +48,88 @@ func TestCatAndResurrectUseFleetSearchReference(t *testing.T) {
 		t.Fatalf("continued history = %q", continued)
 	}
 }
+
+func TestResumeResolvesFriendlySessionsTitle(t *testing.T) {
+	const historyID = "762c779a-b891-4966-9e05-26eb796f5208"
+	var resumed string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/history":
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"schemaVersion": 1,
+				"sessions": []map[string]any{{
+					"id": historyID, "name": "db-final-review-sol", "tool": "codex",
+					"cwd": "/work/db-redo", "conversation_available": true,
+				}},
+			})
+		case request.Method == http.MethodPost && request.URL.Path == "/api/recovery/adopt":
+			var body map[string]any
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			resumed, _ = body["historyId"].(string)
+			_, _ = io.WriteString(response, `{"ok":true,"laneId":"resumed-lane","transcriptRecovery":true}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	if code := run(
+		[]string{"--host", server.URL, "resume", "db-final-review-sol"},
+		strings.NewReader(""), &stdout, &stderr,
+	); code != 0 || stdout.String() != "resumed-lane\n" {
+		t.Fatalf("resume exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if resumed != historyID {
+		t.Fatalf("resumed history = %q, want %q", resumed, historyID)
+	}
+}
+
+func TestSourceDescribesAndReadsExactProviderFile(t *testing.T) {
+	const historyID = "762c779a-b891-4966-9e05-26eb796f5208"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/history":
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"schemaVersion": 1,
+				"sessions": []map[string]any{{
+					"id": historyID, "name": "db-final-review-sol", "tool": "codex",
+					"cwd": "/work/db-redo", "conversation_available": true,
+				}},
+			})
+		case request.Method == http.MethodGet && request.URL.Path == "/api/history/"+historyID+"/source":
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"schemaVersion": 1,
+				"session": map[string]any{
+					"id": historyID, "name": "db-final-review-sol", "tool": "codex", "cwd": "/work/db-redo",
+				},
+				"source_kind": "provider-jsonl", "source_path": "/history/rollout.jsonl",
+				"raw_bytes": 321, "raw_available": true, "text_available": true,
+			})
+		case request.Method == http.MethodGet && request.URL.Path == "/api/history/"+historyID && request.URL.Query().Get("format") == "text":
+			_, _ = io.WriteString(response, "[user]\nFinal cold review.\n")
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	if code := run(
+		[]string{"--host", server.URL, "source", "db-final-review-sol"},
+		strings.NewReader(""), &stdout, &stderr,
+	); code != 0 || !strings.Contains(stdout.String(), "/history/rollout.jsonl") ||
+		!strings.Contains(stdout.String(), "sessions source ") {
+		t.Fatalf("source exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(
+		[]string{"--host", server.URL, "source", "db-final-review-sol", "--text"},
+		strings.NewReader(""), &stdout, &stderr,
+	); code != 0 || stdout.String() != "[user]\nFinal cold review.\n" {
+		t.Fatalf("source text exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}

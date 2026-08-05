@@ -80,7 +80,7 @@ export function CommandPalette({
       },
       {
         id: 'continue',
-        label: 'Continue an earlier chat',
+        label: 'Resume a conversation',
         detail: 'Search provider history and resume the exact conversation',
         group: 'Actions',
         keywords: 'resume reopen claude codex history',

@@ -1046,6 +1046,7 @@ export interface ResumableSession {
   title?: string;
   historyId?: string;
   promptHistoryOnly?: boolean;
+  transcriptRecovery?: boolean;
   runs?: ResumableRun[];
   cwd: string;
   modifiedAt: number;
@@ -1134,6 +1135,7 @@ export interface AdoptConversationResult {
   forkPointIndex?: number;
   forkPointMessageId?: string;
   sourceUntouched?: boolean;
+  transcriptRecovery?: boolean;
 }
 
 export interface AdoptRepairRequest {

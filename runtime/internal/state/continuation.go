@@ -46,6 +46,7 @@ type ContinuationContext struct {
 	DestinationProvider string                `json:"destinationProvider"`
 	Mode                string                `json:"mode"`
 	Fork                bool                  `json:"fork,omitempty"`
+	TranscriptRecovery  bool                  `json:"transcriptRecovery,omitempty"`
 	ForkPointIndex      *int                  `json:"forkPointIndex,omitempty"`
 	ForkPointMessageID  string                `json:"forkPointMessageId,omitempty"`
 	Messages            []ContinuationMessage `json:"messages"`
@@ -66,7 +67,17 @@ func (c ContinuationContext) Validate() error {
 	if c.DestinationProvider != "claude" && c.DestinationProvider != "codex" {
 		return fmt.Errorf("unsupported continuation destination provider %q", c.DestinationProvider)
 	}
-	if c.SourceProvider == c.DestinationProvider && !c.Fork {
+	if c.TranscriptRecovery {
+		if c.Fork {
+			return errors.New("transcript recovery cannot also be a fork")
+		}
+		if c.SourceProvider != c.DestinationProvider {
+			return errors.New("transcript recovery must keep the original provider")
+		}
+		if strings.TrimSpace(c.SourceProviderID) != "" {
+			return errors.New("transcript recovery is only for a missing provider identity")
+		}
+	} else if c.SourceProvider == c.DestinationProvider && !c.Fork {
 		return errors.New("cross-provider continuation requires different source and destination providers")
 	}
 	if c.ForkPointIndex != nil {

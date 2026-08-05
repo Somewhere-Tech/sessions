@@ -13,11 +13,13 @@ import (
 // individual Sessions runtimes are continuation-chain evidence, not duplicate
 // conversations.
 func (s *Server) resumableConversations() ([]watch.ResumableSession, error) {
-	scanned := watch.ScanResumableConversations()
 	history, err := s.integrationEndpoints.History(s.registry.List(true))
 	if err != nil {
 		return nil, err
 	}
+	// History has already populated the provider scan cache. Reuse it so the
+	// Resume dialog does not wait for a second full filesystem traversal.
+	scanned := s.integrationEndpoints.ResumableProviderConversations()
 	return mergeResumableConversations(scanned, history.Sessions), nil
 }
 
@@ -36,7 +38,28 @@ func mergeResumableConversations(
 	runSeen := make(map[string]map[string]struct{}, len(byIdentity))
 	for _, source := range history {
 		tool := resumableTool(source.Tool)
-		if tool == "" || strings.TrimSpace(source.ProviderSessionID) == "" {
+		if tool == "" {
+			continue
+		}
+		if strings.TrimSpace(source.ProviderSessionID) == "" {
+			if !source.ConversationAvailable || source.PromptHistoryOnly {
+				continue
+			}
+			key := "sessions-history:" + tool + ":" + source.ID
+			if _, exists := byIdentity[key]; exists {
+				continue
+			}
+			byIdentity[key] = &watch.ResumableSession{
+				SessionID: source.ID, Tool: tool, Origin: "Sessions recovery",
+				Title: source.Name, HistoryID: source.ID, Cwd: source.CWD,
+				ModifiedAt: float64(source.LastActivityAt), FirstUserMessage: source.Name,
+				TranscriptRecovery: true,
+				Runs: []watch.ResumableRun{{
+					SessionID: source.ID, Name: source.Name, StartedAt: source.CreatedAt,
+					LastActivityAt: source.LastActivityAt, Machine: source.Machine,
+					ReopenedAs: source.ReopenedAs, ResumedFrom: source.ResumedFrom,
+				}},
+			}
 			continue
 		}
 		key := resumableIdentity(tool, source.ProviderSessionID)

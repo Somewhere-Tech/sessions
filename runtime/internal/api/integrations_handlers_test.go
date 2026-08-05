@@ -142,6 +142,17 @@ func TestHistoryRoutesExposeStableListTranscriptTextAndRawShapes(t *testing.T) {
 		!bytes.Equal(rawResponse.Body.Bytes(), conversation) {
 		t.Fatalf("raw status=%d type=%q body=%q", rawResponse.Code, rawResponse.Header().Get("Content-Type"), rawResponse.Body.Bytes())
 	}
+	sourceResponse := serve(t, daemon.handler, http.MethodGet, "/api/history/"+id+"/source", nil, "127.0.0.1:4321", nil)
+	if sourceResponse.Code != http.StatusOK {
+		t.Fatalf("source status=%d body=%s", sourceResponse.Code, sourceResponse.Body.String())
+	}
+	var source integrations.HistorySource
+	decodeBody(t, sourceResponse, &source)
+	if source.Session.ID != id || source.SourcePath != conversationPath ||
+		source.SourceKind != "provider-jsonl" || !source.RawAvailable ||
+		!source.TextAvailable || source.RawBytes != int64(len(conversation)) {
+		t.Fatalf("source = %#v", source)
+	}
 }
 
 func transcriptResponseMessageID(t *testing.T, encoded []byte, index int) string {

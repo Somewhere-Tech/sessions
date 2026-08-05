@@ -286,7 +286,7 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
     try {
       await onResumeConversation(serverId, providerSessionId, sourceSessionId, historyId);
     } catch (reason) {
-      setContinuationError(reason instanceof Error ? reason.message : 'Could not continue this conversation');
+      setContinuationError(reason instanceof Error ? reason.message : 'Could not resume this conversation');
       setContinuingKey(null);
     }
   };
@@ -463,13 +463,15 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
                 group={group}
                 ranked={mode === 'ai' || mode === 'ranked'}
                 onView={(result) => viewConversation(group, result)}
-                onResume={group.primary.provider_session_id
+                onResume={normalizeProvider(group.primary.tool)
                   ? () => continueConversation(
                     group.key,
                     group.primary.serverId,
-                    group.primary.provider_session_id as string,
+                    group.primary.provider_session_id || group.primary.session_id,
                     managedSourceSessionID(group.primary),
-                    isPromptHistoryOnly(group.primary) ? group.primary.session_id : undefined
+                    !group.primary.provider_session_id || isPromptHistoryOnly(group.primary)
+                      ? group.primary.session_id
+                      : undefined
                   )
                   : undefined}
                 resumePending={continuingKey === group.key}
@@ -560,7 +562,7 @@ function SearchConversationCard({
             <button type="button" onClick={() => onView(result)}>{promptHistoryOnly ? 'View retained prompts' : 'Open conversation'} <span aria-hidden>→</span></button>
             {onResume ? (
               <button type="button" className="is-resume" disabled={resumePending} onClick={() => { void onResume(); }}>
-                {resumePending ? 'Continuing…' : 'Continue conversation'}
+                {resumePending ? 'Resuming…' : 'Resume conversation'}
               </button>
             ) : null}
           </span>
@@ -751,8 +753,9 @@ function ConversationReader({
 
   const providerSessionID = readerTranscript?.session.provider_session_id
     ?? selected.result.provider_session_id;
+  const historyID = readerTranscript?.session.id ?? selected.result.session_id;
   const promptHistoryOnly = isPromptHistoryOnly(selected.result);
-  const canResume = Boolean(providerSessionID && provider);
+  const canResume = Boolean(historyID && provider);
 
   return (
     <div className="search-view search-conversation-view">
@@ -773,8 +776,8 @@ function ConversationReader({
             </div>
             <div className="search-conversation-actions">
               <span>{promptHistoryOnly
-                ? 'Sessions found Claude’s prompt index, but not a full local transcript. Continue restores this exact conversation in its recorded workspace.'
-                : 'Viewing is read-only. Continue opens this exact provider conversation in a new runtime.'}</span>
+                ? 'Sessions found Claude’s prompt index, but not a full local transcript. Resume restores this exact conversation in its recorded workspace.'
+                : 'Viewing is read-only. Resume opens this exact conversation in a new runtime.'}</span>
               {canResume ? (
                 <button
                   type="button"
@@ -782,12 +785,12 @@ function ConversationReader({
                   disabled={continuing}
                   onClick={() => { void onResumeConversation(
                     selected.result.serverId,
-                    providerSessionID as string,
+                    providerSessionID || historyID,
                     managedSourceSessionID(selected.result),
-                    promptHistoryOnly ? selected.result.session_id : undefined
+                    !providerSessionID || promptHistoryOnly ? historyID : undefined
                   ); }}
                 >
-                  {continuing ? 'Continuing…' : 'Continue conversation'}
+                  {continuing ? 'Resuming…' : 'Resume conversation'}
                 </button>
               ) : null}
             </div>
