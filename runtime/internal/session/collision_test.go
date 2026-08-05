@@ -159,3 +159,71 @@ func TestMovedConversationRefusesUnlessForced(t *testing.T) {
 		t.Fatalf("forced moved fork did not record provider_rebound: %#v", events)
 	}
 }
+
+// The conversation collision guard reads its provider identity from
+// ledger.ExistingProviderResume. Every real Claude resume spelling must reach
+// it, or `sessions new --tool claude -- -r <uuid>` twice yields two live
+// sessions driving one provider conversation.
+func TestConversationCollisionGuardCoversEveryClaudeResumeSpelling(t *testing.T) {
+	spellings := []struct {
+		name     string
+		provider string
+		args     func(provider string) []string
+	}{
+		{name: "short flag", provider: "33333333-3333-4333-8333-333333333333",
+			args: func(provider string) []string { return []string{"-r", provider} }},
+		{name: "joined long flag", provider: "44444444-4444-4444-8444-444444444444",
+			args: func(provider string) []string { return []string{"--resume=" + provider} }},
+	}
+	for _, spelling := range spellings {
+		t.Run(spelling.name, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := ledger.Open(context.Background(), ledger.Options{Path: filepath.Join(root, "ledger.sqlite3")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			launcher := prototest.NewLauncher()
+			manager := NewManager(testConfig(root), launcher, ManagerOptions{
+				DisableWatchers: true, ActivityInterval: time.Hour,
+				Boundaries: store.Boundaries(), Observations: store.Observations(), LedgerReader: store,
+			})
+			t.Cleanup(manager.Close)
+			ctx := context.Background()
+
+			primary, err := manager.Create(ctx, state.CreateSessionRequest{
+				Cmd: "claude", Args: spelling.args(spelling.provider), Cwd: root, Name: "primary",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The recorded binding must carry the conversation, or the guard has
+			// nothing to find on the next attempt.
+			events, err := store.Events(ctx, primary.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bound := false
+			for _, lane := range ledger.Fold(events) {
+				bound = bound || lane.ProviderUUID == spelling.provider
+			}
+			if !bound {
+				t.Fatalf("session created with %q recorded no provider binding: %#v", spelling.args(spelling.provider), events)
+			}
+
+			_, err = manager.Create(ctx, state.CreateSessionRequest{
+				Cmd: "claude", Args: spelling.args(spelling.provider), Cwd: root, Name: "duplicate",
+			})
+			var liveErr *ConversationLiveError
+			if !errors.As(err, &liveErr) || liveErr.ProviderUUID != spelling.provider {
+				t.Fatalf("duplicate %q resume error = %T %v, want a live-conversation refusal", spelling.name, err, err)
+			}
+			if len(launcher.Launches) != 1 {
+				t.Fatalf("duplicate %q resume launched %d runners on one conversation", spelling.name, len(launcher.Launches))
+			}
+			if session, present := manager.Get(primary.ID); !present || session.Info().Exited {
+				t.Fatal("the collision guard disturbed the session that already owns the conversation")
+			}
+		})
+	}
+}

@@ -376,3 +376,60 @@ func runGitTest(t *testing.T, cwd string, args ...string) string {
 	}
 	return string(encoded)
 }
+
+// A lost runner is an observed loss, exactly like an exit or a reap, and every
+// other lifecycle predicate in this package treats it that way. Omitting it
+// here left a --worktree session reporting "live" forever, so
+// `sessions worktrees clean` refused it permanently.
+func TestWorktreesTreatALostRunnerAsClosedWorkNotALiveSession(t *testing.T) {
+	root := t.TempDir()
+	repo := initWorktreeTestRepo(t, root, "lostrunner")
+	manager, launcher, store := newWorktreeTestManager(t, root)
+
+	lost := createWorktreeSession(t, manager, repo, "Lost Runner")
+	launcher.Runner(lost.ID).Emit(proto.Event{Kind: proto.EventRunnerLost})
+	awaitCondition(t, func() bool {
+		if _, present := manager.Get(lost.ID); present {
+			return false
+		}
+		events, err := store.Events(context.Background(), lost.ID)
+		if err != nil {
+			return false
+		}
+		for _, lane := range ledger.Fold(events) {
+			if lane.LaneID == lost.ID && lane.RunnerLost {
+				return true
+			}
+		}
+		return false
+	})
+
+	listed, err := manager.Worktrees(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, worktree := range listed {
+		if worktree.SessionID != lost.ID {
+			continue
+		}
+		found = true
+		if worktree.SessionState != "exited" {
+			t.Fatalf("lost-runner worktree state = %#v, want exited", worktree)
+		}
+	}
+	if !found {
+		t.Fatalf("lost-runner worktree missing from %#v", listed)
+	}
+
+	results, err := manager.CleanWorktrees(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cleanResultsBySession(results)[lost.ID]; got.Action != "would-remove" {
+		t.Fatalf("clean result for a lost runner = %#v, want would-remove instead of a permanent \"session is live\" refusal", got)
+	}
+	if _, err := os.Stat(lost.Cwd); err != nil {
+		t.Fatalf("dry-run clean mutated %s: %v", lost.Cwd, err)
+	}
+}

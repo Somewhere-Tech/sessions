@@ -780,7 +780,14 @@ func (r *Registry) DeepDiagnostics() []map[string]any {
 	now := time.Now().UnixMilli()
 	result := make([]map[string]any, 0, len(list))
 	for _, info := range list {
-		session, _ := r.Get(info.ID)
+		// List(true) includes exited sessions, which the post-exit grace timer
+		// removes from the registry 30 seconds later. A diagnostics request
+		// racing that timer must report the session, not panic on a nil
+		// receiver.
+		claudeEvents := int64(0)
+		if session, ok := r.Get(info.ID); ok {
+			claudeEvents = session.ClaudeEventCount()
+		}
 		result = append(result, map[string]any{
 			"id":            info.ID,
 			"tool":          info.Tool,
@@ -789,7 +796,7 @@ func (r *Registry) DeepDiagnostics() []map[string]any {
 			"pid":           info.PID,
 			"working":       info.Working,
 			"exited":        info.Exited,
-			"claudeEvents":  session.ClaudeEventCount(),
+			"claudeEvents":  claudeEvents,
 			"lastDataAgeMs": now - info.LastDataAt,
 		})
 	}
@@ -1020,13 +1027,25 @@ func withToolDefaultArgs(cmd string, args []string) []string {
 	return append(result, defaults...)
 }
 
+// appendClaudeSessionID gives a fresh Claude session a stable identity. It must
+// recognize every spelling that already names a conversation, including the
+// `-r` short form and the joined `--flag=value` form. Missing one made Sessions
+// launch `claude -r <uuid> --session-id <fresh uuid>`, which contradicts the
+// resume the caller asked for; `sessions new` (cmd/sessions/commands.go) has
+// always treated `-r` as a resume flag.
 func appendClaudeSessionID(cmd string, args []string, id string) []string {
 	result := append([]string{}, args...)
 	if classifyTool(cmd) != ToolClaude {
 		return result
 	}
 	for i, arg := range result {
-		if (arg == "--session-id" || arg == "--resume") && i+1 < len(result) {
+		switch arg {
+		case "--session-id", "--resume", "-r":
+			if i+1 < len(result) {
+				return result
+			}
+		}
+		if strings.HasPrefix(arg, "--session-id=") || strings.HasPrefix(arg, "--resume=") {
 			return result
 		}
 	}

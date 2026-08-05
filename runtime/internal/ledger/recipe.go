@@ -6,11 +6,52 @@ import (
 	"strings"
 )
 
+// canonicalUUID is the shape of both a Sessions lane UUID and a Claude/Codex
+// conversation id.
+const canonicalUUID = `(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+
 var (
-	providerIDPattern  = regexp.MustCompile(`(?i)^[0-9a-f-]{8,}$`)
-	sessionIDPattern   = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	// Claude and Codex both identify a conversation with a canonical UUID, and
+	// recovery already requires that exact shape before it will adopt one
+	// (recovery/adopt.go strictProviderPattern). The former unbounded
+	// `[0-9a-f-]{8,}` accepted values that are not conversation ids at all —
+	// "--------" among them — and durably recorded them as resume recipes.
+	providerIDPattern  = regexp.MustCompile(canonicalUUID)
+	sessionIDPattern   = regexp.MustCompile(canonicalUUID)
 	userCreatorPattern = regexp.MustCompile(`^(?:uid:[0-9]+|sid:S-[0-9]+(?:-[0-9]+)+)$`)
+
+	// Claude's real spellings for reopening an existing conversation. The
+	// Sessions CLI already treats all three as resume flags
+	// (cmd/sessions/commands.go) and the runner reads the same set
+	// (cmd/sessions-runner/claude_p.go).
+	claudeResumeFlags  = []string{"--resume", "-r"}
+	claudeIdentityFlag = "--session-id"
+	codexResumeFlags   = []string{"resume", "--resume"}
 )
+
+// flagValues returns every value args associates with one of names, in
+// argument order. Long flags are matched in both `--flag value` and
+// `--flag=value` form; short flags and the Codex `resume` subcommand only take
+// a separated value, which is what those CLIs actually accept.
+func flagValues(args []string, names ...string) []string {
+	values := make([]string, 0, 2)
+	for index, argument := range args {
+		for _, name := range names {
+			if argument == name {
+				if index+1 < len(args) {
+					values = append(values, args[index+1])
+				}
+				continue
+			}
+			if strings.HasPrefix(name, "--") {
+				if value, ok := strings.CutPrefix(argument, name+"="); ok {
+					values = append(values, value)
+				}
+			}
+		}
+	}
+	return values
+}
 
 // SafeResumeRecipe follows the normative TypeScript argument forms while
 // intentionally discarding every unrelated argument. The result can contain
@@ -19,30 +60,18 @@ var (
 func SafeResumeRecipe(tool, cmd string, args []string) (providerUUID string, argv []string) {
 	base := strings.ToLower(filepath.Base(cmd))
 	if tool == "claude-code" || base == "claude" {
-		for index := 0; index+1 < len(args); index++ {
-			if args[index] != "--session-id" && args[index] != "--resume" {
-				continue
-			}
-			if providerIDPattern.MatchString(args[index+1]) {
-				providerUUID = args[index+1]
-				return providerUUID, []string{cmd, "--resume", providerUUID}
+		names := append(append([]string{}, claudeResumeFlags...), claudeIdentityFlag)
+		for _, candidate := range flagValues(args, names...) {
+			if providerIDPattern.MatchString(candidate) {
+				return candidate, []string{cmd, "--resume", candidate}
 			}
 		}
 		return "", nil
 	}
 	if tool == "codex" || base == "codex" {
-		for index, argument := range args {
-			if argument == "resume" || argument == "--resume" {
-				if index+1 < len(args) && providerIDPattern.MatchString(args[index+1]) {
-					providerUUID = args[index+1]
-					return providerUUID, []string{cmd, "resume", providerUUID}
-				}
-			}
-			if strings.HasPrefix(argument, "--resume=") {
-				candidate := strings.TrimPrefix(argument, "--resume=")
-				if providerIDPattern.MatchString(candidate) {
-					return candidate, []string{cmd, "resume", candidate}
-				}
+		for _, candidate := range flagValues(args, codexResumeFlags...) {
+			if providerIDPattern.MatchString(candidate) {
+				return candidate, []string{cmd, "resume", candidate}
 			}
 		}
 	}
@@ -55,23 +84,17 @@ func SafeResumeRecipe(tool, cmd string, args []string) (providerUUID string, arg
 func ExistingProviderResume(cmd string, args []string) (providerUUID string, argv []string) {
 	base := strings.ToLower(filepath.Base(cmd))
 	if base == "claude" {
-		for index := 0; index+1 < len(args); index++ {
-			if args[index] == "--resume" && providerIDPattern.MatchString(args[index+1]) {
-				return args[index+1], []string{cmd, "--resume", args[index+1]}
+		for _, candidate := range flagValues(args, claudeResumeFlags...) {
+			if providerIDPattern.MatchString(candidate) {
+				return candidate, []string{cmd, "--resume", candidate}
 			}
 		}
 		return "", nil
 	}
 	if base == "codex" {
-		for index, argument := range args {
-			if (argument == "resume" || argument == "--resume") && index+1 < len(args) && providerIDPattern.MatchString(args[index+1]) {
-				return args[index+1], []string{cmd, "resume", args[index+1]}
-			}
-			if strings.HasPrefix(argument, "--resume=") {
-				candidate := strings.TrimPrefix(argument, "--resume=")
-				if providerIDPattern.MatchString(candidate) {
-					return candidate, []string{cmd, "resume", candidate}
-				}
+		for _, candidate := range flagValues(args, codexResumeFlags...) {
+			if providerIDPattern.MatchString(candidate) {
+				return candidate, []string{cmd, "resume", candidate}
 			}
 		}
 	}

@@ -279,8 +279,11 @@ func (m *Manager) Worktrees(ctx context.Context) ([]WorktreeStatus, error) {
 		}
 		// Kill intent is written before process termination and therefore is
 		// not evidence that a session is dead. Cleanup requires an observed
-		// runner exit or successful reap, and a live registry entry still wins.
-		closed := lane.RunnerExited || lane.Reaped
+		// runner exit, a lost runner, or a successful reap, and a live
+		// registry entry still wins. A lost runner that later reattaches
+		// clears RunnerLost during the fold (runner_ready/attached), so this
+		// never strands a recovered session as "exited".
+		closed := lane.RunnerExited || lane.RunnerLost || lane.Reaped
 		if live, ok := m.registry.Get(lane.LaneID); ok && !live.Info().Exited {
 			closed = false
 		}

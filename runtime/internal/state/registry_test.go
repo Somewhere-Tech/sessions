@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/mirror"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto/prototest"
 )
@@ -341,4 +343,192 @@ func TestDiscoveryStressConcurrentFakeRunnersSkipsTruncatedMetadata(t *testing.T
 	}
 	t.Logf("concurrent_fake_runners=%d discovered=%d malformed_skipped=1 transient_scans=%d",
 		runnerCount, discovered, transientErrors)
+}
+
+// applyEvent broadcasts under the session write lock, and the pump goroutine
+// that calls it is the only sender on a subscriber channel. Draining a full
+// subscriber with a bare receive can therefore block forever if the slow
+// client catches up between the failed send and the drain, which strands the
+// write lock and hangs Info, Attach, Input, Snapshot, and Registry.List for
+// every caller. The drain must be non-blocking, exactly as
+// proto.SocketRunner.broadcastLocked does it.
+func TestTerminalBroadcastNeverDeadlocksWhenASlowClientCatchesUp(t *testing.T) {
+	const rounds = 200
+	const subscribers = 64
+	for round := 0; round < rounds; round++ {
+		session := &Session{subs: make(map[uint64]chan proto.Event), nextSeq: 1}
+		var readers sync.WaitGroup
+		for index := 0; index < subscribers; index++ {
+			stream := make(chan proto.Event, 1)
+			// Full buffer: the non-blocking send in applyEvent must fail.
+			stream <- proto.Event{Kind: proto.EventOutput, Output: proto.OutputEvent{Seq: 1, Data: "backlog"}}
+			session.subs[uint64(index)] = stream
+			readers.Add(1)
+			go func(stream chan proto.Event) {
+				defer readers.Done()
+				<-stream
+			}(stream)
+		}
+		code := 0
+		done := make(chan bool, 1)
+		go func() {
+			done <- session.applyEvent(proto.Event{Kind: proto.EventExit, Exit: proto.ExitEvent{Code: &code}})
+		}()
+		select {
+		case terminal := <-done:
+			if !terminal {
+				t.Fatalf("round %d: exit event was not terminal", round)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("round %d: terminal broadcast deadlocked draining a subscriber while holding the session write lock", round)
+		}
+		info := make(chan SessionInfo, 1)
+		go func() { info <- session.Info() }()
+		select {
+		case got := <-info:
+			if !got.Exited {
+				t.Fatalf("round %d: session info = %#v, want exited", round, got)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("round %d: session write lock was never released after the terminal broadcast", round)
+		}
+		readers.Wait()
+	}
+}
+
+// Dropping a slow client's backlog is intentional; WebSocket reconnect and
+// replay repair it from sequence numbers. The terminal event is the one event
+// that must still arrive, and non-terminal events must still be dropped rather
+// than queued behind a stalled reader.
+func TestFullSubscriberDropsBacklogForTerminalAndDropsNonTerminalEvents(t *testing.T) {
+	code := 0
+	terminalSession := &Session{subs: make(map[uint64]chan proto.Event), nextSeq: 1}
+	terminalStream := make(chan proto.Event, 1)
+	terminalStream <- proto.Event{Kind: proto.EventOutput, Output: proto.OutputEvent{Seq: 1, Data: "backlog"}}
+	terminalSession.subs[0] = terminalStream
+	if !terminalSession.applyEvent(proto.Event{Kind: proto.EventExit, Exit: proto.ExitEvent{Code: &code}}) {
+		t.Fatal("exit event was not terminal")
+	}
+	delivered := make([]proto.Event, 0, 2)
+	for event := range terminalStream {
+		delivered = append(delivered, event)
+	}
+	if len(delivered) != 1 || delivered[0].Kind != proto.EventExit {
+		t.Fatalf("terminal delivery to a full subscriber = %#v, want the exit event only", delivered)
+	}
+
+	outputSession := &Session{subs: make(map[uint64]chan proto.Event), nextSeq: 1}
+	outputSession.mirror = mustTestMirror(t)
+	outputStream := make(chan proto.Event, 1)
+	outputStream <- proto.Event{Kind: proto.EventOutput, Output: proto.OutputEvent{Seq: 1, Data: "backlog"}}
+	outputSession.subs[0] = outputStream
+	if outputSession.applyEvent(proto.Event{Kind: proto.EventOutput, Output: proto.OutputEvent{Seq: 2, Data: "dropped"}}) {
+		t.Fatal("output event reported terminal")
+	}
+	queued := <-outputStream
+	if queued.Output.Data != "backlog" {
+		t.Fatalf("full subscriber queue = %#v, want the original backlog and a dropped new event", queued)
+	}
+	select {
+	case extra := <-outputStream:
+		t.Fatalf("non-terminal event was not dropped for a full subscriber: %#v", extra)
+	default:
+	}
+}
+
+// List(true) includes exited sessions, which registry.register removes after
+// the post-exit grace period. Deep diagnostics must survive a request that
+// races that timer instead of panicking the handler goroutine on a nil
+// *Session.
+func TestDeepDiagnosticsSurvivesSessionEvictedBetweenListAndGet(t *testing.T) {
+	staged := false
+	for attempt := 0; attempt < 10 && !staged; attempt++ {
+		root := t.TempDir()
+		registry := NewRegistry(Config{
+			DefaultShell: "/bin/bash", DefaultCwd: root, DefaultCols: 300, DefaultRows: 50,
+			RunnerStateDir: filepath.Join(root, "runners"), LaunchAgentsDir: filepath.Join(root, "agents"),
+		}, prototest.NewLauncher())
+		evicted, err := registry.Create(context.Background(), CreateSessionRequest{Cmd: "/bin/sh", Cwd: root, Name: "evicted"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		survivor, err := registry.Create(context.Background(), CreateSessionRequest{Cmd: "/bin/sh", Cwd: root, Name: "survivor"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, ok := registry.Get(evicted.ID)
+		if !ok {
+			t.Fatal("created session is not registered")
+		}
+		// Hold the session lock so List() parks inside Info() after it has
+		// already released the registry lock and snapshotted both sessions.
+		session.mu.Lock()
+		diagnostics := make(chan []map[string]any, 1)
+		go func() { diagnostics <- registry.DeepDiagnostics() }()
+		time.Sleep(50 * time.Millisecond)
+		// Evict exactly the way the post-exit grace timer does.
+		registry.mu.Lock()
+		delete(registry.sessions, evicted.ID)
+		registry.removeOrderLocked(evicted.ID)
+		registry.mu.Unlock()
+		session.mu.Unlock()
+
+		result := <-diagnostics
+		byID := make(map[string]map[string]any, len(result))
+		for _, entry := range result {
+			byID[entry["id"].(string)] = entry
+		}
+		if _, listed := byID[evicted.ID]; !listed {
+			continue
+		}
+		staged = true
+		if byID[evicted.ID]["claudeEvents"] != int64(0) {
+			t.Fatalf("evicted session diagnostics = %#v, want a zero claude event count", byID[evicted.ID])
+		}
+		if _, listed := byID[survivor.ID]; !listed {
+			t.Fatalf("deep diagnostics dropped the surviving session: %#v", result)
+		}
+	}
+	if !staged {
+		t.Fatal("could not stage a diagnostics request racing the post-exit eviction")
+	}
+}
+
+func mustTestMirror(t *testing.T) *mirror.Mirror {
+	t.Helper()
+	terminal, err := mirror.NewSize(80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return terminal
+}
+
+// Sessions gives a fresh Claude session a stable --session-id. A request that
+// already names a conversation must be left alone in every real spelling, or
+// Sessions launches `claude -r <uuid> --session-id <fresh uuid>` and the
+// caller's resume silently becomes a different conversation.
+func TestClaudeSessionIDIsInjectedOnlyWhenNoConversationIsNamed(t *testing.T) {
+	const fresh = "99999999-9999-4999-8999-999999999999"
+	const provider = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	untouched := [][]string{
+		{"--session-id", provider},
+		{"--resume", provider},
+		{"-r", provider},
+		{"--resume=" + provider},
+		{"--session-id=" + provider},
+		{"--model", "opus", "-r", provider, "--verbose"},
+	}
+	for _, args := range untouched {
+		got := appendClaudeSessionID("claude", args, fresh)
+		if !reflect.DeepEqual(got, args) {
+			t.Fatalf("appendClaudeSessionID(%q) = %q, want the request unchanged", args, got)
+		}
+	}
+	injected := appendClaudeSessionID("claude", []string{"--model", "opus"}, fresh)
+	if !reflect.DeepEqual(injected, []string{"--model", "opus", "--session-id", fresh}) {
+		t.Fatalf("fresh Claude session args = %q", injected)
+	}
+	if got := appendClaudeSessionID("/bin/bash", []string{"-i"}, fresh); !reflect.DeepEqual(got, []string{"-i"}) {
+		t.Fatalf("non-Claude command args = %q", got)
+	}
 }

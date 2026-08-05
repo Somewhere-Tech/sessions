@@ -46,10 +46,25 @@ type MassKillGuard struct{ Limit int }
 type MassKillError struct {
 	Count int
 	Limit int
+	// Operation names the destructive action that was refused. Empty keeps
+	// the default runner-removal wording used by the kill paths.
+	Operation string
+	// Remedy states what was left untouched and the safe next action. Empty
+	// keeps the default force retry, which only callers with a force surface
+	// should rely on.
+	Remedy string
 }
 
 func (e *MassKillError) Error() string {
-	return fmt.Sprintf("mass-kill guard refused %d runner removals (limit %d); retry with force", e.Count, e.Limit)
+	operation := e.Operation
+	if operation == "" {
+		operation = "runner removals"
+	}
+	remedy := e.Remedy
+	if remedy == "" {
+		remedy = "retry with force"
+	}
+	return fmt.Sprintf("mass-kill guard refused %d %s (limit %d); %s", e.Count, operation, e.Limit, remedy)
 }
 
 func (g MassKillGuard) Check(count int, force bool) error {
@@ -2014,6 +2029,26 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 
 	ids := sortedKeys(candidates)
 	if err := m.guard.Check(len(ids), options.Force); err != nil {
+		// The guard only protects the destructive half of the sweep. Skipping
+		// reconciliation as well would wedge discovery permanently: nothing
+		// else records runner_lost, so every ledger-derived view would keep
+		// reporting these sessions as live and no later sweep could ever get
+		// back under the limit. Reconciliation writes observations only — it
+		// removes no socket, metadata document, or launch agent.
+		m.reconcileLedger(ctx)
+		var guardErr *MassKillError
+		if errors.As(err, &guardErr) {
+			return &MassKillError{
+				Count: guardErr.Count, Limit: guardErr.Limit,
+				Operation: "stale runner artifact removals during discovery",
+				Remedy: fmt.Sprintf(
+					"sockets, metadata, and launch agents were left in place and no session was touched, "+
+						"and lost runners were still recorded in the ledger. Review them with `sessions ls -a` and end "+
+						"the ones you no longer need with `sessions kill <id>...` (--force is required for more than %d "+
+						"targets); discovery finishes the cleanup by itself once at most %d runners are stale",
+					guardErr.Limit, guardErr.Limit),
+			}
+		}
 		return err
 	}
 	var cleanupErrors []error

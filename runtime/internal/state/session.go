@@ -170,7 +170,16 @@ func (s *Session) applyEvent(event proto.Event) bool {
 			// A slow client must not stall every other session. WebSocket
 			// reconnect/replay repairs dropped output using sequence numbers.
 			if terminal {
-				<-subscriber
+				// The drain must never block: this runs under the session
+				// write lock and the pump goroutine is the channel's only
+				// sender, so a consumer that empties the buffer between the
+				// failed send and the drain would otherwise wedge Info,
+				// Attach, Input, Snapshot, and Registry.List forever. Matches
+				// proto.SocketRunner.broadcastLocked.
+				select {
+				case <-subscriber:
+				default:
+				}
 				subscriber <- event
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1349,4 +1350,94 @@ func awaitFile(t *testing.T, watcher *fsnotify.Watcher, path string) {
 			t.Fatalf("test ended before %s was published", path)
 		}
 	}
+}
+
+// The mass-kill guard protects the destructive half of a discovery sweep. It
+// must not also stop the safe half: nothing else records runner_lost, so a
+// refusal that skipped reconciliation left those lanes reported as live in
+// every ledger-derived view and no later sweep could get back under the limit.
+// DiscoverWithOptions{Force:true} is reachable only from tests, so an operator
+// had no way out short of deleting files by hand.
+func TestGuardedDiscoverySweepStillReconcilesLedgerAndExplainsTheRefusal(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.LaunchAgentsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := ledger.Open(context.Background(), ledger.Options{Path: filepath.Join(root, "ledger.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	old := time.Now().Add(-time.Minute)
+	ids := make([]string, 0, DefaultMassKillLimit+1)
+	paths := make([]string, 0, DefaultMassKillLimit+1)
+	for index := 0; index < DefaultMassKillLimit+1; index++ {
+		id := fmt.Sprintf("00000000-0000-4000-8000-00000000000%d", index)
+		ids = append(ids, id)
+		path := state.RunnerPlistPath(config.LaunchAgentsDir, id)
+		if err := os.WriteFile(path, []byte("scratch"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+		if err := store.Boundaries().RecordCreated(ctx, ledger.Created{
+			Meta: ledger.Meta{LaneID: id}, LaneUUID: id, Tool: "terminal", Cwd: root,
+			CreatorKind: ledger.CreatorExternal, CreatorID: "guard-test",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour,
+		Boundaries: store.Boundaries(), Observations: store.Observations(), LedgerReader: store,
+		Notify: func(PushPayload) {},
+	})
+	t.Cleanup(manager.Close)
+
+	discoverErr := manager.Discover(ctx)
+	var guardErr *MassKillError
+	if !errors.As(discoverErr, &guardErr) || guardErr.Count != DefaultMassKillLimit+1 || guardErr.Limit != DefaultMassKillLimit {
+		t.Fatalf("Discover() error = %v, want a mass-kill refusal for %d candidates", discoverErr, DefaultMassKillLimit+1)
+	}
+	// The destructive half stays guarded.
+	for _, path := range paths {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("guarded sweep mutated %s: %v", path, statErr)
+		}
+	}
+	// The safe half still runs.
+	events, err := store.Events(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciled := make(map[string]bool, len(ids))
+	for _, lane := range ledger.Fold(events) {
+		if lane.RunnerLost {
+			reconciled[lane.LaneID] = true
+		}
+	}
+	for _, id := range ids {
+		if !reconciled[id] {
+			t.Fatalf("guarded sweep skipped ledger reconciliation for lane %s: %#v", id, reconciled)
+		}
+	}
+	// The refusal names what it refused and what is safe to do next.
+	message := discoverErr.Error()
+	for _, want := range []string{
+		"discovery", "left in place", "sessions kill", fmt.Sprintf("limit %d", DefaultMassKillLimit),
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("mass-kill refusal %q does not mention %q", message, want)
+		}
+	}
+	if strings.Contains(message, "retry with force") {
+		t.Fatalf("discovery refusal points at a force flag no operator surface exposes: %q", message)
+	}
+	t.Logf("guarded discovery refusal: %s", message)
 }
