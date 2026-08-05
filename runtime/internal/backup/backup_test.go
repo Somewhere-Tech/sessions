@@ -1,15 +1,20 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -374,5 +379,291 @@ func TestPeriodicServiceCloseCancelsAndWaitsForInFlightPush(t *testing.T) {
 	case <-requestCanceled:
 	default:
 		t.Fatal("Close returned before the in-flight periodic upload was canceled")
+	}
+}
+
+// pushFixture builds a Claude backup fixture with one transcript per session
+// id. Ids are pushed in ascending order, so an early failure used to strand
+// every later session.
+type pushFixture struct {
+	configPath  string
+	transcripts map[string]string
+	pusher      *Pusher
+	live        []state.SessionInfo
+	now         time.Time
+}
+
+func newPushFixture(t *testing.T, handler http.HandlerFunc, ids ...string) *pushFixture {
+	t.Helper()
+	root := t.TempDir()
+	runnerDir := filepath.Join(root, "runners")
+	projectsDir := filepath.Join(root, "claude-projects")
+	cwd := filepath.Join(root, "worktree")
+	for _, dir := range []string{runnerDir, projectsDir, cwd} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tokenPath := filepath.Join(root, "somewhere.json")
+	if err := os.WriteFile(tokenPath, []byte(`{"token":"`+fixtureToken+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "backup.json")
+	if err := SaveConfig(configPath, Config{
+		Enabled: true, Project: "fixture-project", TokenPath: tokenPath,
+		Interval: "15m", Cache: make(map[string]Fingerprint),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fixture := &pushFixture{
+		configPath:  configPath,
+		transcripts: make(map[string]string),
+		now:         time.Date(2026, time.July, 16, 17, 0, 0, 0, time.UTC),
+	}
+	for _, id := range ids {
+		path := filepath.Join(projectsDir, watch.EncodeClaudeCWD(cwd), id+".jsonl")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(`{"type":"user","message":"`+id+`"}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fixture.transcripts[id] = path
+		fixture.live = append(fixture.live, state.SessionInfo{
+			ID: id, Name: "session " + id, Cmd: "claude", Args: []string{"--session-id", id},
+			Cwd: cwd, Tool: state.ToolClaude, CreatedAt: fixture.now.Add(-time.Hour).UnixMilli(),
+			LastDataAt: fixture.now.Add(-time.Minute).UnixMilli(),
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	fixture.pusher = NewPusher(Options{
+		ConfigPath: configPath, RunnerStateDir: runnerDir,
+		ClaudeProjectsDir: projectsDir, Machine: "fixture-mac",
+		APIBase: server.URL, HTTPClient: server.Client(),
+		Now: func() time.Time { return fixture.now },
+	})
+	return fixture
+}
+
+func (f *pushFixture) config(t *testing.T) Config {
+	t.Helper()
+	config, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return config
+}
+
+func remotePathFor(id string) string {
+	return "sessions/fixture-mac/claude/" + id + ".jsonl"
+}
+
+// A single failing session must not strand the sessions sorted after it, and
+// must not stop the manifest from being written. The scheduled push runs every
+// 15 minutes, so aborting the run repeats the loss until the session ends.
+func TestPushSkipsOneFailedSessionAndCompletesTheRun(t *testing.T) {
+	busy := "11111111-1111-4111-8111-111111111111"
+	healthy := "22222222-2222-4222-8222-222222222222"
+	var mu sync.Mutex
+	var received []string
+	var refuse atomic.Bool
+	refuse.Store(true)
+	fixture := newPushFixture(t, func(response http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		if strings.HasSuffix(request.URL.Path, busy+".jsonl") && refuse.Load() {
+			http.Error(response, "session is busy", http.StatusServiceUnavailable)
+			return
+		}
+		mu.Lock()
+		received = append(received, request.URL.Path)
+		mu.Unlock()
+		response.WriteHeader(http.StatusCreated)
+	}, busy, healthy)
+
+	first, err := fixture.pusher.Push(t.Context(), fixture.live)
+	if err != nil {
+		t.Fatalf("Push abandoned the run for one failed session: %v", err)
+	}
+	if first.Uploaded != 1 || first.Unresolved != 1 || first.SessionCount != 1 {
+		t.Fatalf("first result = %#v", first)
+	}
+	if len(first.UnresolvedSessions) != 1 || first.UnresolvedSessions[0].ID != busy ||
+		!strings.Contains(first.UnresolvedSessions[0].Reason, "503") {
+		t.Fatalf("unresolved sessions = %#v, want the busy session and why", first.UnresolvedSessions)
+	}
+	if first.ManifestPath == "" {
+		t.Fatal("Push left the manifest unwritten after one failed session")
+	}
+	mu.Lock()
+	got := append([]string(nil), received...)
+	mu.Unlock()
+	if len(got) != 2 || !strings.HasSuffix(got[0], healthy+".jsonl") ||
+		!strings.HasSuffix(got[1], "manifest.json") {
+		t.Fatalf("uploads = %#v, want the later session and the manifest", got)
+	}
+
+	config := fixture.config(t)
+	if _, ok := config.Cache["fixture-project/"+remotePathFor(busy)]; ok {
+		t.Fatal("the incremental cache marked a skipped transcript as uploaded")
+	}
+	if _, ok := config.Cache["fixture-project/"+remotePathFor(healthy)]; !ok {
+		t.Fatal("the incremental cache forgot the transcript it did upload")
+	}
+	if config.LastPushPending != 1 {
+		t.Fatalf("LastPushPending = %d, want the partial push recorded", config.LastPushPending)
+	}
+
+	// The next scheduled push retries only the session that was left behind.
+	refuse.Store(false)
+	second, err := fixture.pusher.Push(t.Context(), fixture.live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Uploaded != 1 || second.Skipped != 1 || second.Unresolved != 0 || second.SessionCount != 2 {
+		t.Fatalf("second result = %#v", second)
+	}
+	if len(second.UnresolvedSessions) != 0 {
+		t.Fatalf("second unresolved sessions = %#v", second.UnresolvedSessions)
+	}
+}
+
+// The manifest may not advertise a transcript that has never been uploaded,
+// and must keep advertising one an earlier push already placed remotely.
+func TestPushManifestOnlyClaimsTranscriptsThatExistRemotely(t *testing.T) {
+	stable := "33333333-3333-4333-8333-333333333333"
+	flaky := "44444444-4444-4444-8444-444444444444"
+	var mu sync.Mutex
+	manifests := make([][]byte, 0, 2)
+	var refuse atomic.Bool
+	fixture := newPushFixture(t, func(response http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		if strings.HasSuffix(request.URL.Path, flaky+".jsonl") && refuse.Load() {
+			http.Error(response, "session is busy", http.StatusServiceUnavailable)
+			return
+		}
+		if strings.HasSuffix(request.URL.Path, "manifest.json") {
+			mu.Lock()
+			manifests = append(manifests, body)
+			mu.Unlock()
+		}
+		response.WriteHeader(http.StatusCreated)
+	}, stable, flaky)
+
+	if _, err := fixture.pusher.Push(t.Context(), fixture.live); err != nil {
+		t.Fatal(err)
+	}
+	// Now the transcript exists remotely but a later push cannot refresh it.
+	refuse.Store(true)
+	if err := os.WriteFile(fixture.transcripts[flaky], []byte(`{"type":"user","message":"more"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.pusher.Push(t.Context(), fixture.live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Unresolved != 1 || result.SessionCount != 2 {
+		t.Fatalf("result = %#v, want the stale entry kept and the failure reported", result)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(manifests) != 2 {
+		t.Fatalf("manifests = %d, want one per push", len(manifests))
+	}
+	for index, encoded := range manifests {
+		var manifest Manifest
+		if err := json.Unmarshal(encoded, &manifest); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := manifest.Sessions[stable]; !ok {
+			t.Fatalf("manifest %d dropped the healthy session", index)
+		}
+		if _, ok := manifest.Sessions[flaky]; !ok {
+			t.Fatalf("manifest %d dropped a session that exists remotely", index)
+		}
+	}
+}
+
+func TestPushDoesNotClaimASessionItNeverUploaded(t *testing.T) {
+	unreadable := "55555555-5555-4555-8555-555555555555"
+	healthy := "66666666-6666-4666-8666-666666666666"
+	if os.Geteuid() == 0 {
+		t.Skip("root can read a 0000 transcript")
+	}
+	fixture := newPushFixture(t, func(response http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		response.WriteHeader(http.StatusCreated)
+	}, unreadable, healthy)
+	if err := os.Chmod(fixture.transcripts[unreadable], 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(fixture.transcripts[unreadable], 0o600) })
+
+	result, err := fixture.pusher.Push(t.Context(), fixture.live)
+	if err != nil {
+		t.Fatalf("Push abandoned the run for one unreadable transcript: %v", err)
+	}
+	if result.Uploaded != 1 || result.Unresolved != 1 || result.SessionCount != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(result.UnresolvedSessions) != 1 || result.UnresolvedSessions[0].ID != unreadable {
+		t.Fatalf("unresolved sessions = %#v", result.UnresolvedSessions)
+	}
+}
+
+func TestPushStopsWhenTheCallerCancels(t *testing.T) {
+	first := "77777777-7777-4777-8777-777777777777"
+	second := "88888888-8888-4888-8888-888888888888"
+	ctx, cancel := context.WithCancel(t.Context())
+	var uploads atomic.Int32
+	fixture := newPushFixture(t, func(response http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		uploads.Add(1)
+		cancel()
+		response.WriteHeader(http.StatusCreated)
+	}, first, second)
+
+	if _, err := fixture.pusher.Push(ctx, fixture.live); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Push = %v, want the cancellation surfaced", err)
+	}
+	if got := uploads.Load(); got != 1 {
+		t.Fatalf("uploads = %d, want the run to stop at the cancellation", got)
+	}
+}
+
+// A live transcript is the routine cause of a skipped session, so the reason
+// has to read as a retry rather than a failure.
+func TestReadStableFileReportsAGrowingTranscriptCalmly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("named pipes are POSIX here")
+	}
+	path := filepath.Join(t.TempDir(), "live.jsonl")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Skip("mkfifo is unavailable: " + err.Error())
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// readStableFile makes two attempts; feed both.
+		for attempt := 0; attempt < 2; attempt++ {
+			writer, err := os.OpenFile(path, os.O_WRONLY, 0)
+			if err != nil {
+				return
+			}
+			_, _ = writer.WriteString("{\"type\":\"user\"}\n")
+			_ = writer.Close()
+		}
+	}()
+	_, _, err := readStableFile(path)
+	<-done
+	if err == nil {
+		t.Fatal("readStableFile accepted an unstable read")
+	}
+	if !strings.Contains(err.Error(), "transcript changed while reading") ||
+		!strings.Contains(err.Error(), "the next push picks it up") {
+		t.Fatalf("err = %v, want a calm, instructional reason", err)
 	}
 }

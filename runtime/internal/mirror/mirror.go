@@ -272,11 +272,17 @@ func (m *Mirror) writeTracked(raw []byte) error {
 				continue
 			}
 		}
-		protected := protectASCIICombining(token)
+		protected, wasProtected := protectASCIICombining(token)
 		if _, err := m.term.Write(protected); err != nil {
 			return err
 		}
-		m.restoreProtectedASCII()
+		if wasProtected {
+			// restoreProtectedASCII walks every cell on the screen. Only a token
+			// that actually carried a protected base can leave one behind, and
+			// each such token is restored before the next write, so the screen is
+			// already clean for the common unprotected token.
+			m.restoreProtectedASCII()
+		}
 		m.afterPrintable(width, start.X)
 		i += len(token)
 	}
@@ -613,8 +619,10 @@ func (m *Mirror) scrollWrapsDown(top, bottom, count int) {
 // emitted as a standalone width-zero cell and then overwritten. Temporarily
 // moving only such ASCII bases into the supplementary private-use area makes
 // x/vt's grapheme segmenter see the complete cluster. The cell content is
-// restored immediately after parsing.
-func protectASCIICombining(raw []byte) []byte {
+// restored immediately after parsing. The second result reports whether any
+// base was moved, so the caller can skip the full-screen restore pass for the
+// overwhelmingly common token that needed no protection.
+func protectASCIICombining(raw []byte) ([]byte, bool) {
 	var out bytes.Buffer
 	changed := false
 	for i := 0; i < len(raw); {
@@ -632,9 +640,9 @@ func protectASCIICombining(raw []byte) []byte {
 		i++
 	}
 	if !changed {
-		return raw
+		return raw, false
 	}
-	return out.Bytes()
+	return out.Bytes(), true
 }
 
 func (m *Mirror) restoreProtectedASCII() {

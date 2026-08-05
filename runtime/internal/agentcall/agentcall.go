@@ -23,6 +23,17 @@ const (
 	ProviderClaude = "claude"
 )
 
+// defaultCallTimeout bounds one provider call when the caller supplied no
+// deadline of its own. Callers that do bound the call keep their own budget.
+const defaultCallTimeout = 5 * time.Minute
+
+// waitDelay bounds the wait for the CLI's output pipes once the call is
+// cancelled or its deadline passes. Both provider CLIs fork helper processes
+// that inherit the pipe, so without it Wait blocks on the pipe copy long after
+// the direct child is gone and the timeout below is never reached. It is a
+// variable only so tests can shorten it.
+var waitDelay = 5 * time.Second
+
 var requiredCodexFeatures = []string{
 	"shell_tool", "unified_exec", "code_mode_host", "apps", "plugins",
 	"browser_use", "browser_use_external", "browser_use_full_cdp_access", "in_app_browser",
@@ -36,6 +47,8 @@ var validatedCodexExecutables sync.Map
 // Run executes one isolated request. The selected CLI chooses its own default
 // model; Sessions only asks for low reasoning effort and disables tools.
 func Run(ctx context.Context, provider, purpose, prompt string) (string, error) {
+	ctx, cancel := boundedContext(ctx)
+	defer cancel()
 	executable, err := Executable(provider)
 	if err != nil {
 		return "", err
@@ -49,24 +62,54 @@ func Run(ctx context.Context, provider, purpose, prompt string) (string, error) 
 	}
 	defer os.RemoveAll(workingDirectory)
 
-	command := exec.CommandContext(ctx, executable, Arguments(provider)...)
+	return runIsolated(ctx, provider, purpose, executable, Arguments(provider), workingDirectory, prompt)
+}
+
+// boundedContext defends the daemon against a caller that never bounds its own
+// call. Both callers serialize on a single slot — daily recap holds a generate
+// mutex and smart search a one-deep busy channel — so an unbounded hung CLI
+// would take the feature down until the daemon restarts.
+func boundedContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, defaultCallTimeout)
+}
+
+func runIsolated(ctx context.Context, provider, purpose, executable string, arguments []string, workingDirectory, prompt string) (string, error) {
+	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Dir = workingDirectory
 	command.Stdin = strings.NewReader(prompt)
 	command.Env = Environment()
+	command.WaitDelay = waitDelay
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	if err := command.Run(); err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return "", fmt.Errorf("%s timed out", purpose)
-		}
-		detail := strings.TrimSpace(stderr.String())
-		if detail == "" {
-			detail = err.Error()
-		}
-		return "", fmt.Errorf("%s %s call failed: %s", provider, purpose, detail)
+
+	started := time.Now()
+	err := command.Run()
+	if err == nil {
+		return stdout.String(), nil
 	}
-	return stdout.String(), nil
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "", fmt.Errorf(
+			"%s timed out after %s and nothing was generated; check that the %s CLI is installed and signed in, then try again",
+			purpose, time.Since(started).Round(time.Second), provider,
+		)
+	}
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("%s was cancelled before the %s CLI answered; nothing was generated", purpose, provider)
+	}
+	// The CLI itself finished cleanly and only a helper process it forked kept
+	// the output pipe open past WaitDelay. The captured answer is complete.
+	if errors.Is(err, exec.ErrWaitDelay) {
+		return stdout.String(), nil
+	}
+	detail := strings.TrimSpace(stderr.String())
+	if detail == "" {
+		detail = err.Error()
+	}
+	return "", fmt.Errorf("%s %s call failed: %s", provider, purpose, detail)
 }
 
 // Arguments are intentionally model-free. User CLI defaults decide the model.
@@ -104,6 +147,7 @@ func validateIsolationSupport(ctx context.Context, provider, executable string) 
 	command := exec.CommandContext(validationCtx, executable, "features", "list")
 	command.Dir = os.TempDir()
 	command.Env = Environment()
+	command.WaitDelay = waitDelay
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("verify Codex isolation support: %w; update Codex or select Claude in Sessions Settings", err)

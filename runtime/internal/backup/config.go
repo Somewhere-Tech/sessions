@@ -36,21 +36,26 @@ type Config struct {
 	LastPushAt       string                 `json:"last_push_at,omitempty"`
 	LastPushCount    int                    `json:"last_push_count"`
 	LastPushSkipped  int                    `json:"last_push_skipped"`
+	LastPushPending  int                    `json:"last_push_pending"`
 	LastSessionCount int                    `json:"last_session_count"`
 	Cache            map[string]Fingerprint `json:"cache,omitempty"`
 }
 
 // Status is the non-secret subset printed by the CLI and returned by the API.
 type Status struct {
-	Enabled          bool   `json:"enabled"`
-	Encrypt          bool   `json:"encrypt"`
-	KeyPath          string `json:"key_path,omitempty"`
-	Project          string `json:"project,omitempty"`
-	Interval         string `json:"interval,omitempty"`
-	LastPushAt       string `json:"last_push_at,omitempty"`
-	LastPushCount    int    `json:"last_push_count"`
-	LastPushSkipped  int    `json:"last_push_skipped"`
-	LastSessionCount int    `json:"last_session_count"`
+	Enabled         bool   `json:"enabled"`
+	Encrypt         bool   `json:"encrypt"`
+	KeyPath         string `json:"key_path,omitempty"`
+	Project         string `json:"project,omitempty"`
+	Interval        string `json:"interval,omitempty"`
+	LastPushAt      string `json:"last_push_at,omitempty"`
+	LastPushCount   int    `json:"last_push_count"`
+	LastPushSkipped int    `json:"last_push_skipped"`
+	// LastPushPending is how many sessions the last push left for the next one.
+	// A live transcript is the routine cause; the count is kept so a partial
+	// push is not reported as a complete one.
+	LastPushPending  int `json:"last_push_pending"`
+	LastSessionCount int `json:"last_session_count"`
 }
 
 func ConfigPath(home string) string {
@@ -65,7 +70,8 @@ func (c Config) Status() Status {
 	return Status{
 		Enabled: c.Enabled, Encrypt: c.Encrypt, Project: c.Project, Interval: c.Interval,
 		LastPushAt: c.LastPushAt, LastPushCount: c.LastPushCount,
-		LastPushSkipped: c.LastPushSkipped, LastSessionCount: c.LastSessionCount,
+		LastPushSkipped: c.LastPushSkipped, LastPushPending: c.LastPushPending,
+		LastSessionCount: c.LastSessionCount,
 	}
 }
 

@@ -37,12 +37,23 @@ type Pusher struct {
 }
 
 type Result struct {
-	PushedAt     string `json:"pushed_at"`
-	Uploaded     int    `json:"uploaded"`
-	Skipped      int    `json:"skipped"`
-	SessionCount int    `json:"session_count"`
-	Unresolved   int    `json:"unresolved"`
-	ManifestPath string `json:"manifest_path"`
+	PushedAt           string              `json:"pushed_at"`
+	Uploaded           int                 `json:"uploaded"`
+	Skipped            int                 `json:"skipped"`
+	SessionCount       int                 `json:"session_count"`
+	Unresolved         int                 `json:"unresolved"`
+	UnresolvedSessions []UnresolvedSession `json:"unresolved_sessions,omitempty"`
+	ManifestPath       string              `json:"manifest_path"`
+}
+
+// UnresolvedSession names one session this push could not back up and says
+// why. A live transcript that grew mid-read, or a single upload that failed,
+// is a routine per-session outcome: the rest of the run continues and the next
+// push retries this one. The set is reported rather than summed away so a
+// partial push is never presented as a complete one.
+type UnresolvedSession struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
 }
 
 type Manifest struct {
@@ -120,13 +131,13 @@ func (p *Pusher) Push(ctx context.Context, live []state.SessionInfo) (Result, er
 		localPath, tool := resolver.Resolve(session)
 		if localPath == "" || tool == "" {
 			if normalizedTool(session.Tool, session.Command) != "" {
-				result.Unresolved++
+				result.unresolve(session.ID, "no local transcript was found for this session")
 			}
 			continue
 		}
 		info, err := os.Stat(localPath)
 		if err != nil || !info.Mode().IsRegular() {
-			result.Unresolved++
+			result.unresolve(session.ID, fmt.Sprintf("%s is not a readable transcript file", localPath))
 			continue
 		}
 		lastActivity := max(session.LastActivityAt, info.ModTime().UnixMilli())
@@ -136,30 +147,45 @@ func (p *Pusher) Push(ctx context.Context, live []state.SessionInfo) (Result, er
 		if config.Encrypt {
 			remotePath += ".enc"
 		}
-		manifest.Sessions[session.ID] = ManifestEntry{
+		entry := ManifestEntry{
 			Name: session.Name, CWD: session.CWD, Tool: tool,
 			LastActivityAt: lastActivity, Path: remotePath,
 		}
-		result.SessionCount++
 		fingerprint := Fingerprint{Size: info.Size(), ModTimeNano: info.ModTime().UnixNano()}
 		cacheKey := config.Project + "/" + remotePath
-		if config.Cache[cacheKey] == fingerprint {
+		uploaded, ok := config.Cache[cacheKey]
+		if ok && uploaded == fingerprint {
+			manifest.Sessions[session.ID] = entry
+			result.SessionCount++
 			result.Skipped++
 			continue
 		}
+		// One busy or unreachable session must not abandon the run: the push is
+		// scheduled, so abandoning it here would strand every session sorted
+		// after this one for as long as any session stays live.
 		contents, stable, err := readStableFile(localPath)
-		if err != nil {
-			return result, p.saveProgress(config, err)
-		}
-		if config.Encrypt {
+		if err == nil && config.Encrypt {
 			contents, err = Encrypt(encryptionKey, contents)
-			if err != nil {
+		}
+		if err == nil {
+			err = p.put(ctx, token, config.Project, remotePath, "application/octet-stream", contents)
+		}
+		if err != nil {
+			if ctx.Err() != nil {
 				return result, p.saveProgress(config, err)
 			}
+			result.unresolve(session.ID, err.Error())
+			// A previous push already placed this transcript remotely, so the
+			// manifest keeps pointing at it. The cache keeps the older
+			// fingerprint, which is what makes the next push retry.
+			if ok {
+				manifest.Sessions[session.ID] = entry
+				result.SessionCount++
+			}
+			continue
 		}
-		if err := p.put(ctx, token, config.Project, remotePath, "application/octet-stream", contents); err != nil {
-			return result, p.saveProgress(config, err)
-		}
+		manifest.Sessions[session.ID] = entry
+		result.SessionCount++
 		config.Cache[cacheKey] = stable
 		result.Uploaded++
 	}
@@ -183,11 +209,17 @@ func (p *Pusher) Push(ctx context.Context, live []state.SessionInfo) (Result, er
 	config.LastPushAt = result.PushedAt
 	config.LastPushCount = result.Uploaded
 	config.LastPushSkipped = result.Skipped
+	config.LastPushPending = result.Unresolved
 	config.LastSessionCount = result.SessionCount
 	if err := SaveConfig(p.options.ConfigPath, config); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+func (r *Result) unresolve(sessionID, reason string) {
+	r.Unresolved++
+	r.UnresolvedSessions = append(r.UnresolvedSessions, UnresolvedSession{ID: sessionID, Reason: reason})
 }
 
 func (p *Pusher) saveProgress(config Config, pushErr error) error {
@@ -264,7 +296,7 @@ func readStableFile(path string) ([]byte, Fingerprint, error) {
 			return contents, Fingerprint{Size: after.Size(), ModTimeNano: after.ModTime().UnixNano()}, nil
 		}
 	}
-	return nil, Fingerprint{}, fmt.Errorf("transcript changed while reading: %s", path)
+	return nil, Fingerprint{}, fmt.Errorf("transcript changed while reading %s; the session is still writing, and the next push picks it up", path)
 }
 
 func sanitizeSegment(value string) string {

@@ -1,9 +1,12 @@
 package mirror
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func newTestMirror(t *testing.T, cols, rows int) *Mirror {
@@ -204,4 +207,125 @@ func TestSerializeANSIWithScrollbackLeavesViewportSnapshotUnchanged(t *testing.T
 	if got := m.SerializeANSI(); strings.Contains(got, "old one") {
 		t.Fatalf("viewport-only SerializeANSI leaked scrollback: %q", got)
 	}
+}
+
+// The daemon writes every PTY chunk through this path at 300x50, so the cost
+// of one printable token is multiplied by everything a session prints.
+func BenchmarkWritePrintableRun(b *testing.B) {
+	chunk := []byte(strings.Repeat("sessions mirror throughput sample line 0123456789\r\n", 8))
+	m, err := NewSize(DefaultCols, DefaultRows)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer m.Close()
+	b.SetBytes(int64(len(chunk)))
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := m.Write(chunk); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestProtectASCIICombiningReportsWhetherItChangedTheToken(t *testing.T) {
+	for _, plain := range []string{"a", "abc", "界", "e", " "} {
+		got, changed := protectASCIICombining([]byte(plain))
+		if changed || string(got) != plain {
+			t.Errorf("protectASCIICombining(%q) = (%q, %t), want the input unchanged", plain, got, changed)
+		}
+	}
+	got, changed := protectASCIICombining([]byte("é"))
+	if !changed {
+		t.Fatalf("protectASCIICombining(%q) reported no change", "é")
+	}
+	if want := string(protectedASCIIBase+'e') + "́"; string(got) != want {
+		t.Fatalf("protectASCIICombining = %q, want %q", got, want)
+	}
+}
+
+// Skipping restoreProtectedASCII for unprotected tokens is only safe if the
+// screen never carries a protected code point between writes. Assert exactly
+// that: no cell holds one, and running the pass unconditionally afterwards
+// cannot change what the mirror reports.
+func assertNoProtectedResidue(t *testing.T, m *Mirror) {
+	t.Helper()
+	snapshot, serialized, reflow := m.Snapshot(), m.SerializeANSI(), m.ReflowTo(60)
+	m.mu.Lock()
+	for y := 0; y < m.rows; y++ {
+		for x := 0; x < m.cols; x++ {
+			cell := m.term.CellAt(x, y)
+			if cell == nil || cell.Content == "" {
+				continue
+			}
+			r, _ := utf8.DecodeRuneInString(cell.Content)
+			if r >= protectedASCIIBase+0x20 && r < protectedASCIIBase+0x7f {
+				m.mu.Unlock()
+				t.Fatalf("cell (%d,%d) = %q kept a protected ASCII base", x, y, cell.Content)
+			}
+		}
+	}
+	m.restoreProtectedASCII()
+	m.mu.Unlock()
+	if got := m.Snapshot(); got != snapshot {
+		t.Fatalf("an extra restore pass changed Snapshot():\n got %q\nwant %q", got, snapshot)
+	}
+	if got := m.SerializeANSI(); got != serialized {
+		t.Fatalf("an extra restore pass changed SerializeANSI():\n got %q\nwant %q", got, serialized)
+	}
+	if got := m.ReflowTo(60); got != reflow {
+		t.Fatalf("an extra restore pass changed ReflowTo():\n got %q\nwant %q", got, reflow)
+	}
+}
+
+func TestSkippingTheRestorePassLeavesNoProtectedResidue(t *testing.T) {
+	cases := map[string]string{
+		"plain":               "plain ASCII with no combining marks at all\r\nsecond line\r\n",
+		"ascii combining":     "é Å ñ ö\r\n",
+		"mixed":               "before é after\r\nmore plain text\r\nç tail\r\n",
+		"combining then bulk": "é" + strings.Repeat("x", 400),
+		"wide and emoji":      "界\U0001f642 é 界\r\n",
+		"scrolled":            strings.Repeat("é line\r\n", 40),
+		"erased":              "é kept\x1b[H\x1b[2Jfresh",
+		"alternate screen":    "main é\x1b[?1049h\x1b[2J\x1b[Halt é\x1b[?1049l",
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			m := newTestMirror(t, 20, 6)
+			writeString(t, m, raw)
+			assertNoProtectedResidue(t, m)
+		})
+	}
+
+	entries, err := os.ReadDir(filepath.Join("testdata", "recordings"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		t.Run(entry.Name(), func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("testdata", "recordings", entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := newTestMirror(t, DefaultCols, DefaultRows)
+			if _, err := m.Write(raw); err != nil {
+				t.Fatal(err)
+			}
+			assertNoProtectedResidue(t, m)
+		})
+	}
+}
+
+// A protected token restores correctly even when the writes around it are
+// unprotected and therefore no longer trigger a restore pass of their own.
+func TestCombiningMarksSurviveSurroundingUnprotectedWrites(t *testing.T) {
+	m := newTestMirror(t, 30, 3)
+	writeString(t, m, "start ")
+	writeString(t, m, "é")
+	writeString(t, m, " middle ")
+	writeString(t, m, "Å")
+	writeString(t, m, " end")
+	if got, want := m.Snapshot(), "start é middle Å end"; got != want {
+		t.Fatalf("Snapshot() = %q, want %q", got, want)
+	}
+	assertNoProtectedResidue(t, m)
 }
