@@ -43,6 +43,20 @@ func TestMergeResumableConversationsGroupsContinuationRunsByProviderIdentity(t *
 		got[0].Runs[1].SessionID != "lane-two" {
 		t.Fatalf("continuation runs = %#v", got[0].Runs)
 	}
+	if got[0].External {
+		t.Fatalf("linked Sessions conversation marked external: %#v", got[0])
+	}
+}
+
+func TestMergeResumableConversationsMarksProviderOnlyHistoryExternal(t *testing.T) {
+	const providerID = "33333333-3333-4333-8333-333333333333"
+	got := mergeResumableConversations([]watch.ResumableSession{{
+		SessionID: providerID, Tool: "codex", Title: "Native Codex chat",
+		Cwd: "/workspace", ModifiedAt: 100,
+	}}, nil)
+	if len(got) != 1 || !got[0].External {
+		t.Fatalf("provider-only conversation = %#v, want external marker", got)
+	}
 }
 
 func TestMergeResumableConversationsIncludesClaudePromptIndexOnlyHistory(t *testing.T) {
@@ -57,7 +71,8 @@ func TestMergeResumableConversationsIncludesClaudePromptIndexOnlyHistory(t *test
 		t.Fatalf("conversations = %#v, want one prompt-index row", got)
 	}
 	if got[0].HistoryID != historyID || !got[0].PromptHistoryOnly ||
-		got[0].Origin != "Claude prompt index" || got[0].Title != "Archived BOLO planning" {
+		!got[0].External || got[0].Origin != "Claude prompt index" ||
+		got[0].Title != "Archived BOLO planning" {
 		t.Fatalf("prompt-index conversation = %#v", got[0])
 	}
 }

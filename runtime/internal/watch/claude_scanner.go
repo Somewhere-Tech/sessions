@@ -21,6 +21,7 @@ const (
 type ResumableSession struct {
 	SessionID          string         `json:"sessionId"`
 	Tool               string         `json:"tool"`
+	External           bool           `json:"external,omitempty"`
 	Origin             string         `json:"origin,omitempty"`
 	Title              string         `json:"title,omitempty"`
 	HistoryID          string         `json:"historyId,omitempty"`

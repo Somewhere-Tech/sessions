@@ -892,6 +892,73 @@ func TestCodexNewSelectsStructuredKindWithRevertibleGate(t *testing.T) {
 	}
 }
 
+func TestCodexRichNewSendsPositionalRequestImmediately(t *testing.T) {
+	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	const prompt = "Reply exactly: CODEX_INITIAL_ACCEPTED"
+	var request createSessionRequest
+	var inputs []string
+	submitted := false
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, httpRequest *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case httpRequest.Method == http.MethodPost && httpRequest.URL.Path == "/api/sessions":
+			if err := json.NewDecoder(httpRequest.Body).Decode(&request); err != nil {
+				t.Errorf("decode create request: %v", err)
+			}
+			response.WriteHeader(http.StatusCreated)
+			_, _ = response.Write([]byte(`{"id":"` + id + `"}`))
+		case httpRequest.Method == http.MethodGet && httpRequest.URL.Path == "/api/sessions":
+			lastUser := any(nil)
+			if submitted {
+				lastUser = int64(2)
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
+				"id": id, "cmd": "codex", "tool": "codex", "lastUserMessageAt": lastUser,
+			}}})
+		case httpRequest.Method == http.MethodGet && httpRequest.URL.Path == "/api/sessions/"+id+"/events":
+			events := []any{}
+			if submitted {
+				events = append(events, map[string]any{
+					"type": "user", "message": map[string]any{"role": "user", "content": prompt},
+				})
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": events, "nextIndex": len(events)})
+		case httpRequest.Method == http.MethodPost && httpRequest.URL.Path == "/api/sessions/"+id+"/input":
+			var body map[string]string
+			if err := json.NewDecoder(httpRequest.Body).Decode(&body); err != nil {
+				t.Errorf("decode input request: %v", err)
+			}
+			inputs = append(inputs, body["data"])
+			if body["data"] == "\r" {
+				submitted = true
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
+		default:
+			http.NotFound(response, httpRequest)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"--host", server.URL, "new", "--tool", "codex", "--full-access", prompt},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if request.Kind != "codex-app-server" {
+		t.Fatalf("create kind = %q", request.Kind)
+	}
+	if slices.Contains(request.Args, prompt) {
+		t.Fatalf("positional prompt leaked into app-server args: %q", request.Args)
+	}
+	if want := []string{prompt, "\r"}; !reflect.DeepEqual(inputs, want) {
+		t.Fatalf("input sequence = %q, want %q", inputs, want)
+	}
+}
+
 func TestCodexAppServerRequiresExplicitFullAccess(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var stdout, stderr bytes.Buffer

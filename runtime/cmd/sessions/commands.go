@@ -309,6 +309,7 @@ func (a *app) cmdNew(args []string) error {
 	}
 	body.WaitReady = removeFirst(&args, "--wait-ready")
 	tool, hasTool := pluck(&args, "--tool")
+	initialInput := ""
 	fullAccess := removeFirst(&args, "--full-access")
 	if value, present := pluck(&args, "--permissions"); present {
 		value = strings.ToLower(strings.TrimSpace(value))
@@ -366,6 +367,14 @@ func (a *app) cmdNew(args []string) error {
 			}
 			if fullAccess && !forcePTYCodex && (forceAppServer || codexAppServerEnabled()) {
 				body.Kind = "codex-app-server"
+				// The app-server runtime does not consume positional CLI arguments.
+				// Treat them as the first user request and deliver them through the
+				// same audited input route used by `sessions send` and the desktop UI.
+				// This is an immediate post-create send, never a hidden prompt queue.
+				if len(args) > 0 {
+					initialInput = strings.Join(args, " ")
+					body.Args = append([]string(nil), chosen...)
+				}
 			}
 		} else if forceAppServer || forcePTYCodex {
 			return fail(1, "--codex-appserver and --pty-codex are only valid with --tool codex")
@@ -428,6 +437,19 @@ func (a *app) cmdNew(args []string) error {
 	var info map[string]any
 	if err := a.postJSON("/api/sessions", body, &info, 2); err != nil {
 		return err
+	}
+	if strings.TrimSpace(initialInput) != "" {
+		id := strings.TrimSpace(fmt.Sprint(info["id"]))
+		if id == "" {
+			return fail(2, "session was created, but sessionsd did not return its id; first request was not sent")
+		}
+		result, err := a.sendAndConfirm(id, initialInput, 30*time.Second, false)
+		if err != nil {
+			return fail(2, "session %s was created, but its first request was not sent: %s", id, err)
+		}
+		if result.ExitCode != 0 {
+			return fail(2, "session %s was created, but its first request was not confirmed: %s", id, result.Reason)
+		}
 	}
 	if a.wantJSON {
 		return writeJSON(a.stdout, info, true)

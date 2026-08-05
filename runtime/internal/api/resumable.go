@@ -30,6 +30,10 @@ func mergeResumableConversations(
 	byIdentity := make(map[string]*watch.ResumableSession, len(scanned))
 	for index := range scanned {
 		session := scanned[index]
+		// Provider scans see Claude and Codex history regardless of whether a
+		// conversation was opened through Sessions. A linked durable Sessions
+		// runtime below clears this marker.
+		session.External = true
 		key := resumableIdentity(session.Tool, session.SessionID)
 		copy := session
 		byIdentity[key] = &copy
@@ -73,6 +77,7 @@ func mergeResumableConversations(
 				Origin: "Claude prompt index", Title: source.Name,
 				Cwd: source.CWD, ModifiedAt: float64(source.LastActivityAt),
 				FirstUserMessage: source.Name, PromptHistoryOnly: true,
+				External: source.External,
 			}
 			byIdentity[key] = session
 		}
@@ -95,6 +100,7 @@ func mergeResumableConversations(
 		if source.External {
 			continue
 		}
+		session.External = false
 		seen := runSeen[key]
 		if seen == nil {
 			seen = make(map[string]struct{})

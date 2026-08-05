@@ -584,6 +584,9 @@ function ResumeCard({ session, selected, onPick, disabled, hideFolder }: CardPro
             {session.runs.some((run) => run.movedFromSessionId || run.movedToSessionId) ? ' · continued across machines' : ''}
           </span>
         ) : null}
+        {session.external ? (
+          <span className="resume-card-chain">Opened in {session.tool === 'claude' ? 'Claude' : 'Codex'} outside Sessions</span>
+        ) : null}
         {session.promptHistoryOnly ? (
           <span className="resume-card-chain">Claude prompt index · Claude will restore the full chat if the provider still retains it</span>
         ) : null}

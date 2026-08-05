@@ -1042,6 +1042,7 @@ export async function fetchClaudeEvents(
 export interface ResumableSession {
   sessionId: string;
   tool: 'claude' | 'codex';
+  external?: boolean;
   origin?: string;
   title?: string;
   historyId?: string;

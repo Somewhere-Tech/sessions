@@ -100,12 +100,12 @@ Usage:
 
 create an interactive session
 
-Create a session. --tool selects Claude, Codex, or shell. Agent-created children inherit their manager's resolved permission policy by default; when the user has explicitly enabled autonomous delegated work, those children use full access instead. A child cannot escalate itself. --permissions makes the policy explicit, while --full-access remains an alias for --permissions full. Agent-created children default to the task lifecycle and close after a successful final response; --lifecycle session or --keep-alive creates a long-lived manager. User-created sessions remain long-lived. Approval questions become needs-input state and are never blindly accepted. Existing sessions keep their original runtime and permission mode. Claude defaults to its native interactive runtime; Codex defaults to its sandboxed terminal mode unless full access selects app-server. Remote Control remains separately consent-gated. --profile selects a private provider login. --description and repeated --tag values record purpose and dimensions. --worktree creates a Sessions-owned worktree.
+Create a session. --tool selects Claude, Codex, or shell. For Claude and Codex, positional text after the options is sent immediately as the first request. Agent-created children inherit their manager's resolved permission policy by default; when the user has explicitly enabled autonomous delegated work, those children use full access instead. A child cannot escalate itself. --permissions makes the policy explicit, while --full-access remains an alias for --permissions full. Agent-created children default to the task lifecycle and close after a successful final response; --lifecycle session or --keep-alive creates a long-lived manager. User-created sessions remain long-lived. Approval questions become needs-input state and are never blindly accepted. Existing sessions keep their original runtime and permission mode. Claude defaults to its native interactive runtime; Codex defaults to its sandboxed terminal mode unless full access selects app-server. Remote Control remains separately consent-gated. --profile selects a private provider login. --description and repeated --tag values record purpose and dimensions. --worktree creates a Sessions-owned worktree.
 
 Examples:
   sessions new --tool claude --cwd ~/work
   sessions new --tool codex --permissions inherit --name focused-worker
-  sessions new --tool codex --permissions full --lifecycle task
+  sessions new --tool codex --permissions full --lifecycle task 'Review this repository'
   sessions new --tool claude --keep-alive --name manager
   sessions new --cmd /bin/zsh
 
