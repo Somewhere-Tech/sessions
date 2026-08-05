@@ -1874,6 +1874,14 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 	defer m.registry.MarkDiscovering(false)
 
 	candidates, deadArtifacts := m.orphanPlistCandidates()
+	for id := range candidates {
+		if _, exists := m.registry.Get(id); exists {
+			// A filesystem-only orphan signal cannot override the daemon's
+			// current ownership of a live session.
+			delete(candidates, id)
+			delete(deadArtifacts, id)
+		}
+	}
 	artifactIDs, err := state.RunnerArtifactIDs(m.config.RunnerStateDir)
 	if err != nil {
 		return fmt.Errorf("read runner state directory: %w", err)

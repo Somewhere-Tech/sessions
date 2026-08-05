@@ -869,6 +869,50 @@ func TestMassKillGuardRefusesDiscoverySweepBeforeBootout(t *testing.T) {
 	}
 }
 
+func TestDiscoveryPreservesRegisteredSessionWithStaleLaunchArtifact(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	config := testConfig(root)
+	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true,
+	})
+	t.Cleanup(manager.Close)
+
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/sh", Cwd: root, Name: "registered session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A daemon restart or an older runner can leave launchd bookkeeping that
+	// looks orphaned even though the current registry already owns the session.
+	// Discovery must trust the live registry and never reap that session.
+	for _, path := range []string{
+		filepath.Join(config.RunnerStateDir, created.ID+".events"),
+		filepath.Join(config.RunnerStateDir, created.ID+".sock"),
+	} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	plistPath := state.RunnerPlistPath(config.LaunchAgentsDir, created.ID)
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(plistPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manager.Get(created.ID); !ok {
+		t.Fatal("discovery reaped a session already owned by the live registry")
+	}
+	if _, err := os.Stat(plistPath); err != nil {
+		t.Fatalf("discovery removed the registered session plist: %v", err)
+	}
+}
+
 func TestDiscoveryReapsExitedLegacyRunnerPlist(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
