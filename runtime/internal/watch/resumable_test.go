@@ -28,6 +28,21 @@ func TestScanResumableConversationsIncludesCodexAndDeduplicatesRollouts(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	injected, err := json.Marshal(map[string]any{
+		"timestamp": "2026-07-22T08:00:00Z",
+		"type":      "response_item",
+		"payload": map[string]any{
+			"type": "message", "role": "user",
+			"content": []map[string]any{
+				{"type": "input_text", "text": "<recommended_plugins>internal catalog</recommended_plugins>"},
+				{"type": "input_text", "text": "# AGENTS.md instructions\n\n<INSTRUCTIONS>internal</INSTRUCTIONS>"},
+				{"type": "input_text", "text": "<environment_context>internal</environment_context>"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	message, err := json.Marshal(map[string]any{
 		"timestamp": "2026-07-22T08:00:01Z",
 		"type":      "response_item",
@@ -39,7 +54,7 @@ func TestScanResumableConversationsIncludesCodexAndDeduplicatesRollouts(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := string(meta) + "\n" + string(message) + "\n"
+	first := string(meta) + "\n" + string(injected) + "\n" + string(message) + "\n"
 	older := filepath.Join(root, "rollout-old.jsonl")
 	newer := filepath.Join(root, "rollout-new.jsonl")
 	if err := os.WriteFile(older, []byte(first), 0o600); err != nil {

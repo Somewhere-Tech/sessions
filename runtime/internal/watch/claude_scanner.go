@@ -340,11 +340,27 @@ func normalizedMessageText(message map[string]any) string {
 		if !ok || block["type"] != "text" {
 			continue
 		}
-		if text, ok := block["text"].(string); ok && strings.TrimSpace(text) != "" {
+		if text, ok := block["text"].(string); ok && strings.TrimSpace(text) != "" && !isCodexInjectedUserText(text) {
 			parts = append(parts, strings.TrimSpace(text))
 		}
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func isCodexInjectedUserText(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	for _, prefix := range []string{
+		"<recommended_plugins>", "# AGENTS.md instructions", "<environment_context>",
+		"<permissions instructions>", "<app-context>", "<apps_instructions>",
+		"<plugins_instructions>", "<skills_instructions>", "<collaboration_mode>",
+		"<system-reminder>", "<local-command-", "<command-name>",
+		"<command-message>", "<command-args>",
+	} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstUserMessageOf(path string) string {
