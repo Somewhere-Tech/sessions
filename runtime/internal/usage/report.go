@@ -263,20 +263,43 @@ func (s *Service) sessionBindings() map[string]sessionBinding {
 		if metadata.Info.ConversationID != "" {
 			result["codex:"+metadata.Info.ConversationID] = binding
 		}
-		for index, argument := range metadata.Info.Args {
-			if index+1 >= len(metadata.Info.Args) {
-				break
-			}
-			if argument == "--session-id" || argument == "--resume" {
-				key := "claude:"
-				if strings.Contains(strings.ToLower(metadata.Info.Cmd), "codex") {
-					key = "codex:"
-				}
-				result[key+metadata.Info.Args[index+1]] = binding
-			}
+		key := "claude:"
+		if strings.Contains(strings.ToLower(metadata.Info.Cmd), "codex") {
+			key = "codex:"
+		}
+		if provider := argvProviderSession(metadata.Info.Args, key == "claude:"); provider != "" {
+			result[key+provider] = binding
 		}
 	}
 	return result
+}
+
+// argvProviderSession reads the provider conversation a session was launched
+// against. The spellings tracked here are the ones the rest of the runtime
+// already accepts (see internal/state/registry.go and internal/ledger/recipe.go):
+// the two long flags in either separated or `=` form, plus the -r shorthand,
+// which is a Claude resume flag only and means something else to Codex.
+func argvProviderSession(args []string, claude bool) string {
+	for index, argument := range args {
+		switch argument {
+		case "--session-id", "--resume":
+		case "-r":
+			if !claude {
+				continue
+			}
+		default:
+			for _, prefix := range []string{"--session-id=", "--resume="} {
+				if value, found := strings.CutPrefix(argument, prefix); found && value != "" {
+					return value
+				}
+			}
+			continue
+		}
+		if index+1 < len(args) {
+			return args[index+1]
+		}
+	}
+	return ""
 }
 
 func addRow(total *ReportRow, row ReportRow) {

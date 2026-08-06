@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +30,7 @@ type parserState struct {
 
 // Increment when parser or pricing semantics change so already-indexed events
 // are rebuilt from their source logs on the next sync.
-const usageIndexVersion = 6
+const usageIndexVersion = 7
 
 type entry struct {
 	key, source, provider, sessionID, model string
@@ -49,15 +50,19 @@ func (s *Service) Sync(ctx context.Context) (ScanStats, error) {
 		return ScanStats{}, err
 	}
 	stats := ScanStats{}
+	launched := s.codexLaunchTiers()
 	for provider, roots := range s.providerRoots() {
 		for _, root := range roots {
-			fast := provider == "codex" && codexFastMode(filepath.Dir(root))
+			var tiers *codexTiers
+			if provider == "codex" {
+				tiers = newCodexTiers(db, filepath.Dir(root), launched)
+			}
 			err := filepath.WalkDir(root, func(path string, item os.DirEntry, walkErr error) error {
 				if walkErr != nil || item.IsDir() || !strings.HasSuffix(strings.ToLower(item.Name()), ".jsonl") {
 					return nil
 				}
 				stats.FilesSeen++
-				return s.syncFile(ctx, db, provider, path, fast, &stats)
+				return s.syncFile(ctx, db, provider, path, tiers, &stats)
 			})
 			if err != nil && !os.IsNotExist(err) {
 				return stats, err
@@ -65,23 +70,6 @@ func (s *Service) Sync(ctx context.Context) (ScanStats, error) {
 		}
 	}
 	return stats, nil
-}
-
-func codexFastMode(configDir string) bool {
-	encoded, err := os.ReadFile(filepath.Join(configDir, "config.toml"))
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(encoded), "\n") {
-		setting := strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
-		key, value, found := strings.Cut(setting, "=")
-		if !found || strings.TrimSpace(key) != "service_tier" {
-			continue
-		}
-		value = strings.Trim(strings.TrimSpace(value), `"'`)
-		return value == "fast" || value == "priority"
-	}
-	return false
 }
 
 func (s *Service) providerRoots() map[string][]string {
@@ -126,7 +114,7 @@ func (s *Service) providerRoots() map[string][]string {
 	return roots
 }
 
-func (s *Service) syncFile(ctx context.Context, db *sql.DB, provider, path string, fast bool, stats *ScanStats) error {
+func (s *Service) syncFile(ctx context.Context, db *sql.DB, provider, path string, tiers *codexTiers, stats *ScanStats) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil
@@ -141,6 +129,15 @@ func (s *Service) syncFile(ctx context.Context, db *sql.DB, provider, path strin
 	state := parserState{}
 	_ = json.Unmarshal([]byte(encodedState), &state)
 	rewrittenInPlace := knownSource && info.Size() == oldSize && info.ModTime().UnixNano() != oldMtime
+	// The conversation this file belongs to is remembered from the previous
+	// scan, so a tier that has since been decided by better evidence reprices
+	// the whole file instead of leaving half of it on the old tier.
+	fast := false
+	if provider == "codex" {
+		if fast, err = tiers.fast(ctx, state.SessionID); err != nil {
+			return err
+		}
+	}
 	pricingModeChanged := provider == "codex" && knownSource && state.Fast != fast
 	indexChanged := knownSource && state.IndexVersion != usageIndexVersion
 	if info.Size() < oldSize || offset > info.Size() || rewrittenInPlace || pricingModeChanged || indexChanged {
@@ -181,7 +178,10 @@ func (s *Service) syncFile(ctx context.Context, db *sql.DB, provider, path strin
 		if provider == "claude" {
 			parsed = parseClaudeLine(path, lineOffset, bytes.TrimSpace(line), info.ModTime())
 		} else {
-			parsed = parseCodexLine(path, lineOffset, bytes.TrimSpace(line), info.ModTime(), &state, fast)
+			parsed, err = parseCodexLine(ctx, path, lineOffset, bytes.TrimSpace(line), info.ModTime(), &state, tiers)
+			if err != nil {
+				return err
+			}
 		}
 		if parsed != nil {
 			if err := upsertEntry(ctx, db, *parsed); err != nil {
@@ -191,6 +191,13 @@ func (s *Service) syncFile(ctx context.Context, db *sql.DB, provider, path strin
 		}
 		if readErr == io.EOF {
 			break
+		}
+	}
+	if provider == "codex" {
+		// Record the tier these entries were actually priced with, now that the
+		// file has told us which conversation it holds.
+		if fast, err = tiers.fast(ctx, state.SessionID); err != nil {
+			return err
 		}
 	}
 	state.Fast = fast
@@ -204,17 +211,24 @@ size_bytes=excluded.size_bytes, mtime_ns=excluded.mtime_ns, parser_state=exclude
 	return err
 }
 
-func upsertEntry(ctx context.Context, db *sql.DB, value entry) error {
-	if value.replayKey != "" {
-		var replayed bool
-		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM usage_entries WHERE event_key = ?)`, value.replayKey).Scan(&replayed); err != nil {
-			return err
-		}
-		if replayed {
-			return nil
-		}
-	}
-	_, err := db.ExecContext(ctx, `INSERT INTO usage_entries(
+// One usage event can be written twice: once as it crosses the live session
+// boundary and again when the provider log that contains it is scanned. The
+// two writers share an event_key, so the merge below must be an order-free
+// rule rather than a race.
+//
+// supersedes is that rule. The incoming row wins when it carries more of the
+// event than the stored row does, or when it is the provider's own log
+// replacing a live sighting - the log is the durable record of what happened.
+// Whenever it wins, the token counts, the model and the calculated cost all
+// move together: a row must never end up describing one writer's tokens with
+// another writer's price.
+const supersedes = `(
+  (excluded.input_tokens + excluded.output_tokens + excluded.cache_creation_tokens + excluded.cache_read_tokens) >
+  (usage_entries.input_tokens + usage_entries.output_tokens + usage_entries.cache_creation_tokens + usage_entries.cache_read_tokens)
+  OR (usage_entries.source_path LIKE 'live://%' AND excluded.source_path NOT LIKE 'live://%')
+)`
+
+var upsertEntryStatement = `INSERT INTO usage_entries(
 event_key, source_path, source_offset, provider, provider_session_id, timestamp_ms, model,
 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 reasoning_tokens, recorded_cost_usd, calculated_cost_usd, pricing_found)
@@ -235,40 +249,38 @@ timestamp_ms=CASE
     THEN excluded.timestamp_ms
   ELSE usage_entries.timestamp_ms
 END,
-model=CASE WHEN excluded.model != '' THEN excluded.model ELSE usage_entries.model END,
-input_tokens=CASE WHEN
-  (excluded.input_tokens + excluded.output_tokens + excluded.cache_creation_tokens + excluded.cache_read_tokens) >
-  (usage_entries.input_tokens + usage_entries.output_tokens + usage_entries.cache_creation_tokens + usage_entries.cache_read_tokens)
-  THEN excluded.input_tokens ELSE usage_entries.input_tokens END,
-output_tokens=CASE WHEN
-  (excluded.input_tokens + excluded.output_tokens + excluded.cache_creation_tokens + excluded.cache_read_tokens) >
-  (usage_entries.input_tokens + usage_entries.output_tokens + usage_entries.cache_creation_tokens + usage_entries.cache_read_tokens)
-  THEN excluded.output_tokens ELSE usage_entries.output_tokens END,
-cache_creation_tokens=CASE WHEN
-  (excluded.input_tokens + excluded.output_tokens + excluded.cache_creation_tokens + excluded.cache_read_tokens) >
-  (usage_entries.input_tokens + usage_entries.output_tokens + usage_entries.cache_creation_tokens + usage_entries.cache_read_tokens)
-  THEN excluded.cache_creation_tokens ELSE usage_entries.cache_creation_tokens END,
-cache_read_tokens=CASE WHEN
-  (excluded.input_tokens + excluded.output_tokens + excluded.cache_creation_tokens + excluded.cache_read_tokens) >
-  (usage_entries.input_tokens + usage_entries.output_tokens + usage_entries.cache_creation_tokens + usage_entries.cache_read_tokens)
-  THEN excluded.cache_read_tokens ELSE usage_entries.cache_read_tokens END,
+model=CASE
+  WHEN excluded.model != '' AND (` + supersedes + ` OR usage_entries.model = '')
+    THEN excluded.model
+  ELSE usage_entries.model
+END,
+input_tokens=CASE WHEN ` + supersedes + ` THEN excluded.input_tokens ELSE usage_entries.input_tokens END,
+output_tokens=CASE WHEN ` + supersedes + ` THEN excluded.output_tokens ELSE usage_entries.output_tokens END,
+cache_creation_tokens=CASE WHEN ` + supersedes + ` THEN excluded.cache_creation_tokens ELSE usage_entries.cache_creation_tokens END,
+cache_read_tokens=CASE WHEN ` + supersedes + ` THEN excluded.cache_read_tokens ELSE usage_entries.cache_read_tokens END,
 reasoning_tokens=MAX(usage_entries.reasoning_tokens, excluded.reasoning_tokens),
 recorded_cost_usd=CASE
   WHEN excluded.recorded_cost_usd IS NOT NULL THEN excluded.recorded_cost_usd
   ELSE usage_entries.recorded_cost_usd
 END,
-calculated_cost_usd=CASE WHEN
-  (excluded.input_tokens + excluded.output_tokens + excluded.cache_creation_tokens + excluded.cache_read_tokens) >
-  (usage_entries.input_tokens + usage_entries.output_tokens + usage_entries.cache_creation_tokens + usage_entries.cache_read_tokens)
-  THEN excluded.calculated_cost_usd ELSE usage_entries.calculated_cost_usd END,
-pricing_found=MAX(usage_entries.pricing_found, excluded.pricing_found)
-WHERE
-  (excluded.input_tokens + excluded.output_tokens + excluded.cache_creation_tokens + excluded.cache_read_tokens) >
-  (usage_entries.input_tokens + usage_entries.output_tokens + usage_entries.cache_creation_tokens + usage_entries.cache_read_tokens)
+calculated_cost_usd=CASE WHEN ` + supersedes + ` THEN excluded.calculated_cost_usd ELSE usage_entries.calculated_cost_usd END,
+pricing_found=CASE WHEN ` + supersedes + ` THEN excluded.pricing_found ELSE MAX(usage_entries.pricing_found, excluded.pricing_found) END
+WHERE ` + supersedes + `
   OR excluded.reasoning_tokens > usage_entries.reasoning_tokens
-  OR (usage_entries.source_path LIKE 'live://%' AND excluded.source_path NOT LIKE 'live://%')
   OR (usage_entries.model = '' AND excluded.model != '')
-  OR (usage_entries.recorded_cost_usd IS NULL AND excluded.recorded_cost_usd IS NOT NULL)`,
+  OR (usage_entries.recorded_cost_usd IS NULL AND excluded.recorded_cost_usd IS NOT NULL)`
+
+func upsertEntry(ctx context.Context, db *sql.DB, value entry) error {
+	if value.replayKey != "" {
+		var replayed bool
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM usage_entries WHERE event_key = ?)`, value.replayKey).Scan(&replayed); err != nil {
+			return err
+		}
+		if replayed {
+			return nil
+		}
+	}
+	_, err := db.ExecContext(ctx, upsertEntryStatement,
 		value.key, value.source, value.offset, value.provider, value.sessionID, value.timestampMS, value.model,
 		value.tokens.Input, value.tokens.Output, value.tokens.CacheCreation, value.tokens.CacheRead, value.tokens.Reasoning,
 		value.recorded, value.calculated, value.pricingFound)
@@ -323,10 +335,10 @@ func parseClaudeLine(path string, offset int64, raw []byte, fallback time.Time) 
 		calculated: calculated, pricingFound: found}
 }
 
-func parseCodexLine(path string, offset int64, raw []byte, fallback time.Time, state *parserState, fast bool) *entry {
+func parseCodexLine(ctx context.Context, path string, offset int64, raw []byte, fallback time.Time, state *parserState, tiers *codexTiers) (*entry, error) {
 	var value map[string]any
 	if json.Unmarshal(raw, &value) != nil {
-		return nil
+		return nil, nil
 	}
 	payload, _ := object(value["payload"])
 	typeName := text(value, "type")
@@ -342,22 +354,22 @@ func parseCodexLine(path string, offset int64, raw []byte, fallback time.Time, s
 		} else if state.ForkSessionID == "" {
 			state.SessionID = candidate
 		}
-		return nil
+		return nil, nil
 	}
 	if typeName == "event_msg" && payloadType == "task_started" {
 		state.TurnID = text(payload, "turn_id", "turnId")
 		state.Previous = Tokens{}
-		return nil
+		return nil, nil
 	}
 	if typeName == "turn_context" {
 		state.TurnID = text(payload, "turn_id", "turnId")
 		if model := text(payload, "model"); model != "" {
 			state.Model = model
 		}
-		return nil
+		return nil, nil
 	}
 	if typeName != "event_msg" || payloadType != "token_count" {
-		return nil
+		return nil, nil
 	}
 	info, _ := object(payload["info"])
 	if model := text(info, "model"); model != "" {
@@ -382,13 +394,19 @@ func parseCodexLine(path string, offset int64, raw []byte, fallback time.Time, s
 		state.Previous = codexTokens(total)
 	}
 	if tokens.Total() == 0 {
-		return nil
+		return nil, nil
 	}
 	sessionID := state.SessionID
 	if sessionID == "" {
 		sessionID = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	}
 	stamp := parseTimestamp(text(value, "timestamp"), fallback)
+	// Price on the tier this conversation ran on, which is what the live
+	// recorder used for the very same event_key.
+	fast, err := tiers.fast(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
 	calculated, found := price(state.Model, tokens, fast)
 	key := fmt.Sprintf("codex:%s:%d", path, offset)
 	replayKey := ""
@@ -400,7 +418,7 @@ func parseCodexLine(path string, offset int64, raw []byte, fallback time.Time, s
 	}
 	return &entry{key: key, source: path, provider: "codex",
 		sessionID: sessionID, model: state.Model, offset: offset, timestampMS: stamp.UnixMilli(),
-		tokens: tokens, calculated: calculated, pricingFound: found, replayKey: replayKey}
+		tokens: tokens, calculated: calculated, pricingFound: found, replayKey: replayKey}, nil
 }
 
 func codexForkParent(payload map[string]any) string {
@@ -449,13 +467,36 @@ func text(value map[string]any, keys ...string) string {
 	}
 	return ""
 }
+
+// maxPlausibleTokens is far above any real provider event (the largest context
+// windows are a few million tokens) and far below the point where float64 to
+// int64 conversion misbehaves. Anything beyond it is corruption, not usage.
+const maxPlausibleTokens = int64(1) << 40
+
 func integer(value map[string]any, keys ...string) int64 {
 	for _, key := range keys {
 		if result, ok := number(value[key]); ok {
-			return int64(result)
+			return tokenCount(result)
 		}
 	}
 	return 0
+}
+
+// tokenCount turns a JSON number into a token count, or into nothing. An
+// unchecked int64(float64) makes a corrupt 1e30 arrive as a large negative
+// count and a wildly negative cost; a NaN arrives as an arbitrary one. Neither
+// is a number worth showing anyone, so an implausible value is dropped rather
+// than carried forward - an event with no usable counts is skipped entirely
+// and never becomes an invented cost.
+func tokenCount(value float64) int64 {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0
+	}
+	truncated := math.Trunc(value)
+	if truncated < 0 || truncated > float64(maxPlausibleTokens) {
+		return 0
+	}
+	return int64(truncated)
 }
 func number(value any) (float64, bool) { result, ok := value.(float64); return result, ok }
 func parseTimestamp(value string, fallback time.Time) time.Time {
