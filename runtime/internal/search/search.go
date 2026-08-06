@@ -45,29 +45,34 @@ type Options struct {
 }
 
 type Match struct {
-	SessionID         string                           `json:"session_id"`
-	ProviderSessionID string                           `json:"provider_session_id,omitempty"`
-	Name              string                           `json:"name"`
-	Tool              string                           `json:"tool"`
-	Role              string                           `json:"role"`
-	Kind              string                           `json:"kind,omitempty"`
-	Timestamp         *string                          `json:"timestamp"`
-	MessageIndex      int                              `json:"message_index"`
-	MessageID         string                           `json:"message_id"`
-	Text              string                           `json:"-"`
-	Snippet           string                           `json:"snippet"`
-	MatchStart        int                              `json:"match_start"`
-	MatchEnd          int                              `json:"match_end"`
-	Score             float64                          `json:"score"`
-	CWD               string                           `json:"cwd"`
-	Machine           string                           `json:"machine"`
-	CreatorKind       string                           `json:"creator_kind,omitempty"`
-	CreatorID         string                           `json:"creator_id,omitempty"`
-	ContextBefore     []integrations.TranscriptMessage `json:"context_before,omitempty"`
-	ContextAfter      []integrations.TranscriptMessage `json:"context_after,omitempty"`
-	MachineAlias      string                           `json:"machine_alias,omitempty"`
-	Reference         string                           `json:"reference,omitempty"`
-	AvailableOn       []string                         `json:"available_on,omitempty"`
+	SessionID         string  `json:"session_id"`
+	ProviderSessionID string  `json:"provider_session_id,omitempty"`
+	Name              string  `json:"name"`
+	Tool              string  `json:"tool"`
+	Role              string  `json:"role"`
+	Kind              string  `json:"kind,omitempty"`
+	Timestamp         *string `json:"timestamp"`
+	MessageIndex      int     `json:"message_index"`
+	MessageID         string  `json:"message_id"`
+	Text              string  `json:"-"`
+	Snippet           string  `json:"snippet"`
+	// MatchStart and MatchEnd are byte offsets into the matching message body.
+	// The body itself is deliberately not part of a search result; a client
+	// that opens the anchored history route for SessionID/MessageIndex gets the
+	// exact same text these offsets index into, so they must be computed
+	// against that text and never against a transformed copy of it.
+	MatchStart    int                              `json:"match_start"`
+	MatchEnd      int                              `json:"match_end"`
+	Score         float64                          `json:"score"`
+	CWD           string                           `json:"cwd"`
+	Machine       string                           `json:"machine"`
+	CreatorKind   string                           `json:"creator_kind,omitempty"`
+	CreatorID     string                           `json:"creator_id,omitempty"`
+	ContextBefore []integrations.TranscriptMessage `json:"context_before,omitempty"`
+	ContextAfter  []integrations.TranscriptMessage `json:"context_after,omitempty"`
+	MachineAlias  string                           `json:"machine_alias,omitempty"`
+	Reference     string                           `json:"reference,omitempty"`
+	AvailableOn   []string                         `json:"available_on,omitempty"`
 }
 
 type Response struct {
@@ -179,6 +184,10 @@ func Run(ctx context.Context, source HistorySource, live []state.SessionInfo, op
 		return Response{}, err
 	}
 	result := Response{Matches: make([]Match, 0, min(options.Limit, 16))}
+	// Collect first, order second. Timeline order is a property of the whole
+	// result set, so reaching the limit has to leave the loops rather than
+	// return from inside them and skip the sort below.
+collect:
 	for _, session := range sessions {
 		if err := ctx.Err(); err != nil {
 			return Response{}, err
@@ -224,8 +233,7 @@ func Run(ctx context.Context, source HistorySource, live []state.SessionInfo, op
 				ContextAfter:  contextAfter(transcript.Messages, index, options.Context),
 			})
 			if len(result.Matches) == options.Limit {
-				result.Total = len(result.Matches)
-				return result, nil
+				break collect
 			}
 		}
 	}

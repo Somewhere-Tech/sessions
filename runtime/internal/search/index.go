@@ -432,12 +432,13 @@ LIMIT ?`
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, ctxErr
 		}
-		return Response{}, &optionError{message: fmt.Sprintf("invalid ranked query: %v", err)}
+		return Response{}, rankedQueryError(err)
 	}
 	defer rows.Close()
 
 	result := Response{Matches: make([]Match, 0, min(options.Limit, 16))}
 	rawScores := make([]float64, 0, min(options.Limit, 16))
+	highlight := rankedHighlightPatterns(options.Query)
 	for rows.Next() {
 		var match Match
 		var rawScore float64
@@ -449,7 +450,7 @@ LIMIT ?`
 		); err != nil {
 			return Response{}, fmt.Errorf("read ranked search result: %w", err)
 		}
-		match.MatchStart, match.MatchEnd = rankedHighlightSpan(match.Text, options.Query)
+		match.MatchStart, match.MatchEnd = rankedHighlightSpan(highlight, match.Text)
 		result.Matches = append(result.Matches, match)
 		rawScores = append(rawScores, rawScore)
 	}
@@ -457,7 +458,7 @@ LIMIT ?`
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, ctxErr
 		}
-		return Response{}, &optionError{message: fmt.Sprintf("invalid ranked query: %v", err)}
+		return Response{}, rankedQueryError(err)
 	}
 	if err := rows.Close(); err != nil {
 		return Response{}, fmt.Errorf("close ranked search results: %w", err)
@@ -479,16 +480,70 @@ LIMIT ?`
 	return result, nil
 }
 
-func rankedHighlightSpan(text, query string) (int, int) {
-	lower := strings.ToLower(text)
+var fts5SyntaxNearPattern = regexp.MustCompile(`syntax error near "([^"]*)"`)
+
+// rankedQueryError turns a rejected query into instruction. FTS5 reports parse
+// failures as raw SQLite text (`SQL logic error: fts5: syntax error near
+// "NOT"`), which reads like a database fault and sends the reader debugging
+// SQLite instead of the query they wrote. Anything that is not a parse failure
+// is a real index fault the caller cannot fix by editing the query, so it stays
+// a plain error and keeps its 500.
+func rankedQueryError(err error) error {
+	raw := err.Error()
+	// SQLite reports a rejected MATCH expression as a logic error; a busy,
+	// missing, or corrupt index reports its own class and is not the caller's
+	// to repair.
+	if !strings.Contains(raw, "SQL logic error") && !strings.Contains(raw, "fts5") {
+		return fmt.Errorf("run ranked search: %w", err)
+	}
+	const guidance = "AND, OR, and NOT are ranked-search operators and each needs a term on both sides, " +
+		"quotes and parentheses must be balanced, and a quoted phrase is matched exactly. " +
+		`Search the text literally instead with --exact, for example: sessions search "NOT NULL" --exact`
+	if strings.Contains(raw, "unterminated string") {
+		return &optionError{message: "ranked search could not parse this query: a quote is opened and never closed. " + guidance}
+	}
+	if found := fts5SyntaxNearPattern.FindStringSubmatch(raw); found != nil {
+		if found[1] == "" {
+			return &optionError{message: "ranked search could not parse this query: it ends where a term was expected. " + guidance}
+		}
+		return &optionError{message: fmt.Sprintf(
+			"ranked search could not parse this query near %q. %s", found[1], guidance,
+		)}
+	}
+	return &optionError{message: "ranked search could not parse this query. " + guidance}
+}
+
+// rankedHighlightPatterns compiles the query terms a client can highlight, in
+// query order. Compiling once per request keeps the per-row span cheap, and
+// case folding belongs in the pattern rather than in a copy of the text: the
+// offsets returned below have to index into the untouched message body.
+func rankedHighlightPatterns(query string) []*regexp.Regexp {
+	patterns := make([]*regexp.Regexp, 0, 4)
 	for _, field := range strings.Fields(query) {
 		candidate := strings.Trim(field, `"'(),`)
 		upper := strings.ToUpper(candidate)
 		if candidate == "" || upper == "AND" || upper == "OR" || upper == "NOT" || strings.HasPrefix(upper, "NEAR") {
 			continue
 		}
-		if start := strings.Index(lower, strings.ToLower(candidate)); start >= 0 {
-			return start, start + len(candidate)
+		pattern, err := regexp.Compile("(?i:" + regexp.QuoteMeta(candidate) + ")")
+		if err != nil {
+			continue
+		}
+		patterns = append(patterns, pattern)
+	}
+	return patterns
+}
+
+// rankedHighlightSpan locates the first query term inside a matching body.
+// Searching a lowercased copy corrupts both ends of the span, because
+// strings.ToLower is not length-preserving in Unicode (İ collapses to i, K to
+// k): every offset after such a rune shifts, and the query term's own length is
+// not the matched text's length. Matching the original bytes keeps the span
+// usable against the body the anchored history route returns.
+func rankedHighlightSpan(patterns []*regexp.Regexp, text string) (int, int) {
+	for _, pattern := range patterns {
+		if location := pattern.FindStringIndex(text); location != nil {
+			return location[0], location[1]
 		}
 	}
 	return 0, 0

@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	historysearch "github.com/somewhere-tech/sessions/runtime/internal/search"
@@ -123,7 +122,7 @@ func (a *app) cmdSearch(args []string) error {
 		if err != nil {
 			return err
 		}
-	} else if err := a.getJSON(path, &result); err != nil {
+	} else if err := a.searchOneDaemon(path, &result); err != nil {
 		return err
 	}
 	if a.wantJSON {
@@ -157,7 +156,7 @@ func (a *app) cmdSearch(args []string) error {
 		if match.Role == "tool" && match.Kind != "" {
 			displayRole = match.Kind
 		}
-		identity := prefixString(match.SessionID, 8)
+		identity := searchMatchIdentity(match.SessionID)
 		if fleet && match.Reference != "" {
 			identity = match.Reference
 		}
@@ -177,8 +176,23 @@ func (a *app) cmdSearch(args []string) error {
 }
 
 type fleetSearchOutcome struct {
+	index    int
 	response historysearch.Response
 	err      error
+}
+
+// searchOneDaemon answers an explicitly targeted search with the same honesty
+// the fleet path owes: a rejected query is the caller's to fix and keeps the
+// daemon's own instruction, while an unreachable daemon is a transport failure.
+func (a *app) searchOneDaemon(path string, result *historysearch.Response) error {
+	err := getJSONFromClient(a.api, path, result, 0)
+	if err == nil {
+		return nil
+	}
+	if rejection, rejected := requestWasRejected(err); rejected {
+		return fail(1, "%s", rejection.Error())
+	}
+	return fail(2, "search failed: %s", err)
 }
 
 func (a *app) searchApprovedFleet(
@@ -192,27 +206,81 @@ func (a *app) searchApprovedFleet(
 	if err != nil {
 		return historysearch.Response{}, fail(2, "read approved machines: %s", err)
 	}
+	health := readFleetPeerHealth(a.home)
+	now := a.now()
 	outcomes := make([]fleetSearchOutcome, len(targets))
-	var wait sync.WaitGroup
+	answers := make(chan fleetSearchOutcome, len(targets))
+	dispatched := make([]bool, len(targets))
+	pending := 0
+	awaitingLocal := false
 	for index := range targets {
-		wait.Add(1)
+		target := targets[index]
+		if target.Endpoint != localFleetEndpoint {
+			if failure, retryAt, cooling := health.coolingDown(target.Alias, now); cooling {
+				outcomes[index].err = fleetPeerSkipped(target, failure, retryAt.Sub(now))
+				if target.Owned {
+					target.Client.close()
+				}
+				continue
+			}
+		}
+		// A peer that never answers still has to leave a machine state behind,
+		// so seed the outcome with the honest reason before dispatching it.
+		outcomes[index] = fleetSearchOutcome{index: index, err: fleetPeerTimedOut(target)}
+		dispatched[index] = true
+		pending++
+		awaitingLocal = awaitingLocal || target.Endpoint == localFleetEndpoint
 		go func(index int) {
-			defer wait.Done()
+			outcome := fleetSearchOutcome{index: index}
 			if targets[index].Owned {
 				defer targets[index].Client.close()
 			}
-			outcomes[index].err = getJSONFromClient(
-				targets[index].Client, path, &outcomes[index].response, fleetTargetTimeout(targets[index]),
+			outcome.err = getJSONFromClient(
+				targets[index].Client, path, &outcome.response, fleetTargetTimeout(targets[index]),
 			)
+			answers <- outcome
 		}(index)
 	}
-	wait.Wait()
+
+	// The local engine owns the answer, so it is always awaited. Peers only
+	// enrich it, so they are dropped once the budget passes — and while the
+	// local index is still building, they answer into a wait already being paid.
+	budget := time.NewTimer(fleetPeerBudget)
+	defer budget.Stop()
+	budgetExpired := budget.C
+	expired := false
+	accept := func(outcome fleetSearchOutcome) {
+		outcomes[outcome.index] = outcome
+		pending--
+		if targets[outcome.index].Endpoint == localFleetEndpoint {
+			awaitingLocal = false
+		}
+	}
+	for pending > 0 {
+		select {
+		case outcome := <-answers:
+			accept(outcome)
+			continue
+		default:
+		}
+		if expired && !awaitingLocal {
+			break
+		}
+		select {
+		case outcome := <-answers:
+			accept(outcome)
+		case <-budgetExpired:
+			expired = true
+			budgetExpired = nil
+		}
+	}
 
 	result := historysearch.Response{
 		Matches:  make([]historysearch.Match, 0),
 		Machines: make([]historysearch.MachineState, 0, len(targets)),
 	}
 	successes := 0
+	rejection := ""
 	seen := make(map[string]int)
 	for index, target := range targets {
 		outcome := outcomes[index]
@@ -224,9 +292,20 @@ func (a *app) searchApprovedFleet(
 			state.Error = outcome.err.Error()
 			result.Partial = true
 			result.Machines = append(result.Machines, state)
+			if refusal, refused := requestWasRejected(outcome.err); refused {
+				// The machine is healthy and said why; that is not a peer
+				// failure and must not be cached as one.
+				if rejection == "" {
+					rejection = refusal.Error()
+				}
+				health.recordSuccess(target.Alias)
+			} else if dispatched[index] && target.Endpoint != localFleetEndpoint {
+				health.recordFailure(target.Alias, now, outcome.err)
+			}
 			continue
 		}
 		successes++
+		health.recordSuccess(target.Alias)
 		result.Machines = append(result.Machines, state)
 		for _, match := range outcome.response.Matches {
 			match.MachineAlias = target.Alias
@@ -243,12 +322,9 @@ func (a *app) searchApprovedFleet(
 			result.Matches = append(result.Matches, match)
 		}
 	}
+	health.save(a.home)
 	if successes == 0 {
-		detail := "no approved Sessions machine answered"
-		if len(result.Machines) == 1 && result.Machines[0].Error != "" {
-			detail = result.Machines[0].Error
-		}
-		return historysearch.Response{}, fail(2, "fleet search failed: %s", detail)
+		return historysearch.Response{}, fleetSearchFailure(result.Machines, rejection)
 	}
 	sortFleetSearchMatches(result.Matches, timeline, ranked)
 	limit := historysearch.DefaultLimit
@@ -260,6 +336,41 @@ func (a *app) searchApprovedFleet(
 	}
 	result.Total = len(result.Matches)
 	return result, nil
+}
+
+// fleetSearchFailure explains why nothing answered. A rejected query is never
+// reported as a network problem — that sends the reader to debug a LAN that is
+// working — and a transport failure names every machine that was tried,
+// whatever the size of the fleet.
+func fleetSearchFailure(machines []historysearch.MachineState, rejection string) error {
+	if rejection != "" {
+		return fail(1, "%s", rejection)
+	}
+	lines := make([]string, 0, len(machines))
+	for _, machine := range machines {
+		lines = append(lines, fmt.Sprintf("  %s (%s): %s", machine.Alias, machine.Name, machine.Error))
+	}
+	if len(lines) == 0 {
+		return fail(2, "no approved Sessions machine answered this search")
+	}
+	return fail(2, "no approved Sessions machine answered this search:\n%s", strings.Join(lines, "\n"))
+}
+
+func fleetPeerTimedOut(target fleetTarget) error {
+	if target.Endpoint == localFleetEndpoint {
+		return fmt.Errorf("this machine did not answer within %s", localFleetRequestTimeout)
+	}
+	return fmt.Errorf(
+		"did not answer within %s, so its matches are missing; run `sessions --machine %s search ...` to wait for it",
+		fleetPeerBudget, target.Alias,
+	)
+}
+
+func fleetPeerSkipped(target fleetTarget, failure fleetPeerFailure, retryIn time.Duration) error {
+	return fmt.Errorf(
+		"skipped after a recent failure (%s), retried automatically in %s; run `sessions --machine %s search ...` to try it now",
+		failure.Error, retryIn.Round(time.Second), target.Alias,
+	)
 }
 
 func sortFleetSearchMatches(matches []historysearch.Match, timeline, ranked bool) {
@@ -355,6 +466,18 @@ func normalizeGrepArgs(args []string) ([]string, error) {
 		return nil, fail(1, "sessions grep needs a query")
 	}
 	return append([]string{query}, options...), nil
+}
+
+// searchMatchIdentity prints an id the reader can hand straight back to
+// `sessions cat` or `sessions resume`. Provider history ids are namespaced
+// (`provider:codex:019f...`), so the eight-character form used for opaque
+// session ids collapses every one of them to the word "provider" and resolves
+// to nothing.
+func searchMatchIdentity(sessionID string) string {
+	if strings.Contains(sessionID, ":") {
+		return sessionID
+	}
+	return prefixString(sessionID, 8)
 }
 
 func rankedMatchLabel(score float64) string {

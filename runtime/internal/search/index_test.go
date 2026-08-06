@@ -163,6 +163,74 @@ func TestRankedSearchRejectsMalformedAndRegexQueries(t *testing.T) {
 	}
 }
 
+// A rejected query has to explain the query, not the storage engine underneath
+// it: raw SQLite text reads as a database fault and sends the reader debugging
+// the wrong system.
+func TestRankedSearchExplainsRejectedQueriesWithoutSQLiteInternals(t *testing.T) {
+	fixture := rankedFixture("alpha beta")
+	indexPath := filepath.Join(t.TempDir(), "search-index.db")
+	for _, test := range []struct{ query, want string }{
+		{query: "NOT beta", want: `near "NOT"`},
+		{query: "alpha NOT", want: "ends where a term was expected"},
+		{query: `"unterminated`, want: "quote is opened and never closed"},
+	} {
+		t.Run(test.query, func(t *testing.T) {
+			_, err := Run(context.Background(), fixture, nil, Options{Query: test.query, Ranked: true}, indexPath)
+			if err == nil || !IsOptionError(err) {
+				t.Fatalf("error = %v, want option error", err)
+			}
+			message := err.Error()
+			if !strings.Contains(message, test.want) {
+				t.Fatalf("error = %q, want it to contain %q", message, test.want)
+			}
+			if !strings.Contains(message, "--exact") {
+				t.Fatalf("error = %q, want the safe next action", message)
+			}
+			for _, leak := range []string{"SQL logic error", "fts5", "sqlite"} {
+				if strings.Contains(strings.ToLower(message), strings.ToLower(leak)) {
+					t.Fatalf("error = %q leaks the storage engine detail %q", message, leak)
+				}
+			}
+		})
+	}
+}
+
+// The span is a byte range into the matching message body, so it has to survive
+// runes whose lowercase form has a different byte length. strings.ToLower
+// collapses İ to i and K (U+212A) to k, which shifts every later offset and
+// makes the query term's length the wrong span length.
+func TestRankedHighlightSpanIndexesTheOriginalText(t *testing.T) {
+	for _, test := range []struct{ name, query, text, want string }{
+		{name: "offset after a shrinking rune", query: "deploy", text: "İstanbul deploy notes", want: "deploy"},
+		{name: "span covers the matched text", query: "kelvin", text: "Kelvin scale", want: "Kelvin"},
+		{name: "operators are skipped", query: "NOT deploy", text: "İstanbul deploy notes", want: "deploy"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			start, end := rankedHighlightSpan(rankedHighlightPatterns(test.query), test.text)
+			if start < 0 || end > len(test.text) || end < start {
+				t.Fatalf("span = [%d,%d) for text of %d bytes", start, end, len(test.text))
+			}
+			if got := test.text[start:end]; got != test.want {
+				t.Fatalf("text[%d:%d] = %q, want %q", start, end, got, test.want)
+			}
+		})
+	}
+}
+
+func TestRankedSearchReportsHighlightSpanOfTheIndexedBody(t *testing.T) {
+	fixture := rankedFixture("İstanbul rollout marker")
+	result := runRankedFixture(t, fixture, "marker", filepath.Join(t.TempDir(), "search-index.db"))
+	if result.Total != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	match := result.Matches[0]
+	if match.Text[match.MatchStart:match.MatchEnd] != "marker" {
+		t.Fatalf("span [%d,%d) of %q = %q, want %q",
+			match.MatchStart, match.MatchEnd, match.Text,
+			match.Text[match.MatchStart:match.MatchEnd], "marker")
+	}
+}
+
 func rankedFixture(texts ...string) *fakeHistory {
 	session := integrations.HistorySession{
 		ID: "cccccccc-1111-4222-8333-444444444444", Name: "ranked", Tool: "codex",
