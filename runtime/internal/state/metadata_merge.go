@@ -33,6 +33,25 @@ func MergeRunnerMetadata(existing, next Metadata) Metadata {
 	merged.Permissions = existing.Permissions
 	merged.Lifecycle = existing.Lifecycle
 
+	// The name and description are daemon-owned in exactly the same way, and
+	// were missing from this list. A runner carries the name it was launched
+	// with -- RUNNER_NAME is read once at startup -- so every later runner
+	// write reverted a `sessions rename` to the launch name. No concurrency was
+	// needed for it, and nothing failed visibly, because the daemon keeps the
+	// new name in memory until a restart re-reads the file.
+	//
+	// The daemon is the only writer of these, so a non-empty value on disk is
+	// always the more recent intent. An empty one means this is the first write
+	// and there is nothing to preserve. Description and its source move
+	// together or the pair can disagree about where the text came from.
+	if existing.Name != "" {
+		merged.Name = existing.Name
+	}
+	if existing.Description != "" || existing.DescriptionSource != "" {
+		merged.Description = existing.Description
+		merged.DescriptionSource = existing.DescriptionSource
+	}
+
 	// Continuation lineage is written by the daemon at creation, but only the
 	// structured runners carry it in their own configuration; the PTY runner
 	// rebuilds metadata without it. Preferring the on-disk value keeps a
