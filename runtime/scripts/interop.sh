@@ -14,6 +14,7 @@ DAEMON_OUT=/tmp/gorunner-daemon.out
 runner_pid=
 daemon_pid=
 cleanup() {
+  local status=$?
   if [[ -n "$daemon_pid" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
     kill -TERM "$daemon_pid" 2>/dev/null || true
     wait "$daemon_pid" 2>/dev/null || true
@@ -22,12 +23,68 @@ cleanup() {
     kill -TERM "$runner_pid" 2>/dev/null || true
     wait "$runner_pid" 2>/dev/null || true
   fi
+  # The runner log is the only record of why the runner side failed. It used to
+  # be captured to $RUNNER_OUT and never read by anything, so an interop failure
+  # discarded exactly the evidence needed to explain it.
+  if [[ "$status" -ne 0 ]]; then
+    echo "interop failed (exit $status); captured process logs follow" >&2
+    local log
+    for log in "$RUNNER_OUT" "$DAEMON_OUT"; do
+      if [[ -f "$log" ]]; then
+        printf -- '--- %s (last 50 lines) ---\n' "$log" >&2
+        tail -n 50 "$log" >&2 || true
+      else
+        printf -- '--- %s (not created) ---\n' "$log" >&2
+      fi
+    done
+  fi
+  return $status
 }
 trap cleanup EXIT
 
-if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | tail -n +2 | grep -q .; then
-  echo "refusing to use occupied port $PORT" >&2
+# `lsof` missing or failing must never be read as "the port is free": the next
+# thing this script does is `rm -rf` fixed state directories, and doing that
+# while a previous run's daemon/runner is still live destroys its state out from
+# under it. Treat only an explicit "no listener" answer as free.
+if ! command -v lsof >/dev/null 2>&1; then
+  echo "interop: lsof is required to prove port $PORT is free before wiping state" >&2
   exit 1
+fi
+set +e
+lsof_output="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null)"
+lsof_status=$?
+set -e
+# Drop lsof's header row; whatever remains is a real listener.
+port_listeners="$(printf '%s\n' "$lsof_output" | tail -n +2)"
+# lsof exits 1 both for "nothing matched" and for some errors; it only counts as
+# "free" when it also produced no output. Any other status is unexplained.
+if [[ "$lsof_status" -gt 1 ]]; then
+  echo "interop: lsof failed (exit $lsof_status); cannot prove port $PORT is free" >&2
+  exit 1
+fi
+if [[ -n "$port_listeners" ]]; then
+  echo "refusing to use occupied port $PORT" >&2
+  printf '%s\n' "$port_listeners" >&2
+  exit 1
+fi
+
+# Even with the port free, a previous run's runner can still be holding sockets
+# in the fixed state directory. Removing those files would strand a live
+# process, so refuse rather than wipe.
+if [[ -d "$STATE" ]]; then
+  live_state_sockets=""
+  for state_socket in "$STATE"/*.sock; do
+    [[ -S "$state_socket" ]] || continue
+    if lsof -- "$state_socket" >/dev/null 2>&1; then
+      live_state_sockets="${live_state_sockets}${state_socket}"$'\n'
+    fi
+  done
+  if [[ -n "$live_state_sockets" ]]; then
+    echo "interop: refusing to wipe $STATE; these sockets are still open by a live process:" >&2
+    printf '%s' "$live_state_sockets" >&2
+    echo "interop: stop the leftover runner/daemon first" >&2
+    exit 1
+  fi
 fi
 
 # These are fixed disposable paths, never the user's default Sessions state.
@@ -201,3 +258,6 @@ find "$STATE" -maxdepth 1 \( -type f -o -type s \) -print | sort
 
 echo '$ tail -n 5 /tmp/gorunner-daemon.out'
 tail -n 5 "$DAEMON_OUT"
+
+echo '$ tail -n 5 /tmp/gorunner-runner.out'
+tail -n 5 "$RUNNER_OUT"

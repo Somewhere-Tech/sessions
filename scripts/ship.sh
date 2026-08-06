@@ -81,27 +81,66 @@ if [[ ! -d "$SRC" ]]; then
   exit 2
 fi
 
-# Atomic-ish swap into /Applications. We rename the old bundle out of
-# the way before deleting it, so a Spotlight reindex or a still-running
-# instance's file handles can't half-delete the previous install. The
-# running app keeps reading from its already-mapped pages even after
-# its on-disk bundle moves to /tmp — macOS handles this fine.
+# Swap into /Applications without ever being in a state that has no
+# working install. The old ordering moved the previous bundle aside and
+# BACKGROUNDED its `rm -rf` before `cp -R` had populated the new one, so
+# a copy that failed midway (disk full, permissions, interrupted build)
+# left a half-populated /Applications/Sessions.app and raced a delete
+# against the only rollback copy.
+#
+# New order: copy the fresh bundle to a staging path on the SAME volume,
+# verify it, rename the old install aside, rename staging into place, and
+# only then schedule the old bundle's deletion. Any failure before the
+# final rename restores the previous install untouched.
+STAGING="/Applications/.${APP_NAME}.ship-$$.app"
+STASH=""
+
+cleanup_ship() {
+  status=$?
+  if [[ -d "$STAGING" ]]; then
+    rm -rf "$STAGING"
+  fi
+  # If we moved the old install aside but never completed the swap, put it back.
+  if [[ $status -ne 0 && -n "$STASH" && -d "$STASH" && ! -d "$DST" ]]; then
+    echo "✗ swap failed; restoring previous install from ${STASH}" >&2
+    mv "$STASH" "$DST" || echo "✗ could not restore ${DST} from ${STASH}" >&2
+  fi
+  return $status
+}
+trap cleanup_ship EXIT
+
+echo "→ staging ${SRC##*/} in /Applications…"
+rm -rf "$STAGING"
+cp -R "$SRC" "$STAGING"
+
+# Prove the staged bundle is actually a bundle before it replaces a
+# working install. A truncated copy must never become the install.
+if [[ ! -f "$STAGING/Contents/Info.plist" || ! -x "$STAGING/Contents/MacOS/${PROCESS_NAME}" ]]; then
+  echo "✗ staged bundle is incomplete (missing Info.plist or Contents/MacOS/${PROCESS_NAME})." >&2
+  echo "  ${DST} was left untouched." >&2
+  exit 2
+fi
+
 if [[ -d "$DST" ]]; then
   STAMP="$(date +%s)"
-  STASH="/tmp/${APP_NAME}.${STAMP}.app"
+  STASH="/tmp/${APP_NAME}.${STAMP}.$$.app"
   echo "→ moving previous install aside (${STASH})…"
   mv "$DST" "$STASH"
-  # Defer cleanup if the app is running so the OS still has the old
-  # bundle on disk for any late-binding reads (icons, plist).
+fi
+
+echo "→ installing ${APP_NAME}.app…"
+mv "$STAGING" "$DST"
+
+# The new install is in place; the previous bundle is now only a rollback
+# copy and is safe to remove. Defer cleanup if the app is running so the
+# OS still has the old bundle on disk for late-binding reads (icons, plist).
+if [[ -n "$STASH" && -d "$STASH" ]]; then
   if is_running; then
     (sleep 30 && rm -rf "$STASH") &
   else
     rm -rf "$STASH" &
   fi
 fi
-
-echo "→ copying ${SRC##*/} to /Applications…"
-cp -R "$SRC" "$DST"
 
 echo
 echo "✓ shipped ${DST}"
