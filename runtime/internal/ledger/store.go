@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	_ "modernc.org/sqlite"
 )
 
@@ -64,12 +66,42 @@ type retentionWriter struct{ store *Store }
 type attributionWriter struct{ store *Store }
 
 // DefaultPath resolves the ledger outside Sessions' runner state directory.
+//
+// The root is the platform user state root, not a hardcoded macOS layout: this
+// is shared code reached on every default daemon boot, and the previous literal
+// ~/Library/Application Support built a nonsense C:\Users\<user>\Library\...
+// tree on Windows for the one file that must survive every crash.
 func DefaultPath() (string, error) {
+	root, err := state.UserStateRootFromEnv()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(root, "ledger", "lanes.sqlite3")
+	if _, statErr := os.Stat(path); statErr == nil {
+		return path, nil
+	}
+	// An installation that already wrote the macOS-only Application Support
+	// ledger keeps using it. Starting an empty ledger beside it would silently
+	// drop the durable record of every lane that machine has ever run.
+	if legacy, ok := legacyDarwinLedgerPath(); ok {
+		if _, statErr := os.Stat(legacy); statErr == nil {
+			return legacy, nil
+		}
+	}
+	return path, nil
+}
+
+// legacyDarwinLedgerPath is the pre-parity macOS location. It is consulted for
+// adoption only and is never created.
+func legacyDarwinLedgerPath() (string, bool) {
+	if goruntime.GOOS != "darwin" {
+		return "", false
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
+		return "", false
 	}
-	return filepath.Join(home, "Library", "Application Support", "sessions", "ledger", "lanes.sqlite3"), nil
+	return filepath.Join(home, "Library", "Application Support", "sessions", "ledger", "lanes.sqlite3"), true
 }
 
 // ResolvePath applies SESSIONS_LEDGER_PATH unless Options.Path is explicit.

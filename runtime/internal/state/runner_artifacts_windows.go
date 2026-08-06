@@ -5,7 +5,6 @@ package state
 import (
 	"errors"
 	"os"
-	"strings"
 )
 
 func RunnerArtifactIDs(directory string) ([]string, error) {
@@ -18,11 +17,17 @@ func RunnerArtifactIDs(directory string) ([]string, error) {
 	}
 	ids := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".manifest.json") {
+		if entry.IsDir() {
 			continue
 		}
-		ids = append(ids, strings.TrimSuffix(name, ".json"))
+		// Windows has no socket artifact to key off, so metadata names are the
+		// discovery key. RunnerIDFromMetadataName owns the sidecar exclusions
+		// so this cannot drift behind a new Paths field.
+		id, ok := RunnerIDFromMetadataName(entry.Name())
+		if !ok {
+			continue
+		}
+		ids = append(ids, id)
 	}
 	return ids, nil
 }

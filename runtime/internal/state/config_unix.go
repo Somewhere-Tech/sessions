@@ -12,6 +12,10 @@ func defaultStateRoot(home string) string {
 	return filepath.Join(home, ".local", "state", "sessions")
 }
 
+func userConfigRoot(home string) string {
+	return filepath.Join(home, ".config", "sessions")
+}
+
 func serviceDefinitionsDir(home string) string {
 	return filepath.Join(home, "Library", "LaunchAgents")
 }

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/discovery"
+	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
@@ -607,8 +608,16 @@ func verifyMachineCredential(endpoint, token string) (nearbyHealth, error) {
 	return fetchNearbyHealth(context.Background(), endpoint)
 }
 
+// machineStateRoot is the platform user state root that owns saved machines.
+// Rebuilding the Unix layout here made `sessions --machine NAME` look at a
+// nonexistent %USERPROFILE%\.local\state\sessions on Windows, so a machine
+// registered on that host could never be reached again from its own CLI.
+func machineStateRoot(home string) string {
+	return sessionstate.UserStateRootFor(home)
+}
+
 func machineRegistryPath(home string) string {
-	return filepath.Join(home, ".local", "state", "sessions", "clients.json")
+	return filepath.Join(machineStateRoot(home), "clients.json")
 }
 
 // maxMachineIDLength bounds a peer-supplied stable id. Real ids are UUIDs or
@@ -656,7 +665,7 @@ func validateMachineID(value string) error {
 }
 
 func savedMachineTokenPath(home, machineID string) string {
-	return filepath.Join(home, ".local", "state", "sessions", "clients", machineID+".token")
+	return filepath.Join(machineStateRoot(home), "clients", machineID+".token")
 }
 
 // machineTokenPathFor is the only safe way to compute a credential path: it
@@ -671,7 +680,7 @@ func machineTokenPathFor(home, machineID string) (string, error) {
 }
 
 func clientIDPath(home string) string {
-	return filepath.Join(home, ".local", "state", "sessions", "client-id")
+	return filepath.Join(machineStateRoot(home), "client-id")
 }
 
 func loadOrCreateClientID(home string) (string, error) {

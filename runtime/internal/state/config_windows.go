@@ -9,12 +9,23 @@ import (
 	"strings"
 )
 
-func defaultStateRoot(home string) string {
+func sessionsAppRoot(home string) string {
 	localAppData := os.Getenv("LOCALAPPDATA")
 	if localAppData == "" {
 		localAppData = filepath.Join(home, "AppData", "Local")
 	}
-	return filepath.Join(localAppData, "Sessions", "state")
+	return filepath.Join(localAppData, "Sessions")
+}
+
+func defaultStateRoot(home string) string {
+	return filepath.Join(sessionsAppRoot(home), "state")
+}
+
+// userConfigRoot is the Windows adapter for the Unix ~/.config/sessions tree.
+// It sits beside the state root rather than under it so a state reset cannot
+// discard configuration or the backup key.
+func userConfigRoot(home string) string {
+	return filepath.Join(sessionsAppRoot(home), "config")
 }
 
 func serviceDefinitionsDir(home string) string {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 )
@@ -39,6 +40,34 @@ func For(dir, id string) Paths {
 		ClaudeP:      base + ".claudep.jsonl",
 		Continuation: base + ".continuation.json",
 	}
+}
+
+// runnerSidecarJSONSuffixes are the non-metadata ".json" artifacts For() writes
+// beside "<id>.json". Discovery on a host with no socket artifact keys off the
+// metadata name, so every suffix added to Paths must be listed here or each
+// session that has one produces a phantom runner id.
+var runnerSidecarJSONSuffixes = []string{".manifest.json", ".continuation.json"}
+
+// RunnerIDFromMetadataName returns the runner id for a "<id>.json" metadata
+// file and reports false for anything else in the runner state directory,
+// including the sidecars listed above. A phantom id survives as a permanent
+// join error out of Registry.Discover and buries the real lost-session signal,
+// so this refuses rather than guesses.
+func RunnerIDFromMetadataName(name string) (string, bool) {
+	if !strings.HasSuffix(name, ".json") {
+		return "", false
+	}
+	for _, suffix := range runnerSidecarJSONSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return "", false
+		}
+	}
+	id := strings.TrimSuffix(name, ".json")
+	// A leading dot is an in-progress WriteMetadata temp file, never an id.
+	if id == "" || strings.HasPrefix(id, ".") {
+		return "", false
+	}
+	return id, true
 }
 
 // DefaultRunnerDir implements ~/.local/state/sessions/runners without

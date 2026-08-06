@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 const (
@@ -58,10 +60,15 @@ type Status struct {
 	LastSessionCount int `json:"last_session_count"`
 }
 
+// ConfigPath is Sessions' own backup configuration. It follows the platform
+// user configuration root rather than a hardcoded XDG path, so a Windows host
+// does not create a literal %USERPROFILE%\.config tree.
 func ConfigPath(home string) string {
-	return filepath.Join(home, ".config", "sessions", "backup.json")
+	return filepath.Join(state.UserConfigRootFor(home), "backup.json")
 }
 
+// SomewhereConfigPath is deliberately not platform-adapted: it is the somewhere
+// CLI's own file, and Sessions must read it where that CLI writes it.
 func SomewhereConfigPath(home string) string {
 	return filepath.Join(home, ".somewhere", "config.json")
 }

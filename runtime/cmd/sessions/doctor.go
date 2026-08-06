@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -28,24 +29,8 @@ type doctorRow struct {
 const legacyRunnerLabelPrefix = "tech.pretty-pty.runner."
 
 func (a *app) cmdDoctor() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, "/usr/bin/true")
-	terminal, err := pty.StartWithSize(command, &pty.Winsize{Cols: 80, Rows: 24})
-	if err != nil {
-		return fail(2, "PTY preflight failed: %s; run xcode-select --install", err)
-	}
-	// Closing the PTY master before the tiny child has actually exited sends
-	// SIGHUP on macOS. That made doctor diagnose a broken PTY on otherwise
-	// healthy installs. Wait for the child first; the context still bounds the
-	// probe, and the master is closed immediately afterwards.
-	waitErr := command.Wait()
-	_ = terminal.Close()
-	if waitErr != nil && ctx.Err() == nil {
-		return fail(2, "PTY preflight failed: %s; run xcode-select --install", waitErr)
-	}
-	if ctx.Err() != nil {
-		return fail(2, "PTY preflight failed: test PTY timed out; run xcode-select --install")
+	if err := ptyPreflight(); err != nil {
+		return err
 	}
 	sessions, err := a.listSessions(false)
 	if err != nil {
@@ -58,18 +43,27 @@ func (a *app) cmdDoctor() error {
 	processTypePattern := regexp.MustCompile(`<key>ProcessType</key>\s*<string>([^<]+)</string>`)
 	rows := make([]doctorRow, 0, len(sessions))
 	for _, value := range sessions {
-		qos := runnerQoS(a.home, value.ID, processTypePattern)
+		// Per-session service QoS is a launchd concept. The Windows adapter is
+		// a logon supervisor with no ProcessType, so reporting "no-plist"
+		// there would invent a fault; say the probe does not apply instead.
+		qos := probeNotApplicable
+		if runtime.GOOS == "darwin" {
+			qos = runnerQoS(a.home, value.ID, processTypePattern)
+		}
 		spawn := "dead?"
 		if value.PID != 0 {
 			// The runner is intentionally independent of the daemon and the
 			// app. It may be re-parented after either one updates, so its
 			// parent command is not evidence of how the runner itself was
 			// launched. Inspect the durable runner process instead.
-			spawn = classifyRunnerSpawn(psField("command=", value.PID))
+			spawn = probeNotApplicable
+			if canProbeProcessCommand() {
+				spawn = classifyRunnerSpawn(psField("command=", value.PID))
+			}
 		}
 		rows = append(rows, doctorRow{
 			ID: value.ID, Tool: toolOfSession(value), Size: fmt.Sprintf("%dx%d", value.Cols, value.Rows),
-			QoS: qos, Spawn: spawn, OK: qos == "Interactive" && (spawn == "native" || spawn == "dist"),
+			QoS: qos, Spawn: spawn, OK: doctorRowOK(qos, spawn),
 		})
 	}
 	if a.wantJSON {
@@ -97,12 +91,79 @@ func (a *app) cmdDoctor() error {
 	}
 	fmt.Fprintf(a.stdout, "\n%d of %d sessions need recreate ", bad, len(rows))
 	if bad > 0 {
-		io.WriteString(a.stdout, "(throttled QoS and/or slow tsx spawn — recreate them or do a full app restart for the fast path).\n")
+		io.WriteString(a.stdout, doctorUnhealthyAdvice()+"\n")
 		a.exitCode = 1
 	} else {
-		io.WriteString(a.stdout, "— all healthy (Interactive QoS, fast dist spawn).\n")
+		io.WriteString(a.stdout, doctorHealthySummary()+"\n")
 	}
 	return nil
+}
+
+// probeNotApplicable marks a column whose probe has no meaning on this host,
+// as opposed to a probe that ran and found nothing.
+const probeNotApplicable = "n/a"
+
+// ptyPreflight exercises the Unix PTY adapter. Windows uses ConPTY and has no
+// /usr/bin/true, so running this there reported a broken terminal and told the
+// user to install Xcode command line tools on a machine that has no Xcode.
+func ptyPreflight() error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	hint := ""
+	if runtime.GOOS == "darwin" {
+		hint = "; run xcode-select --install"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "/usr/bin/true")
+	terminal, err := pty.StartWithSize(command, &pty.Winsize{Cols: 80, Rows: 24})
+	if err != nil {
+		return fail(2, "PTY preflight failed: %s%s", err, hint)
+	}
+	// Closing the PTY master before the tiny child has actually exited sends
+	// SIGHUP on macOS. That made doctor diagnose a broken PTY on otherwise
+	// healthy installs. Wait for the child first; the context still bounds the
+	// probe, and the master is closed immediately afterwards.
+	waitErr := command.Wait()
+	_ = terminal.Close()
+	if waitErr != nil && ctx.Err() == nil {
+		return fail(2, "PTY preflight failed: %s%s", waitErr, hint)
+	}
+	if ctx.Err() != nil {
+		return fail(2, "PTY preflight failed: test PTY timed out%s", hint)
+	}
+	return nil
+}
+
+// canProbeProcessCommand reports whether this host can be asked what command a
+// pid is running. Windows has no ps, and the Windows host evidence contract
+// deliberately does not collect process command lines.
+func canProbeProcessCommand() bool {
+	return runtime.GOOS != "windows"
+}
+
+// doctorRowOK treats a skipped probe as neutral: only a probe that actually ran
+// and found a problem marks a session as needing recreate.
+func doctorRowOK(qos, spawn string) bool {
+	if spawn != "native" && spawn != probeNotApplicable {
+		return false
+	}
+	return qos == "Interactive" || qos == probeNotApplicable
+}
+
+func doctorUnhealthyAdvice() string {
+	if runtime.GOOS == "darwin" {
+		return "(the runner is not the shipped sessions-runner and/or its service QoS is throttled — recreate those sessions, or restart Sessions, to get the current runtime)."
+	}
+	return "(the runner is not the shipped sessions-runner — recreate those sessions to get the current runtime)."
+}
+
+func doctorHealthySummary() string {
+	if runtime.GOOS == "darwin" {
+		return "— all healthy (Interactive QoS, native runner)."
+	}
+	return "— all healthy (native runner)."
 }
 
 func runnerQoS(home, id string, processTypePattern *regexp.Regexp) string {
@@ -120,6 +181,8 @@ func runnerQoS(home, id string, processTypePattern *regexp.Regexp) string {
 	return "no-plist"
 }
 
+// runnerPlistPaths is macOS-only; its callers are guarded by GOOS. The legacy
+// label remains in the list for the documented adoption window.
 func runnerPlistPaths(home, id string) []string {
 	launchAgents := filepath.Join(home, "Library", "LaunchAgents")
 	return []string{
@@ -128,15 +191,17 @@ func runnerPlistPaths(home, id string) []string {
 	}
 }
 
-func classifyRunnerSpawn(parentCommand string) string {
+// classifyRunnerSpawn names what is actually running as the session's runner.
+// The retired Node runtime's "dist"/"tsx-SLOW" classifications are gone: a
+// shipped Go install cannot spawn dist/runner.js or tsx, so those buckets could
+// only mislabel some unrelated process as a healthy or a slow Sessions runner.
+// Anything that is not the shipped sessions-runner is now reported as "other",
+// which is what it is.
+func classifyRunnerSpawn(runnerCommand string) string {
 	switch {
-	case strings.Contains(parentCommand, "sessions-runner"):
+	case strings.Contains(runnerCommand, "sessions-runner"):
 		return "native"
-	case strings.Contains(parentCommand, "dist/runner.js"):
-		return "dist"
-	case regexp.MustCompile(`\btsx\b`).MatchString(parentCommand):
-		return "tsx-SLOW"
-	case parentCommand != "":
+	case runnerCommand != "":
 		return "other"
 	default:
 		return "dead?"

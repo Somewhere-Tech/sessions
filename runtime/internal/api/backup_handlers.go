@@ -2,7 +2,11 @@ package api
 
 import (
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 func (s *Server) handleBackupRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
@@ -45,15 +49,38 @@ func (s *Server) handleBackupRoute(response http.ResponseWriter, request *http.R
 	}
 }
 
+// backupHome resolves the home directory whose Sessions configuration owns
+// backup settings.
+//
+// The home comes from the operating system rather than being reverse-derived
+// from the state root's spelling. The previous derivation asserted the literal
+// Unix ".../.local/state/sessions" shape, so on Windows — where the user state
+// root ends in "state" — it always reported false, server.backups was never
+// constructed, and every backup route answered 503 with no explanation.
+//
+// What remains is a containment check: this daemon reads and writes backup
+// configuration for a home only when its state root is that home's state root,
+// either by living inside the home or by being exactly the platform location
+// for it (a redirected %LOCALAPPDATA% can sit outside the profile directory).
 func backupHome(userStateRoot string) (string, bool) {
-	root := filepath.Clean(userStateRoot)
-	if filepath.Base(root) != "sessions" {
+	root := strings.TrimSpace(userStateRoot)
+	if root == "" {
 		return "", false
 	}
-	stateDir := filepath.Dir(root)
-	localDir := filepath.Dir(stateDir)
-	if filepath.Base(stateDir) != "state" || filepath.Base(localDir) != ".local" {
+	home, err := os.UserHomeDir()
+	if err != nil {
 		return "", false
 	}
-	return filepath.Dir(localDir), true
+	home = filepath.Clean(home)
+	if home == "" || home == "." {
+		return "", false
+	}
+	root = filepath.Clean(root)
+	if root == filepath.Clean(state.UserStateRootFor(home)) {
+		return home, true
+	}
+	if !pathWithinBase(canonicalPath(root), canonicalPath(home)) {
+		return "", false
+	}
+	return home, true
 }

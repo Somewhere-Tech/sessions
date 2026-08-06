@@ -698,8 +698,11 @@ not claim to resurrect process memory or uncommitted worktree bytes
 ## State on disk
 
 The default Unix state root is `~/.local/state/sessions`; Windows uses
-`%LOCALAPPDATA%\Sessions\state`. Both have a `runners/` subdirectory
-(`runtime/internal/state/config.go`). `SESSIONS_STATE_DIR` relocates runner,
+`%LOCALAPPDATA%\Sessions\state`. Both have a `runners/` subdirectory. Sessions'
+own configuration root is `~/.config/sessions` on Unix and
+`%LOCALAPPDATA%\Sessions\config` on Windows. Derive both from
+`state.UserStateRootFor`/`state.UserConfigRootFor` rather than rebuilding either
+layout by hand (`runtime/internal/state/config.go`). `SESSIONS_STATE_DIR` relocates runner,
 token, and open-sentinel state for a scratch daemon, while user settings stay
 under the default user state root; the override is mandatory for scratch work
 so the daily driver's registry is not reused (`docs/DEV.md`).
@@ -712,9 +715,10 @@ so the daily driver's registry is not reused (`docs/DEV.md`).
 | Approved machine metadata and per-device credentials | `~/.local/state/sessions/clients.json` plus `clients/<machine-id>.token`; private files on Unix and DPAPI-protected credential files on Windows | `runtime/cmd/sessions/machines.go`, `runtime/internal/tokenstore/` |
 | Search index | `~/.local/state/sessions/search-index.db` | `runtime/internal/api/search_handlers.go` |
 | Integration errors | `~/.local/state/sessions/errors.jsonl` | `runtime/internal/integrations/errors.go` |
-| Lane ledger | `~/Library/Application Support/sessions/ledger/lanes.sqlite3` | `runtime/internal/ledger/store.go` |
-| Global idle hook | `~/.config/sessions/hooks.json` | `runtime/internal/state/config.go` |
-| Backup configuration | `~/.config/sessions/backup.json` | `runtime/internal/backup/config.go` |
+| Files uploaded to a session | `~/.local/state/sessions/uploads/<stem>-<8 hex><ext>`; an explicit `SESSIONS_STATE_DIR` keeps them inside that scratch state | `runtime/internal/api/files.go` |
+| Lane ledger | `<user state root>/ledger/lanes.sqlite3`; an existing `~/Library/Application Support/sessions/ledger/lanes.sqlite3` is adopted rather than abandoned | `runtime/internal/ledger/store.go` |
+| Global idle hook | `<user config root>/hooks.json` | `runtime/internal/state/config.go` |
+| Backup configuration and encryption key | `<user config root>/{backup.json,backup.key}` | `runtime/internal/backup/config.go`, `runtime/internal/backup/encrypt.go` |
 | Runner LaunchAgents on macOS | `~/Library/LaunchAgents/tech.somewhere.sessions.runner.<id>.plist` | `runtime/internal/state/registry.go` |
 
 The event log is persistent and trims toward its lower bound after crossing its

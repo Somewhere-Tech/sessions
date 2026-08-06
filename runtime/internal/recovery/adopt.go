@@ -286,12 +286,40 @@ func readConversationIdentity(path string) (provider, cwd string, codex bool, er
 		}
 	}
 	if cwd == "" && !codex {
-		cwd = strings.ReplaceAll(filepath.Base(filepath.Dir(path)), "-", "/")
-		if cwd != "" && !strings.HasPrefix(cwd, "/") {
-			cwd = "/" + cwd
-		}
+		cwd = decodeClaudeProjectDirName(filepath.Base(filepath.Dir(path)))
 	}
 	return provider, cwd, codex, nil
+}
+
+// decodeClaudeProjectDirName inverts the project-directory encoding produced by
+// watch.EncodeClaudeCWD, which folds "/", "\\", and ":" to "-". A Windows cwd
+// therefore arrives as "C--Users-x-proj"; decoding that with the Unix rule
+// alone yielded "/C/Users/x/proj" and adoption resolved a directory that does
+// not exist on the host that recorded it.
+//
+// The decision is made on the encoded shape rather than the running GOOS so a
+// transcript copied between machines still resolves to the cwd it was written
+// with. The encoding is lossy — a dash in the original path is indistinguishable
+// from a separator — so this stays a best-effort fallback used only when the
+// transcript itself carried no cwd.
+func decodeClaudeProjectDirName(base string) string {
+	if base == "" {
+		return ""
+	}
+	// "C--Users-x-proj" can only have come from a Windows drive-qualified path:
+	// a POSIX absolute path always encodes with a leading "-".
+	if len(base) >= 3 && isASCIILetter(base[0]) && base[1] == '-' && base[2] == '-' {
+		return string(base[0]) + `:\` + strings.ReplaceAll(base[3:], "-", `\`)
+	}
+	decoded := strings.ReplaceAll(base, "-", "/")
+	if !strings.HasPrefix(decoded, "/") {
+		decoded = "/" + decoded
+	}
+	return decoded
+}
+
+func isASCIILetter(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z')
 }
 
 type AdoptOptions struct {

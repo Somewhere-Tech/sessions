@@ -353,6 +353,23 @@ func filesystemErrorCode(err error) string {
 	}
 }
 
+// uploadsDir resolves the uploads directory from the daemon's own
+// configuration instead of rebuilding the Unix layout inline. A Windows host
+// therefore writes under %LOCALAPPDATA%\Sessions\state, and a daemon started
+// with an explicit SESSIONS_STATE_DIR keeps its uploads inside that isolated
+// state instead of the installed daemon's. CONTRACT/state-dir.md places uploads
+// under the user state root by default, which is what an unset override gives.
+func (s *Server) uploadsDir(home string) string {
+	root := s.config.UserStateRoot
+	if s.config.StateRoot != "" && root != "" && s.config.StateRoot != root {
+		root = s.config.StateRoot
+	}
+	if root == "" {
+		root = state.UserStateRootFor(home)
+	}
+	return filepath.Join(root, "uploads")
+}
+
 func (s *Server) handleUpload(response http.ResponseWriter, request *http.Request, corsOrigin string) {
 	filename := request.Header.Get("X-Sessions-Filename")
 	if filename == "" {
@@ -372,9 +389,15 @@ func (s *Server) handleUpload(response http.ResponseWriter, request *http.Reques
 		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
 		return
 	}
-	uploadsDir := filepath.Join(home, ".local", "state", "sessions", "uploads")
+	uploadsDir := s.uploadsDir(home)
 	canonicalHome := canonicalPath(home)
-	if !pathWithinBase(canonicalPath(uploadsDir), canonicalHome) {
+	canonicalUploads := canonicalPath(uploadsDir)
+	if !pathWithinBase(canonicalUploads, canonicalHome) {
+		s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "upload directory outside home"}, corsOrigin)
+		return
+	}
+	relativeUploads, err := filepath.Rel(canonicalHome, canonicalUploads)
+	if err != nil {
 		s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "upload directory outside home"}, corsOrigin)
 		return
 	}
@@ -384,7 +407,6 @@ func (s *Server) handleUpload(response http.ResponseWriter, request *http.Reques
 		return
 	}
 	defer root.Close()
-	relativeUploads := filepath.Join(".local", "state", "sessions", "uploads")
 	if err := root.MkdirAll(relativeUploads, 0o700); err != nil {
 		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
 		return

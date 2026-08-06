@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
@@ -33,8 +34,11 @@ type KeySetup struct {
 	Reused         bool
 }
 
+// KeyPath follows the platform user configuration root so the backup key lands
+// beside backup.json on every host. Losing track of this file means every
+// existing encrypted backup reads as ErrWrongKeyOrCorruptedFile.
 func KeyPath(home string) string {
-	return filepath.Join(home, ".config", "sessions", "backup.key")
+	return filepath.Join(state.UserConfigRootFor(home), "backup.key")
 }
 
 func keyPathForConfig(configPath string) string {
