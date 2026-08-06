@@ -91,7 +91,21 @@ private hosted-service designs do not belong in this repository.
 9. **Keep routine states calm.** Finished, resumable, archived, and unavailable
    optional integrations are not security emergencies. Reserve danger
    treatment for meaningful irreversible actions.
-10. **Keep private planning private.** Public documentation covers shipped
+10. **Scope instead of guarding.** Before adding a check that refuses an
+    action, ask whether Sessions can actually guarantee what the check
+    protects. If it can, that is an invariant: enforce it and pin it with a
+    test. If it cannot, a refusal claims a guarantee that does not exist, and
+    it will grow the surface a false guarantee grows -- an override flag, a
+    set of not-sure states, and a slow accumulation of edge cases. Reduce the
+    claim instead, or make the consequence survivable and report the fact
+    rather than gating on it. Sessions cannot make a provider conversation
+    exclusive, so it does not refuse a second one; it keeps an append-only
+    copy so a collision is survivable, and says where else the conversation is
+    open (`runtime/internal/recovery/adopt.go`,
+    `runtime/internal/watch/transcript_mirror.go`). A guard that compensates
+    for an inference the code cannot make reliably is a signal that the scope
+    is too wide, not that another check is needed.
+11. **Keep private planning private.** Public documentation covers shipped
     behavior, public contracts, contributor guidance, security/privacy, and
     broad roadmap themes. Run `scripts/check-public-tree.sh` before delivery.
 
