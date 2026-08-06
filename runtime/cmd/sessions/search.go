@@ -282,6 +282,7 @@ func (a *app) searchApprovedFleet(
 	successes := 0
 	rejection := ""
 	seen := make(map[string]int)
+	rolledUp := make(map[string]int)
 	for index, target := range targets {
 		outcome := outcomes[index]
 		state := historysearch.MachineState{
@@ -307,6 +308,37 @@ func (a *app) searchApprovedFleet(
 		successes++
 		health.recordSuccess(target.Alias)
 		result.Machines = append(result.Machines, state)
+		// The session rollup answers the question an agent actually asks --
+		// which session was that -- so it has to survive the fleet merge like
+		// matches do. Without this it was computed per machine and thrown
+		// away, and only a single-daemon caller ever saw it.
+		result.TotalHits += outcome.response.TotalHits
+		if outcome.response.RollupPartial {
+			result.RollupPartial = true
+		}
+		if result.EffectiveQuery == "" {
+			result.EffectiveQuery = outcome.response.EffectiveQuery
+			result.MatchMode = outcome.response.MatchMode
+		} else if outcome.response.EffectiveQuery != "" &&
+			outcome.response.EffectiveQuery != result.EffectiveQuery {
+			// Two machines interpreted the same query differently, which means
+			// they are running different versions. Saying which one produced
+			// these results would be a guess, so say neither.
+			result.EffectiveQuery = ""
+			result.MatchMode = ""
+			result.RollupPartial = true
+		}
+		for _, rollup := range outcome.response.Sessions {
+			rollup.Machine = target.Alias
+			key := qualifiedHistoryReference(target.Alias, rollup.SessionID)
+			rollup.SessionID = key
+			if previous, duplicate := rolledUp[key]; duplicate {
+				result.Sessions[previous] = mergeSessionHits(result.Sessions[previous], rollup)
+				continue
+			}
+			rolledUp[key] = len(result.Sessions)
+			result.Sessions = append(result.Sessions, rollup)
+		}
 		for _, match := range outcome.response.Matches {
 			match.MachineAlias = target.Alias
 			match.Reference = qualifiedHistoryReference(target.Alias, match.SessionID)
@@ -335,7 +367,45 @@ func (a *app) searchApprovedFleet(
 		result.Matches = result.Matches[:limit]
 	}
 	result.Total = len(result.Matches)
+	result.TotalSessions = len(result.Sessions)
+	sortFleetSessionHits(result.Sessions)
 	return result, nil
+}
+
+// mergeSessionHits folds one session observed on two machines into a single
+// row. The same conversation reachable from two places is one answer to
+// "which session", not two.
+func mergeSessionHits(into, from historysearch.SessionHits) historysearch.SessionHits {
+	into.Hits += from.Hits
+	into.TitleMatch = into.TitleMatch || from.TitleMatch
+	if from.Score > into.Score {
+		into.Score = from.Score
+	}
+	if into.FirstHitAt == "" || (from.FirstHitAt != "" && from.FirstHitAt < into.FirstHitAt) {
+		into.FirstHitAt = from.FirstHitAt
+	}
+	if from.LastHitAt > into.LastHitAt {
+		into.LastHitAt = from.LastHitAt
+	}
+	if len(into.Snippets) == 0 {
+		into.Snippets = from.Snippets
+	}
+	return into
+}
+
+// sortFleetSessionHits puts the strongest answer first. A session whose own
+// name satisfied the query outranks one that merely mentioned the words,
+// because someone who remembers a title remembers it exactly.
+func sortFleetSessionHits(sessions []historysearch.SessionHits) {
+	sort.SliceStable(sessions, func(i, j int) bool {
+		if sessions[i].TitleMatch != sessions[j].TitleMatch {
+			return sessions[i].TitleMatch
+		}
+		if sessions[i].Score != sessions[j].Score {
+			return sessions[i].Score > sessions[j].Score
+		}
+		return sessions[i].Hits > sessions[j].Hits
+	})
 }
 
 // fleetSearchFailure explains why nothing answered. A rejected query is never
