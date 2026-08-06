@@ -1,11 +1,12 @@
 package watch
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -92,10 +93,12 @@ type codexTail struct {
 	path          string
 	fileInfo      os.FileInfo
 	offset        int64
-	buffer        string
-	lineIndex     int
+	lines         lineBuffer
 	anchor        readAnchor
 	expectedInput string
+
+	reportedSkips int
+	skipReported  bool
 }
 
 // WatchCodexRollout starts a backfilling Codex rollout watcher.
@@ -197,6 +200,7 @@ func (tail *codexTail) attach(path string) {
 		tail.hints.remove(tail.path)
 	}
 	tail.path = path
+	tail.skipReported = false
 	tail.resetReadState()
 	tail.fileInfo = nil
 	tail.watcher.setPath(path)
@@ -214,8 +218,7 @@ func (tail *codexTail) detach() {
 
 func (tail *codexTail) resetReadState() {
 	tail.offset = 0
-	tail.buffer = ""
-	tail.lineIndex = 0
+	tail.lines.reset()
 	tail.anchor.reset()
 }
 
@@ -325,21 +328,24 @@ func boundedBackfillStart(buffer []byte, windowStart int64) int {
 }
 
 func (tail *codexTail) consume(chunk []byte) {
-	tail.buffer += string(chunk)
+	// Same bounded carry as the Claude tail: a rollout record longer than the
+	// bound is skipped and counted rather than held whole. The record position is
+	// taken from the buffer's own record count so that a skipped record still
+	// advances it -- the synthesized event ids are "<basename>:<index>", and an
+	// index that silently shifted would rename every event after the skip.
+	defer tail.reportSkippedRecords()
+	tail.lines.feed(chunk)
 	for {
-		newline := strings.IndexByte(tail.buffer, '\n')
-		if newline < 0 {
+		line, ok := tail.lines.next()
+		if !ok {
 			return
 		}
-		line := tail.buffer[:newline]
-		tail.buffer = tail.buffer[newline+1:]
-		lineIndex := tail.lineIndex
-		tail.lineIndex++
-		if strings.TrimSpace(line) == "" {
+		lineIndex := tail.lines.records - 1
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var decoded map[string]any
-		if json.Unmarshal([]byte(line), &decoded) != nil {
+		if json.Unmarshal(line, &decoded) != nil {
 			continue
 		}
 		normalized := NormalizeCodexRolloutLine(decoded, CodexNormalizeContext{
@@ -355,4 +361,22 @@ func (tail *codexTail) consume(chunk []byte) {
 			return
 		}
 	}
+}
+
+// reportSkippedRecords mirrors the Claude tail: count every skip, surface it
+// once per attached rollout, and leave the provider file untouched.
+func (tail *codexTail) reportSkippedRecords() {
+	if tail.lines.skipped == tail.reportedSkips {
+		return
+	}
+	tail.watcher.noteSkippedRecords(tail.lines.skipped - tail.reportedSkips)
+	tail.reportedSkips = tail.lines.skipped
+	if tail.skipReported {
+		return
+	}
+	tail.skipReported = true
+	tail.watcher.emitError(tail.ctx, fmt.Errorf(
+		"skipped a record longer than %d bytes in %s; it stays in the rollout file and is counted, later records still stream",
+		tail.lines.limit(), tail.path,
+	))
 }

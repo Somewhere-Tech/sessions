@@ -1,6 +1,7 @@
 package watch
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -36,6 +37,12 @@ type ClaudeWatcherOptions struct {
 	MirrorPath     string
 	SessionID      string
 	MirrorCapBytes int64
+
+	// MaxRecordBytes bounds one JSONL record held in memory while the tail waits
+	// for its newline. Zero selects maxTranscriptRecordBytes, which is what every
+	// production caller wants; fixtures set it small so a pathological record can
+	// be exercised without writing a 64 MiB file.
+	MaxRecordBytes int
 }
 
 type claudeTail struct {
@@ -49,12 +56,14 @@ type claudeTail struct {
 	path        string
 	fileInfo    os.FileInfo
 	offset      int64
-	buffer      string
+	lines       lineBuffer
 	anchor      readAnchor
 
-	emitted      map[string]struct{}
-	emittedOrder []string
-	unresolved   bool
+	emitted       map[string]struct{}
+	emittedOrder  []string
+	unresolved    bool
+	reportedSkips int
+	skipReported  bool
 
 	mirror      *TranscriptMirror
 	mirrorWrote bool
@@ -89,6 +98,7 @@ func WatchClaudeSession(options ClaudeWatcherOptions) (*FileWatcher, error) {
 		sessionID:   options.ClaudeSessionID,
 		emitted:     make(map[string]struct{}),
 	}
+	tail.lines.max = options.MaxRecordBytes
 	if options.MirrorPath != "" {
 		mirror, err := OpenTranscriptMirror(TranscriptMirrorOptions{
 			Path:              options.MirrorPath,
@@ -193,6 +203,7 @@ func (tail *claudeTail) attach(path string) {
 	}
 	tail.path = path
 	tail.fileInfo = nil
+	tail.skipReported = false
 	tail.restartAtZero()
 	tail.mirror.NoteProviderPath(path)
 	tail.watcher.setPath(path)
@@ -218,7 +229,7 @@ func (tail *claudeTail) detach() {
 // numbers those repeats the same way it numbered them the first time.
 func (tail *claudeTail) restartAtZero() {
 	tail.offset = 0
-	tail.buffer = ""
+	tail.lines.reset()
 	tail.anchor.reset()
 	tail.mirror.BeginPass()
 }
@@ -279,21 +290,22 @@ func (tail *claudeTail) read() {
 }
 
 func (tail *claudeTail) consume(chunk []byte) {
-	// Concatenating raw byte strings preserves a UTF-8 codepoint split across
-	// reads until its newline-delimited JSON record is complete.
-	tail.buffer += string(chunk)
+	// Carrying raw bytes preserves a UTF-8 codepoint split across reads until its
+	// newline-delimited JSON record is complete. The carry is bounded: a record
+	// longer than the bound is skipped and counted rather than being allowed to
+	// hold the whole file in memory.
+	defer tail.reportSkippedRecords()
+	tail.lines.feed(chunk)
 	for {
-		newline := strings.IndexByte(tail.buffer, '\n')
-		if newline < 0 {
+		line, ok := tail.lines.next()
+		if !ok {
 			return
 		}
-		line := tail.buffer[:newline]
-		tail.buffer = tail.buffer[newline+1:]
-		if strings.TrimSpace(line) == "" {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var event SessionEvent
-		if json.Unmarshal([]byte(line), &event) != nil {
+		if json.Unmarshal(line, &event) != nil {
 			continue
 		}
 		// Tee before the tail's own deduplication. That set is capped and
@@ -302,7 +314,7 @@ func (tail *claudeTail) consume(chunk []byte) {
 		// identity set of its own and is the component that must not miss one.
 		// The raw line is stored, not the re-encoded event, so the mirror stays
 		// byte-identical provider JSONL.
-		if appended, err := tail.mirror.Append([]byte(line)); err == nil {
+		if appended, err := tail.mirror.Append(line); err == nil {
 			tail.mirrorWrote = tail.mirrorWrote || appended
 		}
 		if uuid, ok := event["uuid"].(string); ok {
@@ -317,6 +329,27 @@ func (tail *claudeTail) consume(chunk []byte) {
 			return
 		}
 	}
+}
+
+// reportSkippedRecords publishes any newly skipped oversized records. The count
+// is what the torn-record policy requires a caller to be able to read back; the
+// error stream carries the first skip per attached file as well, because a
+// number nobody polls is not a surfaced number, and one error per skip could
+// flood a bounded channel on a file full of them.
+func (tail *claudeTail) reportSkippedRecords() {
+	if tail.lines.skipped == tail.reportedSkips {
+		return
+	}
+	tail.watcher.noteSkippedRecords(tail.lines.skipped - tail.reportedSkips)
+	tail.reportedSkips = tail.lines.skipped
+	if tail.skipReported {
+		return
+	}
+	tail.skipReported = true
+	tail.watcher.emitError(tail.ctx, fmt.Errorf(
+		"skipped a record longer than %d bytes in %s; it stays in the provider file and is counted, later records still stream",
+		tail.lines.limit(), tail.path,
+	))
 }
 
 func (tail *claudeTail) trimEmitted() {

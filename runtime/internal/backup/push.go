@@ -36,6 +36,8 @@ type Pusher struct {
 	options Options
 }
 
+// Result describes one push run. It is meaningful whether or not Push also
+// returned an error: see Push for the split.
 type Result struct {
 	PushedAt           string              `json:"pushed_at"`
 	Uploaded           int                 `json:"uploaded"`
@@ -86,6 +88,30 @@ func NewPusher(options Options) *Pusher {
 	return &Pusher{options: options}
 }
 
+// Push uploads every backed-up session and then the manifest. Its two return
+// values answer two different questions, and a caller that reads only one of
+// them will misreport the run:
+//
+//	Result — what this run actually did. Uploaded, Skipped and SessionCount
+//	         count sessions that succeeded or were already current; Unresolved
+//	         and UnresolvedSessions name, individually, the sessions this run
+//	         could not back up and why. A partial push is the normal outcome, not
+//	         an error: a live transcript that grew mid-read or a single failed
+//	         upload is one session deferred to the next run, and abandoning the
+//	         remaining sessions over it would strand every session sorted after
+//	         it for as long as any session stays busy.
+//
+//	error  — the run as a whole stopped early: the configuration, token or key
+//	         could not be read, the context was cancelled, or the manifest
+//	         upload failed. The Result returned alongside it is still accurate
+//	         for the sessions that completed before the stop, and the upload
+//	         cache has been saved, so the next run resumes rather than repeats.
+//
+// So: err == nil never means every session was backed up — check Unresolved.
+// err != nil never means nothing was backed up — read the Result. A caller that
+// discards the Result on error (internal/api/backup_handlers.go does) loses the
+// count of what did upload before a cancellation; nothing durable is lost,
+// because saveProgress has already persisted the cache.
 func (p *Pusher) Push(ctx context.Context, live []state.SessionInfo) (Result, error) {
 	config, err := LoadConfig(p.options.ConfigPath)
 	if err != nil {
@@ -166,7 +192,10 @@ func (p *Pusher) Push(ctx context.Context, live []state.SessionInfo) (Result, er
 		// after this one for as long as any session stays live.
 		contents, stable, err := readStableFile(localPath)
 		if err == nil && config.Encrypt {
-			contents, err = Encrypt(encryptionKey, contents)
+			// Bound to the exact object being written, so this transcript cannot
+			// later be moved over another session's object and decrypt as that
+			// session. See the payload-identity note in encrypt.go.
+			contents, err = EncryptFor(encryptionKey, BackupIdentity(config.Project, remotePath), contents)
 		}
 		if err == nil {
 			err = p.put(ctx, token, config.Project, remotePath, "application/octet-stream", contents)
@@ -198,7 +227,7 @@ func (p *Pusher) Push(ctx context.Context, live []state.SessionInfo) (Result, er
 	manifestContentType := "application/json"
 	if config.Encrypt {
 		result.ManifestPath += ".enc"
-		manifestBytes, err = Encrypt(encryptionKey, manifestBytes)
+		manifestBytes, err = EncryptFor(encryptionKey, BackupIdentity(config.Project, result.ManifestPath), manifestBytes)
 		if err != nil {
 			return result, p.saveProgress(config, err)
 		}
@@ -276,6 +305,17 @@ func uploadURL(base, project, remotePath string) (string, error) {
 	return parsed.String(), nil
 }
 
+// readStableFile reads a transcript that may be being appended to right now,
+// and returns it only if the file did not change underneath the read. A file
+// that keeps moving is reported as an error, which the caller records as one
+// unresolved session and retries on the next push rather than failing the run.
+//
+// It reads the whole file into memory, and an encrypted push then allocates a
+// second copy for the ciphertext. That is bounded only by the transcript: the
+// largest one on this development machine is 1.15 GB, so a push of it peaks
+// above 2 GB. Fixing that means streaming the upload and framing the ciphertext
+// in chunks, which changes the payload format again; it is a known cost, not an
+// oversight.
 func readStableFile(path string) ([]byte, Fingerprint, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		file, err := os.Open(path)

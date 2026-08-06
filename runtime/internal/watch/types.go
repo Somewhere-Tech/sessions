@@ -6,6 +6,7 @@ package watch
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 // SessionEvent is the canonical structured event shape served by sessionsd.
@@ -31,6 +32,7 @@ type FileWatcher struct {
 	input     chan string
 	pathMu    sync.RWMutex
 	path      string
+	skipped   atomic.Int64
 }
 
 func newFileWatcher() (*FileWatcher, context.Context) {
@@ -73,6 +75,30 @@ func (w *FileWatcher) Path() string {
 	w.pathMu.RLock()
 	defer w.pathMu.RUnlock()
 	return w.path
+}
+
+// SkippedRecords reports how many provider records this watcher could not
+// forward because a single record exceeded the in-memory record bound. The
+// torn-record policy in internal/integrations/errors.go requires that a skip is
+// counted and reachable by the caller: a degraded tail must never be
+// indistinguishable from a clean one. The provider file is left untouched, so
+// the skipped bytes are still on disk.
+//
+// The count is of skip events. A provider file that is replaced or truncated is
+// re-read from the start, so a record that stays oversized is counted again on
+// each pass, which is the honest reading of "records this watcher did not
+// deliver".
+func (w *FileWatcher) SkippedRecords() int {
+	if w == nil {
+		return 0
+	}
+	return int(w.skipped.Load())
+}
+
+func (w *FileWatcher) noteSkippedRecords(count int) {
+	if count > 0 {
+		w.skipped.Add(int64(count))
+	}
 }
 
 func (w *FileWatcher) setPath(path string) {

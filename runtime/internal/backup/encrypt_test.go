@@ -212,12 +212,22 @@ func TestEnablingEncryptionRepushesEncryptedTranscriptAndManifest(t *testing.T) 
 		bytes.Contains(encryptedTranscript.body, marker) {
 		t.Fatalf("encrypted transcript upload = %#v", encryptedTranscript)
 	}
-	decrypted, err := Decrypt(key, encryptedTranscript.body)
+	// The upload is bound to the object it was written as, so it cannot be moved
+	// over another session's object and restored as that session.
+	transcriptIdentity := BackupIdentity("fixture-project", "sessions/fixture-mac/claude/"+id+".jsonl.enc")
+	openedTranscript, err := OpenFor(key, transcriptIdentity, encryptedTranscript.body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(decrypted, conversation) {
-		t.Fatalf("decrypted transcript = %q, want %q", decrypted, conversation)
+	if !bytes.Equal(openedTranscript.Plaintext, conversation) {
+		t.Fatalf("decrypted transcript = %q, want %q", openedTranscript.Plaintext, conversation)
+	}
+	if openedTranscript.Legacy {
+		t.Fatal("a freshly pushed transcript must not be sealed in the legacy format")
+	}
+	otherIdentity := BackupIdentity("fixture-project", "sessions/fixture-mac/claude/some-other-session.jsonl.enc")
+	if _, err := OpenFor(key, otherIdentity, encryptedTranscript.body); !errors.Is(err, ErrIdentityMismatch) {
+		t.Fatalf("cross-session open error = %v, want ErrIdentityMismatch", err)
 	}
 
 	encryptedManifest := gotUploads[3]
@@ -227,10 +237,12 @@ func TestEnablingEncryptionRepushesEncryptedTranscriptAndManifest(t *testing.T) 
 		bytes.Contains(encryptedManifest.body, []byte("private fixture session")) {
 		t.Fatalf("encrypted manifest upload = %#v", encryptedManifest)
 	}
-	manifestBytes, err := Decrypt(key, encryptedManifest.body)
+	manifestIdentity := BackupIdentity("fixture-project", result.ManifestPath)
+	openedManifest, err := OpenFor(key, manifestIdentity, encryptedManifest.body)
 	if err != nil {
 		t.Fatal(err)
 	}
+	manifestBytes := openedManifest.Plaintext
 	var manifest Manifest
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		t.Fatal(err)
