@@ -138,6 +138,9 @@ func (a *app) cmdSearch(args []string) error {
 			}
 		}
 	}
+	if err := a.writeSearchWidening(result); err != nil {
+		return err
+	}
 	if len(result.Matches) == 0 {
 		_, err := io.WriteString(a.stdout, "(no matches)\n")
 		return err
@@ -175,7 +178,126 @@ func (a *app) cmdSearch(args []string) error {
 		}
 		fmt.Fprintln(a.stdout)
 	}
+	return a.writeSearchRollup(result, queryText)
+}
+
+// writeSearchWidening explains a result set the reader did not ask for.
+//
+// Ranked search does not answer a phrase that matched nothing with nothing: it
+// relaxes the conjunction and returns what the words could reach. That is the
+// right answer and a confusing one to receive silently, because the rows that
+// come back can share a single word with what was typed, and the reader's next
+// move is to distrust search rather than to rephrase. `--json` has carried
+// match_mode all along; this is the same fact for a person, and it stays quiet
+// on a strict search of exactly what was typed.
+func (a *app) writeSearchWidening(result historysearch.Response) error {
+	relaxation := ""
+	switch result.MatchMode {
+	case "quorum":
+		relaxation = "so it looked for the most distinctive of them"
+	case "broad":
+		relaxation = "so it looked for any one of them"
+	default:
+		return nil
+	}
+	if _, err := fmt.Fprintf(a.stdout,
+		"No message had all of those words, %s — expect looser matches.\n", relaxation); err != nil {
+		return err
+	}
+	if result.EffectiveQuery != "" {
+		if _, err := fmt.Fprintf(a.stdout, "  matched as: %s\n", result.EffectiveQuery); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintln(a.stdout)
+	return err
+}
+
+// searchRollupSessions is how many conversations the footer names before it
+// stops. Search's unit is the message and `sessions history` is the
+// conversation-level browser, so the footer says which conversations these
+// messages came from and hands the rest over rather than growing into a second
+// browser.
+const searchRollupSessions = 8
+
+// writeSearchRollup answers "which conversations were those" under the page of
+// messages. A reader given twenty rows across nine conversations was
+// reconstructing that grouping by eye, and the count of hits beyond the page
+// was visible only to a `--json` caller.
+func (a *app) writeSearchRollup(result historysearch.Response, query string) error {
+	if !searchRollupWorthPrinting(result) {
+		return nil
+	}
+	parts := []string{
+		searchRollupCount(result.TotalHits, "match", "matches", result.RollupPartial),
+		"in " + searchRollupCount(result.TotalSessions, "conversation", "conversations", result.RollupPartial),
+	}
+	if shown := len(result.Matches); shown < result.TotalHits {
+		parts = append(parts, fmt.Sprintf("showing %d", shown))
+	}
+	if _, err := fmt.Fprintln(a.stdout, strings.Join(parts, " · ")); err != nil {
+		return err
+	}
+	shown := result.Sessions
+	if len(shown) > searchRollupSessions {
+		shown = shown[:searchRollupSessions]
+	}
+	identityWidth, nameWidth := 0, 0
+	for _, rollup := range shown {
+		identityWidth = max(identityWidth, len(searchMatchIdentity(rollup.SessionID)))
+		nameWidth = max(nameWidth, len([]rune(searchRollupName(rollup))))
+	}
+	for _, rollup := range shown {
+		line := fmt.Sprintf("  %-*s  %-*s  %s",
+			identityWidth, searchMatchIdentity(rollup.SessionID),
+			nameWidth, searchRollupName(rollup),
+			searchRollupCount(rollup.Hits, "match", "matches", result.RollupPartial))
+		if rollup.TitleMatch {
+			line += " · title match"
+		}
+		if _, err := fmt.Fprintln(a.stdout, line); err != nil {
+			return err
+		}
+	}
+	if remaining := len(result.Sessions) - len(shown); remaining > 0 {
+		_, err := fmt.Fprintf(a.stdout, "  … and %d more · browse them with %s\n",
+			remaining, shellRecipe([]string{"sessions", "history", query}))
+		return err
+	}
 	return nil
+}
+
+// searchRollupWorthPrinting keeps the footer off the screen when it would only
+// repeat the rows above it. One conversation whose every hit is already on the
+// page has been answered by the rows themselves; a daemon too old to send the
+// rollup at all sends nothing here, and gets exactly the output it always had.
+func searchRollupWorthPrinting(result historysearch.Response) bool {
+	if len(result.Sessions) == 0 || result.TotalSessions == 0 {
+		return false
+	}
+	return result.TotalSessions > 1 || result.RollupPartial ||
+		result.TotalHits > len(result.Matches)
+}
+
+// searchRollupCount renders a count that must never read as complete when it
+// is not. A truncated scan produces lower bounds, and a bare "12 matches"
+// would state as fact something the scan never established.
+func searchRollupCount(value int, singular, plural string, partial bool) string {
+	unit := plural
+	if value == 1 {
+		unit = singular
+	}
+	if partial {
+		return fmt.Sprintf("at least %d %s", value, unit)
+	}
+	return fmt.Sprintf("%d %s", value, unit)
+}
+
+func searchRollupName(rollup historysearch.SessionHits) string {
+	if strings.TrimSpace(rollup.Name) == "" {
+		return "(unnamed)"
+	}
+	return truncateRunes(rollup.Name, 40)
 }
 
 type fleetSearchOutcome struct {

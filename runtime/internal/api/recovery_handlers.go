@@ -557,6 +557,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			recovery.AdoptOptions{
 				Force: body.Force, Source: source, Events: store,
 				RuntimeMode: body.RuntimeMode, Claude: claudeOptions,
+				ClaudeLive: claudeLiveQuery(sourceCandidates, resolveOptions.ClaudeProjectsDir),
 			},
 		)
 		if err != nil {
@@ -651,6 +652,49 @@ func normalizeContinuationRuntime(value string) (string, error) {
 	default:
 		return "", errors.New("runtimeMode must be rich or terminal")
 	}
+}
+
+// claudeLiveQuery configures the read that answers "does another live Claude
+// process already have this conversation open". Adoption reports the answer and
+// proceeds either way, so the only thing this has to get right is which
+// processes count as Sessions' own -- a wrong answer here is a false accusation
+// against the user's own fleet, or silence about a genuine second window.
+//
+// claudeProjectsDir, when the source record named a profile, is that profile's
+// CLAUDE_CONFIG_DIR/projects. Claude writes its live registry beside that
+// projects tree under the same root, so a profile conversation has to be looked
+// up in the profile's registry; reading the default ~/.claude one would examine
+// a completely different set of processes.
+func claudeLiveQuery(candidates []state.SessionInfo, claudeProjectsDir string) *watch.ClaudeLiveQuery {
+	query := &watch.ClaudeLiveQuery{OwnedPIDs: ownedRunnerPIDs(candidates)}
+	if trimmed := strings.TrimSpace(claudeProjectsDir); trimmed != "" {
+		query.Dir = filepath.Join(filepath.Dir(trimmed), watch.ClaudeLiveRegistryDirName)
+	}
+	return query
+}
+
+// ownedRunnerPIDs is every process the manager currently has a session running
+// as. It is the ownership seed for the live-registry read.
+//
+// It has to come from the manager's list, not from the daemon's own process
+// tree. Sessions starts its runners through launchd, so a runner -- and the
+// provider process under it -- is not a descendant of the daemon. Verified
+// against a live machine: Claude pid 22440 has parent sessions-runner 22425,
+// whose parent is launchd (pid 1), while the daemon is pid 91118 and appears
+// nowhere in that chain. Seeding ownership with os.Getpid() therefore resolves
+// nothing, and every conversation Sessions itself is running would be reported
+// as somebody else's window. The manager's row for that same session carries
+// pid 22440 directly, and ancestry in the registry read covers the case where
+// the row carries the runner pid and Claude is its child.
+func ownedRunnerPIDs(candidates []state.SessionInfo) []int {
+	pids := make([]int, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Exited || candidate.PID <= 0 {
+			continue
+		}
+		pids = append(pids, candidate.PID)
+	}
+	return pids
 }
 
 func adoptSourceFromSession(candidate state.SessionInfo) *recovery.AdoptSource {
