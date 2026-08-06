@@ -3989,6 +3989,10 @@ button.session-tree-group-head { width: 100%; }
 }
 .session-root-drop.is-drop-target { border-color: var(--accent); background: var(--accent-bg-soft); color: var(--accent); }
 .session-move-error { margin: 1px 1px 8px; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); border-radius: 7px; color: var(--danger); font-size: 12px; line-height: 1.4; }
+/* Inside the end-session sheet the same notice has to line up with the
+   dialog's own 18px gutter — and be readable there, not behind it. */
+.session-end-error { margin: 0 18px 12px; background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.session-end-error strong { color: var(--danger); }
 .session-move-sheet { position: fixed; z-index: 180; inset: 0; display: grid; padding: 24px; place-items: center; background: rgba(0, 0, 0, .58); backdrop-filter: blur(5px); }
 .session-move-sheet > section { display: grid; width: min(520px, 100%); max-height: min(680px, calc(100dvh - 48px)); overflow: hidden; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--bg-elev-1); box-shadow: var(--shadow-2); }
 .session-move-sheet header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 18px 8px; }

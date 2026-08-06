@@ -167,6 +167,11 @@ export function SessionNavigator({
   const [actionMenuPosition, setActionMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const [endingId, setEndingId] = useState<string | null>(null);
   const [endConfirmId, setEndConfirmId] = useState<string | null>(null);
+  // A failed end belongs to the confirmation the user is looking at. It used
+  // to be reported through `moveError`, which renders inside the session tree
+  // — underneath this dialog's fixed, opaque scrim. The request failed, the
+  // dialog stayed open, and the only explanation was invisible.
+  const [endError, setEndError] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
 
   const selectMachineScope = (scope: MachineScope): void => {
@@ -384,17 +389,27 @@ export function SessionNavigator({
   const requestEndSession = (session: SessionInfo): void => {
     if (session.exited || endingId) return;
     setActionMenuId(null);
+    setEndError(null);
     setEndConfirmId(session.id);
+  };
+  const dismissEndConfirm = (): void => {
+    if (endingId) return;
+    setEndConfirmId(null);
+    setEndError(null);
   };
   const confirmEndSession = async (): Promise<void> => {
     if (!endConfirmId || endingId) return;
     setEndingId(endConfirmId);
     setMoveError(null);
+    setEndError(null);
     try {
       await endSession(endConfirmId);
       setEndConfirmId(null);
     } catch (error) {
-      setMoveError(error instanceof Error ? error.message : 'Could not end the session.');
+      // Keep the decision open and say why. docs/PRINCIPLES.md: cleanup must
+      // never hide an unresolved decision — closing here would tell the user
+      // a runtime had stopped when it is still running.
+      setEndError(error instanceof Error ? error.message : 'Could not end the session.');
     } finally {
       setEndingId(null);
     }
@@ -910,16 +925,21 @@ export function SessionNavigator({
         </div>
       ) : null}
       {endConfirmSession ? (
-        <div className="session-move-sheet session-end-sheet" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !endingId) setEndConfirmId(null); }}>
+        <div className="session-move-sheet session-end-sheet" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) dismissEndConfirm(); }}>
           <section role="dialog" aria-modal="true" aria-labelledby="end-session-title">
             <header>
               <div><span>End session</span><h2 id="end-session-title">Stop “{getTabLabel(endConfirmSession.id) ?? sessionLabel(endConfirmSession)}”?</h2></div>
-              <button type="button" aria-label="Cancel ending session" disabled={endingId !== null} onClick={() => setEndConfirmId(null)}>×</button>
+              <button type="button" aria-label="Cancel ending session" disabled={endingId !== null} onClick={dismissEndConfirm}>×</button>
             </header>
             <p>This stops the agent on {machine}. Its conversation stays in Ended, where you can resume it later.</p>
+            {endError ? (
+              <div className="session-move-error session-end-error" role="alert">
+                <strong>This session is still running.</strong> {endError}
+              </div>
+            ) : null}
             <div className="session-end-actions">
-              <button type="button" disabled={endingId !== null} onClick={() => setEndConfirmId(null)}>Keep running</button>
-              <button type="button" className="btn btn-primary" disabled={endingId !== null} onClick={() => void confirmEndSession()}>{endingId ? 'Ending…' : 'End session'}</button>
+              <button type="button" disabled={endingId !== null} onClick={dismissEndConfirm}>Keep running</button>
+              <button type="button" className="btn btn-primary" disabled={endingId !== null} onClick={() => void confirmEndSession()}>{endingId ? 'Ending…' : endError ? 'Try again' : 'End session'}</button>
             </div>
           </section>
         </div>

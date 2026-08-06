@@ -328,8 +328,16 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   const writeOpenTabs = useCallback((ids: string[]): void => {
     try { window.localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(ids)); } catch { /* non-fatal */ }
   }, []);
+  // Read the current rows through a ref rather than closing over them. With
+  // `rawSessions` in the dependency list this callback got a new identity
+  // every time any single session changed, and openSession is a prop on the
+  // memo()'d SessionView — so one session going working→idle re-rendered
+  // every mounted session view, which is exactly what that memo exists to
+  // prevent. Nothing here needs a render when the list changes.
+  const rawSessionsRef = useRef(rawSessions);
+  rawSessionsRef.current = rawSessions;
   const openSession = useCallback((id: string): void => {
-    if (rawSessions.find((session) => session.id === id)?.setAsideAt != null) {
+    if (rawSessionsRef.current.find((session) => session.id === id)?.setAsideAt != null) {
       void updateSetAside(id, false).catch(() => {
         // Opening remains useful even if an older daemon cannot persist the
         // working-set change. The next refresh will keep the row discoverable.
@@ -345,7 +353,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     setMobileSessionDetail(true);
   // setLayoutMode is a stable React setter declared below; callbacks run only
   // after the component has completed initialization.
-  }, [rawSessions, setActive, updateSetAside, writeOpenTabs]);
+  }, [setActive, updateSetAside, writeOpenTabs]);
   const resumeSession = useCallback((
     session: SessionInfo,
     destinationProvider?: 'claude' | 'codex',
@@ -647,16 +655,24 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // SessionView — that's strictly more accurate than the cmd-based
   // classification because it reads the actual buffer, but it's only
   // available for the session we're currently attached to.
-  const statusBySession: Record<string, TabStatus> = {};
-  const iconBySession: Record<string, string> = {};
-  for (const s of sessions) {
-    statusBySession[s.id] = s.working ? 'working' : 'idle';
-    iconBySession[s.id] = TOOL_ICONS[s.tool];
-  }
-  if (activeId) {
-    statusBySession[activeId] = activeStatus.isWorking ? 'working' : 'idle';
-    iconBySession[activeId] = activeStatus.parserIcon;
-  }
+  //
+  // Memoised on purpose: store/sessions.ts goes to real trouble to hand back
+  // the SAME array and the SAME session objects when a poll changes nothing,
+  // and rebuilding these two maps inline on every render threw that away —
+  // each consumer received fresh object identities three seconds apart.
+  const { statusBySession, iconBySession } = useMemo(() => {
+    const status: Record<string, TabStatus> = {};
+    const icons: Record<string, string> = {};
+    for (const s of sessions) {
+      status[s.id] = s.working ? 'working' : 'idle';
+      icons[s.id] = TOOL_ICONS[s.tool];
+    }
+    if (activeId) {
+      status[activeId] = activeStatus.isWorking ? 'working' : 'idle';
+      icons[activeId] = activeStatus.parserIcon;
+    }
+    return { statusBySession: status, iconBySession: icons };
+  }, [activeId, activeStatus.isWorking, activeStatus.parserIcon, sessions]);
 
   // Working → idle desktop notifications. Track last-seen working state
   // per session id; fire whenever a session flips from true to false.
@@ -730,27 +746,33 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     if (view === 'tabs') setMobileSessionDetail(false);
   };
 
+  // One navigator, two mount points: the desktop rail and, on a phone, the
+  // session list itself. This used to be the same fourteen-prop block written
+  // out twice, so every new prop had to be added in both places or the two
+  // form factors quietly disagreed about the same session list.
+  const sessionNavigator = (
+    <SessionNavigator
+      sessions={sessions}
+      activeId={activeId}
+      machine={machine}
+      onOpen={openSession}
+      onOpenMachineSession={openFleetSession}
+      onNew={openNewSession}
+      onContinue={() => setDialogOpen('resume')}
+      onResumeSession={resumeSession}
+      onForkSession={forkSession}
+      onStartLinked={(id) => setDialogOpen({ delegateFrom: id })}
+      openSessionIds={openTabIds}
+      onCloseView={closeTab}
+      onReparent={updateDisplayParent}
+    />
+  );
+
   return (
     <div className={`app-shell operations-shell text-size-${textSize.toLowerCase()}`} data-theme={theme} onClickCapture={handleExternalLinkClick}>
       {!isMobile ? <ProductSidebar active={productView} theme={theme} onNavigate={navigateProduct} onNewSession={openNewSession} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} /> : null}
       <div className="operations-frame">
-        {sessionWorkspace && !isMobile ? (
-          <SessionNavigator
-            sessions={sessions}
-            activeId={activeId}
-            machine={machine}
-            onOpen={openSession}
-            onOpenMachineSession={openFleetSession}
-            onNew={openNewSession}
-            onContinue={() => setDialogOpen('resume')}
-            onResumeSession={resumeSession}
-            onForkSession={forkSession}
-            onStartLinked={(id) => setDialogOpen({ delegateFrom: id })}
-            openSessionIds={openTabIds}
-            onCloseView={closeTab}
-            onReparent={updateDisplayParent}
-          />
-        ) : null}
+        {sessionWorkspace && !isMobile ? sessionNavigator : null}
         <section className="operations-content">
           <TailnetAccessInbox />
           {adoptionNotice ? (
@@ -810,21 +832,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         ) : sessionWorkspace && sessions.length === 0 && !sessionsHydrated ? (
           <SessionsWorkspaceSkeleton />
         ) : sessionWorkspace && isMobile && !mobileSessionDetail ? (
-          <SessionNavigator
-            sessions={sessions}
-            activeId={activeId}
-            machine={machine}
-            onOpen={openSession}
-            onOpenMachineSession={openFleetSession}
-            onNew={openNewSession}
-            onContinue={() => setDialogOpen('resume')}
-            onResumeSession={resumeSession}
-            onForkSession={forkSession}
-            onStartLinked={(id) => setDialogOpen({ delegateFrom: id })}
-            openSessionIds={openTabIds}
-            onCloseView={closeTab}
-            onReparent={updateDisplayParent}
-          />
+          sessionNavigator
         ) : effectiveLayout === 'home' ? (
           <HomeView sessions={sessions} machine={machine} onOpen={openSession} onNew={openNewSession} onNavigate={(view) => setLayoutMode(view)} />
         ) : effectiveLayout === 'fleet' ? (
