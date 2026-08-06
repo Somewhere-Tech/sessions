@@ -733,13 +733,20 @@ func (a *app) cmdKill(ids []string) error {
 // the payload that is genuinely specific to one kind lives in a nested object
 // rather than at the top level where it would collide.
 type waitOutcome struct {
-	OK        bool   `json:"ok"`
-	Kind      string `json:"kind"`
-	Reason    string `json:"reason"`
-	Session   string `json:"session"`
-	Working   bool   `json:"working"`
-	IdleMS    int64  `json:"idleMs"`
-	ElapsedMS int64  `json:"elapsedMs,omitempty"`
+	OK      bool   `json:"ok"`
+	Kind    string `json:"kind"`
+	Reason  string `json:"reason"`
+	Session string `json:"session"`
+	// Code is the exit status this outcome produces. `sessions help` tells an
+	// agent that every --json document carries a code matching the exit status,
+	// and this envelope did not: an agent following that instruction read a
+	// missing key as zero and a lane that failed with exit 3 came back as
+	// success -- the same silent wrong-success that ok was introduced to end.
+	// It is never omitempty: zero is the answer that matters most.
+	Code      int   `json:"code"`
+	Working   bool  `json:"working"`
+	IdleMS    int64 `json:"idleMs"`
+	ElapsedMS int64 `json:"elapsedMs,omitempty"`
 	// Targets is populated only when one outcome covers several targets at
 	// once — a race that timed out without any of them answering — because
 	// then no single id produced it.
@@ -794,25 +801,51 @@ const (
 // writeWaitOutcome emits the envelope and returns the exit status that matches
 // it, so the JSON and the exit code can never disagree.
 func (a *app) writeWaitOutcome(outcome waitOutcome, humanText string, humanToStderr bool) error {
-	if err := a.emitWaitOutcome(outcome, humanText, humanToStderr); err != nil {
-		return err
-	}
-	return waitExitStatus(outcome.Reason)
+	return a.emitWaitOutcome(outcome, humanText, humanToStderr, waitExitStatus(outcome.Reason))
 }
 
-// emitWaitOutcome writes the envelope without deciding the exit status, for the
-// one caller that has a more specific status to report: a single lane wait
-// still propagates the child's own exit code.
-func (a *app) emitWaitOutcome(outcome waitOutcome, humanText string, humanToStderr bool) error {
+// emitWaitOutcome writes the envelope and returns the status the process exits
+// with. final is passed in rather than derived, because one caller has a more
+// specific status than the reason implies: a single lane wait propagates the
+// child's own exit code. Taking it here, and stamping it into the envelope on
+// the way out, is what keeps the printed code and the exit status equal by
+// construction -- a caller cannot report one and return the other.
+func (a *app) emitWaitOutcome(outcome waitOutcome, humanText string, humanToStderr bool, final error) error {
+	outcome.Code = statusCode(final)
 	if a.wantJSON {
-		return writeJSON(a.stdout, outcome, false)
+		if err := writeJSON(a.stdout, outcome, false); err != nil {
+			return err
+		}
+		return final
 	}
 	destination := a.stdout
 	if humanToStderr {
 		destination = a.stderr
 	}
-	_, err := io.WriteString(destination, humanText+"\n")
-	return err
+	if _, err := io.WriteString(destination, humanText+"\n"); err != nil {
+		return err
+	}
+	return final
+}
+
+// statusCode is the exit status an error stands for, with nil meaning success.
+// exitCode alone cannot be used: it reads a nil error as a transport failure,
+// because it is only ever reached on a path that already has one.
+func statusCode(err error) int {
+	if err == nil {
+		return exitSatisfied
+	}
+	return exitCode(err)
+}
+
+// waitOutcomeStatus is the exit status one outcome implies on its own, for
+// results nested inside a fan-out join, which are never emitted through
+// emitWaitOutcome and so never learn a status from it.
+func waitOutcomeStatus(outcome waitOutcome) int {
+	if outcome.Kind == waitKindLane && outcome.Lane != nil {
+		return outcome.Lane.ExitCode
+	}
+	return statusCode(waitExitStatus(outcome.Reason))
 }
 
 func waitExitStatus(reason string) error {

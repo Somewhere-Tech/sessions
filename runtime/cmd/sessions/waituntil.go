@@ -382,14 +382,12 @@ func (a *app) writeWaitTimeout(kind string, targets []string, timeout, elapsed t
 		// target that was being watched is named instead.
 		outcome.Targets = targets
 	}
-	if err := a.emitWaitOutcome(outcome,
-		fmt.Sprintf("timeout: no condition satisfied after %dms", timeout.Milliseconds()), true); err != nil {
-		return err
-	}
 	// A timeout is not a transport failure. This branch used to share exit
 	// code 2 with "the daemon could not be reached", so a caller could not
 	// tell a slow target from a broken connection.
-	return status(exitWaitTimeout)
+	return a.emitWaitOutcome(outcome,
+		fmt.Sprintf("timeout: no condition satisfied after %dms", timeout.Milliseconds()), true,
+		status(exitWaitTimeout))
 }
 
 func (a *app) writeWaitUntilResult(result waitcond.Result) error {
@@ -425,5 +423,5 @@ func (a *app) writeWaitUntilResult(result waitcond.Result) error {
 	default:
 		return io.ErrUnexpectedEOF
 	}
-	return a.emitWaitOutcome(outcome, human, false)
+	return a.emitWaitOutcome(outcome, human, false, nil)
 }

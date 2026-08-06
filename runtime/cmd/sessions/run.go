@@ -118,6 +118,13 @@ func (a *app) cmdRun(args []string) error {
 		return err
 	}
 	if !wait && a.wantJSON {
+		// Dispatching without --wait answers with the lane record rather than a
+		// wait envelope, so it carried none of the fields an agent branches on.
+		// code is added here for the same reason it exists on the envelope:
+		// `sessions help` promises every --json document has one, and an agent
+		// that believes it must not read a missing key as zero. Reaching this
+		// line means the lane was created, which is all this document reports.
+		created["code"] = exitSatisfied
 		return writeJSON(a.stdout, created, true)
 	}
 	id, ok := created["id"].(string)

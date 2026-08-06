@@ -312,13 +312,22 @@ func TestRunWithoutWaitKeepsIDAndJSONShapes(t *testing.T) {
 	if code != 0 || stderr.Len() != 0 {
 		t.Fatalf("json exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	var actual, expected any
+	var actual, expected map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &actual); err != nil {
 		t.Fatal(err)
 	}
 	if err := json.Unmarshal([]byte(responseBody), &expected); err != nil {
 		t.Fatal(err)
 	}
+	// The lane record is passed through unchanged except for code, which is
+	// added deliberately: `sessions help` promises every --json document
+	// carries one, and this document is the only one an agent gets when it
+	// dispatches without waiting. Asserted separately from the passthrough so
+	// this test still fails if any other key is added, renamed, or dropped.
+	if actual["code"] != float64(exitSatisfied) {
+		t.Fatalf("dispatch document code = %#v, want %d", actual["code"], exitSatisfied)
+	}
+	delete(actual, "code")
 	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("run JSON changed: got %#v want %#v", actual, expected)
 	}

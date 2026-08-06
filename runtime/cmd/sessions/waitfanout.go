@@ -39,9 +39,12 @@ type waitTracker struct {
 // and reason carries the worst thing that happened so a caller that branches on
 // one field still cannot mistake a dead delegate for a finished one.
 type waitJoinOutcome struct {
-	OK      bool          `json:"ok"`
-	Kind    string        `json:"kind"`
-	Reason  string        `json:"reason"`
+	OK     bool   `json:"ok"`
+	Kind   string `json:"kind"`
+	Reason string `json:"reason"`
+	// Code matches the exit status, as it does on a single outcome, so one
+	// branch reads a join and a single wait the same way.
+	Code    int           `json:"code"`
 	Waited  int           `json:"waited"`
 	Results []waitOutcome `json:"results"`
 }
@@ -61,6 +64,13 @@ func summarizeWaitJoin(results []waitOutcome) waitJoinOutcome {
 	if len(results) == 0 {
 		join.Results = []waitOutcome{}
 	}
+	// Nested results never pass through emitWaitOutcome, so each one is given
+	// the status it would have produced had it been waited on alone. Without
+	// this every result in a join would report code 0, including the failures.
+	for index := range join.Results {
+		join.Results[index].Code = waitOutcomeStatus(join.Results[index])
+	}
+	join.Code = statusCode(waitExitStatus(join.Reason))
 	return join
 }
 

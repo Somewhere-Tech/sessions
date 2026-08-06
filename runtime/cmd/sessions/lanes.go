@@ -423,23 +423,21 @@ func (a *app) waitForLaneExit(ids []string, timeout time.Duration) (string, lane
 // wait both still propagate the child's own exit code.
 func (a *app) writeLaneWaitCompletion(id string, manifest laneManifest, outputOnly, includeSummary bool) error {
 	outcome := laneWaitOutcome(id, manifest, includeSummary)
+	var final error
+	if manifest.ExitCode != 0 {
+		final = status(manifest.ExitCode)
+	}
 	if !a.wantJSON && outputOnly {
 		if err := writeLaneOutputTail(a.stdout, manifest.LastOutputTail); err != nil {
 			return err
 		}
-	} else {
-		human := fmt.Sprintf("%s exited %d after %s", id, manifest.ExitCode, formatLaneDuration(manifest.DurationMS))
-		if includeSummary {
-			human += "\nsummary: " + compactSummary(manifest.LastOutputTail)
-		}
-		if err := a.emitWaitOutcome(outcome, human, false); err != nil {
-			return err
-		}
+		return final
 	}
-	if manifest.ExitCode != 0 {
-		return status(manifest.ExitCode)
+	human := fmt.Sprintf("%s exited %d after %s", id, manifest.ExitCode, formatLaneDuration(manifest.DurationMS))
+	if includeSummary {
+		human += "\nsummary: " + compactSummary(manifest.LastOutputTail)
 	}
-	return nil
+	return a.emitWaitOutcome(outcome, human, false, final)
 }
 
 func writeLaneOutputTail(writer io.Writer, output string) error {
