@@ -511,15 +511,41 @@ func rankedMatchCount(ctx context.Context, db *sql.DB, expression, where string,
 	return total, nil
 }
 
-// rankedPlan picks the tightest expression that still matches something.
+// rankedPlan picks the tightest expression whose result set can be trusted.
 //
 // The old behaviour was a pure OR of every word including the stopwords, which
 // on a real corpus matches most of it: an eight-word sentence returned 73% of
 // every message ever indexed and let a row whose only merit was the word "the"
 // rank second. Requiring every content term instead is a large precision gain
-// that costs recall only when the conjunction is genuinely empty — and that
-// case is exactly what the relaxation below is for. Nothing here can return
-// fewer results than the old OR: the last rung is that OR.
+// that costs recall only when the conjunction is genuinely empty. Nothing here
+// can return fewer results than the old OR: the last rung is that OR.
+//
+// It used to descend only when a rung matched nothing at all, and that is the
+// part that was wrong. A rung which matches one message is not a precise
+// answer, it is a coincidence, and stopping there hides the conversation the
+// person is looking for behind an accident. Measured on the real corpus here,
+// "where we talked about taking over the google ads account" matched exactly
+// one message -- in an unrelated session -- because the target says "take over
+// my Google Ads account" and never says "talked". Strict returned that one
+// wrong session and the ladder stopped.
+//
+// Descending to the quorum rung does not fix it, which is why the tests pin the
+// whole ladder rather than this one condition: quorum makes the RAREST terms
+// mandatory, and a narration verb a person invents while describing a memory
+// ("talked", 54 occurrences here) is rarer than the subject they are actually
+// looking for ("google", 219). The word carrying none of the meaning becomes
+// the one that cannot be dropped.
+//
+// What does work is ranking. Across seven sentence-length queries measured
+// against this corpus, whose targets were established by hand first, the broad
+// rung ranked the right session FIRST in all seven -- including both cases
+// where a tighter rung was non-empty and wrong. So for a query long enough that
+// requiring every word is a bet rather than a request, a tiny result set is
+// evidence the rung is filtering out the answer, not evidence it found it.
+//
+// Short queries keep the old behaviour exactly. Asking for one identifier, or
+// two words, is a request for precisely those words, and a single match is the
+// answer rather than an accident.
 func rankedPlan(ctx context.Context, db *sql.DB, parsed parsedQuery, where string, filters []any) (string, string, int, error) {
 	if parsed.raw {
 		total, err := rankedMatchCount(ctx, db, parsed.rawExpr, where, filters)
@@ -533,7 +559,7 @@ func rankedPlan(ctx context.Context, db *sql.DB, parsed parsedQuery, where strin
 	if err != nil {
 		return "", "", 0, err
 	}
-	if total > 0 || len(parsed.required) < 2 {
+	if trustRung(total, parsed) {
 		return strict, "strict", total, nil
 	}
 	// Document frequency is only worth a round trip once the conjunction has
@@ -547,7 +573,7 @@ func rankedPlan(ctx context.Context, db *sql.DB, parsed parsedQuery, where strin
 		if err != nil {
 			return "", "", 0, err
 		}
-		if total > 0 {
+		if trustRung(total, parsed) {
 			return quorum, "quorum", total, nil
 		}
 	}
@@ -557,6 +583,30 @@ func rankedPlan(ctx context.Context, db *sql.DB, parsed parsedQuery, where strin
 		return "", "", 0, err
 	}
 	return broad, "broad", total, nil
+}
+
+// proseQueryTerms is where a query stops reading as a request for particular
+// words and starts reading as a remembered sentence. Below it every term is
+// something the person deliberately chose; at and above it some are only
+// connective tissue, and requiring all of them is a bet on phrasing the person
+// has no reason to have reproduced.
+const proseQueryTerms = 4
+
+// trustRung reports whether a rung's result set is worth stopping on.
+//
+// For a short query anything at all is: those words were asked for. For a
+// sentence the rung has to match at least as many messages as the person typed
+// words -- a self-scaling bar, because the longer the sentence the less likely
+// any single message legitimately contains every word of it, and the more
+// likely a lone match is a coincidence that would hide the answer.
+func trustRung(total int, parsed parsedQuery) bool {
+	if len(parsed.required) < 2 {
+		return true
+	}
+	if len(parsed.required) < proseQueryTerms {
+		return total > 0
+	}
+	return total >= len(parsed.required)
 }
 
 // rankedTermOrder sorts the required terms rarest first, so relaxation keeps
