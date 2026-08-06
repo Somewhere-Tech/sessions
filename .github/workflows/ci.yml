@@ -144,6 +144,15 @@ jobs:
       - name: Verify frontend smoke suites
         run: npm --prefix frontend run test:smoke
 
+      # These are the updater, release and Windows platform contracts. They ran
+      # only in the Windows preview, which runs only on push to main -- so every
+      # assertion in them, including the ones written specifically to stop a
+      # Windows-only mistake reaching main, could not fire until after the merge
+      # that introduced it. They are plain node tests over files in the tree,
+      # they need no Windows runner, and they finish in well under a second.
+      - name: Verify updater, release, and platform contracts
+        run: npm run test:updater-release
+
       # The native shell had no lint gate at all — `cargo test` compiles it and
       # nothing reads it. Clippy passes clean on this tree today, so `-D warnings`
       # can be enforced from the first run rather than kept as an aspiration.
