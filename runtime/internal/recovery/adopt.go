@@ -327,7 +327,7 @@ func readConversationIdentity(path string) (provider, cwd string, codex bool, sk
 		}
 	}
 	if cwd == "" && !codex {
-		cwd = decodeClaudeProjectDirName(filepath.Base(filepath.Dir(path)))
+		cwd = claudeCWDForProjectDir(filepath.Dir(path), path)
 	}
 	return provider, cwd, codex, skipped, nil
 }
@@ -355,11 +355,157 @@ func readCappedLine(reader *bufio.Reader, limit int) (line []byte, oversized boo
 	}
 }
 
+const (
+	// projectDirProbeFiles bounds how many sibling transcripts the bucket probe
+	// opens. One project directory can hold hundreds of conversations and this
+	// runs on a fallback path; a handful of agreeing neighbours is as much
+	// evidence as all of them.
+	projectDirProbeFiles = 32
+	// projectDirProbeLines bounds how deep into one sibling the probe reads.
+	// Records carrying a cwd appear within the first few lines.
+	projectDirProbeLines = 64
+)
+
+// claudeCWDForProjectDir answers the question the caller actually has: which
+// working directory does this project bucket stand for, when the conversation
+// itself never recorded one?
+//
+// The bucket name is a lossy encoding — Claude folds every non-alphanumeric
+// character to a dash, so /Users/u/a-b, /Users/u/a/b, /Users/u/a.b and
+// /Users/u/a_b all land in -Users-u-a-b — and inverting it is therefore a
+// guess. The answer becomes Adoption.Cwd, which is where Sessions launches the
+// resumed agent and what it writes into the ledger. A wrong guess does not
+// degrade the adoption, it points a live agent at the wrong repository. So
+// recorded fact is preferred over inference, and inference that cannot be
+// checked is refused.
+//
+// Order:
+//
+//  1. What the neighbours in this bucket recorded about themselves. Claude
+//     stamps the unencoded cwd into its transcripts, so a sibling that encodes
+//     back to this same directory is telling us what the directory means. This
+//     is the same move watch.resolveAmbiguousByRecordedCWD makes for an
+//     ambiguous bucket: reading a fact, not reconstructing one. Siblings that
+//     disagree mean two workspaces share the bucket, and the probe refuses
+//     rather than picking one.
+//  2. Inverting the name, and only if the result is an existing directory. The
+//     inversion assumes every dash was a separator, which is wrong for the very
+//     paths that made the strict encoding necessary. Requiring the result to
+//     exist is what separates "plausible" from "fabricated".
+//
+// Returning "" is a refusal: adoptionFromPath reports the conversation as
+// provider-unbound instead of adopting it into a directory nobody chose.
+func claudeCWDForProjectDir(dir, self string) string {
+	if recorded, ok := recordedCWDForProjectDir(dir, self); ok {
+		return recorded
+	}
+	decoded := decodeClaudeProjectDirName(filepath.Base(dir))
+	if decoded == "" {
+		return ""
+	}
+	if info, err := os.Stat(decoded); err != nil || !info.IsDir() {
+		return ""
+	}
+	return decoded
+}
+
+// recordedCWDForProjectDir reads the working directory the other conversations
+// in this bucket recorded for themselves.
+//
+// A sibling only counts as evidence if its recorded cwd encodes back to this
+// directory under some encoding Sessions or Claude uses. That filter is what
+// makes a migrated neighbour harmless: a conversation moved from another
+// machine still carries the source machine's cwd in its records, and the
+// destination bucket was named after the destination workspace, so the two do
+// not agree and the stale value is ignored instead of being adopted.
+func recordedCWDForProjectDir(dir, self string) (string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	found := ""
+	probed := 0
+	for _, entry := range entries {
+		if probed >= projectDirProbeFiles {
+			break
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if path == self {
+			continue
+		}
+		probed++
+		recorded, ok := transcriptRecordedCWD(path)
+		if !ok || !encodesToProjectDir(recorded, dir) {
+			continue
+		}
+		if found == "" {
+			found = recorded
+			continue
+		}
+		if found != recorded {
+			// Two workspaces share this bucket. Neither is more likely than the
+			// other, and adopting into the wrong one is worse than refusing.
+			return "", false
+		}
+	}
+	return found, found != ""
+}
+
+// encodesToProjectDir reports whether cwd is a working directory this project
+// directory could have been named after, under any encoding Sessions or Claude
+// writes. watch owns that list, so this asks watch rather than restating it.
+func encodesToProjectDir(cwd, dir string) bool {
+	cleaned := filepath.Clean(dir)
+	for _, candidate := range watch.ClaudeProjectDirsUnder(filepath.Dir(cleaned), cwd) {
+		if filepath.Clean(candidate) == cleaned {
+			return true
+		}
+	}
+	return false
+}
+
+// transcriptRecordedCWD reads the cwd a transcript stamped into its own
+// records, over a bounded prefix and with the same oversized-record rule the
+// identity scan uses: a truncated record is not a record, and tool output must
+// never get to impersonate a conversation's workspace.
+func transcriptRecordedCWD(path string) (string, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for lines := 0; lines < projectDirProbeLines; lines++ {
+		line, oversized, readErr := readCappedLine(reader, identityRecordCap)
+		if len(line) > 0 && !oversized {
+			var record struct {
+				CWD string `json:"cwd"`
+			}
+			if json.Unmarshal(line, &record) == nil && record.CWD != "" {
+				return record.CWD, true
+			}
+		}
+		if readErr != nil {
+			return "", false
+		}
+	}
+	return "", false
+}
+
 // decodeClaudeProjectDirName inverts the project-directory encoding produced by
 // watch.EncodeClaudeCWD, which folds "/", "\\", and ":" to "-". A Windows cwd
 // therefore arrives as "C--Users-x-proj"; decoding that with the Unix rule
 // alone yielded "/C/Users/x/proj" and adoption resolved a directory that does
 // not exist on the host that recorded it.
+//
+// It does not invert watch.EncodeClaudeCWDStrict, and cannot: that encoding
+// folds every non-alphanumeric character, so "-Users-u-a-b" has as many
+// pre-images as there are punctuation marks. Callers must go through
+// claudeCWDForProjectDir, which prefers recorded fact and refuses an inversion
+// it cannot confirm on disk.
 //
 // The decision is made on the encoded shape rather than the running GOOS so a
 // transcript copied between machines still resolves to the cwd it was written

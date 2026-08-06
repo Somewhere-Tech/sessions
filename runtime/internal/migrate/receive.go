@@ -71,7 +71,7 @@ func Receive(ctx context.Context, request ReceiveRequest, options ReceiveOptions
 	}
 	var destination string
 	if tool == "claude-code" {
-		destination = filepath.Join(home, ".claude", "projects", watch.EncodeClaudeCWD(request.Cwd), request.UUID+".jsonl")
+		destination = claudeConversationDestination(filepath.Join(home, ".claude", "projects"), request.Cwd, request.UUID)
 	} else {
 		at := codexTime
 		if at.IsZero() {
@@ -91,6 +91,60 @@ func Receive(ctx context.Context, request ReceiveRequest, options ReceiveOptions
 	result.ConversationPath = destination
 	result.AlreadyPresent = already
 	return result, nil
+}
+
+// claudeConversationDestination names the file a moved Claude conversation must
+// land in for the destination machine to be able to resume it.
+//
+// The bucket has to be the one Claude Code itself computes, which folds EVERY
+// non-alphanumeric character to a dash (watch.EncodeClaudeCWDStrict). The
+// narrow encoding folds only separators, so for any workspace whose path
+// contains a dot, underscore, space or other punctuation the two disagree and
+// the conversation was written into a directory Claude never reads: the move
+// reported success and native "claude --resume <uuid>" at the destination could
+// not see the conversation at all. /Users/uzair/pretty_tmux is the whole bug --
+// Claude reads -Users-uzair-pretty-tmux, Sessions wrote -Users-uzair-pretty_tmux.
+//
+// Writing into a bucket that several workspaces can share is safe here in a way
+// it is not for resolution. The file is named by provider UUID, which is unique
+// across workspaces, and this is exactly what Claude Code does with its own
+// conversations. Attribution back to a workspace never depends on the directory
+// name: the transcript records its own cwd, and readers already probe every
+// encoding (watch.ClaudeProjectDirsUnder).
+//
+// An earlier Sessions wrote this conversation under the narrow encoding, so any
+// candidate bucket that already holds this UUID wins over the strict one. That
+// keeps a repeated move idempotent instead of leaving two copies of one
+// conversation in two buckets -- a duplicate would make the UUID resolve to
+// several Claude projects and break adoption by UUID outright.
+//
+// Known remaining gap, which belongs to watch's encoder and not to this
+// function: Claude also caps the bucket name at 200 characters and appends a
+// hash of the unencoded cwd past that (2.1.222, K2e=200):
+//
+//	function rA(e){let t=e.replace(/[^a-zA-Z0-9]/g,"-");
+//	  if(t.length<=K2e)return t;
+//	  return `${t.slice(0,K2e)}-${Math.abs(Fat(e)).toString(36)}`}
+//
+// EncodeClaudeCWDStrict does not truncate, so a workspace whose encoded path
+// exceeds 200 characters still lands beside Claude's bucket. Reproducing the
+// truncation here alone would be worse than not doing it: every Sessions reader
+// probes watch's encodings, so a name only this function knows how to build is
+// one no reader could find. It has to be fixed in watch, for readers and
+// writers together.
+func claudeConversationDestination(projects, cwd, uuid string) string {
+	name := uuid + ".jsonl"
+	destination := filepath.Join(projects, watch.EncodeClaudeCWDStrict(cwd), name)
+	for _, dir := range watch.ClaudeProjectDirsUnder(projects, cwd) {
+		existing := filepath.Join(dir, name)
+		if existing == destination {
+			continue
+		}
+		if info, err := os.Stat(existing); err == nil && info.Mode().IsRegular() {
+			return existing
+		}
+	}
+	return destination
 }
 
 func codexConversationTime(encoded []byte, uuid string) (time.Time, error) {
