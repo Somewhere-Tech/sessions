@@ -26,6 +26,16 @@ type ClaudeWatcherOptions struct {
 	ProjectsDir     string
 	InitialDelay    time.Duration
 	PollInterval    time.Duration
+
+	// MirrorPath enables Sessions' own durable copy of the provider transcript.
+	// The watcher is the right place to tee from: it is already the one
+	// component that resolves, tails, and parses the provider file, and it
+	// re-reads that file from offset zero on every attach, so a mirror opened
+	// here backfills a conversation that started before Sessions was watching.
+	// An empty path disables mirroring and leaves behaviour exactly as before.
+	MirrorPath     string
+	SessionID      string
+	MirrorCapBytes int64
 }
 
 type claudeTail struct {
@@ -43,6 +53,9 @@ type claudeTail struct {
 	emitted      map[string]struct{}
 	emittedOrder []string
 	unresolved   bool
+
+	mirror      *TranscriptMirror
+	mirrorWrote bool
 }
 
 // WatchClaudeSession starts resolving and tailing a Claude session file.
@@ -73,6 +86,23 @@ func WatchClaudeSession(options ClaudeWatcherOptions) (*FileWatcher, error) {
 		sessionID:   options.ClaudeSessionID,
 		emitted:     make(map[string]struct{}),
 	}
+	if options.MirrorPath != "" {
+		mirror, err := OpenTranscriptMirror(TranscriptMirrorOptions{
+			Path:              options.MirrorPath,
+			SessionID:         options.SessionID,
+			ProviderSessionID: options.ClaudeSessionID,
+			Tool:              "claude",
+			CapBytes:          options.MirrorCapBytes,
+		})
+		if err != nil {
+			// A mirror that cannot be opened must not cost the user their live
+			// session view, which is what the watcher is primarily for. The
+			// failure is surfaced once and the watcher continues unmirrored.
+			watcher.emitError(ctx, fmt.Errorf("open transcript mirror %s: %w", options.MirrorPath, err))
+		} else {
+			tail.mirror = mirror
+		}
+	}
 	go tail.run(options.InitialDelay, options.PollInterval)
 	return watcher, nil
 }
@@ -85,6 +115,7 @@ func WatchSessionFile(options ClaudeWatcherOptions) (*FileWatcher, error) {
 func (tail *claudeTail) run(initialDelay, pollInterval time.Duration) {
 	defer tail.watcher.finish()
 	defer tail.hints.close()
+	defer tail.mirror.Close()
 
 	initial := time.NewTimer(initialDelay)
 	defer initial.Stop()
@@ -158,12 +189,17 @@ func (tail *claudeTail) attach(path string) {
 	tail.fileInfo = nil
 	tail.offset = 0
 	tail.buffer = ""
+	tail.mirror.NoteProviderPath(path)
 	tail.watcher.setPath(path)
 	tail.hints.add(filepath.Dir(path))
 	tail.hints.add(path)
 }
 
 func (tail *claudeTail) detach() {
+	// Losing the provider file is the moment the mirror has to be trustworthy,
+	// so everything observed so far is forced to disk before the path is
+	// dropped rather than at some later shutdown that may never happen.
+	_ = tail.mirror.Sync()
 	tail.hints.remove(tail.path)
 	tail.path = ""
 	tail.fileInfo = nil
@@ -189,6 +225,11 @@ func (tail *claudeTail) read() {
 		return
 	}
 	if (tail.fileInfo != nil && !os.SameFile(tail.fileInfo, info)) || info.Size() < tail.offset {
+		// The provider replaced or truncated its file. Re-reading from zero
+		// plus the mirror's own deduplication means Sessions keeps the union of
+		// what the conversation ever contained, not just what survived the
+		// provider's rewrite.
+		tail.mirror.NoteRotation()
 		tail.offset = 0
 		tail.buffer = ""
 	}
@@ -203,6 +244,13 @@ func (tail *claudeTail) read() {
 		}
 		tail.offset += int64(len(chunk))
 		tail.consume(chunk)
+	}
+	// Flush once per read batch rather than once per record: a turn arrives as
+	// a burst, and the provider file is still the backstop for anything a crash
+	// loses between batches.
+	if tail.mirrorWrote {
+		tail.mirrorWrote = false
+		_ = tail.mirror.Sync()
 	}
 	tail.hints.add(tail.path)
 }
@@ -224,6 +272,15 @@ func (tail *claudeTail) consume(chunk []byte) {
 		var event SessionEvent
 		if json.Unmarshal([]byte(line), &event) != nil {
 			continue
+		}
+		// Tee before the tail's own deduplication. That set is capped and
+		// evicts old UUIDs, so a re-read of a long conversation can present
+		// records the tail no longer recognizes. The mirror keeps an uncapped
+		// identity set of its own and is the component that must not miss one.
+		// The raw line is stored, not the re-encoded event, so the mirror stays
+		// byte-identical provider JSONL.
+		if appended, err := tail.mirror.Append([]byte(line)); err == nil {
+			tail.mirrorWrote = tail.mirrorWrote || appended
 		}
 		if uuid, ok := event["uuid"].(string); ok {
 			if _, duplicate := tail.emitted[uuid]; duplicate {
