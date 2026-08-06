@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -30,7 +31,33 @@ const (
 	// wall-clock budget than fleetPeerBudget allows a search — and still a
 	// bounded one, because the local machine owns the answer and one slow peer
 	// may not delay it.
+	//
+	// Two seconds was measured against a two-machine fleet whose peer held 1519
+	// of 1825 recorded conversations and answered in 3.3-3.9 seconds across
+	// nineteen consecutive tries. It missed every one, so the browse paid the
+	// full two seconds and returned 17% of the fleet: the worst value a budget
+	// can take, long enough to be felt and short enough to always fail.
+	//
+	// Raising it does not fix that, and the attempt is instructive. Granting the
+	// peer the time it had proven it needed produced browses of three, four and
+	// a half, then five seconds that still did not reach it, because a peer's
+	// cost grows with the history it accumulates and the honest number is simply
+	// larger than a browse can spend. Sessions cannot make a remote machine
+	// answer quickly, so a budget wide enough to guarantee the fleet is a
+	// guarantee it cannot keep at a price the command can afford.
+	//
+	// What it can do is stop paying for the failure. The budget stays at the
+	// point where a browse still feels immediate, a peer that has shown it
+	// cannot answer inside it is left out at no cost rather than waited for at
+	// full cost, what it holds is stated where the counts are, and
+	// --wait-for-peers buys the complete answer for anyone who wants it.
 	fleetHistoryPeerBudget = 2 * time.Second
+	// How long a peer that has shown it cannot answer inside the budget is taken
+	// at its word before being tried again. A machine gets faster, or its
+	// history gets smaller, or the network stops being terrible; none of those
+	// are events Sessions is told about, so it re-checks on its own rather than
+	// writing the peer off until something clears a cache.
+	fleetHistoryPeerRecheck = 10 * time.Minute
 	// Rows shown by default. A browser that prints every one of several
 	// hundred conversations has not helped anyone find one; the count that
 	// matched is always reported, so the cut is visible rather than silent.
@@ -142,6 +169,11 @@ type historyBrowseResponse struct {
 	Conversations []conversationRow            `json:"conversations"`
 	Machines      []historysearch.MachineState `json:"machines,omitempty"`
 	Partial       bool                         `json:"partial,omitempty"`
+	// Withheld is what the machines that did not answer are known to hold. A
+	// caller that read Known alone would report the machines that answered as
+	// the fleet; this is the correction, and it is present exactly when Partial
+	// is true.
+	Withheld []withheldMachine `json:"withheld,omitempty"`
 	// ProvenanceUnreported counts conversations excluded by --surface or
 	// --actor because the daemon that listed them reported no provenance at
 	// all. Nonzero means the answer is short by that many rows for a reason
@@ -179,6 +211,7 @@ func (a *app) cmdHistory(args []string) error {
 	}
 	all := removeFirst(&args, "--all")
 	pick := removeFirst(&args, "--pick")
+	waitForPeers := removeFirst(&args, "--wait-for-peers")
 	previewCount, wantPreview, err := pluckOptionalCount(&args, "--preview", historyDefaultPreview, historyMaxPreview)
 	if err != nil {
 		return err
@@ -290,7 +323,7 @@ func (a *app) cmdHistory(args []string) error {
 	}
 	defer closeFleetTargets(targets)
 
-	collected, err := a.collectConversations(targets)
+	collected, err := a.collectConversations(targets, waitForPeers)
 	if err != nil {
 		return err
 	}
@@ -326,6 +359,7 @@ func (a *app) cmdHistory(args []string) error {
 			SchemaVersion: integrations.SchemaVersion, Query: query,
 			Known: collected.known, Matched: matched, Shown: len(rows),
 			Conversations: rows, Machines: collected.machines, Partial: collected.partial,
+			Withheld:             collected.withheld,
 			ProvenanceUnreported: len(withoutProvenance),
 		}, true)
 	}
@@ -340,7 +374,8 @@ func (a *app) cmdHistory(args []string) error {
 	// the page it is picking from after a preview has scrolled it away.
 	render := func() error {
 		return a.writeConversationRows(
-			rows, matched, collected.known, query, filters, withoutProvenance, answered, pick)
+			rows, matched, collected.known, query, filters, withoutProvenance, answered, pick,
+			collected.withheld, collected.waited)
 	}
 	if err := render(); err != nil {
 		return err
@@ -422,13 +457,64 @@ type collectedConversations struct {
 	machines []historysearch.MachineState
 	partial  bool
 	known    int
+	// withheld is one entry per machine that did not answer. known counts the
+	// conversations on the machines that did, so on its own it describes a
+	// fraction of the fleet as though it were the whole of it. These entries are
+	// what let the answer say which fraction.
+	withheld []withheldMachine
+	// waited records that this browse already spent everything it had on the
+	// peers. A shortfall line that recommends --wait-for-peers to a caller who
+	// used --wait-for-peers is worse than no advice: it sends them back around a
+	// loop they have already run.
+	waited bool
+}
+
+// withheldMachine is a machine missing from an answer, and the scale of what it
+// took with it. Conversations is what that machine held the last time this one
+// reached it; Counted is false when it has never been reached from here, which
+// is a different and more alarming fact than holding nothing.
+type withheldMachine struct {
+	Alias         string `json:"alias"`
+	Name          string `json:"name"`
+	Conversations int    `json:"conversations,omitempty"`
+	Counted       bool   `json:"counted"`
+	CountedAt     string `json:"counted_at,omitempty"`
+	Reason        string `json:"reason"`
+
+	countedAtMS int64
 }
 
 type historyTargetOutcome struct {
 	index   int
 	listing integrations.HistoryResponse
 	live    map[string]bool
+	took    time.Duration
 	err     error
+}
+
+// peerCannotAnswerInTime reports a peer that has already shown it needs longer
+// than a browse waits, and is therefore left out of one instead of stalling it.
+//
+// This is the whole difference between the two seconds a browse used to spend
+// discovering the same thing every time and the nothing it spends now. It is a
+// claim about the past, checked again on a timer, not a verdict: the peer is
+// re-tried once the recheck window passes, and a --wait-for-peers browse ignores
+// it entirely.
+func peerCannotAnswerInTime(
+	health *fleetPeerHealth, alias string, now time.Time,
+) (fleetPeerListing, bool) {
+	listing, _, known := health.lastListing(alias)
+	// At-or-over, not over: a peer whose observed cost equals the budget did not
+	// answer inside it. That is exactly what a miss records -- the budget it was
+	// still working at when the browse gave up.
+	if !known || listing.TookMS < fleetHistoryPeerBudget.Milliseconds() {
+		return fleetPeerListing{}, false
+	}
+	seen := listing.costSeenAt()
+	if seen.IsZero() || !now.Before(seen.Add(fleetHistoryPeerRecheck)) {
+		return fleetPeerListing{}, false
+	}
+	return listing, true
 }
 
 // collectConversations asks every target for its conversations and for the
@@ -437,7 +523,7 @@ type historyTargetOutcome struct {
 // own guard refuses it and tells you to attach instead — so a browser that
 // could not tell the difference would print a command that fails on exactly
 // the conversation the user is most likely to pick.
-func (a *app) collectConversations(targets []fleetTarget) (collectedConversations, error) {
+func (a *app) collectConversations(targets []fleetTarget, waitForPeers bool) (collectedConversations, error) {
 	health := readFleetPeerHealth(a.home)
 	now := a.now()
 	outcomes := make([]historyTargetOutcome, len(targets))
@@ -447,27 +533,54 @@ func (a *app) collectConversations(targets []fleetTarget) (collectedConversation
 	awaitingLocal := false
 	for index := range targets {
 		target := targets[index]
-		if target.Endpoint != localFleetEndpoint {
+		// The cooldown exists to keep the fast path fast, so it does not apply to
+		// a caller who asked for the complete answer and accepted its cost.
+		// Skipping a peer under --wait-for-peers would answer the flag with the
+		// very shortfall line that recommends it.
+		if target.Endpoint != localFleetEndpoint && !waitForPeers {
 			if failure, retryAt, cooling := health.coolingDown(target.Alias, now); cooling {
 				outcomes[index].err = fleetPeerSkipped(target, "history", failure, retryAt.Sub(now))
 				continue
 			}
+			// A peer that has already shown it cannot answer inside the budget is
+			// left out at no cost. Asking it again would spend the whole budget to
+			// be told the same thing, which is exactly what a browse used to do.
+			if listing, tooSlow := peerCannotAnswerInTime(health, target.Alias, now); tooSlow {
+				outcomes[index].err = fleetHistoryPeerTooSlow(target, listing)
+				continue
+			}
 		}
-		outcomes[index] = historyTargetOutcome{index: index, err: fleetHistoryTimedOut(target)}
+		outcomes[index] = historyTargetOutcome{index: index, err: errPending}
 		dispatched[index] = true
 		pending++
 		awaitingLocal = awaitingLocal || target.Endpoint == localFleetEndpoint
+		// A peer is normally held to the short fleet request timeout so one stale
+		// machine cannot stall anything. --wait-for-peers is the caller saying
+		// that is not the trade they want, and a peer capped at five seconds
+		// while the local machine is allowed sixty would make the flag fail on
+		// exactly the large history it exists to reach.
+		timeout := fleetTargetTimeout(targets[index])
+		if waitForPeers {
+			timeout = localFleetRequestTimeout
+		}
 		go func(index int) {
-			answers <- readTargetConversations(targets[index], index)
+			answers <- readTargetConversations(targets[index], index, timeout)
 		}(index)
 	}
 
 	// The local machine owns the answer, so it is always awaited; peers only
-	// add to it and are dropped once the budget passes.
-	budget := time.NewTimer(fleetHistoryPeerBudget)
-	defer budget.Stop()
-	budgetExpired := budget.C
+	// add to it and are dropped once the budget passes. --wait-for-peers arms no
+	// timer at all: the caller asked for the whole fleet, and every request is
+	// already bounded by fleetTargetTimeout, so there is nothing left for a
+	// second deadline to protect.
+	peerBudget := fleetHistoryPeerBudget
+	var budgetExpired <-chan time.Time
 	expired := false
+	if !waitForPeers {
+		budget := time.NewTimer(peerBudget)
+		defer budget.Stop()
+		budgetExpired = budget.C
+	}
 	accept := func(outcome historyTargetOutcome) {
 		outcomes[outcome.index] = outcome
 		pending--
@@ -498,6 +611,7 @@ func (a *app) collectConversations(targets []fleetTarget) (collectedConversation
 	collected := collectedConversations{
 		rows:     make([]conversationRow, 0, 64),
 		machines: make([]historysearch.MachineState, 0, len(targets)),
+		waited:   waitForPeers,
 	}
 	successes := 0
 	rejection := ""
@@ -506,23 +620,42 @@ func (a *app) collectConversations(targets []fleetTarget) (collectedConversation
 		state := historysearch.MachineState{
 			Alias: target.Alias, Name: target.Name, Endpoint: target.Endpoint, Status: "listed",
 		}
+		// A peer that was still answering when the budget ran out is a healthy
+		// peer with a large history, not a machine that is down, and the two must
+		// not share a verdict. Cooling it down would skip it for five minutes on
+		// the strength of it being busy, and — worse — would stop the very
+		// browses that widen its budget from ever running, so the peer would be
+		// dropped for being slow and then never given the chance to prove how
+		// slow. What it gets instead is the lower bound it just demonstrated.
+		stillAnswering := errors.Is(outcome.err, errPending)
+		if stillAnswering {
+			outcome.err = fleetHistoryTimedOut(target, peerBudget)
+			if target.Endpoint != localFleetEndpoint {
+				health.recordSlow(target.Alias, now, peerBudget)
+			}
+		}
 		if outcome.err != nil {
 			state.Status = "unavailable"
 			state.Error = outcome.err.Error()
 			collected.partial = true
 			collected.machines = append(collected.machines, state)
+			collected.withheld = append(collected.withheld,
+				withheldFromLastListing(health, target, outcome.err))
 			if refusal, refused := requestWasRejected(outcome.err); refused {
 				if rejection == "" {
 					rejection = refusal.Error()
 				}
 				health.recordSuccess(target.Alias)
-			} else if dispatched[index] && target.Endpoint != localFleetEndpoint {
+			} else if dispatched[index] && !stillAnswering && target.Endpoint != localFleetEndpoint {
 				health.recordFailure(target.Alias, now, outcome.err)
 			}
 			continue
 		}
 		successes++
 		health.recordSuccess(target.Alias)
+		if target.Endpoint != localFleetEndpoint {
+			health.recordListing(target.Alias, now, len(outcome.listing.Sessions), outcome.took)
+		}
 		collected.machines = append(collected.machines, state)
 		collected.known += len(outcome.listing.Sessions)
 		for _, session := range outcome.listing.Sessions {
@@ -538,9 +671,40 @@ func (a *app) collectConversations(targets []fleetTarget) (collectedConversation
 	return collected, nil
 }
 
-func readTargetConversations(target fleetTarget, index int) historyTargetOutcome {
-	outcome := historyTargetOutcome{index: index, live: map[string]bool{}}
-	timeout := fleetTargetTimeout(target)
+// errPending marks a target that has not answered yet. It is replaced with the
+// real timeout message once the budget this browse actually granted is known,
+// so the instruction a dropped peer prints names the wait the reader just paid
+// rather than the constant it was floored at.
+var errPending = errors.New("did not answer")
+
+// withheldFromLastListing prices a machine that is missing from this answer,
+// using the last browse that did reach it.
+func withheldFromLastListing(
+	health *fleetPeerHealth, target fleetTarget, reason error,
+) withheldMachine {
+	missing := withheldMachine{Alias: target.Alias, Name: target.Name, Reason: reason.Error()}
+	listing, at, known := health.lastListing(target.Alias)
+	if !known || !listing.Counted {
+		return missing
+	}
+	missing.Counted = true
+	missing.Conversations = listing.Conversations
+	if !at.IsZero() {
+		missing.CountedAt = at.Format(time.RFC3339)
+		missing.countedAtMS = at.UnixMilli()
+	}
+	return missing
+}
+
+// readTargetConversations times its own round trip. What a peer costs is a
+// measurement, not something to be assumed: the next browse reads it back to
+// decide how long that peer is worth waiting for.
+func readTargetConversations(
+	target fleetTarget, index int, timeout time.Duration,
+) (outcome historyTargetOutcome) {
+	outcome = historyTargetOutcome{index: index, live: map[string]bool{}}
+	started := time.Now()
+	defer func() { outcome.took = time.Since(started) }()
 	// The running set is read first because it is the cheap call: if this
 	// daemon cannot answer at all, nothing below is worth attempting, and a
 	// listing without it would misreport which conversations can be resumed.
@@ -926,9 +1090,14 @@ func readConversationTail(target fleetTarget, id string, count int) ([]conversat
 func (a *app) writeConversationRows(
 	rows []conversationRow, matched, known int, query string, filters historyFilters,
 	withoutProvenance []conversationRow, answered map[string]bool, numbered bool,
+	withheld []withheldMachine, waited bool,
 ) error {
 	if len(rows) == 0 {
-		if _, err := io.WriteString(a.stdout, emptyConversationAdvice(known, query, filters)); err != nil {
+		if _, err := io.WriteString(a.stdout,
+			emptyConversationAdvice(known, query, filters, len(withheld) > 0)); err != nil {
+			return err
+		}
+		if err := a.writeWithheldMachines(withheld, waited); err != nil {
 			return err
 		}
 		return a.writeProvenanceShortfall(answered, withoutProvenance, filters)
@@ -968,10 +1137,64 @@ func (a *app) writeConversationRows(
 			return err
 		}
 	}
-	if err := a.writeConversationFooter(len(rows), matched, known, query, filters, numbered); err != nil {
+	if err := a.writeConversationFooter(
+		len(rows), matched, known, query, filters, numbered, len(withheld) > 0); err != nil {
+		return err
+	}
+	if err := a.writeWithheldMachines(withheld, waited); err != nil {
 		return err
 	}
 	return a.writeProvenanceShortfall(answered, withoutProvenance, filters)
+}
+
+// writeWithheldMachines is the line that stops a partial browse from reading
+// like a complete one.
+//
+// The counts above it are honest about what was searched and say nothing about
+// what was not, and that is exactly how a browse of 306 conversations came to
+// present itself as the whole of a fleet holding 1825. There was a warning —
+// naming the machine, on stderr — and it was not enough, for two reasons that
+// both had to be fixed. It went to a stream that `sessions history > list.txt`
+// discards, so the saved answer carried no trace of the omission at all. And it
+// said only that a machine was unavailable, which a reader has no way to price:
+// a laptop that was asleep and held nothing reads identically to the machine
+// holding five sixths of their history.
+//
+// So this goes on stdout beside the counts it corrects, and it carries the
+// number. The number is the last count that machine reported here rather than a
+// live one, because a live one costs exactly the round trip that was just
+// missed; it is stated as of when it was taken, so it is never mistaken for a
+// fact about now.
+func (a *app) writeWithheldMachines(withheld []withheldMachine, waited bool) error {
+	for _, machine := range withheld {
+		scale := "and how many conversations it holds has never been recorded here"
+		if machine.Counted {
+			scale = fmt.Sprintf("and held %s when it last answered", conversationTotal(machine.Conversations))
+			if machine.countedAtMS > 0 {
+				scale += ", " + a.ageOf(machine.countedAtMS) + " ago"
+			}
+		}
+		// A caller who already waited has spent the only lever this line has to
+		// offer, so it points at the machine's own error instead of at itself.
+		advice := "Add --wait-for-peers to include it."
+		if waited {
+			advice = fmt.Sprintf(
+				"Waiting did not reach it; run `sessions --machine %s history` for its own answer.", machine.Alias)
+		}
+		if _, err := fmt.Fprintf(a.stdout,
+			"Not the whole fleet: %s is missing, %s. %s\n",
+			machine.Alias, scale, advice); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func conversationTotal(count int) string {
+	if count == 1 {
+		return "1 conversation"
+	}
+	return fmt.Sprintf("%d conversations", count)
 }
 
 // writeProvenanceShortfall says when a surface or actor filter came up short
@@ -1136,7 +1359,7 @@ func (a *app) conversationMetaLine(row conversationRow) string {
 }
 
 func (a *app) writeConversationFooter(
-	shown, matched, known int, query string, filters historyFilters, numbered bool,
+	shown, matched, known int, query string, filters historyFilters, numbered, partial bool,
 ) error {
 	headline := fmt.Sprintf("%d conversations match", matched)
 	if matched == 1 {
@@ -1152,7 +1375,14 @@ func (a *app) writeConversationFooter(
 	if shown < matched {
 		parts = append(parts, fmt.Sprintf("showing the %d most recent, raise with -n", shown))
 	}
-	parts = append(parts, fmt.Sprintf("%d conversations recorded", known))
+	// "recorded" states a total, and a total is precisely what this number is
+	// not when a machine is missing. Scoping the claim to the machines that
+	// answered costs five words and keeps the line true.
+	recorded := fmt.Sprintf("%d conversations recorded", known)
+	if partial {
+		recorded += " on the machines that answered"
+	}
+	parts = append(parts, recorded)
 	if _, err := fmt.Fprintln(a.stdout, strings.Join(parts, " · ")); err != nil {
 		return err
 	}
@@ -1187,7 +1417,7 @@ func (f historyFilters) narrowed() bool {
 // emptyConversationAdvice never answers an empty browse with only "(none)".
 // The reason a browse came back empty is nearly always a filter, and the user
 // arrived here because they could not find a conversation in the first place.
-func emptyConversationAdvice(known int, query string, filters historyFilters) string {
+func emptyConversationAdvice(known int, query string, filters historyFilters, partial bool) string {
 	var builder strings.Builder
 	builder.WriteString("(no conversations matched")
 	if query != "" {
@@ -1197,8 +1427,13 @@ func emptyConversationAdvice(known int, query string, filters historyFilters) st
 		builder.WriteString(" " + description)
 	}
 	builder.WriteString(")\n")
+	where := ""
+	if partial {
+		where = " on the machines that answered"
+	}
 	if known > 0 {
-		fmt.Fprintf(&builder, "%d conversations are recorded; widen the filters or run `sessions history --all`.\n", known)
+		fmt.Fprintf(&builder,
+			"%d conversations are recorded%s; widen the filters or run `sessions history --all`.\n", known, where)
 		return builder.String()
 	}
 	builder.WriteString("No Claude or Codex history was found on the machines that answered.\n")
@@ -1234,13 +1469,32 @@ func describeHistoryFilters(filters historyFilters) string {
 	return strings.Join(parts, ", ")
 }
 
-func fleetHistoryTimedOut(target fleetTarget) error {
+func fleetHistoryTimedOut(target fleetTarget, budget time.Duration) error {
 	if target.Endpoint == localFleetEndpoint {
 		return fmt.Errorf("this machine did not answer within %s", localFleetRequestTimeout)
 	}
 	return fmt.Errorf(
-		"did not answer within %s, so its conversations are missing; run `sessions --machine %s history ...` to wait for it",
-		fleetHistoryPeerBudget, target.Alias,
+		"did not answer within %s, so its conversations are missing; add --wait-for-peers, or run `sessions --machine %s history ...`",
+		budget.Round(time.Millisecond), target.Alias,
+	)
+}
+
+// fleetHistoryPeerTooSlow explains a peer this browse did not even ask. The
+// distinction from an unreachable machine is the point: nothing is wrong with
+// it, it is simply bigger than a browse, and the reader needs to know that the
+// answer is one flag away rather than that their fleet is broken.
+func fleetHistoryPeerTooSlow(target fleetTarget, listing fleetPeerListing) error {
+	cost := (time.Duration(listing.TookMS) * time.Millisecond).Round(100 * time.Millisecond)
+	// A completed listing measured the cost; an abandoned one only bounded it.
+	// Printing a bound as a measurement would overstate what is known about the
+	// machine, which is the mistake this whole change is about.
+	observed := fmt.Sprintf("was still listing its history after %s last time", cost)
+	if listing.Counted {
+		observed = fmt.Sprintf("took %s to list its history last time", cost)
+	}
+	return fmt.Errorf(
+		"not asked: it %s, longer than the %s a browse waits; add --wait-for-peers, or run `sessions --machine %s history ...`",
+		observed, fleetHistoryPeerBudget, target.Alias,
 	)
 }
 
@@ -1449,4 +1703,4 @@ func truncateRunes(value string, limit int) string {
 	return strings.TrimSpace(string(runes[:limit-1])) + "…"
 }
 
-const historyUsageText = "usage: sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [--pick] [-n N] [--all] [--json]\nWHEN accepts today, yesterday, a span like 3d or 6h, YYYY-MM-DD, or RFC3339. SURFACE is codex-cli, codex-desktop, codex-exec, claude-cli, claude-desktop, claude-sdk, sessions, or the raw value a provider recorded. A QUERY, when given, comes FIRST, before any flags"
+const historyUsageText = "usage: sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [--pick] [-n N] [--all] [--wait-for-peers] [--json]\nWHEN accepts today, yesterday, a span like 3d or 6h, YYYY-MM-DD, or RFC3339. SURFACE is codex-cli, codex-desktop, codex-exec, claude-cli, claude-desktop, claude-sdk, sessions, or the raw value a provider recorded. A QUERY, when given, comes FIRST, before any flags"

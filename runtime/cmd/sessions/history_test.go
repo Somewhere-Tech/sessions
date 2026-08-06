@@ -96,6 +96,428 @@ func runHistoryCLI(t *testing.T, daemon *historyFixtureDaemon, args ...string) (
 	return stdout.String(), stderr.String(), code
 }
 
+// runFleetHistoryCLI browses the approved fleet rather than one pinned daemon:
+// --host only supplies the local endpoint, exactly as fleetSearchApp does for
+// search, and the peer comes from the saved machine registry under home.
+func runFleetHistoryCLI(
+	t *testing.T, home string, local *historyFixtureDaemon, args ...string,
+) (string, string, error) {
+	t.Helper()
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	application, err := newApp(
+		append([]string{"--host", local.server.URL}, args...), strings.NewReader(""), stdout, stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(application.close)
+	application.explicitTarget = false
+	dispatchErr := application.dispatch()
+	return stdout.String(), stderr.String(), dispatchErr
+}
+
+// stalledPeer is an approved machine that has accepted the request and not
+// answered it — the shape of a peer holding a large history, which is the case
+// a browse gets wrong. It never answers until the test says so, so nothing here
+// depends on how long anything takes.
+type stalledPeer struct {
+	server  *httptest.Server
+	started chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	paths   []string
+}
+
+func newStalledPeer(t *testing.T) *stalledPeer {
+	t.Helper()
+	peer := &stalledPeer{started: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	peer.server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		peer.mu.Lock()
+		peer.paths = append(peer.paths, request.URL.Path)
+		peer.mu.Unlock()
+		if request.URL.Path == "/api/history" {
+			once.Do(func() { close(peer.started) })
+			<-peer.release
+		}
+		_ = json.NewEncoder(response).Encode(integrations.HistoryResponse{
+			SchemaVersion: integrations.SchemaVersion,
+		})
+	}))
+	t.Cleanup(func() {
+		select {
+		case <-peer.release:
+		default:
+			close(peer.release)
+		}
+		peer.server.Close()
+	})
+	return peer
+}
+
+// requestPaths is every request this peer has received, so a test can prove a
+// browse did not ask it anything rather than inferring it from the clock.
+func (p *stalledPeer) requestPaths() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.paths...)
+}
+
+func (p *stalledPeer) awaitRequest(t *testing.T) {
+	t.Helper()
+	select {
+	case <-p.started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the peer never received the history request")
+	}
+}
+
+// approvePeer registers one peer in home's machine registry.
+func approvePeer(t *testing.T, home, alias, endpoint string) {
+	t.Helper()
+	if _, err := saveMachine(home, savedMachine{
+		Alias: alias, MachineID: "machine-" + alias, Name: "Mac mini", Endpoint: endpoint,
+	}, "device-secret"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The defect this fixes, in the shape it was measured: a two-machine fleet
+// where the peer holds five sixths of the history and does not answer in time.
+// The browse then reported 306 conversations recorded and 291 matching, with a
+// warning on stderr naming the machine — which a reader has no way to price and
+// a redirected browse never sees at all. The counts on stdout have to say that
+// they are not the fleet, and say how much of it is missing.
+func TestHistoryFooterSaysHowMuchAWithheldMachineHeld(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	now := time.Now()
+	local := newHistoryFixtureDaemon(t, nil, []conversationFixture{
+		{session: conversationAt("provider:codex:here", "local work", "codex", "/w/here", 3, now)},
+	})
+	peer := newStalledPeer(t)
+	approvePeer(t, home, "mini", peer.server.URL)
+
+	// mini answered a browse an hour ago and held 1519 conversations then. That
+	// is the only number available without paying the round trip that was just
+	// missed, and it is the number the reader needs.
+	health := readFleetPeerHealth(home)
+	health.recordListing("mini", now.Add(-time.Hour), 1519, 3500*time.Millisecond)
+	health.save(home)
+
+	stdout, stderr, err := runFleetHistoryCLI(t, home, local, "history")
+	if err != nil {
+		t.Fatalf("browse failed: %v (stderr %q)", err, stderr)
+	}
+	peer.awaitRequest(t)
+
+	if !strings.Contains(stdout, "Not the whole fleet: mini is missing") {
+		t.Fatalf("stdout never said the answer was short a machine:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "held 1519 conversations when it last answered") {
+		t.Fatalf("stdout never said how much was withheld:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "1 conversations recorded on the machines that answered") {
+		t.Fatalf("the footer still states a partial count as the corpus:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "--wait-for-peers") {
+		t.Fatalf("stdout offered no way to get the whole answer:\n%s", stdout)
+	}
+	// The existing diagnostic keeps its place: stdout says what it cost, stderr
+	// says why. Losing the second would make an unreachable peer undebuggable.
+	if !strings.Contains(stderr, "mini") {
+		t.Fatalf("stderr no longer names the unavailable machine: %q", stderr)
+	}
+}
+
+// The count in that line has to be an observation, not a fixture. A browse that
+// reaches a peer records what it held, and the next browse that misses it
+// reports that number back.
+func TestHistoryRemembersWhatAPeerHeldSoAMissedBrowseCanPriceIt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	now := time.Now()
+	local := newHistoryFixtureDaemon(t, nil, []conversationFixture{
+		{session: conversationAt("provider:codex:here", "local work", "codex", "/w/here", 3, now)},
+	})
+	answering := newHistoryFixtureDaemon(t, nil, []conversationFixture{
+		{session: conversationAt("provider:codex:far1", "peer one", "codex", "/w/far", 5, now)},
+		{session: conversationAt("provider:codex:far2", "peer two", "codex", "/w/far", 6, now)},
+	})
+	approvePeer(t, home, "mini", answering.server.URL)
+
+	stdout, stderr, err := runFleetHistoryCLI(t, home, local, "history")
+	if err != nil {
+		t.Fatalf("first browse failed: %v (stderr %q)", err, stderr)
+	}
+	if !strings.Contains(stdout, "peer one") || strings.Contains(stdout, "Not the whole fleet") {
+		t.Fatalf("a peer that answered was not merged into the browse:\n%s", stdout)
+	}
+	listing, _, known := readFleetPeerHealth(home).lastListing("mini")
+	if !known || listing.Conversations != 2 {
+		t.Fatalf("the peer's answer was not remembered: %#v (known %v)", listing, known)
+	}
+	if listing.TookMS < 0 {
+		t.Fatalf("the peer's cost was not measured: %#v", listing)
+	}
+}
+
+// A machine nobody here has ever reached is a different sentence. Printing a
+// count for it would invent one, and printing nothing would leave the reader
+// with a browse that looks complete.
+func TestHistoryAdmitsWhenAWithheldMachinesScaleIsUnknown(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	local := newHistoryFixtureDaemon(t, nil, []conversationFixture{
+		{session: conversationAt("provider:codex:here", "local work", "codex", "/w/here", 3, time.Now())},
+	})
+	peer := newStalledPeer(t)
+	approvePeer(t, home, "mini", peer.server.URL)
+
+	stdout, stderr, err := runFleetHistoryCLI(t, home, local, "history")
+	if err != nil {
+		t.Fatalf("browse failed: %v (stderr %q)", err, stderr)
+	}
+	peer.awaitRequest(t)
+	if !strings.Contains(stdout, "how many conversations it holds has never been recorded here") {
+		t.Fatalf("an uncounted machine was reported as though it were counted:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "held 0 conversations") {
+		t.Fatalf("never reached was printed as holding nothing:\n%s", stdout)
+	}
+}
+
+// An empty answer is the most misleading place of all to omit this: "no
+// conversations matched" reads as a fact about the fleet.
+func TestHistoryEmptyAnswerStillNamesTheMachineThatDidNotAnswer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	local := newHistoryFixtureDaemon(t, nil, nil)
+	peer := newStalledPeer(t)
+	approvePeer(t, home, "mini", peer.server.URL)
+	health := readFleetPeerHealth(home)
+	health.recordListing("mini", time.Now().Add(-time.Minute), 1519, 3500*time.Millisecond)
+	health.save(home)
+
+	stdout, stderr, err := runFleetHistoryCLI(t, home, local, "history")
+	if err != nil {
+		t.Fatalf("browse failed: %v (stderr %q)", err, stderr)
+	}
+	if !strings.Contains(stdout, "Not the whole fleet: mini is missing") ||
+		!strings.Contains(stdout, "1519 conversations") {
+		t.Fatalf("an empty browse presented itself as an empty fleet:\n%s", stdout)
+	}
+}
+
+// --json callers read `known` as the corpus. They need the same correction the
+// footer got, in a field rather than a sentence.
+func TestHistoryJSONCarriesWhatWasWithheld(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	local := newHistoryFixtureDaemon(t, nil, []conversationFixture{
+		{session: conversationAt("provider:codex:here", "local work", "codex", "/w/here", 3, time.Now())},
+	})
+	peer := newStalledPeer(t)
+	approvePeer(t, home, "mini", peer.server.URL)
+	health := readFleetPeerHealth(home)
+	health.recordListing("mini", time.Now().Add(-time.Minute), 1519, 3500*time.Millisecond)
+	health.save(home)
+
+	stdout, stderr, err := runFleetHistoryCLI(t, home, local, "--json", "history")
+	if err != nil {
+		t.Fatalf("browse failed: %v (stderr %q)", err, stderr)
+	}
+	var answer historyBrowseResponse
+	if decodeErr := json.Unmarshal([]byte(stdout), &answer); decodeErr != nil {
+		t.Fatalf("history --json was not decodable: %v (%q)", decodeErr, stdout)
+	}
+	if !answer.Partial || len(answer.Withheld) != 1 {
+		t.Fatalf("withheld machines missing from the document: %#v", answer)
+	}
+	missing := answer.Withheld[0]
+	if missing.Alias != "mini" || !missing.Counted || missing.Conversations != 1519 ||
+		missing.CountedAt == "" || missing.Reason == "" {
+		t.Fatalf("withheld entry = %#v", missing)
+	}
+}
+
+// The second half of the fix: stop paying for the same failure. A peer that has
+// shown it cannot answer inside the budget is left out at no cost instead of
+// being waited for at full cost on every browse, and it is re-tried on a timer
+// so a machine that got faster comes back on its own.
+func TestHistoryDoesNotPayTheBudgetForAPeerItKnowsIsTooSlow(t *testing.T) {
+	now := time.Now()
+	health := &fleetPeerHealth{Peers: map[string]fleetPeerFailure{}}
+
+	if _, tooSlow := peerCannotAnswerInTime(health, "mini", now); tooSlow {
+		t.Fatal("a peer nobody has timed was skipped; the first browse has to look")
+	}
+
+	health.recordListing("mini", now, 12, 80*time.Millisecond)
+	if _, tooSlow := peerCannotAnswerInTime(health, "mini", now); tooSlow {
+		t.Fatal("a peer that answers in 80ms was skipped")
+	}
+
+	health.recordListing("mini", now, 1519, 3700*time.Millisecond)
+	listing, tooSlow := peerCannotAnswerInTime(health, "mini", now)
+	if !tooSlow {
+		t.Fatal("a peer measured at 3.7s is still asked, and the browse still pays 2s to be told so")
+	}
+	if listing.Conversations != 1519 {
+		t.Fatalf("the skip lost the count that prices it: %#v", listing)
+	}
+
+	// Not a verdict: the machine is asked again once the window passes.
+	if _, tooSlow := peerCannotAnswerInTime(
+		health, "mini", now.Add(fleetHistoryPeerRecheck+time.Minute)); tooSlow {
+		t.Fatal("a peer written off permanently can never come back")
+	}
+}
+
+// A miss has to teach the next browse something, or nothing ever learns that
+// this peer is too slow and every browse keeps paying the budget to find out.
+// It also must not be cooled down: being large is not being unreachable.
+func TestHistoryLearnsFromAPeerThatMissedItsBudget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	local := newHistoryFixtureDaemon(t, nil, []conversationFixture{
+		{session: conversationAt("provider:codex:here", "local work", "codex", "/w/here", 3, time.Now())},
+	})
+	peer := newStalledPeer(t)
+	approvePeer(t, home, "mini", peer.server.URL)
+
+	if _, stderr, err := runFleetHistoryCLI(t, home, local, "history"); err != nil {
+		t.Fatalf("browse failed: %v (stderr %q)", err, stderr)
+	}
+	peer.awaitRequest(t)
+
+	health := readFleetPeerHealth(home)
+	if _, _, cooling := health.coolingDown("mini", time.Now()); cooling {
+		t.Fatal("a peer that was still answering was cooled down as though it were unreachable")
+	}
+	listing, _, known := health.lastListing("mini")
+	if !known || listing.TookMS < fleetHistoryPeerBudget.Milliseconds() {
+		t.Fatalf("the miss taught the next browse nothing: %#v (known %v)", listing, known)
+	}
+	if listing.Counted {
+		t.Fatalf("a browse that gave up invented a conversation count: %#v", listing)
+	}
+	if _, tooSlow := peerCannotAnswerInTime(health, "mini", time.Now()); !tooSlow {
+		t.Fatal("the next browse would pay the whole budget again to learn the same thing")
+	}
+
+	// And it does not: the second browse neither contacts the peer nor waits for
+	// it, while still reporting that the answer is short a machine.
+	before := len(peer.requestPaths())
+	started := time.Now()
+	stdout, stderr, err := runFleetHistoryCLI(t, home, local, "history")
+	if err != nil {
+		t.Fatalf("second browse failed: %v (stderr %q)", err, stderr)
+	}
+	if got := len(peer.requestPaths()); got != before {
+		t.Fatalf("the second browse asked the peer again: %d requests, want %d", got, before)
+	}
+	if elapsed := time.Since(started); elapsed >= fleetHistoryPeerBudget {
+		t.Fatalf("the second browse still paid %s for a peer it did not ask", elapsed)
+	}
+	if !strings.Contains(stdout, "Not the whole fleet: mini is missing") {
+		t.Fatalf("a skipped peer vanished from the answer instead of being reported:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "not asked") {
+		t.Fatalf("stderr did not distinguish a peer left out from one that failed: %q", stderr)
+	}
+}
+
+// --wait-for-peers is the explicit lever the shortfall line advertises. It has
+// to actually wait: a caller that asked for the whole fleet and got the fast
+// partial answer anyway is worse off than before, because now they believe they
+// asked.
+func TestHistoryWaitForPeersWaitsForTheMachineTheBudgetWouldDrop(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	now := time.Now()
+	local := newHistoryFixtureDaemon(t, nil, []conversationFixture{
+		{session: conversationAt("provider:codex:here", "local work", "codex", "/w/here", 3, now)},
+	})
+	peer := newStalledPeer(t)
+	approvePeer(t, home, "mini", peer.server.URL)
+	// mini failed a browse a moment ago, which is exactly when a reader reaches
+	// for this flag. The cooldown that keeps the fast path fast must not answer
+	// --wait-for-peers with the shortfall line that recommended it.
+	health := readFleetPeerHealth(home)
+	health.recordFailure("mini", now, errPending)
+	health.save(home)
+
+	type answer struct {
+		stdout string
+		err    error
+	}
+	answers := make(chan answer, 1)
+	go func() {
+		stdout, _, err := runFleetHistoryCLI(t, home, local, "history", "--wait-for-peers")
+		answers <- answer{stdout: stdout, err: err}
+	}()
+	peer.awaitRequest(t)
+
+	// The peer is now inside the request and will stay there until this test
+	// lets it out, so "the browse has not finished" is a fact rather than a
+	// race: under the wall-clock budget it would have given up and printed a
+	// partial answer well inside this window, and under --wait-for-peers it
+	// cannot finish at all. Nothing here sleeps waiting for a hoped-for state.
+	select {
+	case got := <-answers:
+		t.Fatalf("--wait-for-peers gave up on a peer that was still answering:\n%s", got.stdout)
+	case <-time.After(2 * fleetHistoryPeerBudget):
+	}
+	close(peer.release)
+
+	select {
+	case got := <-answers:
+		if got.err != nil {
+			t.Fatalf("--wait-for-peers failed: %v", got.err)
+		}
+		if strings.Contains(got.stdout, "Not the whole fleet") {
+			t.Fatalf("--wait-for-peers still dropped the peer:\n%s", got.stdout)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("--wait-for-peers never returned after the peer answered")
+	}
+}
+
+// A machine that is out of disk, or otherwise answering with its own failure,
+// is not reached by waiting longer. The shortfall line must not send a caller
+// who already used the flag back around to use it again.
+func TestHistoryDoesNotRecommendWaitingToACallerWhoAlreadyWaited(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	local := newHistoryFixtureDaemon(t, nil, []conversationFixture{
+		{session: conversationAt("provider:codex:here", "local work", "codex", "/w/here", 3, time.Now())},
+	})
+	failing := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]string{"error": "no space left on device"})
+	}))
+	defer failing.Close()
+	approvePeer(t, home, "mini", failing.URL)
+
+	stdout, stderr, err := runFleetHistoryCLI(t, home, local, "history", "--wait-for-peers")
+	if err != nil {
+		t.Fatalf("browse failed: %v (stderr %q)", err, stderr)
+	}
+	if !strings.Contains(stdout, "Not the whole fleet: mini is missing") {
+		t.Fatalf("a peer answering with its own failure was not reported:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "Add --wait-for-peers") {
+		t.Fatalf("the answer told a caller who waited to wait:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "sessions --machine mini history") {
+		t.Fatalf("no next step was offered for a peer waiting cannot reach:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "no space left on device") {
+		t.Fatalf("the peer's own explanation was lost: %q", stderr)
+	}
+}
+
 // The complaint this command exists for: a conversation started somewhere else
 // and closed, which the user cannot find again. Browsing must need no search
 // term, must order by recency, and must hand back a command per row.

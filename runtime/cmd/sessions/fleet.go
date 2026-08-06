@@ -27,6 +27,20 @@ const (
 	// so skip it for a while instead of paying the budget on every query. The
 	// window is short because a machine coming back is routine, not an event.
 	fleetPeerCooldown = 5 * time.Minute
+	// How long a peer gets to complete a TCP connection. A shut laptop and a
+	// busy one are different failures and must cost differently: nothing has
+	// been established with a machine that is powered off, so there is nothing
+	// to wait for, while a machine already working on an answer deserves the
+	// time that answer takes.
+	//
+	// It has to be shorter than the fan-out budget or the distinction never
+	// surfaces — the budget fires first, and a powered-off machine is filed as
+	// one that was busy listing a large history, which is both false and the
+	// wrong shelf: it would be skipped as too slow rather than cooled down as
+	// unreachable, and told the user it was still listing. A second is generous
+	// for a handshake on a LAN or a tailnet, and the budget still bounds
+	// anything slower.
+	fleetPeerDialTimeout = time.Second
 )
 
 type fleetTarget struct {
@@ -183,12 +197,57 @@ func apiErrorMessage(body []byte) string {
 type fleetPeerHealth struct {
 	Version int                         `json:"version"`
 	Peers   map[string]fleetPeerFailure `json:"peers"`
-	changed bool
+	// Listings remembers what each peer said the last time it answered a
+	// history browse: how many conversations it held, and how long it took to
+	// say so. Both are facts the next browse needs and neither can be
+	// rediscovered without paying the peer's full cost again.
+	//
+	// The count is what makes a withheld peer reportable at its real scale. A
+	// browse that drops a peer knows only that something is missing; "mini did
+	// not answer" and "mini did not answer, and it held 1519 conversations an
+	// hour ago" are the difference between a warning a reader can dismiss and
+	// one they cannot.
+	//
+	// The duration is what makes the budget a measurement instead of a guess. A
+	// peer's cost scales with the history it holds, so no number chosen once for
+	// a fleet nobody had timed stays right; a peer that has proven it needs
+	// three seconds is granted three seconds, and a peer that answers in eighty
+	// milliseconds never widens anything.
+	Listings map[string]fleetPeerListing `json:"listings,omitempty"`
+	changed  bool
 }
 
 type fleetPeerFailure struct {
 	At    string `json:"at"`
 	Error string `json:"error"`
+}
+
+// fleetPeerListing is what one peer has shown about itself. At, Conversations
+// and Counted describe its last complete answer. TookMS is separate and coarser:
+// it is what the peer has shown it needs, which a complete answer measures
+// exactly and an exceeded budget still bounds from below.
+//
+// Keeping the lower bound matters more than it looks. A peer whose answer costs
+// more than any budget it is ever granted would otherwise never be measured at
+// all — every browse would miss it, learn nothing, and miss it again — so the
+// widening this whole mechanism exists for would never start on precisely the
+// fleet that needs it. Recording "at least this long" makes each miss teach the
+// next browse something, and the budget climbs to the peer's real cost within a
+// few browses instead of never.
+type fleetPeerListing struct {
+	// At and Conversations are the last complete answer: a count, and when it
+	// was taken. Only a browse that actually reached the peer writes them, so
+	// the number reported for a missing machine is always a number that machine
+	// really said.
+	At            string `json:"at,omitempty"`
+	Conversations int    `json:"conversations,omitempty"`
+	Counted       bool   `json:"counted,omitempty"`
+	// TookMS and SeenAt are what the peer costs: measured exactly by a complete
+	// answer, bounded from below by a budget it exceeded, and stamped either
+	// way. They are separate from the count because a browse that gave up
+	// learned the cost and nothing else.
+	TookMS int64  `json:"took_ms,omitempty"`
+	SeenAt string `json:"seen_at,omitempty"`
 }
 
 const fleetPeerHealthVersion = 1
@@ -216,7 +275,69 @@ func readFleetPeerHealth(home string) *fleetPeerHealth {
 	if stored.Peers != nil {
 		health.Peers = stored.Peers
 	}
+	if stored.Listings != nil {
+		health.Listings = stored.Listings
+	}
 	return health
+}
+
+// recordListing remembers a peer's answer so the next browse can price it and,
+// if it is missed, still say how much was missed.
+func (h *fleetPeerHealth) recordListing(alias string, now time.Time, conversations int, took time.Duration) {
+	if h.Listings == nil {
+		h.Listings = map[string]fleetPeerListing{}
+	}
+	stamp := now.Format(time.RFC3339Nano)
+	h.Listings[alias] = fleetPeerListing{
+		At: stamp, Conversations: conversations, Counted: true,
+		TookMS: took.Milliseconds(), SeenAt: stamp,
+	}
+	h.changed = true
+}
+
+// recordSlow remembers that a peer was still answering when its budget ran out.
+// It is a lower bound on that peer's cost, not a measurement, so it never
+// touches the count: a browse that gave up learned nothing about how much the
+// machine holds, and overwriting the last real count with a guess would be the
+// one mistake this whole line exists to prevent.
+func (h *fleetPeerHealth) recordSlow(alias string, now time.Time, budget time.Duration) {
+	if h.Listings == nil {
+		h.Listings = map[string]fleetPeerListing{}
+	}
+	listing := h.Listings[alias]
+	if budget.Milliseconds() > listing.TookMS {
+		listing.TookMS = budget.Milliseconds()
+	}
+	listing.SeenAt = now.Format(time.RFC3339Nano)
+	h.Listings[alias] = listing
+	h.changed = true
+}
+
+// lastListing reports what a peer held the last time it answered. The second
+// value separates "this peer holds nothing" from "this peer has never been
+// reached from here", which a browse must never print as the same sentence.
+func (h *fleetPeerHealth) lastListing(alias string) (fleetPeerListing, time.Time, bool) {
+	listing, known := h.Listings[alias]
+	if !known {
+		return fleetPeerListing{}, time.Time{}, false
+	}
+	at, err := time.Parse(time.RFC3339Nano, listing.At)
+	if err != nil {
+		return listing, time.Time{}, true
+	}
+	return listing, at, true
+}
+
+// costSeenAt is when this peer's cost was last observed, which paces the
+// recheck. It is not when its conversations were counted: a peer skipped every
+// ten minutes keeps refreshing what it costs while the count it reports stays
+// as old as the last browse that truly reached it.
+func (l fleetPeerListing) costSeenAt() time.Time {
+	at, err := time.Parse(time.RFC3339Nano, l.SeenAt)
+	if err != nil {
+		return time.Time{}
+	}
+	return at
 }
 
 // coolingDown reports whether a peer failed recently enough to skip, and when
@@ -256,7 +377,9 @@ func (h *fleetPeerHealth) save(home string) {
 	if !h.changed {
 		return
 	}
-	encoded, err := json.MarshalIndent(fleetPeerHealth{Version: fleetPeerHealthVersion, Peers: h.Peers}, "", "  ")
+	encoded, err := json.MarshalIndent(fleetPeerHealth{
+		Version: fleetPeerHealthVersion, Peers: h.Peers, Listings: h.Listings,
+	}, "", "  ")
 	if err != nil {
 		return
 	}

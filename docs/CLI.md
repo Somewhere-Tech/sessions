@@ -520,7 +520,7 @@ Examples:
 
 ```text
 Usage:
-  sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [--pick] [-n N] [--all] [--json]
+  sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [--pick] [-n N] [--all] [--wait-for-peers] [--json]
 
 browse and preview every past conversation
 
@@ -536,7 +536,11 @@ Where it was started from is the other thing neither provider's picker will tell
 
 --pick numbers the rows and reopens the one you choose, so the command a row carries no longer has to be copied by hand. It is the only thing that makes this command interactive and it is never implied: without it the output is exactly what it has always been, so pipelines, scripts, and agents reading the plain listing are unaffected, and combining it with --json is refused rather than silently ignored. At the prompt, a row number reopens that conversation, `p N` prints the last ten exchanges of row N and returns to the prompt, `l` reprints the list after a preview has scrolled it away, and `q`, an empty line, or end of input leaves without doing anything. Selection runs that row's own printed command — resume for a saved conversation, attach for one that is still running — and a row that carries no command because nothing can bring it back is refused with its reason rather than reopened into a failure. The choice is confirmed with the name and the exact command before anything runs, because reopening starts a provider process and hands it the terminal.
 
-The default view is conversations you could plausibly return to: Claude and Codex, with messages in them, still readable. --all adds empty, shell, and unrecoverable records. The number that matched and the number recorded are always printed, so a narrowed view is never mistaken for an empty history. An approved machine that does not answer in time leaves a partial-result warning rather than silently dropping its conversations.
+The default view is conversations you could plausibly return to: Claude and Codex, with messages in them, still readable. --all adds empty, shell, and unrecoverable records. The number that matched and the number recorded are always printed, so a narrowed view is never mistaken for an empty history.
+
+An approved machine that is not in the answer never disappears quietly. The count in the footer is scoped to the machines that answered, and a line beside it on stdout names the machine that is missing and how many conversations it held the last time this one reached it, so a browse showing a fraction of the fleet cannot be read as the whole of it, and a redirected browse keeps that line.
+
+A browse waits two seconds for the fleet and no longer. A machine whose history is large enough that listing it costs more than that is left out of later browses rather than waited for and dropped again, so the cost of missing it is nothing instead of the whole budget; it is re-checked every ten minutes, and a machine that is powered off fails at connect and is skipped for a few minutes. --wait-for-peers is the complete answer: it ignores those skips, waits for every approved machine as long as this one is allowed to take, and is what the shortfall line points at. Running it once is also what teaches a browse how much a slow machine holds.
 
 Examples:
   sessions history

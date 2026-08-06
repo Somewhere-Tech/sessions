@@ -43,6 +43,18 @@ func newAPIClient(host, port, tokenPath string, localToken bool) (*apiClient, er
 		MaxConnsPerHost:     1,
 		IdleConnTimeout:     60 * time.Second,
 	}
+	// An approved machine that is powered off or off the network must fail at
+	// connect time rather than consume a fan-out's whole wall-clock budget:
+	// "this host is not there" is knowable in a moment, and a fan-out that
+	// cannot tell it apart from "this host is answering slowly" has to price
+	// every browse for the slow case. Loopback is left on the default dialer,
+	// where a connection either succeeds immediately or is refused immediately
+	// and a deadline could only ever fire on a machine under extreme load.
+	if !cliHostIsLoopback(host) {
+		transport.DialContext = (&net.Dialer{
+			Timeout: fleetPeerDialTimeout, KeepAlive: 30 * time.Second,
+		}).DialContext
+	}
 	return &apiClient{
 		host: host, port: port, tokenPath: tokenPath, localToken: localToken,
 		client:         &http.Client{Transport: transport},
