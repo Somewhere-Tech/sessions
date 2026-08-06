@@ -358,33 +358,104 @@ func resolveAmbiguousByRecordedCWD(files []string, cwd string) ClaudeResolution 
 	return ClaudeResolution{Reason: ClaudeAmbiguous}
 }
 
-// claudeTranscriptCWD reads the working directory a transcript recorded for
-// itself. Not every record carries one -- the opening summary and meta lines
-// often do not -- so a bounded prefix is scanned rather than only the first
-// line. The bound matters: this runs on an ambiguous bucket, which may hold a
-// gigabyte-scale transcript, and resolution must stay cheap enough to run on
-// every watcher tick.
-func claudeTranscriptCWD(path string) (string, bool) {
+// ClaudeTranscriptFacts is what a transcript recorded about its own launch.
+// Every field is optional; a zero value means the records in the probed prefix
+// did not carry it, which is not the same as the conversation having no answer.
+type ClaudeTranscriptFacts struct {
+	CWD          string
+	Entrypoint   string
+	PromptSource string
+	Version      string
+	GitBranch    string
+	Sidechain    bool
+}
+
+// probeClaudeTranscript reads what a transcript recorded about itself, over a
+// bounded prefix. Not every record carries every field -- the opening summary
+// and meta lines often carry none -- so a prefix is scanned rather than only
+// the first line. The bound matters: this runs on an ambiguous bucket, which
+// may hold a gigabyte-scale transcript (the largest on the development machine
+// is 1.1 GB), and resolution must stay cheap enough to run on every watcher
+// tick.
+//
+// One reader answers both questions asked of these files. The working directory
+// breaks a bucket collision; the entrypoint says which surface the conversation
+// was started from. They live on the same records, so reading them separately
+// would double the cost of every listing for nothing.
+func probeClaudeTranscript(path string) (ClaudeTranscriptFacts, bool) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", false
+		return ClaudeTranscriptFacts{}, false
 	}
 	defer file.Close()
 
+	var facts ClaudeTranscriptFacts
+	found := false
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), claudeCWDProbeLineCap)
 	for line := 0; line < claudeCWDProbeLines && scanner.Scan(); line++ {
 		var probe struct {
-			CWD string `json:"cwd"`
+			CWD          string `json:"cwd"`
+			Entrypoint   string `json:"entrypoint"`
+			PromptSource string `json:"promptSource"`
+			Version      string `json:"version"`
+			GitBranch    string `json:"gitBranch"`
+			Sidechain    bool   `json:"isSidechain"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &probe) != nil {
 			continue
 		}
-		if probe.CWD != "" {
-			return normalizeCWD(probe.CWD), true
+		for _, field := range []struct {
+			into  *string
+			value string
+		}{
+			{&facts.CWD, probe.CWD},
+			{&facts.Entrypoint, probe.Entrypoint},
+			{&facts.PromptSource, probe.PromptSource},
+			{&facts.Version, probe.Version},
+			{&facts.GitBranch, probe.GitBranch},
+		} {
+			if *field.into == "" && strings.TrimSpace(field.value) != "" {
+				*field.into = strings.TrimSpace(field.value)
+				found = true
+			}
+		}
+		if probe.Sidechain {
+			facts.Sidechain = true
+			found = true
+		}
+		if facts.CWD != "" && facts.Entrypoint != "" && facts.PromptSource != "" {
+			break
 		}
 	}
-	return "", false
+	return facts, found
+}
+
+// ReadClaudeTranscriptFacts is the exported probe. Callers that need the
+// working directory a conversation actually ran in use this rather than
+// inverting the project-directory name, which is a lossy encoding and therefore
+// a guess.
+func ReadClaudeTranscriptFacts(path string) (ClaudeTranscriptFacts, bool) {
+	return probeClaudeTranscript(path)
+}
+
+// ReadClaudeConversationSurface returns where a Claude conversation was started
+// from, out of the same bounded probe used to resolve ambiguous buckets.
+func ReadClaudeConversationSurface(path string) (ConversationSurface, bool) {
+	facts, ok := probeClaudeTranscript(path)
+	if !ok {
+		return ConversationSurface{}, false
+	}
+	surface := ClaudeSurface(facts.Entrypoint, facts.PromptSource, facts.Version, facts.Sidechain)
+	return surface, surface.Known()
+}
+
+func claudeTranscriptCWD(path string) (string, bool) {
+	facts, ok := probeClaudeTranscript(path)
+	if !ok || facts.CWD == "" {
+		return "", false
+	}
+	return normalizeCWD(facts.CWD), true
 }
 
 // ResolveJSONLPath is a compatibility name matching the TypeScript resolver.

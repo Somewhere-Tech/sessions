@@ -50,8 +50,34 @@ type HistorySession struct {
 	// housekeeping pass outranks the conversation the user was actually in.
 	// Zero when no transcript backs the record, in which case LastActivityAt
 	// remains the only answer available.
-	ConversationUpdatedAt int64  `json:"conversation_updated_at,omitempty"`
-	MessageCount          int    `json:"message_count"`
+	ConversationUpdatedAt int64 `json:"conversation_updated_at,omitempty"`
+	// ConversationUpdatedApproximate marks a ConversationUpdatedAt that is the
+	// transcript file's modification time rather than the conversation's own
+	// last record. mtime is metadata about the file, not about the conversation:
+	// any copy that does not preserve times -- a plain `cp -R`, an rsync without
+	// -t, a restore, a move to another machine -- resets it, and every
+	// conversation then reads as having just happened.
+	//
+	// The flag is positive on purpose. It is set only by a daemon that looked
+	// and found nothing stamped, so false means either "taken from the records"
+	// or "this daemon is too old to have looked", and a client that cannot tell
+	// those apart must not brand a row approximate on a guess. Branding every
+	// row of an older daemon's answer would be the same fabrication in the
+	// opposite direction from the one this field exists to stop.
+	ConversationUpdatedApproximate bool `json:"conversation_updated_approximate,omitempty"`
+	MessageCount                   int  `json:"message_count"`
+	// MessageCountUncounted marks a MessageCount that is not a count. The
+	// summary listing does not parse transcripts, so a row it could not answer
+	// for carries zero — and zero is also what a genuinely empty conversation
+	// carries. A consumer filtering out empty conversations cannot tell those
+	// apart, which is exactly why the app's conversation browser had to abandon
+	// the cheap view and pay for the exact one on first paint.
+	//
+	// Positive on purpose, like ConversationUpdatedApproximate: it is set only
+	// by a daemon that deliberately declined to count, so false means "this is a
+	// real count" or "this daemon is too old to say", and neither is a licence
+	// to treat a real zero as unknown.
+	MessageCountUncounted bool   `json:"message_count_uncounted,omitempty"`
 	ConversationAvailable bool   `json:"conversation_available"`
 	External              bool   `json:"external,omitempty"`
 	PromptHistoryOnly     bool   `json:"prompt_history_only,omitempty"`
@@ -73,6 +99,19 @@ type HistorySession struct {
 	// session's transcript, so a degraded message count is never mistaken for
 	// an exact one.
 	SkippedRecords int `json:"skipped_records,omitempty"`
+
+	// Surface says where the conversation was started from -- Codex Desktop,
+	// the Codex CLI, a headless `codex exec`, Claude Code, Claude Desktop, the
+	// Agent SDK, or Sessions itself -- and whether a person or an agent drove
+	// it. Neither provider's own picker can answer this, which is the reason it
+	// is carried here at all.
+	//
+	// Additive and optional in both directions. Nil means the provider recorded
+	// nothing this reader understood, and is deliberately distinguishable from
+	// a surface whose fields happen to be empty; an older record that predates
+	// the field decodes to nil rather than failing, and a daemon too old to send
+	// it produces nil on the client rather than a wrong answer.
+	Surface *watch.ConversationSurface `json:"surface,omitempty"`
 }
 
 type HistoryResponse struct {
@@ -143,6 +182,67 @@ type HistoryOptions struct {
 	DiscoverProviderHistory bool
 }
 
+// messageCountMode decides how much a listing is willing to pay for message
+// counts. Counting a transcript means parsing all of it — a count is not
+// derivable from a line count — and on the development machine's real history
+// that is 1.4 GB across 303 conversations and seven seconds of cold wall clock,
+// against 0.15 seconds for the same listing without it. The cheap view must
+// stay cheap, and the expensive view must stay exact, so the choice is made by
+// the caller rather than by a heuristic inside the store.
+type messageCountMode int
+
+const (
+	// countNone answers a single-session lookup, where the count is about to be
+	// recomputed from the messages actually returned.
+	countNone messageCountMode = iota
+
+	// countCached reports the counts already in the cache and does not parse a
+	// single byte for the rest. This is the summary listing: it costs a map
+	// lookup per row, and it is honest about which rows it could not answer for
+	// rather than reporting them as empty.
+	countCached
+
+	// countAll parses whatever is not cached. This is the exact listing.
+	countAll
+)
+
+// countMessages applies the mode. The third result says whether the returned
+// count is a count at all, which is the distinction the summary view previously
+// could not express: a transcript nobody counted and a transcript with nothing
+// in it both arrived as zero, and a consumer filtering out empty conversations
+// therefore had to abandon the cheap view entirely to avoid hiding everything.
+func (h *HistoryStore) countMessages(
+	mode messageCountMode, path, tool string, info os.FileInfo,
+) (count, skipped int, counted bool, err error) {
+	switch mode {
+	case countAll:
+		count, skipped, err = h.messageCount(path, tool, info)
+		return count, skipped, err == nil, err
+	case countCached:
+		count, skipped, ok := h.cachedMessageCount(path, info)
+		return count, skipped, ok, nil
+	default:
+		return 0, 0, false, nil
+	}
+}
+
+// cachedMessageCount returns a count already computed for this exact file, at
+// no I/O cost. The cache is keyed by path, size and modification time, so a
+// transcript that has grown since it was counted is a miss rather than a stale
+// answer.
+func (h *HistoryStore) cachedMessageCount(path string, info os.FileInfo) (int, int, bool) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	cached, ok := h.cache[path]
+	if !ok || cached.size != info.Size() || cached.modTimeNano != info.ModTime().UnixNano() {
+		return 0, 0, false
+	}
+	h.cacheClock++
+	cached.used = h.cacheClock
+	h.cache[path] = cached
+	return cached.count, cached.skipped, true
+}
+
 // maxHistoryCacheEntries bounds the path-keyed message-count cache. The cache
 // is keyed by transcript path, and a long-lived daemon sees an unbounded number
 // of paths over its lifetime, so it is evicted rather than grown forever.
@@ -179,7 +279,7 @@ func NewHistoryStore(options HistoryOptions) *HistoryStore {
 }
 
 func (h *HistoryStore) List(live []state.SessionInfo) (HistoryResponse, error) {
-	sessions, err := h.list(live, true)
+	sessions, err := h.list(live, countAll)
 	if err != nil {
 		return HistoryResponse{}, err
 	}
@@ -197,7 +297,7 @@ func (h *HistoryStore) List(live []state.SessionInfo) (HistoryResponse, error) {
 // transcript just to count its messages. Search reads only candidates that
 // survive its session/tool filters and applies its own bounded transcript read.
 func (h *HistoryStore) SearchSessions(live []state.SessionInfo) ([]HistorySession, error) {
-	return h.list(live, false)
+	return h.list(live, countCached)
 }
 
 // Lookup resolves one exact history identifier through the same provider and
@@ -212,7 +312,7 @@ func (h *HistoryStore) Lookup(live []state.SessionInfo, id string) (HistorySessi
 	if source.archived != nil {
 		return h.describeArchived(*source.archived), nil
 	}
-	session, _, _, err := h.describeSource(source, false)
+	session, _, _, err := h.describeSource(source, countNone)
 	return session, err
 }
 
@@ -232,7 +332,7 @@ func (h *HistoryStore) Source(live []state.SessionInfo, id string) (HistorySourc
 			RawAvailable: false, TextAvailable: session.ConversationAvailable,
 		}, nil
 	}
-	session, path, _, err := h.describeSource(source, false)
+	session, path, _, err := h.describeSource(source, countNone)
 	if err != nil {
 		return HistorySource{}, err
 	}
@@ -258,7 +358,7 @@ func (h *HistoryStore) Source(live []state.SessionInfo, id string) (HistorySourc
 	return result, nil
 }
 
-func (h *HistoryStore) list(live []state.SessionInfo, countMessages bool) ([]HistorySession, error) {
+func (h *HistoryStore) list(live []state.SessionInfo, counting messageCountMode) ([]HistorySession, error) {
 	sources := backup.CollectSessions(live, h.options.RunnerStateDir)
 	sessions := make([]HistorySession, 0, len(sources))
 	managedByProvider := make(map[string]int, len(sources))
@@ -267,7 +367,7 @@ func (h *HistoryStore) list(live []state.SessionInfo, countMessages bool) ([]His
 		// degrades that one row. Returning the error here emptied the whole
 		// history UI, so a single JSONL on a stale mount cost the user the
 		// ability to browse every other session they own.
-		session, _, _, err := h.describe(source, countMessages)
+		session, _, _, err := h.describe(source, counting)
 		if err != nil {
 			session = markUnreadable(session, source.ID, err)
 		}
@@ -285,7 +385,7 @@ func (h *HistoryStore) list(live []state.SessionInfo, countMessages bool) ([]His
 				}
 				continue
 			}
-			session, _, _, err := h.describeExternal(source, countMessages)
+			session, _, _, err := h.describeExternal(source, counting)
 			if err != nil {
 				session = markUnreadable(session, source.SessionID, err)
 			}
@@ -327,7 +427,7 @@ func (h *HistoryStore) TranscriptWindow(live []state.SessionInfo, id string, opt
 	if source.archived != nil {
 		return h.archivedTranscriptWindow(*source.archived, options)
 	}
-	session, path, tool, err := h.describeSource(source, false)
+	session, path, tool, err := h.describeSource(source, countNone)
 	if err != nil {
 		return TranscriptResponse{}, err
 	}
@@ -342,6 +442,7 @@ func (h *HistoryStore) TranscriptWindow(live []state.SessionInfo, id string, opt
 		return TranscriptResponse{}, ErrHistoryChanged
 	}
 	session.MessageCount = messageCount
+	session.MessageCountUncounted = false
 	session.SkippedRecords = skipped
 	nextIndex := options.End
 	hasMore := nextIndex >= 0 && nextIndex < messageCount
@@ -382,7 +483,7 @@ func (h *HistoryStore) TranscriptPreview(live []state.SessionInfo, id string, ma
 		}
 		return response, nil
 	}
-	session, path, tool, err := h.describeSource(source, false)
+	session, path, tool, err := h.describeSource(source, countNone)
 	if err != nil {
 		return TranscriptResponse{}, err
 	}
@@ -394,6 +495,7 @@ func (h *HistoryStore) TranscriptPreview(live []state.SessionInfo, id string, ma
 		return TranscriptResponse{}, fmt.Errorf("read history transcript preview %s: %w", id, err)
 	}
 	session.MessageCount = len(messages)
+	session.MessageCountUncounted = false
 	session.SkippedRecords = skipped
 	return TranscriptResponse{
 		SchemaVersion:  SchemaVersion,
@@ -415,7 +517,7 @@ func (h *HistoryStore) transcript(ctx context.Context, live []state.SessionInfo,
 		}
 		return h.archivedTranscript(*source.archived), nil
 	}
-	session, path, tool, err := h.describeSource(source, false)
+	session, path, tool, err := h.describeSource(source, countNone)
 	if err != nil {
 		return TranscriptResponse{}, err
 	}
@@ -427,6 +529,7 @@ func (h *HistoryStore) transcript(ctx context.Context, live []state.SessionInfo,
 		return TranscriptResponse{}, fmt.Errorf("read history transcript %s: %w", id, err)
 	}
 	session.MessageCount = len(messages)
+	session.MessageCountUncounted = false
 	session.SkippedRecords = skipped
 	return TranscriptResponse{
 		SchemaVersion:  SchemaVersion,
@@ -444,7 +547,7 @@ func (h *HistoryStore) Raw(live []state.SessionInfo, id string) ([]byte, error) 
 	if source.archived != nil {
 		return json.Marshal(source.archived.Prompts)
 	}
-	_, path, _, err := h.describeSource(source, false)
+	_, path, _, err := h.describeSource(source, countNone)
 	if err != nil {
 		return nil, err
 	}
@@ -505,18 +608,19 @@ func markUnreadable(session HistorySession, fallbackID string, err error) Histor
 	session.Unreadable = true
 	session.ConversationAvailable = false
 	session.MessageCount = 0
+	session.MessageCountUncounted = false
 	session.UnreadableReason = fmt.Sprintf(
 		"transcript could not be read (%v); the session record is intact — check that its provider file and any network volume are reachable, then reload history",
 		err)
 	return session
 }
 
-func (h *HistoryStore) describeSource(source resolvedHistorySource, countMessages bool) (HistorySession, string, string, error) {
+func (h *HistoryStore) describeSource(source resolvedHistorySource, counting messageCountMode) (HistorySession, string, string, error) {
 	if source.managed != nil {
-		return h.describe(*source.managed, countMessages)
+		return h.describe(*source.managed, counting)
 	}
 	if source.external != nil {
-		return h.describeExternal(*source.external, countMessages)
+		return h.describeExternal(*source.external, counting)
 	}
 	return HistorySession{}, "", "", ErrHistoryNotFound
 }
@@ -537,7 +641,7 @@ func (h *HistoryStore) describeArchived(source watch.ArchivedClaudeConversation)
 	}
 }
 
-func (h *HistoryStore) describe(source backup.Session, countMessages bool) (HistorySession, string, string, error) {
+func (h *HistoryStore) describe(source backup.Session, counting messageCountMode) (HistorySession, string, string, error) {
 	// Backup opt-out controls external upload only. These local, authenticated
 	// recall endpoints remain able to read the user's own conversation.
 	source.OptOut = false
@@ -590,22 +694,23 @@ func (h *HistoryStore) describe(source backup.Session, countMessages bool) (Hist
 		}
 	}
 	result.ConversationAvailable = true
-	result.ConversationUpdatedAt = info.ModTime().UnixMilli()
-	result.LastActivityAt = max(result.LastActivityAt, info.ModTime().UnixMilli())
+	updated, fromRecord := conversationUpdatedAt(path, info)
+	result.ConversationUpdatedAt = updated
+	result.ConversationUpdatedApproximate = !fromRecord
+	result.LastActivityAt = max(result.LastActivityAt, updated)
+	result.Surface = conversationSurface(path, tool)
 	result.SourceFingerprint = historySourceFingerprint(path, info)
-	if !countMessages {
-		return result, path, tool, nil
-	}
-	count, skipped, err := h.messageCount(path, tool, info)
+	count, skipped, counted, err := h.countMessages(counting, path, tool, info)
 	if err != nil {
 		return result, "", tool, fmt.Errorf("count history transcript %s: %w", source.ID, err)
 	}
 	result.MessageCount = count
 	result.SkippedRecords = skipped
+	result.MessageCountUncounted = !counted
 	return result, path, tool, nil
 }
 
-func (h *HistoryStore) describeExternal(source watch.ResumableSession, countMessages bool) (HistorySession, string, string, error) {
+func (h *HistoryStore) describeExternal(source watch.ResumableSession, counting messageCountMode) (HistorySession, string, string, error) {
 	tool := strings.TrimSpace(source.Tool)
 	name := compactHistoryTitle(source.Title)
 	if name == "" {
@@ -634,17 +739,71 @@ func (h *HistoryStore) describeExternal(source watch.ResumableSession, countMess
 		return result, "", tool, nil
 	}
 	result.SourceFingerprint = historySourceFingerprint(source.SourcePath, info)
-	result.ConversationUpdatedAt = info.ModTime().UnixMilli()
-	if !countMessages {
-		return result, source.SourcePath, tool, nil
+	updated, fromRecord := conversationUpdatedAt(source.SourcePath, info)
+	result.ConversationUpdatedAt = updated
+	result.ConversationUpdatedApproximate = !fromRecord
+	// A provider conversation has no Sessions record behind it, so mtime was the
+	// only activity time it had. Where the conversation stamped its own last
+	// record, that replaces mtime rather than being maxed with it: taking the
+	// larger of the two would keep exactly the inflated value a copy produces.
+	if fromRecord {
+		result.LastActivityAt = updated
 	}
-	count, skipped, err := h.messageCount(source.SourcePath, tool, info)
+	// The scan already parsed the provider metadata that carries provenance, so
+	// take it from there rather than opening the file a second time.
+	result.Surface = source.Surface
+	count, skipped, counted, err := h.countMessages(counting, source.SourcePath, tool, info)
 	if err != nil {
 		return result, "", tool, fmt.Errorf("count provider history %s: %w", source.SessionID, err)
 	}
 	result.MessageCount = count
 	result.SkippedRecords = skipped
+	result.MessageCountUncounted = !counted
 	return result, source.SourcePath, tool, nil
+}
+
+// conversationUpdatedAt answers when the conversation was last written to, and
+// says which source the answer came from.
+//
+// The provider's own records are preferred over the file's modification time
+// because mtime is metadata about the file and does not survive being copied.
+// A `cp -R` of this machine's history was enough to make all 203 conversations
+// report the same instant, which erased the browser's primary ordering; the
+// records themselves carry RFC3339 timestamps that travel with the bytes. The
+// read is a single bounded seek to the tail, so it costs the same on the 1.1 GB
+// transcript here as on a small one.
+//
+// mtime remains the fallback for a transcript that stamped nothing -- a
+// single-record bridge file, say -- and the caller is told which it got so a
+// copy artefact is never presented as recency.
+func conversationUpdatedAt(path string, info os.FileInfo) (int64, bool) {
+	if recorded, ok := watch.ConversationRecordedActivity(path); ok {
+		return recorded.UnixMilli(), true
+	}
+	return info.ModTime().UnixMilli(), false
+}
+
+// conversationSurface reads where a managed conversation was started from. Both
+// readers are the bounded ones the resolvers already use -- Codex's session_meta
+// first line, Claude's transcript prefix -- so this adds a bounded read per row
+// and no new parser.
+func conversationSurface(path, tool string) *watch.ConversationSurface {
+	var (
+		surface watch.ConversationSurface
+		ok      bool
+	)
+	switch tool {
+	case "codex":
+		surface, ok = watch.ReadCodexConversationSurface(path)
+	case "claude":
+		surface, ok = watch.ReadClaudeConversationSurface(path)
+	default:
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	return &surface
 }
 
 func (h *HistoryStore) providerConversations() []watch.ResumableSession {
@@ -728,6 +887,7 @@ func (h *HistoryStore) archivedTranscript(source watch.ArchivedClaudeConversatio
 func (h *HistoryStore) archivedTranscriptWindow(source watch.ArchivedClaudeConversation, options TranscriptWindowOptions) (TranscriptResponse, error) {
 	response := h.archivedTranscript(source)
 	response.Session.MessageCount = len(response.Messages)
+	response.Session.MessageCountUncounted = false
 	end := options.End
 	if end < 0 || end > len(response.Messages) {
 		end = len(response.Messages)

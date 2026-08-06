@@ -13,6 +13,7 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
 	historysearch "github.com/somewhere-tech/sessions/runtime/internal/search"
+	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
 
 // The browser exists because neither provider can answer "which conversation
@@ -69,6 +70,31 @@ type conversationRow struct {
 	Tool     string `json:"tool"`
 	CWD      string `json:"cwd"`
 	Messages int    `json:"messages"`
+	// PromptHistoryOnly marks a row recovered from Claude's prompt archive
+	// rather than from a transcript. That archive keeps the user's prompts and
+	// nothing else, so it can never say where a conversation was started — which
+	// is a different fact from a daemon that did not look.
+	PromptHistoryOnly bool `json:"prompt_history_only,omitempty"`
+	// MessagesUncounted marks a Messages that is not a count, because the
+	// answering daemon declined to parse that transcript. An unknown count must
+	// not be read as an empty conversation: that mistake hides exactly the rows
+	// a browse exists to show.
+	MessagesUncounted bool `json:"messages_uncounted,omitempty"`
+	// Surface is where the conversation was started from and who drove it — the
+	// thing neither provider's own picker will tell you. SurfaceKind is the
+	// token --surface matches, Surface is what a person reads, SurfaceRaw is
+	// exactly what the provider wrote. All are empty when the answering daemon
+	// did not report any of it, which is not the same as "started nowhere".
+	Surface     string `json:"surface,omitempty"`
+	SurfaceKind string `json:"surface_kind,omitempty"`
+	SurfaceRaw  string `json:"surface_raw,omitempty"`
+	Actor       string `json:"actor,omitempty"`
+	// ApproximateTime marks a row whose last-active time is the transcript
+	// file's modification time rather than the conversation's own last record.
+	// A history copied without preserving times reports every conversation as
+	// new, and a row that cannot say so is misleading in the one column the
+	// whole list is sorted by.
+	ApproximateTime bool `json:"approximate_time,omitempty"`
 	// LastActiveAt and LastActiveAtMS are the same instant twice: the string is
 	// what a human reads back, the milliseconds are what a caller sorts on.
 	LastActiveAt   string   `json:"last_active_at,omitempty"`
@@ -109,19 +135,33 @@ type historyBrowseResponse struct {
 	Conversations []conversationRow            `json:"conversations"`
 	Machines      []historysearch.MachineState `json:"machines,omitempty"`
 	Partial       bool                         `json:"partial,omitempty"`
+	// ProvenanceUnreported counts conversations excluded by --surface or
+	// --actor because the daemon that listed them reported no provenance at
+	// all. Nonzero means the answer is short by that many rows for a reason
+	// that has nothing to do with the filter.
+	ProvenanceUnreported int `json:"provenance_unreported,omitempty"`
 }
 
 type historyFilters struct {
-	tool      string
-	cwd       string
-	nameGlob  string
-	sessions  []string
-	sinceMS   int64
-	untilMS   int64
-	sinceText string
-	untilText string
-	all       bool
-	explicit  bool // a tool was named, so the conversation-only default is off
+	tool        string
+	cwd         string
+	nameGlob    string
+	sessions    []string
+	sinceMS     int64
+	untilMS     int64
+	sinceText   string
+	untilText   string
+	surface     string
+	surfaceText string
+	actor       string
+	all         bool
+	explicit    bool // a tool was named, so the conversation-only default is off
+}
+
+// wantsProvenance reports whether the caller narrowed on something only a
+// daemon new enough to report a surface can answer.
+func (f historyFilters) wantsProvenance() bool {
+	return f.surface != "" || f.actor != ""
 }
 
 func (a *app) cmdHistory(args []string) error {
@@ -136,6 +176,8 @@ func (a *app) cmdHistory(args []string) error {
 		return err
 	}
 	tool, hasTool := pluck(&args, "--tool")
+	surface, hasSurface := pluck(&args, "--surface")
+	actor, hasActor := pluck(&args, "--actor")
 	cwd, hasCWD := pluck(&args, "--cwd")
 	name, hasName := pluck(&args, "--name")
 	lane, hasLane := pluck(&args, "--lane")
@@ -160,6 +202,20 @@ func (a *app) cmdHistory(args []string) error {
 			return fail(1, "--tool must be \"claude\", \"codex\", or \"shell\"")
 		}
 		filters.explicit = true
+	}
+	if hasSurface {
+		filters.surfaceText = strings.TrimSpace(surface)
+		filters.surface = watch.NormalizeSurfaceKind(filters.surfaceText)
+		if filters.surface == "" {
+			return fail(1, "--surface needs a surface: %s, or the raw value a provider recorded",
+				strings.Join(watch.KnownSurfaceKinds(), ", "))
+		}
+	}
+	if hasActor {
+		filters.actor = watch.NormalizeActor(actor)
+		if filters.actor == "" {
+			return fail(1, "--actor must be \"user\", \"automation\", or \"agent\"")
+		}
 	}
 	if hasCWD {
 		filters.cwd = a.expandHome(strings.TrimSpace(cwd))
@@ -229,7 +285,12 @@ func (a *app) cmdHistory(args []string) error {
 			return err
 		}
 	}
-	rows = filterConversations(rows, filters)
+	candidates := rows
+	// Which machines answered with any provenance at all is decided over every
+	// candidate, before the page limit, so a machine whose only matching rows
+	// fell off the page is not accused of being unable to answer.
+	answered := machinesReportingProvenance(candidates)
+	rows, withoutProvenance := filterConversations(rows, filters)
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].LastActiveAtMS != rows[j].LastActiveAtMS {
 			return rows[i].LastActiveAtMS > rows[j].LastActiveAtMS
@@ -249,6 +310,7 @@ func (a *app) cmdHistory(args []string) error {
 			SchemaVersion: integrations.SchemaVersion, Query: query,
 			Known: collected.known, Matched: matched, Shown: len(rows),
 			Conversations: rows, Machines: collected.machines, Partial: collected.partial,
+			ProvenanceUnreported: len(withoutProvenance),
 		}, true)
 	}
 	if collected.partial {
@@ -258,7 +320,48 @@ func (a *app) cmdHistory(args []string) error {
 			}
 		}
 	}
-	return a.writeConversationRows(rows, matched, collected.known, query, filters)
+	if err := a.writeConversationRows(
+		rows, matched, collected.known, query, filters, withoutProvenance, answered); err != nil {
+		return err
+	}
+	return a.writeSurfacesSeen(candidates, matched, filters)
+}
+
+// writeSurfacesSeen answers a --surface that matched nothing with the surfaces
+// that are actually there.
+//
+// --surface deliberately accepts more than the curated tokens: a provider can
+// add an originator tomorrow, and a browse that refused the new value would be
+// unable to reach exactly the conversations a user is most confused about. The
+// cost of accepting anything is that a typo comes back as an empty list, so an
+// empty list says what could have been typed instead — read off this machine's
+// own history rather than from a hardcoded vocabulary.
+func (a *app) writeSurfacesSeen(candidates []conversationRow, matched int, filters historyFilters) error {
+	if matched > 0 || filters.surface == "" {
+		return nil
+	}
+	seen := make(map[string]struct{}, 8)
+	available := make([]string, 0, 8)
+	for _, row := range candidates {
+		for _, value := range []string{row.SurfaceKind, row.SurfaceRaw} {
+			if value == "" {
+				continue
+			}
+			if _, known := seen[value]; known {
+				continue
+			}
+			seen[value] = struct{}{}
+			available = append(available, value)
+		}
+	}
+	if len(available) == 0 {
+		return nil
+	}
+	sort.Strings(available)
+	_, err := fmt.Fprintf(a.stdout,
+		"No conversation was started from %q. Surfaces recorded here: %s.\n",
+		filters.surfaceText, strings.Join(available, ", "))
+	return err
 }
 
 // historyTargets is the approved fleet unless the caller pinned one daemon.
@@ -443,12 +546,21 @@ func (r conversationRow) fill(
 	r.Tool = historyToolName(session.Tool)
 	r.CWD = session.CWD
 	r.Messages = session.MessageCount
+	r.MessagesUncounted = session.MessageCountUncounted
+	r.PromptHistoryOnly = session.PromptHistoryOnly
+	if session.Surface != nil {
+		r.Surface = session.Surface.Display()
+		r.SurfaceKind = session.Surface.Kind
+		r.SurfaceRaw = session.Surface.Originator
+		r.Actor = session.Surface.Actor
+	}
 	// When the conversation was last written to is the question a browser is
 	// ordering by, and it is not the same as when the Sessions record was last
 	// touched. A shutdown sweep that drains sixteen finished runners moves
 	// every one of their record timestamps to the same instant; the transcripts
 	// they name did not change, and it is the transcripts the user remembers.
 	r.LastActiveAtMS = session.ConversationUpdatedAt
+	r.ApproximateTime = session.ConversationUpdatedApproximate
 	if r.LastActiveAtMS == 0 {
 		r.LastActiveAtMS = session.LastActivityAt
 	}
@@ -596,10 +708,27 @@ func conversationKey(machine, sessionID string) string {
 // record the daemon keeps. Empty shells, shell lanes and conversations nothing
 // can read are the rows a person scrolls past, so they are behind --all — and
 // the count of what was filtered is always printed, so the cut is never silent.
-func filterConversations(rows []conversationRow, filters historyFilters) []conversationRow {
-	kept := make([]conversationRow, 0, len(rows))
+// The second return value counts conversations dropped only because the daemon
+// that listed them reported no provenance at all. Those rows are not evidence
+// against the filter — they are evidence that the machine holding them is older
+// than the field — and silently dropping them would turn "this machine needs
+// updating" into "you have no Desktop conversations".
+func filterConversations(
+	rows []conversationRow, filters historyFilters,
+) (kept, withoutProvenance []conversationRow) {
+	kept = make([]conversationRow, 0, len(rows))
 	for _, row := range rows {
 		if filters.tool != "" && row.Tool != filters.tool {
+			continue
+		}
+		if filters.wantsProvenance() && !row.hasProvenance() {
+			withoutProvenance = append(withoutProvenance, row)
+			continue
+		}
+		if filters.surface != "" && !row.matchesSurface(filters.surface) {
+			continue
+		}
+		if filters.actor != "" && row.Actor != filters.actor {
 			continue
 		}
 		if !filters.all && !filters.explicit {
@@ -608,7 +737,12 @@ func filterConversations(rows []conversationRow, filters historyFilters) []conve
 			}
 		}
 		if !filters.all {
-			if row.Messages <= 0 || row.Status == historyStatusUnrecoverable || row.Status == historyStatusUnreadable {
+			// An uncounted row is not an empty one. A daemon answering from its
+			// cache reports no count for a transcript it did not parse, and
+			// dropping those would hide the conversations most likely to be the
+			// ones being looked for.
+			if (row.Messages <= 0 && !row.MessagesUncounted) ||
+				row.Status == historyStatusUnrecoverable || row.Status == historyStatusUnreadable {
 				continue
 			}
 		}
@@ -634,7 +768,29 @@ func filterConversations(rows []conversationRow, filters historyFilters) []conve
 		}
 		kept = append(kept, row)
 	}
-	return kept
+	return kept, withoutProvenance
+}
+
+// hasProvenance reports whether the answering daemon said anything at all about
+// where this conversation came from.
+func (r conversationRow) hasProvenance() bool {
+	return r.SurfaceKind != "" || r.SurfaceRaw != "" || r.Actor != ""
+}
+
+// matchesSurface accepts the token, the raw provider value, or the label, all
+// folded the same way. A person who read "Codex Desktop" in a row should be
+// able to type it back, and a person who saw the raw `pretty-pty` in --json
+// should be able to select on that too.
+func (r conversationRow) matchesSurface(wanted string) bool {
+	for _, candidate := range []string{r.SurfaceKind, r.SurfaceRaw, r.Surface} {
+		if candidate == "" {
+			continue
+		}
+		if wanted == watch.NormalizeSurfaceKind(candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesAnyConversationID(row conversationRow, wanted []string) bool {
@@ -730,10 +886,13 @@ func readConversationTail(target fleetTarget, id string, count int) ([]conversat
 
 func (a *app) writeConversationRows(
 	rows []conversationRow, matched, known int, query string, filters historyFilters,
+	withoutProvenance []conversationRow, answered map[string]bool,
 ) error {
 	if len(rows) == 0 {
-		_, err := io.WriteString(a.stdout, emptyConversationAdvice(known, query, filters))
-		return err
+		if _, err := io.WriteString(a.stdout, emptyConversationAdvice(known, query, filters)); err != nil {
+			return err
+		}
+		return a.writeProvenanceShortfall(answered, withoutProvenance, filters)
 	}
 	for _, row := range rows {
 		name := row.Name
@@ -770,22 +929,137 @@ func (a *app) writeConversationRows(
 			return err
 		}
 	}
-	return a.writeConversationFooter(len(rows), matched, known, query, filters)
+	if err := a.writeConversationFooter(len(rows), matched, known, query, filters); err != nil {
+		return err
+	}
+	return a.writeProvenanceShortfall(answered, withoutProvenance, filters)
 }
 
+// writeProvenanceShortfall says when a surface or actor filter came up short
+// because nothing could answer the question, rather than because no
+// conversation matched. A browse that silently omitted those rows would read as
+// a confident "you have none of those" when the honest answer is "these could
+// not say".
+//
+// The two reasons are not interchangeable and must not share a sentence. A
+// machine running a Sessions older than the field returns every row with no
+// provenance, and the fix is to update that machine. A conversation recovered
+// from Claude's prompt archive has no provenance because the archive keeps
+// prompts and nothing else, and no update will ever change that. Blaming the
+// daemon for the second sends the reader to fix something that is not broken —
+// which is exactly what this message did against the development machine's own
+// history, where 81 of the 91 excluded rows were archive records answered by a
+// daemon that reports provenance perfectly well for the other 212.
+func (a *app) writeProvenanceShortfall(
+	answered map[string]bool, withoutProvenance []conversationRow, filters historyFilters,
+) error {
+	if len(withoutProvenance) == 0 || !filters.wantsProvenance() {
+		return nil
+	}
+	flag := "--surface"
+	if filters.surface == "" {
+		flag = "--actor"
+	}
+	staleMachines := make(map[string]struct{}, 2)
+	stale, unrecorded := 0, 0
+	for _, row := range withoutProvenance {
+		if !answered[row.Machine] {
+			stale++
+			staleMachines[row.Machine] = struct{}{}
+			continue
+		}
+		unrecorded++
+	}
+	if stale > 0 {
+		machines := make([]string, 0, len(staleMachines))
+		for machine := range staleMachines {
+			machines = append(machines, machine)
+		}
+		sort.Strings(machines)
+		if _, err := fmt.Fprintf(a.stderr,
+			"sessions: %s left out of this %s answer: %s does not report where a conversation was started. Update Sessions there, or drop %s to see them.\n",
+			conversationCount(stale), flag, strings.Join(machines, ", "), flag); err != nil {
+			return err
+		}
+	}
+	if unrecorded > 0 {
+		_, err := fmt.Fprintf(a.stderr,
+			"sessions: %s left out of this %s answer: nothing recorded where they were started. Claude's prompt archive keeps prompts only, and a shell record has no provider launch context at all.\n",
+			conversationCount(unrecorded), flag)
+		return err
+	}
+	return nil
+}
+
+// machinesReportingProvenance reports which machines answered with any
+// provenance at all. A machine that produced even one surface is new enough to
+// have looked, so its blank rows are the provider's silence rather than the
+// daemon's version.
+func machinesReportingProvenance(rows []conversationRow) map[string]bool {
+	answered := make(map[string]bool, 4)
+	for _, row := range rows {
+		if row.hasProvenance() {
+			answered[row.Machine] = true
+		}
+	}
+	return answered
+}
+
+func conversationCount(count int) string {
+	if count == 1 {
+		return "1 conversation was"
+	}
+	return fmt.Sprintf("%d conversations were", count)
+}
+
+// conversationMetaLine is the one compact line under a conversation's name, and
+// everything on it has to earn its place.
+//
+// The surface takes the provider column rather than sitting beside it. Every
+// surface label names its provider — "Codex Desktop", "Claude Code", "Codex via
+// Sessions" — so nothing is lost, and printing "codex · Codex Desktop" would
+// spend a second field restating the first. When no surface was recorded the
+// provider name is what remains, which is exactly today's row.
+//
+// The actor is printed only when it was something other than the user. A row
+// that says "automation" or "agent" is telling the reader something they could
+// not otherwise know; a row that says "user" is telling them what they already
+// assumed about their own history, on every line. So the exception is flagged
+// and the ordinary case stays silent — and --actor user remains for when the
+// distinction has to be exact, since it matches only conversations that
+// recorded it.
+//
+// Deliberately not here: the client version (Codex cli_version, Claude
+// version), the raw originator, the git branch, and the recorded source value.
+// They are real provenance and they are all carried in --json and in `sessions
+// source`, but none of them is how a person recognises a conversation a week
+// later, and a meta line long enough to wrap is one nobody reads.
 func (a *app) conversationMetaLine(row conversationRow) string {
-	parts := make([]string, 0, 6)
+	parts := make([]string, 0, 8)
 	when := "no recorded activity"
 	if row.LastActiveAtMS > 0 {
 		when = fmt.Sprintf("%s · %s ago",
 			time.UnixMilli(row.LastActiveAtMS).Format("2006-01-02 15:04"), a.ageOf(row.LastActiveAtMS))
+		if row.ApproximateTime {
+			// The conversation never stamped its own last record, so this is the
+			// file's modification time. Say so rather than let a copied history
+			// present itself as a freshly used one.
+			when += " (file time)"
+		}
 	}
-	parts = append(parts, when, row.Tool, pluralMessages(row.Messages))
+	origin := row.Tool
+	if row.Surface != "" {
+		origin = row.Surface
+	}
+	parts = append(parts, when, origin, row.messageCountText())
 	if row.CWD != "" {
 		parts = append(parts, a.shortenHome(row.CWD))
 	}
 	if row.Machine != "" && row.Machine != "local" {
 		parts = append(parts, "on "+row.Machine)
+	}
+	if row.Actor != "" && row.Actor != "user" {
+		parts = append(parts, row.Actor)
 	}
 	if row.Status == historyStatusLive {
 		parts = append(parts, "LIVE NOW")
@@ -830,7 +1104,8 @@ func (a *app) writeConversationFooter(
 
 func (f historyFilters) narrowed() bool {
 	return f.all || f.tool != "" || f.cwd != "" || f.nameGlob != "" ||
-		len(f.sessions) > 0 || f.sinceMS != 0 || f.untilMS != 0
+		len(f.sessions) > 0 || f.sinceMS != 0 || f.untilMS != 0 ||
+		f.surface != "" || f.actor != ""
 }
 
 // emptyConversationAdvice never answers an empty browse with only "(none)".
@@ -858,6 +1133,12 @@ func describeHistoryFilters(filters historyFilters) string {
 	parts := make([]string, 0, 5)
 	if filters.tool != "" {
 		parts = append(parts, "in "+filters.tool)
+	}
+	if filters.surface != "" {
+		parts = append(parts, "started from "+filters.surface)
+	}
+	if filters.actor != "" {
+		parts = append(parts, "driven by "+filters.actor)
 	}
 	if filters.sinceText != "" {
 		parts = append(parts, "since "+filters.sinceText)
@@ -1040,6 +1321,16 @@ func (a *app) shortenHome(path string) string {
 	return path
 }
 
+// messageCountText never prints "0 messages" for a conversation nobody counted.
+// Zero and unknown are different facts, and only one of them is a reason to
+// pass a row by.
+func (r conversationRow) messageCountText() string {
+	if r.MessagesUncounted {
+		return "messages not counted"
+	}
+	return pluralMessages(r.Messages)
+}
+
 func pluralMessages(count int) string {
 	if count == 1 {
 		return "1 message"
@@ -1082,4 +1373,4 @@ func truncateRunes(value string, limit int) string {
 	return strings.TrimSpace(string(runes[:limit-1])) + "…"
 }
 
-const historyUsageText = "usage: sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [-n N] [--all] [--json]\nWHEN accepts today, yesterday, a span like 3d or 6h, YYYY-MM-DD, or RFC3339. A QUERY, when given, comes FIRST, before any flags"
+const historyUsageText = "usage: sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [-n N] [--all] [--json]\nWHEN accepts today, yesterday, a span like 3d or 6h, YYYY-MM-DD, or RFC3339. SURFACE is codex-cli, codex-desktop, codex-exec, claude-cli, claude-desktop, claude-sdk, sessions, or the raw value a provider recorded. A QUERY, when given, comes FIRST, before any flags"

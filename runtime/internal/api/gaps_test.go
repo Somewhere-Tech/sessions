@@ -35,7 +35,11 @@ func TestAddedRouteShapeTable(t *testing.T) {
 	projectDir := filepath.Join(home, ".claude", "projects", "-Users-fixture-Code-nested-project")
 	mustMkdirAll(t, projectDir)
 	jsonlPath := filepath.Join(projectDir, "session-one.jsonl")
-	jsonl := []byte("{\"type\":\"assistant\",\"message\":{\"content\":\"skip\"}}\n" +
+	// The transcript records its own working directory, which is where the
+	// listing takes it from. The bucket name is a lossy encoding and is no
+	// longer inverted into a path nobody confirmed exists; see
+	// TestScanResumableConversationsNeverInventsAWorkingDirectory.
+	jsonl := []byte("{\"type\":\"assistant\",\"cwd\":\"/Users/fixture/Code/nested/project\",\"message\":{\"content\":\"skip\"}}\n" +
 		"{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"skip\"},{\"type\":\"text\",\"text\":\"  first\\nfixture   request  \"}]}}\n")
 	mustWriteFile(t, jsonlPath, jsonl)
 	modified := time.Unix(1_700_000_000, 123_000_000)

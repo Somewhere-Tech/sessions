@@ -43,7 +43,7 @@ func TestHistoryRoutesExposeStableListTranscriptTextAndRawShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	conversation := []byte(strings.Join([]string{
-		`{"type":"user","uuid":"u1","timestamp":"2026-07-16T17:01:00Z","message":{"role":"user","content":"Recall this fixture"}}`,
+		`{"type":"user","uuid":"u1","timestamp":"2026-07-16T17:01:00Z","entrypoint":"cli","version":"2.1.220","message":{"role":"user","content":"Recall this fixture"}}`,
 		`{"type":"assistant","uuid":"a1","timestamp":"2026-07-16T17:01:02Z","message":{"role":"assistant","content":[{"type":"text","text":"Fixture remembered."}]}}`,
 		`{"type":"user","uuid":"tool1","timestamp":"2026-07-16T17:01:03Z","message":{"role":"user","content":[{"type":"tool_result","content":"not a conversation turn"}]}}`,
 	}, "\n") + "\n")
@@ -74,10 +74,18 @@ func TestHistoryRoutesExposeStableListTranscriptTextAndRawShapes(t *testing.T) {
 		t.Fatalf("history = %#v", history)
 	}
 	listed := history.Sessions[0]
+	// The conversation's own last record, not the file's modification time.
+	// mtime here is two minutes past the last record precisely so the two
+	// cannot be confused; see TestHistoryDatesConversationsByTheirOwnRecords.
+	lastRecord := time.Date(2026, time.July, 16, 17, 1, 3, 0, time.UTC).UnixMilli()
 	if listed.ID != id || listed.Name != "fixture recall" || listed.Tool != "claude" || listed.CWD != cwd ||
-		listed.Machine == "" || listed.CreatedAt != created.UnixMilli() || listed.LastActivityAt != modified.UnixMilli() ||
+		listed.Machine == "" || listed.CreatedAt != created.UnixMilli() || listed.LastActivityAt != lastRecord ||
+		listed.ConversationUpdatedAt != lastRecord || listed.ConversationUpdatedApproximate ||
 		listed.MessageCount != 2 || !listed.ConversationAvailable {
-		t.Fatalf("listed session = %#v", listed)
+		t.Fatalf("listed session = %#v (mtime was %d)", listed, modified.UnixMilli())
+	}
+	if listed.Surface == nil || listed.Surface.Kind != watch.SurfaceClaudeCLI {
+		t.Fatalf("listed surface = %#v", listed.Surface)
 	}
 
 	transcriptResponse := serve(t, daemon.handler, http.MethodGet, "/api/history/"+id+"?format=json", nil, "127.0.0.1:4321", nil)

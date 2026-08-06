@@ -229,7 +229,12 @@ func readCodexFirstLine(path string) (string, error) {
 	return strings.TrimSpace(strings.TrimSuffix(line, "\n")), nil
 }
 
-func readCodexSessionMeta(path string) *codexSessionMeta {
+// readCodexSessionMetaPayload is the single reader of a rollout's session_meta
+// line. Identity, working directory, timestamp and provenance all come out of
+// the same payload, so they are decoded once here rather than by one reader per
+// question — a second reader is a second thing to keep in agreement with the
+// provider's format.
+func readCodexSessionMetaPayload(path string) map[string]any {
 	line, err := readCodexFirstLine(path)
 	if err != nil || line == "" {
 		return nil
@@ -242,14 +247,26 @@ func readCodexSessionMeta(path string) *codexSessionMeta {
 	if !ok {
 		return nil
 	}
+	if _, present := payload["timestamp"]; !present {
+		// The rollout timestamp lives on the envelope in older files. Carry it
+		// into the payload so callers see one shape.
+		if timestamp, ok := record["timestamp"].(string); ok {
+			payload["timestamp"] = timestamp
+		}
+	}
+	return payload
+}
+
+func readCodexSessionMeta(path string) *codexSessionMeta {
+	payload := readCodexSessionMetaPayload(path)
+	if payload == nil {
+		return nil
+	}
 	cwd, ok := payload["cwd"].(string)
 	if !ok {
 		return nil
 	}
 	timestamp, _ := payload["timestamp"].(string)
-	if timestamp == "" {
-		timestamp, _ = record["timestamp"].(string)
-	}
 	parsed, err := time.Parse(time.RFC3339Nano, timestamp)
 	if err != nil {
 		return nil
@@ -332,6 +349,15 @@ func ReadCodexConversationIdentity(path string) (sessionID, cwd string, err erro
 		return "", "", errors.New("Codex rollout has no readable session_meta")
 	}
 	return meta.id, meta.cwd, nil
+}
+
+// ReadCodexConversationSurface returns where a rollout was started from, out of
+// the same session_meta line the resolver already reads. A rollout with no
+// readable session_meta reports not-known rather than a blank surface, so a
+// caller can tell "started somewhere we cannot name" from "started nowhere".
+func ReadCodexConversationSurface(path string) (ConversationSurface, bool) {
+	surface := CodexSurface(readCodexSessionMetaPayload(path))
+	return surface, surface.Known()
 }
 
 func resolveResumedCodex(root string, args []string) (CodexResolution, bool) {

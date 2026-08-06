@@ -171,6 +171,12 @@ type historyListResponse struct {
 	// it, the cheap view (the one a UI or agent polls) would report a torn
 	// history exactly like a clean one.
 	TranscriptsUnread bool `json:"transcripts_unread,omitempty"`
+	// UncountedSessions is how many rows carry a message_count that is not a
+	// count. The summary view answers with whatever counts are already cached
+	// and declines to parse the rest, so it is usually partly counted rather
+	// than wholly uncounted, and a client deciding whether it can filter on
+	// message_count needs the number rather than the boolean above.
+	UncountedSessions int `json:"uncounted_sessions,omitempty"`
 }
 
 // historySummaryListing aggregates the per-row degradation the store attached,
@@ -188,6 +194,9 @@ func historySummaryListing(sessions []integrations.HistorySession) historyListRe
 	for _, session := range sessions {
 		if session.Unreadable {
 			listing.UnreadableSessions++
+		}
+		if session.MessageCountUncounted {
+			listing.UncountedSessions++
 		}
 		listing.SkippedRecords += session.SkippedRecords
 	}
