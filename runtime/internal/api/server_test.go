@@ -1486,7 +1486,7 @@ func awaitRunnerChange(t *testing.T, runner *prototest.Runner, condition func() 
 	for !condition() {
 		select {
 		case <-runner.Changes():
-		case <-t.Context().Done():
+		case <-time.After(waitConditionBudget):
 			t.Fatal("test ended before fake runner state changed")
 		}
 	}

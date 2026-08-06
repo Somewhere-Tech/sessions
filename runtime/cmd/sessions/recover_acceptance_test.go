@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	daemonapi "github.com/somewhere-tech/sessions/runtime/internal/api"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
@@ -383,12 +383,11 @@ func cliHasLedgerEvent(t *testing.T, store *ledger.Store, laneID string, kind le
 
 func cliWaitFor(t *testing.T, condition func() bool) {
 	t.Helper()
+	deadline := time.Now().Add(waitConditionBudget)
 	for !condition() {
-		select {
-		case <-t.Context().Done():
-			t.Fatal("test ended before scratch recovery state arrived")
-		default:
-			runtime.Gosched()
+		if time.Now().After(deadline) {
+			t.Fatalf("test ended before scratch recovery state arrived"+" (waited %s)", waitConditionBudget)
 		}
+		time.Sleep(waitConditionPoll)
 	}
 }

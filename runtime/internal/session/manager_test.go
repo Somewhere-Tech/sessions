@@ -1319,13 +1319,12 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 
 func awaitCondition(t *testing.T, condition func() bool) {
 	t.Helper()
+	deadline := time.Now().Add(waitConditionBudget)
 	for !condition() {
-		select {
-		case <-t.Context().Done():
-			t.Fatal("test ended before condition became true")
-		default:
-			runtime.Gosched()
+		if time.Now().After(deadline) {
+			t.Fatalf("test ended before condition became true"+" (waited %s)", waitConditionBudget)
 		}
+		time.Sleep(waitConditionPoll)
 	}
 }
 
@@ -1346,7 +1345,7 @@ func awaitFile(t *testing.T, watcher *fsnotify.Watcher, path string) {
 			if ok {
 				t.Fatalf("watch %s: %v", path, err)
 			}
-		case <-t.Context().Done():
+		case <-time.After(waitConditionBudget):
 			t.Fatalf("test ended before %s was published", path)
 		}
 	}
