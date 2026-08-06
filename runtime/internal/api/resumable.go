@@ -8,19 +8,33 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
 
+// resumableListing is the Resume view plus the degradation of the history it
+// was built from. A conversation whose transcript could not be read is dropped
+// from or thinned in the merge below, so without these counters a Resume list
+// that is missing conversations looks exactly like one where those
+// conversations never existed.
+type resumableListing struct {
+	Sessions           []watch.ResumableSession `json:"sessions"`
+	UnreadableSessions int                      `json:"unreadable_sessions,omitempty"`
+	SkippedRecords     int                      `json:"skipped_records,omitempty"`
+}
+
 // resumableConversations projects provider files and durable Sessions history
 // into one row per provider conversation. The provider UUID is the identity;
 // individual Sessions runtimes are continuation-chain evidence, not duplicate
 // conversations.
-func (s *Server) resumableConversations() ([]watch.ResumableSession, error) {
-	history, err := s.integrationEndpoints.History(s.registry.List(true))
-	if err != nil {
-		return nil, err
-	}
+func (s *Server) resumableConversations() resumableListing {
+	// History degrades one row at a time and returns a nil error
+	// unconditionally; there is no wholesale failure to propagate.
+	history, _ := s.integrationEndpoints.History(s.registry.List(true))
 	// History has already populated the provider scan cache. Reuse it so the
 	// Resume dialog does not wait for a second full filesystem traversal.
 	scanned := s.integrationEndpoints.ResumableProviderConversations()
-	return mergeResumableConversations(scanned, history.Sessions), nil
+	return resumableListing{
+		Sessions:           mergeResumableConversations(scanned, history.Sessions),
+		UnreadableSessions: history.UnreadableSessions,
+		SkippedRecords:     history.SkippedRecords,
+	}
 }
 
 func mergeResumableConversations(

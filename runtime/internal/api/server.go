@@ -541,12 +541,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/resumable-conversations" && request.Method == http.MethodGet {
-		sessions, err := s.resumableConversations()
-		if err != nil {
-			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
-			return
-		}
-		s.sendJSON(response, http.StatusOK, map[string]any{"sessions": sessions}, corsOrigin)
+		s.sendJSON(response, http.StatusOK, s.resumableConversations(), corsOrigin)
 		return
 	}
 

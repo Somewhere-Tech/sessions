@@ -1,6 +1,9 @@
 package api
 
 import (
+	"net/http"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
@@ -46,6 +49,48 @@ func TestMergeResumableConversationsGroupsContinuationRunsByProviderIdentity(t *
 	if got[0].External {
 		t.Fatalf("linked Sessions conversation marked external: %#v", got[0])
 	}
+}
+
+// The Resume list is built from the same history the torn-record policy
+// degrades. It used to forward only the rows and drop the counters, so a Resume
+// dialog missing a conversation because its transcript could not be read was
+// indistinguishable from one where that conversation never existed.
+func TestResumableConversationsReportTheHistoryDegradationBehindThem(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the unreadable-file permissions this test relies on")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	daemon := newTestDaemon(t)
+
+	clean := serve(t, daemon.handler, http.MethodGet, "/api/resumable-conversations", nil, "127.0.0.1:4321", nil)
+	if clean.Code != http.StatusOK {
+		t.Fatalf("resumable status=%d body=%s", clean.Code, clean.Body.String())
+	}
+	// A clean listing keeps the documented shape: an absent counter still means
+	// nothing was lost.
+	if body := clean.Body.String(); strings.Contains(body, "unreadable_sessions") || strings.Contains(body, "skipped_records") {
+		t.Fatalf("clean resumable listing must omit the counters: %s", body)
+	}
+
+	unreadablePath := writeClaudeHistoryFixture(t, daemon, home,
+		"cccccccc-8888-4888-8888-cccccccccccc", "unreadable recall", claudeTranscriptLines("lost question"))
+	if err := os.Chmod(unreadablePath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadablePath, 0o600) })
+
+	degraded := serve(t, daemon.handler, http.MethodGet, "/api/resumable-conversations", nil, "127.0.0.1:4321", nil)
+	if degraded.Code != http.StatusOK {
+		t.Fatalf("degraded resumable status=%d body=%s", degraded.Code, degraded.Body.String())
+	}
+	var listing resumableListing
+	decodeBody(t, degraded, &listing)
+	if listing.UnreadableSessions != 1 {
+		t.Fatalf("unreadable_sessions = %d, want 1: %s", listing.UnreadableSessions, degraded.Body.String())
+	}
+	t.Logf("resumable listing: sessions=%d unreadable_sessions=%d skipped_records=%d",
+		len(listing.Sessions), listing.UnreadableSessions, listing.SkippedRecords)
 }
 
 func TestMergeResumableConversationsMarksProviderOnlyHistoryExternal(t *testing.T) {

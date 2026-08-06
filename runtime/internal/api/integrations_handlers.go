@@ -39,23 +39,18 @@ func (s *Server) handleIntegrationsRoute(response http.ResponseWriter, request *
 
 	switch {
 	case path == "/api/history":
+		// Both history views degrade one row at a time (integrations'
+		// markUnreadable) and cannot fail wholesale: HistoryStore.list returns a
+		// nil error unconditionally, so History and SearchSessions do too. The
+		// 500 branches that used to stand here were the last trace of the old
+		// wholesale-failure behaviour and were unreachable.
 		if request.URL.Query().Get("summary") == "true" {
-			sessions, err := s.integrationEndpoints.SearchSessions(s.registry.List(true))
-			if err != nil {
-				s.integrationError(response, corsOrigin, "history summary failed", err)
-				return true
-			}
-			s.sendJSON(response, http.StatusOK, integrations.HistoryResponse{
-				SchemaVersion: integrations.SchemaVersion, Sessions: sessions,
-			}, corsOrigin)
+			sessions, _ := s.integrationEndpoints.SearchSessions(s.registry.List(true))
+			s.sendJSON(response, http.StatusOK, historySummaryListing(sessions), corsOrigin)
 			return true
 		}
-		history, err := s.integrationEndpoints.History(s.registry.List(true))
-		if err != nil {
-			s.integrationError(response, corsOrigin, "history list failed", err)
-			return true
-		}
-		s.sendJSON(response, http.StatusOK, history, corsOrigin)
+		history, _ := s.integrationEndpoints.History(s.registry.List(true))
+		s.sendJSON(response, http.StatusOK, historyListResponse{HistoryResponse: history}, corsOrigin)
 		return true
 	case path == "/api/errors":
 		since, err := errorsSince(request)
@@ -160,6 +155,43 @@ func (s *Server) handleIntegrationsRoute(response http.ResponseWriter, request *
 	}
 	s.sendJSON(response, http.StatusOK, transcript, corsOrigin)
 	return true
+}
+
+// historyListResponse is the body both /api/history views return. It is the
+// store's own response plus one honesty field, so a client can read either view
+// with the same decoder.
+type historyListResponse struct {
+	integrations.HistoryResponse
+	// TranscriptsUnread marks a listing that never opened the transcripts it
+	// listed. `summary=true` resolves and stats each source but deliberately
+	// does not parse it, so on that view `skipped_records` is unknown rather
+	// than zero and `unreadable` reports only what a stat could see. The field
+	// is omitted when every listed transcript was read, which keeps the
+	// documented rule that an absent counter means nothing was lost — without
+	// it, the cheap view (the one a UI or agent polls) would report a torn
+	// history exactly like a clean one.
+	TranscriptsUnread bool `json:"transcripts_unread,omitempty"`
+}
+
+// historySummaryListing aggregates the per-row degradation the store attached,
+// the same way integrations.HistoryStore.List does for the full listing, so the
+// two views of /api/history can never disagree about what they lost. The
+// summary view used to build its body by hand and leave `unreadable_sessions`
+// and `skipped_records` at zero on every response.
+func historySummaryListing(sessions []integrations.HistorySession) historyListResponse {
+	listing := historyListResponse{
+		HistoryResponse: integrations.HistoryResponse{
+			SchemaVersion: integrations.SchemaVersion, Sessions: sessions,
+		},
+		TranscriptsUnread: true,
+	}
+	for _, session := range sessions {
+		if session.Unreadable {
+			listing.UnreadableSessions++
+		}
+		listing.SkippedRecords += session.SkippedRecords
+	}
+	return listing
 }
 
 func historyPath(path string) (id, variant string, ok bool) {

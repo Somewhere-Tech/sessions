@@ -13,6 +13,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/recovery"
 	sessionruntime "github.com/somewhere-tech/sessions/runtime/internal/session"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
+	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
 
 // Recovery mutations are serialized inside one daemon. Together with the
@@ -296,7 +297,22 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 				}, corsOrigin)
 				return
 			}
-			if history.ProviderSessionID == "" {
+			// A missing provider handle is not the only way a native resume
+			// becomes impossible. The handle can be perfectly well known while
+			// the provider's own transcript is gone -- Claude prunes on a
+			// timer -- and Sessions answers from the copy it kept. Handing the
+			// provider a resume flag for a file it no longer has is refused,
+			// so those conversations take the same transcript path as one
+			// whose handle was never recorded. Without this the recovery plan
+			// correctly labels them transcript-recovery and the resume route
+			// then fails with "no conversation source exists".
+			restoreFromTranscript := history.ProviderSessionID == ""
+			if !restoreFromTranscript {
+				source, sourceErr := s.integrationEndpoints.Source(sourceCandidates, history.ID)
+				restoreFromTranscript = sourceErr == nil &&
+					source.SourceKind == string(watch.ClaudeMirror)
+			}
+			if restoreFromTranscript {
 				if history.PromptHistoryOnly || !history.ConversationAvailable {
 					s.sendJSON(response, http.StatusConflict, map[string]any{
 						"error": "This conversation has neither a provider resume handle nor a complete Sessions transcript.",
