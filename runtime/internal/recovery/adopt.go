@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -35,6 +36,12 @@ type Adoption struct {
 	ProviderUUID      string   `json:"providerUuid"`
 	Cmd               string   `json:"cmd"`
 	Args              []string `json:"args"`
+	// SkippedRecords counts conversation records the identity scan could not
+	// read whole. It is never a reason to refuse an adoption — the conversation
+	// itself is untouched and the provider still replays it in full — but it is
+	// reported so a caller can say the scan was lossy rather than imply it read
+	// everything.
+	SkippedRecords int `json:"skippedRecords,omitempty"`
 }
 
 type AdoptResult struct {
@@ -206,7 +213,7 @@ func adoptionFromPath(path string) (Adoption, error) {
 	if err != nil {
 		return Adoption{}, err
 	}
-	provider, cwd, codex, err := readConversationIdentity(absolute)
+	provider, cwd, codex, skipped, err := readConversationIdentity(absolute)
 	if err != nil {
 		return Adoption{}, err
 	}
@@ -234,42 +241,72 @@ func adoptionFromPath(path string) (Adoption, error) {
 	return Adoption{
 		Path: absolute, Tool: tool, Cwd: cwd, ProviderUUID: provider,
 		Cmd: argv[0], Args: append([]string(nil), argv[1:]...),
+		SkippedRecords: skipped,
 	}, nil
 }
 
-func readConversationIdentity(path string) (provider, cwd string, codex bool, err error) {
+const (
+	// identityScanLines bounds how far into a conversation the identity scan
+	// looks before falling back to the file's own name and location.
+	identityScanLines = 256
+	// identityRecordCap is the largest single record the scan will hold in
+	// memory. One tool result can be far larger than every other record in a
+	// conversation combined, and that record is never the one carrying
+	// identity.
+	identityRecordCap = 2 * 1024 * 1024
+)
+
+// readConversationIdentity extracts provider identity and cwd from the head of
+// a conversation. A record larger than identityRecordCap is skipped and
+// counted, never fatal: the user can see the conversation exists, so refusing
+// to adopt it over one oversized tool result would put their work permanently
+// out of reach for a reason that has nothing to do with identity.
+//
+// A skipped record is not parsed from its truncated prefix either. A partial
+// record is not valid JSON, and scraping identity-shaped keys out of what is
+// almost always tool output would let that output impersonate the
+// conversation's cwd. The filename and project directory remain the honest
+// fallbacks, and the count tells the caller the scan was lossy.
+func readConversationIdentity(path string) (provider, cwd string, codex bool, skipped int, err error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", "", false, err
+		return "", "", false, 0, err
 	}
 	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
-	for lines := 0; lines < 256 && scanner.Scan(); lines++ {
-		var record map[string]any
-		if json.Unmarshal(scanner.Bytes(), &record) != nil {
-			continue
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for lines := 0; lines < identityScanLines; lines++ {
+		line, oversized, readErr := readCappedLine(reader, identityRecordCap)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return "", "", false, skipped, fmt.Errorf("read conversation %s: %w", path, readErr)
 		}
-		if value, ok := record["cwd"].(string); ok && cwd == "" {
-			cwd = value
+		if oversized {
+			skipped++
 		}
-		if record["type"] == "session_meta" {
-			codex = true
-			if payload, ok := record["payload"].(map[string]any); ok {
-				if value, ok := payload["cwd"].(string); ok && cwd == "" {
+		if len(line) > 0 && !oversized {
+			var record map[string]any
+			if json.Unmarshal(line, &record) == nil {
+				if value, ok := record["cwd"].(string); ok && cwd == "" {
 					cwd = value
 				}
-				if value, ok := payload["id"].(string); ok {
-					provider = value
+				if record["type"] == "session_meta" {
+					codex = true
+					if payload, ok := record["payload"].(map[string]any); ok {
+						if value, ok := payload["cwd"].(string); ok && cwd == "" {
+							cwd = value
+						}
+						if value, ok := payload["id"].(string); ok {
+							provider = value
+						}
+					}
 				}
 			}
 		}
 		if provider != "" && cwd != "" {
 			break
 		}
-	}
-	if scanErr := scanner.Err(); scanErr != nil {
-		return "", "", false, fmt.Errorf("read conversation %s: %w", path, scanErr)
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
 	}
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	if !codex && strings.HasPrefix(base, "rollout-") {
@@ -288,7 +325,30 @@ func readConversationIdentity(path string) (provider, cwd string, codex bool, er
 	if cwd == "" && !codex {
 		cwd = decodeClaudeProjectDirName(filepath.Base(filepath.Dir(path)))
 	}
-	return provider, cwd, codex, nil
+	return provider, cwd, codex, skipped, nil
+}
+
+// readCappedLine reads one newline-terminated record. A record longer than cap
+// is consumed to its end and reported as oversized rather than aborting the
+// scan, which is what bufio.Scanner does instead. The returned line is nil for
+// an oversized record: a truncated prefix is not a record.
+func readCappedLine(reader *bufio.Reader, limit int) (line []byte, oversized bool, err error) {
+	for {
+		fragment, readErr := reader.ReadSlice('\n')
+		if !oversized && len(line)+len(fragment) <= limit {
+			line = append(line, fragment...)
+		} else {
+			oversized = true
+			line = nil
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if readErr != nil {
+			return line, oversized, readErr
+		}
+		return line, oversized, nil
+	}
 }
 
 // decodeClaudeProjectDirName inverts the project-directory encoding produced by
