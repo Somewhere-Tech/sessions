@@ -13,7 +13,7 @@ export function ConnectionStatus({ machine, hydrated, error }: Props): JSX.Eleme
   const unreachable = Boolean(error);
   const label = unreachable
     ? `Can’t reach ${machine}`
-    : `Connecting to ${machine}…`;
+    : `Reconnecting to ${machine}… Agents keep running`;
 
   return (
     <span

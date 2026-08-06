@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchServerHistoryTranscript, type HistoryTranscript } from '../api/sessionsd';
-import { getActiveServer, useServers } from '../lib/servers';
+import { getActiveServer, serverDisplayName, useServers } from '../lib/servers';
 import { sessionLabel, useTabLabel } from '../lib/tabLabels';
 import { useSessions } from '../store/sessions';
 import type { SessionInfo } from '../types';
@@ -10,6 +10,7 @@ import { canContinueSession, continuationSession, endedAtLabel, endedSummary } f
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
 import { ContinueElsewhereButton } from './ContinueElsewhereButton';
+import { ConversationForkButton } from './ConversationForkButton';
 
 interface Props {
   session: SessionInfo;
@@ -38,6 +39,7 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [forkPoint, setForkPoint] = useState<number | null>(null);
+  const [forkMode, setForkMode] = useState(false);
   const [forkBusy, setForkBusy] = useState(false);
   const [forkError, setForkError] = useState<string | null>(null);
   const historyBodyRef = useRef<HTMLDivElement>(null);
@@ -118,6 +120,7 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
     try {
       await onFork(session, destinationProvider, { index: message.index, messageId: message.id });
       setForkPoint(null);
+      setForkMode(false);
     } catch (reason) {
       setForkError(reason instanceof Error ? reason.message : 'Could not fork this conversation.');
     } finally {
@@ -134,7 +137,7 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
           <div className="session-active-title-row"><h1>{label}</h1><span className={`session-live-pill ${continuationIsLive ? 'is-completed' : 'is-finished'}`}>{lifecycleLabel}</span><span className={`session-runtime-badge${sessionMode(session) === 'terminal' && session.tool !== 'claude-code' ? ' is-terminal' : ''}`} title={sessionModeName(session)}>{sessionModeShort(session)}</span></div>
           <div className="session-active-meta">
             {provider ? <ProviderBadge provider={provider} compact /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}
-            <span>{session.profile || 'Default profile'}</span><span>Saved on {getActiveServer().name}</span><span title={session.cwd}>{session.cwd}</span>
+            <span>{session.profile || 'Default profile'}</span><span>Saved on {serverDisplayName(getActiveServer(), true)}</span><span title={session.cwd}>{session.cwd}</span>
           </div>
         </div>
         <div className="session-active-actions">
@@ -145,7 +148,28 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
       <div className="session-toolbar">
         {supportsConversation ? <div className="view-toggle is-content-switch"><button type="button" className="view-toggle-btn is-active">Conversation</button></div> : <span className="history-shell-label">Shell session</span>}
         <span className="status-text">{hasContinuation ? `Original runtime ended ${endedAtLabel(session)} · ${continuationIsLive ? 'live continuation' : 'continued elsewhere'}` : `Ended ${endedAtLabel(session)} · read-only history`}</span>
-        <button type="button" className={`details-inspector-button${detailsOpen ? ' is-active' : ''}`} onClick={() => setDetailsOpen((current) => !current)}>{detailsOpen ? 'Close details' : 'Details'}</button>
+        {onFork && provider ? (
+          <ConversationForkButton
+            active={forkMode}
+            onClick={() => {
+              setForkError(null);
+              setForkPoint(null);
+              const next = !forkMode;
+              setForkMode(next);
+              if (next) setDetailsOpen(false);
+            }}
+          />
+        ) : null}
+        <button
+          type="button"
+          className={`details-inspector-button${detailsOpen ? ' is-active' : ''}`}
+          onClick={() => {
+            if (!detailsOpen) setForkMode(false);
+            setDetailsOpen((current) => !current);
+          }}
+        >
+          {detailsOpen ? 'Close details' : 'Details'}
+        </button>
       </div>
       <div ref={historyBodyRef} className="session-history-body" onScroll={updateJumpToLatest}>
         {detailsOpen ? (
@@ -165,12 +189,12 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
                 {continuation && onOpenSession ? (
                   <button type="button" className="btn btn-primary" onClick={() => onOpenSession(continuation.id)}>Open {continuationIsLive ? 'live ' : ''}continuation <span aria-hidden>→</span></button>
                 ) : canContinueSession(session) ? (
-                  <button type="button" className="btn btn-primary" onClick={() => onResume?.(session)}>Continue conversation <span aria-hidden>→</span></button>
+                  <button type="button" className="btn btn-primary" onClick={() => onResume?.(session)}>Resume conversation <span aria-hidden>→</span></button>
                 ) : hasContinuation ? (
                   <span>The continuation is recorded on another machine.</span>
                 ) : (
                   <span>{supportsConversation
-                    ? 'This runtime ended before Sessions recorded an agent conversation ID.'
+                    ? 'Sessions could not find a readable conversation history for this runtime.'
                     : 'Shell sessions do not have an agent conversation to resume.'}</span>
                 )}
                 {canContinueSession(session) ? <ContinueElsewhereButton sessionId={session.id} label={label} /> : null}
@@ -178,6 +202,12 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
               </div>
             </div>
             {archiveError ? <div className="session-history-action-error" role="alert">{archiveError}</div> : null}
+            {forkMode ? (
+              <div className="conversation-fork-mode-note" role="status">
+                <span>Choose a message to branch from.</span>
+                <small>The original conversation stays unchanged.</small>
+              </div>
+            ) : null}
             {loading ? <div className="usage-empty">Loading the conversation…</div> : null}
             {error ? <div className="search-errors">{error}</div> : null}
             {transcript?.truncated ? <div className="search-preview-notice">Showing {transcript.messages.length} recent messages from a bounded preview (up to 400).</div> : null}
@@ -198,18 +228,18 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
                     <time>{message.timestamp ? formatDate(message.timestamp) : ''}</time>
                   </footer>
                 ) : null}
-                {onFork && provider ? (
+                {forkMode && onFork && provider ? (
                   <div className="session-history-message-actions">
                     <button
                       type="button"
-                      className="btn btn-ghost"
+                      className="remote-message-fork-trigger"
                       disabled={forkBusy}
                       onClick={() => {
                         setForkError(null);
                         setForkPoint((current) => current === message.index ? null : message.index);
                       }}
                     >
-                      Fork from here…
+                      Fork here
                     </button>
                     {forkPoint === message.index ? (
                       <div className="session-history-fork-picker">

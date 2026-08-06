@@ -39,6 +39,12 @@ type LaunchdStatus struct {
 type LaunchdProbe func(context.Context, string) (LaunchdStatus, error)
 type HelloProbe func(context.Context, string) (proto.RunnerInfo, error)
 
+// ProcessProbe reports whether the process recorded in a runner's metadata is
+// still running and is still that runner. It is the platform-neutral liveness
+// signal: launchd answers only on darwin, so without this Windows and Linux
+// lose one of recovery's three independent ways to see that a session is alive.
+type ProcessProbe func(context.Context, proto.RunnerInfo) bool
+
 type Options struct {
 	Reader            EventReader
 	RunnerStateDir    string
@@ -47,6 +53,7 @@ type Options struct {
 	ManagedSessions   []state.SessionInfo
 	LaunchdProbe      LaunchdProbe
 	HelloProbe        HelloProbe
+	ProcessProbe      ProcessProbe
 	Clock             func() time.Time
 }
 
@@ -62,18 +69,38 @@ func New(options Options) *Engine {
 	if options.HelloProbe == nil {
 		options.HelloProbe = probeHello
 	}
+	if options.ProcessProbe == nil {
+		options.ProcessProbe = probeProcess
+	}
 	return &Engine{options: options}
 }
 
+// Reality is what could be observed about one lane, signal by signal. Nothing
+// here is a conclusion; classification combines them.
 type Reality struct {
-	MetadataPresent bool     `json:"metadataPresent"`
-	SocketPresent   bool     `json:"socketPresent"`
-	Hello           bool     `json:"hello"`
-	LaunchdLoaded   bool     `json:"launchdLoaded"`
-	LaunchdRunning  bool     `json:"launchdRunning"`
-	ManagerVisible  bool     `json:"managerVisible"`
-	Conversation    string   `json:"conversation,omitempty"`
-	ProbeErrors     []string `json:"probeErrors,omitempty"`
+	MetadataPresent bool `json:"metadataPresent"`
+	SocketPresent   bool `json:"socketPresent"`
+	Hello           bool `json:"hello"`
+	// LaunchdLoaded and LaunchdRunning are darwin-only by construction: the
+	// probe reports false everywhere else. ProcessAlive is the signal that
+	// answers on every platform.
+	LaunchdLoaded  bool `json:"launchdLoaded"`
+	LaunchdRunning bool `json:"launchdRunning"`
+	ProcessAlive   bool `json:"processAlive"`
+	ManagerVisible bool `json:"managerVisible"`
+	// Conversation is the provider's own conversation file. Its presence is
+	// what makes a native `claude --resume` or `codex resume` possible.
+	Conversation string `json:"conversation,omitempty"`
+	// TranscriptMirror is Sessions' own copy of the conversation, when one
+	// exists and holds records. It is deliberately a separate fact from
+	// Conversation: a mirror makes the conversation readable and recoverable
+	// through Sessions, and never makes a provider-native resume work.
+	TranscriptMirror string `json:"transcriptMirror,omitempty"`
+	// ConversationRecoverable reports whether the conversation can still be
+	// read from somewhere — the provider's file or Sessions' mirror. It is not
+	// a promise that native resume works; that remains Conversation.
+	ConversationRecoverable bool     `json:"conversationRecoverable"`
+	ProbeErrors             []string `json:"probeErrors,omitempty"`
 }
 
 type Lane struct {
@@ -182,13 +209,41 @@ func (e *Engine) Report(ctx context.Context) (Report, error) {
 		reality.LaunchdLoaded = launchd.Loaded
 		reality.LaunchdRunning = launchd.Running
 
+		// launchd answers only on darwin. Without this probe a Windows or Linux
+		// lane whose socket has gone quiet has no third opinion at all, and a
+		// live session reads as unexpectedly lost.
+		// observed is whatever identity was established above, from the metadata
+		// file or from HELLO itself, so a runner with no metadata file still
+		// gets its pid probed.
+		if observed.raw.PID > 0 {
+			processCtx, cancelProcess := context.WithTimeout(ctx, probeTimeout)
+			reality.ProcessAlive = e.options.ProcessProbe(processCtx, observed.raw)
+			cancelProcess()
+		}
+
 		lane := stateByID[id]
 		known, exists, conversation := e.resumeSource(lane)
 		reality.Conversation = conversation
+		// The mirror is Sessions' own copy. It is reported beside the provider
+		// file and never folded into ResumeSourceExists, which load-bears
+		// "native provider resume will work": a mirror cannot make
+		// `claude --resume` succeed, and promising that would produce a resume
+		// that fails in the user's terminal.
+		mirrorPath := watch.TranscriptMirrorPath(e.options.RunnerStateDir, id)
+		if watch.TranscriptMirrorUsable(mirrorPath) {
+			reality.TranscriptMirror = mirrorPath
+		}
+		reality.ConversationRecoverable = exists || reality.TranscriptMirror != ""
 		runtimeStates[id] = ledger.RuntimeState{
-			Running:            reality.ManagerVisible || reality.Hello || reality.LaunchdRunning,
+			Running: reality.ManagerVisible || reality.Hello ||
+				reality.LaunchdRunning || reality.ProcessAlive,
 			ResumeSourceKnown:  known,
 			ResumeSourceExists: exists,
+			// Carried separately from ResumeSourceExists so classification can
+			// keep raising the missing-source anomaly -- the provider file
+			// really is gone -- while the plan stops calling the conversation
+			// unrecoverable.
+			TranscriptMirrorUsable: reality.TranscriptMirror != "",
 		}
 		realities[id] = reality
 	}
@@ -375,6 +430,37 @@ func probeHello(ctx context.Context, socketPath string) (proto.RunnerInfo, error
 	return info, nil
 }
 
+// probeProcess is the platform-neutral liveness signal. It is deliberately
+// conservative in the same direction as the session manager's discovery pass:
+// an unreadable command line counts as live. Recovery and the manager must not
+// disagree about whether a runner still exists, because recovery's answer
+// decides whether the user is offered a second runtime for a conversation that
+// already has one.
+func probeProcess(ctx context.Context, info proto.RunnerInfo) bool {
+	if info.PID <= 0 || !processAlive(info.PID) {
+		return false
+	}
+	return runnerProcessMatches(processCommand(ctx, info.PID), info.ID, info.Cmd)
+}
+
+// runnerProcessMatches rejects a PID that has been reused by an unrelated
+// process. It mirrors the session manager's rule, including its treatment of
+// an unknown command as a match.
+func runnerProcessMatches(command, id, expectedCommand string) bool {
+	if command == "" || strings.Contains(command, id) {
+		return true
+	}
+	// Every runner is the sessions-runner image whatever it hosts, and on
+	// Windows only that image path is observable.
+	if strings.Contains(strings.ToLower(command), "sessions-runner") {
+		return true
+	}
+	expectedBase := filepath.Base(strings.TrimSpace(expectedCommand))
+	return expectedBase != "" && expectedBase != "." && strings.Contains(command, expectedBase)
+}
+
+// probeLaunchd answers only on darwin; see ProcessProbe for the signal that
+// answers everywhere.
 func probeLaunchd(ctx context.Context, id string) (LaunchdStatus, error) {
 	if runtime.GOOS != "darwin" {
 		return LaunchdStatus{}, nil

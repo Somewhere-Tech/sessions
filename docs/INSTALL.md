@@ -1,10 +1,12 @@
 # Install Sessions
 
-Sessions.app is the primary macOS package. Its bundled-runtime installer and
-signed updater shipped publicly as v0.1.0. The release is Developer ID signed,
-notarized, stapled, and backed by an immutable updater artifact. The standalone
-instructions below remain useful for agents, developers, and headless installs.
-Do not use them to change the production mini.
+Sessions.app is the primary macOS package, carrying a bundled-runtime installer
+and a signed updater. Public releases are Developer ID signed, notarized,
+stapled, and backed by an immutable updater artifact; see
+[GitHub Releases](https://github.com/somewhere-tech/sessions/releases/latest)
+for the current version. The standalone instructions below remain useful for
+agents, developers, and headless installs. Do not use them to change the
+production mini.
 
 The standalone runtime ships as three static Go binaries:
 
@@ -75,9 +77,9 @@ sessions install
 open http://localhost:8787
 ```
 
-The public `somewhere-tech/homebrew-tap` repository pins the immutable v0.1.0 URLs and
-SHA-256 digests. It installs native binaries directly; Node and npm are not
-runtime dependencies.
+The public `somewhere-tech/homebrew-tap` repository pins immutable release URLs
+and their SHA-256 digests. It installs native binaries directly; Node and npm
+are not runtime dependencies.
 
 `sessions install` writes
 `~/Library/LaunchAgents/tech.somewhere.sessions.dev.daemon.plist`, starts the per-user
@@ -105,7 +107,9 @@ With GitHub CLI, agents can select an immutable tag without parsing a web page.
 private; no repository checkout, npm, Node, or install script is involved:
 
 ```sh
-VERSION=0.1.0
+# Resolve the current release, then pin it for the rest of the install.
+VERSION="$(gh release view --repo somewhere-tech/sessions --json tagName -q .tagName)"
+VERSION="${VERSION#v}"
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 DOWNLOAD_DIR="$(mktemp -d)"
 gh release download "v${VERSION}" --repo somewhere-tech/sessions \
@@ -125,7 +129,9 @@ For a public repository, the same command works without authentication. Agents
 that do not have `gh` can use the direct HTTPS form:
 
 ```sh
-VERSION=0.1.0
+# Substitute the version you intend to install. The releases page always shows
+# the current one: https://github.com/somewhere-tech/sessions/releases/latest
+VERSION=0.2.16
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}.sha256"
@@ -171,9 +177,12 @@ wildcard hosts such as `0.0.0.0`. `SESSIONS_HOST` and `SESSIONS_PORT` select a
 specific alternative address and port.
 
 Runtime state is under `~/.local/state/sessions/`, with runner artifacts in
-`~/.local/state/sessions/runners/`. The lane ledger is stored separately at
-`~/Library/Application Support/sessions/ledger/lanes.sqlite3` in the current
-implementation. Treat both locations as private user data.
+`~/.local/state/sessions/runners/`. The lane ledger is stored beside them at
+`~/.local/state/sessions/ledger/lanes.sqlite3`. On macOS only, an installation
+that already wrote the earlier ledger under
+`~/Library/Application Support/sessions/ledger/lanes.sqlite3` keeps using that
+file instead of starting an empty one; the legacy path is adopted when present
+but never created. Treat every one of these locations as private user data.
 
 ## Upgrade
 
@@ -191,8 +200,10 @@ separate and continue to own their PTYs.
 
 ## Uninstall
 
-End or record any sessions you still need before removing their runtime. On
-macOS, stop the daemon and remove its launchd registration idempotently:
+There are two removal paths, because there are two things that install.
+
+For the runtime you installed yourself, `sessions uninstall` stops the
+development daemon and removes its launchd registration idempotently on macOS:
 
 ```sh
 sessions uninstall
@@ -201,8 +212,31 @@ sessions uninstall
 Then use `brew uninstall sessions`, or remove `sessions`, `sessionsd`, and `sessions-runner`
 from the directory where you installed the static archive.
 
-State is deliberately not deleted during uninstall. After confirming no
-session or recovery data is needed, you may remove it separately.
+For Sessions.app, the app binary removes the integration points the package
+wrote outside itself — the LaunchAgent that brings the daemon back at every
+login, and the Sessions-managed `sessions` symlinks in
+`/opt/homebrew/bin`, `/usr/local/bin`, and `~/.local/bin`:
+
+```sh
+/Applications/Sessions.app/Contents/MacOS/Sessions --remove-integration
+```
+
+Windows runs the same step automatically from the uninstaller, where it also
+clears the logon supervisor value and the managed PATH entry. Run it by hand on
+macOS, which ships as a bundle with no uninstaller of its own. It prints what it
+removed, what was already absent, and what it kept, and exits non-zero naming
+anything it could not finish.
+
+You do not need to end sessions first. This path deliberately stops no process:
+the daemon is the only thing that can still record what a live runner produces,
+so ending it during removal would turn live sessions into orphans. Deleting the
+LaunchAgent is enough — the daemon does not come back after the next login. A
+`sessions` symlink that is a real file, or that points outside Sessions' managed
+runtime, belongs to whoever put it there and is left exactly as found.
+
+State is deliberately not deleted during either path. Session records, the
+ledger, the saved port, and paired-machine credentials all survive. After
+confirming no session or recovery data is needed, you may remove it separately.
 
 ## Troubleshooting
 

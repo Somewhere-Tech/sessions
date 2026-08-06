@@ -12,6 +12,7 @@
       },
       "nsis": {
         "installMode": "currentUser",
+        "installerHooks": "./windows/installer-hooks.nsh",
         "headerImage": "./windows/installer-header.bmp",
         "sidebarImage": "./windows/installer-sidebar.bmp",
         "installerIcon": "./icons/icon.ico",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -55,6 +56,50 @@ func TestDurableExitReasonRequiresCleanExitEvidence(t *testing.T) {
 	}
 	if got := durableExitReason(ledger.LaneState{RunnerExited: true, ExitCode: &failure}); got != "failed" {
 		t.Fatalf("runner exit code nonzero = %q, want failed", got)
+	}
+}
+
+func TestInteractiveShellIdleDoesNotClaimCompletion(t *testing.T) {
+	root := t.TempDir()
+	launcher := prototest.NewLauncher()
+	manager := NewManager(testConfig(root), launcher, ManagerOptions{DisableWatchers: true})
+	t.Cleanup(manager.Close)
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{Cmd: "/bin/bash", Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.setWorking(true)
+	runtime.setWorking(false)
+	info, _ := manager.Get(created.ID)
+	if got := info.Info().IdleReason; got != "" {
+		t.Fatalf("live shell idle reason = %q, want no completed/failed claim", got)
+	}
+}
+
+func TestTerminalCodexTaskCompleteOverridesStaleScreenError(t *testing.T) {
+	root := t.TempDir()
+	launcher := prototest.NewLauncher()
+	manager := NewManager(testConfig(root), launcher, ManagerOptions{
+		DisableWatchers: true, Notify: func(PushPayload) {},
+	})
+	t.Cleanup(manager.Close)
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{Cmd: "codex", Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.setWorking(true)
+	launcher.Runner(created.ID).AddOutput("old fatal error text still visible\n")
+	runtime.markTerminalTurnDone()
+	runtime.setWorking(false)
+	info, _ := manager.Get(created.ID)
+	if got := info.Info().IdleReason; got != state.IdleReasonCompleted {
+		t.Fatalf("Codex task_complete idle reason = %q, want %q", got, state.IdleReasonCompleted)
 	}
 }
 
@@ -169,11 +214,28 @@ func TestCodexAppServerConversationPersistsInMetadataAndLedger(t *testing.T) {
 	}
 }
 
+func TestNormalizedTerminalPromptRemovesBracketedPaste(t *testing.T) {
+	got := normalizedTerminalPrompt("\x1b[200~line one\nline two\x1b[201~")
+	if got != "line one\nline two" {
+		t.Fatalf("normalized prompt = %q", got)
+	}
+}
+
 type claudeStructuredBoundLauncher struct{ *prototest.Launcher }
 
 func (l claudeStructuredBoundLauncher) Launch(ctx context.Context, request proto.LaunchRequest) (proto.Runner, error) {
 	request.Info.ClaudeSessionID = "019f7181-cb32-46e0-952d-2f5f7862e668"
 	return l.Launcher.Launch(ctx, request)
+}
+
+type reapRecordingLauncher struct {
+	*prototest.Launcher
+	reaped []string
+}
+
+func (l *reapRecordingLauncher) Reap(id string) error {
+	l.reaped = append(l.reaped, id)
+	return nil
 }
 
 func TestClaudeStructuredHistoryLifecycleMetadataLedgerAndAuth(t *testing.T) {
@@ -869,6 +931,50 @@ func TestMassKillGuardRefusesDiscoverySweepBeforeBootout(t *testing.T) {
 	}
 }
 
+func TestDiscoveryPreservesRegisteredSessionWithStaleLaunchArtifact(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	config := testConfig(root)
+	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true,
+	})
+	t.Cleanup(manager.Close)
+
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/sh", Cwd: root, Name: "registered session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A daemon restart or an older runner can leave launchd bookkeeping that
+	// looks orphaned even though the current registry already owns the session.
+	// Discovery must trust the live registry and never reap that session.
+	for _, path := range []string{
+		filepath.Join(config.RunnerStateDir, created.ID+".events"),
+		filepath.Join(config.RunnerStateDir, created.ID+".sock"),
+	} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	plistPath := state.RunnerPlistPath(config.LaunchAgentsDir, created.ID)
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(plistPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manager.Get(created.ID); !ok {
+		t.Fatal("discovery reaped a session already owned by the live registry")
+	}
+	if _, err := os.Stat(plistPath); err != nil {
+		t.Fatalf("discovery removed the registered session plist: %v", err)
+	}
+}
+
 func TestDiscoveryReapsExitedLegacyRunnerPlist(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
@@ -1057,7 +1163,8 @@ func TestDiscoveryPreservesUnreachableLivePID(t *testing.T) {
 	if err := os.WriteFile(metadata, []byte(encoded), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+	launcher := &reapRecordingLauncher{Launcher: prototest.NewLauncher()}
+	manager := NewManager(config, launcher, ManagerOptions{
 		DisableWatchers: true, DiscoveryRetries: 1, DiscoveryDelay: time.Millisecond,
 		ProcessAlive: func(int) bool { return true }, ProcessCommand: func(int) string { return "" },
 	})
@@ -1069,6 +1176,9 @@ func TestDiscoveryPreservesUnreachableLivePID(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("discovery removed sacred state %s: %v", path, err)
 		}
+	}
+	if len(launcher.reaped) != 0 {
+		t.Fatalf("discovery reaped unreachable live runner: %v", launcher.reaped)
 	}
 }
 
@@ -1209,13 +1319,12 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 
 func awaitCondition(t *testing.T, condition func() bool) {
 	t.Helper()
+	deadline := time.Now().Add(waitConditionBudget)
 	for !condition() {
-		select {
-		case <-t.Context().Done():
-			t.Fatal("test ended before condition became true")
-		default:
-			runtime.Gosched()
+		if time.Now().After(deadline) {
+			t.Fatalf("test ended before condition became true"+" (waited %s)", waitConditionBudget)
 		}
+		time.Sleep(waitConditionPoll)
 	}
 }
 
@@ -1236,8 +1345,98 @@ func awaitFile(t *testing.T, watcher *fsnotify.Watcher, path string) {
 			if ok {
 				t.Fatalf("watch %s: %v", path, err)
 			}
-		case <-t.Context().Done():
+		case <-time.After(waitConditionBudget):
 			t.Fatalf("test ended before %s was published", path)
 		}
 	}
+}
+
+// The mass-kill guard protects the destructive half of a discovery sweep. It
+// must not also stop the safe half: nothing else records runner_lost, so a
+// refusal that skipped reconciliation left those lanes reported as live in
+// every ledger-derived view and no later sweep could get back under the limit.
+// DiscoverWithOptions{Force:true} is reachable only from tests, so an operator
+// had no way out short of deleting files by hand.
+func TestGuardedDiscoverySweepStillReconcilesLedgerAndExplainsTheRefusal(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.LaunchAgentsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := ledger.Open(context.Background(), ledger.Options{Path: filepath.Join(root, "ledger.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	old := time.Now().Add(-time.Minute)
+	ids := make([]string, 0, DefaultMassKillLimit+1)
+	paths := make([]string, 0, DefaultMassKillLimit+1)
+	for index := 0; index < DefaultMassKillLimit+1; index++ {
+		id := fmt.Sprintf("00000000-0000-4000-8000-00000000000%d", index)
+		ids = append(ids, id)
+		path := state.RunnerPlistPath(config.LaunchAgentsDir, id)
+		if err := os.WriteFile(path, []byte("scratch"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+		if err := store.Boundaries().RecordCreated(ctx, ledger.Created{
+			Meta: ledger.Meta{LaneID: id}, LaneUUID: id, Tool: "terminal", Cwd: root,
+			CreatorKind: ledger.CreatorExternal, CreatorID: "guard-test",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour,
+		Boundaries: store.Boundaries(), Observations: store.Observations(), LedgerReader: store,
+		Notify: func(PushPayload) {},
+	})
+	t.Cleanup(manager.Close)
+
+	discoverErr := manager.Discover(ctx)
+	var guardErr *MassKillError
+	if !errors.As(discoverErr, &guardErr) || guardErr.Count != DefaultMassKillLimit+1 || guardErr.Limit != DefaultMassKillLimit {
+		t.Fatalf("Discover() error = %v, want a mass-kill refusal for %d candidates", discoverErr, DefaultMassKillLimit+1)
+	}
+	// The destructive half stays guarded.
+	for _, path := range paths {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("guarded sweep mutated %s: %v", path, statErr)
+		}
+	}
+	// The safe half still runs.
+	events, err := store.Events(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciled := make(map[string]bool, len(ids))
+	for _, lane := range ledger.Fold(events) {
+		if lane.RunnerLost {
+			reconciled[lane.LaneID] = true
+		}
+	}
+	for _, id := range ids {
+		if !reconciled[id] {
+			t.Fatalf("guarded sweep skipped ledger reconciliation for lane %s: %#v", id, reconciled)
+		}
+	}
+	// The refusal names what it refused and what is safe to do next.
+	message := discoverErr.Error()
+	for _, want := range []string{
+		"discovery", "left in place", "sessions kill", fmt.Sprintf("limit %d", DefaultMassKillLimit),
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("mass-kill refusal %q does not mention %q", message, want)
+		}
+	}
+	if strings.Contains(message, "retry with force") {
+		t.Fatalf("discovery refusal points at a force flag no operator surface exposes: %q", message)
+	}
+	t.Logf("guarded discovery refusal: %s", message)
 }

@@ -8,17 +8,33 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
 
+// resumableListing is the Resume view plus the degradation of the history it
+// was built from. A conversation whose transcript could not be read is dropped
+// from or thinned in the merge below, so without these counters a Resume list
+// that is missing conversations looks exactly like one where those
+// conversations never existed.
+type resumableListing struct {
+	Sessions           []watch.ResumableSession `json:"sessions"`
+	UnreadableSessions int                      `json:"unreadable_sessions,omitempty"`
+	SkippedRecords     int                      `json:"skipped_records,omitempty"`
+}
+
 // resumableConversations projects provider files and durable Sessions history
 // into one row per provider conversation. The provider UUID is the identity;
 // individual Sessions runtimes are continuation-chain evidence, not duplicate
 // conversations.
-func (s *Server) resumableConversations() ([]watch.ResumableSession, error) {
-	scanned := watch.ScanResumableConversations()
-	history, err := s.integrationEndpoints.History(s.registry.List(true))
-	if err != nil {
-		return nil, err
+func (s *Server) resumableConversations() resumableListing {
+	// History degrades one row at a time and returns a nil error
+	// unconditionally; there is no wholesale failure to propagate.
+	history, _ := s.integrationEndpoints.History(s.registry.List(true))
+	// History has already populated the provider scan cache. Reuse it so the
+	// Resume dialog does not wait for a second full filesystem traversal.
+	scanned := s.integrationEndpoints.ResumableProviderConversations()
+	return resumableListing{
+		Sessions:           mergeResumableConversations(scanned, history.Sessions),
+		UnreadableSessions: history.UnreadableSessions,
+		SkippedRecords:     history.SkippedRecords,
 	}
-	return mergeResumableConversations(scanned, history.Sessions), nil
 }
 
 func mergeResumableConversations(
@@ -28,6 +44,10 @@ func mergeResumableConversations(
 	byIdentity := make(map[string]*watch.ResumableSession, len(scanned))
 	for index := range scanned {
 		session := scanned[index]
+		// Provider scans see Claude and Codex history regardless of whether a
+		// conversation was opened through Sessions. A linked durable Sessions
+		// runtime below clears this marker.
+		session.External = true
 		key := resumableIdentity(session.Tool, session.SessionID)
 		copy := session
 		byIdentity[key] = &copy
@@ -36,7 +56,28 @@ func mergeResumableConversations(
 	runSeen := make(map[string]map[string]struct{}, len(byIdentity))
 	for _, source := range history {
 		tool := resumableTool(source.Tool)
-		if tool == "" || strings.TrimSpace(source.ProviderSessionID) == "" {
+		if tool == "" {
+			continue
+		}
+		if strings.TrimSpace(source.ProviderSessionID) == "" {
+			if !source.ConversationAvailable || source.PromptHistoryOnly {
+				continue
+			}
+			key := "sessions-history:" + tool + ":" + source.ID
+			if _, exists := byIdentity[key]; exists {
+				continue
+			}
+			byIdentity[key] = &watch.ResumableSession{
+				SessionID: source.ID, Tool: tool, Origin: "Sessions recovery",
+				Title: source.Name, HistoryID: source.ID, Cwd: source.CWD,
+				ModifiedAt: float64(source.LastActivityAt), FirstUserMessage: source.Name,
+				TranscriptRecovery: true,
+				Runs: []watch.ResumableRun{{
+					SessionID: source.ID, Name: source.Name, StartedAt: source.CreatedAt,
+					LastActivityAt: source.LastActivityAt, Machine: source.Machine,
+					ReopenedAs: source.ReopenedAs, ResumedFrom: source.ResumedFrom,
+				}},
+			}
 			continue
 		}
 		key := resumableIdentity(tool, source.ProviderSessionID)
@@ -50,6 +91,7 @@ func mergeResumableConversations(
 				Origin: "Claude prompt index", Title: source.Name,
 				Cwd: source.CWD, ModifiedAt: float64(source.LastActivityAt),
 				FirstUserMessage: source.Name, PromptHistoryOnly: true,
+				External: source.External,
 			}
 			byIdentity[key] = session
 		}
@@ -72,6 +114,7 @@ func mergeResumableConversations(
 		if source.External {
 			continue
 		}
+		session.External = false
 		seen := runSeen[key]
 		if seen == nil {
 			seen = make(map[string]struct{})

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
 func TestDecideSendConfirmation(t *testing.T) {
@@ -66,16 +68,14 @@ func TestClaudeSubmitSequenceMatchesNodeCLI(t *testing.T) {
 				})
 			}
 			_ = json.NewEncoder(response).Encode(map[string]any{"events": events, "nextIndex": len(events)})
-		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/input":
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/submit":
 			var body map[string]string
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 				http.Error(response, err.Error(), http.StatusBadRequest)
 				return
 			}
-			inputs = append(inputs, body["data"])
-			if body["data"] == "\r" {
-				submitted = true
-			}
+			inputs = append(inputs, body["data"], "\r")
+			submitted = true
 			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
 		default:
 			http.NotFound(response, request)
@@ -101,7 +101,7 @@ func TestClaudeSubmitSequenceMatchesNodeCLI(t *testing.T) {
 	if want := []string{text, "\r"}; !reflect.DeepEqual(inputs, want) {
 		t.Fatalf("input sequence = %q, want %q", inputs, want)
 	}
-	if want := []time.Duration{sendTextSettleDelay}; !reflect.DeepEqual(sleeps, want) {
+	if want := []time.Duration(nil); !reflect.DeepEqual(sleeps, want) {
 		t.Fatalf("sleeps = %v, want %v", sleeps, want)
 	}
 }
@@ -132,12 +132,13 @@ func TestClaudeEnterRetriesRequireTextStillInComposer(t *testing.T) {
 				case request.Method == http.MethodGet && request.URL.Path == "/api/sessions/"+id+"/snapshot":
 					response.Header().Set("Content-Type", "text/plain")
 					_, _ = io.WriteString(response, test.snapshot)
-				case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/input":
+				case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/submit":
 					var body map[string]string
 					_ = json.NewDecoder(request.Body).Decode(&body)
-					if body["data"] == "\r" {
-						enters++
-					}
+					enters++
+					_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
+				case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/input":
+					enters++
 					_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
 				default:
 					http.NotFound(response, request)
@@ -186,7 +187,7 @@ func TestNodeCLIGoldenOutputShapes(t *testing.T) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
 			fmt.Fprintf(response, `{"sessions":%s}`, bytes.TrimSpace(lsFixture))
-		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/input":
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/submit":
 			_, _ = io.Copy(io.Discard, request.Body)
 			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
 		default:
@@ -892,6 +893,71 @@ func TestCodexNewSelectsStructuredKindWithRevertibleGate(t *testing.T) {
 	}
 }
 
+func TestCodexRichNewSendsPositionalRequestImmediately(t *testing.T) {
+	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	const prompt = "Reply exactly: CODEX_INITIAL_ACCEPTED"
+	var request createSessionRequest
+	var inputs []string
+	submitted := false
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, httpRequest *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case httpRequest.Method == http.MethodPost && httpRequest.URL.Path == "/api/sessions":
+			if err := json.NewDecoder(httpRequest.Body).Decode(&request); err != nil {
+				t.Errorf("decode create request: %v", err)
+			}
+			response.WriteHeader(http.StatusCreated)
+			_, _ = response.Write([]byte(`{"id":"` + id + `"}`))
+		case httpRequest.Method == http.MethodGet && httpRequest.URL.Path == "/api/sessions":
+			lastUser := any(nil)
+			if submitted {
+				lastUser = int64(2)
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
+				"id": id, "cmd": "codex", "tool": "codex", "lastUserMessageAt": lastUser,
+			}}})
+		case httpRequest.Method == http.MethodGet && httpRequest.URL.Path == "/api/sessions/"+id+"/events":
+			events := []any{}
+			if submitted {
+				events = append(events, map[string]any{
+					"type": "user", "message": map[string]any{"role": "user", "content": prompt},
+				})
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": events, "nextIndex": len(events)})
+		case httpRequest.Method == http.MethodPost && httpRequest.URL.Path == "/api/sessions/"+id+"/submit":
+			var body map[string]string
+			if err := json.NewDecoder(httpRequest.Body).Decode(&body); err != nil {
+				t.Errorf("decode input request: %v", err)
+			}
+			inputs = append(inputs, body["data"], "\r")
+			submitted = true
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
+		default:
+			http.NotFound(response, httpRequest)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"--host", server.URL, "new", "--tool", "codex", "--full-access", prompt},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if request.Kind != "codex-app-server" {
+		t.Fatalf("create kind = %q", request.Kind)
+	}
+	if slices.Contains(request.Args, prompt) {
+		t.Fatalf("positional prompt leaked into app-server args: %q", request.Args)
+	}
+	if want := []string{prompt, "\r"}; !reflect.DeepEqual(inputs, want) {
+		t.Fatalf("input sequence = %q, want %q", inputs, want)
+	}
+}
+
 func TestCodexAppServerRequiresExplicitFullAccess(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var stdout, stderr bytes.Buffer
@@ -942,7 +1008,7 @@ func TestClaudeNewDefaultsInteractiveAndKeepsStructuredExplicit(t *testing.T) {
 			if request.Kind != test.kind {
 				t.Fatalf("create kind = %q, want %q", request.Kind, test.kind)
 			}
-			if !hasArgValue(request.Args, "--session-id") {
+			if !providerargs.HasValue(request.Args, providerargs.ClaudeSessionIDFlag) {
 				t.Fatalf("Claude create args do not contain a preallocated session id: %q", request.Args)
 			}
 			hasFullAccess := slices.Contains(request.Args, "--dangerously-skip-permissions")
@@ -1055,5 +1121,80 @@ func assertJSONEqual(t *testing.T, actual, expected string) {
 	}
 	if !reflect.DeepEqual(actualValue, expectedValue) {
 		t.Fatalf("JSON mismatch\nactual:   %s\nexpected: %s", actual, expected)
+	}
+}
+
+func TestInputIsSendIncludingJSONAndUnknownOptionRefusal(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	id := "25000000-0000-4000-8000-000000000001"
+	submitted := make([]string, 0, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_, _ = response.Write([]byte(`{"sessions":[{"id":"` + id + `","cmd":"/bin/sh"}]}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/submit":
+			var body struct {
+				Data string `json:"data"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode submit body: %v", err)
+			}
+			submitted = append(submitted, body.Data)
+			_, _ = response.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	// --json is a flag for input exactly as it is for send, never message text.
+	for _, arguments := range [][]string{
+		{"--host", server.URL, "input", id, "--json", "hi"},
+		{"--host", server.URL, "--json", "input", id, "hi"},
+		{"--host", server.URL, "--json", "send", id, "hi"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(arguments, strings.NewReader(""), &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+			t.Fatalf("%v exit=%d stdout=%q stderr=%q", arguments, code, stdout.String(), stderr.String())
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+			t.Fatalf("%v did not print JSON: %v\n%s", arguments, err, stdout.String())
+		}
+		if decoded["confidence"] != "unconfirmed" {
+			t.Fatalf("%v JSON = %v", arguments, decoded)
+		}
+	}
+	if !slices.Equal(submitted, []string{"hi", "hi", "hi"}) {
+		t.Fatalf("submitted text = %#v", submitted)
+	}
+
+	// An unknown leading option is refused instead of typed into the session.
+	submitted = submitted[:0]
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--host", server.URL, "input", id, "--nope", "hi"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "unknown send option --nope") {
+		t.Fatalf("unknown option exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if len(submitted) != 0 {
+		t.Fatalf("refused send still submitted %#v", submitted)
+	}
+
+	// -- sends dashed text verbatim, and a flag inside the message stays text.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--host", server.URL, "input", id, "--", "--json", "please"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("separator exit=%d stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--host", server.URL, "send", id, "run make", "--fast"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("trailing flag-like word exit=%d stderr=%q", code, stderr.String())
+	}
+	if !slices.Equal(submitted, []string{"--json please", "run make --fast"}) {
+		t.Fatalf("submitted text = %#v", submitted)
 	}
 }

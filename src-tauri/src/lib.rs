@@ -7,6 +7,8 @@ mod lifecycle;
 #[cfg(any(target_os = "windows", test))]
 mod windows_cli_path;
 mod windows_credentials;
+#[cfg(any(target_os = "windows", test))]
+mod windows_runner;
 #[cfg(target_os = "windows")]
 mod windows_runtime;
 #[cfg(any(target_os = "windows", test))]
@@ -16,9 +18,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(desktop)]
 use std::fs;
+#[cfg(desktop)]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::{
-    collections::HashMap, env, io::Read, net::IpAddr, path::PathBuf, process::Command, sync::Mutex,
-    thread, time::Duration,
+    collections::HashMap,
+    env,
+    io::{Read, Write},
+    net::IpAddr,
+    path::PathBuf,
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::Mutex,
+    thread,
+    time::{Duration, Instant},
 };
 #[cfg(desktop)]
 use tauri::{
@@ -40,6 +54,20 @@ const SUPPORT_BUG_URL: &str =
 const SUPPORT_SECURITY_URL: &str =
     "https://github.com/Somewhere-Tech/sessions/security/advisories/new";
 const API_PROTOCOL_VERSION: u16 = 1;
+// A URL handler either fails fast (unknown scheme, no registered application)
+// or takes ownership of the foreground. This is how long we listen for the
+// first case before concluding the second.
+const EXTERNAL_LAUNCH_TIMEOUT: Duration = Duration::from_secs(5);
+// A GUI action that shells out to the bundled CLI must not wait forever: it
+// pins a blocking-pool thread and the control that started it. Status, registry
+// and discovery calls answer immediately.
+const BUNDLED_CLI_TIMEOUT: Duration = Duration::from_secs(120);
+// A cross-machine continuation or a first backup legitimately copies a working
+// tree over the network, so it gets its own much wider budget.
+const BUNDLED_CLI_TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+// The CLI's JSON answers are small. Cap what we buffer so a runaway process
+// cannot exhaust this process's memory, while still draining its pipes.
+const BUNDLED_CLI_MAX_OUTPUT: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +154,17 @@ struct NativePairingClaim {
     device_id: String,
     token: String,
     name: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeAgentMachine {
+    alias: Option<String>,
+    machine_id: String,
+    name: String,
+    endpoint: String,
+    device_id: Option<String>,
+    token: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -256,7 +295,7 @@ struct SomewhereCliStatus {
 }
 
 #[cfg(desktop)]
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 struct WindowBounds {
     x: i32,
     y: i32,
@@ -265,10 +304,55 @@ struct WindowBounds {
     maximized: bool,
 }
 
+// Dragging a window emits Moved/Resized tens to hundreds of times per second.
+// Coalesce that burst into a single write instead of re-serializing the whole
+// map and rewriting the file on every event.
 #[cfg(desktop)]
-struct WindowGeometryStore {
+const WINDOW_GEOMETRY_FLUSH_DELAY: Duration = Duration::from_millis(500);
+
+#[cfg(desktop)]
+struct WindowGeometryFile {
     path: PathBuf,
     bounds: Mutex<HashMap<String, WindowBounds>>,
+    // True while a debounced writer is already armed for the current burst.
+    flush_pending: AtomicBool,
+}
+
+#[cfg(desktop)]
+impl WindowGeometryFile {
+    fn write(&self) {
+        // Serialize under the lock, then release it before touching the disk.
+        // The lock is taken from the window-event handler, so a slow or full
+        // volume must never be waited on while holding it.
+        let encoded = {
+            let Ok(bounds) = self.bounds.lock() else {
+                return;
+            };
+            serde_json::to_vec_pretty(&*bounds)
+        };
+        let Ok(encoded) = encoded else {
+            return;
+        };
+        if let Some(parent) = self.path.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                log::warn!(
+                    "create window geometry directory {}: {error}",
+                    parent.display()
+                );
+                return;
+            }
+        }
+        // Temp-plus-rename: a crash or a power loss partway through a plain
+        // fs::write truncates this file and loses every remembered window.
+        if let Err(error) = lifecycle::write_atomic(&self.path, &encoded, 0o600) {
+            log::warn!("save window geometry: {error}");
+        }
+    }
+}
+
+#[cfg(desktop)]
+struct WindowGeometryStore {
+    file: Arc<WindowGeometryFile>,
 }
 
 #[cfg(desktop)]
@@ -279,27 +363,48 @@ impl WindowGeometryStore {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
         Self {
-            path,
-            bounds: Mutex::new(bounds),
+            file: Arc::new(WindowGeometryFile {
+                path,
+                bounds: Mutex::new(bounds),
+                flush_pending: AtomicBool::new(false),
+            }),
         }
     }
 
     fn get(&self, label: &str) -> Option<WindowBounds> {
-        self.bounds.lock().ok()?.get(label).cloned()
+        self.file.bounds.lock().ok()?.get(label).cloned()
     }
 
     fn remember(&self, label: String, bounds: WindowBounds) {
-        let Ok(mut all_bounds) = self.bounds.lock() else {
-            return;
-        };
-        all_bounds.insert(label, bounds);
-        let Ok(json) = serde_json::to_vec_pretty(&*all_bounds) else {
-            return;
-        };
-        if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent);
+        {
+            let Ok(mut all_bounds) = self.file.bounds.lock() else {
+                return;
+            };
+            if all_bounds.get(&label) == Some(&bounds) {
+                return;
+            }
+            all_bounds.insert(label, bounds);
         }
-        let _ = fs::write(&self.path, json);
+        // The first change of a burst arms one writer; every later change
+        // during the window is free and is picked up when that writer wakes.
+        if self.file.flush_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let file = Arc::clone(&self.file);
+        thread::spawn(move || {
+            thread::sleep(WINDOW_GEOMETRY_FLUSH_DELAY);
+            // Clear before writing, so an event that lands mid-write arms a
+            // fresh flush instead of being dropped on the floor.
+            file.flush_pending.store(false, Ordering::SeqCst);
+            file.write();
+        });
+    }
+
+    // Closing a window or quitting right after a drag must still persist the
+    // final position: the debounced writer may well still be sleeping.
+    fn flush(&self) {
+        self.file.flush_pending.store(false, Ordering::SeqCst);
+        self.file.write();
     }
 }
 
@@ -459,10 +564,17 @@ fn remember_window(window: &WebviewWindow) {
 #[cfg(desktop)]
 fn track_window(window: &WebviewWindow) {
     let tracked = window.clone();
-    window.on_window_event(move |event| {
-        if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
-            remember_window(&tracked);
+    window.on_window_event(move |event| match event {
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) => remember_window(&tracked),
+        // Do not let the debounce outlive the window it is remembering.
+        // try_state, not state: Destroyed can arrive during teardown, and a
+        // panic in a window-event handler is not worth a saved position.
+        WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+            if let Some(store) = tracked.app_handle().try_state::<WindowGeometryStore>() {
+                store.flush();
+            }
         }
+        _ => {}
     });
 }
 
@@ -550,6 +662,22 @@ fn runtime_status(app: AppHandle) -> Result<lifecycle::RuntimeStatus, String> {
         .lock()
         .map(|status| status.clone())
         .map_err(|error| error.to_string())
+}
+
+// Reconcile the local service without touching runner lifetimes. The
+// lifecycle installer repairs or restarts sessionsd; existing runners remain
+// independently supervised and are re-adopted by the daemon when it returns.
+#[tauri::command]
+async fn recover_runtime(app: AppHandle) -> Result<lifecycle::RuntimeStatus, String> {
+    let worker = app.clone();
+    let status = tauri::async_runtime::spawn_blocking(move || lifecycle::install_for_app(&worker))
+        .await
+        .map_err(|error| format!("runtime recovery worker failed: {error}"))?;
+    *app.state::<RuntimeState>()
+        .status
+        .lock()
+        .map_err(|error| error.to_string())? = status.clone();
+    Ok(status)
 }
 
 #[tauri::command]
@@ -740,14 +868,51 @@ async fn native_move_machines(app: AppHandle) -> Result<NativeConnectionCommand,
 }
 
 #[tauri::command]
+async fn native_agent_machines_sync(
+    app: AppHandle,
+    machines: Vec<NativeAgentMachine>,
+) -> Result<NativeConnectionCommand, String> {
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        let _ = machines;
+        return Ok(NativeConnectionCommand {
+            data: serde_json::json!({ "machines": [] }),
+            detail: String::new(),
+        });
+    }
+
+    #[cfg(desktop)]
+    tauri::async_runtime::spawn_blocking(move || {
+        let input = serde_json::to_vec(&serde_json::json!({ "machines": machines }))
+            .map_err(|error| format!("encode native machine registry: {error}"))?;
+        run_bundled_sessions_json_with_input(
+            &app,
+            &["machines".to_string(), "sync-native".to_string()],
+            "agent machine sync",
+            Some(&input),
+            BUNDLED_CLI_TIMEOUT,
+        )
+    })
+    .await
+    .map_err(|error| format!("agent machine sync worker failed: {error}"))?
+}
+
+#[tauri::command]
 async fn native_move_session(
     app: AppHandle,
     session_id: String,
     machine: String,
+    source_machine: Option<String>,
     dry_run: bool,
     allow_dirty: bool,
     runtime_mode: String,
 ) -> Result<NativeConnectionCommand, String> {
+    let local_port = *app
+        .state::<RuntimeState>()
+        .port
+        .lock()
+        .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         let session_id = session_id.trim();
         let machine = machine.trim();
@@ -759,12 +924,20 @@ async fn native_move_session(
                 "session id and saved machine must not contain control characters".to_string(),
             );
         }
-        let mut args = vec![
-            "move".to_string(),
-            session_id.to_string(),
-            "--machine".to_string(),
-            machine.to_string(),
-        ];
+        let source_machine = source_machine.unwrap_or_default();
+        if source_machine.chars().any(char::is_control) {
+            return Err("source machine must not contain control characters".to_string());
+        }
+        let mut args = Vec::new();
+        if !source_machine.trim().is_empty() {
+            args.extend(["--machine".to_string(), source_machine.trim().to_string()]);
+        }
+        args.extend(["move".to_string(), session_id.to_string()]);
+        if machine == "__local__" {
+            args.extend(["--to".to_string(), format!("http://127.0.0.1:{local_port}")]);
+        } else {
+            args.extend(["--machine".to_string(), machine.to_string()]);
+        }
         if dry_run {
             args.push("--dry-run".to_string());
         }
@@ -776,7 +949,14 @@ async fn native_move_session(
         } else if runtime_mode != "rich" {
             return Err("runtime mode must be rich or terminal".to_string());
         }
-        run_bundled_sessions_json(&app, &args, "cross-machine continuation")
+        // A continuation copies a working tree between machines; hold it to the
+        // transfer budget rather than the interactive one.
+        run_bundled_sessions_json_with_timeout(
+            &app,
+            &args,
+            "cross-machine continuation",
+            BUNDLED_CLI_TRANSFER_TIMEOUT,
+        )
     })
     .await
     .map_err(|error| format!("cross-machine continuation worker failed: {error}"))?
@@ -840,42 +1020,112 @@ fn support_page_url(kind: &str) -> Result<&'static str, String> {
     }
 }
 
-#[tauri::command]
-fn open_support_page(kind: String) -> Result<(), String> {
-    let url = support_page_url(kind.trim())?;
+fn validate_external_url(value: &str) -> Result<url::Url, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 8192 || value.chars().any(char::is_control) {
+        return Err("invalid external URL".to_string());
+    }
+    let parsed = url::Url::parse(value).map_err(|_| "invalid external URL".to_string())?;
+    match parsed.scheme() {
+        "http" | "https" if parsed.host_str().is_some() => Ok(parsed),
+        "mailto" if !parsed.path().is_empty() => Ok(parsed),
+        "vscode" if !parsed.path().is_empty() => Ok(parsed),
+        _ => Err("unsupported external URL scheme".to_string()),
+    }
+}
+
+fn open_external_target(url: &str) -> Result<(), String> {
+    let parsed = validate_external_url(url)?;
+    let target = parsed.as_str();
     #[cfg(target_os = "macos")]
-    {
-        let status = Command::new("/usr/bin/open")
-            .arg(url)
-            .status()
-            .map_err(|error| format!("open support page: {error}"))?;
-        if !status.success() {
-            return Err(format!("open support page failed with {status}"));
-        }
-        Ok(())
-    }
+    let mut command = {
+        let mut command = Command::new("/usr/bin/open");
+        command.arg(target);
+        command
+    };
     #[cfg(target_os = "windows")]
-    {
-        let status = Command::new("rundll32.exe")
-            .args(["url.dll,FileProtocolHandler", url])
-            .status()
-            .map_err(|error| format!("open support page: {error}"))?;
-        if !status.success() {
-            return Err(format!("open support page failed with {status}"));
-        }
-        Ok(())
-    }
+    let mut command = {
+        let mut command = Command::new("rundll32.exe");
+        command.args(["url.dll,FileProtocolHandler", target]);
+        command
+    };
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    {
-        let status = Command::new("xdg-open")
-            .arg(url)
-            .status()
-            .map_err(|error| format!("open support page: {error}"))?;
-        if !status.success() {
-            return Err(format!("open support page failed with {status}"));
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(target);
+        command
+    };
+    // Never adopt the launched application's lifetime. `/usr/bin/open` returns
+    // as soon as LaunchServices accepts the request, but a cold `vscode://`
+    // handler can take seconds and several xdg-open backends stay in the
+    // foreground for the entire life of the browser they started. Give the
+    // launcher a bounded window to report a real failure (no handler for the
+    // scheme, bad arguments) and hand it to a reaper if it outlives that
+    // window. Output stays inherited so the launcher's own diagnostics still
+    // reach the app log; only stdin is closed, because a detached process must
+    // never end up waiting on this process's input.
+    command.stdin(Stdio::null());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("open external URL: {error}"))?;
+    match wait_bounded(&mut child, EXTERNAL_LAUNCH_TIMEOUT) {
+        Ok(Some(status)) if status.success() => Ok(()),
+        Ok(Some(status)) => Err(format!("open external URL failed with {status}")),
+        // Still running means the handoff happened and the handler simply owns
+        // the foreground now. That is a successful open, not an unknown state.
+        Ok(None) => {
+            reap_in_background(child);
+            Ok(())
         }
-        Ok(())
+        Err(error) => {
+            reap_in_background(child);
+            Err(format!("open external URL: {error}"))
+        }
     }
+}
+
+// Wait for a child up to `timeout`. Ok(None) means it is still running; the
+// caller decides whether that is success or a failure, because "still running"
+// means opposite things for a URL handler and for a CLI we need output from.
+fn wait_bounded(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        thread::sleep(remaining.min(Duration::from_millis(25)));
+    }
+}
+
+// Child::drop does not wait, so anything we stop waiting for would stay a
+// zombie for the life of the app. One short-lived thread owns the final wait.
+fn reap_in_background(mut child: Child) {
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+}
+
+#[tauri::command]
+async fn open_external_url(url: String) -> Result<(), String> {
+    // Sync commands run on Tauri v2's main thread, where any wait freezes every
+    // webview. Follow the same spawn_blocking pattern as the other commands.
+    tauri::async_runtime::spawn_blocking(move || open_external_target(&url))
+        .await
+        .map_err(|error| format!("external link worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn open_support_page(kind: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let url = support_page_url(kind.trim())?;
+        open_external_target(url)
+    })
+    .await
+    .map_err(|error| format!("support page worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1677,9 +1927,17 @@ fn run_backup_action(
     action: &str,
     project: Option<&str>,
 ) -> Result<NativeConnectionCommand, String> {
-    let command_args = match action {
-        "status" => vec!["backup".to_string(), "status".to_string()],
-        "now" => vec!["backup".to_string(), "now".to_string()],
+    // A first or catch-up backup uploads real data, so it gets the transfer
+    // budget; status and enable only talk to the local daemon.
+    let (command_args, timeout) = match action {
+        "status" => (
+            vec!["backup".to_string(), "status".to_string()],
+            BUNDLED_CLI_TIMEOUT,
+        ),
+        "now" => (
+            vec!["backup".to_string(), "now".to_string()],
+            BUNDLED_CLI_TRANSFER_TIMEOUT,
+        ),
         "enable" => {
             let project = project
                 .map(str::trim)
@@ -1696,25 +1954,53 @@ fn run_backup_action(
                         .to_string(),
                 );
             }
-            vec![
-                "backup".to_string(),
-                "enable".to_string(),
-                "--project".to_string(),
-                project.to_string(),
-                "--interval".to_string(),
-                "15m".to_string(),
-                "--encrypt".to_string(),
-            ]
+            (
+                vec![
+                    "backup".to_string(),
+                    "enable".to_string(),
+                    "--project".to_string(),
+                    project.to_string(),
+                    "--interval".to_string(),
+                    "15m".to_string(),
+                    "--encrypt".to_string(),
+                ],
+                BUNDLED_CLI_TIMEOUT,
+            )
         }
         _ => return Err("unsupported native backup action".to_string()),
     };
-    run_bundled_sessions_json(app, &command_args, "backup")
+    run_bundled_sessions_json_with_timeout(app, &command_args, "backup", timeout)
 }
 
 fn run_bundled_sessions_json(
     app: &AppHandle,
     command_args: &[String],
     response_kind: &str,
+) -> Result<NativeConnectionCommand, String> {
+    run_bundled_sessions_json_with_input(
+        app,
+        command_args,
+        response_kind,
+        None,
+        BUNDLED_CLI_TIMEOUT,
+    )
+}
+
+fn run_bundled_sessions_json_with_timeout(
+    app: &AppHandle,
+    command_args: &[String],
+    response_kind: &str,
+    timeout: Duration,
+) -> Result<NativeConnectionCommand, String> {
+    run_bundled_sessions_json_with_input(app, command_args, response_kind, None, timeout)
+}
+
+fn run_bundled_sessions_json_with_input(
+    app: &AppHandle,
+    command_args: &[String],
+    response_kind: &str,
+    input: Option<&[u8]>,
+    timeout: Duration,
 ) -> Result<NativeConnectionCommand, String> {
     let port = *app
         .state::<RuntimeState>()
@@ -1747,18 +2033,91 @@ fn run_bundled_sessions_json(
         "PATH",
         format!("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:{inherited_path}"),
     );
-    let output = command
-        .output()
+    run_json_command(command, response_kind, input, timeout)
+}
+
+// Run one bundled-CLI invocation to completion and decode its JSON answer.
+//
+// Split out from the argument building so the process handling — which is the
+// part with the failure modes — can be exercised directly in tests.
+fn run_json_command(
+    mut command: Command,
+    response_kind: &str,
+    input: Option<&[u8]>,
+    timeout: Duration,
+) -> Result<NativeConnectionCommand, String> {
+    command
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
         .map_err(|error| format!("run bundled Sessions CLI: {error}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
+
+    // Drain both output pipes on their own threads *before* writing stdin. The
+    // CLI writes progress and diagnostics while it reads its input, so an input
+    // larger than the ~64 KiB pipe buffer used to deadlock permanently: this
+    // side blocked in write_all because the child was not reading, while the
+    // child blocked writing output nobody was reading — and the old
+    // wait_with_output only began draining after write_all returned. The
+    // machine registry that native_agent_machines_sync writes crosses that
+    // buffer on any well-used machine.
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "read bundled Sessions CLI output".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "read bundled Sessions CLI diagnostics".to_string())?;
+    let stdout_reader = thread::spawn(move || drain_bounded(stdout));
+    let stderr_reader = thread::spawn(move || drain_bounded(stderr));
+
+    let write_result = match (input, child.stdin.take()) {
+        // Dropping the handle at the end of this arm closes the pipe, which is
+        // the EOF the CLI is waiting for.
+        (Some(input), Some(mut stdin)) => stdin
+            .write_all(input)
+            .map_err(|error| format!("write bundled Sessions CLI input: {error}")),
+        (Some(_), None) => Err("open bundled Sessions CLI input".to_string()),
+        (None, _) => Ok(()),
+    };
+
+    let finished = if write_result.is_ok() {
+        matches!(wait_bounded(&mut child, timeout), Ok(Some(_)))
+    } else {
+        false
+    };
+    let status = if finished {
+        child.try_wait().ok().flatten()
+    } else {
+        // Stop the run so the reader threads see EOF and are released. The
+        // daemon and every runner are separate processes; ending this CLI
+        // invocation cannot touch a live session.
+        let _ = child.kill();
+        child.wait().ok()
+    };
+    // Join before reporting anything: these threads hold the pipe ends.
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    write_result?;
+
+    let stdout = String::from_utf8_lossy(&stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+    let Some(status) = status.filter(|_| finished) else {
+        return Err(format!(
+            "the sessions {response_kind} command did not finish within {} seconds and was stopped. Your daemon and every runner keep running; retry, or run the same command from the sessions CLI to watch its progress.",
+            timeout.as_secs()
+        ));
+    };
+    if !status.success() {
         let detail = if stderr.is_empty() { stdout } else { stderr };
         return Err(if detail.is_empty() {
-            format!(
-                "sessions {response_kind} command failed with {}",
-                output.status
-            )
+            format!("sessions {response_kind} command failed with {status}")
         } else {
             detail
         });
@@ -1769,6 +2128,18 @@ fn run_bundled_sessions_json(
         data,
         detail: stderr,
     })
+}
+
+// Read up to the cap, then keep draining to the void. The child must never
+// block on a full pipe just because we stopped being interested in its output.
+fn drain_bounded(mut source: impl Read) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    let _ = source
+        .by_ref()
+        .take(BUNDLED_CLI_MAX_OUTPUT)
+        .read_to_end(&mut buffer);
+    let _ = std::io::copy(&mut source, &mut std::io::sink());
+    buffer
 }
 
 #[cfg(desktop)]
@@ -1811,10 +2182,31 @@ fn tray_snapshot(response: SessionsResponse) -> TraySnapshot {
     snapshot
 }
 
+// The daemon binds 127.0.0.1 (lifecycle::LOOPBACK_HOST). Asking for
+// "localhost" invites a resolver that answers ::1 first, and the tray then
+// reads "daemon unreachable" forever on a perfectly healthy machine.
+#[cfg(desktop)]
+fn tray_sessions_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/api/sessions")
+}
+
+// Every other loopback client in this codebase disables proxies; this one used
+// not to. With HTTP_PROXY set, the tray's own status poll would be routed
+// through the proxy and fail permanently.
+#[cfg(desktop)]
+fn tray_http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|error| format!("build loopback session client: {error}"))
+}
+
 #[cfg(desktop)]
 fn fetch_tray_snapshot(client: &reqwest::blocking::Client, port: u16) -> TraySnapshot {
     client
-        .get(format!("http://localhost:{port}/api/sessions"))
+        .get(tray_sessions_url(port))
         .send()
         .and_then(|response| response.error_for_status())
         .and_then(|response| response.json::<SessionsResponse>())
@@ -1977,18 +2369,27 @@ fn handle_tray_menu(app: &AppHandle, id: &str) {
 #[cfg(desktop)]
 fn start_tray_poll(app: AppHandle) {
     thread::spawn(move || {
-        let client = reqwest::blocking::Client::builder()
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(3))
-            .build()
-            .expect("build loopback session client");
+        // Building the client must never be fatal here. An .expect() inside
+        // this thread would take tray status down silently and permanently for
+        // the rest of the app's life; retry on the next tick instead and report
+        // the honest "unreachable" state in the meantime.
+        let mut client: Option<reqwest::blocking::Client> = None;
         loop {
+            if client.is_none() {
+                match tray_http_client() {
+                    Ok(built) => client = Some(built),
+                    Err(error) => log::warn!("tray status client: {error}"),
+                }
+            }
             let port = *app
                 .state::<RuntimeState>()
                 .port
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            let next = fetch_tray_snapshot(&client, port);
+            let next = match client.as_ref() {
+                Some(client) => fetch_tray_snapshot(client, port),
+                None => TraySnapshot::default(),
+            };
             let changed = {
                 let state = app.state::<TrayState>();
                 let mut snapshot = state.snapshot.lock().unwrap_or_else(|e| e.into_inner());
@@ -2012,8 +2413,37 @@ fn start_tray_poll(app: AppHandle) {
     });
 }
 
+// The uninstall entry point, invoked by the NSIS uninstaller before it deletes
+// the package and available by hand on macOS, which ships as a bundle with no
+// uninstaller of its own. It runs before any Tauri app is built, so it opens no
+// window, starts no tray, and touches no daemon: it removes the per-user
+// integration Sessions installed and reports what it deliberately left. See
+// lifecycle::IntegrationRemoval for that boundary.
+#[cfg(desktop)]
+const REMOVE_INTEGRATION_ARGUMENT: &str = "--remove-integration";
+
+#[cfg(desktop)]
+fn requested_integration_removal() -> bool {
+    env::args_os().skip(1).any(|argument| {
+        argument
+            .to_str()
+            .is_some_and(|argument| argument == REMOVE_INTEGRATION_ARGUMENT)
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(desktop)]
+    if requested_integration_removal() {
+        let removal = lifecycle::remove_integration();
+        println!("{}", removal.report());
+        // A non-zero exit is the only way this can tell an uninstaller that
+        // something is now the user's to clean up by hand; the uninstaller
+        // continues either way, because a package that refuses to uninstall is
+        // worse than one that leaves a registry value behind.
+        std::process::exit(if removal.is_complete() { 0 } else { 1 });
+    }
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
@@ -2023,6 +2453,7 @@ pub fn run() {
             open_scoped_window,
             set_tray_servers,
             runtime_status,
+            recover_runtime,
             native_connection_settings,
             set_runtime_port,
             native_connection_action,
@@ -2036,23 +2467,32 @@ pub fn run() {
             native_backup_action,
             native_support_preview,
             native_move_machines,
+            native_agent_machines_sync,
             native_move_session,
             native_machine_credentials_load,
             native_machine_credentials_save,
+            open_external_url,
             open_support_page,
             somewhere_cli_status
         ])
         .setup(|app| {
-            let configured_port =
-                lifecycle::configured_port(app.handle()).unwrap_or_else(|error| {
-                    log::error!("Sessions native connection settings: {error}");
-                    lifecycle::default_port()
-                });
-            let runtime_status = lifecycle::install_for_app(app.handle());
-            let owns_local_runtime = runtime_status.state != "client-only";
-            if runtime_status.state == "error" {
-                log::error!("Sessions background service: {}", runtime_status.detail);
+            // One answer to a corrupt connections.json, shared with every
+            // reconcile path: fall back to the default port so the management
+            // plane keeps working, and carry the reason into the status the
+            // tray and settings screen display instead of only into the log.
+            let resolved_port = lifecycle::resolve_port(app.handle());
+            if let Some(problem) = resolved_port.problem() {
+                log::error!("Sessions native connection settings: {problem}");
             }
+            let configured_port = resolved_port.port();
+            // Never run launchd reconciliation on Tauri's setup thread. Until
+            // setup returns WebKit cannot draw even the recovery shell, and a
+            // machine with many retained runners can need minutes to re-adopt
+            // them after a daemon update. Publish a truthful transitional state
+            // first, then reconcile without blocking the viewer.
+            let runtime_status = resolved_port.annotate(lifecycle::startup_status());
+            let reconcile_runtime = lifecycle::needs_background_reconcile(&runtime_status);
+            let owns_local_runtime = runtime_status.state != "client-only";
             app.manage(RuntimeState {
                 status: Mutex::new(runtime_status),
                 port: Mutex::new(configured_port),
@@ -2083,6 +2523,28 @@ pub fn run() {
                 }
             }
 
+            if reconcile_runtime {
+                let worker = app.handle().clone();
+                thread::spawn(move || {
+                    let status = lifecycle::install_for_app(&worker);
+                    if status.state == "error" {
+                        log::error!("Sessions background service: {}", status.detail);
+                    }
+                    if let Ok(mut current) = worker.state::<RuntimeState>().status.lock() {
+                        *current = status;
+                    }
+                    #[cfg(desktop)]
+                    {
+                        let app_for_menu = worker.clone();
+                        let _ = worker.run_on_main_thread(move || {
+                            if let Err(error) = refresh_tray(&app_for_menu) {
+                                log::warn!("refresh tray after runtime reconciliation: {error}");
+                            }
+                        });
+                    }
+                });
+            }
+
             #[cfg(mobile)]
             let _ = owns_local_runtime;
 
@@ -2099,6 +2561,15 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|_app, _event| {
+        // Quitting right after moving a window must still keep that position:
+        // the debounced geometry writer may be mid-sleep. Quitting never ends
+        // the daemon or a runner, so this is the only state worth saving here.
+        #[cfg(desktop)]
+        if matches!(_event, tauri::RunEvent::Exit) {
+            if let Some(store) = _app.try_state::<WindowGeometryStore>() {
+                store.flush();
+            }
+        }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = _event {
             let _ = open_window(_app, main_window_spec());
@@ -2109,10 +2580,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        io::Write as _,
-        net::{TcpListener, TcpStream},
-    };
+    use std::net::{TcpListener, TcpStream};
 
     fn read_test_http_request(stream: &mut TcpStream) -> String {
         stream
@@ -2154,6 +2622,182 @@ mod tests {
             body.len()
         )
         .unwrap();
+    }
+
+    fn unique_test_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn window_geometry_is_debounced_and_replaced_atomically() {
+        let root = env::temp_dir().join(format!(
+            "sessions-window-geometry-test-{}-{}",
+            std::process::id(),
+            unique_test_suffix()
+        ));
+        let path = root.join("window-geometry.json");
+        let store = WindowGeometryStore::load(path.clone());
+        let at = |x: i32| WindowBounds {
+            x,
+            y: 10,
+            width: 1200,
+            height: 800,
+            maximized: false,
+        };
+
+        // One drag. The old code re-serialized the whole map and truncated the
+        // file once per event, with the mutex held for the entire write.
+        for x in 0..300 {
+            store.remember("main".to_string(), at(x));
+        }
+        assert!(
+            !path.exists(),
+            "window geometry was written synchronously during a drag"
+        );
+
+        thread::sleep(WINDOW_GEOMETRY_FLUSH_DELAY + Duration::from_millis(500));
+        let saved: HashMap<String, WindowBounds> =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.get("main"), Some(&at(299)));
+        assert_eq!(store.get("main"), Some(at(299)));
+
+        // Temp-plus-rename must not leave a partial file to be loaded next time.
+        let leftovers: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "window-geometry.json")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "atomic write left files behind: {leftovers:?}"
+        );
+
+        // Quitting or closing right after a move must still keep that position.
+        store.remember("main".to_string(), at(900));
+        store.flush();
+        let saved: HashMap<String, WindowBounds> =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.get("main"), Some(&at(900)));
+
+        thread::sleep(WINDOW_GEOMETRY_FLUSH_DELAY + Duration::from_millis(500));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bundled_cli_input_and_output_stream_together_instead_of_deadlocking() {
+        // The child writes far past a pipe buffer before it reads a byte of
+        // stdin. The old code wrote all of stdin first and only began draining
+        // in wait_with_output afterwards, so a machine registry over ~64 KiB
+        // hung this call and its blocking-pool thread forever.
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'd' >&2; cat >/dev/null; printf '{\"machines\":[]}'",
+        ]);
+        let registry = vec![b'x'; 512 * 1024];
+        let answer = run_json_command(
+            command,
+            "agent machine sync",
+            Some(&registry),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert_eq!(answer.data, serde_json::json!({ "machines": [] }));
+        assert_eq!(answer.detail.len(), 200 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bundled_cli_run_that_outlives_its_budget_is_stopped_and_explained() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 60"]);
+        let started = Instant::now();
+        let error = run_json_command(command, "support", None, Duration::from_secs(1)).unwrap_err();
+        assert!(error.contains("did not finish within 1 seconds"), "{error}");
+        // Rule 4: say what is still true and what to do next.
+        assert!(error.contains("keep running"), "{error}");
+        assert!(error.contains("sessions CLI"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the timeout did not release the caller"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_launch_waits_only_long_enough_to_see_an_immediate_failure() {
+        let detached = |program: &str| {
+            Command::new("/bin/sh")
+                .args(["-c", program])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        };
+
+        // A scheme with no registered handler still has to be reported.
+        let mut refused = detached("exit 3");
+        let status = wait_bounded(&mut refused, Duration::from_secs(10))
+            .unwrap()
+            .expect("an immediate failure was not observed");
+        assert_eq!(status.code(), Some(3));
+
+        // An xdg-open backend that stays in the foreground for the life of the
+        // browser must not hold the caller — the old code called status().
+        let mut lingering = detached("sleep 60");
+        let started = Instant::now();
+        assert!(wait_bounded(&mut lingering, Duration::from_millis(200))
+            .unwrap()
+            .is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "a long-lived URL handler blocked the caller"
+        );
+        let _ = lingering.kill();
+        reap_in_background(lingering);
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn tray_status_polls_the_loopback_address_the_daemon_actually_binds() {
+        // Not "localhost": a resolver that answers ::1 first leaves the tray
+        // permanently stuck on "daemon unreachable".
+        assert_eq!(
+            tray_sessions_url(8787),
+            "http://127.0.0.1:8787/api/sessions"
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_test_http_request(&mut stream);
+            assert!(request.starts_with("GET /api/sessions HTTP/1.1"));
+            write_test_http_json(
+                &mut stream,
+                "200 OK",
+                r#"{"sessions":[{"working":true,"exited":false,"exitCode":null,"idleReason":null,"lastUserMessageAt":null}]}"#,
+            );
+        });
+
+        let client = tray_http_client().expect("tray client must build");
+        let snapshot = fetch_tray_snapshot(&client, port);
+        assert_eq!(snapshot.working, 1);
+        assert!(snapshot.reachable);
+        server.join().unwrap();
+
+        // A daemon that is not there reads as unreachable, not as idle.
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_port = closed.local_addr().unwrap().port();
+        drop(closed);
+        assert!(!fetch_tray_snapshot(&client, closed_port).reachable);
     }
 
     #[test]
@@ -2237,6 +2881,33 @@ mod tests {
             let parsed = url::Url::parse(url).unwrap();
             assert_eq!(parsed.scheme(), "https");
             assert_eq!(parsed.host_str(), Some("github.com"));
+        }
+    }
+
+    #[test]
+    fn external_links_allow_only_explicit_non_executable_schemes() {
+        for valid in [
+            "https://somewhere.tech/sessions",
+            "http://127.0.0.1:8787/docs",
+            "mailto:support@somewhere.tech",
+            "vscode://file/Users/test/project/main.go:12",
+        ] {
+            assert!(
+                validate_external_url(valid).is_ok(),
+                "external URL was rejected: {valid}"
+            );
+        }
+        for invalid in [
+            "javascript:alert(1)",
+            "data:text/html,hello",
+            "file:///Users/test/.ssh/id_ed25519",
+            "https://example.com/\nnext",
+            "relative/path",
+        ] {
+            assert!(
+                validate_external_url(invalid).is_err(),
+                "unsafe URL was accepted: {invalid}"
+            );
         }
     }
 

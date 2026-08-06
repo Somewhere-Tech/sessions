@@ -89,10 +89,23 @@ func TestWindowsScratchDaemonTokenContract(t *testing.T) {
 		!strings.Contains(stderr, "only if you intend to rotate master-token access") {
 		t.Fatalf("sessions token with corrupt protected state: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 	}
+	// The forwarded request is deliberately not a local one: it carries
+	// X-Forwarded-For, so it reaches the daemon the way a proxied or LAN peer
+	// would. Such a peer learns that the token could not be read and nothing
+	// else. It used to receive the unlock guidance, which names the token
+	// file's absolute path and therefore the state directory and the Windows
+	// account that owns it -- an unauthenticated peer could enumerate all of
+	// that from a failure. The actionable message still exists for the person
+	// who can act on it: assertWindowsTokenContractLocalCLI above requires the
+	// local CLI to print it.
 	status, body = windowsTokenContractForwardedRequest(t, baseURL, windowsScratchDaemonToken)
 	if status != http.StatusInternalServerError ||
-		!strings.Contains(body, "only if you intend to rotate master-token access") {
+		!strings.Contains(body, "could not read this machine's auth token") {
 		t.Fatalf("master-token request with corrupt protected state: status=%d body=%s", status, body)
+	}
+	if strings.Contains(body, "only if you intend to rotate master-token access") ||
+		strings.Contains(body, tokenPath) {
+		t.Fatalf("a forwarded peer was told where the token lives: body=%s", body)
 	}
 	after, err := os.ReadFile(tokenPath)
 	if err != nil {

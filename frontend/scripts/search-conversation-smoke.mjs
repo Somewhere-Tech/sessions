@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
+import { closeBrowser } from './lib/smoke.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const [searchView, searchAPI, app, styles] = await Promise.all([
@@ -21,14 +22,19 @@ assert.match(searchView, /via Sessions/);
 assert.doesNotMatch(searchView, /Your request/);
 assert.doesNotMatch(searchView, /\['ai', 'ranked', 'exact', 'regex'\]/);
 assert.doesNotMatch(searchView, /Enter a Go regular expression/);
-assert.match(searchView, /Continue conversation/);
+assert.match(searchView, /Resume conversation/);
 assert.match(searchView, /next === 'full'\) window = undefined/);
 assert.match(searchView, /Jump to latest ↓/);
 assert.match(searchView, /search-transcript-latest/);
 assert.match(searchAPI, /provider_session_id\?: string/);
 assert.match(app, /<SearchView[\s\S]*onResumeConversation=/);
-assert.match(app, /adoptConversation\(providerSessionId, sourceSessionId, historyId\)/);
-assert.match(app, /preferNextSessionView\(result\.laneId, 'terminal'\)/);
+// Continuing from Search goes through the shared adopt-then-repair helper —
+// the same one ResumeDialog uses — so both entry points give the user the
+// same answer about whether the history annotations finished.
+assert.match(app, /adoptConversationWithRepair\(providerSessionId, sourceSessionId, historyId\)/);
+assert.match(app, /setAdoptionNotice\(adoptionWarning\(adopted\)\)/);
+assert.doesNotMatch(app, /console\.warn\('Sessions resumed the conversation/);
+assert.match(app, /result\.transcriptRecovery[\s\S]*\? 'remote'[\s\S]*: 'terminal'/);
 assert.doesNotMatch(app, /onResumeConversation=\{\(serverId,[\s\S]{0,240}setDialogOpen/);
 
 const scratch = await mkdtemp(join(tmpdir(), 'sessions-search-smoke-'));
@@ -158,7 +164,7 @@ try {
                 <span class="search-conversation-matches">
                   <button class="search-conversation-match"><span>You said</span><span class="search-snippet">A long matching message that should remain inside the available conversation card width.</span></button>
                 </span>
-                <span class="search-result-footer"><span class="search-result-location">Mac mini · ~/somewhere/tech</span><span class="search-result-actions"><button>Open conversation →</button><button class="is-resume">Continue conversation</button></span></span>
+                <span class="search-result-footer"><span class="search-result-location">Mac mini · ~/somewhere/tech</span><span class="search-result-actions"><button>Open conversation →</button><button class="is-resume">Resume conversation</button></span></span>
               </span>
             </article>
           </section>
@@ -181,7 +187,7 @@ try {
             <button class="search-back">← Back to results</button>
             <header class="search-conversation-heading">
               <div><h1>Lakebuild</h1><p>Mac mini</p></div>
-              <div class="search-conversation-actions"><button class="btn">Continue conversation</button></div>
+              <div class="search-conversation-actions"><button class="btn">Resume conversation</button></div>
             </header>
             <div class="search-reader-toolbar"><span>Full transcript</span><span class="search-reader-position"><span>1635 messages</span><button>Jump to latest ↓</button></span></div>
           </div>
@@ -211,7 +217,10 @@ try {
     assert.ok(readerGeometry.transcriptBottom <= readerGeometry.viewportHeight, 'reader should keep its transcript inside the window');
     assert.ok(readerGeometry.chromeTop >= 0, 'reader controls should remain inside the visible window');
   } finally {
-    await browser.close();
+    // Bounded: `browser.close()` waits on the browser's own shutdown, and a
+    // wedged Chromium on a loaded machine turns a finished suite into a hang with
+    // no assertion to report. Fail, never wait.
+    await closeBrowser(browser);
   }
 } finally {
   await rm(scratch, { recursive: true, force: true });

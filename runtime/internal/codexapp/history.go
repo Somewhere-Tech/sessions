@@ -37,6 +37,20 @@ func ImportedHistoryEvent(conversationID, role, text, sourceHistoryID string, at
 	})
 }
 
+// InputRejectedEvent makes steering semantics explicit when a structured
+// Codex turn is already active. Sessions never hides a prompt queue behind
+// the composer, and it never drops composed text without saying so; the user
+// must send again after the current turn finishes. The shape mirrors
+// claudep.InputRejectedEvent so both structured providers report a refused
+// message the same way.
+func InputRejectedEvent(conversationID, message string, at time.Time) (json.RawMessage, error) {
+	return marshalHistory(map[string]any{
+		"type": "system", "subtype": "input_rejected", "source": HistorySource,
+		"timestamp": historyTimestamp(at), "conversationId": conversationID,
+		"error": message,
+	})
+}
+
 // HistoryEvent preserves every structured app-server notification while
 // projecting completed assistant items into the existing message shape.
 func HistoryEvent(event Event, at time.Time) (json.RawMessage, error) {

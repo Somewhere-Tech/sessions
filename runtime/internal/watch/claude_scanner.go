@@ -19,18 +19,25 @@ const (
 // ResumableSession is the exact metadata shape returned by the TypeScript
 // /api/claude-sessions route.
 type ResumableSession struct {
-	SessionID         string         `json:"sessionId"`
-	Tool              string         `json:"tool"`
-	Origin            string         `json:"origin,omitempty"`
-	Title             string         `json:"title,omitempty"`
-	HistoryID         string         `json:"historyId,omitempty"`
-	PromptHistoryOnly bool           `json:"promptHistoryOnly,omitempty"`
-	Runs              []ResumableRun `json:"runs,omitempty"`
-	Cwd               string         `json:"cwd"`
-	ModifiedAt        float64        `json:"modifiedAt"`
-	FirstUserMessage  string         `json:"firstUserMessage"`
-	SizeBytes         int64          `json:"sizeBytes"`
-	SourcePath        string         `json:"-"`
+	SessionID          string         `json:"sessionId"`
+	Tool               string         `json:"tool"`
+	External           bool           `json:"external,omitempty"`
+	Origin             string         `json:"origin,omitempty"`
+	Title              string         `json:"title,omitempty"`
+	HistoryID          string         `json:"historyId,omitempty"`
+	PromptHistoryOnly  bool           `json:"promptHistoryOnly,omitempty"`
+	TranscriptRecovery bool           `json:"transcriptRecovery,omitempty"`
+	Runs               []ResumableRun `json:"runs,omitempty"`
+	Cwd                string         `json:"cwd"`
+	ModifiedAt         float64        `json:"modifiedAt"`
+	FirstUserMessage   string         `json:"firstUserMessage"`
+	SizeBytes          int64          `json:"sizeBytes"`
+	SourcePath         string         `json:"-"`
+
+	// Surface is where the conversation was started from, read from the same
+	// provider metadata this scan already parses. Nil means the provider
+	// recorded nothing, which a caller must not render as a blank surface.
+	Surface *ConversationSurface `json:"surface,omitempty"`
 }
 
 type ResumableRun struct {
@@ -85,7 +92,7 @@ func scanResumableClaudeSessions(projectsDir string) []ResumableSession {
 		if err != nil {
 			continue
 		}
-		cwd := decodeClaudeProjectName(project.Name())
+		cwd := claudeProjectDirCWD(projectDir)
 		for _, file := range files {
 			if !strings.HasSuffix(file.Name(), ".jsonl") {
 				continue
@@ -115,20 +122,32 @@ func scanResumableClaudeSessions(projectsDir string) []ResumableSession {
 				if err != nil {
 					return
 				}
-				results[index] = resumableResult{
-					ok: true,
-					session: ResumableSession{
-						SessionID:        task.sessionID,
-						Tool:             "claude",
-						Origin:           "Claude Code",
-						Title:            claudeConversationTitle(task.path),
-						Cwd:              task.cwd,
-						ModifiedAt:       float64(info.ModTime().UnixNano()) / 1_000_000,
-						FirstUserMessage: firstUserMessageOf(task.path),
-						SizeBytes:        info.Size(),
-						SourcePath:       task.path,
-					},
+				session := ResumableSession{
+					SessionID:        task.sessionID,
+					Tool:             "claude",
+					Origin:           "Claude Code",
+					Title:            claudeConversationTitle(task.path),
+					Cwd:              task.cwd,
+					ModifiedAt:       float64(info.ModTime().UnixNano()) / 1_000_000,
+					FirstUserMessage: firstUserMessageOf(task.path),
+					SizeBytes:        info.Size(),
+					SourcePath:       task.path,
 				}
+				// One bounded probe answers both questions: which directory this
+				// conversation actually ran in, and which surface started it.
+				// What the transcript recorded about itself outranks anything
+				// derivable from the directory name.
+				if facts, ok := probeClaudeTranscript(task.path); ok {
+					if facts.CWD != "" {
+						session.Cwd = facts.CWD
+					}
+					if surface := ClaudeSurface(
+						facts.Entrypoint, facts.PromptSource, facts.Version, facts.Sidechain,
+					); surface.Known() {
+						session.Surface = &surface
+					}
+				}
+				results[index] = resumableResult{ok: true, session: session}
 			}(i, task)
 		}
 		for range results {
@@ -145,6 +164,36 @@ func scanResumableClaudeSessions(projectsDir string) []ResumableSession {
 		return out[i].ModifiedAt > out[j].ModifiedAt
 	})
 	return out
+}
+
+// claudeProjectDirCWD is the bucket-level fallback for a conversation whose own
+// records carried no working directory.
+//
+// The project-directory name is a lossy encoding -- Claude folds every
+// non-alphanumeric byte to a dash, so /Users/u/a-b, /Users/u/a/b, /Users/u/a.b
+// and /Users/u/a_b all land in -Users-u-a-b -- and inverting it is a guess.
+// Presenting that guess as the conversation's directory is worse than printing
+// nothing: the directory column is the one a person uses to recognise which
+// conversation is theirs, and this scanner was printing /Users/uzair/pretty/PTY
+// for conversations that ran in /Users/uzair/pretty-PTY. A path that does not
+// exist tells the reader nothing and costs them their trust in the column.
+//
+// So: the inversion is accepted only when it names a directory that actually
+// exists, which is what separates a plausible reading from a fabricated one.
+// Otherwise the answer is nothing at all. This is the rule recovery/adopt.go
+// already holds itself to for the same encoding and the same reason.
+//
+// The per-conversation caller does better still -- a transcript that recorded
+// its own cwd is read directly, and this is only consulted when none did.
+func claudeProjectDirCWD(projectDir string) string {
+	decoded := decodeClaudeProjectName(filepath.Base(projectDir))
+	if decoded == "" {
+		return ""
+	}
+	if info, err := os.Stat(decoded); err != nil || !info.IsDir() {
+		return ""
+	}
+	return decoded
 }
 
 func decodeClaudeProjectName(encoded string) string {
@@ -234,13 +283,18 @@ func resumableCodexConversation(path string, modified time.Time) (ResumableSessi
 			if json.Unmarshal(line, &decoded) == nil {
 				if decoded["type"] == "session_meta" && session.SessionID == "" {
 					if payload, ok := decoded["payload"].(map[string]any); ok {
-						session.SessionID, _ = payload["id"].(string)
+						session.SessionID = CodexSessionMetaID(payload)
 						session.Cwd, _ = payload["cwd"].(string)
 						if originator, ok := payload["originator"].(string); ok && strings.TrimSpace(originator) != "" {
 							session.Origin = originator
 						}
-						if codexSubagentSource(payload) {
+						if _, subagent := CodexSubagentParent(payload); subagent {
 							session.Origin = "Codex child agent"
+						}
+						// Same payload, no second read: provenance comes out of
+						// the session_meta line already decoded above.
+						if surface := CodexSurface(payload); surface.Known() {
+							session.Surface = &surface
 						}
 					}
 				}
@@ -321,15 +375,6 @@ func claudeConversationTitle(path string) string {
 	return aiTitle
 }
 
-func codexSubagentSource(payload map[string]any) bool {
-	source, ok := payload["source"].(map[string]any)
-	if !ok {
-		return false
-	}
-	_, ok = source["subagent"].(map[string]any)
-	return ok
-}
-
 func normalizedMessageText(message map[string]any) string {
 	blocks, _ := message["content"].([]any)
 	parts := make([]string, 0, len(blocks))
@@ -338,11 +383,27 @@ func normalizedMessageText(message map[string]any) string {
 		if !ok || block["type"] != "text" {
 			continue
 		}
-		if text, ok := block["text"].(string); ok && strings.TrimSpace(text) != "" {
+		if text, ok := block["text"].(string); ok && strings.TrimSpace(text) != "" && !isCodexInjectedUserText(text) {
 			parts = append(parts, strings.TrimSpace(text))
 		}
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func isCodexInjectedUserText(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	for _, prefix := range []string{
+		"<recommended_plugins>", "# AGENTS.md instructions", "<environment_context>",
+		"<permissions instructions>", "<app-context>", "<apps_instructions>",
+		"<plugins_instructions>", "<skills_instructions>", "<collaboration_mode>",
+		"<system-reminder>", "<local-command-", "<command-name>",
+		"<command-message>", "<command-args>",
+	} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstUserMessageOf(path string) string {

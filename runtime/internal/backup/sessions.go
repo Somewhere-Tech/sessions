@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
@@ -42,7 +43,11 @@ type Session struct {
 type Resolver struct {
 	ClaudeProjectsDir string
 	CodexSessionsDir  string
-	Now               func() time.Time
+	// RunnerStateDir locates Sessions' own transcript copies. The provider
+	// prunes its transcripts on its own schedule, so when the original is
+	// gone the mirror is the conversation. Empty disables the fallback.
+	RunnerStateDir string
+	Now            func() time.Time
 }
 
 func CollectSessions(live []state.SessionInfo, runnerStateDir string) []Session {
@@ -72,10 +77,17 @@ func CollectSessions(live []state.SessionInfo, runnerStateDir string) []Session 
 	entries, _ := os.ReadDir(runnerStateDir)
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".manifest.json") {
+		if entry.IsDir() {
 			continue
 		}
-		id := strings.TrimSuffix(name, ".json")
+		// Sidecar names are decided in one place, with a drift-guard test that
+		// fails when a new Paths field adds a ".json" artifact. A local copy of
+		// that rule would silently start collecting phantom sessions the next
+		// time one is added.
+		id, ok := state.RunnerIDFromMetadataName(name)
+		if !ok {
+			continue
+		}
 		if _, exists := collected[id]; exists {
 			continue
 		}
@@ -126,7 +138,13 @@ func (r Resolver) Resolve(session Session) (path, tool string) {
 		if launchID == "" {
 			launchID = session.ID
 		}
-		resolution := watch.ResolveClaudeCWD(projects, session.CWD, launchID)
+		// The provider file wins whenever it resolves, so a session always
+		// has exactly one transcript and nothing is counted twice.
+		mirror := ""
+		if r.RunnerStateDir != "" {
+			mirror = watch.TranscriptMirrorPath(r.RunnerStateDir, session.ID)
+		}
+		resolution := watch.ResolveClaudeWithMirror(projects, session.CWD, launchID, mirror)
 		return resolution.Path, "claude"
 	case "codex":
 		now := time.Now()
@@ -195,16 +213,8 @@ func normalizedTool(tool state.SessionTool, command string) string {
 	}
 }
 
+// extractClaudeSessionID used to read only the two long flags, so a session
+// started with `claude -r <uuid>` was backed up with no conversation identity.
 func extractClaudeSessionID(args []string) string {
-	for index, argument := range args {
-		for _, flag := range []string{"--session-id", "--resume"} {
-			if argument == flag && index+1 < len(args) {
-				return args[index+1]
-			}
-			if strings.HasPrefix(argument, flag+"=") {
-				return strings.TrimPrefix(argument, flag+"=")
-			}
-		}
-	}
-	return ""
+	return providerargs.ClaudeSessionID(args)
 }

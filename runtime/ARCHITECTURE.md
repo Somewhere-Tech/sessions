@@ -10,7 +10,7 @@ the runtime independent of npm, install scripts, and node-gyp.
 2. **Interop remains proven:** Go runners are attachable by the TypeScript daemon and vice versa — same `~/.local/state/sessions/` layout (`{id}.sock/.json/.events/.log`), frame protocol, and `tech.somewhere.sessions.runner.<id>` plists.
 3. **Pure Go, CGO_ENABLED=0.** creack/pty for PTYs, coder/websocket for WS, modernc.org/sqlite (NOT mattn — no cgo) for the ledger. A cross-compilable static binary is the whole point.
 4. **The lane ledger is built-in from day one** (board tsk_64772bd2): write-ahead `created` before launch, tombstone before kill, `sessions recover --reopen`.
-5. Dumb pipe: zero LLM calls, observation never interpretation. Sessions are sacred: no code path may mass-remove runners without an explicit forced flag (the mass-kill guard is IN the design here).
+5. Dumb pipe: zero LLM calls, observation never interpretation. Sessions are sacred: no code path may mass-remove runners without an explicit forced flag. The mass-kill guard that enforces this is a deliberate compensation, not an invariant -- liveness is inferred from a socket, a pid and a command match, none of them authoritative, so the guard caps the blast radius of a wrong inference. It goes when discovery stops deleting on inference (AGENTS.md rule 10).
 
 ## Module layout
 module github.com/somewhere-tech/sessions/runtime

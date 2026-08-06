@@ -144,6 +144,47 @@ func TestSearchSubstringFiltersAndCenteredSnippet(t *testing.T) {
 	}
 }
 
+// The limit is the case that regressed: an early return at the limit used to
+// skip the timeline sort, so --timeline was chronological only for result sets
+// smaller than -n.
+func TestSearchTimelineOrdersMatchesWhenTheLimitIsReached(t *testing.T) {
+	newest := "2026-07-17T13:00:00Z"
+	middle := "2026-07-17T12:00:00Z"
+	oldest := "2026-07-17T11:00:00Z"
+	// Sessions arrive in recent-activity order, so discovery order is the
+	// reverse of conversation time.
+	recent := integrations.HistorySession{ID: "recent", Name: "recent", Tool: "codex", ConversationAvailable: true}
+	older := integrations.HistorySession{ID: "older", Name: "older", Tool: "codex", ConversationAvailable: true}
+	fixture := &fakeHistory{
+		sessions: []integrations.HistorySession{recent, older},
+		transcript: map[string]integrations.TranscriptResponse{
+			recent.ID: {Messages: []integrations.TranscriptMessage{
+				{Role: "user", Timestamp: &newest, Text: "needle newest"},
+				{Role: "user", Timestamp: &middle, Text: "needle middle"},
+			}},
+			older.ID: {Messages: []integrations.TranscriptMessage{
+				{Role: "user", Timestamp: &oldest, Text: "needle oldest"},
+			}},
+		},
+	}
+	for _, options := range []Options{
+		{Query: "needle", Timeline: true, Limit: 2},
+		{Query: "needle", Timeline: true, Limit: 2, Regex: true},
+	} {
+		result, err := Run(context.Background(), fixture, nil, options, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Total != 2 || len(result.Matches) != 2 {
+			t.Fatalf("options %#v result = %#v", options, result)
+		}
+		if *result.Matches[0].Timestamp != middle || *result.Matches[1].Timestamp != newest {
+			t.Fatalf("options %#v timeline order = %q then %q, want oldest first",
+				options, *result.Matches[0].Timestamp, *result.Matches[1].Timestamp)
+		}
+	}
+}
+
 func TestSearchLimitValidationAndEmptyShape(t *testing.T) {
 	result, err := Run(context.Background(), searchFixture(), nil, Options{Query: "needle", Limit: 2}, "")
 	if err != nil || result.Total != 2 || len(result.Matches) != 2 {

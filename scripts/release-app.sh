@@ -50,12 +50,39 @@ fi
 CONFIG_VERSION="$(node -p "require('$ROOT/src-tauri/tauri.conf.json').version")"
 FRONTEND_VERSION="$(node -p "require('$ROOT/frontend/package.json').version")"
 CARGO_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/src-tauri/Cargo.toml" | head -1)"
-for pair in "tauri.conf.json:$CONFIG_VERSION" "frontend/package.json:$FRONTEND_VERSION" "Cargo.toml:$CARGO_VERSION"; do
+ROOT_PACKAGE_VERSION="$(node -p "require('$ROOT/package.json').version")"
+for pair in "tauri.conf.json:$CONFIG_VERSION" "frontend/package.json:$FRONTEND_VERSION" \
+            "Cargo.toml:$CARGO_VERSION" "package.json:$ROOT_PACKAGE_VERSION"; do
   if [[ "${pair#*:}" != "$VERSION" ]]; then
     echo "error: ${pair%%:*} is ${pair#*:}, expected $VERSION" >&2
     exit 1
   fi
 done
+
+# The Go binaries report their version through -ldflags at build time, but the
+# in-source defaults are what a `go build ./...` developer runs and what shows
+# up in bug reports, so they must not drift either.
+while IFS= read -r go_version_file; do
+  go_version="$(sed -n 's/^var version = "\([^"]*\)"/\1/p' "$go_version_file" | head -1)"
+  if [[ -n "$go_version" && "$go_version" != "$VERSION" ]]; then
+    echo "error: ${go_version_file#$ROOT/} declares version $go_version, expected $VERSION" >&2
+    exit 1
+  fi
+done < <(grep -rl '^var version = "' "$ROOT/runtime/cmd" --include='*.go')
+
+# Release notes must exist before the tag is published, not after.
+if [[ ! -f "$ROOT/release/notes-v${VERSION}.md" ]]; then
+  echo "error: release/notes-v${VERSION}.md is missing; write the notes before releasing" >&2
+  exit 1
+fi
+
+# The download links users actually click live in site/. A release that leaves
+# them pointing at an older build ships a working app nobody can find.
+if ! grep -q "v${VERSION}/" "$ROOT/site/index.html"; then
+  echo "error: site/index.html does not link to v${VERSION}; update the download links" >&2
+  echo "       (this is the check that would have caught the site sitting on an older release)" >&2
+  exit 1
+fi
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
   echo "error: the current release lane produces notarized darwin-aarch64 artifacts" >&2
@@ -85,8 +112,17 @@ if ((DRY_RUN)); then
   exit 0
 fi
 
-if ! git -C "$ROOT" diff --quiet || ! git -C "$ROOT" diff --cached --quiet; then
-  echo "error: release builds require a clean reviewed worktree" >&2
+# One definition of "clean worktree" for the whole release path. `git diff` is
+# blind to untracked files, but the bundle is built from the working tree: an
+# untracked file under frontend/public/ is copied into frontend/dist and ends up
+# inside the notarized app while a diff-only gate reports the tree as reviewed.
+# scripts/build-app-runtime.sh already uses this strict definition to decide
+# whether to stamp the build "-dirty"; the release gate must not be weaker than
+# the label, or a build labelled clean could contain unreviewed files.
+release_tree_state="$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)"
+if [[ -n "$release_tree_state" ]]; then
+  echo "error: release builds require a clean reviewed worktree (tracked and untracked)" >&2
+  printf '%s\n' "$release_tree_state" >&2
   exit 1
 fi
 
@@ -126,9 +162,53 @@ export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
 npm --prefix "$ROOT" exec tauri build -- --bundles app
 
 codesign --verify --deep --strict --verbose=2 "$APP"
+
+# The nested Go binaries must each be verified individually. This used to read
+# from `< <(find …)`: a process substitution's exit status is invisible to
+# `set -euo pipefail`, so if the resource path ever moved, `find` failed, the
+# loop body ran ZERO times, and a notarized .app shipped whose embedded binaries
+# were never verified — while every line below still reported success.
+# Collect the list into a variable first (a failing command substitution DOES
+# abort under `set -e`), then assert the verified set is exactly the set that
+# scripts/build-app-runtime.sh installs into src-tauri/runtime, which
+# tauri.conf.json maps to Contents/Resources/runtime.
+RUNTIME_RESOURCES="$APP/Contents/Resources/runtime"
+EXPECTED_RUNTIME_BINARIES=(sessions sessionsd sessions-runner)
+if [[ ! -d "$RUNTIME_RESOURCES" ]]; then
+  echo "error: bundled runtime resources are missing at $RUNTIME_RESOURCES" >&2
+  echo "       the app cannot be released without its embedded Go binaries" >&2
+  exit 1
+fi
+runtime_binary_list="$(find "$RUNTIME_RESOURCES" -type f -perm -111 -print | sort)"
+if [[ -z "$runtime_binary_list" ]]; then
+  echo "error: found no executable runtime binaries under $RUNTIME_RESOURCES" >&2
+  exit 1
+fi
+verified_count=0
+verified_names=""
 while IFS= read -r binary; do
+  [[ -n "$binary" ]] || continue
   codesign --verify --strict --verbose=2 "$binary"
-done < <(find "$APP/Contents/Resources/runtime" -type f -perm -111 -print | sort)
+  verified_names+="${binary##*/}"$'\n'
+  verified_count=$((verified_count + 1))
+done <<<"$runtime_binary_list"
+
+expected_names="$(printf '%s\n' "${EXPECTED_RUNTIME_BINARIES[@]}" | sort)"
+actual_names="$(printf '%s' "$verified_names" | sort)"
+if [[ "$actual_names" != "$expected_names" ]]; then
+  echo "error: bundled runtime binaries do not match the expected set" >&2
+  echo "expected:" >&2
+  printf '  %s\n' "${EXPECTED_RUNTIME_BINARIES[@]}" >&2
+  echo "verified:" >&2
+  printf '%s' "$verified_names" | sed 's/^/  /' >&2
+  exit 1
+fi
+if ((verified_count != ${#EXPECTED_RUNTIME_BINARIES[@]})); then
+  echo "error: verified $verified_count nested binaries, expected ${#EXPECTED_RUNTIME_BINARIES[@]}" >&2
+  exit 1
+fi
+printf 'verified %d nested runtime binaries individually\n' "$verified_count"
+
 xcrun stapler validate "$APP"
 spctl --assess --type execute --verbose=4 "$APP"
 

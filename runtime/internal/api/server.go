@@ -43,6 +43,7 @@ const (
 	apiProtocolVersion   = 1
 	minimumAPIClient     = 1
 	maximumAPIClient     = apiProtocolVersion
+	submitSettleDelay    = 150 * time.Millisecond
 )
 
 // Version is stamped into sessionsd at build time and reported by both health
@@ -65,6 +66,7 @@ type Server struct {
 	smartSearch          *smartsearch.Service
 	identity             machineIdentity
 	identityError        error
+	submits              *sessionMutexes
 }
 
 type authPrincipal struct {
@@ -143,6 +145,7 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 		config: config, registry: registry, push: notifications, tokens: tokenStore{path: config.TokenPath},
 		pair:          newPairService(config),
 		tailnetAccess: newTailnetAccessService(),
+		submits:       newSessionMutexes(),
 		identity:      identity, identityError: identityErr,
 		integrationEndpoints: integrations.NewService(integrations.ServiceOptions{
 			StateDir: config.StateRoot, RunnerStateDir: config.RunnerStateDir,
@@ -208,10 +211,22 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/health" && request.Method == http.MethodGet {
+		// /api/health stays unauthenticated on purpose: native discovery,
+		// `sessions machines discover`, the updater, and the frontend's
+		// bootstrapCurrentOriginServer all depend on it, the last on the
+		// 200-vs-401 distinction. The selected private IPv4 and port are a
+		// different matter — they map the user's network for anyone who can
+		// reach the port — so that one field is redacted unless the caller
+		// has already proved it belongs here. `lan.enabled` stays visible so
+		// probes can still tell whether the listener is up.
+		lanState := s.lan.state()
+		if !s.mayReadLANEndpoint(request) {
+			lanState.URL = nil
+		}
 		s.sendJSON(response, http.StatusOK, map[string]any{
 			"ok": true, "name": "sessionsd", "version": Version,
 			"listen": map[string]any{"host": s.config.Host, "port": s.config.Port},
-			"lan":    s.lan.state(),
+			"lan":    lanState,
 			"access": map[string]any{"open": s.openAccessEnabled()},
 			"system": map[string]any{"os": goruntime.GOOS, "arch": goruntime.GOARCH},
 			"compatibility": map[string]any{
@@ -227,6 +242,43 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		}, corsOrigin)
 		return
 	}
+	if s.handlePairClaimRoute(response, request, corsOrigin) {
+		return
+	}
+	if s.handleTailnetAccessPublicRoute(response, request, corsOrigin) {
+		return
+	}
+	if s.handleNearbyAccessPublicRoute(response, request, corsOrigin) {
+		return
+	}
+
+	principal, authorized, err := s.authorized(request)
+	if err != nil {
+		// This runs before the caller has proved anything, and the detail is
+		// usually an os.PathError naming the token file — an absolute path
+		// that spells out the state directory and the user's account name.
+		// The operator gets the whole error in the daemon log and over
+		// loopback; an unauthenticated peer gets the next action and nothing
+		// to enumerate.
+		log.Printf("sessionsd: authorization check failed for %s %s: %v", request.Method, path, err)
+		detail := "Sessions could not read this machine's auth token, so no request can be authorized. Check the sessionsd log, then restart the daemon."
+		if isLoopbackPeer(request) {
+			detail = err.Error()
+		}
+		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": detail}, corsOrigin)
+		return
+	}
+	if !authorized {
+		s.sendJSON(response, http.StatusUnauthorized, map[string]any{"error": "unauthorized"}, corsOrigin)
+		return
+	}
+	request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, principal))
+	// Deep health is dispatched after authorization, unlike plain /api/health.
+	// It reports live session UUIDs and host PIDs, so an unauthenticated peer
+	// on the LAN listener or the Tailscale Serve frontend could otherwise
+	// enumerate the user's running work. Its first-party caller is
+	// `sessions doctor`, which reaches the daemon over loopback (or with a
+	// per-device token when targeting another machine).
 	if path == "/api/health/deep" && request.Method == http.MethodGet {
 		s.sendJSON(response, http.StatusOK, map[string]any{
 			"ok": true, "name": "sessionsd", "version": Version,
@@ -246,32 +298,37 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		}, corsOrigin)
 		return
 	}
-	if s.handlePairClaimRoute(response, request, corsOrigin) {
+	if path == "/api/machine" && request.Method == http.MethodGet {
+		if s.identityError != nil || s.identity.ID == "" {
+			detail := "machine identity is unavailable"
+			if s.identityError != nil {
+				detail = s.identityError.Error()
+			}
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": detail}, corsOrigin)
+			return
+		}
+		name, err := os.Hostname()
+		name = truncateMachineName(name)
+		if err != nil || name == "" {
+			name = s.identity.Name
+		}
+		s.sendJSON(response, http.StatusOK, map[string]any{
+			"machine_id": s.identity.ID,
+			"name":       name,
+		}, corsOrigin)
 		return
 	}
-	if s.handleTailnetAccessPublicRoute(response, request, corsOrigin) {
-		return
-	}
-	if s.handleNearbyAccessPublicRoute(response, request, corsOrigin) {
-		return
-	}
-
-	principal, authorized, err := s.authorized(request)
-	if err != nil {
-		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
-		return
-	}
-	if !authorized {
-		s.sendJSON(response, http.StatusUnauthorized, map[string]any{"error": "unauthorized"}, corsOrigin)
-		return
-	}
-	request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, principal))
 	if path == "/ws" {
 		if !allowedOrigin(origin, s.config.Host, s.lan.activeHost()) {
 			s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
 			return
 		}
-		s.serveWebSocket(response, request)
+		writes, err := s.websocketWritesAllowed(request)
+		if err != nil {
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
+			return
+		}
+		s.serveWebSocket(response, request, writes)
 		return
 	}
 	if s.handleLANRoute(response, request, corsOrigin) {
@@ -437,7 +494,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/directories" && request.Method == http.MethodGet {
-		s.sendJSON(response, http.StatusOK, map[string]any{"directories": listDirectoryCandidates()}, corsOrigin)
+		s.sendJSON(response, http.StatusOK, map[string]any{"directories": listDirectoryCandidates(s.registry.List(true))}, corsOrigin)
 		return
 	}
 	if path == "/api/fs/list" && request.Method == http.MethodGet {
@@ -484,12 +541,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/resumable-conversations" && request.Method == http.MethodGet {
-		sessions, err := s.resumableConversations()
-		if err != nil {
-			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
-			return
-		}
-		s.sendJSON(response, http.StatusOK, map[string]any{"sessions": sessions}, corsOrigin)
+		s.sendJSON(response, http.StatusOK, s.resumableConversations(), corsOrigin)
 		return
 	}
 
@@ -558,6 +610,23 @@ func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) 
 	return authPrincipal{
 		Kind: ledger.CreatorExternal, ID: "device:" + device.DeviceID, Name: device.Name,
 	}, true, nil
+}
+
+// mayReadLANEndpoint decides whether a caller of the unauthenticated
+// /api/health may see the LAN listener's address. A peer that presents no
+// credential at all is never charged the cost of a full authorization check,
+// so a flood of anonymous probes cannot make the daemon read the token file or
+// touch the device store.
+func (s *Server) mayReadLANEndpoint(request *http.Request) bool {
+	if isLoopbackPeer(request) {
+		return true
+	}
+	if strings.TrimSpace(request.Header.Get("Authorization")) == "" &&
+		strings.TrimSpace(request.URL.Query().Get("token")) == "" {
+		return false
+	}
+	_, authorized, err := s.authorized(request)
+	return err == nil && authorized
 }
 
 func (s *Server) openAccessEnabled() bool {
@@ -729,7 +798,14 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 	if suffix == "/tags" && request.Method == http.MethodGet {
 		tags, err := s.registry.Tags(id)
 		if err != nil {
-			s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "unknown session", "id": id}, corsOrigin)
+			// The PUT on this same path already distinguishes "no such session"
+			// from "this machine could not read it". The GET reported both as
+			// 404, so a caller retried forever against a lane that exists.
+			if errors.Is(err, state.ErrSessionNotFound) || errors.Is(err, os.ErrNotExist) {
+				s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "unknown session", "id": id}, corsOrigin)
+				return
+			}
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error(), "id": id}, corsOrigin)
 			return
 		}
 		s.sendJSON(response, http.StatusOK, map[string]any{"tags": tags}, corsOrigin)
@@ -794,15 +870,21 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		if cols < 0 {
 			cols = 0
 		}
-		text, seq, err := session.Snapshot(request.Context(), cols)
+		var text string
+		var seq uint32
+		var err error
+		if request.URL.Query().Get("scrollback") == "1" && cols == 0 {
+			text, seq, err = session.TerminalSnapshot(request.Context())
+		} else {
+			text, seq, err = session.Snapshot(request.Context(), cols)
+		}
 		if err != nil {
 			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
 			return
 		}
 		response.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		response.Header().Set("Vary", "Origin")
+		setCORSHeaders(response, corsOrigin)
 		if corsOrigin != "" {
-			response.Header().Set("Access-Control-Allow-Origin", corsOrigin)
 			response.Header().Set("Access-Control-Expose-Headers", "X-Sessions-Seq")
 		}
 		response.Header().Set("X-Sessions-Seq", strconv.FormatUint(uint64(seq), 10))
@@ -818,25 +900,10 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		since := queryIndex(request.URL.Query(), "since")
 		tail := queryIndex(request.URL.Query(), "tail")
 		before := queryIndex(request.URL.Query(), "before")
-		window := session.EventsWindow(since, tail, before)
-		events := window.Events
-		full := session.EventsWindow(nil, nil, nil)
-		if annotated, err := s.annotateRawEvents(request.Context(), id, full.Events); err != nil {
-			log.Printf("[attribution] annotate live events for %s: %v", id, err)
-		} else {
-			start := window.StartIndex - full.StartIndex
-			end := window.EndIndex - full.StartIndex
-			if start >= 0 && end >= start && end <= int64(len(annotated)) {
-				events = annotated[start:end]
-			}
-		}
-		s.sendJSON(response, http.StatusOK, map[string]any{
-			"events": events, "nextIndex": window.NextIndex, "totalCount": window.TotalCount,
-			"startIndex": window.StartIndex, "endIndex": window.EndIndex,
-		}, corsOrigin)
+		s.sendJSON(response, http.StatusOK, s.eventsWindowBody(request.Context(), session, id, since, tail, before), corsOrigin)
 		return
 	}
-	if suffix == "/input" && request.Method == http.MethodPost {
+	if (suffix == "/input" || suffix == "/submit") && request.Method == http.MethodPost {
 		var body struct {
 			Data string `json:"data"`
 		}
@@ -849,41 +916,43 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
 			return
 		}
-		if attributed {
-			service, supported := s.registry.(attributedInputService)
-			if !supported {
-				s.sendJSON(response, http.StatusNotImplemented, map[string]any{"error": "message attribution is unavailable"}, corsOrigin)
-				return
-			}
-			err := service.InputAttributed(request.Context(), id, body.Data, attribution)
-			if err != nil {
-				var invalid *sessionruntime.InvalidMessageSourceError
-				var invalidInput *sessionruntime.InvalidAttributedInputError
-				var unavailable *sessionruntime.MessageInputUnavailableError
-				var committed *sessionruntime.MessageAttributionCommitError
-				switch {
-				case errors.As(err, &invalid), errors.As(err, &invalidInput):
-					s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-				case errors.As(err, &unavailable):
-					s.sendJSON(response, http.StatusNotFound, map[string]any{"error": err.Error()}, corsOrigin)
-				case errors.As(err, &committed):
-					s.sendJSON(response, http.StatusInternalServerError, map[string]any{
-						"error": err.Error(), "delivered": true, "retry": false,
-					}, corsOrigin)
-				default:
-					s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
-				}
-				return
-			}
-			s.sendJSON(response, http.StatusOK, map[string]any{"ok": true, "attributed": true}, corsOrigin)
-			return
+		if suffix == "/submit" {
+			// Keyed by session: the text and its Enter stay adjacent for THIS
+			// session while submits to other sessions run at the same time.
+			defer s.submits.lock(id)()
 		}
-		result := ok && s.registry.Input(request.Context(), id, body.Data)
-		if !result {
+		if !ok {
 			s.sendJSON(response, http.StatusNotFound, map[string]any{"ok": false}, corsOrigin)
 			return
 		}
-		s.sendJSON(response, http.StatusOK, map[string]any{"ok": true}, corsOrigin)
+		if err := s.writeSessionInput(request.Context(), id, body.Data, attribution, attributed); err != nil {
+			var unavailable *sessionruntime.MessageInputUnavailableError
+			if !attributed && errors.As(err, &unavailable) {
+				s.sendJSON(response, http.StatusNotFound, map[string]any{"ok": false}, corsOrigin)
+				return
+			}
+			s.sendInputError(response, err, corsOrigin)
+			return
+		}
+		if suffix == "/submit" {
+			timer := time.NewTimer(submitSettleDelay)
+			select {
+			case <-request.Context().Done():
+				timer.Stop()
+				s.sendJSON(response, http.StatusRequestTimeout, map[string]any{
+					"error": request.Context().Err().Error(), "delivered": true, "retry": false,
+				}, corsOrigin)
+				return
+			case <-timer.C:
+			}
+			if !s.registry.Input(request.Context(), id, "\r") {
+				s.sendJSON(response, http.StatusConflict, map[string]any{
+					"error": "message text was delivered but Enter could not be sent", "delivered": true, "retry": false,
+				}, corsOrigin)
+				return
+			}
+		}
+		s.sendJSON(response, http.StatusOK, map[string]any{"ok": true, "attributed": attributed}, corsOrigin)
 		return
 	}
 	if suffix == "/upload" && request.Method == http.MethodPost {
@@ -897,14 +966,21 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 	s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": request.URL.Path}, corsOrigin)
 }
 
-func (s *Server) sendJSON(response http.ResponseWriter, status int, body any, corsOrigin string) {
-	response.Header().Set("Content-Type", "application/json")
+// setCORSHeaders writes the one CORS answer this daemon gives. Every response
+// helper calls it, so a client cannot learn a different allowed-method or
+// allowed-header set from one endpoint than from another.
+func setCORSHeaders(response http.ResponseWriter, corsOrigin string) {
 	if corsOrigin != "" {
 		response.Header().Set("Access-Control-Allow-Origin", corsOrigin)
 	}
 	response.Header().Set("Vary", "Origin")
 	response.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization, x-sessions-creator-session, x-sessions-owner-id, x-sessions-client, x-sessions-filename, x-sessions-user-consent")
+}
+
+func (s *Server) sendJSON(response http.ResponseWriter, status int, body any, corsOrigin string) {
+	response.Header().Set("Content-Type", "application/json")
+	setCORSHeaders(response, corsOrigin)
 	response.WriteHeader(status)
 	if status == http.StatusNoContent {
 		return
@@ -962,6 +1038,48 @@ func captureInputAttribution(request *http.Request) (state.InputAttribution, boo
 		return state.InputAttribution{}, false, errors.New("X-Sessions-Client is invalid")
 	}
 	return state.InputAttribution{SourceSessionID: sessionID, Client: client}, true, nil
+}
+
+func (s *Server) writeSessionInput(
+	ctx context.Context,
+	id, data string,
+	attribution state.InputAttribution,
+	attributed bool,
+) error {
+	if !attributed {
+		if s.registry.Input(ctx, id, data) {
+			return nil
+		}
+		return &sessionruntime.MessageInputUnavailableError{SessionID: id}
+	}
+	service, supported := s.registry.(attributedInputService)
+	if !supported {
+		return errors.New("message attribution is unavailable")
+	}
+	return service.InputAttributed(ctx, id, data, attribution)
+}
+
+func (s *Server) sendInputError(response http.ResponseWriter, err error, corsOrigin string) {
+	var invalid *sessionruntime.InvalidMessageSourceError
+	var invalidInput *sessionruntime.InvalidAttributedInputError
+	var unavailable *sessionruntime.MessageInputUnavailableError
+	var committed *sessionruntime.MessageAttributionCommitError
+	switch {
+	case errors.As(err, &invalid), errors.As(err, &invalidInput):
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+	case errors.As(err, &unavailable):
+		s.sendJSON(response, http.StatusNotFound, map[string]any{"error": err.Error()}, corsOrigin)
+	case errors.As(err, &committed):
+		s.sendJSON(response, http.StatusInternalServerError, map[string]any{
+			"error": err.Error(), "delivered": true, "retry": false,
+		}, corsOrigin)
+	default:
+		status := http.StatusInternalServerError
+		if err.Error() == "message attribution is unavailable" {
+			status = http.StatusNotImplemented
+		}
+		s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
+	}
 }
 
 func captureEndRequest(request *http.Request, reason, operationID string) (state.EndSessionRequest, error) {
@@ -1034,16 +1152,27 @@ func creatorHeaderValue(header http.Header, name string) (string, bool, error) {
 	return values[0], true, nil
 }
 
+// checkJSONContentType is the content-type guard every JSON POST shares. It is
+// separate from readJSON so routes that must decode with their own decoder
+// still enforce the same rule.
+func checkJSONContentType(request *http.Request) error {
+	if request.ContentLength == 0 {
+		return nil
+	}
+	contentTypes := request.Header.Values("Content-Type")
+	if len(contentTypes) != 1 {
+		return errors.New("content-type must be application/json")
+	}
+	mediaType, _, err := mime.ParseMediaType(contentTypes[0])
+	if err != nil || mediaType != "application/json" {
+		return errors.New("content-type must be application/json")
+	}
+	return nil
+}
+
 func readJSON(request *http.Request, target any) error {
-	if request.ContentLength != 0 {
-		contentTypes := request.Header.Values("Content-Type")
-		if len(contentTypes) != 1 {
-			return errors.New("content-type must be application/json")
-		}
-		mediaType, _, err := mime.ParseMediaType(contentTypes[0])
-		if err != nil || mediaType != "application/json" {
-			return errors.New("content-type must be application/json")
-		}
+	if err := checkJSONContentType(request); err != nil {
+		return err
 	}
 	reader := http.MaxBytesReader(nil, request.Body, maxJSONBody)
 	encoded, err := io.ReadAll(reader)

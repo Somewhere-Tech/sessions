@@ -72,6 +72,11 @@ export interface SessionInfo {
   creatorKind?: string;
   creatorId?: string;
   parentSessionId?: string;
+  // Whether a child was explicitly delegated by a person or created by an
+  // agent session. Legacy children omit this and stay fully visible.
+  delegationKind?: 'user' | 'agent';
+  permissions?: 'constrained' | 'full';
+  lifecycle?: 'task' | 'session';
   // User-controlled visual grouping. Undefined preserves trusted creator
   // lineage; an empty string deliberately promotes the session to a root.
   displayParentSessionId?: string;
@@ -116,6 +121,9 @@ export interface CreateSessionRequest {
   // Frontend-only transport hint. api/sessionsd.ts removes this from the
   // JSON body and sends it through the daemon's trusted creator header.
   creatorSessionId?: string;
+  delegationKind?: 'user' | 'agent';
+  permissions?: 'inherit' | 'constrained' | 'full';
+  lifecycle?: 'task' | 'session';
 }
 
 export type ClaudeToggle = 'inherit' | 'on' | 'off';
@@ -145,7 +153,7 @@ export interface ClaudeSessionOptions {
 export interface DirectoryCandidate {
   path: string;
   label: string;
-  kind: 'home' | 'common' | 'project';
+  kind: 'home' | 'common' | 'project' | 'somewhere';
 }
 
 export type ServerMsg =
@@ -182,6 +190,7 @@ export type ServerMsg =
       sessionId: string;
     }
   | { type: 'inputAck'; requestId: string; ok: boolean; sessionId: string }
+  | { type: 'submitAck'; requestId: string; ok: boolean; sessionId: string }
   // Claude Code's structured session events. Sourced server-side from
   // ~/.claude/projects/<encoded-cwd>/<id>.jsonl. RemoteView consumes
   // these instead of the parser-derived blocks — far more reliable
@@ -206,6 +215,7 @@ export type MuxClientMsg =
   | { type: 'attach'; sessionId: string; lastSeq?: number; claudeEventsSince?: number; outputReplay?: boolean; claudeReplay?: boolean; claudeLive?: boolean }
   | { type: 'detach'; sessionId: string }
   | { type: 'input'; data: string; sessionId: string; requestId?: string }
+  | { type: 'submit'; data: string; sessionId: string; requestId: string }
   | { type: 'resize'; cols: number; rows: number; sessionId: string }
   | { type: 'snapshot'; requestId: string; sessionId: string; cols?: number }
   | { type: 'events'; requestId: string; sessionId: string; since?: number; tail?: number };

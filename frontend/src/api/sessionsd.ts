@@ -1,5 +1,5 @@
 import type { ClaudeSettings, CreateSessionRequest, SessionInfo, DirectoryCandidate } from '../types';
-import { getActiveServer, isLocalServer, useServers, type ServerConfig } from '../lib/servers';
+import { getActiveServer, getServer, isLocalServer, serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
 
 // Thrown when the daemon returns HTTP 401 (token required / wrong token).
@@ -23,7 +23,7 @@ export class AuthError extends Error {
 // embedded-daemon build). A hosted shell selecting http://localhost:8787
 // must keep that exact target; substituting window.location would send API
 // calls to sessions.somewhere.tech instead of the user's daemon.
-function useSameOriginDaemon(s: ServerConfig): boolean {
+function isSameOriginDaemon(s: ServerConfig): boolean {
   if (isTauri()) return false;
   const pageScheme = window.location.protocol === 'https:' ? 'https' : 'http';
   const pagePort = window.location.port
@@ -39,7 +39,7 @@ function hostForUrl(host: string): string {
 }
 
 function httpBaseForServer(s: ServerConfig): string {
-  if (useSameOriginDaemon(s)) {
+  if (isSameOriginDaemon(s)) {
     return window.location.origin;
   }
   // Honour the selected endpoint exactly. Falling back to HTTP keeps older
@@ -52,9 +52,13 @@ function httpBase(): string {
   return httpBaseForServer(getActiveServer());
 }
 
+function requestedServer(serverId?: string): ServerConfig {
+  return serverId ? getServer(serverId) : getActiveServer();
+}
+
 function wsBase(): string {
   const s = getActiveServer();
-  if (useSameOriginDaemon(s)) {
+  if (isSameOriginDaemon(s)) {
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
     return `${scheme}://${window.location.host}`;
   }
@@ -84,7 +88,7 @@ async function serverFetch(
   };
   const res = await fetch(input, merged);
   if (res.status === 401) {
-    if (server.isDefault && useSameOriginDaemon(server)) {
+    if (server.isDefault && isSameOriginDaemon(server)) {
       useServers.getState().markTokenRequired(server.id);
     }
     throw new AuthError();
@@ -111,11 +115,15 @@ async function featureJSON<T>(res: Response, feature: string): Promise<T> {
   return json<T>(res);
 }
 
-export async function listSessions(): Promise<SessionInfo[]> {
+export async function listSessions(serverId?: string): Promise<SessionInfo[]> {
   // The operations inbox is a lifecycle/history surface, not only a live
   // process switcher. Exited sessions are required for Finished/Failed
   // filters and for preserving parent-child provenance after a parent ends.
-  const r = await apiFetch(`${httpBase()}/api/sessions?include_exited=1`);
+  const server = serverId ? getServer(serverId) : getActiveServer();
+  const r = await serverFetch(
+    server,
+    `${httpBaseForServer(server)}/api/sessions?include_exited=1`
+  );
   const body = await json<{ sessions: SessionInfo[] }>(r);
   return body.sessions.map(normalizeSessionInfo);
 }
@@ -173,11 +181,12 @@ export interface MachineAccessRequest {
 }
 
 export async function listMachineAccessRequests(
-  server: ServerConfig = getActiveServer()
+  server: ServerConfig = getActiveServer(),
+  signal?: AbortSignal
 ): Promise<MachineAccessRequest[] | null> {
-  let r = await serverFetch(server, `${httpBaseForServer(server)}/api/access/requests`);
+  let r = await serverFetch(server, `${httpBaseForServer(server)}/api/access/requests`, { signal });
   if (r.status === 404) {
-    r = await serverFetch(server, `${httpBaseForServer(server)}/api/tailnet/access/requests`);
+    r = await serverFetch(server, `${httpBaseForServer(server)}/api/tailnet/access/requests`, { signal });
   }
   if (r.status === 404) return null;
   const body = await json<{ requests: MachineAccessRequest[] }>(r);
@@ -219,6 +228,7 @@ type WireSessionInfo = SessionInfo & {
   creator_kind?: string;
   creator_id?: string;
   parent_session_id?: string;
+  delegation_kind?: 'user' | 'agent';
   display_parent_session_id?: string;
   creator_ancestry?: string[];
   root_creator_kind?: string;
@@ -249,6 +259,7 @@ function normalizeSessionInfo(session: SessionInfo): SessionInfo {
     creatorKind: session.creatorKind ?? wire.creator_kind,
     creatorId: session.creatorId ?? wire.creator_id,
     parentSessionId: session.parentSessionId ?? wire.parent_session_id,
+    delegationKind: session.delegationKind ?? wire.delegation_kind,
     displayParentSessionId: session.displayParentSessionId ?? wire.display_parent_session_id,
     creatorAncestry: session.creatorAncestry ?? wire.creator_ancestry,
     rootCreatorKind: session.rootCreatorKind ?? wire.root_creator_kind,
@@ -287,6 +298,18 @@ export interface ServerHealth {
 
 export const API_PROTOCOL_VERSION = 1;
 
+// A reachable, identified sessionsd whose API range excludes this client.
+// Distinguishable from "this origin is not a daemon at all" so a caller that
+// silently ignores the latter can still surface the instructional message for
+// the former — see bootstrapCurrentOriginServer in lib/servers.ts.
+export class ServerCompatibilityError extends Error {
+  readonly code = 'incompatible' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'ServerCompatibilityError';
+  }
+}
+
 function validateServerHealth(health: ServerHealth): ServerHealth {
   if (!health.ok || health.name !== 'sessionsd') {
     throw new Error('unexpected health response');
@@ -296,7 +319,7 @@ function validateServerHealth(health: ServerHealth): ServerHealth {
     range
     && (API_PROTOCOL_VERSION < range.minimumClient || API_PROTOCOL_VERSION > range.maximumClient)
   ) {
-    throw new Error(
+    throw new ServerCompatibilityError(
       `This client uses Sessions API ${API_PROTOCOL_VERSION}, but the machine accepts ${range.minimumClient}–${range.maximumClient}. Update Sessions on this device or the host.`
     );
   }
@@ -349,6 +372,43 @@ export async function fetchServerHealth(
   return validateServerHealth(await json<ServerHealth>(r));
 }
 
+// Revoking a device credential on ANOTHER machine, using the credential
+// itself. hostedBootstrap called `fetch` directly for this, which skipped the
+// client's auth header construction and its 401 translation; the request is
+// otherwise identical.
+export async function revokeServerDevice(
+  server: ServerConfig,
+  deviceId: string
+): Promise<boolean> {
+  const r = await serverFetch(
+    server,
+    `${httpBaseForServer(server)}/api/devices/${encodeURIComponent(deviceId)}`,
+    { method: 'DELETE' }
+  );
+  return r.ok;
+}
+
+export interface ServerMachineIdentity {
+  machineId: string;
+  name: string;
+}
+
+export async function fetchServerMachineIdentity(
+  server: ServerConfig,
+  signal?: AbortSignal
+): Promise<ServerMachineIdentity> {
+  const r = await serverFetch(
+    server,
+    `${httpBaseForServer(server)}/api/machine`,
+    { signal }
+  );
+  const body = await json<{ machine_id?: string; machineId?: string; name: string }>(r);
+  const machineId = (body.machineId ?? body.machine_id ?? '').trim();
+  const name = body.name?.trim();
+  if (!machineId || !name) throw new Error('machine identity response was incomplete');
+  return { machineId, name };
+}
+
 export async function listServerSessions(
   server: ServerConfig,
   signal?: AbortSignal
@@ -382,8 +442,8 @@ async function profilesForServer(server: ServerConfig, signal?: AbortSignal): Pr
   return body.profiles;
 }
 
-export async function fetchProfiles(signal?: AbortSignal): Promise<AccountProfile[]> {
-  return profilesForServer(getActiveServer(), signal);
+export async function fetchProfiles(signal?: AbortSignal, serverId?: string): Promise<AccountProfile[]> {
+  return profilesForServer(requestedServer(serverId), signal);
 }
 
 export async function listServerProfiles(
@@ -419,7 +479,93 @@ export interface SearchMatch {
   context_after?: HistoryMessage[];
 }
 
-export interface SearchResponse { matches: SearchMatch[]; total: number }
+// One session's whole contribution to a result set. The daemon computes this
+// across the entire index, so `hits`, `first_hit_at` and `last_hit_at` describe
+// the session, not the page of messages that came back with it.
+export interface SearchSessionHits {
+  session_id: string;
+  name: string;
+  cwd?: string;
+  tool?: 'claude' | 'codex' | 'shell';
+  machine?: string;
+  hits: number;
+  title_match?: boolean;
+  score: number;
+  first_hit_at?: string;
+  last_hit_at?: string;
+  // Drawn from the returned page: a session that matched but did not reach the
+  // page has counts and timestamps without snippets.
+  snippets?: string[];
+}
+
+export interface SearchMachineState {
+  alias: string;
+  name: string;
+  endpoint?: string;
+  status: string;
+  error?: string;
+}
+
+export interface SearchResponse {
+  matches: SearchMatch[];
+  total: number;
+  machines?: SearchMachineState[];
+  partial?: boolean;
+  // Everything below is optional on purpose: a daemon older than the rollup
+  // omits all of it and the client must still work from `matches`/`total`.
+  sessions?: SearchSessionHits[];
+  // The expression that actually ran, after stopword removal, path expansion
+  // and conjunction. Differs from what was sent whenever the query was
+  // rewritten.
+  effective_query?: string;
+  // Which rung of the relaxation ladder produced these results: 'strict',
+  // 'quorum', 'broad' or 'raw'. Deliberately typed as a plain string so a
+  // daemon that adds a rung is not silently misread as one of these.
+  match_mode?: string;
+  // Counts across the whole index, not the returned page.
+  total_hits?: number;
+  total_sessions?: number;
+  // The rollup is incomplete: its counts are lower bounds.
+  rollup_partial?: boolean;
+}
+
+// A daemon is not a type checker. Anything the rollup says is either
+// well-formed or dropped here, so no view has to defend itself against a
+// missing array, a NaN count or a null timestamp.
+function normalizeSearchResponse(body: SearchResponse): SearchResponse {
+  const count = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+  const text = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.trim() ? value : undefined;
+  const sessions = Array.isArray(body.sessions)
+    ? body.sessions
+      .filter((session): session is SearchSessionHits => Boolean(session) && typeof session.session_id === 'string')
+      .map((session) => ({
+        ...session,
+        name: typeof session.name === 'string' ? session.name : '',
+        hits: count(session.hits) ?? 0,
+        score: typeof session.score === 'number' && Number.isFinite(session.score) ? session.score : 0,
+        cwd: text(session.cwd),
+        tool: session.tool === 'claude' || session.tool === 'codex' || session.tool === 'shell' ? session.tool : undefined,
+        machine: text(session.machine),
+        first_hit_at: text(session.first_hit_at),
+        last_hit_at: text(session.last_hit_at),
+        snippets: Array.isArray(session.snippets) ? session.snippets.filter((snippet) => typeof snippet === 'string') : undefined
+      }))
+    : undefined;
+  return {
+    ...body,
+    matches: Array.isArray(body.matches) ? body.matches : [],
+    total: count(body.total) ?? 0,
+    ...(sessions ? { sessions } : { sessions: undefined }),
+    effective_query: text(body.effective_query),
+    match_mode: text(body.match_mode),
+    total_hits: count(body.total_hits),
+    total_sessions: count(body.total_sessions),
+    rollup_partial: body.rollup_partial === true,
+    partial: body.partial === true
+  };
+}
 
 export type AIProvider = 'codex' | 'claude';
 export interface AISettings { provider: AIProvider }
@@ -456,7 +602,7 @@ export async function searchServer(
   if (options.context !== undefined) query.set('context', String(options.context));
   if (options.timeline) query.set('timeline', 'true');
   const r = await serverFetch(server, `${httpBaseForServer(server)}/api/search?${query.toString()}`, { signal });
-  return json<SearchResponse>(r);
+  return normalizeSearchResponse(await json<SearchResponse>(r));
 }
 
 export async function fetchAISettings(signal?: AbortSignal): Promise<AISettings> {
@@ -491,6 +637,7 @@ export interface OnboardingState {
   version: number;
   complete: boolean;
   remoteControl: 'pending' | 'enabled' | 'local-only';
+  delegatedAccess: 'pending' | 'inherit' | 'autonomous';
   supported?: boolean;
 }
 
@@ -499,21 +646,22 @@ export async function fetchOnboardingState(signal?: AbortSignal): Promise<Onboar
   // Older daemons cannot enable Sessions' new Remote Control default, so
   // allowing their UI through is safe and keeps mixed-version Fleet usable.
   if (r.status === 404) {
-    return { version: 0, complete: true, remoteControl: 'local-only', supported: false };
+    return { version: 0, complete: true, remoteControl: 'local-only', delegatedAccess: 'inherit', supported: false };
   }
   return { ...(await json<OnboardingState>(r)), supported: true };
 }
 
 export async function updateOnboardingPreference(
-  remoteControl: 'enabled' | 'local-only'
+  remoteControl: 'enabled' | 'local-only',
+  delegatedAccess: 'inherit' | 'autonomous'
 ): Promise<OnboardingState> {
   const r = await apiFetch(`${httpBase()}/api/onboarding`, {
     method: 'PUT',
     headers: {
       'content-type': 'application/json',
-      'X-Sessions-User-Consent': 'remote-control'
+      'X-Sessions-User-Consent': 'onboarding'
     },
-    body: JSON.stringify({ remoteControl })
+    body: JSON.stringify({ remoteControl, delegatedAccess })
   });
   return { ...(await featureJSON<OnboardingState>(r, 'Onboarding')), supported: true };
 }
@@ -539,6 +687,12 @@ export interface HistorySession {
   creator_id?: string;
   created_at: number;
   last_activity_at: number;
+  // When the conversation itself was last written to, read from the transcript
+  // rather than from the Sessions record. A shutdown sweep that drains a dozen
+  // finished runners moves every `last_activity_at` to the same instant without
+  // a word being said, so this is the field to order a browse by. Absent on
+  // records with no transcript behind them, and on daemons older than it.
+  conversation_updated_at?: number;
   message_count: number;
   conversation_available: boolean;
   external?: boolean;
@@ -549,11 +703,29 @@ export interface HistorySession {
   moved_to_session_id?: string;
   moved_from_endpoint?: string;
   moved_from_session_id?: string;
+  // One row that could not be read on this pass. The session is still listed,
+  // named and addressable — losing one file must never lose the conversation.
+  unreadable?: boolean;
+  unreadable_reason?: string;
+  skipped_records?: number;
 }
 
 export interface HistoryResponse {
   schemaVersion: number;
   sessions: HistorySession[];
+  unreadable_sessions?: number;
+  skipped_records?: number;
+  transcripts_unread?: boolean;
+}
+
+/** One machine's answer to "every conversation you have recorded". */
+export interface HistoryListing {
+  sessions: HistorySession[];
+  /** Rows the daemon listed but could not read. Always a count, never silence. */
+  unreadableSessions: number;
+  skippedRecords: number;
+  /** True on the cheap view, which stats transcripts without parsing them. */
+  transcriptsUnread: boolean;
 }
 
 export interface HistoryMessage {
@@ -614,6 +786,27 @@ export async function fetchServerHistory(
   return (await json<HistoryResponse>(r)).sessions;
 }
 
+// The full listing, which is what a conversation browser needs and what
+// `sessions history` reads. `?summary=true` above deliberately stats each
+// transcript without parsing it, so on that view `message_count` is 0 for
+// every row — a browser built on it could neither show how big a conversation
+// is nor tell an empty shell from a real one. The daemon caches its per-file
+// counts by size and mtime, so the extra cost is paid once per changed file.
+export async function fetchServerHistoryListing(
+  server: ServerConfig,
+  signal?: AbortSignal
+): Promise<HistoryListing> {
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/history`, { signal });
+  if (!r.ok) throw new Error(`Sessions history ${r.status}`);
+  const body = await json<HistoryResponse>(r);
+  return {
+    sessions: body.sessions ?? [],
+    unreadableSessions: body.unreadable_sessions ?? 0,
+    skippedRecords: body.skipped_records ?? 0,
+    transcriptsUnread: body.transcripts_unread === true
+  };
+}
+
 export async function fetchServerHistoryTranscript(
   server: ServerConfig,
   sessionId: string,
@@ -646,7 +839,7 @@ export async function fetchServerHistoryTranscript(
     try {
       const parsed = JSON.parse(body) as { error?: string };
       if (parsed.error === 'history session not found') {
-        throw new Error(`This conversation is no longer available on ${server.name}.`);
+        throw new Error(`This conversation is no longer available on ${serverDisplayName(server, true)}.`);
       }
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('This conversation')) throw error;
@@ -659,9 +852,10 @@ export async function fetchServerHistoryTranscript(
   return normalizeHistoryTranscript(await json<HistoryTranscript>(r));
 }
 
-export async function createSession(req: CreateSessionRequest): Promise<SessionInfo> {
+export async function createSession(req: CreateSessionRequest, serverId?: string): Promise<SessionInfo> {
   const { creatorSessionId, ...body } = req;
-  const r = await apiFetch(`${httpBase()}/api/sessions`, {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -750,8 +944,9 @@ export interface SessionModelOption {
   supportedReasoningEfforts: Array<{ reasoningEffort: string; description: string }>;
 }
 
-export async function listNewSessionCodexModels(signal?: AbortSignal): Promise<SessionModelOption[]> {
-  const r = await apiFetch(`${httpBase()}/api/models/codex`, { signal });
+export async function listNewSessionCodexModels(signal?: AbortSignal, serverId?: string): Promise<SessionModelOption[]> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/models/codex`, { signal });
   const body = await featureJSON<{ models?: SessionModelOption[] }>(r, 'Codex model choices');
   return body.models ?? [];
 }
@@ -786,6 +981,23 @@ export interface UsageRow {
   missingPricingEntries: number;
 }
 
+export interface UsageEvent {
+  eventKey: string;
+  groupKey: string;
+  start?: string;
+  provider: string;
+  providerSessionId?: string;
+  sessionId?: string;
+  tags?: Record<string, string>;
+  model?: string;
+  tokens: UsageTokens;
+  costUSD: number;
+  recordedCostUSD: number;
+  calculatedCostUSD: number;
+  hasRecordedCost: boolean;
+  missingPricing: boolean;
+}
+
 export interface UsageReport {
   schemaVersion: number;
   machine: string;
@@ -797,6 +1009,8 @@ export interface UsageReport {
   scan: { filesSeen: number; filesRead: number; linesRead: number; entriesSeen: number };
   rows: UsageRow[];
   totals: UsageRow;
+  eventsIncluded?: boolean;
+  events?: UsageEvent[];
 }
 
 export interface UsageOptions {
@@ -806,6 +1020,7 @@ export interface UsageOptions {
   since?: string;
   until?: string;
   dimension?: string;
+  includeEvents?: boolean;
 }
 
 export async function fetchUsage(options: UsageOptions, signal?: AbortSignal): Promise<UsageReport> {
@@ -822,6 +1037,7 @@ export async function fetchUsageForServer(
   if (options.since) query.set('since', options.since);
   if (options.until) query.set('until', options.until);
   if (options.dimension) query.set('dimension', options.dimension);
+	if (options.includeEvents) query.set('events', '1');
 	const r = await serverFetch(server, `${httpBaseForServer(server)}/api/usage?${query.toString()}`, { signal });
 	return featureJSON<UsageReport>(r, 'Usage');
 }
@@ -929,8 +1145,11 @@ export interface Snapshot {
 // visible width before sending. The Reflowed view passes its viewport
 // width here so long prose wraps to fit without horizontal scroll while
 // box-drawing / table lines stay intact.
-export async function snapshot(sessionId: string, cols?: number): Promise<Snapshot | null> {
-  const params = cols && cols > 0 ? `?cols=${cols | 0}` : '';
+export async function snapshot(sessionId: string, cols?: number, includeScrollback = false): Promise<Snapshot | null> {
+  const query = new URLSearchParams();
+  if (cols && cols > 0) query.set('cols', String(cols | 0));
+  if (includeScrollback && !cols) query.set('scrollback', '1');
+  const params = query.size > 0 ? `?${query.toString()}` : '';
   const r = await apiFetch(`${httpBase()}/api/sessions/${encodeURIComponent(sessionId)}/snapshot${params}`);
   if (r.status === 404) return null;
   if (!r.ok) {
@@ -983,10 +1202,12 @@ export async function fetchClaudeEvents(
 export interface ResumableSession {
   sessionId: string;
   tool: 'claude' | 'codex';
+  external?: boolean;
   origin?: string;
   title?: string;
   historyId?: string;
   promptHistoryOnly?: boolean;
+  transcriptRecovery?: boolean;
   runs?: ResumableRun[];
   cwd: string;
   modifiedAt: number;
@@ -1075,6 +1296,7 @@ export interface AdoptConversationResult {
   forkPointIndex?: number;
   forkPointMessageId?: string;
   sourceUntouched?: boolean;
+  transcriptRecovery?: boolean;
 }
 
 export interface AdoptRepairRequest {
@@ -1138,8 +1360,9 @@ export async function forkConversation(
   return featureJSON<AdoptConversationResult>(r, 'Conversation copies');
 }
 
-export async function listDirectories(): Promise<DirectoryCandidate[]> {
-  const r = await apiFetch(`${httpBase()}/api/directories`);
+export async function listDirectories(serverId?: string): Promise<DirectoryCandidate[]> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/directories`);
   const body = await json<{ directories: DirectoryCandidate[] }>(r);
   return body.directories;
 }
@@ -1158,18 +1381,18 @@ export interface FsListing {
 // Direct filesystem listing — the DirectoryBrowser walks this. No
 // curation, no "project-shape" filtering; every child the sessionsd
 // process can stat shows up. Default to $HOME when path is omitted.
-export async function listFs(path?: string): Promise<FsListing> {
-  // httpBase() now always returns an absolute URL (scheme://host:port),
-  // so we can use it directly with new URL().
-  const base = httpBase() || window.location.origin;
+export async function listFs(path?: string, serverId?: string): Promise<FsListing> {
+  const server = requestedServer(serverId);
+  const base = httpBaseForServer(server) || window.location.origin;
   const url = new URL(`${base}/api/fs/list`);
   if (path) url.searchParams.set('path', path);
-  const r = await apiFetch(url);
+  const r = await serverFetch(server, url);
   return json<FsListing>(r);
 }
 
-export async function killSession(id: string, reason = ''): Promise<void> {
-  const r = await apiFetch(`${httpBase()}/api/sessions/${encodeURIComponent(id)}`, {
+export async function killSession(id: string, reason = '', serverId?: string): Promise<void> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(id)}`, {
     method: 'DELETE',
     headers: {
       'content-type': 'application/json',
@@ -1184,8 +1407,19 @@ export async function killSession(id: string, reason = ''): Promise<void> {
 // forwarding — no per-cell WebSocket, just a single HTTP POST per
 // keystroke. The 2-second poll on each cell already reflects the
 // result back into the reflowed thumbnail.
-export async function sendInput(sessionId: string, data: string): Promise<void> {
-  const r = await apiFetch(`${httpBase()}/api/sessions/${encodeURIComponent(sessionId)}/input`, {
+export async function sendInput(sessionId: string, data: string, serverId?: string): Promise<void> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/input`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ data })
+  });
+  await json<{ ok: boolean }>(r);
+}
+
+export async function submitMessage(sessionId: string, data: string, serverId?: string): Promise<void> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/submit`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ data })
@@ -1284,4 +1518,16 @@ export function wsMuxUrl(): string {
   const params = new URLSearchParams({ mux: '1' });
   if (s.token) params.set('token', s.token);
   return `${wsBase()}/ws?${params.toString()}`;
+}
+
+// Identity of the mux endpoint a live stream is bound to. Because the token
+// lives in the URL, saving a credential for the already-selected machine
+// produces a different socket without changing the active server id. Effects
+// that own a mux subscription must key on this, not on the id alone —
+// otherwise the terminal stays attached to the old tokenless URL and
+// reconnects forever with a credential the daemon rejects. Returns '' while no
+// server is configured so it is safe to call during render.
+export function muxEndpointKey(): string {
+  try { return wsMuxUrl(); }
+  catch { return ''; }
 }

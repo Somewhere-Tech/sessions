@@ -172,17 +172,62 @@ func (m *Manager) handleIdle(session *state.Session, duration time.Duration) Idl
 	if info.Exited {
 		return IdleClassification{Outcome: IdleDone}
 	}
+	classification, summary := inspectIdle(session)
+	return m.publishIdle(session, duration, classification, summary)
+}
+
+func (m *Manager) handleCompletedTurn(session *state.Session, duration time.Duration) IdleClassification {
+	summary := FinalAssistantSummary(session.ClaudeEventLog())
+	return m.publishIdle(session, duration, IdleClassification{Outcome: IdleDone}, summary)
+}
+
+func (m *Manager) publishIdle(session *state.Session, duration time.Duration, classification IdleClassification, summary string) IdleClassification {
+	info := session.Info()
 	m.observe(context.Background(), "idle", func(writer ledger.ObservationWriter) error {
 		return writer.RecordIdle(context.Background(), ledger.Observation{Meta: ledger.Meta{LaneID: info.ID}})
 	})
-	classification, summary := inspectIdle(session)
 	session.SetIdleResult(idleReason(classification.Outcome), classification.Line, summary, time.Now().UnixMilli())
 	info = session.Info()
 	hookContext := idleHookContext{Summary: summary, Outcome: classification.Outcome, DurationMS: duration.Milliseconds()}
 	m.writeIdleSentinel(info)
 	m.runHook(info.OnIdle, info, hookContext, false)
 	m.runHook(m.hooks.OnIdle, info, hookContext, true)
+	if classification.Outcome == IdleDone && info.Lifecycle == state.LifecycleTask && summary != "" {
+		m.scheduleTaskCompletion(info.ID)
+	}
 	return classification
+}
+
+func (m *Manager) scheduleTaskCompletion(id string) {
+	m.startWorker(func() {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+		session, ok := m.registry.Get(id)
+		if !ok {
+			return
+		}
+		info := session.Info()
+		if info.Exited || info.Working || info.IdleReason != state.IdleReasonCompleted || info.Lifecycle != state.LifecycleTask {
+			return
+		}
+		provenance := m.withProvenance(context.Background(), []state.SessionInfo{info})[0]
+		if provenance.ParentSessionID == "" {
+			return
+		}
+		if err := m.RequestKillAttributed(context.Background(), id, false, state.EndSessionRequest{
+			InitiatorKind: string(ledger.CreatorSession),
+			InitiatorID:   provenance.ParentSessionID,
+			Client:        "sessionsd-task-lifecycle",
+			Reason:        "Delegated task completed",
+		}); err != nil {
+			// Completion remains visible and resumable if the durable end
+			// boundary cannot be recorded. Never trade history for cleanup.
+			return
+		}
+	})
 }
 
 func (m *Manager) runHook(script string, info state.SessionInfo, hook idleHookContext, timeout bool) {

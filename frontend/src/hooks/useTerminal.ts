@@ -5,8 +5,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // On a fresh Android install over cellular, this is the difference
 // between "instant tap-to-content" and "wait for the terminal lib to
 // download even though you didn't open Terminal view."
-import { wsMuxUrl, snapshot as fetchServerSnapshot, fetchClaudeEvents } from '../api/sessionsd';
-import { attachSession, type SessionChannel, type MuxStatus } from '../lib/wsMux';
+import { muxEndpointKey, snapshot as fetchServerSnapshot, fetchClaudeEvents } from '../api/sessionsd';
+import { attachSession, sendSessionInput, submitSessionMessage, type SessionChannel, type MuxStatus } from '../lib/wsMux';
 import { useServers } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
 import { terminalRenderer } from '../lib/terminalRenderer';
@@ -23,6 +23,11 @@ interface UseTerminalResult {
   // InputBar share the same channel as the xterm itself — xterm echoes
   // the result back, so the terminal stays the source of truth.
   sendInputRef: { current: (data: string) => void };
+  // Composer sends are acknowledged by sessionsd. Unlike raw terminal
+  // keystrokes, they are never queued through a reconnect: failure leaves the
+  // user's draft in place so delivery is explicit and retryable.
+  sendConfirmedInputRef: { current: (data: string) => Promise<void> };
+  submitMessageRef: { current: (data: string) => Promise<void> };
   // Scroll position state for the floating "scroll to latest" button.
   // True when xterm's viewport is parked at the live tail; flips false
   // as soon as the user scrolls up. Driven by xterm's onScroll event.
@@ -93,6 +98,12 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
   const sendInputRef = useRef<(data: string) => void>(() => {});
+  const sendConfirmedInputRef = useRef<(data: string) => Promise<void>>(() =>
+    Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'))
+  );
+  const submitMessageRef = useRef<(data: string) => Promise<void>>(() =>
+    Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'))
+  );
   const scrollTerminalToBottomRef = useRef<() => void>(() => {});
   const focusTerminalRef = useRef<() => void>(() => {});
   const loadEarlierClaudeEventsRef = useRef<() => void>(() => {});
@@ -103,12 +114,20 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
   const reattachRef = useRef<(active: boolean) => void>(() => {});
   const fitTerminalRef = useRef<() => void>(() => {});
   const [terminalAtBottom, setTerminalAtBottom] = useState(true);
-  // Re-attach whenever the active server flips. Same effect-key pattern
-  // as sessionId — no need to share buffers across servers.
-  const activeServerId = useServers((s) => s.activeId);
+  // Re-attach whenever the mux endpoint changes. Same effect-key pattern as
+  // sessionId — no need to share buffers across servers. This is the full
+  // socket URL rather than the server id because the auth token is carried in
+  // the query string: pasting a token for the machine you are already on keeps
+  // the id identical while changing the endpoint this stream must bind to.
+  // The selector re-runs on every servers-store change and the hook only
+  // re-renders when the resulting URL actually differs.
+  const muxUrl = useServers(() => muxEndpointKey());
 
   useEffect(() => {
     if (!sessionId) return;
+    // No machine configured yet — nothing to bind a stream to. The effect
+    // re-runs as soon as one is, because muxUrl is a dependency.
+    if (!muxUrl) return;
 
     // We do the entire setup in an async IIFE so we can `await` the
     // dynamic-import of xterm. The cleanup function returned from
@@ -127,6 +146,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       let scrollDisp: { dispose: () => void } | null = null;
       let dataDisp: { dispose: () => void } | null = null;
       let ro: ResizeObserver | null = null;
+      let repaintAlternateScreenAfterWrite = false;
 
       if (mountTerminal) {
         const [xtermMod, serializeMod, fitMod, webglMod, canvasMod] = await Promise.all([
@@ -184,6 +204,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           // correctness. Chromium/WebView2 keeps WebGL and falls back to
           // Canvas on context loss.
           const renderer = terminalRenderer(isTauri(), navigator.userAgent);
+          repaintAlternateScreenAfterWrite = renderer === 'dom';
           if (renderer === 'dom') {
             // No addon: xterm's built-in DOM renderer is the reliable Apple
             // WebView path. Output batching and active-session mounting keep
@@ -225,6 +246,14 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       sendInputRef.current = (data: string): void => {
         channel?.sendInput(data);
       };
+      // Bound to the same `muxUrl` this effect attached with, never
+      // re-derived at send time. Re-deriving let a composer send open a
+      // second socket on a newly-saved token while the stream stayed on the
+      // old one — the composer looked healthy while the terminal was dead.
+      sendConfirmedInputRef.current = (data: string): Promise<void> =>
+        sendSessionInput(muxUrl, sessionId, data);
+      submitMessageRef.current = (data: string): Promise<void> =>
+        submitSessionMessage(muxUrl, sessionId, data);
 
       setExitInfo(null);
       setResumedFromSeq(null);
@@ -360,12 +389,32 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       // tracked per-message (above) so resume is unaffected by the batching.
       let pendingOutput: string[] = [];
       let outputRaf: number | null = null;
+      let outputWriteInFlight = false;
       const flushOutput = (): void => {
         outputRaf = null;
-        if (!term || pendingOutput.length === 0) return;
+        if (!term || outputWriteInFlight || pendingOutput.length === 0) return;
         const data = pendingOutput.length === 1 ? pendingOutput[0]! : pendingOutput.join('');
         pendingOutput = [];
-        term.write(data);
+        outputWriteInFlight = true;
+        term.write(data, () => {
+          outputWriteInFlight = false;
+          if (disposed || !term) return;
+          // WKWebView's correctness-first DOM renderer needs the repaint only
+          // after xterm has parsed the full frame. Calling refresh before the
+          // write callback leaves stale row spans visible during Claude's
+          // slash-command/settings alternate screen. Normal scrollback does
+          // not pay this full-viewport repaint cost.
+          if (
+            repaintAlternateScreenAfterWrite
+            && term.buffer.active.type === 'alternate'
+            && term.rows > 0
+          ) {
+            term.refresh(0, term.rows - 1);
+          }
+          if (pendingOutput.length > 0 && outputRaf === null) {
+            outputRaf = requestAnimationFrame(flushOutput);
+          }
+        });
       };
 
       // Sizing strategy: FitAddon measures cell metrics + container dims
@@ -605,7 +654,11 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           });
         });
         try {
-          const snap = await fetchServerSnapshot(sessionId);
+          // Terminal priming asks for the mirror's bounded scrollback as one
+          // bulk stream. The old viewport-only snapshot made the terminal
+          // look current but left nothing above it to scroll into; replaying
+          // every raw event would reintroduce the multi-second attach cost.
+          const snap = await fetchServerSnapshot(sessionId, undefined, true);
           if (disposed || !isActiveRef.current) return;
           if (snap && snap.seq > 0) {
             term.reset();
@@ -617,16 +670,40 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         } catch { /* fall through to plain attach — full replay */ }
       };
 
+      // Generation counter, same pattern SettingsView uses for its async
+      // loads. attachNow awaits the snapshot prefill and the HTTP tail between
+      // clearing `channel` and reassigning it. Rapid tab switching (or a
+      // reattach landing on top of the mount attach) could therefore run two
+      // attachNow calls through that window at once: both saw `channel` as
+      // null, both called attachSession, and the loser's socket was
+      // overwritten by the winner's assignment with nothing left holding a
+      // reference to detach it — a leaked mux subscription still receiving
+      // this session's bytes for the life of the mount.
+      //
+      // Every attach now takes a generation. Only the newest one is allowed to
+      // publish its channel; an older one that finishes late detaches whatever
+      // it opened and leaves the current attach alone.
+      let attachGeneration = 0;
+
       const attachNow = async (active: boolean): Promise<void> => {
         if (disposed) return;
+        const generation = ++attachGeneration;
         if (active) setHistoryPending(true);
         channel?.detach();
+        sendInputRef.current = (): void => {};
+        sendConfirmedInputRef.current = (): Promise<void> =>
+          Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'));
+        submitMessageRef.current = (): Promise<void> =>
+          Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'));
         channel = null;
         const tailPromise = active ? loadClaudeTail() : Promise.resolve(false);
         if (active && term) await prefillTerminalSnapshot();
         if (active) await tailPromise;
-        if (disposed) return;
-        channel = attachSession(wsMuxUrl(), sessionId, { onMessage, onStatus, getResume });
+        // Stale generation: a newer attachNow started while this one was
+        // awaiting and now owns `channel`. Returning here is what keeps the
+        // winner's socket intact instead of overwriting it.
+        if (disposed || generation !== attachGeneration) return;
+        channel = attachSession(muxUrl, sessionId, { onMessage, onStatus, getResume });
       };
       // Re-subscribe with flags recomputed for current activeness. Becoming
       // active → prefill (the terminal was frozen while hidden) + the
@@ -654,7 +731,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       disposed = true;
       if (runCleanup) runCleanup();
     };
-  }, [sessionId, activeServerId, mountTerminal]);
+  }, [sessionId, muxUrl, mountTerminal]);
 
   // Activeness changes are NOT a mount-effect dependency (that would
   // dispose + rebuild xterm on every tab switch). Instead, re-subscribe
@@ -682,6 +759,8 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
     exitInfo,
     resumedFromSeq,
     sendInputRef,
+    sendConfirmedInputRef,
+    submitMessageRef,
     terminalAtBottom,
     scrollTerminalToBottomRef,
     focusTerminalRef,

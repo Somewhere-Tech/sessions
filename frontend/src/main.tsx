@@ -9,6 +9,7 @@ import {
   blockNativeMachineCredentialPersistence,
   bootstrapCurrentOriginServer,
   hydrateNativeMachineCredentials,
+  syncNativeAgentMachineAccess,
   useServers
 } from './lib/servers';
 import './styles/globals.css';
@@ -121,6 +122,9 @@ async function bootstrap(): Promise<void> {
     if (!pairFragmentPresent && !endpointFragmentPresent) {
       await bootstrapCurrentOriginServer();
     }
+    await syncNativeAgentMachineAccess().catch((error) => {
+      console.warn('Sessions could not share remembered machines with the CLI', error);
+    });
   }
 }
 

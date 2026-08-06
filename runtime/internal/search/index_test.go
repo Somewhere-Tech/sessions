@@ -70,7 +70,8 @@ func TestRankedSearchReturnsScoreAnchorAndContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.Total != 1 || result.Matches[0].MessageIndex != 1 ||
-		result.Matches[0].ProviderSessionID != "codex-provider-ranked" || result.Matches[0].Score != 1 ||
+		result.Matches[0].ProviderSessionID != "codex-provider-ranked" ||
+		result.Matches[0].Score <= 0 || result.Matches[0].Score >= 1 ||
 		len(result.Matches[0].ContextBefore) != 1 || len(result.Matches[0].ContextAfter) != 1 ||
 		result.Matches[0].ContextBefore[0].Text != "before marker" ||
 		result.Matches[0].ContextAfter[0].Text != "after marker" {
@@ -78,11 +79,24 @@ func TestRankedSearchReturnsScoreAnchorAndContext(t *testing.T) {
 	}
 }
 
-func TestRankedSearchSupportsBooleanNot(t *testing.T) {
+// Excluding a term stays possible without the bare word NOT, which prose uses
+// far too often to be an operator.
+func TestRankedSearchExcludesTermsWithRawSyntax(t *testing.T) {
 	fixture := rankedFixture("alpha gamma", "alpha beta")
-	result := runRankedFixture(t, fixture, "alpha NOT beta", filepath.Join(t.TempDir(), "search-index.db"))
-	if result.Total != 1 || result.Matches[0].Text != "alpha gamma" {
+	result := runRankedFixture(t, fixture, "fts:alpha NOT beta", filepath.Join(t.TempDir(), "search-index.db"))
+	if result.Total != 1 || result.Matches[0].Text != "alpha gamma" || result.MatchMode != "raw" {
 		t.Fatalf("boolean result = %#v", result)
+	}
+}
+
+// A leading dash is a character in a pasted flag far more often than it is an
+// exclusion marker, and a wrong exclusion loses results with nothing to show
+// for it.
+func TestRankedSearchTreatsLeadingDashAsPartOfTheTerm(t *testing.T) {
+	fixture := rankedFixture("run the suite with -race enabled", "run the suite without it")
+	result := runRankedFixture(t, fixture, "suite -race", filepath.Join(t.TempDir(), "search-index.db"))
+	if result.Total != 1 || result.Matches[0].Text != "run the suite with -race enabled" {
+		t.Fatalf("dash result = %#v (effective %q)", result, result.EffectiveQuery)
 	}
 }
 
@@ -154,12 +168,84 @@ func TestRankedSearchRejectsMalformedAndRegexQueries(t *testing.T) {
 	fixture := rankedFixture("alpha")
 	indexPath := filepath.Join(t.TempDir(), "search-index.db")
 	for _, options := range []Options{
-		{Query: `"unterminated`, Ranked: true},
+		{Query: `fts:"unterminated`, Ranked: true},
 		{Query: "alpha", Ranked: true, Regex: true},
 	} {
 		if _, err := Run(context.Background(), fixture, nil, options, indexPath); err == nil || !IsOptionError(err) {
 			t.Fatalf("options %#v error = %v, want option error", options, err)
 		}
+	}
+}
+
+// A rejected query has to explain the query, not the storage engine underneath
+// it: raw SQLite text reads as a database fault and sends the reader debugging
+// the wrong system.
+func TestRankedSearchExplainsRejectedQueriesWithoutSQLiteInternals(t *testing.T) {
+	fixture := rankedFixture("alpha beta")
+	indexPath := filepath.Join(t.TempDir(), "search-index.db")
+	for _, test := range []struct{ query, want string }{
+		{query: "fts:NOT beta", want: `near "NOT"`},
+		{query: "fts:alpha NOT", want: "ends where a term was expected"},
+		{query: `fts:"unterminated`, want: "quote is opened and never closed"},
+	} {
+		t.Run(test.query, func(t *testing.T) {
+			_, err := Run(context.Background(), fixture, nil, Options{Query: test.query, Ranked: true}, indexPath)
+			if err == nil || !IsOptionError(err) {
+				t.Fatalf("error = %v, want option error", err)
+			}
+			message := err.Error()
+			if !strings.Contains(message, test.want) {
+				t.Fatalf("error = %q, want it to contain %q", message, test.want)
+			}
+			if !strings.Contains(message, "--exact") {
+				t.Fatalf("error = %q, want the safe next action", message)
+			}
+			for _, leak := range []string{"SQL logic error", "fts5", "sqlite"} {
+				if strings.Contains(strings.ToLower(message), strings.ToLower(leak)) {
+					t.Fatalf("error = %q leaks the storage engine detail %q", message, leak)
+				}
+			}
+		})
+	}
+}
+
+// The span is a byte range into the matching message body, so it has to survive
+// runes whose lowercase form has a different byte length. strings.ToLower
+// collapses İ to i and K (U+212A) to k, which shifts every later offset and
+// makes the query term's length the wrong span length.
+func TestRankedHighlightSpanIndexesTheOriginalText(t *testing.T) {
+	for _, test := range []struct{ name, query, text, want string }{
+		{name: "offset after a shrinking rune", query: "deploy", text: "İstanbul deploy notes", want: "deploy"},
+		{name: "span covers the matched text", query: "kelvin", text: "Kelvin scale", want: "Kelvin"},
+		{name: "excluded terms are skipped", query: "-notes deploy", text: "İstanbul deploy notes", want: "deploy"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, err := parseSearchQuery(test.query, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			start, end := rankedHighlightSpan(rankedHighlightPatterns(parsed.highlights), test.text)
+			if start < 0 || end > len(test.text) || end < start {
+				t.Fatalf("span = [%d,%d) for text of %d bytes", start, end, len(test.text))
+			}
+			if got := test.text[start:end]; got != test.want {
+				t.Fatalf("text[%d:%d] = %q, want %q", start, end, got, test.want)
+			}
+		})
+	}
+}
+
+func TestRankedSearchReportsHighlightSpanOfTheIndexedBody(t *testing.T) {
+	fixture := rankedFixture("İstanbul rollout marker")
+	result := runRankedFixture(t, fixture, "marker", filepath.Join(t.TempDir(), "search-index.db"))
+	if result.Total != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	match := result.Matches[0]
+	if match.Text[match.MatchStart:match.MatchEnd] != "marker" {
+		t.Fatalf("span [%d,%d) of %q = %q, want %q",
+			match.MatchStart, match.MatchEnd, match.Text,
+			match.Text[match.MatchStart:match.MatchEnd], "marker")
 	}
 }
 

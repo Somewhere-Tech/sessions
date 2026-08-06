@@ -71,7 +71,7 @@ func Receive(ctx context.Context, request ReceiveRequest, options ReceiveOptions
 	}
 	var destination string
 	if tool == "claude-code" {
-		destination = filepath.Join(home, ".claude", "projects", watch.EncodeClaudeCWD(request.Cwd), request.UUID+".jsonl")
+		destination = claudeConversationDestination(filepath.Join(home, ".claude", "projects"), request.Cwd, request.UUID)
 	} else {
 		at := codexTime
 		if at.IsZero() {
@@ -93,26 +93,72 @@ func Receive(ctx context.Context, request ReceiveRequest, options ReceiveOptions
 	return result, nil
 }
 
+// claudeConversationDestination names the file a moved Claude conversation must
+// land in for the destination machine to be able to resume it.
+//
+// The bucket has to be the one Claude Code itself computes, which folds EVERY
+// non-alphanumeric character to a dash (watch.EncodeClaudeCWDStrict). The
+// narrow encoding folds only separators, so for any workspace whose path
+// contains a dot, underscore, space or other punctuation the two disagree and
+// the conversation was written into a directory Claude never reads: the move
+// reported success and native "claude --resume <uuid>" at the destination could
+// not see the conversation at all. /Users/uzair/pretty_tmux is the whole bug --
+// Claude reads -Users-uzair-pretty-tmux, Sessions wrote -Users-uzair-pretty_tmux.
+//
+// Writing into a bucket that several workspaces can share is safe here in a way
+// it is not for resolution. The file is named by provider UUID, which is unique
+// across workspaces, and this is exactly what Claude Code does with its own
+// conversations. Attribution back to a workspace never depends on the directory
+// name: the transcript records its own cwd, and readers already probe every
+// encoding (watch.ClaudeProjectDirsUnder).
+//
+// An earlier Sessions wrote this conversation under the narrow encoding, so any
+// candidate bucket that already holds this UUID wins over the strict one. That
+// keeps a repeated move idempotent instead of leaving two copies of one
+// conversation in two buckets -- a duplicate would make the UUID resolve to
+// several Claude projects and break adoption by UUID outright.
+//
+// Claude also caps the bucket name at 200 characters and appends a hash of the
+// unencoded cwd past that. EncodeClaudeCWDStrict reproduces both, so a long
+// workspace lands in the same directory the provider reads -- and it lives in
+// watch rather than here, because every Sessions reader probes watch's
+// encodings and a name only this function knew how to build would be one no
+// reader could find.
+func claudeConversationDestination(projects, cwd, uuid string) string {
+	name := uuid + ".jsonl"
+	destination := filepath.Join(projects, watch.EncodeClaudeCWDStrict(cwd), name)
+	for _, dir := range watch.ClaudeProjectDirsUnder(projects, cwd) {
+		existing := filepath.Join(dir, name)
+		if existing == destination {
+			continue
+		}
+		if info, err := os.Stat(existing); err == nil && info.Mode().IsRegular() {
+			return existing
+		}
+	}
+	return destination
+}
+
 func codexConversationTime(encoded []byte, uuid string) (time.Time, error) {
 	line := encoded
 	if index := bytes.IndexByte(encoded, '\n'); index >= 0 {
 		line = encoded[:index]
 	}
 	var record struct {
-		Type      string `json:"type"`
-		Timestamp string `json:"timestamp"`
-		Payload   struct {
-			ID        string `json:"id"`
-			Timestamp string `json:"timestamp"`
-		} `json:"payload"`
+		Type      string         `json:"type"`
+		Timestamp string         `json:"timestamp"`
+		Payload   map[string]any `json:"payload"`
 	}
 	if err := json.Unmarshal(line, &record); err != nil {
 		return time.Time{}, fmt.Errorf("decode Codex session_meta: %w", err)
 	}
-	if record.Type != "session_meta" || record.Payload.ID != uuid {
+	// The id key has two spellings and this reader only knew one, so a rollout
+	// that spells it session_id was rejected as "does not match uuid" — a
+	// received conversation refused on the strength of a key name.
+	if record.Type != "session_meta" || watch.CodexSessionMetaID(record.Payload) != uuid {
 		return time.Time{}, errors.New("Codex conversation session_meta does not match uuid")
 	}
-	raw := record.Payload.Timestamp
+	raw, _ := record.Payload["timestamp"].(string)
 	if raw == "" {
 		raw = record.Timestamp
 	}

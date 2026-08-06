@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +56,8 @@ type statusOutput struct {
 	EndReason         string                   `json:"end_reason,omitempty"`
 	EndOperationID    string                   `json:"end_operation_id,omitempty"`
 	SetAsideAtMS      *int64                   `json:"set_aside_at_ms,omitempty"`
+	Permissions       string                   `json:"permissions,omitempty"`
+	Lifecycle         string                   `json:"lifecycle,omitempty"`
 }
 
 func (a *app) cmdStatus(args []string) error {
@@ -129,6 +133,7 @@ func (a *app) cmdStatus(args []string) error {
 		EndedByName: current.EndedByName, EndedByClient: current.EndedByClient, EndReason: current.EndReason,
 		EndOperationID: current.EndOperationID,
 		SetAsideAtMS:   current.SetAsideAt,
+		Permissions:    current.Permissions, Lifecycle: current.Lifecycle,
 	}
 	if current.Exited {
 		output.ExitCode = current.ExitCode
@@ -203,7 +208,20 @@ func inspectGit(cwd string) (*gitStatus, error) {
 	if strings.TrimSpace(string(probeOutput)) != "true" {
 		return nil, nil
 	}
-	command := exec.CommandContext(ctx, "git", "-C", cwd, "status", "--porcelain=v2", "--branch", "--untracked-files=normal")
+	rootOutput, err := exec.CommandContext(ctx, "git", "-C", cwd, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return nil, err
+	}
+	root := strings.TrimSpace(string(rootOutput))
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		absHome, homeAbsErr := filepath.Abs(home)
+		absCWD, cwdAbsErr := filepath.Abs(cwd)
+		absRoot, rootAbsErr := filepath.Abs(root)
+		if homeAbsErr == nil && cwdAbsErr == nil && rootAbsErr == nil && absHome == absRoot && absCWD == absRoot {
+			return nil, nil
+		}
+	}
+	command := exec.CommandContext(ctx, "git", "-C", cwd, "status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--", ".")
 	encoded, err := command.Output()
 	if err != nil {
 		return nil, err
@@ -319,6 +337,16 @@ func (a *app) writeStatusCard(output statusOutput, lastActivityAt int64) error {
 	}
 	if output.IdleReason != "" {
 		if _, err := fmt.Fprintf(a.stdout, "  reason   %s\n", output.IdleReason); err != nil {
+			return err
+		}
+	}
+	if output.Permissions != "" {
+		if _, err := fmt.Fprintf(a.stdout, "  access   %s\n", output.Permissions); err != nil {
+			return err
+		}
+	}
+	if output.Lifecycle != "" {
+		if _, err := fmt.Fprintf(a.stdout, "  lifecycle %s\n", output.Lifecycle); err != nil {
 			return err
 		}
 	}

@@ -54,6 +54,17 @@ func (r *runtimeSession) markStructuredDone() {
 	r.notifyDone()
 }
 
+func (r *runtimeSession) markTerminalTurnDone() {
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	r.terminalTurnDone = true
+	r.cancelWaitingLocked()
+	r.mu.Unlock()
+}
+
 func (r *runtimeSession) notifyDone() {
 	info := r.session.Info()
 	body := info.LastSummary

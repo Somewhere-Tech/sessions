@@ -181,3 +181,33 @@ func TestRemoteControlRequiresCompletedOnboardingConsent(t *testing.T) {
 		t.Fatalf("local-only Remote Control = %q, want %q", got, ClaudeChoiceOff)
 	}
 }
+
+func TestDelegatedAccessRequiresCurrentExplicitOnboarding(t *testing.T) {
+	if got := (Settings{}).EffectiveDelegation().Access; got != DelegatedAccessConsentInherited {
+		t.Fatalf("fresh delegation = %q, want inherit", got)
+	}
+	legacy := Settings{
+		Delegation: &DelegationSettings{Access: DelegatedAccessConsentAutonomous},
+		Onboarding: &OnboardingSettings{
+			Version: OnboardingCurrentVersion - 1, RemoteControlConsent: RemoteControlConsentLocalOnly,
+			DelegatedAccessConsent: DelegatedAccessConsentAutonomous,
+		},
+	}
+	if got := legacy.EffectiveDelegation().Access; got != DelegatedAccessConsentInherited {
+		t.Fatalf("legacy delegation = %q, want inherit", got)
+	}
+	autonomous := Settings{
+		Delegation: &DelegationSettings{Access: DelegatedAccessConsentAutonomous},
+		Onboarding: &OnboardingSettings{
+			Version: OnboardingCurrentVersion, RemoteControlConsent: RemoteControlConsentLocalOnly,
+			DelegatedAccessConsent: DelegatedAccessConsentAutonomous,
+		},
+	}
+	state := autonomous.EffectiveOnboarding()
+	if !state.Complete || state.DelegatedAccess != DelegatedAccessConsentAutonomous {
+		t.Fatalf("autonomous onboarding = %#v", state)
+	}
+	if got := autonomous.EffectiveDelegation().Access; got != DelegatedAccessConsentAutonomous {
+		t.Fatalf("autonomous delegation = %q", got)
+	}
+}

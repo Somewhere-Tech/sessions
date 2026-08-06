@@ -6,19 +6,20 @@ import (
 	"testing"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 func TestModelControlArgumentUpdates(t *testing.T) {
 	args := []string{"--model", "old", "-c", "service_tier=priority", "-c", "model_reasoning_effort=medium"}
-	args = withArgumentValue(args, "new", "--model", "-m")
-	args = withConfigValue(args, "model_reasoning_effort", "high")
+	args = providerargs.WithValue(args, "new", providerargs.ModelFlags()...)
+	args = providerargs.WithConfigValue(args, providerargs.CodexEffortKey, "high")
 	want := []string{"-c", "service_tier=priority", "--model", "new", "-c", "model_reasoning_effort=high"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("updated args = %#v, want %#v", args, want)
 	}
 
-	if cleared := withArgumentValue([]string{"-m", "opus", "--verbose"}, "", "--model", "-m"); !reflect.DeepEqual(cleared, []string{"--verbose"}) {
+	if cleared := providerargs.WithValue([]string{"-m", "opus", "--verbose"}, "", providerargs.ModelFlags()...); !reflect.DeepEqual(cleared, []string{"--verbose"}) {
 		t.Fatalf("cleared args = %#v", cleared)
 	}
 }

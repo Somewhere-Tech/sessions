@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 const (
@@ -76,6 +78,39 @@ func (s *Server) messageRelayMatcher(ctx context.Context, laneID string) (*relay
 	return newRelayMatcher(relays), nil
 }
 
+// eventsWindowBody builds the structured-events payload that BOTH transports
+// return, so a conversation read over the WebSocket mux carries the same
+// `author` annotations as the same read over HTTP.
+//
+// Only the requested window is fetched and annotated. Annotating the entire
+// history to serve one page made every page cost O(total events) — paging a
+// 50k-event conversation re-parsed 50k events per page — and re-reading the
+// history a second time also let a trim between the two reads shift the slice
+// that was handed back.
+func (s *Server) eventsWindowBody(
+	ctx context.Context,
+	session *state.Session,
+	laneID string,
+	since, tail, before *int64,
+) map[string]any {
+	window := session.EventsWindow(since, tail, before)
+	events := window.Events
+	if annotated, err := s.annotateRawEvents(ctx, laneID, events); err != nil {
+		log.Printf("[attribution] annotate live events for %s: %v", laneID, err)
+	} else {
+		events = annotated
+	}
+	return map[string]any{
+		"events": events, "nextIndex": window.NextIndex, "totalCount": window.TotalCount,
+		"startIndex": window.StartIndex, "endIndex": window.EndIndex,
+	}
+}
+
+// annotateRawEvents attributes the events it is given. Relay consumption is
+// scoped to that set, so a relay already spent on an event outside the window
+// is available again inside it. That only differs from a whole-history pass
+// when the same message text was relayed twice within relayMatchAge, and it is
+// the price of not re-parsing the whole conversation for every page.
 func (s *Server) annotateRawEvents(
 	ctx context.Context,
 	laneID string,

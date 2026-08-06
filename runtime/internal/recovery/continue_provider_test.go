@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/recovery"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
@@ -48,6 +49,41 @@ func TestContinueAcrossProvidersCreatesFreshDestinationWithoutCredentials(t *tes
 	if creator.request.Continuation == nil ||
 		creator.request.Continuation.SourceHistoryID != continuation.SourceHistoryID {
 		t.Fatalf("continuation was not carried through create: %+v", creator.request.Continuation)
+	}
+}
+
+func TestResumeFromTranscriptCreatesLinkedSameProviderSuccessor(t *testing.T) {
+	creator := &continuationCreator{}
+	root := t.TempDir()
+	store := openScratchLedger(t, root)
+	defer store.Close()
+	continuation := state.ContinuationContext{
+		SchemaVersion:   state.ContinuationSchemaVersion,
+		SourceHistoryID: "ended-lane", SourceProvider: "codex",
+		SourceTitle: "db-final-review-sol", SourceCWD: t.TempDir(),
+		DestinationProvider: "codex", Mode: state.ContinuationNativeImport,
+		Messages: []state.ContinuationMessage{
+			{Role: "user", Text: "Final cold review"},
+			{Role: "assistant", Text: "DO-NOT-SHIP"},
+		},
+	}
+	source := &recovery.AdoptSource{LaneID: "ended-lane", Profile: "work", ConfigDir: "/profiles/work"}
+	result, err := recovery.ResumeFromTranscript(
+		context.Background(), continuation, "", creator,
+		ledger.ObservationWriter(store.Observations()), source,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || !result.TranscriptRecovery || result.ImportedMessages != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+	if creator.request.Cmd != "codex" || creator.request.Kind != state.KindCodexAppServer ||
+		creator.request.Profile != "work" || creator.request.ConfigDir != "/profiles/work" {
+		t.Fatalf("destination request = %+v", creator.request)
+	}
+	if creator.request.Continuation == nil || !creator.request.Continuation.TranscriptRecovery {
+		t.Fatalf("continuation = %+v", creator.request.Continuation)
 	}
 }
 

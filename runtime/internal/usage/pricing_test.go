@@ -2,8 +2,6 @@ package usage
 
 import (
 	"math"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -53,20 +51,5 @@ func TestPriceMatchesCCUsageFastAndLongContextSemantics(t *testing.T) {
 				t.Fatalf("price(%q) = %.12f, want %.12f", test.model, got, test.want)
 			}
 		})
-	}
-}
-
-func TestCodexFastMode(t *testing.T) {
-	root := t.TempDir()
-	if codexFastMode(root) {
-		t.Fatal("missing config unexpectedly enabled fast mode")
-	}
-	for _, tier := range []string{"fast", "priority"} {
-		if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte("service_tier = \""+tier+"\" # comment\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if !codexFastMode(root) {
-			t.Fatalf("service_tier %q did not enable fast pricing", tier)
-		}
 	}
 }

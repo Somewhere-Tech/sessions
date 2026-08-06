@@ -146,17 +146,32 @@ func TestProviderArgumentsDisableToolsAndPersistence(t *testing.T) {
 	}
 }
 
+// A recap must run on the sign-in the user's CLI already holds. agentcall now
+// builds the child environment from an allowlist rather than stripping a fixed
+// list of names, so an unrecognized variable is dropped by default: a denylist
+// let ANTHROPIC_AUTH_TOKEN and the Bedrock and Vertex switches through, and any
+// one of those makes a recap billable.
 func TestProviderEnvironmentPrefersExistingCLIAuthentication(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "do-not-forward")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "do-not-forward")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://do-not-forward.example")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
 	t.Setenv("OPENAI_API_KEY", "do-not-forward")
+	t.Setenv("OPENAI_BASE_URL", "https://do-not-forward.example/v1")
 	t.Setenv("SESSIONS_RECAP_TEST_KEEP", "kept")
 	environment := strings.Join(providerEnvironment(), "\n")
-	for _, forbidden := range []string{"ANTHROPIC_API_KEY=", "OPENAI_API_KEY="} {
+	for _, forbidden := range []string{
+		"ANTHROPIC_API_KEY=", "ANTHROPIC_AUTH_TOKEN=", "ANTHROPIC_BASE_URL=",
+		"CLAUDE_CODE_USE_BEDROCK=", "OPENAI_API_KEY=", "OPENAI_BASE_URL=",
+	} {
 		if strings.Contains(environment, forbidden) {
-			t.Fatalf("provider environment contains %s", forbidden)
+			t.Errorf("provider environment contains %s", forbidden)
 		}
 	}
-	if !strings.Contains(environment, "SESSIONS_RECAP_TEST_KEEP=kept") {
-		t.Fatal("provider environment dropped ordinary variables")
+	if strings.Contains(environment, "SESSIONS_RECAP_TEST_KEEP=") {
+		t.Error("provider environment forwarded a variable that is not on the allowlist")
+	}
+	if !strings.Contains(environment, "PATH=") {
+		t.Fatal("provider environment has no PATH; the recap could not find the user's CLI")
 	}
 }

@@ -9,12 +9,27 @@ import (
 	"strings"
 )
 
-func defaultStateRoot(home string) string {
-	localAppData := os.Getenv("LOCALAPPDATA")
-	if localAppData == "" {
-		localAppData = filepath.Join(home, "AppData", "Local")
+// sessionsAppRoot resolves the per-user application root for a given home.
+// The decision lives in resolveWindowsAppRoot, in a file without a build tag,
+// so it is covered by tests that run on every host rather than only where this
+// file compiles.
+func sessionsAppRoot(home string) string {
+	signedInHome, err := os.UserHomeDir()
+	if err != nil {
+		signedInHome = ""
 	}
-	return filepath.Join(localAppData, "Sessions", "state")
+	return resolveWindowsAppRoot(home, signedInHome, os.Getenv("LOCALAPPDATA"))
+}
+
+func defaultStateRoot(home string) string {
+	return filepath.Join(sessionsAppRoot(home), "state")
+}
+
+// userConfigRoot is the Windows adapter for the Unix ~/.config/sessions tree.
+// It sits beside the state root rather than under it so a state reset cannot
+// discard configuration or the backup key.
+func userConfigRoot(home string) string {
+	return filepath.Join(sessionsAppRoot(home), "config")
 }
 
 func serviceDefinitionsDir(home string) string {

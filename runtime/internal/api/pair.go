@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,9 +23,22 @@ import (
 )
 
 const (
-	pairTicketTTL            = 5 * time.Minute
-	pairFailureWindow        = time.Minute
-	pairFailureLimit         = 10
+	pairTicketTTL     = 5 * time.Minute
+	pairFailureWindow = time.Minute
+	// pairFailureLimit is per source address. A single global counter let any
+	// peer that can reach /api/pair/claim spend the whole budget on bad
+	// tickets and lock the user out of their own QR claim, which denies the
+	// feature the user actually relies on rather than protecting it.
+	pairFailureLimit = 10
+	// pairGlobalFailureLimit is the backstop against a spray from many
+	// addresses. It is deliberately far above the per-peer limit so one
+	// attacker cannot reach it, and a botnet that does reach it is a problem
+	// worth failing closed on.
+	pairGlobalFailureLimit = 100
+	// pairTrackedPeerLimit bounds the memory a hostile peer can cost us. An
+	// IPv6 /64 hands one host more addresses than we would ever want to track,
+	// so keys are already collapsed to a /64 and the map is capped on top.
+	pairTrackedPeerLimit     = 1024
 	deviceLastUsedWriteGap   = time.Minute
 	maximumPairingDeviceName = 80
 )
@@ -47,6 +61,7 @@ type pairService struct {
 	mu           sync.Mutex
 	tickets      map[string]pairTicket
 	failedClaims []time.Time
+	peerFailures map[string][]time.Time
 	now          func() time.Time
 	devices      *deviceStore
 }
@@ -100,9 +115,10 @@ func newPairService(config state.Config) *pairService {
 	}
 	now := time.Now
 	return &pairService{
-		tickets: make(map[string]pairTicket),
-		now:     now,
-		devices: newDeviceStore(filepath.Join(root, "devices.json"), now),
+		tickets:      make(map[string]pairTicket),
+		peerFailures: make(map[string][]time.Time),
+		now:          now,
+		devices:      newDeviceStore(filepath.Join(root, "devices.json"), now),
 	}
 }
 
@@ -140,10 +156,11 @@ func (p *pairService) mint(name string) (pairingTicketResponse, error) {
 	return pairingTicketResponse{Ticket: id + "." + secret, ExpiresAt: expiresAt}, nil
 }
 
-func (p *pairService) claim(encoded, name, userAgent string) (pairingClaimResponse, error) {
+func (p *pairService) claim(encoded, name, userAgent, remoteAddress string) (pairingClaimResponse, error) {
+	peer := pairPeerKey(remoteAddress)
 	id, secret, validShape := strings.Cut(strings.TrimSpace(encoded), ".")
 	if !validShape || id == "" || secret == "" || strings.Contains(secret, ".") {
-		if p.recordFailedClaim() {
+		if p.recordFailedClaim(peer) {
 			return pairingClaimResponse{}, errPairRateLimit
 		}
 		return pairingClaimResponse{}, errPairTicketGone
@@ -152,7 +169,7 @@ func (p *pairService) claim(encoded, name, userAgent string) (pairingClaimRespon
 	p.mu.Lock()
 	now := p.now().UTC()
 	p.pruneFailuresLocked(now)
-	if len(p.failedClaims) >= pairFailureLimit {
+	if p.rateLimitedLocked(peer) {
 		p.mu.Unlock()
 		return pairingClaimResponse{}, errPairRateLimit
 	}
@@ -162,7 +179,7 @@ func (p *pairService) claim(encoded, name, userAgent string) (pairingClaimRespon
 		if found && !now.Before(ticket.ExpiresAt) {
 			delete(p.tickets, id)
 		}
-		p.failedClaims = append(p.failedClaims, now)
+		p.recordFailureLocked(now, peer)
 		p.mu.Unlock()
 		return pairingClaimResponse{}, errPairTicketGone
 	}
@@ -189,27 +206,101 @@ func (p *pairService) claim(encoded, name, userAgent string) (pairingClaimRespon
 	return pairingClaimResponse{DeviceID: record.DeviceID, Token: token, Name: record.Name}, nil
 }
 
-func (p *pairService) recordFailedClaim() bool {
+func (p *pairService) recordFailedClaim(peer string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now().UTC()
 	p.pruneFailuresLocked(now)
-	if len(p.failedClaims) >= pairFailureLimit {
+	if p.rateLimitedLocked(peer) {
 		return true
 	}
-	p.failedClaims = append(p.failedClaims, now)
+	p.recordFailureLocked(now, peer)
 	return false
+}
+
+// rateLimitedLocked answers for one source address. Callers must have pruned
+// first. The per-peer limit is what stops an attacker from denying the user
+// their own claim; the global limit only catches a spray broad enough that
+// failing closed is the right answer.
+func (p *pairService) rateLimitedLocked(peer string) bool {
+	return len(p.peerFailures[peer]) >= pairFailureLimit || len(p.failedClaims) >= pairGlobalFailureLimit
+}
+
+func (p *pairService) recordFailureLocked(now time.Time, peer string) {
+	p.failedClaims = append(p.failedClaims, now)
+	if p.peerFailures == nil {
+		p.peerFailures = make(map[string][]time.Time)
+	}
+	p.peerFailures[peer] = append(p.peerFailures[peer], now)
+	p.evictOldestPeersLocked()
 }
 
 func (p *pairService) pruneFailuresLocked(now time.Time) {
 	cutoff := now.Add(-pairFailureWindow)
+	p.failedClaims = pruneExpiredFailures(p.failedClaims, cutoff)
+	for peer, failures := range p.peerFailures {
+		remaining := pruneExpiredFailures(failures, cutoff)
+		if len(remaining) == 0 {
+			delete(p.peerFailures, peer)
+			continue
+		}
+		p.peerFailures[peer] = remaining
+	}
+}
+
+// evictOldestPeersLocked keeps the tracker's memory bounded even if pruning has
+// not caught up. Dropping a peer only forgives its recent failures, and the
+// global counter still covers the volume, so this can never lock a peer out.
+func (p *pairService) evictOldestPeersLocked() {
+	for len(p.peerFailures) > pairTrackedPeerLimit {
+		oldestPeer := ""
+		var oldest time.Time
+		for peer, failures := range p.peerFailures {
+			last := failures[len(failures)-1]
+			if oldestPeer == "" || last.Before(oldest) {
+				oldestPeer, oldest = peer, last
+			}
+		}
+		delete(p.peerFailures, oldestPeer)
+	}
+}
+
+func pruneExpiredFailures(failures []time.Time, cutoff time.Time) []time.Time {
 	first := 0
-	for first < len(p.failedClaims) && !p.failedClaims[first].After(cutoff) {
+	for first < len(failures) && !failures[first].After(cutoff) {
 		first++
 	}
-	if first > 0 {
-		p.failedClaims = append([]time.Time(nil), p.failedClaims[first:]...)
+	if first == 0 {
+		return failures
 	}
+	return append([]time.Time(nil), failures[first:]...)
+}
+
+// pairPeerKey names the source of a claim by something it cannot forge. It is
+// deliberately the transport peer and never X-Forwarded-For: a header an
+// attacker controls would let one peer exhaust every other peer's budget and
+// recreate the exact denial this dimension exists to prevent. Behind a reverse
+// proxy every claim collapses onto the proxy's address, which degrades to the
+// old global behaviour rather than to something unsafe.
+func pairPeerKey(remoteAddress string) string {
+	address := strings.TrimSpace(remoteAddress)
+	if address == "" {
+		return "unknown"
+	}
+	host := address
+	if parsed, _, err := net.SplitHostPort(address); err == nil {
+		host = parsed
+	}
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return strings.ToLower(host)
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	// One host routinely owns every address in its /64, so count the prefix.
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 func (s *deviceStore) create(name string) (deviceRecord, string, error) {
@@ -484,10 +575,11 @@ func (s *Server) handlePairClaimRoute(response http.ResponseWriter, request *htt
 		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
 		return true
 	}
-	claimed, err := s.pair.claim(body.Ticket, body.Name, request.UserAgent())
+	claimed, err := s.pair.claim(body.Ticket, body.Name, request.UserAgent(), request.RemoteAddr)
 	if errors.Is(err, errPairRateLimit) {
+		response.Header().Set("Retry-After", "60")
 		s.sendJSON(response, http.StatusTooManyRequests, map[string]any{
-			"error": "Too many failed pairing attempts. Wait one minute, then run `sessions pair` again.",
+			"error": "Too many failed pairing attempts from this address. Wait one minute, then run `sessions pair` to create a fresh ticket and claim it again.",
 		}, corsOrigin)
 		return true
 	}

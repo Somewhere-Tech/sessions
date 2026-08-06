@@ -1,14 +1,24 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer';
+import { closeBrowser } from './lib/smoke.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-const [fleet, styles] = await Promise.all([
+const [fleet, servers, api, styles, status] = await Promise.all([
   source('src/components/FleetView.tsx'),
-  source('src/styles/globals.css')
+  source('src/lib/servers.ts'),
+  source('src/api/sessionsd.ts'),
+  source('src/styles/globals.css'),
+  source('src/lib/sessionStatus.ts')
 ]);
 
-assert.match(fleet, /'needs-you': 'Needs you'/);
+// The state vocabulary lives in exactly one module. Fleet asks for it; it
+// must not carry its own label map or its own precedence order, which is how
+// it came to say "Needs you" about a session the navigator called "Ended".
+assert.match(status, /'needs-you': 'Needs you'/);
+assert.match(fleet, /classifySession/);
+assert.doesNotMatch(fleet, /'Needs you'/);
+assert.doesNotMatch(fleet, /function fleetSessionState/);
 assert.match(fleet, /sortFleetSessions\(candidateSessions\)/);
 assert.doesNotMatch(fleet, /quiet sessions/);
 assert.doesNotMatch(fleet, /Open Sessions to see and manage everything\./);
@@ -17,8 +27,16 @@ assert.doesNotMatch(fleet, /className="fleet-session-cwd"/);
 assert.doesNotMatch(fleet, /className="fleet-session-summary"/);
 assert.doesNotMatch(fleet, /className="fleet-session-tags"/);
 assert.match(fleet, /reported\.includes\('windows'\)/);
-assert.match(fleet, /if \(platform === 'windows'\) return 'This PC'/);
 assert.match(fleet, /Sessions \$\{version\}/);
+assert.match(fleet, /Name this machine/);
+assert.match(fleet, /updateServer\(server\.id, \{ name, customName: name \}\)/);
+assert.match(fleet, /serverDisplayName\(server, true\)/);
+assert.match(servers, /custom \|\| reported \|\|/,
+  'a custom Fleet label must override a renamed system hostname');
+assert.match(servers, /`\$\{base\} \(this machine\)`/,
+  'the local annotation must follow the actual machine name');
+assert.match(api, /\/api\/machine/,
+  'clients must refresh the authenticated stable machine identity');
 assert.match(styles, /grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(420px,\s*100%\),\s*1fr\)\)/);
 assert.match(styles, /\.fleet-session-state\s*\{[\s\S]*?white-space:\s*nowrap;/);
 assert.doesNotMatch(styles, /\.fleet-session-state\s*\{[^}]*font-family:\s*var\(--font-mono\)/);
@@ -120,7 +138,10 @@ try {
   assert.equal(layout.windowsPlatformMark, 'Windows');
   assert.ok(layout.windowsCardOverflow <= 0, `Windows machine card overflowed by ${layout.windowsCardOverflow}px`);
 } finally {
-  await browser.close();
+  // Bounded: `browser.close()` waits on the browser's own shutdown, and a
+  // wedged Chromium on a loaded machine turns a finished suite into a hang with
+  // no assertion to report. Fail, never wait.
+  await closeBrowser(browser);
 }
 
 console.log('fleet clarity smoke: ok');

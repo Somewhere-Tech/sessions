@@ -15,6 +15,7 @@ func TestClassifyIdleReasonHeritageSnapshots(t *testing.T) {
 	}{
 		{name: "done screen", snapshot: "Implemented finish notifications.\n12 tests passed, 0 failed.\n❯", want: IdleDone},
 		{name: "y/n prompt", snapshot: "The migration changes production data.\nContinue? [y/N]", want: IdleBlocked},
+		{name: "codex confirmation footer", snapshot: "Reason: Allow the focused regression test to open tsx's local IPC socket?\nPress enter to confirm or esc to cancel", want: IdleBlocked},
 		{name: "numbered picker", snapshot: "Deployment target\n❯ 1) Staging\n  2) Production\n  3) Cancel", want: IdleBlocked},
 		{name: "error trace", snapshot: "Traceback (most recent call last):\n  at notify.ts:42\nFatal error: connection failed", want: IdleError},
 		{name: "resolved error", snapshot: "Error: first attempt failed\nRetrying with fallback\nAll checks passed", want: IdleDone},
@@ -25,6 +26,13 @@ func TestClassifyIdleReasonHeritageSnapshots(t *testing.T) {
 				t.Fatalf("ClassifyIdleReason() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestClassifySnapshotUsesCodexApprovalReason(t *testing.T) {
+	got := ClassifySnapshot("Reason: Allow the focused regression test to open tsx's local IPC socket?\nPress enter to confirm or esc to cancel")
+	if got.Outcome != IdleBlocked || got.Line != "Allow the focused regression test to open tsx's local IPC socket?" {
+		t.Fatalf("ClassifySnapshot() = %#v", got)
 	}
 }
 

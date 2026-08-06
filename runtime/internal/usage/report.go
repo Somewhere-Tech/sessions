@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -49,7 +51,7 @@ func (s *Service) Report(ctx context.Context, options ReportOptions) (Report, er
 		return Report{}, err
 	}
 	bindings := s.sessionBindings()
-	query := `SELECT provider, provider_session_id, timestamp_ms, model,
+	query := `SELECT event_key, provider, provider_session_id, timestamp_ms, model,
 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 reasoning_tokens, recorded_cost_usd, calculated_cost_usd, pricing_found
 FROM usage_entries WHERE 1=1`
@@ -73,14 +75,15 @@ FROM usage_entries WHERE 1=1`
 	}
 	defer rows.Close()
 	aggregates := make(map[string]*aggregate)
+	events := make([]ReportEvent, 0)
 	for rows.Next() {
-		var provider, providerSessionID, model string
+		var eventKey, provider, providerSessionID, model string
 		var timestampMS int64
 		var tokens Tokens
 		var recorded sql.NullFloat64
 		var calculated float64
 		var pricingFound bool
-		if err := rows.Scan(&provider, &providerSessionID, &timestampMS, &model,
+		if err := rows.Scan(&eventKey, &provider, &providerSessionID, &timestampMS, &model,
 			&tokens.Input, &tokens.Output, &tokens.CacheCreation, &tokens.CacheRead,
 			&tokens.Reasoning,
 			&recorded, &calculated, &pricingFound); err != nil {
@@ -88,6 +91,32 @@ FROM usage_entries WHERE 1=1`
 		}
 		binding := bindings[provider+":"+providerSessionID]
 		key, start := usageGroupKey(options, time.UnixMilli(timestampMS), provider, providerSessionID, model, binding)
+		eventCost := calculated
+		switch options.Mode {
+		case ModeDisplay:
+			eventCost = 0
+			if recorded.Valid {
+				eventCost = recorded.Float64
+			}
+		case ModeAuto:
+			if recorded.Valid {
+				eventCost = recorded.Float64
+			}
+		}
+		missingPricing := !pricingFound && !(options.Mode == ModeDisplay || (options.Mode == ModeAuto && recorded.Valid))
+		if options.IncludeEvents {
+			event := ReportEvent{
+				EventKey: fleetEventKey(eventKey), GroupKey: key, Start: start, Provider: provider,
+				ProviderSessionID: providerSessionID, SessionID: binding.id,
+				Tags: state.CloneTags(binding.tags), Model: model, Tokens: tokens,
+				CostUSD: eventCost, CalculatedCostUSD: calculated,
+				HasRecordedCost: recorded.Valid, MissingPricing: missingPricing,
+			}
+			if recorded.Valid {
+				event.RecordedCostUSD = recorded.Float64
+			}
+			events = append(events, event)
+		}
 		group := aggregates[key]
 		if group == nil {
 			group = &aggregate{row: ReportRow{Key: key, Start: start}, models: make(map[string]struct{}), providers: make(map[string]struct{})}
@@ -121,7 +150,7 @@ FROM usage_entries WHERE 1=1`
 			}
 		}
 		group.row.Entries++
-		if !pricingFound && !(options.Mode == ModeDisplay || (options.Mode == ModeAuto && recorded.Valid)) {
+		if missingPricing {
 			group.row.MissingPricing++
 		}
 		if options.Group == "session" {
@@ -138,6 +167,7 @@ FROM usage_entries WHERE 1=1`
 	report := Report{SchemaVersion: 1, Machine: s.options.Machine, GeneratedAt: s.options.Now().UTC().Format(time.RFC3339), Group: options.Group,
 		Mode: options.Mode, Dimension: strings.ToLower(strings.TrimSpace(options.Dimension)), Pricing: provenance, Scan: scan,
 		Rows: make([]ReportRow, 0, len(aggregates)), Totals: ReportRow{Key: "total", Models: []string{}},
+		EventsIncluded: options.IncludeEvents, Events: events,
 	}
 	for _, group := range aggregates {
 		for model := range group.models {
@@ -172,6 +202,10 @@ FROM usage_entries WHERE 1=1`
 	}
 	sort.Strings(report.Totals.Models)
 	return report, nil
+}
+
+func fleetEventKey(eventKey string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte("sessions-usage-event-v1\x00"+eventKey)))
 }
 
 func usageGroupKey(options ReportOptions, timestamp time.Time, provider, providerSessionID, model string, binding sessionBinding) (string, string) {
@@ -230,20 +264,26 @@ func (s *Service) sessionBindings() map[string]sessionBinding {
 		if metadata.Info.ConversationID != "" {
 			result["codex:"+metadata.Info.ConversationID] = binding
 		}
-		for index, argument := range metadata.Info.Args {
-			if index+1 >= len(metadata.Info.Args) {
-				break
-			}
-			if argument == "--session-id" || argument == "--resume" {
-				key := "claude:"
-				if strings.Contains(strings.ToLower(metadata.Info.Cmd), "codex") {
-					key = "codex:"
-				}
-				result[key+metadata.Info.Args[index+1]] = binding
-			}
+		key := "claude:"
+		if strings.Contains(strings.ToLower(metadata.Info.Cmd), "codex") {
+			key = "codex:"
+		}
+		if provider := argvProviderSession(metadata.Info.Args, key == "claude:"); provider != "" {
+			result[key+provider] = binding
 		}
 	}
 	return result
+}
+
+// argvProviderSession reads the provider conversation a session was launched
+// against, using the one parse in internal/providerargs. This copy used to read
+// only the two long Claude flags for Codex too, so a session started as
+// `codex resume <uuid>` — Codex's own spelling — was never bound to its usage.
+func argvProviderSession(args []string, claude bool) string {
+	if claude {
+		return providerargs.ClaudeSessionID(args)
+	}
+	return providerargs.CodexConversationID(args)
 }
 
 func addRow(total *ReportRow, row ReportRow) {

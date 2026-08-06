@@ -1,0 +1,104 @@
+# Windows behaviour, on the pull request instead of after the merge.
+#
+# Before this file, Windows had no pull-request coverage of any kind: the
+# preview build runs on push to main, and the signed release candidate is
+# manual-dispatch only. A Windows-only break therefore reached main by default
+# and was found by whoever ran the preview — which has already happened.
+#
+# Two things keep this from being an expensive job:
+#
+#   1. It is path-filtered. A pull request that touches only docs, the site, or
+#      the frontend never starts a Windows runner. (Windows runners bill at 2x,
+#      so a job that does not start is the cheapest possible outcome.)
+#   2. It runs only the contract tests and the compile/vet sweep — the first two
+#      steps of windows-preview.yml. It does not build the Tauri bundle, does
+#      not sign anything, and does not collect package evidence. Those stay
+#      post-merge, where their ~25 minutes are affordable.
+#
+# Expected cost when it does run: ~4 min of runner setup (checkout, Node, Go,
+# Rust, npm ci) plus ~4–6 min of Go work, so 8–10 min wall clock, billed at the
+# Windows 2x rate. The `ci.yml` cross-compile step catches plain compile breaks
+# on the macOS runner for free; this job exists for the things a cross-compile
+# cannot see — named pipes, ConPTY, job objects, and process lifetime.
+name: Windows pull-request gate
+
+on:
+  pull_request:
+    paths:
+      - "runtime/**"
+      - "src-tauri/**"
+      - "scripts/windows/**"
+      - ".github/workflows/windows-pr-gate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-pr-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  GOFLAGS: -buildvcs=false
+
+jobs:
+  contracts:
+    name: Windows runtime contracts
+    runs-on: windows-2022
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: runtime/go.mod
+          cache-dependency-path: runtime/go.sum
+
+      # Identical to the first verification step of windows-preview.yml. Keeping
+      # them the same shape is deliberate: if this passes and the preview later
+      # fails, the difference is the bundle, not the contracts.
+      - name: Verify Windows runtime contracts and compilation
+        shell: bash
+        working-directory: runtime
+        run: |
+          set -euo pipefail
+          packages="$(go list ./... | grep -v -E '/internal/(interop|winconpty)$')"
+          go test -timeout 5m ./internal/tokenstore -run '^TestWindowsTokenStore' -count=1
+          go test -timeout 5m ./internal/state -run '^TestConfigFromEnvParityAndScratchIsolation$' -count=1
+          go test -timeout 5m ./cmd/sessions -run '^TestTokenCommandPrintsDaemonToken$' -count=1
+          go test -timeout 5m ./cmd/sessions -run '^TestWindowsScratchDaemonTokenContract$' -count=1
+          go test -timeout 5m ./cmd/sessions -run '^TestWindowsRunnerProtocolReAdoption$' -count=1
+          go test -timeout 5m ./internal/ipc -run '^TestWindowsNamedPipe' -count=1
+          go test -timeout 5m ./cmd/sessions-runner -run '^TestWindowsConPTYContract$' -count=1
+          go test -timeout 5m ./cmd/sessions-runner -run '^TestWaitChildSyncsLastEventBeforeExit$' -count=1
+          go test -timeout 5m ./cmd/sessionsd -run 'Test(SupervisorStopEvent|PlatformStopEvent)'
+          # Compile every package and its test binary on Windows.
+          go test $packages -run '^$' -count=1
+          go test ./internal/winconpty -run '^$' -count=1
+          go vet $packages
+          # HPCON is a pointer-shaped Windows handle; the Win32 attribute API
+          # requires its value directly as lpValue.
+          go vet -unsafeptr=false ./internal/winconpty
+          go build ./...
+
+      - name: Verify Windows independent process lifetime contracts
+        shell: pwsh
+        run: |
+          ./scripts/windows/run-go-test-outside-actions-job.ps1 `
+            -WorkingDirectory ./runtime `
+            -Package ./cmd/sessions `
+            -Run '^TestWindowsRunnerUnexpectedLossClassification$'
+          ./scripts/windows/run-go-test-outside-actions-job.ps1 `
+            -WorkingDirectory ./runtime `
+            -Package ./internal/winprocess `
+            -Run '^TestDetachedChildSurvivesParentJobClose$'
+          ./scripts/windows/run-go-test-outside-actions-job.ps1 `
+            -WorkingDirectory ./runtime `
+            -Package ./cmd/sessionsd `
+            -Run '^TestSupervisorRestartsCrashedDaemonWithoutTouchingDetachedRunner$'

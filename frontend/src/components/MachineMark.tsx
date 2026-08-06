@@ -8,7 +8,7 @@ function inferredPlatform(machine: string, explicit?: string): 'darwin' | 'windo
   const value = `${explicit ?? ''} ${machine}`.toLowerCase();
   if (value.includes('win')) return 'windows';
   if (value.includes('linux') || value.includes('ubuntu') || value.includes('debian')) return 'linux';
-  if (machine === 'This machine' && typeof navigator !== 'undefined') {
+  if ((machine === 'This machine' || machine.includes('(this machine)')) && typeof navigator !== 'undefined') {
     const agent = navigator.userAgent.toLowerCase();
     if (agent.includes('windows')) return 'windows';
     if (agent.includes('linux') && !agent.includes('android')) return 'linux';

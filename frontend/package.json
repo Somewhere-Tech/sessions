@@ -8,17 +8,24 @@
     "build": "tsc -b && vite build && node scripts/stamp-sw.mjs && node scripts/typography-smoke.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
     "test:markdown": "node scripts/markdown-smoke.cjs",
     "test:native-credentials": "node scripts/native-credentials-smoke.mjs",
     "test:structured-events": "node scripts/structured-events-smoke.mjs",
     "test:structured-view": "node scripts/structured-view-smoke.mjs",
     "test:fleet-clarity": "node scripts/fleet-clarity-smoke.mjs",
+    "test:fleet-usage": "node scripts/fleet-usage-smoke.mjs",
     "test:search-conversations": "node scripts/search-conversation-smoke.mjs",
     "test:terminal-renderer": "node scripts/terminal-renderer-smoke.mjs",
+    "test:external-links": "node scripts/external-links-smoke.mjs",
     "test:lifecycle-clarity": "node scripts/lifecycle-clarity-smoke.mjs",
     "test:workspace-ux": "node scripts/workspace-ux-smoke.mjs",
     "test:session-status": "node scripts/session-status-smoke.mjs",
+    "test:surface-truth": "node scripts/surface-truth-smoke.mjs",
+    "test:search-rollup": "node scripts/search-rollup-smoke.mjs",
+    "test:conversation-browser": "node scripts/conversation-browser-smoke.mjs",
     "test:resume-partial": "node scripts/resume-partial-smoke.mjs",
+    "test:shared-contracts": "node scripts/shared-contracts-smoke.mjs",
     "test:working-set": "node scripts/working-set-smoke.mjs",
     "test:typography": "node scripts/typography-smoke.mjs",
     "test:window-scope": "node scripts/window-scope-smoke.mjs",
@@ -27,7 +34,7 @@
     "test:fork-conversation": "node scripts/fork-conversation-smoke.mjs",
     "test:onboarding-consent": "node scripts/onboarding-consent-smoke.mjs",
     "test:webapp": "node scripts/webapp-smoke.mjs",
-    "test:smoke": "npm run test:markdown && npm run test:native-credentials && npm run test:structured-events && npm run test:structured-view && npm run test:fleet-clarity && npm run test:search-conversations && npm run test:terminal-renderer && npm run test:lifecycle-clarity && npm run test:workspace-ux && npm run test:session-status && npm run test:resume-partial && npm run test:working-set && npm run test:typography && npm run test:window-scope && npm run test:same-origin-bootstrap && npm run test:startup-recovery && npm run test:fork-conversation && npm run test:onboarding-consent"
+    "test:smoke": "node scripts/run-smoke.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
@@ -48,6 +55,7 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/dompurify": "^3.0.5",
     "@types/node": "^25.6.0",
     "@types/react": "^18.3.12",
@@ -55,8 +63,12 @@
     "@vitejs/plugin-react": "^4.3.3",
     "@xterm/headless": "^5.5.0",
     "esbuild": "^0.28.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^15.15.0",
     "puppeteer": "^24.42.0",
     "typescript": "^5.6.3",
+    "typescript-eslint": "^8.66.0",
     "vite": "^5.4.11"
   }
 }

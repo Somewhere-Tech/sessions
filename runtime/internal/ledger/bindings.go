@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"fmt"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
 // LiveBinding identifies the lane which currently owns a provider
@@ -25,7 +26,7 @@ type MovedConversation struct {
 // the replacement lane actually becomes managed-active, so a failed takeover
 // launch cannot orphan the original binding.
 func (s *Store) LiveBindingFor(ctx context.Context, providerUUID string) (*LiveBinding, error) {
-	if !providerIDPattern.MatchString(providerUUID) {
+	if !providerargs.IsConversationUUID(providerUUID) {
 		return nil, fmt.Errorf("live binding: invalid provider UUID %q", providerUUID)
 	}
 	events, err := s.Events(ctx, "")
@@ -67,7 +68,7 @@ func (s *Store) LiveBindingFor(ctx context.Context, providerUUID string) (*LiveB
 // as Machine so the collision warning remains stable if move gains a richer
 // machine identity later.
 func (s *Store) MovedBinding(ctx context.Context, providerUUID string) (*MovedConversation, error) {
-	if !providerIDPattern.MatchString(providerUUID) {
+	if !providerargs.IsConversationUUID(providerUUID) {
 		return nil, fmt.Errorf("moved binding: invalid provider UUID %q", providerUUID)
 	}
 	events, err := s.Events(ctx, "")

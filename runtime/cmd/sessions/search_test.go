@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -88,6 +89,96 @@ func TestSearchCLIJSONShapeAndValidation(t *testing.T) {
 		if code := run(args, strings.NewReader(""), &stdout, &stderr); code != 1 || stderr.Len() == 0 {
 			t.Errorf("args=%#v exit=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
 		}
+	}
+}
+
+func TestSearchFleetReturnsPartialDeduplicatedDurableReferences(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	timestamp := "2026-08-01T12:00:00Z"
+	shared := historysearch.Match{
+		SessionID: "provider-history:claude:shared", ProviderSessionID: "provider-shared",
+		Name: "Google Ads", Tool: "claude", Role: "user", MessageID: "message-shared",
+		Timestamp: &timestamp, Snippet: "[[Google Ads]] budget",
+	}
+	local := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		_ = json.NewEncoder(response).Encode(historysearch.Response{Matches: []historysearch.Match{shared}, Total: 1})
+	}))
+	defer local.Close()
+	remote := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		unique := shared
+		unique.SessionID = "provider-history:claude:remote"
+		unique.ProviderSessionID = "provider-remote"
+		unique.MessageID = "message-remote"
+		unique.Name = "Campaign notes"
+		_ = json.NewEncoder(response).Encode(historysearch.Response{Matches: []historysearch.Match{shared, unique}, Total: 2})
+	}))
+	defer remote.Close()
+	for _, machine := range []savedMachine{
+		{Alias: "mini", MachineID: "machine-mini", Name: "Mac mini", Endpoint: remote.URL},
+		{Alias: "offline", MachineID: "machine-offline", Name: "Offline Mac", Endpoint: "http://127.0.0.1:1"},
+	} {
+		if _, err := saveMachine(home, machine, "device-secret"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	application, err := newApp(
+		[]string{"--json", "--host", local.URL, "search", "Google Ads"},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.close()
+	application.explicitTarget = false
+	if err := application.dispatch(); err != nil {
+		t.Fatal(err)
+	}
+	var result historysearch.Response
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode fleet search: %v\n%s", err, stdout.String())
+	}
+	if !result.Partial || len(result.Matches) != 2 || len(result.Machines) != 3 {
+		t.Fatalf("fleet result = %#v", result)
+	}
+	if result.Matches[0].Reference != "local::provider-history:claude:shared" ||
+		!reflect.DeepEqual(result.Matches[0].AvailableOn, []string{"local", "mini"}) {
+		t.Fatalf("deduplicated match = %#v", result.Matches[0])
+	}
+	if result.Matches[1].Reference != "mini::provider-history:claude:remote" {
+		t.Fatalf("remote reference = %#v", result.Matches[1])
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("JSON search wrote stderr: %q", stderr.String())
+	}
+}
+
+func TestGrepNormalizesFamiliarFlags(t *testing.T) {
+	got, err := normalizeGrepArgs([]string{"-i", "-C3", "--tool", "claude", "Google Ads"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Google Ads", "--context", "3", "--tool", "claude"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("normalizeGrepArgs = %#v, want %#v", got, want)
+	}
+}
+
+func TestFleetSearchOrderingDoesNotFavorTheLocalMachine(t *testing.T) {
+	older := "2026-08-01T10:00:00Z"
+	newer := "2026-08-01T11:00:00Z"
+	matches := []historysearch.Match{
+		{Reference: "local::older", Timestamp: &older, Score: 0.2},
+		{Reference: "mini::newer", Timestamp: &newer, Score: 0.9},
+	}
+	sortFleetSearchMatches(matches, false, true)
+	if matches[0].Reference != "mini::newer" {
+		t.Fatalf("ranked fleet order = %#v", matches)
+	}
+	sortFleetSearchMatches(matches, true, true)
+	if matches[0].Reference != "local::older" {
+		t.Fatalf("timeline fleet order = %#v", matches)
 	}
 }
 

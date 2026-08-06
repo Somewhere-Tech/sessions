@@ -73,6 +73,12 @@ func (s *Server) handleRecapRoute(response http.ResponseWriter, request *http.Re
 			s.sendRecapError(response, err, corsOrigin)
 			return true
 		}
+		// Decide "recap is off" here, where it is a request error the API layer
+		// can name, instead of recognising the recap service's sentence later.
+		if day.Settings.Provider == state.RecapProviderOff {
+			s.sendRecapError(response, errRecapOff, corsOrigin)
+			return true
+		}
 		ctx, cancel := context.WithTimeout(request.Context(), 5*time.Minute)
 		defer cancel()
 		document, err := s.recaps.Generate(ctx, day.Settings, input, body.Force)
@@ -243,22 +249,31 @@ func (s *Server) loadRecapSettings() (state.RecapSettings, error) {
 	return state.NormalizeRecapSettings(settings.EffectiveRecap())
 }
 
+// Callers of the recap routes get 400 for these two and 500 for anything else.
+// They are values, not sentences to match on.
+var (
+	errRecapDateFormat = errors.New("date must use YYYY-MM-DD")
+	errRecapOff        = errors.New("daily recap is off; choose Codex or Claude in Settings first")
+)
+
 func localDay(raw string) (string, time.Time, time.Time, error) {
 	if raw == "" {
 		raw = time.Now().In(time.Local).Format("2006-01-02")
 	}
 	start, err := time.ParseInLocation("2006-01-02", raw, time.Local)
 	if err != nil || start.Format("2006-01-02") != raw {
-		return "", time.Time{}, time.Time{}, errors.New("date must use YYYY-MM-DD")
+		return "", time.Time{}, time.Time{}, errRecapDateFormat
 	}
 	return raw, start, start.AddDate(0, 0, 1), nil
 }
 
+// sendRecapError classifies by error identity. It used to compare err.Error()
+// against two exact sentences, so rewording a message in another package
+// silently turned a caller's 400 into a 500.
 func (s *Server) sendRecapError(response http.ResponseWriter, err error, corsOrigin string) {
 	status := http.StatusInternalServerError
-	message := err.Error()
-	if message == "date must use YYYY-MM-DD" || message == "daily recap is off; choose Codex or Claude in Settings first" {
+	if errors.Is(err, errRecapDateFormat) || errors.Is(err, errRecapOff) {
 		status = http.StatusBadRequest
 	}
-	s.sendJSON(response, status, map[string]any{"error": message}, corsOrigin)
+	s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
 }

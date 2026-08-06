@@ -40,9 +40,9 @@ export interface SessionChannel {
 
 const RECONNECT_BACKOFF_MS = [500, 1000, 2000, 4000, 8000] as const;
 
-// Cap on input/resize frames buffered while the socket is down. Keystrokes
-// are tiny; this is seconds of furious typing. Bounded so a socket that
-// never comes back can't grow it without limit.
+// Cap on replayable query/resize frames buffered while the socket is down.
+// User input is deliberately never included: a message must either receive
+// an inputAck now or remain visibly in the composer for the user to retry.
 const OUTBOX_CAP = 2000;
 const REQUEST_TIMEOUT_MS = 10_000;
 const IDLE_SHUTDOWN_MS = 15_000;
@@ -87,8 +87,7 @@ function isRpcResponse(msg: ServerMsg): msg is RpcResponse {
 }
 
 function isQueueableWhileClosed(msg: MuxClientMsg): boolean {
-  return msg.type === 'input' ||
-    msg.type === 'resize' ||
+  return msg.type === 'resize' ||
     msg.type === 'snapshot' ||
     msg.type === 'events';
 }
@@ -103,11 +102,9 @@ class MuxManager {
   private readonly sessions = new Map<string, SessionHandlers>();
   private readonly requests = new Map<string, PendingRequest>();
   private idleShutdownTimer: number | null = null;
-  // Input/resize typed while the socket isn't OPEN (initial connect, or a
-  // reconnect blip after phone-sleep / network handoff). Without this they
-  // were silently dropped — you'd click a terminal that LOOKS ready (the
-  // snapshot is already painted) and type into the void until the socket
-  // happened to be OPEN. Flushed in order on reopen, after re-attach.
+  // Replayable requests and resize frames may wait for a reconnect. User
+  // input never enters this outbox: delayed delivery would be a hidden prompt
+  // queue and could make a message run long after the user thought it failed.
   private readonly outbox: MuxClientMsg[] = [];
   private readonly onVis = (): void => {
     // Phone unlock / tab foreground: if the socket died while backgrounded,
@@ -123,11 +120,18 @@ class MuxManager {
     }
   };
 
+  // True once this manager has gone idle and given up its window-level
+  // subscription and its slot in the module map. A stale reference can still
+  // be used afterwards; `reacquire` puts it back rather than leaving a
+  // half-live manager whose visibilitychange reconnect no longer fires.
+  private released = false;
+
   constructor(private readonly url: string) {
     document.addEventListener('visibilitychange', this.onVis);
   }
 
   attach(sessionId: string, handlers: SessionHandlers): SessionChannel {
+    this.reacquire();
     this.cancelIdleShutdown();
     this.sessions.set(sessionId, handlers);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -149,7 +153,15 @@ class MuxManager {
   }
 
   request(msg: MuxClientMsg & { requestId: string }, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<RpcResponse> {
+    this.reacquire();
     this.cancelIdleShutdown();
+    if ((msg.type === 'input' || msg.type === 'submit') && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
+      if (!this.ws || this.ws.readyState >= WebSocket.CLOSING) {
+        if (this.reconnectTimer === null) this.connect();
+      }
+      this.scheduleIdleShutdown();
+      return Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'));
+    }
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.requests.delete(msg.requestId);
@@ -170,18 +182,17 @@ class MuxManager {
       this.ws.send(JSON.stringify(msg));
       return;
     }
-    // Socket not OPEN. Queue input & resize so they're delivered on reopen
-    // instead of silently lost. RPC frames queue the same way. attach/detach
-    // are NOT queued — they're rebuilt from the live `sessions` map on
-    // reconnect, so a stale queued attach/detach would only fight that.
+    // Socket not OPEN. Queue replayable reads and resize state, but never
+    // user input. attach/detach are also rebuilt from the live `sessions` map
+    // on reconnect, so a stale queued attach/detach would only fight that.
     if (isQueueableWhileClosed(msg)) {
       this.outbox.push(msg);
       if (this.outbox.length > OUTBOX_CAP) {
         const dropped = this.outbox.splice(0, this.outbox.length - OUTBOX_CAP);
         this.rejectDroppedRequests(dropped);
       }
-      // A queued keystroke means we WANT a live socket. If none is pending,
-      // kick a connect now rather than waiting for the next backoff tick.
+      // Queued work means we want a live socket. If none is pending, connect
+      // now rather than waiting for the next backoff tick.
       if (!this.ws || this.ws.readyState >= WebSocket.CLOSING) {
         if (this.reconnectTimer === null) this.connect();
       }
@@ -235,8 +246,29 @@ class MuxManager {
       this.idleShutdownTimer = null;
       if (this.sessions.size === 0 && this.requests.size === 0 && this.outbox.length === 0) {
         this.shutdownSocket();
+        this.release();
       }
     }, IDLE_SHUTDOWN_MS);
+  }
+
+  // Give up the document listener and the module-map slot once this endpoint
+  // has been idle. Without this an endpoint's manager lived for the life of
+  // the page: the map key is the full socket URL including the auth token, so
+  // every credential change created a new manager while the previous one
+  // stayed subscribed to visibilitychange and kept waking up to reconnect with
+  // a credential the daemon had already rejected.
+  private release(): void {
+    if (this.released) return;
+    this.released = true;
+    document.removeEventListener('visibilitychange', this.onVis);
+    if (managers.get(this.url) === this) managers.delete(this.url);
+  }
+
+  private reacquire(): void {
+    if (!this.released) return;
+    this.released = false;
+    document.addEventListener('visibilitychange', this.onVis);
+    if (!managers.has(this.url)) managers.set(this.url, this);
   }
 
   private sendAttach(sessionId: string, handlers: SessionHandlers): void {
@@ -474,4 +506,17 @@ export async function sendSessionInput(
   });
   if (msg.type !== 'inputAck') throw new Error(`unexpected mux response: ${msg.type}`);
   if (!msg.ok) throw new Error(`unknown session ${sessionId}`);
+}
+
+export async function submitSessionMessage(
+  muxUrl: string,
+  sessionId: string,
+  data: string
+): Promise<void> {
+  const requestId = newRequestId();
+  const msg = await managerFor(muxUrl).request({
+    type: 'submit', requestId, sessionId, data
+  });
+  if (msg.type !== 'submitAck') throw new Error(`unexpected mux response: ${msg.type}`);
+  if (!msg.ok) throw new Error(`session ${sessionId} could not accept the message`);
 }

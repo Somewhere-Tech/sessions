@@ -5,101 +5,49 @@ description: Spawn, drive, monitor, and recover long-lived Claude Code / Codex /
 
 # sessions — drive agent sessions from the CLI
 
-`sessions` is a local daemon + CLI for running **long-lived sessions** (Claude Code, Codex, shell) and **headless lanes** (any command) that survive restarts, expose structured history, and can be driven and monitored programmatically. Use it to dispatch sub-agents and get trustworthy results — not by typing into a terminal and scraping the screen, but through a real contract.
+`sessions` runs long-lived agent sessions and headless command lanes on this
+machine, and keeps a durable record of them.
 
-**Prereq:** the daemon must be running (`sessions ls` should work). If "connection refused", it isn't running — tell the user to `sessions install` (or check `sessions doctor`). All commands accept `--json` for machine-parseable output — **always use `--json` when parsing**; never scrape `sessions snap`.
+**Read `sessions help` first, then `sessions help <command>` for anything you
+are about to use.** That text is the contract. It is generated from the same
+source the commands dispatch from, and CI fails if the two disagree, so it
+cannot describe a version of this tool that no longer exists.
 
-## Core workflow: dispatch a sub-agent and get its result
+This file deliberately does not repeat flags, exit codes, or output shapes.
+Nothing regenerates this file and nothing diffs it against the code, so any
+detail written here would eventually be a confident lie. What follows is only
+the orientation you cannot get from a command list.
 
-```bash
-# 1. Spawn. Codex runs on the structured app-server by default (reliable, no scraping).
-id=$(sessions --json new --tool codex --cwd /path/to/work --name my-subtask | jq -r .id)
-#   Claude:  sessions new --tool claude --cwd DIR --name NAME
-#   Claude structured (subscription-billed, no live TUI): add --structured
-#   Pick model/effort:  --model gpt-5.6-sol --effort high   (validated against the live catalog)
+## What it is for
 
-# 2. Drive it and WAIT for the reply in one call (best for request→response):
-sessions ask "$id" "Do X. Reply DONE when finished."
-#   `ask` = send + wait for working→idle + print the last assistant message. Claude/Codex only.
+- **Work that outlives the process that started it.** A session or lane keeps
+  running after you exit, are killed, or run out of context. Dispatch with
+  `run`, come back later — from any process — with `wait`. Native subagents
+  cannot do this; it is the main reason to reach for this tool.
+- **Conversations that outlive the provider.** Providers delete their own
+  transcripts on a retention timer. Sessions keeps its own copy, so reading,
+  searching, and resuming still work afterwards.
+- **Asking what you already did.** `search` reaches every recorded
+  conversation on this machine, not just the live ones.
+- **Handing work between agents.** A Claude session can drive a Codex one and
+  back, with the requester recorded.
 
-# 3. Or send + poll separately:
-sessions send "$id" "your message"     # blocks until receipt is confirmed (exit 0); exit 1/2 = failed/ambiguous
-sessions wait "$id" --idle 30s --timeout 30m   # block until genuinely idle for 30s
-sessions --json last "$id"             # structured last user+assistant message
-sessions --json status "$id"           # state / git / activity / verdict card
+## Rules that outrank convenience
 
-# 4. Clean up when done:
-sessions kill "$id"
-```
+1. **Sessions are sacred.** Never kill, replace, or clean up a session you did
+   not create. If you think something is stale, say so and let the user decide.
+2. **Parse `--json`, and branch on the exit status.** Every command takes
+   `--json`, always emits exactly one JSON document, and reports its outcome in
+   the exit code as well as the body. `sessions help` lists what the codes
+   mean. Do not write `if rc == 0` without reading them: several distinct
+   outcomes are deliberately not success, and one of them means the target is
+   never coming back.
+3. **Never screen-scrape.** `snap` and `tail` are for showing a human what a
+   terminal looks like. Anything you intend to act on has a structured route.
+4. **If the daemon is unreachable, nothing was observed.** That is not the same
+   as "the work failed". Report it as unknown.
 
-## Headless lanes (run a command as a tracked session)
+## When something is not in the help
 
-```bash
-lane=$(sessions --json run --name build-check --cwd /repo -- go test ./... | jq -r .id)
-sessions wait "$lane" --timeout 20m       # returns when the command exits
-sessions --json last "$lane"              # exit code + output tail (completion manifest)
-sessions lanes                            # list headless lanes
-```
-
-## Track YOUR OWN lanes — do not keep a mental list
-
-If you (an agent) are running **inside a sessions session**, every lane you spawn is automatically tagged with your session as parent. So to find what you created — **ask sessions, don't remember** (this survives context compaction):
-
-```bash
-sessions list --mine              # BOTH agent sessions AND lanes you created (this session, transitively)
-sessions list --mine --include-closed  # include exited/tombstoned records
-sessions lanes --mine                 # just headless lanes you created
-sessions list --all               # everything (all users) — use sparingly
-```
-
-**Rule: before ending your work, `sessions list --mine` and `sessions kill` the ones you no longer need** (this lists both agent sessions and lanes — `lanes --mine` alone misses agent sessions). Leaked lanes are the #1 orchestration failure. Never track lane ids in scratch files — query `--mine`.
-
-## Recovery (after a crash / lost daemon)
-
-```bash
-sessions recover            # lists sessions that died unexpectedly, with resume recipes
-sessions recover --reopen   # re-open every unexpectedly-lost session (idempotent)
-```
-`recover` never resurrects a session you deliberately `kill`ed (tombstoned). Use it after a reboot or if sessions vanish.
-
-## Monitoring another session
-
-```bash
-sessions ls                       # all live sessions
-sessions --json status <id>       # one session's full state
-sessions --json transcript <id>   # full structured history
-sessions tail <id> -f             # follow output live
-sessions snap <id>                # current screen (human viewing only — DON'T parse this)
-```
-
-## Sacred rules (do not violate)
-
-1. **Never `kill` a session you did not create.** Others' sessions may be real work. Use `sessions list --mine` to know which are yours (sessions + lanes). When unsure, don't kill.
-2. **Conversation collision guard:** if `sessions new`/resume refuses with "already live as ...", the conversation is being driven elsewhere — **do not `--force` past it** unless you're certain the other driver is dead. Two drivers on one conversation corrupt it.
-3. **Prefer structured output.** Use `--json` and `sessions last`/`status`/`transcript`, not `snap` scraping. Codex-app-server and Claude-`--structured` sessions give authoritative done/working signals; PTY sessions are best-effort.
-4. **`ask` for request→response, `send`+`wait` for fire-then-monitor.** `send` alone returns before the reply is done.
-5. **Report Sessions product failures through the safe contract.** Run `sessions --json support --diagnostics`, add the sanitized failing command shape/action, exit code, expected result, and sanitized exact error, then ask the user before opening or submitting a ticket. Never attach transcripts, terminal output, paths, IDs, credentials, environment, private source, raw logs, or crash files.
-
-## Background pattern (for long sub-tasks)
-
-Run `sessions wait "$id" --timeout 30m &` in the background so your orchestration can be re-invoked when the sub-agent finishes, instead of blocking. Then `sessions --json last "$id"` for the result.
-
-## Quick reference
-
-| Need | Command |
-|---|---|
-| spawn codex sub-agent | `sessions --json new --tool codex --cwd DIR --name NAME` |
-| spawn claude sub-agent | `sessions --json new --tool claude --cwd DIR --name NAME` |
-| headless command lane | `sessions run --name NAME --cwd DIR -- CMD ARGS` |
-| ask + get reply | `sessions ask <id> "msg"` |
-| send (confirmed) | `sessions send <id> "msg"` |
-| wait until idle | `sessions wait <id> --idle 30s --timeout 30m` |
-| structured result | `sessions --json last <id>` / `sessions --json status <id>` |
-| my sessions + lanes | `sessions list --mine` |
-| list all | `sessions ls` |
-| model catalog | `sessions --json models` |
-| recover lost | `sessions recover [--reopen]` |
-| report a Sessions problem | `sessions --json support --diagnostics` |
-| clean up | `sessions kill <id>` |
-
-Add `--host H --port P` to target a non-default daemon. `sessions --help` for everything.
+Ask the user. This tool changes quickly, and a plausible guess that happens to
+be wrong is worse for them than a question.

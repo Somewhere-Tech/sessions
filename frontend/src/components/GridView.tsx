@@ -12,6 +12,7 @@ import { eventsToMessages } from '../lib/claudeEvents';
 import { getTabLabel, useTabLabel, sessionLabel } from '../lib/tabLabels';
 import type { DispatchMessage } from '../hooks/useDispatch';
 import { CopyButton } from './CopyButton';
+import { classifySession } from '../lib/sessionStatus';
 
 // Tile every session in a column-flow grid. Each cell renders a
 // chat-style preview (the most recent user message + Claude reply
@@ -89,6 +90,13 @@ function GridCell({ session, status, icon, onPopOut, onExpand, onEnd }: CellProp
   const [, setNow] = useState(Date.now());
   // Two-step confirmation before explicitly ending a live runtime.
   const [endConfirm, setEndConfirm] = useState(false);
+  // store/sessions.ts `kill` throws on a non-2xx daemon reply. This used to be
+  // `void onEnd()`: the popover closed, the tile stayed exactly as it was, and
+  // the rejection went nowhere — the user was told a session had ended that
+  // had not. docs/PRINCIPLES.md: "cleanup must never hide an unresolved
+  // decision". The confirmation now stays open, and says what went wrong.
+  const [ending, setEnding] = useState(false);
+  const [endError, setEndError] = useState<string | null>(null);
   // Flash a red border and "send failed" hint when a keystroke POST fails.
   // Cleared automatically after 1.5s so the cell returns to normal.
   const [sendFailed, setSendFailed] = useState(false);
@@ -166,6 +174,20 @@ function GridCell({ session, status, icon, onPopOut, onExpand, onEnd }: CellProp
     const id = window.setTimeout(() => setSendFailed(false), 1500);
     return () => window.clearTimeout(id);
   }, [sendFailed]);
+
+  const confirmEnd = async (): Promise<void> => {
+    if (!onEnd || ending) return;
+    setEnding(true);
+    setEndError(null);
+    try {
+      await onEnd();
+      setEndConfirm(false);
+    } catch (reason) {
+      setEndError(reason instanceof Error ? reason.message : 'Sessions could not end this session.');
+    } finally {
+      setEnding(false);
+    }
+  };
 
   const cwd = useMemo(() => session.cwd ?? '', [session.cwd]);
   const customLabel = useTabLabel(session.id);
@@ -260,14 +282,16 @@ function GridCell({ session, status, icon, onPopOut, onExpand, onEnd }: CellProp
   // state lives. Cleared explicitly on Enter / Escape / modifier
   // combos via the onKeyDown handler.
 
-  // Status text — "working · 5s", "idle · 3m". Working comes from the
-  // active parser/sidebar (lifted up via statusBySession). Time ago is
-  // computed off session.lastDataAt, ticked every 30s.
+  // Status text — "Working · 5s", "Ready · 3m". The state word comes from the
+  // one classifier (lib/sessionStatus.ts) so a cell never disagrees with the
+  // navigator, Fleet, or Home about the same session; the parser/sidebar
+  // working signal lifted up via statusBySession is passed in as the live
+  // activity override. Time ago is computed off session.lastDataAt, ticked
+  // every 30s.
+  const sessionStatus = classifySession(session, { working: status === 'working' });
   const statusText = session.exited
-    ? `exited${session.exitCode != null ? ` · ${session.exitCode}` : ''}`
-    : status === 'working'
-    ? `working · ${relativeTime(session.lastDataAt)}`
-    : `idle · ${relativeTime(session.lastDataAt)}`;
+    ? `${sessionStatus.label}${session.exitCode != null ? ` · ${session.exitCode}` : ''}`
+    : `${sessionStatus.label} · ${relativeTime(session.lastDataAt)}`;
 
   return (
     <div
@@ -305,18 +329,22 @@ function GridCell({ session, status, icon, onPopOut, onExpand, onEnd }: CellProp
         {onEnd ? (
           endConfirm ? (
             <>
-              <span className="grid-cell-close-label">End runtime?</span>
+              <span className="grid-cell-close-label" role={endError ? 'alert' : undefined}>
+                {endError ?? (ending ? 'Ending…' : 'End runtime?')}
+              </span>
               <button
                 type="button"
                 className="grid-cell-close-yes"
-                aria-label="Confirm end session"
-                onClick={(e) => { e.stopPropagation(); setEndConfirm(false); void onEnd(); }}
-              >End</button>
+                aria-label={endError ? 'Try ending this session again' : 'Confirm end session'}
+                disabled={ending}
+                onClick={(e) => { e.stopPropagation(); void confirmEnd(); }}
+              >{endError ? 'Retry' : 'End'}</button>
               <button
                 type="button"
                 className="grid-cell-close-no"
                 aria-label="Cancel ending session"
-                onClick={(e) => { e.stopPropagation(); setEndConfirm(false); }}
+                disabled={ending}
+                onClick={(e) => { e.stopPropagation(); setEndConfirm(false); setEndError(null); }}
               >Cancel</button>
             </>
           ) : (
@@ -325,6 +353,7 @@ function GridCell({ session, status, icon, onPopOut, onExpand, onEnd }: CellProp
               className="grid-cell-close"
               onClick={(e) => {
                 e.stopPropagation();
+                setEndError(null);
                 setEndConfirm(true);
               }}
               title="End the running process. Closing a tab does not."

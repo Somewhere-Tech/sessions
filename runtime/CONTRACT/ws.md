@@ -309,6 +309,16 @@ absolute total; the response does not expose its selected start.
 Only mux `input` carrying `requestId` gets this response. `ok=false` means the
 session was unknown or exited.
 
+### `submitAck`
+
+```json
+{"type":"submitAck","requestId":"<request id>","ok":true,"sessionId":"<id>"}
+```
+
+Mux `submit` is the atomic composer-message equivalent of HTTP `/submit`.
+Unlike raw `input`, it owns the provider-compatible text/Enter sequence and is
+never queued while disconnected.
+
 ### `claudeEvent`
 
 ```json
@@ -333,7 +343,7 @@ The browser constructs `/ws?mux=1[&token=...]` and keeps one manager per exact
 URL. On reconnect it reattaches every registered session with current
 `lastSeq`, absolute structured-event count, and view-dependent replay/live
 flags. Frames queued while offline are bounded to 2,000 and are flushed only
-after attaches on reopen. Snapshot/events/input RPCs time out after 10 seconds.
+after attaches on reopen. Snapshot/events/input/submit RPCs time out after 10 seconds.
 
 The terminal consumer:
 

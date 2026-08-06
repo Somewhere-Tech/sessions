@@ -8,14 +8,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	_ "modernc.org/sqlite"
 )
 
@@ -64,12 +67,42 @@ type retentionWriter struct{ store *Store }
 type attributionWriter struct{ store *Store }
 
 // DefaultPath resolves the ledger outside Sessions' runner state directory.
+//
+// The root is the platform user state root, not a hardcoded macOS layout: this
+// is shared code reached on every default daemon boot, and the previous literal
+// ~/Library/Application Support built a nonsense C:\Users\<user>\Library\...
+// tree on Windows for the one file that must survive every crash.
 func DefaultPath() (string, error) {
+	root, err := state.UserStateRootFromEnv()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(root, "ledger", "lanes.sqlite3")
+	if _, statErr := os.Stat(path); statErr == nil {
+		return path, nil
+	}
+	// An installation that already wrote the macOS-only Application Support
+	// ledger keeps using it. Starting an empty ledger beside it would silently
+	// drop the durable record of every lane that machine has ever run.
+	if legacy, ok := legacyDarwinLedgerPath(); ok {
+		if _, statErr := os.Stat(legacy); statErr == nil {
+			return legacy, nil
+		}
+	}
+	return path, nil
+}
+
+// legacyDarwinLedgerPath is the pre-parity macOS location. It is consulted for
+// adoption only and is never created.
+func legacyDarwinLedgerPath() (string, bool) {
+	if goruntime.GOOS != "darwin" {
+		return "", false
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
+		return "", false
 	}
-	return filepath.Join(home, "Library", "Application Support", "sessions", "ledger", "lanes.sqlite3"), nil
+	return filepath.Join(home, "Library", "Application Support", "sessions", "ledger", "lanes.sqlite3"), true
 }
 
 // ResolvePath applies SESSIONS_LEDGER_PATH unless Options.Path is explicit.
@@ -239,6 +272,9 @@ func (w boundaryWriter) RecordCreated(ctx context.Context, value Created) error 
 	if err := ValidateCreator(value.CreatorKind, value.CreatorID); err != nil {
 		return fmt.Errorf("record created: %w", err)
 	}
+	if value.DelegationKind != "" && value.DelegationKind != "user" && value.DelegationKind != "agent" {
+		return fmt.Errorf("record created: invalid delegation kind %q", value.DelegationKind)
+	}
 	if value.Actor == "" {
 		value.Actor = ActorDaemon
 	}
@@ -274,13 +310,13 @@ func (w boundaryWriter) RecordCreated(ctx context.Context, value Created) error 
 		WorktreePath: value.WorktreePath, Branch: value.Branch, Base: value.Base, SourceRepo: value.SourceRepo,
 		ResumeArgv: append([]string{}, value.ResumeArgv...),
 		LaneUUID:   value.LaneUUID, ProviderUUID: value.ProviderUUID,
-		CreatorKind: value.CreatorKind, CreatorID: value.CreatorID,
+		CreatorKind: value.CreatorKind, CreatorID: value.CreatorID, DelegationKind: value.DelegationKind,
 	}
 	return w.store.append(ctx, EventCreated, value.Meta, payload, false)
 }
 
 func (w boundaryWriter) RecordProviderRebound(ctx context.Context, value ProviderRebound) error {
-	if value.ProviderUUID == "" || !providerIDPattern.MatchString(value.ProviderUUID) {
+	if value.ProviderUUID == "" || !providerargs.IsConversationUUID(value.ProviderUUID) {
 		return fmt.Errorf("record provider rebound: invalid provider UUID %q", value.ProviderUUID)
 	}
 	if value.NewLaneID == "" {
@@ -675,6 +711,7 @@ type createdPayload struct {
 	ProviderUUID      string            `json:"provider_uuid,omitempty"`
 	CreatorKind       CreatorKind       `json:"creator_kind"`
 	CreatorID         string            `json:"creator_id"`
+	DelegationKind    string            `json:"delegation_kind,omitempty"`
 }
 
 type providerPayload struct {
@@ -785,7 +822,7 @@ func ValidateCreator(kind CreatorKind, id string) error {
 	}
 	switch kind {
 	case CreatorSession:
-		if !sessionIDPattern.MatchString(id) {
+		if !providerargs.IsConversationUUID(id) {
 			return fmt.Errorf("invalid creator session UUID %q", id)
 		}
 	case CreatorUser:
@@ -809,7 +846,7 @@ func validateResumeIdentity(tool, providerUUID string, argv []string) error {
 		}
 		return nil
 	}
-	if !providerIDPattern.MatchString(providerUUID) {
+	if !providerargs.IsConversationUUID(providerUUID) {
 		return fmt.Errorf("invalid provider UUID %q", providerUUID)
 	}
 	if len(argv) == 0 {

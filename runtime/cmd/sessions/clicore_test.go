@@ -312,13 +312,22 @@ func TestRunWithoutWaitKeepsIDAndJSONShapes(t *testing.T) {
 	if code != 0 || stderr.Len() != 0 {
 		t.Fatalf("json exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	var actual, expected any
+	var actual, expected map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &actual); err != nil {
 		t.Fatal(err)
 	}
 	if err := json.Unmarshal([]byte(responseBody), &expected); err != nil {
 		t.Fatal(err)
 	}
+	// The lane record is passed through unchanged except for code, which is
+	// added deliberately: `sessions help` promises every --json document
+	// carries one, and this document is the only one an agent gets when it
+	// dispatches without waiting. Asserted separately from the passthrough so
+	// this test still fails if any other key is added, renamed, or dropped.
+	if actual["code"] != float64(exitSatisfied) {
+		t.Fatalf("dispatch document code = %#v, want %d", actual["code"], exitSatisfied)
+	}
+	delete(actual, "code")
 	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("run JSON changed: got %#v want %#v", actual, expected)
 	}
@@ -333,5 +342,48 @@ func TestRunOutputRequiresWait(t *testing.T) {
 	code := run([]string{"run", "--output", "--", "true"}, strings.NewReader(""), &stdout, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), "--output requires --wait") {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+// TestCommandTableDocumentsTheFlagsParsersAccept keeps `sessions help`,
+// `sessions docs`, and docs/CLI.md honest: a flag the parser accepts must be
+// discoverable offline, because agents have no other contract to read.
+func TestCommandTableDocumentsTheFlagsParsersAccept(t *testing.T) {
+	documented := map[string][]string{
+		"new": {
+			"--model", "--effort", "--fast", "--structured", "--pty-claude",
+			"--codex-appserver", "--pty-codex", "--wait-ready", "--on-idle",
+			"--force", "--no-skip-perms", "--owner", "--detach", "--cmd", "--base",
+		},
+		"run":    {"--owner", "--detach", "--spec", "--base"},
+		"tail":   {"--follow", "--lines", "-f", "-n"},
+		"search": {"--lane"},
+		"gc":     {"--dry-run", "--apply", "--older-than"},
+		"fork":   {"--at", "--message-id"},
+		"kill":   {"--json", "--reason", "--force"},
+		"send":   {"--from", "--timeout", "--no-wait", "--file"},
+		"input":  {"--from", "--timeout", "--no-wait", "--file"},
+	}
+	for name, flags := range documented {
+		command, ok := lookupCommand(name)
+		if !ok {
+			t.Fatalf("command %q is missing from the table", name)
+		}
+		reference := command.usage + "\n" + command.longHelp
+		for _, flag := range flags {
+			if !strings.Contains(reference, flag) {
+				t.Errorf("`sessions %s` help never documents %s", name, flag)
+			}
+		}
+	}
+	if command, _ := lookupCommand("cat"); !strings.Contains(command.usage, "session-id") {
+		t.Errorf("cat usage still hides that a live session id works: %q", command.usage)
+	}
+	// Every destructive or state-changing lifecycle verb owes agents JSON.
+	for _, name := range []string{"new", "kill", "archive", "aside", "move", "adopt", "fork", "resize", "input", "send"} {
+		command, ok := lookupCommand(name)
+		if !ok || !command.localJSON {
+			t.Errorf("command %q does not accept --json among its own options", name)
+		}
 	}
 }

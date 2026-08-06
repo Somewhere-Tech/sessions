@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { rm } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
+import { smoke, stableDistSnapshot, closeBrowser, closeServer } from './lib/smoke.mjs';
 
+const t = smoke('window-scope');
 const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const distDir = path.join(frontendDir, 'dist');
 const appSource = fs.readFileSync(path.join(frontendDir, 'src', 'App.tsx'), 'utf8');
-if (!fs.existsSync(path.join(distDir, 'index.html'))) {
-  throw new Error('frontend/dist is missing; run npx vite build first');
-}
+// The suites below serve the real build. They serve a private snapshot of it
+// rather than frontend/dist itself: `vite build` empties dist before rewriting
+// it, so any concurrent build on the machine used to yank the app out from
+// under a running suite — dist missing at start-up, or every asset 404ing
+// mid-run, which reads exactly like a slow machine. See stableDistSnapshot.
+const distDir = await stableDistSnapshot('window-scope');
 
 const sessions = [
   {
@@ -155,7 +160,15 @@ async function openCase(query, selector = '.session-view-host:not(.is-hidden)') 
     window.localStorage.setItem('sessions:active-server', 'primary-server');
   }, storedServers);
   await page.goto(`${origin}/${query}`, { waitUntil: 'domcontentloaded', timeout: 15_000 });
-  await page.waitForSelector(selector, { timeout: 10_000 });
+  // Every scope case enters through here, so the wait has to say which URL it
+  // opened. Without the query string, six different scenarios failed with one
+  // indistinguishable message.
+  await t.waitForSelector(
+    page,
+    selector,
+    `the window opened at "/${query}" to settle on ${selector}`,
+    { timeout: 10_000 }
+  );
   return { page, pageErrors };
 }
 
@@ -181,14 +194,20 @@ async function managerTabIds() {
     if (!(child instanceof HTMLElement)) throw new Error('finished child row is missing');
     child.click();
   });
-  await current.page.waitForSelector('.session-view-host[data-session-id="finished-child"]:not(.is-hidden)');
+  await t.waitForSelector(
+    current.page,
+    '.session-view-host[data-session-id="finished-child"]:not(.is-hidden)',
+    'clicking the finished child row to make its view the visible one'
+  );
   await current.page.evaluate(() => {
     const manager = document.querySelector('.session-nav-row[data-session-id="finished-parent"]');
     if (!(manager instanceof HTMLElement)) throw new Error('finished manager row is missing');
     manager.click();
   });
-  await current.page.waitForFunction(
-    () => document.querySelectorAll('[role="tab"][data-tab-id]').length === 2
+  await t.waitForFunction(
+    current.page,
+    () => document.querySelectorAll('[role="tab"][data-tab-id]').length === 2,
+    'selecting the manager to expose exactly its two leaf tabs'
   );
   const ids = await current.page.evaluate(() =>
     [...document.querySelectorAll('[role="tab"][data-tab-id]')]
@@ -217,7 +236,11 @@ async function assertFinishedSessionIsReadOnly() {
     if (!(row instanceof HTMLElement)) throw new Error('finished parent row is missing');
     row.click();
   });
-  await current.page.waitForSelector('.session-view-host:not(.is-hidden) .session-history-body');
+  await t.waitForSelector(
+    current.page,
+    '.session-view-host:not(.is-hidden) .session-history-body',
+    'a finished session to open as read-only history rather than a live terminal'
+  );
   const state = await current.page.evaluate(() => {
     const node = document.querySelector('.session-view-host:not(.is-hidden)');
     if (!node) throw new Error('active finished session is missing');
@@ -227,7 +250,7 @@ async function assertFinishedSessionIsReadOnly() {
       copy: node.textContent,
       popOut: Boolean(node.querySelector('.session-popout-view')),
       resumeButtons: [...node.querySelectorAll('button')]
-        .filter((button) => button.textContent?.trim().startsWith('Continue conversation'))
+        .filter((button) => button.textContent?.trim().startsWith('Resume conversation'))
         .length,
       archiveButtons: [...node.querySelectorAll('button')]
         .filter((button) => button.textContent?.trim() === 'Archive from list')
@@ -277,6 +300,7 @@ try {
   assert.deepEqual(await navigatorIds(''), ['finished-parent', 'finished-child', 'live-grandchild', 'shell-1', 'claude-1', 'codex-1']);
   await assertFinishedSessionIsReadOnly();
   await assertTreeDisclosureIsClear();
+  t.scenario('an unscoped window opens the first session, and tool/server scopes narrow it');
   assert.deepEqual(await activeView(''), { sessionID: 'codex-1', tabIDs: [] });
   assert.deepEqual(await activeView('?tool=codex'), { sessionID: 'codex-1', tabIDs: [] });
   assert.deepEqual(await activeView('?tool=claude'), { sessionID: 'claude-1', tabIDs: [] });
@@ -292,9 +316,12 @@ try {
   assert.equal(primary.sessionRequests, primaryBefore);
   assert.ok(scoped.sessionRequests > scopedBefore);
 
+  t.scenario('?session=…&mode=single pins one session and hides the pop-out chrome');
   const single = await openCase('?session=codex-1&mode=single', '.single-mode');
-  await single.page.waitForFunction(
-    () => document.querySelector('.single-mode-label')?.textContent?.trim() === 'codex'
+  await t.waitForFunction(
+    single.page,
+    () => document.querySelector('.single-mode-label')?.textContent?.trim() === 'codex',
+    'single-session mode to label the window with the codex session it was pinned to'
   );
   const singleLabel = await single.page.evaluate(
     () => document.querySelector('.single-mode-label')?.textContent?.trim()
@@ -318,10 +345,12 @@ try {
     result: 'ok'
   }));
 } finally {
-  await browser.close();
-  await Promise.all([
-    new Promise((resolve) => uiServer.close(resolve)),
-    new Promise((resolve) => primary.server.close(resolve)),
-    new Promise((resolve) => scoped.server.close(resolve))
-  ]);
+  t.release();
+  // Three servers and a browser, all closed with unbounded awaits. Any one
+  // socket the browser had not released turned a finished suite into a silent
+  // hang; bound every one of them.
+  await closeBrowser(browser);
+  await Promise.all([uiServer, primary.server, scoped.server].map((s) => closeServer(s)));
+  // The dist snapshot is this suite's private copy; nothing else will remove it.
+  await rm(distDir, { recursive: true, force: true });
 }

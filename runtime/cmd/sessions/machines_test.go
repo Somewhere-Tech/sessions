@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
+	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
 func TestMachineRegistryKeepsCredentialsOutOfMetadataAndUsesPrivateModes(t *testing.T) {
@@ -44,6 +47,37 @@ func TestMachineRegistryKeepsCredentialsOutOfMetadataAndUsesPrivateModes(t *test
 	}
 }
 
+func TestNativeMachineSyncSharesApprovedMachinesWithAgents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	payload := `{"machines":[{"machineId":"native-machine","name":"Mac mini","endpoint":"https://mini.example.ts.net","deviceId":"native-device","token":"native-device-token"}]}`
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--json", "machines", "sync-native"}, strings.NewReader(payload), &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("sync exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	registry, err := readMachineRegistry(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registry.Machines) != 1 || registry.Machines[0].Alias != "mac-mini" || registry.Machines[0].Source != nativeAppMachineSource {
+		t.Fatalf("registry = %#v", registry)
+	}
+	token, err := tokenstore.ReadSecret(savedMachineTokenPath(home, "native-machine"))
+	if err != nil || token != "native-device-token" {
+		t.Fatalf("saved token=%q err=%v", token, err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--json", "machines", "sync-native"}, strings.NewReader(`{"machines":[]}`), &stdout, &stderr); code != 0 {
+		t.Fatalf("clear exit=%d stderr=%q", code, stderr.String())
+	}
+	registry, err = readMachineRegistry(home)
+	if err != nil || len(registry.Machines) != 0 {
+		t.Fatalf("cleared registry=%#v err=%v", registry, err)
+	}
+}
+
 func TestSavedMachineGlobalSelectsEndpointAndTokenWithoutPrintingIt(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -75,7 +109,10 @@ func TestSavedMachineGlobalSelectsEndpointAndTokenWithoutPrintingIt(t *testing.T
 func TestRawRemoteHostNeverReusesLocalDaemonToken(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	localToken := filepath.Join(home, ".local", "state", "sessions", "token")
+	// Derive the local token location instead of spelling out the Unix layout,
+	// or on Windows this plants the decoy somewhere the CLI never looks and the
+	// test passes without exercising anything.
+	localToken := filepath.Join(sessionstate.UserStateRootFor(home), "token")
 	if err := writePrivateFile(localToken, []byte("local-master-token\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -166,5 +203,86 @@ func TestClientIDIsStableAndPrivate(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("client id mode = %04o", info.Mode().Perm())
+	}
+}
+
+func TestMachineIDValidationKeepsCredentialsInsideTheClientDirectory(t *testing.T) {
+	escape := "../../../../../../tmp/sessions-escape/probe"
+	for _, hostile := range []string{
+		"", "   ", escape, "..", ".", ".hidden", "a/b", `a\b`,
+		"has space", "id\r\n", "id\x00", strings.Repeat("x", maxMachineIDLength+1),
+	} {
+		if err := validateMachineID(hostile); err == nil {
+			t.Fatalf("validateMachineID(%q) accepted a hostile id", hostile)
+		}
+	}
+	for _, allowed := range []string{
+		"11111111-1111-4111-8111-111111111111", "native-machine", "mac_mini.local", "a",
+	} {
+		if err := validateMachineID(allowed); err != nil {
+			t.Fatalf("validateMachineID(%q) = %v", allowed, err)
+		}
+	}
+
+	home := t.TempDir()
+	if _, err := saveMachine(home, savedMachine{
+		MachineID: escape, Name: "Hostile", Endpoint: "http://192.168.1.20:8787",
+		Transport: "nearby", DeviceID: "device", ConnectedAt: time.Now(),
+	}, "device-token"); err == nil {
+		t.Fatal("saveMachine accepted a path-escaping machine id")
+	}
+	if _, err := os.Stat(savedMachineTokenPath(home, escape)); !os.IsNotExist(err) {
+		t.Fatalf("credential written outside the client directory: %v", err)
+	}
+	if _, err := os.Stat(machineRegistryPath(home)); !os.IsNotExist(err) {
+		t.Fatal("registry was written for a rejected machine id")
+	}
+}
+
+func TestNativeMachineSyncRejectsPathEscapingMachineIDs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	escape := "../../../../../../tmp/sessions-escape/native"
+	payload := `{"machines":[{"machineId":"` + escape + `","name":"Hostile","endpoint":"https://mini.example.ts.net","deviceId":"d","token":"t"}]}`
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"machines", "sync-native"}, strings.NewReader(payload), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("sync-native exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "invalid stable id") || !strings.Contains(stderr.String(), "parent-directory reference") {
+		t.Fatalf("sync-native stderr=%q", stderr.String())
+	}
+	if _, err := os.Stat(savedMachineTokenPath(home, escape)); !os.IsNotExist(err) {
+		t.Fatalf("sync-native wrote a credential outside the client directory: %v", err)
+	}
+}
+
+func TestForgetSkipsCredentialRemovalForAPoisonedRegistryEntry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	victim := filepath.Join(home, "victim.token")
+	if err := os.WriteFile(victim, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A registry written by an older, unvalidated build must not turn forget
+	// into an arbitrary file deletion.
+	poisoned := machineRegistry{Version: machineRegistryVersion, Machines: []savedMachine{{
+		Alias: "poisoned", MachineID: "../../../../victim", Name: "Poisoned",
+		Endpoint: "http://192.168.1.20:8787", Transport: "nearby", DeviceID: "device",
+		ConnectedAt: time.Now().UTC(),
+	}}}
+	if err := writeMachineRegistry(home, poisoned); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"machines", "forget", "poisoned"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("forget exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("forget deleted a file outside the client directory: %v", err)
+	}
+	registry, err := readMachineRegistry(home)
+	if err != nil || len(registry.Machines) != 0 {
+		t.Fatalf("registry = %#v err=%v", registry, err)
 	}
 }

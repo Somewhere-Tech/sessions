@@ -136,7 +136,10 @@ func TestSmartSearchSettingsAndPlan(t *testing.T) {
 		Query    string `json:"query"`
 	}
 	decodeBody(t, planned, &plan)
-	if planned.Code != http.StatusOK || provider != state.AIProviderClaude || plan.Provider != state.AIProviderClaude || plan.Query != "apple AND signing" || !strings.Contains(prompt, "Apple signing") {
+	// The planner is asked for FTS5, so its answer is handed to the index
+	// verbatim. Ordinary queries are conjunctive and drop a bare AND or OR as a
+	// stopword, which would silently invert the recall the planner produced.
+	if planned.Code != http.StatusOK || provider != state.AIProviderClaude || plan.Provider != state.AIProviderClaude || plan.Query != "fts:apple AND signing" || !strings.Contains(prompt, "Apple signing") {
 		t.Fatalf("status=%d provider=%q plan=%#v prompt=%q", planned.Code, provider, plan, prompt)
 	}
 

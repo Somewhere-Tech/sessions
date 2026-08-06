@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/waitcond"
 )
 
@@ -51,6 +52,8 @@ func (a *app) cmdWaitUntil(args []string) error {
 	}
 
 	conditions := make([]waitcond.Condition, 0, len(assigned))
+	waited := make([]string, 0, len(assigned))
+	kind := ""
 	for _, spec := range assigned {
 		target, err := a.resolveWaitTarget(spec.session)
 		if err != nil {
@@ -61,7 +64,11 @@ func (a *app) cmdWaitUntil(args []string) error {
 		case waitcond.CommitKind:
 			condition, err = waitcond.NewCommit(context.Background(), target.id, target.cwd)
 		case waitcond.FileContainsKind:
-			condition, err = waitcond.NewFileContains(target.id, target.cwd, spec.file, spec.literal)
+			var path string
+			path, err = resolveWaitFilePath(spec.file)
+			if err == nil {
+				condition, err = waitcond.NewFileContains(target.id, target.cwd, path, spec.literal)
+			}
 		case waitcond.IdleStableKind:
 			id := target.id
 			condition, err = waitcond.NewIdleStable(id, target.cwd, spec.stable, func(ctx context.Context) (waitcond.IdleSample, error) {
@@ -74,6 +81,13 @@ func (a *app) cmdWaitUntil(args []string) error {
 			return fail(1, "%s", err)
 		}
 		conditions = append(conditions, condition)
+		waited = append(waited, target.id)
+		specKind := waitConditionKindLabel(spec.kind)
+		if kind == "" {
+			kind = specKind
+		} else if kind != specKind {
+			kind = waitKindCondition
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -82,12 +96,62 @@ func (a *app) cmdWaitUntil(args []string) error {
 	result, err := waitcond.WaitAny(ctx, conditions)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return a.writeWaitTimeout(timeout, time.Since(started), len(conditions))
+			return a.writeWaitTimeout(kind, uniqueStrings(waited), timeout, time.Since(started))
 		}
 		return fail(1, "%s", err)
 	}
 	result.Elapsed = time.Since(started)
 	return a.writeWaitUntilResult(result)
+}
+
+func waitConditionKindLabel(kind waitcond.Kind) string {
+	switch kind {
+	case waitcond.CommitKind:
+		return waitKindCommit
+	case waitcond.FileContainsKind:
+		return waitKindFile
+	case waitcond.IdleStableKind:
+		return waitKindIdleStable
+	default:
+		return waitKindCondition
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		unique = append(unique, value)
+	}
+	return unique
+}
+
+// resolveWaitFilePath roots a relative --until-file-contains path at the
+// caller's working directory, not the delegate's.
+//
+// The delegate's cwd was the old rule, and it is a directory the caller usually
+// does not know: `sessions new` defaults a session's cwd to $HOME while
+// `sessions run` inherits the caller's, so the same relative path meant
+// different files depending on how the target was created. The condition then
+// watched a path that would never exist and the wait simply timed out with
+// nothing to explain it. A relative path now means what it means in the shell
+// that typed it, and an absolute path is passed through untouched.
+func resolveWaitFilePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fail(1, "--until-file-contains needs a file path")
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), nil
+	}
+	working, err := os.Getwd()
+	if err != nil {
+		return "", fail(1, "resolve working directory for '%s': %s — pass an absolute path instead", path, err)
+	}
+	return filepath.Join(working, path), nil
 }
 
 func parseWaitUntilArgs(args []string) ([]string, []waitUntilSpec, bool, time.Duration, error) {
@@ -240,9 +304,12 @@ func selectWaitTarget(idOrPrefix string, candidates []waitTarget) (waitTarget, e
 }
 
 func (a *app) runnerMetadataTargets() ([]waitTarget, error) {
+	// Mirror state.stateRootsFromEnv: SESSIONS_STATE_DIR *is* the runner
+	// directory, and its absence falls back to <user state root>/runners. The
+	// root is derived, never spelled out, so this resolves on Windows too.
 	dir := os.Getenv("SESSIONS_STATE_DIR")
 	if dir == "" {
-		dir = filepath.Join(a.home, ".local", "state", "sessions", "runners")
+		dir = filepath.Join(sessionstate.UserStateRootFor(a.home), "runners")
 	}
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -297,68 +364,64 @@ func (a *app) observeWaitIdle(ctx context.Context, id string) (waitcond.IdleSamp
 	return waitcond.IdleSample{Working: observation.Working, Source: observation.Source}, nil
 }
 
-func (a *app) writeWaitTimeout(timeout, elapsed time.Duration, count int) error {
-	if a.wantJSON {
-		_ = writeJSON(a.stdout, struct {
-			OK         bool   `json:"ok"`
-			Reason     string `json:"reason"`
-			ElapsedMS  int64  `json:"elapsed_ms"`
-			Conditions int    `json:"conditions"`
-		}{false, "timeout", elapsed.Milliseconds(), count}, false)
-	} else {
-		fmt.Fprintf(a.stderr, "timeout: no condition satisfied after %dms\n", timeout.Milliseconds())
+// writeWaitTimeout reports a wait that ended without observing anything, in the
+// same envelope every other wait answers with. It used to emit its own object
+// whose only fields were ok, reason, elapsed_ms, and a condition count — no
+// target id at all, so a caller racing several delegates learned that something
+// timed out but never which one.
+func (a *app) writeWaitTimeout(kind string, targets []string, timeout, elapsed time.Duration) error {
+	outcome := waitOutcome{
+		OK: false, Kind: kind, Reason: waitReasonTimeout, ElapsedMS: elapsed.Milliseconds(),
 	}
-	return status(2)
+	switch len(targets) {
+	case 0:
+	case 1:
+		outcome.Session = targets[0]
+	default:
+		// A race that nothing won has no single answering target, so every
+		// target that was being watched is named instead.
+		outcome.Targets = targets
+	}
+	// A timeout is not a transport failure. This branch used to share exit
+	// code 2 with "the daemon could not be reached", so a caller could not
+	// tell a slow target from a broken connection.
+	return a.emitWaitOutcome(outcome,
+		fmt.Sprintf("timeout: no condition satisfied after %dms", timeout.Milliseconds()), true,
+		status(exitWaitTimeout))
 }
 
 func (a *app) writeWaitUntilResult(result waitcond.Result) error {
+	outcome := waitOutcome{
+		OK: true, Reason: waitReasonSatisfied, Session: result.Session,
+		ElapsedMS: result.Elapsed.Milliseconds(),
+		Condition: &waitConditionDetail{Cwd: result.Cwd},
+	}
+	human := ""
 	switch result.Kind {
 	case waitcond.CommitKind:
-		output := struct {
-			Session          string `json:"session"`
-			Cwd              string `json:"cwd"`
-			Baseline         string `json:"baseline"`
-			Commit           string `json:"commit"`
-			Subject          string `json:"subject"`
-			ElapsedMS        int64  `json:"elapsed_ms"`
-			HistoryRewritten bool   `json:"history_rewritten"`
-		}{result.Session, result.Cwd, result.Baseline, result.Commit, result.Subject, result.Elapsed.Milliseconds(), result.HistoryRewritten}
-		if a.wantJSON {
-			return writeJSON(a.stdout, output, false)
-		}
+		outcome.Kind = waitKindCommit
+		outcome.Condition.Baseline = result.Baseline
+		outcome.Condition.Commit = result.Commit
+		outcome.Condition.Subject = result.Subject
+		outcome.Condition.HistoryRewritten = result.HistoryRewritten
 		rewrite := ""
 		if result.HistoryRewritten {
 			rewrite = " (history rewritten)"
 		}
-		_, err := fmt.Fprintf(a.stdout, "%s commit %s %s after %dms%s\n", result.Session, result.Commit, result.Subject, result.Elapsed.Milliseconds(), rewrite)
-		return err
+		human = fmt.Sprintf("%s commit %s %s after %dms%s", result.Session, result.Commit, result.Subject, result.Elapsed.Milliseconds(), rewrite)
 	case waitcond.FileContainsKind:
-		output := struct {
-			Session   string `json:"session"`
-			Cwd       string `json:"cwd"`
-			File      string `json:"file"`
-			Contains  string `json:"contains"`
-			ElapsedMS int64  `json:"elapsed_ms"`
-		}{result.Session, result.Cwd, result.File, result.Contains, result.Elapsed.Milliseconds()}
-		if a.wantJSON {
-			return writeJSON(a.stdout, output, false)
-		}
-		_, err := fmt.Fprintf(a.stdout, "%s observed literal bytes in %s after %dms\n", result.Session, result.File, result.Elapsed.Milliseconds())
-		return err
+		outcome.Kind = waitKindFile
+		outcome.Condition.File = result.File
+		outcome.Condition.Contains = result.Contains
+		human = fmt.Sprintf("%s observed literal bytes in %s after %dms", result.Session, result.File, result.Elapsed.Milliseconds())
 	case waitcond.IdleStableKind:
-		output := struct {
-			Session      string `json:"session"`
-			Cwd          string `json:"cwd"`
-			IdleStableMS int64  `json:"idle_stable_ms"`
-			ElapsedMS    int64  `json:"elapsed_ms"`
-			Source       string `json:"source"`
-		}{result.Session, result.Cwd, result.Stable.Milliseconds(), result.Elapsed.Milliseconds(), result.Source}
-		if a.wantJSON {
-			return writeJSON(a.stdout, output, false)
-		}
-		_, err := fmt.Fprintf(a.stdout, "%s observed idle for %dms (source: %s)\n", result.Session, result.Stable.Milliseconds(), result.Source)
-		return err
+		outcome.Kind = waitKindIdleStable
+		outcome.Condition.IdleStableMS = result.Stable.Milliseconds()
+		outcome.Condition.Source = result.Source
+		outcome.IdleMS = result.Stable.Milliseconds()
+		human = fmt.Sprintf("%s observed idle for %dms (source: %s)", result.Session, result.Stable.Milliseconds(), result.Source)
 	default:
 		return io.ErrUnexpectedEOF
 	}
+	return a.emitWaitOutcome(outcome, human, false, nil)
 }

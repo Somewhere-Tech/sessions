@@ -4,9 +4,10 @@ import type { SessionTool } from '../types';
 import { ComposerModelControl } from './ComposerModelControl';
 
 interface Props {
-  // Sender from useTerminal — writes through the live WS. xterm echoes
-  // the bytes back into the buffer so the terminal stays the source of truth.
-  send: (data: string) => void;
+  // Acknowledged sender from useTerminal. Messages are never queued while the
+  // connection is down; a failed send leaves the draft visible for retry.
+  send: (data: string) => Promise<void>;
+  submitMessage: (data: string) => Promise<void>;
   // Status from useTerminal — disable when not open.
   connected: boolean;
   // Session id — needed for file uploads so the server knows which
@@ -58,6 +59,7 @@ function quotePath(p: string): string {
 // next snapshot without a separate live-typing diff.
 export function InputBar({
   send,
+  submitMessage,
   connected,
   sessionId,
   onSubmitted,
@@ -80,6 +82,7 @@ export function InputBar({
   // "message acknowledged by the recipient", which is a different
   // claim than "the bytes left your browser".)
   const [feedback, setFeedback] = useState<'idle' | 'sent'>('idle');
+  const [submitting, setSubmitting] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -119,7 +122,7 @@ export function InputBar({
   }, [recoverDraft, text]);
 
   const submit = async (): Promise<void> => {
-    if (!connected) return;
+    if (!connected || submitting) return;
     setUploadError(null); // clear any lingering upload error on submit
     setComposerNotice(null);
     const trimmed = text.trim();
@@ -166,7 +169,7 @@ export function InputBar({
           ? 'Remote Control needs a Terminal session'
           : `${command} needs a Terminal session`,
         detail: command === '/rc'
-          ? 'Claude exposes Remote Control only from its interactive terminal. This command was not sent as a chat message.'
+          ? 'Claude exposes Remote Control only from its interactive terminal, and only when this machine has it turned on in Settings → Claude. This command was not sent as a chat message.'
           : 'Claude slash commands run in its interactive terminal. This command was not sent as a chat message.',
         canContinueInTerminal: Boolean(onContinueInTerminal),
         enableRemoteControl: command === '/rc'
@@ -183,31 +186,33 @@ export function InputBar({
       return;
     }
 
-    if (text) {
-      // Two-step submit:
-      //   1. Send the text wrapped in bracketed-paste markers so
-      //      Claude Code's TUI (Ink + bracketed-paste mode) knows
-      //      this is paste, not a fast keystroke storm. The end
-      //      marker \x1b[201~ tells it where the paste finishes.
-      //   2. After a tiny delay, send \r as its OWN WS message.
-      //      That arrives at the runner as a separate pty.write,
-      //      which Ink's input loop reads as a fresh keystroke.
-      //      Without the delay, Ink processes the paste-end marker
-      //      AND the trailing \r in the same read() call — the \r
-      //      gets buffered and doesn't fire submit until the next
-      //      keystroke arrives. (That's why a second Enter "fixed"
-      //      it: the second Enter's \r came in cleanly on its own.)
-      send('\x1b[200~' + text + '\x1b[201~');
-      window.setTimeout(() => send('\r'), 30);
-    } else {
-      // Empty buffer — just an Enter, e.g. to accept a y/n prompt.
-      send('\r');
+    setSubmitting(true);
+    try {
+      if (text) {
+        // The daemon owns text + Enter as one atomic operation. It still
+        // writes two PTY frames (needed by Ink), but concurrent agents cannot
+        // interleave their messages between those frames.
+        await submitMessage('\x1b[200~' + text + '\x1b[201~');
+      } else {
+        // Empty buffer — just an Enter, e.g. to accept a y/n prompt.
+        await send('\r');
+      }
+      if (text && onSubmitted) onSubmitted(text);
+      setText('');
+      restoredDraftRef.current = null;
+      setFeedback('sent');
+      window.setTimeout(() => setFeedback('idle'), 500);
+    } catch (reason) {
+      setComposerNotice({
+        tone: 'error',
+        title: 'Message not sent',
+        detail: reason instanceof Error
+          ? `${reason.message} Your draft is still here.`
+          : 'Sessions is reconnecting. Your draft is still here; send it again after the connection returns.'
+      });
+    } finally {
+      setSubmitting(false);
     }
-    if (text && onSubmitted) onSubmitted(text);
-    setText('');
-    restoredDraftRef.current = null;
-    setFeedback('sent');
-    window.setTimeout(() => setFeedback('idle'), 500);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -221,7 +226,13 @@ export function InputBar({
       if (text) {
         setText('');
       } else {
-        send('\x1b');
+        void send('\x1b').catch(() => {
+          setComposerNotice({
+            tone: 'error',
+            title: 'Key not sent',
+            detail: 'Sessions is reconnecting. Try again when the connection returns.'
+          });
+        });
       }
       return;
     }
@@ -366,7 +377,11 @@ export function InputBar({
                   : continuingInTerminal
                     ? 'Preparing…'
                     : composerNotice.enableRemoteControl
-                      ? 'End Rich & open Remote Control…'
+                      // Says what the button does, in the order it happens.
+                      // "Open Remote Control" implied this button turned it
+                      // on; it does not — this machine's Settings choice does,
+                      // and the handler checks it before ending anything.
+                      ? 'End Rich & continue in Terminal with Remote Control…'
                       : 'End Rich & continue in Terminal…'}
               </button>
             ) : null}
@@ -402,7 +417,7 @@ export function InputBar({
           placeholder={connected
             ? `Message ${provider === 'codex' ? 'Codex' : 'Claude'} — Enter sends, Shift+Enter for newline`
             : 'Disconnected'}
-          disabled={!connected}
+          disabled={!connected || submitting}
           rows={Math.min(6, Math.max(1, text.split('\n').length))}
           autoCapitalize="sentences"
           autoCorrect="on"
@@ -434,9 +449,9 @@ export function InputBar({
             type="button"
             className={`btn btn-primary input-send${feedback === 'sent' ? ' is-sent' : ''}`}
             onClick={() => void submit()}
-            disabled={!connected}
+            disabled={!connected || submitting}
             aria-label="Send"
-            title="Send (Enter)"
+            title={submitting ? 'Sending…' : 'Send (Enter)'}
           >
             <span aria-hidden>↑</span>
           </button>

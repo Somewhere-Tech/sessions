@@ -104,6 +104,26 @@ export interface NativeSavedMachine {
   connected_at: string;
 }
 
+export interface NativeAgentMachine {
+  alias?: string;
+  machineId: string;
+  name: string;
+  endpoint: string;
+  deviceId?: string;
+  token: string;
+}
+
+export async function syncNativeAgentMachines(
+  machines: NativeAgentMachine[]
+): Promise<NativeSavedMachine[]> {
+  if (!isTauri()) return [];
+  const result = await invoke<NativeConnectionCommand<{ machines: NativeSavedMachine[] }>>(
+    'native_agent_machines_sync',
+    { machines }
+  );
+  return result.data.machines ?? [];
+}
+
 export interface NativeMovePlan {
   source_id: string;
   target_id?: string;
@@ -139,12 +159,13 @@ export async function listNativeMoveMachines(): Promise<NativeSavedMachine[]> {
 export async function moveNativeSession(
   sessionId: string,
   machine: string,
-  options: { dryRun: boolean; allowDirty?: boolean; runtimeMode: 'rich' | 'terminal' }
+  options: { dryRun: boolean; allowDirty?: boolean; runtimeMode: 'rich' | 'terminal'; sourceMachine?: string }
 ): Promise<NativeMovePlan> {
   if (!isTauri()) throw new Error('Cross-machine continuation is available in Sessions.app');
   const result = await invoke<NativeConnectionCommand<NativeMovePlan>>('native_move_session', {
     sessionId,
     machine,
+    sourceMachine: options.sourceMachine,
     dryRun: options.dryRun,
     allowDirty: options.allowDirty ?? false,
     runtimeMode: options.runtimeMode
@@ -153,7 +174,7 @@ export async function moveNativeSession(
 }
 
 export interface NativeRuntimeStatus {
-  state: 'ready' | 'development' | 'client-only' | 'disabled' | 'error';
+  state: 'starting' | 'ready' | 'development' | 'client-only' | 'disabled' | 'error';
   detail: string;
   serviceLabel: string;
   runtimeVersion: string | null;
@@ -382,6 +403,11 @@ export async function getNativeRuntimeStatus(): Promise<NativeRuntimeStatus | nu
   return invoke<NativeRuntimeStatus>('runtime_status');
 }
 
+export async function recoverNativeRuntime(): Promise<NativeRuntimeStatus> {
+  if (!isTauri()) throw new Error('Runtime recovery is available in Sessions.app');
+  return invoke<NativeRuntimeStatus>('recover_runtime');
+}
+
 export interface SomewhereCLIStatus {
   installed: boolean;
   installedVersion: string | null;
@@ -451,6 +477,17 @@ export async function openSupportPage(kind: SupportPage): Promise<void> {
   const target = supportURLs[kind];
   const opened = window.open(target, '_blank', 'noopener,noreferrer');
   if (!opened) window.location.assign(target);
+}
+
+export async function openExternalURL(url: string): Promise<void> {
+  if (isTauri()) {
+    await invoke<void>('open_external_url', { url });
+    return;
+  }
+  const opened = window.open(url, '_blank', 'noopener,noreferrer');
+  if (!opened) {
+    throw new Error('The browser blocked the new tab. Allow pop-ups for Sessions and try again.');
+  }
 }
 
 export interface NativeUpdateInfo {
@@ -547,4 +584,13 @@ export async function installNativeUpdate(
   // and remain alive across this replacement.
   const { relaunch } = await import('@tauri-apps/plugin-process');
   await relaunch();
+}
+
+// Quitting the viewer never ends the daemon or any runner. Recovery screens
+// use this as the calm escape hatch when the user does not want to wait for
+// the machine view to reconnect.
+export async function quitNativeApp(): Promise<void> {
+  if (!isTauri()) return;
+  const { exit } = await import('@tauri-apps/plugin-process');
+  await exit(0);
 }

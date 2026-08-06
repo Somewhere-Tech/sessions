@@ -14,8 +14,8 @@
 //
 // Content blocks (inside `assistant`):
 //   - 'text'      chat-visible
-//   - 'thinking'  internal reasoning (encrypted in recent Claude) — surface
-//                 a "💭 thought for X" badge but don't display raw text
+//   - 'thinking'  internal reasoning (encrypted in recent Claude) — preserve
+//                 presence metadata but don't display raw text
 //   - 'tool_use'  Claude called a tool → surface as a chip with name + input
 //
 // Content blocks (inside `user`):
@@ -428,10 +428,30 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
     }
 
     const subtype = event.subtype ?? '';
-    const turnID = event.turnId || latestTurnID;
     if (subtype === 'turn_started') {
       if (event.turnId) latestTurnID = event.turnId;
       ensureTurn(event.turnId ?? '', at);
+      continue;
+    }
+
+    // A message the user typed while Codex was mid-turn. The runner refuses
+    // it rather than queuing it, so the only honest thing the UI can do is
+    // show that it was not sent. Handled here, ahead of the turn projection
+    // below, because a rejection carries no turnId: routed through
+    // ensureTurn it would either be folded into whichever turn happened to be
+    // latest or dropped outright when none was. Mirrors the Claude branch in
+    // eventsToMessages so a rejection reads the same for both providers.
+    if (event.type === 'system' && subtype === 'input_rejected') {
+      const rejection = (event as Record<string, unknown>).error;
+      if (typeof rejection !== 'string' || !rejection.trim()) continue;
+      out.push({
+        id: event.uuid ?? `codex-input-rejected-${out.length}`,
+        role: 'assistant',
+        content: '',
+        status: 'sent',
+        createdAt: at,
+        errorResponse: rejection
+      });
       continue;
     }
 
@@ -505,16 +525,13 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
 // seen in the wild; unknown types pass through silently (forward-
 // compatible with new Claude releases).
 //
-// Key shape decision: multi-step assistant turns (Claude calls 5
-// tools then replies) arrive as a sequence of assistant events. We
-// COLLAPSE consecutive tool-only assistant events into the next
-// text-bearing one, so the chat reads as "user → (one assistant turn,
-// optionally with N tool chips attached) → user". When the last
-// assistant event in a turn is still tool-only (Claude is mid-turn,
-// no reply yet), we emit a synthetic "in progress" assistant entry
-// carrying the pending tool calls — the user can see what Claude is
-// doing in real time. That entry's `id` is the last tool_use_id so
-// React keeps it stable across re-renders.
+// Key shape decision: multi-step assistant turns (Claude writes prose,
+// calls tools, then writes more prose) arrive as a sequence of assistant
+// events. Consecutive tool-only events become one activity entry at their
+// exact position in the timeline. They must not be attached to the next
+// text event: doing so visibly shifts every command group one message late.
+// A trailing group remains visible while Claude is mid-turn. Its stable id
+// comes from the first tool event so React does not re-key it on every tick.
 export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] {
   if (isCodexAppServerHistory(events)) return codexEventsToMessages(events);
   // First pass: index every tool_result by tool_use_id. They live on
@@ -533,10 +550,10 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
   // event OR a synthetic "in progress" message at end-of-stream.
   let pendingTools: import('../hooks/useDispatch').ToolCall[] = [];
   let pendingHadThinking = false;
-  // Track the earliest timestamp/uuid of the pending batch so when we
-  // emit them attached to a later text event, the implicit "this turn
-  // started" time is honest.
+  // Track the earliest timestamp/uuid of the pending batch so the ordered
+  // activity entry keeps the time at which the commands actually started.
   let pendingFirstUuid: string | undefined;
+  let pendingFirstCreatedAt: number | undefined;
   // queue-operation dedup (Claude sometimes enqueues the same text
   // twice; we drop replicas).
   const queuedContents = new Set<string>();
@@ -554,6 +571,25 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
     });
   };
 
+  const flushPendingTools = (): void => {
+    if (pendingTools.length === 0) return;
+    const collected = enrichToolCalls(pendingTools);
+    out.push({
+      id: `${pendingFirstUuid ?? `asst-tools-${out.length}`}:tools`,
+      role: 'assistant',
+      content: '',
+      status: 'sent',
+      createdAt: pendingFirstCreatedAt ?? Date.now(),
+      blockId: pendingFirstUuid,
+      toolCalls: collected.length > 0 ? collected : undefined,
+      hadThinking: pendingHadThinking || undefined
+    });
+    pendingTools = [];
+    pendingHadThinking = false;
+    pendingFirstUuid = undefined;
+    pendingFirstCreatedAt = undefined;
+  };
+
   for (const ev of events) {
     if (ev.type === 'user' && ev.message?.role === 'user') {
       const content = ev.message?.content;
@@ -567,6 +603,8 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
       // not human typing — skip them in the chat.
       if (isSystemUserPseudoMessage(body)) continue;
 
+      flushPendingTools();
+      pendingHadThinking = false;
       const interrupted = body === '[Request interrupted by user]';
       queuedContents.delete(body.trim());
 
@@ -588,22 +626,27 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
       const breakdown = breakdownAssistant(ev.message?.content);
       // Tool-only assistant event (Claude called a tool, no text reply
       // yet) — buffer the tool calls and continue. The next
-      // text-bearing assistant event will absorb them.
+      // visible timeline boundary will flush them in place.
       if (!breakdown.text) {
         if (breakdown.toolCalls.length > 0) {
+          const startsGroup = pendingTools.length === 0;
           pendingTools.push(...breakdown.toolCalls);
-          if (!pendingFirstUuid) pendingFirstUuid = ev.uuid;
+          if (startsGroup) {
+            pendingFirstUuid = ev.uuid;
+            pendingFirstCreatedAt = timestampMs(ev.timestamp);
+          }
         }
         if (breakdown.hadThinking) pendingHadThinking = true;
         continue;
       }
-      // Text-bearing event — emit a real message that absorbs every
-      // pending tool from earlier in this turn.
-      const collected = enrichToolCalls([...pendingTools, ...breakdown.toolCalls]);
+      // The pending commands happened before this prose. Emit them first
+      // instead of visually shifting them down onto this message.
+      flushPendingTools();
+      const collected = enrichToolCalls(breakdown.toolCalls);
       const hadThinkingAny = pendingHadThinking || breakdown.hadThinking;
-      pendingTools = [];
       pendingHadThinking = false;
       pendingFirstUuid = undefined;
+      pendingFirstCreatedAt = undefined;
       out.push({
         id: ev.uuid ?? `asst-evt-${out.length}`,
         role: 'assistant',
@@ -623,6 +666,8 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
       if (op !== 'enqueue' || typeof text !== 'string' || !text.trim()) continue;
       const trimmed = text.trim();
       if (queuedContents.has(trimmed)) continue;
+      flushPendingTools();
+      pendingHadThinking = false;
       queuedContents.add(trimmed);
       out.push({
         id: `queue-${out.length}-${trimmed.slice(-12)}`,
@@ -637,6 +682,8 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
     if (ev.type === 'system' && ev.subtype === 'input_rejected') {
       const message = (ev as Record<string, unknown>).error;
       if (typeof message !== 'string' || !message.trim()) continue;
+      flushPendingTools();
+      pendingHadThinking = false;
       out.push({
         id: ev.uuid ?? `input-rejected-${out.length}`,
         role: 'assistant',
@@ -651,23 +698,8 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
     // last-prompt are bookkeeping; skipped.
   }
 
-  // Drain: if Claude is mid-turn (tools called, no text yet), emit a
-  // synthetic "in progress" assistant message carrying the pending
-  // tool calls. Stable id from the first tool's uuid so React doesn't
-  // re-key on every tick.
-  if (pendingTools.length > 0) {
-    const collected = enrichToolCalls(pendingTools);
-    out.push({
-      id: pendingFirstUuid ?? `asst-pending-${out.length}`,
-      role: 'assistant',
-      content: '',
-      status: 'sent',
-      createdAt: Date.now(),
-      blockId: pendingFirstUuid,
-      toolCalls: collected.length > 0 ? collected : undefined,
-      hadThinking: pendingHadThinking || undefined
-    });
-  }
+  // Drain a still-running final command group without changing its timestamp.
+  flushPendingTools();
 
   // Final pass: drop queued entries already superseded by the real
   // user_input event further down the list.

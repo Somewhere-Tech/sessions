@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/ansi"
 )
 
 type session struct {
@@ -54,6 +56,9 @@ type session struct {
 	CreatorKind        string            `json:"creator_kind,omitempty"`
 	CreatorID          string            `json:"creator_id,omitempty"`
 	ParentSessionID    string            `json:"parent_session_id,omitempty"`
+	DelegationKind     string            `json:"delegation_kind,omitempty"`
+	Permissions        string            `json:"permissions,omitempty"`
+	Lifecycle          string            `json:"lifecycle,omitempty"`
 	SetAsideAt         *int64            `json:"setAsideAt,omitempty"`
 	CreatorAncestry    []string          `json:"creator_ancestry,omitempty"`
 	RootCreatorKind    string            `json:"root_creator_kind,omitempty"`
@@ -203,10 +208,13 @@ func (a *app) cmdLS(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Preserve the historical JSON behavior of including closed sessions while
-	// keeping the raw daemon objects (and their existing field casing) intact.
-	includeClosed := options.includeClosed || a.wantJSON
-	records, err := a.fetchSessionRecords(includeClosed)
+	// --json selects a format, never a working set. It used to also force
+	// closed sessions into the answer, so `sessions --json ls` returned every
+	// record the daemon had ever seen and -a was a no-op there: an agent asking
+	// the most common question there is — what is running? — got a pile of dead
+	// sessions and no way to say otherwise. The flag now means the same thing
+	// in both modes.
+	records, err := a.fetchSessionRecords(options.includeClosed)
 	if err != nil {
 		return err
 	}
@@ -238,7 +246,11 @@ func (a *app) cmdLS(args []string) error {
 		writeOSUserScope(a.stdout, scope)
 	}
 	if len(records) == 0 {
-		_, err := io.WriteString(a.stdout, "(no sessions)\n")
+		// An empty ls is the moment an agent is most likely to conclude that
+		// the work it dispatched never happened, so name the two things this
+		// view deliberately excludes rather than leaving it to the help text.
+		_, err := io.WriteString(a.stdout, "(no sessions)\n"+
+			"ls hides ended sessions and never lists lanes; `sessions list -a` shows every session and lane in any state\n")
 		return err
 	}
 	showProfile := recordsHaveProfiles(records)
@@ -267,10 +279,7 @@ func (a *app) cmdLS(args []string) error {
 
 func jsLength(value string) int { return len(utf16.Encode([]rune(value))) }
 
-var (
-	ansiPattern          = regexp.MustCompile("\\x1b\\[[0-?]*[ -/]*[@-~]|\\x1b\\][^\\x07]*\\x07")
-	cursorForwardPattern = regexp.MustCompile("\\x1b\\[(\\d+)C")
-)
+var cursorForwardPattern = regexp.MustCompile("\\x1b\\[(\\d+)C")
 
 func normalize(value string) string {
 	return cursorForwardPattern.ReplaceAllStringFunc(value, func(match string) string {
@@ -280,7 +289,7 @@ func normalize(value string) string {
 	})
 }
 
-func cleanANSI(value string) string { return ansiPattern.ReplaceAllString(normalize(value), "") }
+func cleanANSI(value string) string { return ansi.Strip(normalize(value)) }
 
 func (a *app) cmdSnap(args []string) error {
 	if len(args) == 0 || args[0] == "" {

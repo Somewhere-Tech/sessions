@@ -41,7 +41,10 @@ the host's explicit Accept/Deny decision for Tailscale or nearby requests.
 `frontend/src/lib/hostedBootstrap.ts` deliberately keeps browser pairing
 same-origin while routing a pasted native link through the Tauri command in
 `src-tauri/src/lib.rs`; the device credential is then stored as a normal
-machine entry. Native onboarding probes `/api/health` before consuming the
+machine entry. The native shell also synchronizes that approved identity into
+the CLI registry through standard input, never argv. Unix keeps the device
+credential in a private file; Windows applies signed-in-user DPAPI protection.
+Native onboarding probes `/api/health` before consuming the
 single-use ticket. The claim returns the daemon identity persisted in
 `~/.local/state/sessions/machine-id`; `frontend/src/lib/hostedBootstrap.ts`
 uses that identity to update an existing machine even when its access endpoint
@@ -52,7 +55,23 @@ workspace, and ordering state locally; renders best-first message results; and
 opens the exact stable message index in a read-only transcript reader. The
 reader initially requests only a server-side window, then can deliberately
 request everything after the match, user messages only, the full transcript,
-or a bookmarked range between two user messages. Provider badges
+or a bookmarked range between two user messages. That surface is labelled
+**History** in `ProductSidebar.tsx` and `MobileNav.tsx`, because its no-query
+state is not an empty screen: it renders
+`frontend/src/components/ConversationBrowser.tsx`, the app's equivalent of
+`sessions history` — every recorded Claude and Codex conversation on every
+configured machine, whoever started it, newest first, with its last-spoken
+time, message count, provider, machine, folder, and whether it began outside
+Sessions. Typing narrows the same set into message results. Resume eligibility
+mirrors the CLI's precedence exactly — live, moved, unreadable, unavailable,
+resumable (`frontend/src/lib/conversationBrowser.ts`) — and a live conversation
+offers attach rather than resume, because the daemon refuses a second runtime
+for one conversation. Rows order on `conversation_updated_at`, when something
+was actually said, rather than on record activity, so a shutdown sweep that
+touches a dozen finished runners cannot float them above yesterday's real work.
+A machine that did not answer is named, every count becomes a lower bound,
+hidden rows are counted out loud, and an empty result says how many
+conversations exist behind the filters. Provider badges
 reuse the Claude and Codex product icons through
 `frontend/src/components/ProviderBadge.tsx`. `scripts/release-app.sh` validates the
 version, signing key, notarization credentials, nested signatures, stapling,
@@ -63,9 +82,16 @@ The desktop workspace begins in `frontend/src/App.tsx`. `ProductSidebar.tsx`
 owns the permanent Home/Sessions/Daily/Search/Fleet/Usage/Settings rail;
 `HomeView.tsx` summarizes the operational inbox; and `SessionNavigator.tsx`
 builds the manager/child tree from normalized `SessionInfo` provenance fields.
+The global `NewSessionDialog.tsx` launcher is embedded as the empty state of
+the right-hand conversation pane rather than mounted as a modal. Its prompt
+composer shares the live conversation composer's visual structure; starting a
+session replaces that surface with `SessionView.tsx` in place. Linked-session
+creation remains a deliberate overlay because it is scoped to its visible
+parent.
 `FleetView.tsx` independently polls every configured daemon, uses the optional
 `system.os`/`system.arch` health metadata to choose a platform mark, reports
-each daemon version, and keeps older daemons compatible with a conservative
+each daemon version, persists a user-defined local alias for each configured
+machine, and keeps older daemons compatible with a conservative
 client-side fallback. It compares release versions only to render advisory
 older/newer/different-build notices; a different version is not itself an API
 failure. An advertised `compatibility.api` range is authoritative: native
@@ -88,6 +114,12 @@ status remain separate daemon/ledger truth. `SessionView.tsx` keeps Conversation
 as the primary agent surface; terminal-backed agents open the exact provider
 terminal as a bounded drawer, while shell sessions and single-session pop-outs
 retain the full terminal. Details stays a separate inspector.
+The navigator's **All machines** scope uses
+`frontend/src/hooks/useFleetSessions.ts` to poll each already-configured daemon
+independently and groups live and ended rows by computer. It does not introduce
+a relay or share credentials between hosts: selecting a row switches to that
+row's authenticated machine before opening the session. Individual machine
+chips retain the full hierarchy and management controls.
 `SessionDetails.tsx` renders
 runtime, workspace, recovery, relationship, usage, and destructive controls;
 closing `SessionTabs.tsx` only closes a view. The navigator's row menu keeps
@@ -178,16 +210,36 @@ usage in `runtime/cmd/sessions/help.go`. Lifecycle commands are split into focus
 files such as `runtime/cmd/sessions/commands.go`, `runtime/cmd/sessions/run.go`, and
 `runtime/cmd/sessions/recover.go`; `runtime/cmd/sessions/app.go` owns global flags
 and dispatch. `runtime/cmd/sessions/machines.go` owns Bonjour discovery,
-host-approved connection, private saved credentials, the access inbox, and
-global saved-machine resolution. `sessions docs` renders the complete offline Markdown reference,
+host-approved connection, private saved credentials, native-app registry sync,
+the access inbox, and global saved-machine resolution.
+`runtime/cmd/sessions/fleet.go` resolves machine-qualified history references
+and constructs the approved fleet used by `search`/`grep`; `history_cat.go`
+streams one exact source conversation. `runtime/cmd/sessions/history.go` is
+`sessions history`: it browses every recorded Claude and Codex conversation
+across that same fleet with the query optional, resolves whether each one is
+live, moved, unreadable, gone, or resumable, and prints beside every row the
+command that actually works for it — `sessions attach` for a live conversation,
+`sessions resume` for one Sessions can reopen including from its own mirror
+copy, and no command with the reason for one nothing still holds. `--preview`
+reads the stored tail over GET only and creates nothing.
+`sessions docs` renders the complete offline Markdown reference,
 and [`CLI.md`](CLI.md) is generated by that command, so both track the executable
 command table rather than a copied list.
 
 ## Internal packages
 
-There are 23 production packages under `runtime/internal/`. The neighboring
+There are 27 production packages under `runtime/internal/`. The neighboring
 `runtime/internal/interop/` directory is a compatibility test fixture, not a
 production package (`runtime/internal/interop/cutover_test.go`).
+
+The sections below describe the packages that carry product behavior. Five
+supporting packages have no section of their own: `discovery` (Bonjour
+advertisement and browsing), `ipc` (the local runner socket, including the
+Windows named-pipe owner check), `tokenstore` (master-token and device
+credential storage), and the Windows-only `winconpty` and `winprocess`. The
+Unix implementation in `tokenstore/store_unix.go` currently has no test file
+while its Windows counterpart does; `.github/workflows/windows-preview.yml`
+covers the Windows side.
 
 ### `api`
 
@@ -271,15 +323,34 @@ The Somewhere resolver recognizes the canonical HTTP registration or local
 `somewhere mcp` adapter, avoids an equivalent duplicate, and fails on a
 same-name/different-target conflict without copying a token into runner state.
 
+The same onboarding boundary records the user's delegated-task access choice.
+`runtime/internal/session/delegation.go` resolves it below every UI and CLI
+caller. A user-created session is constrained unless full access is explicit.
+An agent-created child inherits the parent's exact Claude permission mode or
+Codex sandbox and approval flags; it cannot ask the daemon to promote itself.
+Explicit autonomous consent permits full-access agent children without changing
+already-running sessions. Agent children default to `task` lifecycle, while
+user-created conversations default to `session` lifecycle. A successful idle
+task is durably ended by `runtime/internal/session/idle.go`; failed or
+needs-input tasks remain visible and resumable.
+
 ### `agentcall`
 
 `agentcall` is the shared one-shot boundary for explicitly requested AI
 features (`runtime/internal/agentcall/agentcall.go`). It invokes the user's
-already-authenticated Codex or Claude CLI in a temporary directory, strips
-provider API-key environment variables, disables tools and persistence, and
-does not hardcode a model. Codex runs ephemeral/read-only with user config and
-rules ignored; its supported isolation features are preflighted so an older CLI
-fails with an update/provider instruction rather than weakening the boundary.
+already-authenticated Codex or Claude CLI in a temporary directory, disables
+tools and persistence, and does not hardcode a model. The child environment is
+built from an allowlist rather than by stripping known API-key names: only
+variables needed to locate the CLI, let it read credentials the user already
+stored on disk, and reach the network at all are passed through, and `PATH` is
+rebuilt rather than inherited verbatim. Nothing that selects a model, an
+account, or an endpoint is on the list, so a name a vendor ships later —
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `ANTHROPIC_BASE_URL`,
+`OPENAI_BASE_URL` — is dropped without needing a denylist update. Names are
+compared case-insensitively for Windows parity. Codex runs ephemeral/read-only
+with user config and rules ignored; its supported isolation features are
+preflighted so an older CLI fails with an update/provider instruction rather
+than weakening the boundary.
 Claude runs in safe mode with Chrome, slash commands, settings sources, tools,
 MCP, and persistence disabled.
 
@@ -329,7 +400,15 @@ for deliberate integrations. `TranscriptWindow` returns role/range-selected
 stable indices for the native reader; the older tail-bounded
 `TranscriptPreview` remains available to compatibility surfaces.
 It also keeps append-only integration failures and records lost or nonzero
-runner exits (`runtime/internal/integrations/errors.go`).
+runner exits (`runtime/internal/integrations/errors.go`), which is where the
+torn-record policy for every append-only log in the runtime is stated: a record
+that cannot be decoded is skipped, counted, and reported to the caller, and the
+file is never rewritten to repair it. History applies that policy per item, so
+one unreadable transcript degrades its own row — `unreadable` plus an
+instructional `unreadable_reason` — instead of emptying the listing, while a
+single-session fetch still fails loudly. The counters are contract fields;
+[`docs/INTEGRATIONS.md`](INTEGRATIONS.md) documents what a consumer does with
+them.
 
 ### `lan`
 
@@ -363,12 +442,23 @@ process or arbitrary worktree contents (`runtime/internal/migrate/types.go`,
 `runtime/internal/migrate/source.go`). Receivers validate the recipe and refuse
 to overwrite an existing destination (`runtime/internal/migrate/receive.go`);
 workspace transfer policy is isolated in `runtime/internal/migrate/workspace.go`.
+A moved Claude conversation is written into the bucket Claude itself computes
+(`watch.EncodeClaudeCWDStrict`), not the narrow Sessions encoding, because a
+destination transcript in any other directory is one native `claude --resume`
+cannot see; a bucket that already holds that provider UUID wins over the strict
+one, so a repeated move reuses the file rather than leaving one conversation in
+two buckets and making lookup by UUID ambiguous.
 `runtime/internal/migrate/create.go` independently validates the exact source
 identity, minimal recipe, absolute workspace, and Claude/Codex provider before
 creating a Rich target runtime. Both daemons append provenance links, while the
-source provider file remains in place. The native app uses a saved machine
-credential through the bundled CLI and requires a dry-run review; the low-level
-endpoint/token CLI form remains an explicit escape hatch. The transfer does not
+source provider file remains in place. The native app uses saved source and
+destination machine credentials through the bundled CLI and requires a dry-run
+review; the low-level endpoint/token CLI form remains an explicit escape hatch.
+The transfer is client-mediated: the client authenticates to each daemon
+independently and never sends either machine credential to the other daemon. A
+remote source exports the bounded handoff, the destination receives and creates
+it, and only then does the client record source completion
+(`runtime/internal/api/move_handlers.go`). The transfer does not
 carry the full Sessions ledger, tags, isolated profile credentials, attachments,
 usage database, or PTY history. The transfer boundary is checksum-verified and
 client-mediated. Public behavior is described by `runtime/internal/migrate/`
@@ -386,11 +476,13 @@ by this package rather than by API clients.
 ### `proto`
 
 `proto` defines the framed runner protocol and the daemon-side socket client
-(`runtime/internal/proto/proto.go`, `runtime/internal/proto/client.go`). Version
-1 requires server-first HELLO, bounds frame size, and distinguishes replay from
-live traffic. The daemon accepts protocol 0 for immutable legacy runners whose
-HELLO omitted the field, accepts protocol 1, and rejects an unknown future
-version before replay or control frames. HELLO also reports the runner's
+(`runtime/internal/proto/proto.go`, `runtime/internal/proto/client.go`). The
+current revision is protocol 2, which added the model request/response frames;
+every revision requires server-first HELLO, bounds frame size, and distinguishes
+replay from live traffic. The daemon accepts protocol 0 for immutable legacy
+runners whose HELLO omitted the field, accepts every revision through the
+current one, and rejects an unknown future version before replay or control
+frames (`MinimumCompatibleVersion`, `MaximumCompatibleVersion`). HELLO also reports the runner's
 runtime release when known; semantic runner capabilities are exposed through
 `runtime/internal/proto/runner.go`. Structured provider events use the protocol's
 extension frame instead of masquerading as terminal output.
@@ -415,9 +507,28 @@ provider credentials.
 
 `recovery` reconciles ledger state with live runners and provider files without
 mutating anything while it builds a report (`runtime/internal/recovery/report.go`).
+Its per-lane `Reality` reports readability and native resumability as two
+separate facts. `conversation` is the provider's own file and
+`resumeSourceExists` means only that this file is present, which is what makes
+`claude --resume` or `codex resume` possible. `transcriptMirror` is the path to
+Sessions' own copy when one exists and holds records, and
+`conversationRecoverable` is true when either source can still be read. A
+conversation is therefore routinely fully readable through Sessions while
+provider-native resume is impossible; the mirror is never folded into
+`resumeSourceExists`, because promising a native resume a mirror cannot deliver
+would fail in the user's terminal.
 Reopen operations only use validated safe recipes and avoid creating duplicate
 live ownership (`runtime/internal/recovery/mutate.go`). Adoption requires an
 explicit, unambiguous provider artifact (`runtime/internal/recovery/adopt.go`).
+Adoption reports, and does not refuse, a conversation another live Claude
+process already has open. Claude keeps an undocumented per-process registry
+that `AdoptOptions.ClaudeLive` reads strictly read-only to name the holding
+window, its pid, and what it is waiting on; it never changes what adoption
+does. Refusing there would claim an exclusivity Sessions cannot deliver —
+Claude does not lock its transcript and a user can open one a second after any
+check — so the consequence is made survivable instead: the transcript mirror is
+append-only, so if two writers do collide the Sessions copy holds the union.
+This is [`AGENTS.md`](../AGENTS.md) rule 10 in its worked form.
 The one prompt-index exception is still exact: an authenticated Claude history
 ID must supply a valid provider UUID and an existing recorded absolute
 workspace. Sessions launches only `claude --resume <uuid>` there and never
@@ -467,8 +578,18 @@ record whether an agent, the user, or both encountered the problem.
 (`runtime/internal/search/search.go`): ranked token recall by default, explicit
 case-insensitive contiguous substring matching, and regular expressions. The
 SQLite FTS5 path (`runtime/internal/search/index.go`) uses BM25, stemming,
-phrases, boolean operators, and `near(a,b,N)` proximity; bare terms are OR
-alternatives for recall. Results carry a stable message index plus
+phrases, and `near(a,b,N)` proximity. Bare terms are conjunctive — every word
+has to appear — and the query relaxes in named rungs instead of starting broad:
+`strict` requires all terms, `quorum` requires half of them once there are at
+least three, and `broad` is the old OR (`rankedPlan` in
+`runtime/internal/search/index.go`, `runtime/internal/search/query.go`). Boolean
+words in prose are stopwords rather than operators, and raw FTS5 syntax is an
+explicit `fts:` prefix (`search.RawSyntaxPrefix`), so a sentence containing
+"and" can no longer flip a whole query into a syntax the caller did not ask for.
+A pasted path is expanded into its own suffix alternatives instead of being read
+as one phrase. Session name and cwd are indexed columns weighted above body
+text, with a name-only pass so a session is findable by its exact title.
+Results carry a stable message index plus
 content-derived bookmark ID, ranking score, match span,
 provider/session/workspace/machine/creator metadata, and optional neighboring
 messages; full bodies are fetched only after the user opens a hit. Filters
@@ -481,6 +602,34 @@ transcript. Refreshes are serialized and cancelable; unavailable transcripts
 are removed from the plaintext local index. Search-result history is streamed
 into 500-position pages, and the first page verifies the bookmarked message ID
 before displaying it.
+
+The response says how it answered. `effective_query` and `match_mode` echo the
+expression that actually ran and the rung it ran at, and a `sessions` rollup
+counts hits per session over the whole result set rather than the page — the
+"which conversation was that" answer — with `rollup_partial` when the scan hit
+its bound. Scores are absolute, a saturating relevance blended with recency, so
+the same match scores the same at any page size and a caller can threshold on
+it; a per-session spread keeps one large conversation from owning the page. The
+index version is mixed into every fingerprint, so a schema change like this one
+rebuilds the index once on the first search after the upgrade.
+
+With no explicit global `--machine` or `--host`, the CLI fans search across the
+local daemon and every approved machine concurrently. Results add a stable
+`machine::history-id` reference and collapse matching provider-message copies
+while retaining their `available_on` locations. Per-machine status is included
+in JSON; reachable results still succeed when another machine is offline.
+`sessions grep` accepts familiar `-i` and `-C` spelling over this contract,
+`sessions cat` streams the exact normalized transcript from its source, and
+`sessions resurrect` is an accepted spelling of `sessions resume`. No transcript
+is materialized into a shared plaintext directory for OS-level grep. The fleet
+merge preserves the per-session rollup, machine-qualifies it the same way
+matches are, and folds one conversation reachable from two machines into one
+row; it withdraws `effective_query`/`match_mode` and marks the response partial
+when two machines interpret the query differently, because naming either
+interpretation would be a guess about which produced these results. `search`
+answers "which message"; a caller who wants "which conversation", or who has
+filters but no words, is pointed at `sessions history` rather than refused with
+a syntax error.
 
 ### `smartsearch`
 
@@ -509,6 +658,15 @@ selects sessions and lanes active in a local day, carries hierarchy/tags/outcome
 and uses only final structured assistant summaries for optional recap input
 (`runtime/internal/session/daily_activity.go`).
 
+`MassKillGuard` refuses more than `DefaultMassKillLimit` (3) runner removals in
+one operation without an explicit force
+(`runtime/internal/session/manager.go`). By the standard in
+[`AGENTS.md`](../AGENTS.md) rule 10 this is a guard compensating for an
+inference rather than an invariant: Sessions does not know a runner is dead, it
+infers it from discovery, and the guard exists to bound the damage when that
+inference is wrong. It is load-bearing today and stays until discovery stops
+deleting on inference; it is not a model to copy for new refusals.
+
 ### `state`
 
 `state` owns daemon configuration, runner paths, launchd registration, and each
@@ -536,10 +694,29 @@ snapshot followed by new child work: copied parent turns are neither rebilled
 nor re-dated, and physical-log provenance cannot be replaced by an equal replay.
 Aggregation exposes schema-versioned daily, weekly,
 monthly, session, tag, provider, and model views; session tags are joined from
-current runner metadata at query time (`runtime/internal/usage/report.go`).
+current runner metadata at query time (`runtime/internal/usage/report.go`). The
+desktop separates the requested time window from those grouping dimensions and
+queries every configured machine directly. Fleet reports can include stable,
+content-free event identities so the client deduplicates copied histories
+without uploading transcript contents; mixed-version fleets are visibly
+reported as a machine sum until every daemon supports exact deduplication.
 Pricing is an explicit pinned `ccusage`-compatible table: recorded costs remain
 distinguishable from estimates, and unknown models remain visibly unpriced
 (`runtime/internal/usage/pricing.go`).
+
+Every calculated cost is an estimate, and the known gaps are worth stating
+rather than discovering. The rate table is hand-maintained in source with a
+pinned upstream revision but no as-of date, so it lags a vendor price change
+until someone edits it. Server-side tool use is billed by the provider but never
+appears in the token stream Sessions reads, so it is absent from the total.
+Cache writes are priced from one `cache_creation_input_tokens` figure and the
+ephemeral 5-minute/1-hour split is not read, so a longer cache TTL is
+under-priced. A Codex session's service tier is inferred from launch arguments
+and profile configuration rather than reported by the provider. And on a Claude
+Max or ChatGPT subscription the marginal cost of a session is zero, so the
+figure is a list-price valuation of the tokens spent, not money owed. Treat the
+totals as directional; recorded provider costs, where present, are the only
+non-estimated numbers.
 
 ### `verdict`
 
@@ -547,7 +724,12 @@ distinguishable from estimates, and unknown models remain visibly unpriced
 from prose or terminal output (`runtime/internal/verdict/verdict.go`). It appends
 records per session, enforces increasing sequence numbers, and retrieves the
 latest record (`runtime/internal/verdict/store.go`); the ledger stores only a
-pointer to verdict state.
+pointer to verdict state. `Emit` writes that ledger pointer *before* the durable
+JSONL record, following the write-ahead rule. A consumer should read the
+resulting partial state accordingly: an interrupted emit can leave a lane event
+saying a verdict was attempted with no record behind it, which is visible and
+retryable, rather than a durable record whose caller was told the write failed
+and whose retry would append a duplicate verdict.
 
 ### `waitcond`
 
@@ -562,11 +744,72 @@ and file reads are bounded. CLI integration behavior is exercised in
 `watch` resolves and tails Claude project JSONL and Codex rollout JSONL, then
 normalizes provider events for the session layer (`runtime/internal/watch/types.go`,
 `runtime/internal/watch/codex_normalize.go`). Claude resolution prefers an
-exact conversation UUID and refuses ambiguous candidates
+exact conversation UUID, then a sole candidate; when several share a project
+bucket it splits them by the cwd each transcript stamped into its own records —
+recorded fact rather than a guess — and only one survivor resolves, because
+following the wrong conversation is worse than showing none
 (`runtime/internal/watch/claude_resolver.go`); Codex resolution uses resume ID,
 working directory, and creation time with a broader fallback
 (`runtime/internal/watch/codex_resolver.go`). Watchers combine filesystem hints
 with polling so missed notifications do not stop progress.
+
+Two Claude project-bucket encodings live here and both matter.
+`EncodeClaudeCWD` is the narrow historical one, folding only `/`, `\` and `:`;
+it stays as it is because existing files are named with it.
+`EncodeClaudeCWDStrict` reproduces what Claude Code actually does — every
+non-alphanumeric character folded to a dash, iterated over UTF-16 code units so
+an astral character contributes both surrogates, and past 200 characters a
+200-character prefix plus a base-36 hash of the original path, so two long
+directories sharing a prefix still land in different buckets.
+`ClaudeProjectDirsUnder` probes both, narrow first so nothing that resolves
+today moves. Strict is a
+write path as well as a read path: `internal/migrate` names a moved
+conversation with it, because a file written anywhere else is one the provider
+will never read. The strict encoding is lossy, so a reader that needs the real
+working directory takes it from what the transcripts in that bucket recorded
+rather than by inverting the directory name.
+
+`watch` also owns the transcript mirror: Sessions' own durable, append-only copy
+of a Claude conversation at `<runner-state-dir>/<id>.transcript.jsonl` with a
+`<id>.transcript.meta.json` provenance sidecar
+(`runtime/internal/watch/transcript_mirror.go`). A PTY-backed Claude watcher tees
+provider lines into it verbatim and in observed order, so the mirror is itself a
+legal Claude transcript that every existing reader handles by substituting the
+path. Structured Claude and Codex app-server kinds start no watcher, and the
+Codex tailer is not mirrored.
+
+Record identity is a multiset, not a set. A record carrying a `uuid` dedupes on
+that uuid globally; a record without one is keyed by content hash plus a
+per-pass ordinal, so a legitimately repeated line is kept rather than swallowed
+as a duplicate. `BeginPass` is the in-memory boundary every reader that restarts
+at byte zero calls first, and it is what resets those ordinals — nothing but
+verbatim provider lines is ever written into the file. This is load-bearing
+rather than pedantic: repeated uuid-less `mode`, `permission-mode`,
+`custom-title`, and `agent-name` records are precisely what a native
+`claude --resume` replays last-one-wins to restore model, permission mode, and
+agent, so collapsing them would not drop decoration, it would rewind restored
+state.
+
+The contract has three parts. The provider file always wins whenever it still
+resolves, so a session resolves to exactly one transcript path and nothing is
+counted twice (`watch.ResolveClaudeWithMirror`, used by `backup.Resolver.Resolve`).
+The mirror is never truncated, rotated, or repaired — reaching its 512 MiB cap
+stops appends and is recorded in the sidecar rather than discarding recorded
+conversation, and it is not unlinked when the session ends. And it becomes the
+answer once the provider prunes, renames the bucket it wrote into, or leaves the
+resolver unable to choose: `sessions source` and `GET /api/history/<id>/source`
+then report `source_kind: "sessions-mirror"` instead of `provider-jsonl`, because
+saying `provider-jsonl` would imply a provider-native resume that is no longer
+possible.
+
+`sessions transcripts` backfills that copy for conversations nobody is watching —
+ended sessions whose provider transcript is still on disk and next in line for
+the provider's retention timer (`runtime/cmd/sessions/transcripts.go`). It is a
+dry run by default and copies only on an exact provider-id match. The resolver's
+single-file fallback is a reasonable guess for *reading* a bucket that holds one
+transcript, but writing a guess into a mirror makes it permanent, and once the
+provider prunes there is nothing left to correct it against; anything less than
+an exact match is reported as unverified and left alone.
 
 ### `webassets`
 
@@ -595,6 +838,15 @@ while `embedui` builds embed the built SPA and provide guarded route fallback
    an explicit kill is ledgered before the kill request
    (`runtime/internal/session/manager.go`,
    `runtime/internal/state/registry.go`).
+
+Idle classification treats a provider approval or confirmation footer as
+`needs-input` and preserves its actual `Reason:` line. That state flows through
+status, list, Fleet, notifications, JSON, and `sessions wait`, whose envelope
+reports `reason: needs-input` with or without `--summary`; no
+watcher sends Enter on the user's behalf. A task-lifecycle child with a
+successful final summary is the one exception to indefinite runtime lifetime:
+the manager records an attributed end boundary and closes the process while
+retaining transcript, lineage, and workspace.
 
 The binding check in `runtime/internal/session/manager.go` prevents two live
 sessions from resuming the same provider conversation. The runner keeps exited
@@ -629,22 +881,39 @@ not claim to resurrect process memory or uncommitted worktree bytes
 ## State on disk
 
 The default Unix state root is `~/.local/state/sessions`; Windows uses
-`%LOCALAPPDATA%\Sessions\state`. Both have a `runners/` subdirectory
-(`runtime/internal/state/config.go`). `SESSIONS_STATE_DIR` relocates runner,
-token, and open-sentinel state for a scratch daemon, while user settings stay
-under the default user state root; the override is mandatory for scratch work
-so the daily driver's registry is not reused (`docs/DEV.md`).
+`%LOCALAPPDATA%\Sessions\state`. Both have a `runners/` subdirectory. Sessions'
+own configuration root is `~/.config/sessions` on Unix and
+`%LOCALAPPDATA%\Sessions\config` on Windows. Derive both from
+`state.UserStateRootFor`/`state.UserConfigRootFor` rather than rebuilding either
+layout by hand (`runtime/internal/state/config.go`). `SESSIONS_STATE_DIR` relocates runner,
+token, open-sentinel, uploads, recap, usage, and integration-error state for a
+scratch daemon, while the user state root — settings, machine identity, approved
+machines, search index, idle sentinels — stays where `HOME` puts it. The
+override is necessary but not sufficient for scratch work: a scratch daemon also
+needs `SESSIONS_LEDGER_PATH` and its own `HOME`, or it will still write into the
+daily driver's ledger and sweep the daily driver's runner plists (`docs/DEV.md`).
 
 | State | Default location | Source |
 | --- | --- | --- |
 | Runner socket, metadata, frames, logs, manifests, structured histories | `~/.local/state/sessions/runners/` | `runtime/internal/state/paths.go` |
+| Sessions' own copy of a Claude conversation | `~/.local/state/sessions/runners/<session-id>.transcript.jsonl` plus a `.transcript.meta.json` sidecar; append-only, mode 0600, never truncated, rotated, or unlinked when the session ends | `runtime/internal/watch/transcript_mirror.go`, `runtime/internal/state/paths.go` |
 | Daemon settings | `~/.local/state/sessions/settings.json` | `runtime/internal/state/config.go` |
 | Access token and open sentinel | Unix: `~/.local/state/sessions/{token,open}`; Windows: `%LOCALAPPDATA%\Sessions\state\{token,open}` with the token DPAPI-protected | `runtime/internal/state/config.go`, `runtime/internal/tokenstore/` |
+| Approved machine metadata and per-device credentials | `~/.local/state/sessions/clients.json` plus `clients/<machine-id>.token`; private files on Unix and DPAPI-protected credential files on Windows | `runtime/cmd/sessions/machines.go`, `runtime/internal/tokenstore/` |
+| Paired-device records | `~/.local/state/sessions/devices.json` | `runtime/internal/api/pair.go` |
+| Durable machine identity | `~/.local/state/sessions/machine-id` | `runtime/internal/api/identity.go` |
 | Search index | `~/.local/state/sessions/search-index.db` | `runtime/internal/api/search_handlers.go` |
-| Integration errors | `~/.local/state/sessions/errors.jsonl` | `runtime/internal/integrations/errors.go` |
-| Lane ledger | `~/Library/Application Support/sessions/ledger/lanes.sqlite3` | `runtime/internal/ledger/store.go` |
-| Global idle hook | `~/.config/sessions/hooks.json` | `runtime/internal/state/config.go` |
-| Backup configuration | `~/.config/sessions/backup.json` | `runtime/internal/backup/config.go` |
+| Integration errors | `~/.local/state/sessions/errors.jsonl`; follows an explicit `SESSIONS_STATE_DIR` | `runtime/internal/integrations/errors.go` |
+| Daily recaps and local usage rollup | `~/.local/state/sessions/recaps/` and `usage.sqlite3`; both follow an explicit `SESSIONS_STATE_DIR` | `runtime/internal/recap/service.go`, `runtime/internal/usage/config.go` |
+| Browser push keys and subscriptions | `~/.local/state/sessions/{vapid.json,push-subscriptions.json}` | `runtime/internal/session/push.go` |
+| Idle completion sentinels | `~/.local/state/sessions/idle/<session-id>` | `runtime/internal/session/idle.go` |
+| Saved provider profiles | `~/.local/state/sessions/profiles/<tool>/<name>` | `runtime/internal/session/profiles.go` |
+| Fleet-search peer health cache (CLI-local, best effort) | `<user state root>/fleet-search-health.json`, so Windows gets `%LOCALAPPDATA%\Sessions\state`; written only by the CLI, holding the last failure and a five-minute cooldown per approved peer | `runtime/cmd/sessions/fleet.go` |
+| Windows supervisor identity | `%LOCALAPPDATA%\Sessions\state\supervisor.json` | `runtime/cmd/sessionsd/supervisor_windows.go` |
+| Files uploaded to a session | `~/.local/state/sessions/uploads/<stem>-<8 hex><ext>`; an explicit `SESSIONS_STATE_DIR` keeps them inside that scratch state | `runtime/internal/api/files.go` |
+| Lane ledger | `<user state root>/ledger/lanes.sqlite3`; an existing `~/Library/Application Support/sessions/ledger/lanes.sqlite3` is adopted rather than abandoned | `runtime/internal/ledger/store.go` |
+| Global idle hook | `<user config root>/hooks.json` | `runtime/internal/state/config.go` |
+| Backup configuration and encryption key | `<user config root>/{backup.json,backup.key}` | `runtime/internal/backup/config.go`, `runtime/internal/backup/encrypt.go` |
 | Runner LaunchAgents on macOS | `~/Library/LaunchAgents/tech.somewhere.sessions.runner.<id>.plist` | `runtime/internal/state/registry.go` |
 
 The event log is persistent and trims toward its lower bound after crossing its
@@ -676,6 +945,13 @@ token; forwarding headers disable the loopback shortcut
 compatibility bypass, and static UI/health routing is distinct from
 authenticated API routes (`runtime/internal/api/server.go`).
 
+After authentication, `GET /api/machine` returns the daemon's durable machine
+ID and its current operating-system hostname. The ID survives a computer
+rename, while clients refresh the hostname and keep any explicit Fleet nickname
+as a separate override. Local UI labels use the real current name followed by
+`(this machine)`; they do not use that phrase as the machine's identity
+(`runtime/internal/api/server.go`, `frontend/src/lib/servers.ts`).
+
 `sessions lan enable` adds and persists a listener on the selected private
 network address and starts its Bonjour advertisement
 (`runtime/cmd/sessions/lan.go`, `runtime/internal/lan/network.go`,
@@ -696,9 +972,11 @@ the session manager does not start transcript-file watchers for them
 instead resolve provider artifacts using the session working directory,
 arguments, creation time, and any explicit resume ID.
 
-Claude lookup maps the real working directory to its project directories,
-prefers an exact UUID, accepts a sole unambiguous candidate, and refuses to guess
-among multiple files (`runtime/internal/watch/claude_resolver.go`). Codex lookup
+Claude lookup maps the real working directory to its project directories under
+both encodings, prefers an exact UUID, accepts a sole unambiguous candidate,
+splits a shared bucket by the cwd the transcripts themselves recorded, and
+otherwise refuses to guess among multiple files
+(`runtime/internal/watch/claude_resolver.go`). Codex lookup
 first handles a global explicit resume ID, then searches date/cwd/time candidates
 and finally performs a bounded broad scan (`runtime/internal/watch/codex_resolver.go`).
 Both tailers combine polling with filesystem notification hints, and Codex

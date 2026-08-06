@@ -25,7 +25,9 @@ const ITEMS: Array<{ id: ProductView; label: string; icon: ReactNode }> = [
   { id: 'home', label: 'Home', icon: <HomeIcon /> },
   { id: 'tabs', label: 'Sessions', icon: <SessionsIcon /> },
   { id: 'today', label: 'Daily', icon: <TodayIcon /> },
-  { id: 'search', label: 'Search', icon: <SearchIcon /> },
+  // "History" rather than "Search": the destination now browses every recorded
+  // Claude and Codex conversation, and searching them is one way to narrow it.
+  { id: 'search', label: 'History', icon: <HistoryIcon /> },
   { id: 'fleet', label: 'Fleet', icon: <FleetIcon /> },
   { id: 'usage', label: 'Usage', icon: <UsageIcon /> },
   { id: 'settings', label: 'Settings', icon: <SettingsIcon /> }
@@ -201,6 +203,7 @@ function HomeIcon(): JSX.Element { return <Icon><path d="M3 10.5 12 3l9 7.5"/><p
 function SessionsIcon(): JSX.Element { return <Icon><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></Icon>; }
 function TodayIcon(): JSX.Element { return <Icon><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/></Icon>; }
 function SearchIcon(): JSX.Element { return <Icon><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></Icon>; }
+function HistoryIcon(): JSX.Element { return <Icon><path d="M3.2 12a8.8 8.8 0 1 0 2.6-6.2"/><path d="M3 4v4h4"/><path d="M12 7.5V12l3 2"/></Icon>; }
 function FleetIcon(): JSX.Element { return <Icon><rect x="4" y="3" width="16" height="7" rx="2"/><rect x="4" y="14" width="16" height="7" rx="2"/><path d="M8 6.5h.01M8 17.5h.01"/></Icon>; }
 function UsageIcon(): JSX.Element { return <Icon><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></Icon>; }
 function FeedbackIcon(): JSX.Element { return <Icon><path d="M4 5.5h16v11H9l-5 4v-15Z"/><path d="M8 9h8M8 13h5"/></Icon>; }

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -28,6 +29,21 @@ const (
 	// For larger files, the newest bytes are inspected so appended sentinels
 	// remain useful without unbounded reads.
 	MaxFileRead = 8 * 1024 * 1024
+
+	// watchDebounce coalesces a burst of filesystem notifications into one
+	// observation. A watch covers the whole parent directory — usually the
+	// session cwd — so an unrelated `npm install` there can wake a waiter tens
+	// of thousands of times per second. Without coalescing every one of those
+	// wakes became a re-check, and the waiter pinned a core for the entire
+	// timeout. The window is far below every poll interval, so it costs
+	// latency no caller can observe.
+	watchDebounce = 50 * time.Millisecond
+
+	// mtimeGranularity is the coarsest modification-time resolution this code
+	// assumes a filesystem may have. It is the slack applied before an
+	// unchanged size and mtime are trusted as proof that a file has not been
+	// rewritten since it was last read.
+	mtimeGranularity = time.Second
 )
 
 // Kind identifies the observation that satisfied a wait.
@@ -133,6 +149,7 @@ type commitCondition struct {
 	logPath  string
 	watch    watchFactory
 	ticker   tickerFactory
+	debounce time.Duration
 	checked  func()
 }
 
@@ -166,9 +183,10 @@ func NewCommit(ctx context.Context, session, cwd string) (Condition, error) {
 	}
 	return &commitCondition{
 		session: session, cwd: cwd, baseline: baseline,
-		logPath: filepath.Join(gitDir, "logs", "HEAD"),
-		watch:   watchParent,
-		ticker:  startTicker,
+		logPath:  filepath.Join(gitDir, "logs", "HEAD"),
+		watch:    watchParent,
+		ticker:   startTicker,
+		debounce: watchDebounce,
 	}, nil
 }
 
@@ -195,6 +213,11 @@ func (condition *commitCondition) Wait(ctx context.Context) (Result, error) {
 			return Result{}, ctx.Err()
 		case <-ticker.ticks:
 		case <-wake:
+			// Every wake here spawns git processes, and the watch covers the
+			// whole .git directory, so a burst must cost one re-check.
+			if err := coalesce(ctx, wake, condition.debounce); err != nil {
+				return Result{}, err
+			}
 		}
 	}
 }
@@ -253,13 +276,32 @@ func gitOutput(ctx context.Context, cwd string, args ...string) (string, error) 
 }
 
 type fileContainsCondition struct {
-	session string
-	cwd     string
-	path    string
-	needle  []byte
-	literal string
-	watch   watchFactory
-	ticker  tickerFactory
+	session  string
+	cwd      string
+	path     string
+	literal  string
+	probe    fileProbe
+	watch    watchFactory
+	ticker   tickerFactory
+	debounce time.Duration
+}
+
+// fileProbe remembers what it last read so an observation of an unchanged file
+// costs one stat instead of a re-read of up to MaxFileRead bytes, and so an
+// appended file costs only the appended bytes.
+//
+// Both matter because the watch is on the parent directory: any write anywhere
+// in the session cwd wakes the condition, and the file being waited on is
+// usually not the file that moved.
+type fileProbe struct {
+	needle []byte
+	last   os.FileInfo
+	readAt time.Time
+
+	// checks and reads are observation counters. They exist so a test can
+	// assert that unrelated directory churn does not turn into file reads.
+	checks atomic.Int64
+	reads  atomic.Int64
 }
 
 // NewFileContains creates a literal-byte file condition. Relative paths are
@@ -285,8 +327,9 @@ func NewFileContains(session, cwd, path, literal string) (Condition, error) {
 		return nil, precondition("literal is larger than the %d-byte file read cap", MaxFileRead)
 	}
 	return &fileContainsCondition{
-		session: session, cwd: cwd, path: resolved, needle: needle, literal: literal,
-		watch: watchParent, ticker: startTicker,
+		session: session, cwd: cwd, path: resolved, literal: literal,
+		probe: fileProbe{needle: needle},
+		watch: watchParent, ticker: startTicker, debounce: watchDebounce,
 	}, nil
 }
 
@@ -297,7 +340,7 @@ func (condition *fileContainsCondition) Wait(ctx context.Context) (Result, error
 	ticker := condition.ticker(filePollInterval)
 	defer ticker.stop()
 	for {
-		satisfied, err := fileContains(condition.path, condition.needle)
+		satisfied, err := condition.probe.contains(condition.path)
 		if err != nil {
 			return Result{}, precondition("read %s: %v", condition.path, err)
 		}
@@ -312,13 +355,22 @@ func (condition *fileContainsCondition) Wait(ctx context.Context) (Result, error
 			return Result{}, ctx.Err()
 		case <-ticker.ticks:
 		case <-wake:
+			if err := coalesce(ctx, wake, condition.debounce); err != nil {
+				return Result{}, err
+			}
 		}
 	}
 }
 
-func fileContains(path string, needle []byte) (bool, error) {
+// contains reports whether the file currently holds the needle. The poll timer
+// and the filesystem watch both land here, so it must stay cheap when nothing
+// relevant has happened: a file that cannot have changed since the last read is
+// answered from the previous result without reading a byte.
+func (probe *fileProbe) contains(path string) (bool, error) {
+	probe.checks.Add(1)
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
+		probe.last = nil
 		return false, nil
 	}
 	if err != nil {
@@ -327,6 +379,7 @@ func fileContains(path string, needle []byte) (bool, error) {
 	defer file.Close()
 	info, err := file.Stat()
 	if errors.Is(err, os.ErrNotExist) {
+		probe.last = nil
 		return false, nil
 	}
 	if err != nil {
@@ -336,15 +389,41 @@ func fileContains(path string, needle []byte) (bool, error) {
 		return false, precondition("not a regular file")
 	}
 	start := int64(0)
-	if info.Size() > MaxFileRead {
+	if previous := probe.last; previous != nil && os.SameFile(previous, info) {
+		if probe.unchanged(previous, info) {
+			return false, nil
+		}
+		if info.Size() > previous.Size() {
+			// Appended bytes are the only ones that can complete a match, plus
+			// the largest needle prefix that could straddle the old end.
+			start = previous.Size() - int64(len(probe.needle)) + 1
+		}
+	}
+	start = max(start, 0)
+	start = min(start, info.Size())
+	if info.Size()-start > MaxFileRead {
 		start = info.Size() - MaxFileRead
 	}
-	reader := io.NewSectionReader(file, start, min(info.Size()-start, int64(MaxFileRead)))
-	encoded, err := io.ReadAll(reader)
+	probe.reads.Add(1)
+	encoded, err := io.ReadAll(io.NewSectionReader(file, start, info.Size()-start))
 	if err != nil {
 		return false, err
 	}
-	return bytes.Contains(encoded, needle), nil
+	probe.last = info
+	probe.readAt = time.Now()
+	return bytes.Contains(encoded, probe.needle), nil
+}
+
+// unchanged reports whether the file cannot have been modified since the last
+// read. Identity, size, and modification time are the portable evidence; the
+// granularity slack covers filesystems that record whole-second mtimes, where
+// an in-place rewrite of identical length inside the same second would
+// otherwise be invisible. Within that slack the file is always re-read.
+func (probe *fileProbe) unchanged(previous, current os.FileInfo) bool {
+	if current.Size() != previous.Size() || !current.ModTime().Equal(previous.ModTime()) {
+		return false
+	}
+	return current.ModTime().Add(mtimeGranularity).Before(probe.readAt)
 }
 
 // IdleSample is one daemon observation of the working classifier.
@@ -439,6 +518,27 @@ func cleanDirectory(path string) (string, error) {
 	return resolved, nil
 }
 
+// coalesce absorbs the rest of a notification burst before the caller
+// re-observes. It returns only when the window has elapsed or the wait was
+// cancelled, which bounds wake-driven observations to one per window no matter
+// how much unrelated churn the watched directory produces.
+func coalesce(ctx context.Context, wake <-chan struct{}, window time.Duration) error {
+	if window <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(window)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-wake:
+		case <-timer.C:
+			return nil
+		}
+	}
+}
+
 // watchParent returns a coalesced wake channel. Failure to establish a native
 // watch is harmless because callers always retain their polling timer.
 func watchParent(path string) (<-chan struct{}, func()) {
@@ -453,7 +553,18 @@ func watchParent(path string) (<-chan struct{}, func()) {
 		_ = watcher.Close()
 		return wake, func() { close(done) }
 	}
+	signal := func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
 	go func() {
+		settle := time.NewTimer(watchDebounce)
+		defer settle.Stop()
+		if !settle.Stop() {
+			<-settle.C
+		}
 		for {
 			select {
 			case <-done:
@@ -462,18 +573,26 @@ func watchParent(path string) (<-chan struct{}, func()) {
 				if !ok {
 					return
 				}
-				select {
-				case wake <- struct{}{}:
-				default:
-				}
+				signal()
 			case _, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				select {
-				case wake <- struct{}{}:
-				default:
-				}
+				signal()
+			}
+			// Stop consuming for a moment after each burst. The watcher's own
+			// producer blocks while nobody receives, so an unrelated build
+			// hammering the watched directory stops costing anything: on kqueue
+			// platforms every delivered event costs a directory rescan, and
+			// draining that stream as fast as it arrived was most of the CPU a
+			// waiter burned. Coalescing in the kernel queue is safe because
+			// every condition re-observes real state after a wake and keeps its
+			// polling fallback.
+			settle.Reset(watchDebounce)
+			select {
+			case <-done:
+				return
+			case <-settle.C:
 			}
 		}
 	}()

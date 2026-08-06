@@ -66,12 +66,12 @@ func TestPairTicketSurvivesDevicePersistenceFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.devices.path = unwritableTarget
-	if _, err := service.claim(ticket.Ticket, "", "test"); err == nil {
+	if _, err := service.claim(ticket.Ticket, "", "test", "198.51.100.42:4242"); err == nil {
 		t.Fatal("claim unexpectedly succeeded when the device credential could not be persisted")
 	}
 
 	service.devices.path = filepath.Join(root, "devices.json")
-	claimed, err := service.claim(ticket.Ticket, "", "test")
+	claimed, err := service.claim(ticket.Ticket, "", "test", "198.51.100.42:4242")
 	if err != nil {
 		t.Fatalf("retry after persistence failure: %v", err)
 	}

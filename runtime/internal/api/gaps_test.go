@@ -21,6 +21,7 @@ func TestAddedRouteShapeTable(t *testing.T) {
 	fixture := t.TempDir()
 	home := filepath.Join(fixture, "home")
 	mustMkdirAll(t, filepath.Join(home, "Code", "nested-project", ".git"))
+	mustMkdirAll(t, filepath.Join(home, "somewhere", "tech", ".git"))
 	mustMkdirAll(t, filepath.Join(home, "top-project"))
 	mustWriteFile(t, filepath.Join(home, "top-project", "go.mod"), []byte("module example.test/top\n"))
 	mustMkdirAll(t, filepath.Join(home, "Alpha"))
@@ -34,7 +35,11 @@ func TestAddedRouteShapeTable(t *testing.T) {
 	projectDir := filepath.Join(home, ".claude", "projects", "-Users-fixture-Code-nested-project")
 	mustMkdirAll(t, projectDir)
 	jsonlPath := filepath.Join(projectDir, "session-one.jsonl")
-	jsonl := []byte("{\"type\":\"assistant\",\"message\":{\"content\":\"skip\"}}\n" +
+	// The transcript records its own working directory, which is where the
+	// listing takes it from. The bucket name is a lossy encoding and is no
+	// longer inverted into a path nobody confirmed exists; see
+	// TestScanResumableConversationsNeverInventsAWorkingDirectory.
+	jsonl := []byte("{\"type\":\"assistant\",\"cwd\":\"/Users/fixture/Code/nested/project\",\"message\":{\"content\":\"skip\"}}\n" +
 		"{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"skip\"},{\"type\":\"text\",\"text\":\"  first\\nfixture   request  \"}]}}\n")
 	mustWriteFile(t, jsonlPath, jsonl)
 	modified := time.Unix(1_700_000_000, 123_000_000)
@@ -75,6 +80,7 @@ func TestAddedRouteShapeTable(t *testing.T) {
 					home:                        {"~", "home"},
 					filepath.Join(home, "Code"): {"~/Code", "common"},
 					filepath.Join(home, "Code", "nested-project"): {"~/Code/nested-project", "project"},
+					filepath.Join(home, "somewhere", "tech"):      {"~/somewhere/tech", "somewhere"},
 				} {
 					candidate, ok := got[path]
 					if !ok || candidate["label"] != want[0] || candidate["kind"] != want[1] {
@@ -84,8 +90,8 @@ func TestAddedRouteShapeTable(t *testing.T) {
 				if candidate := got[filepath.Join(home, "top-project")]; candidate != nil {
 					t.Errorf("broad home scan unexpectedly returned %#v", candidate)
 				}
-				if len(directories) == 0 || valueMap(t, directories[0])["kind"] != "project" {
-					t.Errorf("projects should be offered before broad folders: %#v", directories)
+				if len(directories) == 0 || valueMap(t, directories[0])["kind"] != "somewhere" {
+					t.Errorf("Somewhere projects should be offered first: %#v", directories)
 				}
 			},
 		},

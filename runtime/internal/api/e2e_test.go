@@ -115,7 +115,7 @@ func TestGoDaemonRunnerMirrorRoundTrip(t *testing.T) {
 			if match := markerPattern.FindString(event.Output.Data); match != "" {
 				marker = match
 			}
-		case <-t.Context().Done():
+		case <-time.After(waitConditionBudget):
 			t.Fatal("test ended before expanded E2E_$RANDOM marker arrived")
 		}
 	}

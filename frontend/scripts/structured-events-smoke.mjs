@@ -172,6 +172,61 @@ try {
   assert.deepEqual(claude.map((message) => message.content), ['hello', 'hi']);
   assert.equal(claude[0].author?.name, 'Review lane');
 
+  const orderedClaude = eventsToMessages([
+    {
+      type: 'user',
+      uuid: 'ordered-user',
+      timestamp: '2026-07-20T11:00:00Z',
+      message: { role: 'user', content: 'Continue the merge' }
+    },
+    {
+      type: 'assistant',
+      uuid: 'ordered-intro',
+      timestamp: '2026-07-20T11:00:01Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'I will merge master first.' }] }
+    },
+    {
+      type: 'assistant',
+      uuid: 'ordered-tool-1',
+      timestamp: '2026-07-20T11:00:02Z',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'git merge master', description: 'Fetch and merge master' } }] }
+    },
+    {
+      type: 'user',
+      uuid: 'ordered-result-1',
+      timestamp: '2026-07-20T11:00:03Z',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'merged' }] }
+    },
+    {
+      type: 'assistant',
+      uuid: 'ordered-tool-2',
+      timestamp: '2026-07-20T11:00:04Z',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tool-2', name: 'Bash', input: { command: 'git status', description: 'List conflicted files' } }] }
+    },
+    {
+      type: 'user',
+      uuid: 'ordered-result-2',
+      timestamp: '2026-07-20T11:00:05Z',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-2', content: 'package.json' }] }
+    },
+    {
+      type: 'assistant',
+      uuid: 'ordered-followup',
+      timestamp: '2026-07-20T11:00:06Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Now I will regenerate the docs.' }] }
+    }
+  ]);
+  assert.deepEqual(
+    orderedClaude.map((message) => ({ content: message.content, tools: message.toolCalls?.map((tool) => tool.id) ?? [] })),
+    [
+      { content: 'Continue the merge', tools: [] },
+      { content: 'I will merge master first.', tools: [] },
+      { content: '', tools: ['tool-1', 'tool-2'] },
+      { content: 'Now I will regenerate the docs.', tools: [] }
+    ],
+    'Claude tool activity must remain between the prose messages that surround it'
+  );
+
   const rejected = eventsToMessages([
     {
       type: 'system',
@@ -182,6 +237,59 @@ try {
   ]);
   assert.equal(rejected.length, 1);
   assert.match(rejected[0].errorResponse, /not sent or queued/);
+
+  // Codex refuses a message typed mid-turn instead of queuing it. That
+  // rejection is routed through codexEventsToMessages, which is a completely
+  // separate walk from the Claude one above, so it needs its own coverage:
+  // without an explicit branch the event matched no subtype and vanished, and
+  // the user's message was lost with nothing on screen to say so.
+  const codexRejectionText =
+    'Codex is still working. This message was not sent or queued; send it again after the turn finishes.';
+  const codexBase = { source: 'codex-app-server', conversationId: 'thread-2' };
+  const codexRejected = eventsToMessages([
+    { ...codexBase, type: 'codex', subtype: 'turn_started', turnId: 'turn-1', timestamp: '2026-07-20T10:00:00Z' },
+    {
+      ...codexBase,
+      type: 'codex',
+      subtype: 'agent_message_delta',
+      turnId: 'turn-1',
+      itemId: 'item-1',
+      delta: 'Working on it.',
+      timestamp: '2026-07-20T10:00:01Z'
+    },
+    {
+      ...codexBase,
+      type: 'system',
+      subtype: 'input_rejected',
+      timestamp: '2026-07-20T10:00:02Z',
+      error: codexRejectionText
+    }
+  ]);
+  const codexRejections = codexRejected.filter((message) => message.errorResponse);
+  assert.equal(codexRejections.length, 1, 'a rejected Codex message must survive into the rendered list');
+  assert.equal(codexRejections[0].errorResponse, codexRejectionText);
+  assert.equal(codexRejections[0].content, '', 'the rejection carries no assistant prose of its own');
+  // It must be its own entry, not folded into the turn that was in flight —
+  // the rejection has no turnId and does not belong to that turn's output.
+  assert.equal(codexRejected.length, 2, 'the rejection is a separate message from the in-flight turn');
+  assert.equal(codexRejected[0].content, 'Working on it.');
+  assert.equal(codexRejected[0].errorResponse, undefined, 'the in-flight turn must not absorb the rejection');
+  assert.ok(
+    codexRejected[0].createdAt <= codexRejections[0].createdAt,
+    'the rejection is ordered after the turn it interrupted'
+  );
+
+  // Same event with no turn ever started: previously ensureTurn returned null
+  // here and the event was dropped on the floor.
+  const codexRejectedNoTurn = eventsToMessages([
+    { ...codexBase, type: 'codex', subtype: 'turn_started', turnId: 'turn-9', timestamp: '2026-07-20T09:59:00Z' },
+    { ...codexBase, type: 'system', subtype: 'input_rejected', timestamp: '2026-07-20T10:00:02Z', error: codexRejectionText }
+  ]);
+  assert.equal(
+    codexRejectedNoTurn.filter((message) => message.errorResponse).length,
+    1,
+    'a rejection with no turn of its own must still render'
+  );
 
   process.stdout.write('structured-events smoke passed\n');
 } finally {

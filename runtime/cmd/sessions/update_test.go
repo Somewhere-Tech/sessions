@@ -166,7 +166,8 @@ func writeTestUpdateArchive(t *testing.T, destination string, headers []tar.Head
 
 func TestUpdateCommandUsesSecureRunnerAndSupportsCheck(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	application, err := newApp([]string{"update", "--check"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	var captured bytes.Buffer
+	application, err := newApp([]string{"update", "--check"}, strings.NewReader(""), &captured, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +186,7 @@ func TestUpdateCommandUsesSecureRunnerAndSupportsCheck(t *testing.T) {
 	if !called {
 		t.Fatal("secure update runner was not called")
 	}
-	if output := application.stdout.(*bytes.Buffer).String(); output != "safe check\n" {
+	if output := captured.String(); output != "safe check\n" {
 		t.Fatalf("stdout = %q", output)
 	}
 }

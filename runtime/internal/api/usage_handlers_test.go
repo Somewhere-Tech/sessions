@@ -23,6 +23,10 @@ func TestUsageReportAndValidation(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"schemaVersion":1`) || !strings.Contains(response.Body.String(), `"recordedCostUSD":0.25`) || !strings.Contains(response.Body.String(), `"entries":1`) {
 		t.Fatalf("usage report: status=%d body=%s", response.Code, response.Body.String())
 	}
+	withEvents := serve(t, daemon.handler, http.MethodGet, "/api/usage?group=daily&mode=auto&since=2026-07-20&until=2026-07-20&events=1", nil, "127.0.0.1:1", nil)
+	if withEvents.Code != http.StatusOK || !strings.Contains(withEvents.Body.String(), `"eventKey":"`) || strings.Contains(withEvents.Body.String(), `"eventKey":"claude:`) || !strings.Contains(withEvents.Body.String(), `"groupKey":"2026-07-20"`) {
+		t.Fatalf("usage events: status=%d body=%s", withEvents.Code, withEvents.Body.String())
+	}
 	invalid := serve(t, daemon.handler, http.MethodGet, "/api/usage?group=tag", nil, "127.0.0.1:1", nil)
 	if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), "dimension") {
 		t.Fatalf("invalid usage report: status=%d body=%s", invalid.Code, invalid.Body.String())

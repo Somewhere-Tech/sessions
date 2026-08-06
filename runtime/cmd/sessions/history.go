@@ -1,0 +1,1706 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
+	historysearch "github.com/somewhere-tech/sessions/runtime/internal/search"
+	"github.com/somewhere-tech/sessions/runtime/internal/watch"
+)
+
+// The browser exists because neither provider can answer "which conversation
+// was that". `claude --resume` is scoped to the directory you happen to be
+// standing in and its git worktrees, and Codex's own picker filters by cwd
+// too, so a conversation you started somewhere else is unreachable unless you
+// first remember where you started it. Sessions already resolves conversation
+// ids fleet-wide; this command is the missing view over that: every recorded
+// Claude and Codex conversation, newest first, each row carrying enough to
+// recognise it and the exact command that brings it back from any directory.
+const (
+	// A history listing parses every transcript it counts, so it costs more on
+	// the answering daemon than a search does. Peers therefore get a larger
+	// wall-clock budget than fleetPeerBudget allows a search — and still a
+	// bounded one, because the local machine owns the answer and one slow peer
+	// may not delay it.
+	//
+	// Two seconds was measured against a two-machine fleet whose peer held 1519
+	// of 1825 recorded conversations and answered in 3.3-3.9 seconds across
+	// nineteen consecutive tries. It missed every one, so the browse paid the
+	// full two seconds and returned 17% of the fleet: the worst value a budget
+	// can take, long enough to be felt and short enough to always fail.
+	//
+	// Raising it does not fix that, and the attempt is instructive. Granting the
+	// peer the time it had proven it needed produced browses of three, four and
+	// a half, then five seconds that still did not reach it, because a peer's
+	// cost grows with the history it accumulates and the honest number is simply
+	// larger than a browse can spend. Sessions cannot make a remote machine
+	// answer quickly, so a budget wide enough to guarantee the fleet is a
+	// guarantee it cannot keep at a price the command can afford.
+	//
+	// What it can do is stop paying for the failure. The budget stays at the
+	// point where a browse still feels immediate, a peer that has shown it
+	// cannot answer inside it is left out at no cost rather than waited for at
+	// full cost, what it holds is stated where the counts are, and
+	// --wait-for-peers buys the complete answer for anyone who wants it.
+	fleetHistoryPeerBudget = 2 * time.Second
+	// How long a peer that has shown it cannot answer inside the budget is taken
+	// at its word before being tried again. A machine gets faster, or its
+	// history gets smaller, or the network stops being terrible; none of those
+	// are events Sessions is told about, so it re-checks on its own rather than
+	// writing the peer off until something clears a cache.
+	fleetHistoryPeerRecheck = 10 * time.Minute
+	// Rows shown by default. A browser that prints every one of several
+	// hundred conversations has not helped anyone find one; the count that
+	// matched is always reported, so the cut is visible rather than silent.
+	historyDefaultRows = 20
+	// Previews are several lines each, so asking for them narrows the page
+	// unless the caller said otherwise.
+	historyPreviewRows        = 5
+	historyDefaultPreview     = 4
+	historyMaxRows            = 500
+	historyMaxPreview         = 20
+	historyPreviewConcurrency = 6
+	historySnippetRunes       = 150
+	historyMaxSnippets        = 2
+)
+
+// Statuses a conversation row can report. They name why a row does or does not
+// carry a command, and they are the same words in the table and in --json.
+const (
+	historyStatusResumable     = "resumable"
+	historyStatusLive          = "live"
+	historyStatusMoved         = "moved"
+	historyStatusUnreadable    = "unreadable"
+	historyStatusUnrecoverable = "unrecoverable"
+)
+
+// conversationRow is one recorded conversation as the browser sees it. Status,
+// reason and resume follow `sessions recover`'s discipline deliberately: the
+// command printed against a row is the one that actually works for that row,
+// and a row nothing can bring back carries no command at all rather than a
+// plausible-looking one that would be refused.
+type conversationRow struct {
+	Reference string `json:"reference"`
+	ID        string `json:"id"`
+	// Machine is the approved-fleet alias the conversation was found on.
+	Machine  string `json:"machine"`
+	Name     string `json:"name"`
+	Tool     string `json:"tool"`
+	CWD      string `json:"cwd"`
+	Messages int    `json:"messages"`
+	// PromptHistoryOnly marks a row recovered from Claude's prompt archive
+	// rather than from a transcript. That archive keeps the user's prompts and
+	// nothing else, so it can never say where a conversation was started — which
+	// is a different fact from a daemon that did not look.
+	PromptHistoryOnly bool `json:"prompt_history_only,omitempty"`
+	// MessagesUncounted marks a Messages that is not a count, because the
+	// answering daemon declined to parse that transcript. An unknown count must
+	// not be read as an empty conversation: that mistake hides exactly the rows
+	// a browse exists to show.
+	MessagesUncounted bool `json:"messages_uncounted,omitempty"`
+	// Surface is where the conversation was started from and who drove it — the
+	// thing neither provider's own picker will tell you. SurfaceKind is the
+	// token --surface matches, Surface is what a person reads, SurfaceRaw is
+	// exactly what the provider wrote. All are empty when the answering daemon
+	// did not report any of it, which is not the same as "started nowhere".
+	Surface     string `json:"surface,omitempty"`
+	SurfaceKind string `json:"surface_kind,omitempty"`
+	SurfaceRaw  string `json:"surface_raw,omitempty"`
+	Actor       string `json:"actor,omitempty"`
+	// ApproximateTime marks a row whose last-active time is the transcript
+	// file's modification time rather than the conversation's own last record.
+	// A history copied without preserving times reports every conversation as
+	// new, and a row that cannot say so is misleading in the one column the
+	// whole list is sorted by.
+	ApproximateTime bool `json:"approximate_time,omitempty"`
+	// LastActiveAt and LastActiveAtMS are the same instant twice: the string is
+	// what a human reads back, the milliseconds are what a caller sorts on.
+	LastActiveAt   string `json:"last_active_at,omitempty"`
+	LastActiveAtMS int64  `json:"last_active_at_ms"`
+	// StartedAt and StartedAtMS are when the conversation began, which is not
+	// recoverable from anything else on the row. A Codex rollout is filed under
+	// the date it started and may still be written to weeks later, so the only
+	// two questions a person asks about a half-remembered session -- when did I
+	// start this, and when did I last touch it -- need both numbers.
+	StartedAt   string   `json:"started_at,omitempty"`
+	StartedAtMS int64    `json:"started_at_ms,omitempty"`
+	Status      string   `json:"status"`
+	Reason      string   `json:"reason,omitempty"`
+	Resume      []string `json:"resume,omitempty"`
+	// Hits and Snippets are only present when a query narrowed the browse, and
+	// say why this conversation is in the answer.
+	Hits     int      `json:"hits,omitempty"`
+	Snippets []string `json:"snippets,omitempty"`
+	// Preview is the tail of the conversation, present only under --preview.
+	Preview []conversationPreviewMessage `json:"preview,omitempty"`
+	// PreviewError explains a preview that could not be read. A row whose
+	// preview failed is still a row: losing the tail must not lose the
+	// conversation from the list.
+	PreviewError string `json:"preview_error,omitempty"`
+
+	target int
+}
+
+type conversationPreviewMessage struct {
+	Role      string `json:"role"`
+	Text      string `json:"text"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+type historyBrowseResponse struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Query         string `json:"query,omitempty"`
+	// Known counts every conversation the answering machines listed, Matched
+	// counts the ones that survived the filters, and Shown counts the ones on
+	// this page. Three numbers because a browser that silently truncates is
+	// indistinguishable from one that found nothing else.
+	Known         int                          `json:"known"`
+	Matched       int                          `json:"matched"`
+	Shown         int                          `json:"shown"`
+	Conversations []conversationRow            `json:"conversations"`
+	Machines      []historysearch.MachineState `json:"machines,omitempty"`
+	Partial       bool                         `json:"partial,omitempty"`
+	// Withheld is what the machines that did not answer are known to hold. A
+	// caller that read Known alone would report the machines that answered as
+	// the fleet; this is the correction, and it is present exactly when Partial
+	// is true.
+	Withheld []withheldMachine `json:"withheld,omitempty"`
+	// ProvenanceUnreported counts conversations excluded by --surface or
+	// --actor because the daemon that listed them reported no provenance at
+	// all. Nonzero means the answer is short by that many rows for a reason
+	// that has nothing to do with the filter.
+	ProvenanceUnreported int `json:"provenance_unreported,omitempty"`
+}
+
+type historyFilters struct {
+	tool        string
+	cwd         string
+	nameGlob    string
+	sessions    []string
+	sinceMS     int64
+	untilMS     int64
+	sinceText   string
+	untilText   string
+	surface     string
+	surfaceText string
+	actor       string
+	all         bool
+	explicit    bool // a tool was named, so the conversation-only default is off
+}
+
+// wantsProvenance reports whether the caller narrowed on something only a
+// daemon new enough to report a surface can answer.
+func (f historyFilters) wantsProvenance() bool {
+	return f.surface != "" || f.actor != ""
+}
+
+func (a *app) cmdHistory(args []string) error {
+	query := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		query = strings.TrimSpace(args[0])
+		args = args[1:]
+	}
+	all := removeFirst(&args, "--all")
+	pick := removeFirst(&args, "--pick")
+	waitForPeers := removeFirst(&args, "--wait-for-peers")
+	previewCount, wantPreview, err := pluckOptionalCount(&args, "--preview", historyDefaultPreview, historyMaxPreview)
+	if err != nil {
+		return err
+	}
+	tool, hasTool := pluck(&args, "--tool")
+	surface, hasSurface := pluck(&args, "--surface")
+	actor, hasActor := pluck(&args, "--actor")
+	cwd, hasCWD := pluck(&args, "--cwd")
+	name, hasName := pluck(&args, "--name")
+	lane, hasLane := pluck(&args, "--lane")
+	since, hasSince := pluck(&args, "--since")
+	until, hasUntil := pluck(&args, "--until")
+	sessionIDs, hasSession := pluck(&args, "--session")
+	limitText, hasLimit := pluck(&args, "-n")
+	if len(args) != 0 {
+		return fail(1, "unknown history option: %s\n%s", args[0], historyUsageText)
+	}
+	if hasName && hasLane {
+		return fail(1, "--name and --lane are aliases; use only one")
+	}
+	// --pick is the only thing that makes this command interactive, and it is
+	// refused rather than ignored next to --json. A caller that asked for one
+	// JSON document must never be handed a prompt it will not answer and a
+	// stream that never ends; silently dropping the flag instead would leave
+	// them believing they had a picker.
+	if pick && a.wantJSON {
+		return fail(1, "--pick is interactive; it cannot be combined with --json")
+	}
+	if hasLane {
+		name, hasName = lane, true
+	}
+
+	filters := historyFilters{all: all}
+	if hasTool {
+		filters.tool = strings.ToLower(strings.TrimSpace(tool))
+		if filters.tool != "claude" && filters.tool != "codex" && filters.tool != "shell" {
+			return fail(1, "--tool must be \"claude\", \"codex\", or \"shell\"")
+		}
+		filters.explicit = true
+	}
+	if hasSurface {
+		filters.surfaceText = strings.TrimSpace(surface)
+		filters.surface = watch.NormalizeSurfaceKind(filters.surfaceText)
+		if filters.surface == "" {
+			return fail(1, "--surface needs a surface: %s, or the raw value a provider recorded",
+				strings.Join(watch.KnownSurfaceKinds(), ", "))
+		}
+	}
+	if hasActor {
+		filters.actor = watch.NormalizeActor(actor)
+		if filters.actor == "" {
+			return fail(1, "--actor must be \"user\", \"automation\", or \"agent\"")
+		}
+	}
+	if hasCWD {
+		filters.cwd = a.expandHome(strings.TrimSpace(cwd))
+		if filters.cwd == "" {
+			return fail(1, "--cwd needs a path")
+		}
+	}
+	if hasName {
+		filters.nameGlob = strings.TrimSpace(name)
+		if _, matchErr := filepath.Match(filters.nameGlob, "conversation"); matchErr != nil {
+			return fail(1, "invalid --name glob: %s", matchErr)
+		}
+	}
+	if hasSession {
+		for _, value := range strings.Split(sessionIDs, ",") {
+			if value = strings.TrimSpace(value); value != "" {
+				filters.sessions = append(filters.sessions, value)
+			}
+		}
+		if len(filters.sessions) == 0 {
+			return fail(1, "--session needs a conversation id")
+		}
+	}
+	if hasSince {
+		value, text, timeErr := parseHistoryTime(since, a.now(), false)
+		if timeErr != nil {
+			return timeErr
+		}
+		filters.sinceMS, filters.sinceText = value, text
+	}
+	if hasUntil {
+		value, text, timeErr := parseHistoryTime(until, a.now(), true)
+		if timeErr != nil {
+			return timeErr
+		}
+		filters.untilMS, filters.untilText = value, text
+	}
+	if filters.sinceMS != 0 && filters.untilMS != 0 && filters.sinceMS >= filters.untilMS {
+		return fail(1, "--since must be before --until")
+	}
+	limit := historyDefaultRows
+	if wantPreview {
+		limit = historyPreviewRows
+	}
+	if hasLimit {
+		parsed, convErr := strconv.Atoi(limitText)
+		if convErr != nil || parsed < 1 || parsed > historyMaxRows {
+			return fail(1, "-n must be between 1 and %d", historyMaxRows)
+		}
+		limit = parsed
+	}
+
+	targets, err := a.historyTargets()
+	if err != nil {
+		return err
+	}
+	defer closeFleetTargets(targets)
+
+	collected, err := a.collectConversations(targets, waitForPeers)
+	if err != nil {
+		return err
+	}
+	rows := collected.rows
+	if query != "" {
+		rows, err = a.narrowConversationsByQuery(rows, query, filters)
+		if err != nil {
+			return err
+		}
+	}
+	candidates := rows
+	// Which machines answered with any provenance at all is decided over every
+	// candidate, before the page limit, so a machine whose only matching rows
+	// fell off the page is not accused of being unable to answer.
+	answered := machinesReportingProvenance(candidates)
+	rows, withoutProvenance := filterConversations(rows, filters)
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].LastActiveAtMS != rows[j].LastActiveAtMS {
+			return rows[i].LastActiveAtMS > rows[j].LastActiveAtMS
+		}
+		return rows[i].Reference < rows[j].Reference
+	})
+	matched := len(rows)
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	if wantPreview {
+		a.attachConversationPreviews(rows, targets, previewCount)
+	}
+
+	if a.wantJSON {
+		return writeJSON(a.stdout, historyBrowseResponse{
+			SchemaVersion: integrations.SchemaVersion, Query: query,
+			Known: collected.known, Matched: matched, Shown: len(rows),
+			Conversations: rows, Machines: collected.machines, Partial: collected.partial,
+			Withheld:             collected.withheld,
+			ProvenanceUnreported: len(withoutProvenance),
+		}, true)
+	}
+	if collected.partial {
+		for _, machine := range collected.machines {
+			if machine.Status == "unavailable" {
+				fmt.Fprintf(a.stderr, "sessions: %s was unavailable: %s\n", machine.Name, machine.Error)
+			}
+		}
+	}
+	// The listing is drawn through a closure so the picker can redraw exactly
+	// the page it is picking from after a preview has scrolled it away.
+	render := func() error {
+		return a.writeConversationRows(
+			rows, matched, collected.known, query, filters, withoutProvenance, answered, pick,
+			collected.withheld, collected.waited)
+	}
+	if err := render(); err != nil {
+		return err
+	}
+	if err := a.writeSurfacesSeen(candidates, matched, filters); err != nil {
+		return err
+	}
+	if !pick {
+		return nil
+	}
+	return a.pickConversation(rows, targets, render)
+}
+
+// writeSurfacesSeen answers a --surface that matched nothing with the surfaces
+// that are actually there.
+//
+// --surface deliberately accepts more than the curated tokens: a provider can
+// add an originator tomorrow, and a browse that refused the new value would be
+// unable to reach exactly the conversations a user is most confused about. The
+// cost of accepting anything is that a typo comes back as an empty list, so an
+// empty list says what could have been typed instead — read off this machine's
+// own history rather than from a hardcoded vocabulary.
+func (a *app) writeSurfacesSeen(candidates []conversationRow, matched int, filters historyFilters) error {
+	if matched > 0 || filters.surface == "" {
+		return nil
+	}
+	seen := make(map[string]struct{}, 8)
+	available := make([]string, 0, 8)
+	for _, row := range candidates {
+		for _, value := range []string{row.SurfaceKind, row.SurfaceRaw} {
+			if value == "" {
+				continue
+			}
+			if _, known := seen[value]; known {
+				continue
+			}
+			seen[value] = struct{}{}
+			available = append(available, value)
+		}
+	}
+	if len(available) == 0 {
+		return nil
+	}
+	sort.Strings(available)
+	_, err := fmt.Fprintf(a.stdout,
+		"No conversation was started from %q. Surfaces recorded here: %s.\n",
+		filters.surfaceText, strings.Join(available, ", "))
+	return err
+}
+
+// historyTargets is the approved fleet unless the caller pinned one daemon.
+// Browsing has to reach every machine a conversation could be on for the same
+// reason search does: the whole point is not having to remember where you were.
+func (a *app) historyTargets() ([]fleetTarget, error) {
+	if a.explicitTarget {
+		return []fleetTarget{{
+			Alias: "local", Name: "This machine", Endpoint: localFleetEndpoint, Client: a.api,
+		}}, nil
+	}
+	targets, err := a.approvedFleetTargets()
+	if err != nil {
+		return nil, fail(2, "read approved machines: %s", err)
+	}
+	return targets, nil
+}
+
+func closeFleetTargets(targets []fleetTarget) {
+	for _, target := range targets {
+		if target.Owned {
+			target.Client.close()
+		}
+	}
+}
+
+// collectedConversations is one fleet-wide listing: the rows themselves, which
+// machines were reached, and how many conversations exist before any filter.
+type collectedConversations struct {
+	rows     []conversationRow
+	machines []historysearch.MachineState
+	partial  bool
+	known    int
+	// withheld is one entry per machine that did not answer. known counts the
+	// conversations on the machines that did, so on its own it describes a
+	// fraction of the fleet as though it were the whole of it. These entries are
+	// what let the answer say which fraction.
+	withheld []withheldMachine
+	// waited records that this browse already spent everything it had on the
+	// peers. A shortfall line that recommends --wait-for-peers to a caller who
+	// used --wait-for-peers is worse than no advice: it sends them back around a
+	// loop they have already run.
+	waited bool
+}
+
+// withheldMachine is a machine missing from an answer, and the scale of what it
+// took with it. Conversations is what that machine held the last time this one
+// reached it; Counted is false when it has never been reached from here, which
+// is a different and more alarming fact than holding nothing.
+type withheldMachine struct {
+	Alias         string `json:"alias"`
+	Name          string `json:"name"`
+	Conversations int    `json:"conversations,omitempty"`
+	Counted       bool   `json:"counted"`
+	CountedAt     string `json:"counted_at,omitempty"`
+	Reason        string `json:"reason"`
+
+	countedAtMS int64
+}
+
+type historyTargetOutcome struct {
+	index   int
+	listing integrations.HistoryResponse
+	live    map[string]bool
+	took    time.Duration
+	err     error
+}
+
+// peerCannotAnswerInTime reports a peer that has already shown it needs longer
+// than a browse waits, and is therefore left out of one instead of stalling it.
+//
+// This is the whole difference between the two seconds a browse used to spend
+// discovering the same thing every time and the nothing it spends now. It is a
+// claim about the past, checked again on a timer, not a verdict: the peer is
+// re-tried once the recheck window passes, and a --wait-for-peers browse ignores
+// it entirely.
+func peerCannotAnswerInTime(
+	health *fleetPeerHealth, alias string, now time.Time,
+) (fleetPeerListing, bool) {
+	listing, _, known := health.lastListing(alias)
+	// At-or-over, not over: a peer whose observed cost equals the budget did not
+	// answer inside it. That is exactly what a miss records -- the budget it was
+	// still working at when the browse gave up.
+	if !known || listing.TookMS < fleetHistoryPeerBudget.Milliseconds() {
+		return fleetPeerListing{}, false
+	}
+	seen := listing.costSeenAt()
+	if seen.IsZero() || !now.Before(seen.Add(fleetHistoryPeerRecheck)) {
+		return fleetPeerListing{}, false
+	}
+	return listing, true
+}
+
+// collectConversations asks every target for its conversations and for the
+// sessions it currently has running. Both come from the same daemon on
+// purpose: a conversation that is live right now is not resumable — Sessions'
+// own guard refuses it and tells you to attach instead — so a browser that
+// could not tell the difference would print a command that fails on exactly
+// the conversation the user is most likely to pick.
+func (a *app) collectConversations(targets []fleetTarget, waitForPeers bool) (collectedConversations, error) {
+	health := readFleetPeerHealth(a.home)
+	now := a.now()
+	outcomes := make([]historyTargetOutcome, len(targets))
+	answers := make(chan historyTargetOutcome, len(targets))
+	dispatched := make([]bool, len(targets))
+	pending := 0
+	awaitingLocal := false
+	for index := range targets {
+		target := targets[index]
+		// The cooldown exists to keep the fast path fast, so it does not apply to
+		// a caller who asked for the complete answer and accepted its cost.
+		// Skipping a peer under --wait-for-peers would answer the flag with the
+		// very shortfall line that recommends it.
+		if target.Endpoint != localFleetEndpoint && !waitForPeers {
+			if failure, retryAt, cooling := health.coolingDown(target.Alias, now); cooling {
+				outcomes[index].err = fleetPeerSkipped(target, "history", failure, retryAt.Sub(now))
+				continue
+			}
+			// A peer that has already shown it cannot answer inside the budget is
+			// left out at no cost. Asking it again would spend the whole budget to
+			// be told the same thing, which is exactly what a browse used to do.
+			if listing, tooSlow := peerCannotAnswerInTime(health, target.Alias, now); tooSlow {
+				outcomes[index].err = fleetHistoryPeerTooSlow(target, listing)
+				continue
+			}
+		}
+		outcomes[index] = historyTargetOutcome{index: index, err: errPending}
+		dispatched[index] = true
+		pending++
+		awaitingLocal = awaitingLocal || target.Endpoint == localFleetEndpoint
+		// A peer is normally held to the short fleet request timeout so one stale
+		// machine cannot stall anything. --wait-for-peers is the caller saying
+		// that is not the trade they want, and a peer capped at five seconds
+		// while the local machine is allowed sixty would make the flag fail on
+		// exactly the large history it exists to reach.
+		timeout := fleetTargetTimeout(targets[index])
+		if waitForPeers {
+			timeout = localFleetRequestTimeout
+		}
+		go func(index int) {
+			answers <- readTargetConversations(targets[index], index, timeout)
+		}(index)
+	}
+
+	// The local machine owns the answer, so it is always awaited; peers only
+	// add to it and are dropped once the budget passes. --wait-for-peers arms no
+	// timer at all: the caller asked for the whole fleet, and every request is
+	// already bounded by fleetTargetTimeout, so there is nothing left for a
+	// second deadline to protect.
+	peerBudget := fleetHistoryPeerBudget
+	var budgetExpired <-chan time.Time
+	expired := false
+	if !waitForPeers {
+		budget := time.NewTimer(peerBudget)
+		defer budget.Stop()
+		budgetExpired = budget.C
+	}
+	accept := func(outcome historyTargetOutcome) {
+		outcomes[outcome.index] = outcome
+		pending--
+		if targets[outcome.index].Endpoint == localFleetEndpoint {
+			awaitingLocal = false
+		}
+	}
+	for pending > 0 {
+		select {
+		case outcome := <-answers:
+			accept(outcome)
+			continue
+		default:
+		}
+		if expired && !awaitingLocal {
+			break
+		}
+		select {
+		case outcome := <-answers:
+			accept(outcome)
+		case <-budgetExpired:
+			expired = true
+			budgetExpired = nil
+		}
+	}
+
+	qualify := !a.explicitTarget && len(targets) > 1
+	collected := collectedConversations{
+		rows:     make([]conversationRow, 0, 64),
+		machines: make([]historysearch.MachineState, 0, len(targets)),
+		waited:   waitForPeers,
+	}
+	successes := 0
+	rejection := ""
+	for index, target := range targets {
+		outcome := outcomes[index]
+		state := historysearch.MachineState{
+			Alias: target.Alias, Name: target.Name, Endpoint: target.Endpoint, Status: "listed",
+		}
+		// A peer that was still answering when the budget ran out is a healthy
+		// peer with a large history, not a machine that is down, and the two must
+		// not share a verdict. Cooling it down would skip it for five minutes on
+		// the strength of it being busy, and — worse — would stop the very
+		// browses that widen its budget from ever running, so the peer would be
+		// dropped for being slow and then never given the chance to prove how
+		// slow. What it gets instead is the lower bound it just demonstrated.
+		stillAnswering := errors.Is(outcome.err, errPending)
+		if stillAnswering {
+			outcome.err = fleetHistoryTimedOut(target, peerBudget)
+			if target.Endpoint != localFleetEndpoint {
+				health.recordSlow(target.Alias, now, peerBudget)
+			}
+		}
+		if outcome.err != nil {
+			state.Status = "unavailable"
+			state.Error = outcome.err.Error()
+			collected.partial = true
+			collected.machines = append(collected.machines, state)
+			collected.withheld = append(collected.withheld,
+				withheldFromLastListing(health, target, outcome.err))
+			if refusal, refused := requestWasRejected(outcome.err); refused {
+				if rejection == "" {
+					rejection = refusal.Error()
+				}
+				health.recordSuccess(target.Alias)
+			} else if dispatched[index] && !stillAnswering && target.Endpoint != localFleetEndpoint {
+				health.recordFailure(target.Alias, now, outcome.err)
+			}
+			continue
+		}
+		successes++
+		health.recordSuccess(target.Alias)
+		if target.Endpoint != localFleetEndpoint {
+			health.recordListing(target.Alias, now, len(outcome.listing.Sessions), outcome.took)
+		}
+		collected.machines = append(collected.machines, state)
+		collected.known += len(outcome.listing.Sessions)
+		for _, session := range outcome.listing.Sessions {
+			collected.rows = append(collected.rows, conversationRow{
+				target: index,
+			}.fill(target.Alias, qualify, session, outcome.live[session.ID]))
+		}
+	}
+	health.save(a.home)
+	if successes == 0 {
+		return collectedConversations{}, fleetHistoryFailure(collected.machines, rejection)
+	}
+	return collected, nil
+}
+
+// errPending marks a target that has not answered yet. It is replaced with the
+// real timeout message once the budget this browse actually granted is known,
+// so the instruction a dropped peer prints names the wait the reader just paid
+// rather than the constant it was floored at.
+var errPending = errors.New("did not answer")
+
+// withheldFromLastListing prices a machine that is missing from this answer,
+// using the last browse that did reach it.
+func withheldFromLastListing(
+	health *fleetPeerHealth, target fleetTarget, reason error,
+) withheldMachine {
+	missing := withheldMachine{Alias: target.Alias, Name: target.Name, Reason: reason.Error()}
+	listing, at, known := health.lastListing(target.Alias)
+	if !known || !listing.Counted {
+		return missing
+	}
+	missing.Counted = true
+	missing.Conversations = listing.Conversations
+	if !at.IsZero() {
+		missing.CountedAt = at.Format(time.RFC3339)
+		missing.countedAtMS = at.UnixMilli()
+	}
+	return missing
+}
+
+// readTargetConversations times its own round trip. What a peer costs is a
+// measurement, not something to be assumed: the next browse reads it back to
+// decide how long that peer is worth waiting for.
+func readTargetConversations(
+	target fleetTarget, index int, timeout time.Duration,
+) (outcome historyTargetOutcome) {
+	outcome = historyTargetOutcome{index: index, live: map[string]bool{}}
+	started := time.Now()
+	defer func() { outcome.took = time.Since(started) }()
+	// The running set is read first because it is the cheap call: if this
+	// daemon cannot answer at all, nothing below is worth attempting, and a
+	// listing without it would misreport which conversations can be resumed.
+	var running sessionsResponse
+	if outcome.err = getJSONFromClient(target.Client, "/api/sessions", &running, timeout); outcome.err != nil {
+		return outcome
+	}
+	for _, value := range running.Sessions {
+		if !value.Exited {
+			outcome.live[value.ID] = true
+		}
+	}
+	outcome.err = getJSONFromClient(target.Client, "/api/history", &outcome.listing, timeout)
+	return outcome
+}
+
+// fill turns one stored conversation into a browsable row, including the
+// verdict on how it comes back.
+func (r conversationRow) fill(
+	alias string, qualify bool, session integrations.HistorySession, live bool,
+) conversationRow {
+	reference := session.ID
+	if qualify {
+		reference = qualifiedHistoryReference(alias, session.ID)
+	}
+	r.Reference = reference
+	r.ID = session.ID
+	r.Machine = alias
+	r.Name = strings.TrimSpace(session.Name)
+	r.Tool = historyToolName(session.Tool)
+	r.CWD = session.CWD
+	r.Messages = session.MessageCount
+	r.MessagesUncounted = session.MessageCountUncounted
+	r.PromptHistoryOnly = session.PromptHistoryOnly
+	if session.Surface != nil {
+		r.Surface = session.Surface.Display()
+		r.SurfaceKind = session.Surface.Kind
+		r.SurfaceRaw = session.Surface.Originator
+		r.Actor = session.Surface.Actor
+	}
+	// When the conversation was last written to is the question a browser is
+	// ordering by, and it is not the same as when the Sessions record was last
+	// touched. A shutdown sweep that drains sixteen finished runners moves
+	// every one of their record timestamps to the same instant; the transcripts
+	// they name did not change, and it is the transcripts the user remembers.
+	r.LastActiveAtMS = session.ConversationUpdatedAt
+	r.ApproximateTime = session.ConversationUpdatedApproximate
+	if r.LastActiveAtMS == 0 {
+		r.LastActiveAtMS = session.LastActivityAt
+	}
+	if r.LastActiveAtMS > 0 {
+		r.LastActiveAt = time.UnixMilli(r.LastActiveAtMS).Format(time.RFC3339)
+	}
+	// The daemon has always sent this and the row discarded it, so "when did
+	// this start" could not be answered from the browse a person answers it in.
+	r.StartedAtMS = session.CreatedAt
+	if r.StartedAtMS > 0 {
+		r.StartedAt = time.UnixMilli(r.StartedAtMS).Format(time.RFC3339)
+	}
+	r.Status, r.Reason, r.Resume = conversationRecovery(session, reference, live)
+	return r
+}
+
+// conversationRecovery decides what a row can be told to do. The rule is the
+// one `sessions recover` holds itself to: print the command that works, or
+// print none and say why. `sessions resume` is the right command even for a
+// conversation whose provider deleted its own transcript, because resume
+// replays Sessions' own copy for exactly that case — which is also why the
+// provider's native resume flag is never printed here.
+func conversationRecovery(
+	session integrations.HistorySession, reference string, live bool,
+) (string, string, []string) {
+	if live {
+		return historyStatusLive,
+			"still running; attach instead of resuming",
+			[]string{"sessions", "attach", prefixString(session.ID, 8)}
+	}
+	if session.MovedToEndpoint != "" {
+		return historyStatusMoved,
+			"continued on " + session.MovedToEndpoint + "; resume it there",
+			nil
+	}
+	if session.Unreadable {
+		reason := strings.TrimSpace(session.UnreadableReason)
+		if reason == "" {
+			reason = "this conversation could not be read on this pass"
+		}
+		return historyStatusUnreadable, reason, nil
+	}
+	if !session.ConversationAvailable {
+		return historyStatusUnrecoverable,
+			"neither the provider nor Sessions still holds this conversation",
+			nil
+	}
+	return historyStatusResumable, "", []string{"sessions", "resume", reference}
+}
+
+// narrowConversationsByQuery keeps only the conversations whose text matched,
+// using search's own per-session rollup. That rollup is computed over every
+// hit rather than over a page of messages, which is why it can answer "which
+// conversation" at all — and until now the CLI computed it, merged it across
+// the fleet, and printed nothing from it.
+func (a *app) narrowConversationsByQuery(
+	rows []conversationRow, query string, filters historyFilters,
+) ([]conversationRow, error) {
+	parameters := url.Values{"q": {query}, "ranked": {"true"}}
+	if filters.tool != "" {
+		parameters.Set("tool", filters.tool)
+	}
+	if filters.cwd != "" {
+		parameters.Set("cwd", filters.cwd)
+	}
+	if filters.nameGlob != "" {
+		parameters.Set("name", filters.nameGlob)
+	}
+	if filters.sinceMS != 0 {
+		parameters.Set("since", time.UnixMilli(filters.sinceMS).Format(time.RFC3339))
+	}
+	if filters.untilMS != 0 {
+		parameters.Set("until", time.UnixMilli(filters.untilMS).Format(time.RFC3339))
+	}
+	path := "/api/search?" + parameters.Encode()
+	var result historysearch.Response
+	if a.explicitTarget {
+		if err := a.searchOneDaemon(path, &result); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		result, err = a.searchApprovedFleet(path, 0, false, false, true)
+		if err != nil {
+			return nil, err
+		}
+	}
+	hits := conversationsBehindMatches(result)
+	kept := rows[:0]
+	for _, row := range rows {
+		evidence, matched := hits[conversationKey(row.Machine, row.ID)]
+		if !matched {
+			continue
+		}
+		row.Hits = evidence.hits
+		row.Snippets = evidence.snippets
+		kept = append(kept, row)
+	}
+	return kept, nil
+}
+
+// conversationEvidence is why one conversation is in a narrowed answer. hits is
+// left at zero unless the rollup supplied it, because a count derived from a
+// page of messages is a lower bound and printing it as a total would be a
+// quiet lie about how much of the conversation is about this.
+type conversationEvidence struct {
+	hits     int
+	snippets []string
+}
+
+// conversationsBehindMatches folds a search answer down to the conversations it
+// implicates. The per-session rollup is the better source — it is computed over
+// every hit rather than over one page — but it is capped at fifty sessions and
+// older daemons do not send it at all, and a conversation that reached the
+// message page while missing from the rollup is still an answer. Reading both
+// is what keeps this from silently reporting "no conversations matched" for a
+// search that plainly did match.
+func conversationsBehindMatches(result historysearch.Response) map[string]conversationEvidence {
+	evidence := make(map[string]conversationEvidence, len(result.Sessions)+len(result.Matches))
+	for _, rollup := range result.Sessions {
+		evidence[conversationKey(rollup.Machine, rollup.SessionID)] = conversationEvidence{
+			hits: rollup.Hits, snippets: rollup.Snippets,
+		}
+	}
+	for _, match := range result.Matches {
+		key := conversationKey(match.MachineAlias, match.SessionID)
+		found := evidence[key]
+		if len(found.snippets) < historyMaxSnippets && strings.TrimSpace(match.Snippet) != "" {
+			found.snippets = append(found.snippets, match.Snippet)
+		}
+		evidence[key] = found
+	}
+	return evidence
+}
+
+// conversationKey identifies one conversation on one machine. Search qualifies
+// its rollup ids in fleet mode and leaves them bare against a single daemon, so
+// both spellings have to collapse to the same key.
+func conversationKey(machine, sessionID string) string {
+	if alias, id, qualified := splitQualifiedHistoryReference(sessionID); qualified {
+		return alias + "\x00" + id
+	}
+	if machine == "" {
+		machine = "local"
+	}
+	return machine + "\x00" + sessionID
+}
+
+// filterConversations applies the narrowing the caller asked for, plus the one
+// it did not: by default a browse answers with conversations, not with every
+// record the daemon keeps. Empty shells, shell lanes and conversations nothing
+// can read are the rows a person scrolls past, so they are behind --all — and
+// the count of what was filtered is always printed, so the cut is never silent.
+// The second return value counts conversations dropped only because the daemon
+// that listed them reported no provenance at all. Those rows are not evidence
+// against the filter — they are evidence that the machine holding them is older
+// than the field — and silently dropping them would turn "this machine needs
+// updating" into "you have no Desktop conversations".
+func filterConversations(
+	rows []conversationRow, filters historyFilters,
+) (kept, withoutProvenance []conversationRow) {
+	kept = make([]conversationRow, 0, len(rows))
+	for _, row := range rows {
+		if filters.tool != "" && row.Tool != filters.tool {
+			continue
+		}
+		if filters.wantsProvenance() && !row.hasProvenance() {
+			withoutProvenance = append(withoutProvenance, row)
+			continue
+		}
+		if filters.surface != "" && !row.matchesSurface(filters.surface) {
+			continue
+		}
+		if filters.actor != "" && row.Actor != filters.actor {
+			continue
+		}
+		if !filters.all && !filters.explicit {
+			if row.Tool != "claude" && row.Tool != "codex" {
+				continue
+			}
+		}
+		if !filters.all {
+			// An uncounted row is not an empty one. A daemon answering from its
+			// cache reports no count for a transcript it did not parse, and
+			// dropping those would hide the conversations most likely to be the
+			// ones being looked for.
+			if (row.Messages <= 0 && !row.MessagesUncounted) ||
+				row.Status == historyStatusUnrecoverable || row.Status == historyStatusUnreadable {
+				continue
+			}
+		}
+		if filters.cwd != "" && !withinDirectory(row.CWD, filters.cwd) {
+			continue
+		}
+		if filters.nameGlob != "" {
+			matched, err := filepath.Match(strings.ToLower(filters.nameGlob), strings.ToLower(row.Name))
+			if err != nil || !matched {
+				continue
+			}
+		}
+		if len(filters.sessions) > 0 && !matchesAnyConversationID(row, filters.sessions) {
+			continue
+		}
+		// A conversation with no recorded activity time cannot be placed on a
+		// timeline, so a date filter has to exclude it rather than guess.
+		if filters.sinceMS != 0 && row.LastActiveAtMS < filters.sinceMS {
+			continue
+		}
+		if filters.untilMS != 0 && (row.LastActiveAtMS == 0 || row.LastActiveAtMS >= filters.untilMS) {
+			continue
+		}
+		kept = append(kept, row)
+	}
+	return kept, withoutProvenance
+}
+
+// hasProvenance reports whether the answering daemon said anything at all about
+// where this conversation came from.
+func (r conversationRow) hasProvenance() bool {
+	return r.SurfaceKind != "" || r.SurfaceRaw != "" || r.Actor != ""
+}
+
+// matchesSurface accepts the token, the raw provider value, or the label, all
+// folded the same way. A person who read "Codex Desktop" in a row should be
+// able to type it back, and a person who saw the raw `pretty-pty` in --json
+// should be able to select on that too.
+func (r conversationRow) matchesSurface(wanted string) bool {
+	for _, candidate := range []string{r.SurfaceKind, r.SurfaceRaw, r.Surface} {
+		if candidate == "" {
+			continue
+		}
+		if wanted == watch.NormalizeSurfaceKind(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAnyConversationID(row conversationRow, wanted []string) bool {
+	for _, value := range wanted {
+		if row.ID == value || row.Reference == value {
+			return true
+		}
+		if _, id, qualified := splitQualifiedHistoryReference(value); qualified && row.ID == id {
+			return true
+		}
+		if len(value) >= 4 && strings.HasPrefix(row.ID, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func withinDirectory(candidate, root string) bool {
+	if candidate == "" {
+		return false
+	}
+	want := filepath.Clean(root)
+	got := filepath.Clean(candidate)
+	return got == want || strings.HasPrefix(got, want+string(filepath.Separator))
+}
+
+// attachConversationPreviews reads the tail of each shown conversation through
+// the same history reader `sessions cat` uses. It is a read: no session is
+// created, nothing is marked, and nothing about the conversation changes.
+func (a *app) attachConversationPreviews(rows []conversationRow, targets []fleetTarget, count int) {
+	if len(rows) == 0 {
+		return
+	}
+	work := make(chan int)
+	var wait sync.WaitGroup
+	workers := min(historyPreviewConcurrency, len(rows))
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for index := range work {
+				row := &rows[index]
+				if len(row.Resume) == 0 {
+					row.PreviewError = row.Reason
+					continue
+				}
+				messages, err := readConversationTail(targets[row.target], row.ID, count)
+				if err != nil {
+					row.PreviewError = err.Error()
+					continue
+				}
+				row.Preview = messages
+			}
+		}()
+	}
+	for index := range rows {
+		work <- index
+	}
+	close(work)
+	wait.Wait()
+}
+
+// readConversationTail asks the history preview view for the end of a
+// conversation. The preview route is already tail-bounded, so the last few
+// exchanges never require pulling a two-thousand-message transcript across.
+func readConversationTail(target fleetTarget, id string, count int) ([]conversationPreviewMessage, error) {
+	var transcript integrations.TranscriptResponse
+	path := "/api/history/" + escapeID(id) + "/preview?format=json"
+	if err := getJSONFromClient(target.Client, path, &transcript, fleetTargetTimeout(target)); err != nil {
+		return nil, err
+	}
+	// Tool traffic is not what a person reads a conversation back for, and it
+	// is most of the volume in an agent transcript.
+	spoken := make([]integrations.TranscriptMessage, 0, len(transcript.Messages))
+	for _, message := range transcript.Messages {
+		if message.Role == "user" || message.Role == "assistant" {
+			spoken = append(spoken, message)
+		}
+	}
+	if len(spoken) > count {
+		spoken = spoken[len(spoken)-count:]
+	}
+	preview := make([]conversationPreviewMessage, 0, len(spoken))
+	for _, message := range spoken {
+		entry := conversationPreviewMessage{Role: message.Role, Text: compactSearchText(message.Text)}
+		if message.Timestamp != nil {
+			entry.Timestamp = *message.Timestamp
+		}
+		preview = append(preview, entry)
+	}
+	return preview, nil
+}
+
+// numbered adds the row numbers the picker selects by. Every shown row is
+// numbered, including the ones nothing can reopen: the numbers have to agree
+// with what is on the screen, and a list whose numbering skipped rows would
+// make "row 4" mean two different things depending on how carefully you
+// counted. Selecting an unreopenable number is refused with that row's reason
+// instead.
+func (a *app) writeConversationRows(
+	rows []conversationRow, matched, known int, query string, filters historyFilters,
+	withoutProvenance []conversationRow, answered map[string]bool, numbered bool,
+	withheld []withheldMachine, waited bool,
+) error {
+	if len(rows) == 0 {
+		if _, err := io.WriteString(a.stdout,
+			emptyConversationAdvice(known, query, filters, len(withheld) > 0)); err != nil {
+			return err
+		}
+		if err := a.writeWithheldMachines(withheld, waited); err != nil {
+			return err
+		}
+		return a.writeProvenanceShortfall(answered, withoutProvenance, filters)
+	}
+	for index, row := range rows {
+		label := ""
+		if numbered {
+			label = fmt.Sprintf("%d. ", index+1)
+		}
+		if _, err := fmt.Fprintf(a.stdout, "%s%s\n", label, conversationName(row)); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(a.stdout, "  %s\n", a.conversationMetaLine(row)); err != nil {
+			return err
+		}
+		for _, snippet := range firstSnippets(row.Snippets) {
+			if _, err := fmt.Fprintf(a.stdout, "  … %s\n", truncateRunes(compactSearchText(snippet), historySnippetRunes)); err != nil {
+				return err
+			}
+		}
+		for _, message := range row.Preview {
+			if _, err := fmt.Fprintf(a.stdout, "  %-10s %s\n",
+				message.Role, truncateRunes(message.Text, historySnippetRunes)); err != nil {
+				return err
+			}
+		}
+		if row.PreviewError != "" {
+			if _, err := fmt.Fprintf(a.stdout, "  (preview unavailable: %s)\n", row.PreviewError); err != nil {
+				return err
+			}
+		}
+		line := "  " + shellRecipe(row.Resume)
+		if len(row.Resume) == 0 {
+			line = "  (cannot be resumed: " + row.Reason + ")"
+		}
+		if _, err := fmt.Fprintf(a.stdout, "%s\n\n", line); err != nil {
+			return err
+		}
+	}
+	if err := a.writeConversationFooter(
+		len(rows), matched, known, query, filters, numbered, len(withheld) > 0); err != nil {
+		return err
+	}
+	if err := a.writeWithheldMachines(withheld, waited); err != nil {
+		return err
+	}
+	return a.writeProvenanceShortfall(answered, withoutProvenance, filters)
+}
+
+// writeWithheldMachines is the line that stops a partial browse from reading
+// like a complete one.
+//
+// The counts above it are honest about what was searched and say nothing about
+// what was not, and that is exactly how a browse of 306 conversations came to
+// present itself as the whole of a fleet holding 1825. There was a warning —
+// naming the machine, on stderr — and it was not enough, for two reasons that
+// both had to be fixed. It went to a stream that `sessions history > list.txt`
+// discards, so the saved answer carried no trace of the omission at all. And it
+// said only that a machine was unavailable, which a reader has no way to price:
+// a laptop that was asleep and held nothing reads identically to the machine
+// holding five sixths of their history.
+//
+// So this goes on stdout beside the counts it corrects, and it carries the
+// number. The number is the last count that machine reported here rather than a
+// live one, because a live one costs exactly the round trip that was just
+// missed; it is stated as of when it was taken, so it is never mistaken for a
+// fact about now.
+func (a *app) writeWithheldMachines(withheld []withheldMachine, waited bool) error {
+	for _, machine := range withheld {
+		scale := "and how many conversations it holds has never been recorded here"
+		if machine.Counted {
+			scale = fmt.Sprintf("and held %s when it last answered", conversationTotal(machine.Conversations))
+			if machine.countedAtMS > 0 {
+				scale += ", " + a.ageOf(machine.countedAtMS) + " ago"
+			}
+		}
+		// A caller who already waited has spent the only lever this line has to
+		// offer, so it points at the machine's own error instead of at itself.
+		advice := "Add --wait-for-peers to include it."
+		if waited {
+			advice = fmt.Sprintf(
+				"Waiting did not reach it; run `sessions --machine %s history` for its own answer.", machine.Alias)
+		}
+		if _, err := fmt.Fprintf(a.stdout,
+			"Not the whole fleet: %s is missing, %s. %s\n",
+			machine.Alias, scale, advice); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func conversationTotal(count int) string {
+	if count == 1 {
+		return "1 conversation"
+	}
+	return fmt.Sprintf("%d conversations", count)
+}
+
+// writeProvenanceShortfall says when a surface or actor filter came up short
+// because nothing could answer the question, rather than because no
+// conversation matched. A browse that silently omitted those rows would read as
+// a confident "you have none of those" when the honest answer is "these could
+// not say".
+//
+// The two reasons are not interchangeable and must not share a sentence. A
+// machine running a Sessions older than the field returns every row with no
+// provenance, and the fix is to update that machine. A conversation recovered
+// from Claude's prompt archive has no provenance because the archive keeps
+// prompts and nothing else, and no update will ever change that. Blaming the
+// daemon for the second sends the reader to fix something that is not broken —
+// which is exactly what this message did against the development machine's own
+// history, where 81 of the 91 excluded rows were archive records answered by a
+// daemon that reports provenance perfectly well for the other 212.
+func (a *app) writeProvenanceShortfall(
+	answered map[string]bool, withoutProvenance []conversationRow, filters historyFilters,
+) error {
+	if len(withoutProvenance) == 0 || !filters.wantsProvenance() {
+		return nil
+	}
+	flag := "--surface"
+	if filters.surface == "" {
+		flag = "--actor"
+	}
+	staleMachines := make(map[string]struct{}, 2)
+	stale, unrecorded := 0, 0
+	for _, row := range withoutProvenance {
+		if !answered[row.Machine] {
+			stale++
+			staleMachines[row.Machine] = struct{}{}
+			continue
+		}
+		unrecorded++
+	}
+	if stale > 0 {
+		machines := make([]string, 0, len(staleMachines))
+		for machine := range staleMachines {
+			machines = append(machines, machine)
+		}
+		sort.Strings(machines)
+		if _, err := fmt.Fprintf(a.stderr,
+			"sessions: %s left out of this %s answer: %s does not report where a conversation was started. Update Sessions there, or drop %s to see them.\n",
+			conversationCount(stale), flag, strings.Join(machines, ", "), flag); err != nil {
+			return err
+		}
+	}
+	if unrecorded > 0 {
+		_, err := fmt.Fprintf(a.stderr,
+			"sessions: %s left out of this %s answer: nothing recorded where they were started. Claude's prompt archive keeps prompts only, and a shell record has no provider launch context at all.\n",
+			conversationCount(unrecorded), flag)
+		return err
+	}
+	return nil
+}
+
+// machinesReportingProvenance reports which machines answered with any
+// provenance at all. A machine that produced even one surface is new enough to
+// have looked, so its blank rows are the provider's silence rather than the
+// daemon's version.
+func machinesReportingProvenance(rows []conversationRow) map[string]bool {
+	answered := make(map[string]bool, 4)
+	for _, row := range rows {
+		if row.hasProvenance() {
+			answered[row.Machine] = true
+		}
+	}
+	return answered
+}
+
+func conversationCount(count int) string {
+	if count == 1 {
+		return "1 conversation was"
+	}
+	return fmt.Sprintf("%d conversations were", count)
+}
+
+// conversationMetaLine is the one compact line under a conversation's name, and
+// everything on it has to earn its place.
+//
+// The surface takes the provider column rather than sitting beside it. Every
+// surface label names its provider — "Codex Desktop", "Claude Code", "Codex via
+// Sessions" — so nothing is lost, and printing "codex · Codex Desktop" would
+// spend a second field restating the first. When no surface was recorded the
+// provider name is what remains, which is exactly today's row.
+//
+// The actor is printed only when it was something other than the user. A row
+// that says "automation" or "agent" is telling the reader something they could
+// not otherwise know; a row that says "user" is telling them what they already
+// assumed about their own history, on every line. So the exception is flagged
+// and the ordinary case stays silent — and --actor user remains for when the
+// distinction has to be exact, since it matches only conversations that
+// recorded it.
+//
+// Deliberately not here: the client version (Codex cli_version, Claude
+// version), the raw originator, the git branch, and the recorded source value.
+// They are real provenance and they are all carried in --json and in `sessions
+// source`, but none of them is how a person recognises a conversation a week
+// later, and a meta line long enough to wrap is one nobody reads.
+// startedOnAnEarlierDay reports the start date when the conversation began on a
+// different calendar day from its last activity, which is the case where the
+// two timestamps carry different information. Both are read in local time,
+// because the question being asked -- "was this the one from last Tuesday?" --
+// is asked about the local day.
+func (row conversationRow) startedOnAnEarlierDay() (string, bool) {
+	if row.StartedAtMS <= 0 || row.LastActiveAtMS <= 0 {
+		return "", false
+	}
+	started := time.UnixMilli(row.StartedAtMS)
+	last := time.UnixMilli(row.LastActiveAtMS)
+	startedDay := started.Format("2006-01-02")
+	if startedDay == last.Format("2006-01-02") || started.After(last) {
+		return "", false
+	}
+	return startedDay, true
+}
+
+func (a *app) conversationMetaLine(row conversationRow) string {
+	parts := make([]string, 0, 8)
+	when := "no recorded activity"
+	if row.LastActiveAtMS > 0 {
+		when = fmt.Sprintf("%s · %s ago",
+			time.UnixMilli(row.LastActiveAtMS).Format("2006-01-02 15:04"), a.ageOf(row.LastActiveAtMS))
+		if row.ApproximateTime {
+			// The conversation never stamped its own last record, so this is the
+			// file's modification time. Say so rather than let a copied history
+			// present itself as a freshly used one.
+			when += " (file time)"
+		}
+	}
+	origin := row.Tool
+	if row.Surface != "" {
+		origin = row.Surface
+	}
+	parts = append(parts, when)
+	// Only worth a column when it says something the last-active stamp does
+	// not. A session started and finished this afternoon repeating its own
+	// date is noise on every row; one started three weeks ago and touched
+	// yesterday is the whole reason the user could not place it.
+	if started, ok := row.startedOnAnEarlierDay(); ok {
+		parts = append(parts, "started "+started)
+	}
+	parts = append(parts, origin, row.messageCountText())
+	if row.CWD != "" {
+		parts = append(parts, a.shortenHome(row.CWD))
+	}
+	if row.Machine != "" && row.Machine != "local" {
+		parts = append(parts, "on "+row.Machine)
+	}
+	if row.Actor != "" && row.Actor != "user" {
+		parts = append(parts, row.Actor)
+	}
+	if row.Status == historyStatusLive {
+		parts = append(parts, "LIVE NOW")
+	}
+	if row.Hits > 0 {
+		parts = append(parts, fmt.Sprintf("%d matching messages", row.Hits))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (a *app) writeConversationFooter(
+	shown, matched, known int, query string, filters historyFilters, numbered, partial bool,
+) error {
+	headline := fmt.Sprintf("%d conversations match", matched)
+	if matched == 1 {
+		headline = "1 conversation matches"
+	}
+	if query != "" {
+		headline += fmt.Sprintf(" %q", query)
+	}
+	if description := describeHistoryFilters(filters); description != "" {
+		headline += " (" + description + ")"
+	}
+	parts := []string{headline}
+	if shown < matched {
+		parts = append(parts, fmt.Sprintf("showing the %d most recent, raise with -n", shown))
+	}
+	// "recorded" states a total, and a total is precisely what this number is
+	// not when a machine is missing. Scoping the claim to the machines that
+	// answered costs five words and keeps the line true.
+	recorded := fmt.Sprintf("%d conversations recorded", known)
+	if partial {
+		recorded += " on the machines that answered"
+	}
+	parts = append(parts, recorded)
+	if _, err := fmt.Fprintln(a.stdout, strings.Join(parts, " · ")); err != nil {
+		return err
+	}
+	// The hint is for the reader who has not narrowed anything yet. Repeating
+	// it after they have is noise, and noise under a list is what stops people
+	// reading the honest counts above it.
+	if query == "" && !filters.narrowed() && shown < matched {
+		if _, err := fmt.Fprintln(a.stdout,
+			"Narrow with a word from the conversation, --since today, --tool codex, or --cwd ."); err != nil {
+			return err
+		}
+	}
+	// --pick has to be discoverable without being compulsory. It is advertised
+	// only to a person — both ends of this invocation are a terminal — and only
+	// when they are not already using it, so a pipeline, a --json caller, and
+	// every existing scripted reader of this output see byte-for-byte what they
+	// saw before.
+	if !numbered && a.attachedToTerminal() {
+		_, err := fmt.Fprintln(a.stdout,
+			"Reopen one without copying its command: add --pick.")
+		return err
+	}
+	return nil
+}
+
+func (f historyFilters) narrowed() bool {
+	return f.all || f.tool != "" || f.cwd != "" || f.nameGlob != "" ||
+		len(f.sessions) > 0 || f.sinceMS != 0 || f.untilMS != 0 ||
+		f.surface != "" || f.actor != ""
+}
+
+// emptyConversationAdvice never answers an empty browse with only "(none)".
+// The reason a browse came back empty is nearly always a filter, and the user
+// arrived here because they could not find a conversation in the first place.
+func emptyConversationAdvice(known int, query string, filters historyFilters, partial bool) string {
+	var builder strings.Builder
+	builder.WriteString("(no conversations matched")
+	if query != "" {
+		fmt.Fprintf(&builder, " %q", query)
+	}
+	if description := describeHistoryFilters(filters); description != "" {
+		builder.WriteString(" " + description)
+	}
+	builder.WriteString(")\n")
+	where := ""
+	if partial {
+		where = " on the machines that answered"
+	}
+	if known > 0 {
+		fmt.Fprintf(&builder,
+			"%d conversations are recorded%s; widen the filters or run `sessions history --all`.\n", known, where)
+		return builder.String()
+	}
+	builder.WriteString("No Claude or Codex history was found on the machines that answered.\n")
+	return builder.String()
+}
+
+func describeHistoryFilters(filters historyFilters) string {
+	parts := make([]string, 0, 5)
+	if filters.tool != "" {
+		parts = append(parts, "in "+filters.tool)
+	}
+	if filters.surface != "" {
+		parts = append(parts, "started from "+filters.surface)
+	}
+	if filters.actor != "" {
+		parts = append(parts, "driven by "+filters.actor)
+	}
+	if filters.sinceText != "" {
+		parts = append(parts, "since "+filters.sinceText)
+	}
+	if filters.untilText != "" {
+		parts = append(parts, "before "+filters.untilText)
+	}
+	if filters.cwd != "" {
+		parts = append(parts, "under "+filters.cwd)
+	}
+	if filters.nameGlob != "" {
+		parts = append(parts, "named "+filters.nameGlob)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
+}
+
+func fleetHistoryTimedOut(target fleetTarget, budget time.Duration) error {
+	if target.Endpoint == localFleetEndpoint {
+		return fmt.Errorf("this machine did not answer within %s", localFleetRequestTimeout)
+	}
+	return fmt.Errorf(
+		"did not answer within %s, so its conversations are missing; add --wait-for-peers, or run `sessions --machine %s history ...`",
+		budget.Round(time.Millisecond), target.Alias,
+	)
+}
+
+// fleetHistoryPeerTooSlow explains a peer this browse did not even ask. The
+// distinction from an unreachable machine is the point: nothing is wrong with
+// it, it is simply bigger than a browse, and the reader needs to know that the
+// answer is one flag away rather than that their fleet is broken.
+func fleetHistoryPeerTooSlow(target fleetTarget, listing fleetPeerListing) error {
+	cost := (time.Duration(listing.TookMS) * time.Millisecond).Round(100 * time.Millisecond)
+	// A completed listing measured the cost; an abandoned one only bounded it.
+	// Printing a bound as a measurement would overstate what is known about the
+	// machine, which is the mistake this whole change is about.
+	observed := fmt.Sprintf("was still listing its history after %s last time", cost)
+	if listing.Counted {
+		observed = fmt.Sprintf("took %s to list its history last time", cost)
+	}
+	return fmt.Errorf(
+		"not asked: it %s, longer than the %s a browse waits; add --wait-for-peers, or run `sessions --machine %s history ...`",
+		observed, fleetHistoryPeerBudget, target.Alias,
+	)
+}
+
+func fleetHistoryFailure(machines []historysearch.MachineState, rejection string) error {
+	if rejection != "" {
+		return fail(1, "%s", rejection)
+	}
+	lines := make([]string, 0, len(machines))
+	for _, machine := range machines {
+		lines = append(lines, fmt.Sprintf("  %s (%s): %s", machine.Alias, machine.Name, machine.Error))
+	}
+	if len(lines) == 0 {
+		return fail(2, "no approved Sessions machine answered this history request")
+	}
+	return fail(2, "no approved Sessions machine answered this history request:\n%s", strings.Join(lines, "\n"))
+}
+
+// pluckOptionalCount reads a flag whose count may be omitted. --preview alone
+// is the common case and has to stay one word; --preview 8 is the same option
+// with the default overridden. A following token is only consumed when it is a
+// bare number, so `--preview --tool codex` keeps its meaning.
+func pluckOptionalCount(args *[]string, name string, fallback, maximum int) (int, bool, error) {
+	for index, argument := range *args {
+		if argument != name {
+			continue
+		}
+		if index+1 < len(*args) {
+			if parsed, err := strconv.Atoi((*args)[index+1]); err == nil {
+				if parsed < 1 || parsed > maximum {
+					return 0, false, fail(1, "%s must be between 1 and %d", name, maximum)
+				}
+				*args = append((*args)[:index], (*args)[index+2:]...)
+				return parsed, true, nil
+			}
+		}
+		*args = append((*args)[:index], (*args)[index+1:]...)
+		return fallback, true, nil
+	}
+	return 0, false, nil
+}
+
+// parseHistoryTime accepts the way people say when. "today" is the question
+// this command exists to answer, and refusing it because the daemon's search
+// route only understands YYYY-MM-DD would reproduce the papercut. The second
+// return value is how the answer will describe the bound back to the reader.
+func parseHistoryTime(raw string, now time.Time, endOfDay bool) (int64, string, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return 0, "", fail(1, "date filters need a value: today, yesterday, 3d, YYYY-MM-DD, or RFC3339")
+	}
+	startOfDay := func(day time.Time) time.Time {
+		return time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
+	}
+	switch value {
+	case "today":
+		day := startOfDay(now)
+		if endOfDay {
+			day = day.AddDate(0, 0, 1)
+		}
+		return day.UnixMilli(), "today", nil
+	case "yesterday":
+		day := startOfDay(now).AddDate(0, 0, -1)
+		if endOfDay {
+			day = day.AddDate(0, 0, 1)
+		}
+		return day.UnixMilli(), "yesterday", nil
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return parsed.UnixMilli(), parsed.Local().Format("2006-01-02 15:04"), nil
+	}
+	if parsed, err := time.ParseInLocation("2006-01-02", value, time.Local); err == nil {
+		if endOfDay {
+			parsed = parsed.AddDate(0, 0, 1)
+		}
+		return parsed.UnixMilli(), value, nil
+	}
+	if ago, ok := parseHistoryDuration(value); ok {
+		return now.Add(-ago).UnixMilli(), value + " ago", nil
+	}
+	return 0, "", fail(1,
+		"could not read the date %q; use today, yesterday, a span like 3d or 6h, YYYY-MM-DD, or RFC3339", raw)
+}
+
+// parseHistoryDuration extends Go's own units with the ones a person uses for
+// conversation history. time.ParseDuration stops at hours, and "the last three
+// days" is the most natural way to ask this question.
+func parseHistoryDuration(value string) (time.Duration, bool) {
+	if len(value) < 2 {
+		return 0, false
+	}
+	unit := value[len(value)-1]
+	amount, err := strconv.Atoi(value[:len(value)-1])
+	if err != nil || amount < 0 {
+		if parsed, parseErr := time.ParseDuration(value); parseErr == nil && parsed >= 0 {
+			return parsed, true
+		}
+		return 0, false
+	}
+	switch unit {
+	case 'm':
+		return time.Duration(amount) * time.Minute, true
+	case 'h':
+		return time.Duration(amount) * time.Hour, true
+	case 'd':
+		return time.Duration(amount) * 24 * time.Hour, true
+	case 'w':
+		return time.Duration(amount) * 7 * 24 * time.Hour, true
+	}
+	return 0, false
+}
+
+// historyToolName folds the provider spellings a stored conversation can carry
+// into the three names the CLI filters on.
+func historyToolName(tool string) string {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "claude", "claude-code":
+		return "claude"
+	case "codex":
+		return "codex"
+	case "terminal", "shell", "":
+		return "shell"
+	default:
+		return strings.ToLower(strings.TrimSpace(tool))
+	}
+}
+
+func (a *app) expandHome(path string) string {
+	if path == "~" {
+		return a.home
+	}
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		return filepath.Join(a.home, rest)
+	}
+	if path == "" {
+		return ""
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return absolute
+}
+
+func (a *app) shortenHome(path string) string {
+	if a.home == "" {
+		return path
+	}
+	if path == a.home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(path, a.home+string(filepath.Separator)); ok {
+		return "~" + string(filepath.Separator) + rest
+	}
+	return path
+}
+
+// messageCountText never prints "0 messages" for a conversation nobody counted.
+// Zero and unknown are different facts, and only one of them is a reason to
+// pass a row by.
+func (r conversationRow) messageCountText() string {
+	if r.MessagesUncounted {
+		return "messages not counted"
+	}
+	return pluralMessages(r.Messages)
+}
+
+func pluralMessages(count int) string {
+	if count == 1 {
+		return "1 message"
+	}
+	return fmt.Sprintf("%s messages", groupThousands(count))
+}
+
+func groupThousands(value int) string {
+	digits := strconv.Itoa(value)
+	negative := strings.HasPrefix(digits, "-")
+	digits = strings.TrimPrefix(digits, "-")
+	var builder strings.Builder
+	for index, character := range digits {
+		if index > 0 && (len(digits)-index)%3 == 0 {
+			builder.WriteByte(',')
+		}
+		builder.WriteRune(character)
+	}
+	if negative {
+		return "-" + builder.String()
+	}
+	return builder.String()
+}
+
+// firstSnippets keeps a browse readable. The evidence for a match is that it
+// matched; two lines of it are enough to recognise the conversation, and
+// `sessions search` remains the place to read every hit.
+func firstSnippets(snippets []string) []string {
+	if len(snippets) > historyMaxSnippets {
+		return snippets[:historyMaxSnippets]
+	}
+	return snippets
+}
+
+func truncateRunes(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:limit-1])) + "…"
+}
+
+const historyUsageText = "usage: sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [--pick] [-n N] [--all] [--wait-for-peers] [--json]\nWHEN accepts today, yesterday, a span like 3d or 6h, YYYY-MM-DD, or RFC3339. SURFACE is codex-cli, codex-desktop, codex-exec, claude-cli, claude-desktop, claude-sdk, sessions, or the raw value a provider recorded. A QUERY, when given, comes FIRST, before any flags"

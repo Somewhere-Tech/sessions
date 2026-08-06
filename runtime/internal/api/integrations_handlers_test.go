@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,7 +43,7 @@ func TestHistoryRoutesExposeStableListTranscriptTextAndRawShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	conversation := []byte(strings.Join([]string{
-		`{"type":"user","uuid":"u1","timestamp":"2026-07-16T17:01:00Z","message":{"role":"user","content":"Recall this fixture"}}`,
+		`{"type":"user","uuid":"u1","timestamp":"2026-07-16T17:01:00Z","entrypoint":"cli","version":"2.1.220","message":{"role":"user","content":"Recall this fixture"}}`,
 		`{"type":"assistant","uuid":"a1","timestamp":"2026-07-16T17:01:02Z","message":{"role":"assistant","content":[{"type":"text","text":"Fixture remembered."}]}}`,
 		`{"type":"user","uuid":"tool1","timestamp":"2026-07-16T17:01:03Z","message":{"role":"user","content":[{"type":"tool_result","content":"not a conversation turn"}]}}`,
 	}, "\n") + "\n")
@@ -73,10 +74,18 @@ func TestHistoryRoutesExposeStableListTranscriptTextAndRawShapes(t *testing.T) {
 		t.Fatalf("history = %#v", history)
 	}
 	listed := history.Sessions[0]
+	// The conversation's own last record, not the file's modification time.
+	// mtime here is two minutes past the last record precisely so the two
+	// cannot be confused; see TestHistoryDatesConversationsByTheirOwnRecords.
+	lastRecord := time.Date(2026, time.July, 16, 17, 1, 3, 0, time.UTC).UnixMilli()
 	if listed.ID != id || listed.Name != "fixture recall" || listed.Tool != "claude" || listed.CWD != cwd ||
-		listed.Machine == "" || listed.CreatedAt != created.UnixMilli() || listed.LastActivityAt != modified.UnixMilli() ||
+		listed.Machine == "" || listed.CreatedAt != created.UnixMilli() || listed.LastActivityAt != lastRecord ||
+		listed.ConversationUpdatedAt != lastRecord || listed.ConversationUpdatedApproximate ||
 		listed.MessageCount != 2 || !listed.ConversationAvailable {
-		t.Fatalf("listed session = %#v", listed)
+		t.Fatalf("listed session = %#v (mtime was %d)", listed, modified.UnixMilli())
+	}
+	if listed.Surface == nil || listed.Surface.Kind != watch.SurfaceClaudeCLI {
+		t.Fatalf("listed surface = %#v", listed.Surface)
 	}
 
 	transcriptResponse := serve(t, daemon.handler, http.MethodGet, "/api/history/"+id+"?format=json", nil, "127.0.0.1:4321", nil)
@@ -142,6 +151,277 @@ func TestHistoryRoutesExposeStableListTranscriptTextAndRawShapes(t *testing.T) {
 		!bytes.Equal(rawResponse.Body.Bytes(), conversation) {
 		t.Fatalf("raw status=%d type=%q body=%q", rawResponse.Code, rawResponse.Header().Get("Content-Type"), rawResponse.Body.Bytes())
 	}
+	sourceResponse := serve(t, daemon.handler, http.MethodGet, "/api/history/"+id+"/source", nil, "127.0.0.1:4321", nil)
+	if sourceResponse.Code != http.StatusOK {
+		t.Fatalf("source status=%d body=%s", sourceResponse.Code, sourceResponse.Body.String())
+	}
+	var source integrations.HistorySource
+	decodeBody(t, sourceResponse, &source)
+	if source.Session.ID != id || source.SourcePath != conversationPath ||
+		source.SourceKind != "provider-jsonl" || !source.RawAvailable ||
+		!source.TextAvailable || source.RawBytes != int64(len(conversation)) {
+		t.Fatalf("source = %#v", source)
+	}
+}
+
+// writeClaudeHistoryFixture registers a managed Claude session and, when
+// conversation is non-nil, the provider transcript it resolves to.
+func writeClaudeHistoryFixture(t *testing.T, daemon testDaemon, home, id, name string, conversation []byte) string {
+	t.Helper()
+	cwd := filepath.Join(daemon.root, "worktree-"+id)
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(daemon.config.RunnerStateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, time.August, 5, 9, 0, 0, 0, time.UTC)
+	metadataPath := filepath.Join(daemon.config.RunnerStateDir, id+".json")
+	if err := state.WriteMetadata(metadataPath, state.Metadata{
+		ID: id, Name: name, Cmd: "claude", Args: []string{"--session-id", id},
+		Cwd: cwd, Cols: 120, Rows: 40, CreatedAt: created.UnixMilli(), PID: 4242,
+		SockPath: filepath.Join(daemon.config.RunnerStateDir, id+".sock"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(metadataPath, created, created); err != nil {
+		t.Fatal(err)
+	}
+	if conversation == nil {
+		return ""
+	}
+	conversationPath := filepath.Join(home, ".claude", "projects", watch.EncodeClaudeCWD(cwd), id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(conversationPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(conversationPath, conversation, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return conversationPath
+}
+
+func claudeTranscriptLines(texts ...string) []byte {
+	lines := make([]string, 0, len(texts))
+	for index, text := range texts {
+		lines = append(lines, fmt.Sprintf(
+			`{"type":"user","uuid":"u%d","timestamp":"2026-08-05T09:0%d:00Z","message":{"role":"user","content":%q}}`,
+			index, index, text))
+	}
+	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
+// The summary view is the cheap view, so it is the one a UI or an agent polls.
+// It used to build its body by hand and always report zero torn records and zero
+// unreadable sessions, which made a degraded history indistinguishable from a
+// clean one on exactly the route most likely to be watched.
+func TestHistorySummaryReportsDegradationAlongsideTheFullListing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the unreadable-file permissions this test relies on")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	daemon := newTestDaemon(t)
+	healthyID := "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+	tornID := "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+	unreadableID := "cccccccc-3333-4333-8333-cccccccccccc"
+	writeClaudeHistoryFixture(t, daemon, home, healthyID, "healthy recall", claudeTranscriptLines("healthy question"))
+	// A valid record, then invalid UTF-8, then a record a power cut truncated
+	// mid-line with no trailing newline: two torn records, one usable message.
+	torn := append(claudeTranscriptLines("torn question"),
+		[]byte("\xff\xfe\x00 not utf-8 and not json\n"+
+			`{"type":"user","uuid":"u9","timestamp":"2026-08-05T09:09:00Z","message":{"role":"user","content":"cut`)...)
+	writeClaudeHistoryFixture(t, daemon, home, tornID, "torn recall", torn)
+	unreadablePath := writeClaudeHistoryFixture(t, daemon, home, unreadableID, "unreadable recall",
+		claudeTranscriptLines("lost question"))
+	// Stat still succeeds; opening the file does not, the way a stale network
+	// mount or a revoked ACL behaves.
+	if err := os.Chmod(unreadablePath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadablePath, 0o600) })
+
+	full := serve(t, daemon.handler, http.MethodGet, "/api/history", nil, "127.0.0.1:4321", nil)
+	if full.Code != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", full.Code, full.Body.String())
+	}
+	var listing historyListResponse
+	decodeBody(t, full, &listing)
+	if listing.TranscriptsUnread {
+		t.Fatalf("the full listing reads every transcript and must not claim otherwise: %s", full.Body.String())
+	}
+	byID := historySessionsByID(listing.Sessions)
+	if len(byID) != 3 {
+		t.Fatalf("history = %s", full.Body.String())
+	}
+	if byID[tornID].SkippedRecords != 2 || byID[tornID].Unreadable || byID[tornID].MessageCount != 1 {
+		t.Fatalf("torn session = %#v", byID[tornID])
+	}
+	if !byID[unreadableID].Unreadable || byID[unreadableID].UnreadableReason == "" {
+		t.Fatalf("unreadable session = %#v", byID[unreadableID])
+	}
+	if listing.SkippedRecords != 2 || listing.UnreadableSessions != 1 {
+		t.Fatalf("full listing aggregates: skipped=%d unreadable_sessions=%d body=%s",
+			listing.SkippedRecords, listing.UnreadableSessions, full.Body.String())
+	}
+
+	summary := serve(t, daemon.handler, http.MethodGet, "/api/history?summary=true", nil, "127.0.0.1:4321", nil)
+	if summary.Code != http.StatusOK {
+		t.Fatalf("summary status=%d body=%s", summary.Code, summary.Body.String())
+	}
+	var summarized historyListResponse
+	decodeBody(t, summary, &summarized)
+	if len(summarized.Sessions) != len(listing.Sessions) {
+		t.Fatalf("summary listed %d sessions, full listing listed %d", len(summarized.Sessions), len(listing.Sessions))
+	}
+	// The summary view resolves and stats every source but never opens one, so
+	// it cannot count torn records. Saying so is what keeps it honest: a zero
+	// counter here means "not counted", not "nothing was lost".
+	if !summarized.TranscriptsUnread {
+		t.Fatalf("summary must declare that it did not read the transcripts it listed: %s", summary.Body.String())
+	}
+	if !strings.Contains(summary.Body.String(), `"transcripts_unread":true`) {
+		t.Fatalf("summary body must carry transcripts_unread: %s", summary.Body.String())
+	}
+	// Whatever degradation the cheap pass did observe must be aggregated the
+	// same way the full listing aggregates it, never dropped on the floor.
+	expected := historySummaryListing(summarized.Sessions)
+	if summarized.UnreadableSessions != expected.UnreadableSessions || summarized.SkippedRecords != expected.SkippedRecords {
+		t.Fatalf("summary aggregates disagree with its own rows: response(unreadable=%d skipped=%d) rows(unreadable=%d skipped=%d)",
+			summarized.UnreadableSessions, summarized.SkippedRecords,
+			expected.UnreadableSessions, expected.SkippedRecords)
+	}
+	t.Logf("full: unreadable_sessions=%d skipped_records=%d; summary: unreadable_sessions=%d skipped_records=%d transcripts_unread=%v",
+		listing.UnreadableSessions, listing.SkippedRecords,
+		summarized.UnreadableSessions, summarized.SkippedRecords, summarized.TranscriptsUnread)
+}
+
+// The aggregation itself, pinned without a filesystem: the summary view counts
+// every degraded row it was handed.
+func TestHistorySummaryListingAggregatesEveryDegradedRow(t *testing.T) {
+	listing := historySummaryListing([]integrations.HistorySession{
+		{ID: "clean"},
+		{ID: "torn", SkippedRecords: 3},
+		{ID: "unreadable", Unreadable: true, UnreadableReason: "transcript could not be read"},
+		{ID: "both", Unreadable: true, SkippedRecords: 4},
+	})
+	if listing.SchemaVersion != integrations.SchemaVersion || len(listing.Sessions) != 4 {
+		t.Fatalf("listing = %#v", listing)
+	}
+	if listing.UnreadableSessions != 2 || listing.SkippedRecords != 7 || !listing.TranscriptsUnread {
+		t.Fatalf("aggregates = unreadable %d, skipped %d, transcripts_unread %v",
+			listing.UnreadableSessions, listing.SkippedRecords, listing.TranscriptsUnread)
+	}
+	encoded, err := json.Marshal(listing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"unreadable_sessions":2`, `"skipped_records":7`, `"transcripts_unread":true`, `"schemaVersion":1`,
+	} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("summary body %s is missing %s", encoded, want)
+		}
+	}
+	// A clean listing stays byte-identical to the documented shape: an absent
+	// counter still means nothing was lost.
+	clean, err := json.Marshal(historyListResponse{HistoryResponse: integrations.HistoryResponse{
+		SchemaVersion: integrations.SchemaVersion, Sessions: []integrations.HistorySession{},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(clean) != `{"schemaVersion":1,"sessions":[]}` {
+		t.Fatalf("clean listing = %s", clean)
+	}
+}
+
+// `source_kind` is the only way a consumer can tell where a conversation came
+// from, and `sessions-mirror` specifically means the provider deleted its
+// transcript and this content is Sessions' own copy — native `claude --resume`
+// will not work for that session. The handler must pass the store's value
+// through untouched for every kind.
+func TestHistorySourceReportsWhereEachConversationCameFrom(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	daemon := newTestDaemon(t)
+	providerID := "dddddddd-4444-4444-8444-dddddddddddd"
+	mirrorID := "eeeeeeee-5555-4555-8555-eeeeeeeeeeee"
+	missingID := "ffffffff-6666-4666-8666-ffffffffffff"
+	archivedID := "99999999-7777-4777-8777-999999999999"
+
+	providerPath := writeClaudeHistoryFixture(t, daemon, home, providerID, "provider recall",
+		claudeTranscriptLines("provider question"))
+	// A session Sessions kept a copy of: no provider file resolves, only the
+	// mirror beside the runner state.
+	writeClaudeHistoryFixture(t, daemon, home, mirrorID, "mirrored recall", nil)
+	mirrorPath := watch.TranscriptMirrorPath(daemon.config.RunnerStateDir, mirrorID)
+	if err := os.WriteFile(mirrorPath, claudeTranscriptLines("mirrored question"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeClaudeHistoryFixture(t, daemon, home, missingID, "vanished recall", nil)
+	archive := fmt.Sprintf(
+		`{"display":"archived question","project":%q,"sessionId":%q,"timestamp":1785920400000}`+"\n",
+		daemon.root, archivedID)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "history.jsonl"), []byte(archive), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, expected := range []struct {
+		id            string
+		kind          string
+		path          string
+		rawAvailable  bool
+		textAvailable bool
+	}{
+		{id: providerID, kind: "provider-jsonl", path: providerPath, rawAvailable: true, textAvailable: true},
+		{id: mirrorID, kind: "sessions-mirror", path: mirrorPath, rawAvailable: true, textAvailable: true},
+		{id: missingID, kind: "missing"},
+		{id: "provider-history:claude:" + archivedID, kind: "prompt-index", textAvailable: true},
+	} {
+		response := serve(t, daemon.handler, http.MethodGet, "/api/history/"+expected.id+"/source", nil, "127.0.0.1:4321", nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("source(%s) status=%d body=%s", expected.id, response.Code, response.Body.String())
+		}
+		var source integrations.HistorySource
+		decodeBody(t, response, &source)
+		if source.SchemaVersion != integrations.SchemaVersion || source.Session.ID != expected.id {
+			t.Fatalf("source(%s) = %#v", expected.id, source)
+		}
+		if source.SourceKind != expected.kind {
+			t.Fatalf("source_kind(%s) = %q, want %q", expected.id, source.SourceKind, expected.kind)
+		}
+		if expected.path != "" && source.SourcePath != expected.path {
+			t.Fatalf("source_path(%s) = %q, want %q", expected.id, source.SourcePath, expected.path)
+		}
+		if source.RawAvailable != expected.rawAvailable || source.TextAvailable != expected.textAvailable {
+			t.Fatalf("source(%s) raw=%v text=%v, want raw=%v text=%v",
+				expected.id, source.RawAvailable, source.TextAvailable, expected.rawAvailable, expected.textAvailable)
+		}
+	}
+
+	// The mirrored session must really be served from Sessions' copy, which is
+	// what makes the `sessions-mirror` label load-bearing rather than cosmetic.
+	transcript := serve(t, daemon.handler, http.MethodGet, "/api/history/"+mirrorID+"?format=json", nil, "127.0.0.1:4321", nil)
+	var decoded integrations.TranscriptResponse
+	decodeBody(t, transcript, &decoded)
+	if transcript.Code != http.StatusOK || len(decoded.Messages) != 1 || decoded.Messages[0].Text != "mirrored question" {
+		t.Fatalf("mirrored transcript status=%d body=%s", transcript.Code, transcript.Body.String())
+	}
+	unknown := serve(t, daemon.handler, http.MethodGet, "/api/history/not-a-session/source", nil, "127.0.0.1:4321", nil)
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("unknown source status=%d body=%s", unknown.Code, unknown.Body.String())
+	}
+}
+
+func historySessionsByID(sessions []integrations.HistorySession) map[string]integrations.HistorySession {
+	byID := make(map[string]integrations.HistorySession, len(sessions))
+	for _, session := range sessions {
+		byID[session.ID] = session
+	}
+	return byID
 }
 
 func transcriptResponseMessageID(t *testing.T, encoded []byte, index int) string {

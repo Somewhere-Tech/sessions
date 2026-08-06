@@ -6,8 +6,10 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
+import { closeBrowser } from './lib/smoke.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
+const mux = await source('src/lib/wsMux.ts');
 const [
   app,
   connection,
@@ -64,7 +66,8 @@ assert.match(connection, /Can’t reach \$\{machine\}/);
 assert.match(navigator, /RECENTLY_ENDED_DAYS = 7/);
 assert.match(navigator, /RECENTLY_ENDED_LIMIT = 20/);
 assert.match(navigator, /DisclosureChevron open=\{runningOpen\} \/> Live/);
-assert.match(navigator, /DisclosureChevron open=\{endedOpen\} \/> Recently ended/);
+assert.match(navigator, /DisclosureChevron open=\{endedOpen\} \/> Ended/);
+assert.doesNotMatch(navigator, /> Later<|> Quiet<|Pin manager|Move to Later/);
 assert.match(navigator, /session-tree-toggle/);
 assert.match(navigator, /All ended sessions →/);
 assert.doesNotMatch(navigator, /ENDED_CATEGORIES|Provider finished|Ended through Sessions/);
@@ -73,13 +76,20 @@ assert.doesNotMatch(navigator, /session-nav-summary/);
 assert.match(navigator, />Resume <span aria-hidden>→<\/span><\/button>/);
 assert.match(navigator, /draggable=\{movingId !== session\.id\}/);
 assert.match(navigator, /text\/x-sessions-session-id/);
-assert.match(navigator, /Start child session…/);
-assert.match(navigator, /Close tab <small>stays in Live<\/small>/);
-assert.match(navigator, /Set aside for later <small>keeps running<\/small>/);
-assert.match(navigator, /Continue with \{otherProviderLabel\}…/);
+assert.match(navigator, /Start linked session…/);
+assert.match(navigator, /Close tab <small>keeps running<\/small>/);
+assert.match(navigator, /className="session-helper-summary"/);
+assert.match(navigator, /session-nav-rollup/);
+assert.match(navigator, /<summary>Fork <small>original stays here<\/small><\/summary>/);
+assert.match(navigator, /'In Claude'/);
+assert.match(navigator, /'In Codex'/);
 assert.match(navigator, /ContinueElsewhereButton/);
+assert.match(navigator, /createPortal/);
+assert.match(navigator, /data-session-action-menu/);
+assert.match(navigator, /className="session-row-action-trigger"/);
 assert.match(navigator, /document\.addEventListener\('click', dismiss\)/);
 assert.match(navigator, /event\.key !== 'Escape'/);
+assert.doesNotMatch(navigator, /window\.confirm/);
 assert.match(continueElsewhere, /createPortal/);
 assert.match(continueElsewhere, /appearance === 'menuitem'/);
 assert.match(resumeDialog, /preferredDestinationApplied/);
@@ -88,7 +98,7 @@ assert.match(resumeDialog, /Remote Control follows the explicit choice for the d
 assert.match(navigator, /<MachineMark machine=\{machine\} size=\{17\} \/>/);
 assert.doesNotMatch(navigator, /<span>\{machine\}<\/span>/);
 assert.match(navigator, /<ProviderMark provider=\{providerName\} size=\{20\} \/>/);
-assert.match(navigator, /className="session-continue-action" onClick=\{onContinue\}>Continue<\/button>/);
+assert.match(navigator, /className="session-continue-action" onClick=\{onContinue\}>Resume<\/button>/);
 assert.match(app, /onContinue=\{\(\) => setDialogOpen\('resume'\)\}/);
 assert.doesNotMatch(navigator, /session-mode-glyph/);
 assert.match(tabLabels, /export function reconcileDurableTabLabels/);
@@ -117,7 +127,7 @@ assert.match(app, /sessionId=\{sessionId\}[\s\S]*isActive[\s\S]*onStatusChange=\
 assert.match(popout, />Pop out<\/span>/);
 assert.match(popout, /mode'\) === 'single'/);
 assert.match(view, /No terminal for this Rich session/);
-assert.match(view, /choose Continue conversation, then select Terminal/);
+assert.match(view, /choose Resume conversation, then select Terminal/);
 assert.match(view, /terminalAvailable=\{!richSession\}/);
 assert.match(view, /Continuing the same Claude conversation in Terminal with Remote Control/);
 assert.match(view, /Continuing the same Claude conversation in Terminal for slash commands/);
@@ -128,7 +138,7 @@ assert.match(view, />Okay<\/button>/);
 assert.match(view, />Don’t show again<\/button>/);
 assert.match(view, /session\.tool === 'codex'[\s\S]*!richSession/);
 assert.doesNotMatch(view, /reading \{session\.tool === 'claude-code'/);
-assert.match(view, /<MachineMark machine=\{getActiveServer\(\)\.name\} size=\{18\} \/>/);
+assert.match(view, /<MachineMark machine=\{serverDisplayName\(getActiveServer\(\), true\)\} size=\{18\} \/>/);
 assert.doesNotMatch(view, /session-parser/);
 assert.match(view, /sessions:terminal-notice-ack:/);
 assert.match(view, /setTimeout\(\(\) => \{[\s\S]*setTerminalNoticeOpen\(true\);[\s\S]*\}, 400\)/);
@@ -141,7 +151,7 @@ assert.match(styles, /\.session-ended-summary\s*>\s*\.session-ended-actions\s*\{
 assert.match(styles, /\.session-history-jump-anchor\s*\{[^}]*position:\s*sticky;[^}]*bottom:\s*14px;/);
 assert.match(styles, /\.product-command-button\s*\{[^}]*font-size:\s*13px;/);
 assert.doesNotMatch(styles, /\.tab-resume|\.tab-popout/);
-assert.match(styles, /\.session-row-action-menu\.opens-up/);
+assert.match(styles, /\.session-row-action-menu \{ position: fixed/);
 assert.doesNotMatch(styles, /\.session-ended-summary\.is-failed/);
 assert.doesNotMatch(remote, /copyOnClickAtPointer|onClick=\{\(e\) => copy/);
 assert.doesNotMatch(grid, /copyOnClickAtPointer|onClick=\{\(e\) => copy/);
@@ -151,8 +161,20 @@ assert.match(input, /<ComposerModelControl/);
 assert.match(input, /Remote Control needs a Terminal session/);
 assert.match(input, /This command was not sent as a chat message/);
 assert.match(input, /Your draft is kept here and was not sent or queued/);
+assert.match(input, /title: 'Message not sent'/);
+assert.match(input, /Your draft is still here/);
+assert.ok(input.includes("await submitMessage('\\x1b[200~' + text + '\\x1b[201~')"));
+assert.doesNotMatch(mux, /return msg\.type === 'input' \|\|/);
+assert.match(mux, /Sessions is reconnecting\. Your message was not sent\./);
+assert.doesNotMatch(remote, />retry<\/button>/);
+assert.match(remote, />restore draft<\/button>/);
+assert.doesNotMatch(await source('src/hooks/useDispatch.ts'), /ENTER_RETRY_OFFSETS_MS|scheduleEnterRetries|send\('\\r'\)/);
 assert.match(input, /\/rename\(\?:\\s\|\$\)/);
-assert.match(remote, /if \(!terminalAvailable \|\| !latestFailedSend\)/);
+// The snapshot heuristic still runs only for a terminal-backed session that
+// has an unconfirmed failed send. `failedSendKey` is that send's identity —
+// the effect reads it directly so its dependency list is honest.
+assert.match(remote, /if \(!terminalAvailable \|\| !failedSendKey\)/);
+assert.match(remote, /const failedSendKey = latestFailedSend/);
 assert.match(remote, /richSession=\{!terminalAvailable\}/);
 assert.match(modelControl, /Next message/);
 assert.match(modelControl, /listSessionModelOptions\(sessionId\)/);
@@ -161,23 +183,43 @@ assert.match(machineMark, /aria-label=\{machine\}/);
 assert.match(styles, /\.remote-message-actions\.is-agent\s*\{\s*justify-content:\s*flex-start;/);
 assert.doesNotMatch(styles, /\.remote-bubble-assistant\s*\{[^}]*cursor:\s*copy;/);
 assert.match(newSession, /\{browserOpen \? \([\s\S]*<DirectoryBrowser[\s\S]*\) : null\}/);
-const agentStep = newSession.indexOf('Choose an agent');
-const machineStep = newSession.indexOf('Choose a machine');
-const folderStep = newSession.indexOf('Choose a folder');
-assert.ok(agentStep > 0 && agentStep < machineStep && machineStep < folderStep, 'new-session steps must be Agent, Machine, Folder');
-assert.match(newSession, /This computer/);
+const launcherHero = newSession.indexOf("'Start a new session'");
+const agentControl = newSession.indexOf('aria-label="Agent"');
+const machineControl = newSession.indexOf('aria-label="Computer"');
+const workspaceControl = newSession.indexOf('launcher-intent-control is-workspace');
+const launcherComposer = newSession.indexOf('launcher-task-field launcher-composer');
+const folderControl = newSession.indexOf('launcher-workspace-shell');
+const advancedControl = newSession.indexOf('launcher-advanced');
+const permissionsControl = newSession.indexOf('aria-label="Permissions"');
+assert.ok(launcherHero > 0 && launcherHero < agentControl && agentControl < machineControl && machineControl < workspaceControl && workspaceControl < launcherComposer && launcherComposer < folderControl,
+  'new-session must present agent, computer, and folder before the prompt');
+assert.ok(permissionsControl > launcherComposer && permissionsControl < advancedControl,
+  'permissions belong in the primary composer before Advanced');
+assert.match(newSession, /Somewhere project/);
+assert.doesNotMatch(newSession, /worktree|Developer isolation|Git copy/);
+assert.doesNotMatch(newSession, /already has .* live sessions|Sessions will not stop or queue existing work/);
+assert.match(newSession, /serverDisplayName\(selectedMachine, true\)/);
 assert.match(newSession, /configuredMachines\.find\(\(machine\) => machine\.isDefault && isLocalServer\(machine\)\)/);
 assert.match(newSession, /<ModelPicker[\s\S]*options=\{modelOptions\}/);
 assert.match(newSession, /CLAUDE_MODEL_OPTIONS/);
 assert.match(newSession, /launcher-composer-footer/);
-assert.match(newSession, /listNewSessionCodexModels\(controller\.signal\)/);
+assert.match(newSession, /listNewSessionCodexModels\(controller\.signal, machineId\)/);
+assert.match(newSession, /create\(\{[\s\S]*\}, machineId\)/);
+assert.match(newSession, /submitInitialRequest\(info\.id, task\.trim\(\), machineId\)/);
+assert.match(newSession, /<DirectoryBrowser[\s\S]*serverId=\{machineId\}/);
+assert.doesNotMatch(newSession, /resumeId|sessionsForCwd|--resume/);
+assert.match(newSession, /event\.currentTarget\.form\?\.requestSubmit\(\)/);
+assert.match(api, /createSession\(req: CreateSessionRequest, serverId\?: string\)/);
+assert.match(api, /killSession\(id: string, reason = '', serverId\?: string\)/);
+assert.match(api, /sendInput\(sessionId: string, data: string, serverId\?: string\)/);
+assert.match(sessionsStore, /api\.killSession\(id, reason, serverId\)/);
 assert.match(api, /\/api\/models\/codex/);
 assert.match(api, /remoteControl/);
 assert.doesNotMatch(newSession, /Provider default|More options|screen parsing|message parsing/);
 assert.match(newSession, /<summary><strong>Advanced<\/strong>/);
 assert.match(newSession, /if \(tool === 'claude-code'\) return 'terminal'/);
 assert.match(newSession, /Conversation \+ Terminal/);
-assert.match(newSession, /Remote Control follows the explicit choice for this machine in Settings/);
+assert.match(newSession, /Uses this machine’s consent choice from Settings/);
 assert.doesNotMatch(newSession, /runtimeMode === 'rich'\s*\?\s*\{\s*\.\.\.claudeOptions,\s*remoteControl: 'off'/);
 assert.doesNotMatch(newSession, /Choose Terminal for Claude slash commands and Remote Control/);
 assert.match(settingsView, /Enabled for new Claude sessions/);
@@ -188,7 +230,7 @@ assert.match(settingsView, /Help shape Sessions/);
 assert.match(settingsView, /Share an idea or win/);
 assert.match(settingsView, /Report a bug/);
 assert.doesNotMatch(settingsView, /Reporting from an agent/);
-assert.match(resumeDialog, /Continue an earlier chat/);
+assert.match(resumeDialog, /Resume a conversation/);
 assert.match(resumeDialog, /\(\['all', 'claude', 'codex'\] as const\)/);
 assert.match(resumeDialog, /s\.title\?\.toLowerCase\(\)\.includes\(q\)/);
 assert.match(resumeDialog, /const title = session\.title\?\.trim\(\) \|\| msg/);
@@ -241,7 +283,7 @@ try {
       <p>The provider finished normally and the exact conversation is still available.</p>
       <p class="session-ended-read-only">Viewing does not resume or send anything.</p>
       <div class="session-ended-actions">
-        <button class="btn btn-primary">Continue conversation →</button>
+        <button class="btn btn-primary">Resume conversation →</button>
         <button class="btn btn-secondary">Archive from list</button>
       </div>
     </section>
@@ -295,7 +337,10 @@ try {
   assert.ok(jumpBounds.jumpBottom <= jumpBounds.bodyBottom, 'jump-to-latest button must stay inside the history viewport');
   assert.ok(jumpBounds.jumpRight <= jumpBounds.bodyRight, 'jump-to-latest button must stay inside the history viewport');
 } finally {
-  await browser.close();
+  // Bounded: `browser.close()` waits on the browser's own shutdown, and a
+  // wedged Chromium on a loaded machine turns a finished suite into a hang with
+  // no assertion to report. Fail, never wait.
+  await closeBrowser(browser);
 }
 
 const scratch = await mkdtemp(join(tmpdir(), 'sessions-mode-smoke-'));

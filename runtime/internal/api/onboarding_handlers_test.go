@@ -54,15 +54,15 @@ func TestOnboardingPersistsEnabledAndLocalOnlyChoices(t *testing.T) {
 	} {
 		t.Run(choice, func(t *testing.T) {
 			daemon := newTestDaemon(t)
-			headers := http.Header{remoteControlConsentHeader: {"remote-control"}}
+			headers := http.Header{onboardingConsentHeader: {"onboarding"}}
 			response := serve(t, daemon.handler, http.MethodPut, "/api/onboarding",
-				bytes.NewBufferString(`{"remoteControl":"`+choice+`"}`), "127.0.0.1:4321", headers)
+				bytes.NewBufferString(`{"remoteControl":"`+choice+`","delegatedAccess":"autonomous"}`), "127.0.0.1:4321", headers)
 			if response.Code != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 			}
 			var got state.OnboardingState
 			decodeBody(t, response, &got)
-			if !got.Complete || got.RemoteControl != choice {
+			if !got.Complete || got.RemoteControl != choice || got.DelegatedAccess != state.DelegatedAccessConsentAutonomous {
 				t.Fatalf("onboarding = %#v", got)
 			}
 
@@ -76,6 +76,9 @@ func TestOnboardingPersistsEnabledAndLocalOnlyChoices(t *testing.T) {
 			}
 			if got := settings.EffectiveClaude().RemoteControl; got != wantRemoteControl {
 				t.Fatalf("Claude Remote Control = %q, want %q", got, wantRemoteControl)
+			}
+			if got := settings.EffectiveDelegation().Access; got != state.DelegatedAccessConsentAutonomous {
+				t.Fatalf("delegated access = %q, want autonomous", got)
 			}
 		})
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 )
@@ -23,6 +24,12 @@ type Paths struct {
 	Structured   string
 	ClaudeP      string
 	Continuation string
+	// Transcript is Sessions' own append-only copy of the provider
+	// conversation, and TranscriptMeta records where it came from. The
+	// provider owns the original and prunes it on its own schedule; these are
+	// what remain when it does.
+	Transcript     string
+	TranscriptMeta string
 }
 
 func For(dir, id string) Paths {
@@ -38,7 +45,42 @@ func For(dir, id string) Paths {
 		Structured:   base + ".codexapp.jsonl",
 		ClaudeP:      base + ".claudep.jsonl",
 		Continuation: base + ".continuation.json",
+
+		Transcript:     base + ".transcript.jsonl",
+		TranscriptMeta: base + ".transcript.meta.json",
 	}
+}
+
+// runnerSidecarJSONSuffixes are the non-metadata ".json" artifacts For() writes
+// beside "<id>.json". Discovery on a host with no socket artifact keys off the
+// metadata name, so every suffix added to Paths must be listed here or each
+// session that has one produces a phantom runner id.
+var runnerSidecarJSONSuffixes = []string{
+	".manifest.json",
+	".continuation.json",
+	".transcript.meta.json",
+}
+
+// RunnerIDFromMetadataName returns the runner id for a "<id>.json" metadata
+// file and reports false for anything else in the runner state directory,
+// including the sidecars listed above. A phantom id survives as a permanent
+// join error out of Registry.Discover and buries the real lost-session signal,
+// so this refuses rather than guesses.
+func RunnerIDFromMetadataName(name string) (string, bool) {
+	if !strings.HasSuffix(name, ".json") {
+		return "", false
+	}
+	for _, suffix := range runnerSidecarJSONSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return "", false
+		}
+	}
+	id := strings.TrimSuffix(name, ".json")
+	// A leading dot is an in-progress WriteMetadata temp file, never an id.
+	if id == "" || strings.HasPrefix(id, ".") {
+		return "", false
+	}
+	return id, true
 }
 
 // DefaultRunnerDir implements ~/.local/state/sessions/runners without
@@ -84,6 +126,9 @@ type Metadata struct {
 	ImportedMessageCount   int               `json:"importedMessageCount,omitempty"`
 	DisplayParentSessionID *string           `json:"display_parent_session_id,omitempty"`
 	SetAsideAt             *int64            `json:"set_aside_at,omitempty"`
+	DelegationKind         string            `json:"delegation_kind,omitempty"`
+	Permissions            string            `json:"permissions,omitempty"`
+	Lifecycle              string            `json:"lifecycle,omitempty"`
 }
 
 // CompletionManifest is the durable terminal fact emitted by a headless lane.

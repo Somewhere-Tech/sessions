@@ -23,9 +23,9 @@ agent CLI you want to run separately.
 
 ## Install
 
-Sessions.app is the primary macOS package. The signed, notarized Apple Silicon
-v0.1.0 release is available from
-[GitHub Releases](https://github.com/somewhere-tech/sessions/releases/tag/v0.1.0) or
+Sessions.app is the primary macOS package. The current signed, notarized Apple
+Silicon build is available from
+[GitHub Releases](https://github.com/somewhere-tech/sessions/releases/latest) or
 Homebrew:
 
 ```sh
@@ -72,12 +72,26 @@ downloads, PATH setup, Linux startup, upgrades, and uninstalling.
 ```sh
 id=$(sessions new --tool claude --cwd "$HOME/project" --name docs)
 sessions send "$id" "Review the documentation and fix stale examples"
-sessions wait "$id" --timeout 10m
+sessions wait "$id" --timeout 10m --summary
 sessions last "$id" --role assistant
 ```
 
-Open Sessions.app for terminal and structured conversation views. Session IDs
-may be replaced with a unique prefix shown by `sessions ls`.
+Open Sessions.app for terminal and structured conversation views; its History
+surface browses the same conversations `sessions history` does, and typing
+narrows them. Session IDs may be replaced with a unique prefix shown by
+`sessions ls`.
+
+Agents created from a managed parent inherit that parent's exact provider
+permission mode by default. They cannot silently promote themselves to full
+access. An agent-created task worker also closes its runtime after a successful
+final response while its transcript, lineage, and workspace remain available.
+If a provider is waiting for approval, `sessions wait` returns `reason:
+needs-input` with the actual prompt instead of pretending that the worker is
+still making progress; `--summary` adds prose but never changes the shape.
+Waiting on a session always answers with one JSON object and an exit code that
+agrees with it: 0 satisfied, 1 usage, 2 daemon unreachable, 3 timed out, 4 the
+target is gone or failed. Users can explicitly opt into autonomous delegated
+work during onboarding or later in Settings.
 
 ## The CLI in 60 seconds
 
@@ -89,24 +103,38 @@ command registry.
 | Command | Purpose |
 | --- | --- |
 | `sessions new --tool claude\|codex\|shell [--cwd DIR]` | Start an interactive session |
-| `sessions ls` | List live sessions |
+| `sessions ls` | List the live sessions Sessions itself created |
+| `sessions history [QUERY]` | Browse and preview every recorded Claude and Codex conversation, whoever started it |
 | `sessions send <id> <message...>` | Submit text and confirm receipt |
 | `sessions ask <id> <message...>` | Send, wait, and print the reply |
-| `sessions wait <id> [--timeout 10m]` | Wait for a session to become idle |
+| `sessions wait <id> [--timeout 10m] [--summary]` | Wait for completion or return an actionable approval prompt |
 | `sessions run [options] -- <command...>` | Start a tracked headless lane |
 | `sessions lanes` | List running and completed lanes |
 | `sessions status <id>` | Show compact session, git, activity, and verdict state |
 | `sessions recover [--reopen]` | Inspect or reopen unexpectedly lost lanes |
-| `sessions continue <history-id> [--with claude\|codex]` | Continue the original chat or start a cross-provider continuation |
+| `sessions grep -C 3 "Google Ads"` | Search Claude and Codex history across every approved machine |
+| `sessions cat <machine::history-id>` | Read the complete durable conversation returned by search |
+| `sessions resume <[machine::]name-or-id> [--with claude\|codex]` | Reopen the exact conversation, or start a cross-provider continuation |
 | `sessions fork <live-id> [--with claude\|codex]` | Branch a live chat without stopping the original |
 | `sessions remote enable\|status\|disable` | Manage early-access Tailscale HTTPS access |
 | `sessions model <id> <model> [--effort LEVEL]` | Switch an idle supported Claude session model |
 | `sessions support [--diagnostics]` | Open feedback/support channels and preview a redacted local diagnostic summary |
 | `sessions kill <id> [<id>...]` | Explicitly terminate selected sessions |
 
+`continue` and `resurrect` are accepted spellings of `resume`. `ls` lists only
+what Sessions itself started, so a conversation you opened by running plain
+`claude` or `codex` is recorded but never appears there — `sessions history`
+is the view that reaches it, with no search term required and the command that
+reopens each row printed beside it.
+
+Fleet search is the default when no connection flag is supplied. Use global
+`--machine NAME` before a command to target only one approved machine. Search
+and history report unreachable machines as partial coverage and never copy
+transcripts just to make them greppable.
+
 Also useful: `sessions snap`, `last`, `transcript`, `tail`, `keys`, `attach`,
 `verdict`, `doctor`, `docs`, and `help`. Global flags are `--json`, `--host`, and
-`--port` (or `SESSIONS_HOST` / `SESSIONS_PORT`).
+`--port`, and `--machine` (or `SESSIONS_HOST` / `SESSIONS_PORT`).
 
 ## Feedback and support
 

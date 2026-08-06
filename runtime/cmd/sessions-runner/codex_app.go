@@ -20,6 +20,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -200,17 +201,17 @@ func (r *codexAppRunner) prepareContinuation() error {
 
 func codexConversationOptions(cfg config) codexapp.ConversationOptions {
 	options := codexapp.ConversationOptions{
-		CWD: cfg.cwd, Model: codexArgValue(cfg.args, "--model", "-m"),
-		Effort:      codexConfigValue(cfg.args, "model_reasoning_effort"),
-		ServiceTier: codexConfigValue(cfg.args, "service_tier"),
+		CWD: cfg.cwd, Model: providerargs.Value(cfg.args, providerargs.ModelFlags()...),
+		Effort:      providerargs.ConfigValue(cfg.args, providerargs.CodexEffortKey),
+		ServiceTier: providerargs.ConfigValue(cfg.args, providerargs.CodexServiceTierKey),
 	}
 	if codexHasArg(cfg.args, "--dangerously-bypass-approvals-and-sandbox") {
 		options.ApprovalPolicy = codexapp.ApprovalNever
 		options.Sandbox = codexapp.SandboxDangerFullAccess
 		return options
 	}
-	options.ApprovalPolicy = codexArgValue(cfg.args, "--ask-for-approval", "-a")
-	options.Sandbox = codexArgValue(cfg.args, "--sandbox", "-s")
+	options.ApprovalPolicy = providerargs.Value(cfg.args, "--ask-for-approval", "-a")
+	options.Sandbox = providerargs.Value(cfg.args, "--sandbox", "-s")
 	return options
 }
 
@@ -223,29 +224,6 @@ func codexHasArg(args []string, name string) bool {
 	return false
 }
 
-func codexArgValue(args []string, names ...string) string {
-	for index := 0; index+1 < len(args); index++ {
-		for _, name := range names {
-			if args[index] == name {
-				return args[index+1]
-			}
-		}
-	}
-	return ""
-}
-
-func codexConfigValue(args []string, key string) string {
-	for index := 0; index+1 < len(args); index++ {
-		if args[index] != "-c" && args[index] != "--config" {
-			continue
-		}
-		if value, ok := strings.CutPrefix(args[index+1], key+"="); ok {
-			return strings.Trim(value, `"'`)
-		}
-	}
-	return ""
-}
-
 func (r *codexAppRunner) writeMetadata() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -253,7 +231,7 @@ func (r *codexAppRunner) writeMetadata() error {
 }
 
 func (r *codexAppRunner) writeMetadataLocked() error {
-	return state.WriteMetadata(r.paths.Meta, state.Metadata{
+	return state.WriteRunnerMetadata(r.paths.Meta, state.Metadata{
 		ID: r.cfg.id, Name: r.cfg.name, Description: r.cfg.description,
 		DescriptionSource: r.cfg.descriptionSource, Kind: r.cfg.kind, SpecPath: r.cfg.specPath,
 		Profile: r.cfg.profile, ConfigDir: r.cfg.configDir,
@@ -415,13 +393,13 @@ func (r *codexAppRunner) configureModel(control proto.ModelControl) error {
 		return errors.New("Codex turn is active")
 	}
 	previous := append([]string(nil), r.cfg.args...)
-	previousModel := codexArgValue(previous, "--model", "-m")
-	previousEffort := codexConfigValue(previous, "model_reasoning_effort")
+	previousModel := providerargs.Value(previous, providerargs.ModelFlags()...)
+	previousEffort := providerargs.ConfigValue(previous, providerargs.CodexEffortKey)
 	if err := r.client.SetConversationModel(r.conversationID, control.Model, control.Effort); err != nil {
 		return err
 	}
-	r.cfg.args = withArgumentValue(r.cfg.args, control.Model, "--model", "-m")
-	r.cfg.args = withConfigValue(r.cfg.args, "model_reasoning_effort", control.Effort)
+	r.cfg.args = providerargs.WithValue(r.cfg.args, control.Model, providerargs.ModelFlags()...)
+	r.cfg.args = providerargs.WithConfigValue(r.cfg.args, providerargs.CodexEffortKey, control.Effort)
 	if err := r.writeMetadataLocked(); err != nil {
 		r.cfg.args = previous
 		_ = r.client.SetConversationModel(r.conversationID, previousModel, previousEffort)
@@ -441,6 +419,7 @@ func (r *codexAppRunner) handleInput(data string) {
 		return
 	}
 	r.mu.Lock()
+	var rejected []json.RawMessage
 	parts := strings.Split(data, "\r")
 	for index, part := range parts {
 		r.composer.WriteString(part)
@@ -449,13 +428,29 @@ func (r *codexAppRunner) handleInput(data string) {
 		}
 		text := cleanComposerInput(r.composer.String())
 		r.composer.Reset()
-		if text == "" || r.active {
+		if text == "" {
+			continue
+		}
+		if r.active {
+			// The composer has already been emptied, so silently dropping the
+			// text would destroy the message with no trace anywhere.
+			event, err := codexapp.InputRejectedEvent(
+				r.conversationID,
+				"Codex is still working. This message was not sent or queued; send it again after the turn finishes.",
+				time.Now(),
+			)
+			if err == nil {
+				rejected = append(rejected, event)
+			}
 			continue
 		}
 		r.active = true
 		go r.runTurn(text)
 	}
 	r.mu.Unlock()
+	for _, event := range rejected {
+		r.appendStructured(event)
+	}
 }
 
 func isCodexInterruptInput(data string) bool {
@@ -538,6 +533,18 @@ func (r *codexAppRunner) snapshot() string {
 	r.mu.Lock()
 	history := cloneStructured(r.history)
 	r.mu.Unlock()
+	return structuredTranscript(history)
+}
+
+// structuredTranscript renders a structured history as the plain text a
+// SnapshotReq answers with. Both structured runners had a byte-identical copy
+// of this rendering inside their own snapshot method; the copies were the same
+// today and there was nothing keeping them the same tomorrow, so a fix to one
+// provider's snapshot would silently not reach the other.
+//
+// The lock and the clone stay with each runner because each owns its own mutex.
+// What is shared here is the part that has no state at all.
+func structuredTranscript(history []json.RawMessage) string {
 	var output strings.Builder
 	for _, raw := range history {
 		var event map[string]any

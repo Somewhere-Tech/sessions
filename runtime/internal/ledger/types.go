@@ -112,6 +112,7 @@ type Created struct {
 	ProviderUUID      string
 	CreatorKind       CreatorKind
 	CreatorID         string
+	DelegationKind    string
 }
 
 type UserKill struct {

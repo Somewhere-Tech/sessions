@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"mime"
 	"net"
 	"net/http"
@@ -446,9 +447,27 @@ func (s *Server) handleNearbyAccessPublicRoute(response http.ResponseWriter, req
 	return true
 }
 
+// Access-request administration answers on two paths for the same resource.
+//
+//   - accessRequestsPath is canonical. It covers tailnet AND nearby/LAN
+//     requests, which is why it is not named after tailnet, and it is what the
+//     sessions CLI (`sessions machines`) calls and what the frontend tries
+//     first.
+//   - legacyTailnetAccessRequestsPath is the original name, still documented in
+//     CONTRACT/http-api.md and still used by the frontend as its fallback for
+//     daemons that predate the canonical path. It is DEPRECATED: it stays until
+//     a release whose clients all speak the canonical path, and responses on it
+//     say so with RFC 8594 Deprecation/Link headers so the situation is visible
+//     to a client instead of buried in this file.
+const (
+	accessRequestsPath               = "/api/access/requests"
+	legacyTailnetAccessRequestsPath  = "/api/tailnet/access/requests"
+	accessRequestsDeprecationLinkFmt = `<%s>; rel="successor-version"`
+)
+
 func (s *Server) handleTailnetAccessAdminRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
 	collection := ""
-	for _, candidate := range []string{"/api/access/requests", "/api/tailnet/access/requests"} {
+	for _, candidate := range []string{accessRequestsPath, legacyTailnetAccessRequestsPath} {
 		if request.URL.Path == candidate || strings.HasPrefix(request.URL.Path, candidate+"/") {
 			collection = candidate
 			break
@@ -456,6 +475,11 @@ func (s *Server) handleTailnetAccessAdminRoute(response http.ResponseWriter, req
 	}
 	if collection == "" {
 		return false
+	}
+	if collection == legacyTailnetAccessRequestsPath {
+		response.Header().Set("Deprecation", "true")
+		response.Header().Set("Link", fmt.Sprintf(accessRequestsDeprecationLinkFmt,
+			accessRequestsPath+strings.TrimPrefix(request.URL.Path, collection)))
 	}
 	if !s.requireLocalPrincipal(response, request, corsOrigin, "Access request administration") {
 		return true

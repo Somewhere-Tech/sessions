@@ -12,6 +12,7 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/mirror"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
 type Session struct {
@@ -84,6 +85,9 @@ func newSession(ctx context.Context, info proto.RunnerInfo, runner proto.Runner,
 			ImportedMessageCount:   metadata.ImportedMessageCount,
 			DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 			SetAsideAt:             cloneInt64Pointer(metadata.SetAsideAt),
+			DelegationKind:         metadata.DelegationKind,
+			Permissions:            metadata.Permissions,
+			Lifecycle:              metadata.Lifecycle,
 		},
 		nextSeq: 1,
 		subs:    make(map[uint64]chan proto.Event),
@@ -167,7 +171,16 @@ func (s *Session) applyEvent(event proto.Event) bool {
 			// A slow client must not stall every other session. WebSocket
 			// reconnect/replay repairs dropped output using sequence numbers.
 			if terminal {
-				<-subscriber
+				// The drain must never block: this runs under the session
+				// write lock and the pump goroutine is the channel's only
+				// sender, so a consumer that empties the buffer between the
+				// failed send and the drain would otherwise wedge Info,
+				// Attach, Input, Snapshot, and Registry.List forever. Matches
+				// proto.SocketRunner.broadcastLocked.
+				select {
+				case <-subscriber:
+				default:
+				}
 				subscriber <- event
 			}
 		}
@@ -324,6 +337,17 @@ func (s *Session) Attach(options AttachOptions) Attachment {
 }
 
 func (s *Session) Snapshot(_ context.Context, cols int) (string, uint32, error) {
+	return s.snapshot(cols, false)
+}
+
+// TerminalSnapshot primes an interactive terminal with the bounded history
+// retained by the server-side mirror. Other snapshot consumers deliberately
+// remain viewport-only so status parsing and responsive reflow are unchanged.
+func (s *Session) TerminalSnapshot(_ context.Context) (string, uint32, error) {
+	return s.snapshot(0, true)
+}
+
+func (s *Session) snapshot(cols int, includeScrollback bool) (string, uint32, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	seq := uint32(0)
@@ -347,6 +371,9 @@ func (s *Session) Snapshot(_ context.Context, cols int) (string, uint32, error) 
 	}
 	if cols > 0 {
 		return s.mirror.ReflowTo(cols), seq, nil
+	}
+	if includeScrollback {
+		return s.mirror.SerializeANSIWithScrollback(), seq, nil
 	}
 	return s.mirror.SerializeANSI(), seq, nil
 }
@@ -383,53 +410,11 @@ func (s *Session) ConfigureModel(ctx context.Context, model, effort string) erro
 }
 
 func withModelControls(tool SessionTool, args []string, model, effort string) []string {
-	result := withArgumentValue(args, model, "--model", "-m")
+	result := providerargs.WithValue(args, model, providerargs.ModelFlags()...)
 	if tool == ToolCodex {
-		return withConfigValue(result, "model_reasoning_effort", effort)
+		return providerargs.WithConfigValue(result, providerargs.CodexEffortKey, effort)
 	}
-	return withArgumentValue(result, effort, "--effort")
-}
-
-func withArgumentValue(args []string, value string, names ...string) []string {
-	result := make([]string, 0, len(args)+2)
-	for index := 0; index < len(args); index++ {
-		matched := false
-		for _, name := range names {
-			if args[index] == name {
-				matched = true
-				if index+1 < len(args) {
-					index++
-				}
-				break
-			}
-		}
-		if !matched {
-			result = append(result, args[index])
-		}
-	}
-	value = strings.TrimSpace(value)
-	if value != "" {
-		result = append(result, names[0], value)
-	}
-	return result
-}
-
-func withConfigValue(args []string, key, value string) []string {
-	result := make([]string, 0, len(args)+2)
-	for index := 0; index < len(args); index++ {
-		if (args[index] == "-c" || args[index] == "--config") && index+1 < len(args) {
-			if _, ok := strings.CutPrefix(args[index+1], key+"="); ok {
-				index++
-				continue
-			}
-		}
-		result = append(result, args[index])
-	}
-	value = strings.TrimSpace(value)
-	if value != "" {
-		result = append(result, "-c", key+"="+value)
-	}
-	return result
+	return providerargs.WithValue(result, effort, providerargs.ClaudeEffortFlags()...)
 }
 
 func (s *Session) Resize(ctx context.Context, cols, rows int) bool {
@@ -501,6 +486,20 @@ func (s *Session) SetIdleResult(reason, detail, summary string, at int64) {
 	if summary != "" {
 		s.info.LastSummary = summary
 	}
+}
+
+// ClearIdleResult records that new input invalidated the previous idle outcome.
+// LastSummary remains available as the last completed result, but a scheduled
+// task cleanup must no longer treat the session as completed.
+func (s *Session) ClearIdleResult() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.info.Exited {
+		return
+	}
+	s.info.IdleReason = ""
+	s.info.IdleDetail = ""
+	s.info.IdleSince = nil
 }
 
 // RecordClaudeEvent adds one watcher-derived structured event to the same log

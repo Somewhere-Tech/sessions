@@ -211,15 +211,17 @@ func TestLaneWaitAnyUsesSharedCompositionAndWinningExitCode(t *testing.T) {
 	if code != 6 || stderr.Len() != 0 {
 		t.Fatalf("wait --any exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	var output struct {
-		ID       string `json:"id"`
-		ExitCode int    `json:"exit_code"`
-		Summary  string `json:"summary"`
+	outcome := decodeWaitOutcome(t, stdout.String())
+	// The lane answers in the same envelope a session answers in, so a caller
+	// fanning out over both writes one parser; what only a lane can report
+	// stays nested rather than colliding at the top level.
+	if outcome.Kind != waitKindLane || outcome.Session != second || outcome.Summary != "second" {
+		t.Fatalf("wait --any outcome = %+v", outcome)
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
-		t.Fatal(err)
+	if outcome.OK || outcome.Reason != waitReasonFailed {
+		t.Fatalf("a lane that exited 6 reported ok=%v reason=%q", outcome.OK, outcome.Reason)
 	}
-	if output.ID != second || output.ExitCode != 6 || output.Summary != "second" {
-		t.Fatalf("wait --any output = %#v", output)
+	if outcome.Lane == nil || outcome.Lane.ExitCode != 6 || outcome.Lane.LastOutputTail != "second\n" {
+		t.Fatalf("lane payload = %+v", outcome.Lane)
 	}
 }

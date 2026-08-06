@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { rm } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
+import { smoke, stableDistSnapshot, closeBrowser, closeServer } from './lib/smoke.mjs';
 
+const t = smoke('same-origin-bootstrap');
 const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const distDir = path.join(frontendDir, 'dist');
-if (!fs.existsSync(path.join(distDir, 'index.html'))) {
-  throw new Error('frontend/dist is missing; run npx vite build first');
-}
+// The suites below serve the real build. They serve a private snapshot of it
+// rather than frontend/dist itself: `vite build` empties dist before rewriting
+// it, so any concurrent build on the machine used to yank the app out from
+// under a running suite — dist missing at start-up, or every asset 404ing
+// mid-run, which reads exactly like a slow machine. See stableDistSnapshot.
+const distDir = await stableDistSnapshot('same-origin-bootstrap');
 
 const contentTypes = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -98,10 +103,28 @@ async function openCase(health, pairClaim = null) {
       healthRequests += 1;
       if (health === 'reject') {
         void request.abort('failed');
+      } else if (health === 'unauthorized') {
+        void request.respond({ status: 401, contentType: 'application/json', body: '' });
       } else {
-        const status = health === 'unauthorized' ? 401 : 200;
-        const body = status === 200 ? JSON.stringify({ name: 'sessionsd' }) : '';
-        void request.respond({ status, contentType: 'application/json', body });
+        // Contract-shaped health (runtime/CONTRACT/http-api.md § GET /api/health).
+        // The origin probe now runs the same validateServerHealth as every
+        // other entry point, so `ok` and the API range are both meaningful.
+        void request.respond({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ok: true,
+            name: 'sessionsd',
+            version: '0.2.16',
+            listen: { host: '127.0.0.1', port: address.port },
+            lan: { enabled: false, url: null },
+            discovering: false,
+            sessionsLoaded: 0,
+            compatibility: health === 'incompatible'
+              ? { api: { current: 9, minimumClient: 8, maximumClient: 9 }, runner: { current: 2, minimum: 0, maximum: 2 } }
+              : { api: { current: 1, minimumClient: 1, maximumClient: 1 }, runner: { current: 2, minimum: 0, maximum: 2 } }
+          })
+        });
       }
       return;
     }
@@ -129,13 +152,14 @@ async function openCase(health, pairClaim = null) {
 }
 
 try {
+  t.scenario('a healthy same-origin daemon is adopted without showing the picker');
   const healthy = await openCase('healthy');
   await healthy.page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 15_000 });
-  await healthy.page.waitForSelector('.app-shell', { timeout: 10_000 });
-  await healthy.page.waitForFunction(() => {
+  await t.waitForSelector(healthy.page, '.app-shell', 'the app shell to mount over the adopted same-origin daemon', { timeout: 10_000 });
+  await t.waitForFunction(healthy.page, () => {
     const servers = JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]');
     return servers.length === 1 && window.localStorage.getItem('sessions:active-server') === servers[0].id;
-  });
+  }, 'the origin probe to store exactly one server and select it');
   const healthyState = await healthy.page.evaluate(() => ({
     pickerVisible: document.querySelector('[data-testid="connect-screen"]') !== null,
     servers: JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]'),
@@ -152,9 +176,10 @@ try {
   });
   assert.equal(healthyState.activeId, 'local');
 
-  await healthy.page.waitForFunction(() => document.querySelector('.empty-state') !== null);
+  await t.waitForFunction(healthy.page, () => document.querySelector('.empty-state') !== null, 'the empty session list to render, proving /api/sessions was answered');
+  t.scenario('a daemon that starts refusing the stored token prompts for a new one');
   healthy.requireSessionsToken();
-  await healthy.page.waitForSelector('.daemon-banner-token-input', { timeout: 6_000 });
+  await t.waitForSelector(healthy.page, '.daemon-banner-token-input', 'the token prompt to appear once /api/sessions starts answering 401', { timeout: 6_000 });
   const runtimePrompt = await healthy.page.$eval(
     '.daemon-banner-host',
     (node) => node.textContent?.trim() ?? ''
@@ -163,9 +188,10 @@ try {
   assert.deepEqual(healthy.pageErrors, []);
   await healthy.page.close();
 
+  t.scenario('a 401 from the origin probe asks for a token rather than the picker');
   const unauthorized = await openCase('unauthorized');
   await unauthorized.page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 15_000 });
-  await unauthorized.page.waitForSelector('.daemon-banner-token-input', { timeout: 10_000 });
+  await t.waitForSelector(unauthorized.page, '.daemon-banner-token-input', 'the token prompt to appear for a same-origin daemon that answered 401', { timeout: 10_000 });
   const unauthorizedState = await unauthorized.page.evaluate(() => ({
     endpoint: document.querySelector('.daemon-banner-host')?.textContent?.trim() ?? '',
     tokenFocused: document.activeElement?.classList.contains('daemon-banner-token-input') ?? false,
@@ -177,9 +203,10 @@ try {
   assert.deepEqual(unauthorized.pageErrors, []);
   await unauthorized.page.close();
 
+  t.scenario('an origin with no daemon falls back to the connect picker');
   const rejected = await openCase('reject');
   await rejected.page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 15_000 });
-  await rejected.page.waitForSelector('[data-testid="connect-screen"]', { timeout: 10_000 });
+  await t.waitForSelector(rejected.page, '[data-testid="connect-screen"]', 'the connect picker to appear when the origin probe is refused outright', { timeout: 10_000 });
   const rejectedState = await rejected.page.evaluate(() => ({
     servers: JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]'),
     activeId: window.localStorage.getItem('sessions:active-server')
@@ -188,10 +215,31 @@ try {
   assert.deepEqual(rejected.pageErrors, []);
   await rejected.page.close();
 
+  // An out-of-range daemon must not be adopted silently. The probe used to
+  // accept any body with an `ok` or `name` field, so a machine this client
+  // cannot speak to became the active server and the user met whatever broke
+  // next instead of the instructional compatibility message.
+  t.scenario('an out-of-range daemon is refused with the compatibility message, not adopted');
+  const incompatible = await openCase('incompatible');
+  await incompatible.page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+  await t.waitForSelector(incompatible.page, '[data-testid="connect-screen"]', 'the connect picker to appear instead of adopting an API-incompatible daemon', { timeout: 10_000 });
+  await t.waitForSelector(incompatible.page, '.connect-error', 'the instructional compatibility error to be rendered on the picker', { timeout: 6_000 });
+  const incompatibleState = await incompatible.page.evaluate(() => ({
+    error: document.querySelector('.connect-error')?.textContent?.trim() ?? '',
+    servers: JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]'),
+    activeId: window.localStorage.getItem('sessions:active-server')
+  }));
+  assert.match(incompatibleState.error, /Sessions API 1, but the machine accepts 8–9/);
+  assert.deepEqual(incompatibleState.servers, []);
+  assert.equal(incompatibleState.activeId, null);
+  assert.deepEqual(incompatible.pageErrors, []);
+  await incompatible.page.close();
+
   const fragment = await openCase('healthy');
   const fragmentUrl = `${origin}/#endpoint=${encodeURIComponent(origin)}&token=fragment-smoke-token`;
+  t.scenario('an #endpoint=…&token=… fragment bootstraps without probing, and is scrubbed');
   await fragment.page.goto(fragmentUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
-  await fragment.page.waitForSelector('.app-shell', { timeout: 10_000 });
+  await t.waitForSelector(fragment.page, '.app-shell', 'the app shell to mount from the URL fragment alone', { timeout: 10_000 });
   const fragmentState = await fragment.page.evaluate(() => ({
     hash: window.location.hash,
     servers: JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]'),
@@ -206,15 +254,16 @@ try {
   assert.deepEqual(fragment.pageErrors, []);
   await fragment.page.close();
 
+  t.scenario('a #pair=… ticket is claimed once, stored, and scrubbed from the URL');
   const paired = await openCase('healthy', 'success');
   await paired.page.goto(`${origin}/#pair=one-time-smoke-ticket`, {
     waitUntil: 'domcontentloaded', timeout: 15_000
   });
-  await paired.page.waitForSelector('.app-shell', { timeout: 10_000 });
-  await paired.page.waitForFunction(() => {
+  await t.waitForSelector(paired.page, '.app-shell', 'the app shell to mount after the pairing ticket was claimed', { timeout: 10_000 });
+  await t.waitForFunction(paired.page, () => {
     const servers = JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]');
     return servers.length === 1 && servers[0].token === 'paired-device-token';
-  });
+  }, 'the claimed pairing token to be stored as the one server\'s credential');
   const pairedState = await paired.page.evaluate(() => ({
     hash: window.location.hash,
     servers: JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]'),
@@ -227,19 +276,20 @@ try {
   assert.equal(pairedState.servers[0].token, 'paired-device-token');
   assert.equal(pairedState.servers[0].isDefault, true);
   assert.equal(pairedState.activeId, pairedState.servers[0].id);
-  await paired.page.waitForFunction(() => document.querySelector('.empty-state') !== null);
+  await t.waitForFunction(paired.page, () => document.querySelector('.empty-state') !== null, 'the empty session list to render using the paired token');
   assert.ok(paired.sessionsAuthorizations.includes('Bearer paired-device-token'));
   paired.requireSessionsToken();
-  await paired.page.waitForSelector('.daemon-banner-token-input', { timeout: 6_000 });
+  await t.waitForSelector(paired.page, '.daemon-banner-token-input', 'the token prompt to reappear once the paired token is revoked', { timeout: 6_000 });
   assert.deepEqual(paired.pageErrors, []);
   await paired.page.close();
 
+  t.scenario('an already-used pairing ticket says so and leaves the picker usable');
   const expiredPair = await openCase('healthy', 'expired');
   await expiredPair.page.goto(`${origin}/#pair=expired-smoke-ticket`, {
     waitUntil: 'domcontentloaded', timeout: 15_000
   });
-  await expiredPair.page.waitForSelector('[data-testid="connect-screen"]', { timeout: 10_000 });
-  await expiredPair.page.waitForSelector('.connect-error', { timeout: 10_000 });
+  await t.waitForSelector(expiredPair.page, '[data-testid="connect-screen"]', 'the connect picker to appear after a refused pairing claim', { timeout: 10_000 });
+  await t.waitForSelector(expiredPair.page, '.connect-error', 'the expired-ticket explanation to be rendered on the picker', { timeout: 10_000 });
   const expiredPairState = await expiredPair.page.evaluate(() => ({
     hash: window.location.hash,
     error: document.querySelector('.connect-error')?.textContent?.trim() ?? '',
@@ -295,6 +345,14 @@ try {
     }
   }, null, 2));
 } finally {
-  await browser.close();
-  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  t.release();
+  // Teardown used to be two unbounded awaits. `server.close()` does not return
+  // until every connection is gone, so one keep-alive socket the browser had
+  // not yet released turned a finished suite into a hang — an outcome with no
+  // failing assertion and no message, which is the worst thing this gate can
+  // produce. Bound both, and take the browser out by force if it will not go.
+  await closeBrowser(browser);
+  await closeServer(server);
+  // The dist snapshot is this suite's private copy; nothing else will remove it.
+  await rm(distDir, { recursive: true, force: true });
 }

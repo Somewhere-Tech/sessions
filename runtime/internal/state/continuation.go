@@ -12,7 +12,12 @@ const (
 	ContinuationSchemaVersion = 1
 	ContinuationNativeImport  = "native-import"
 	ContinuationLinkedSearch  = "linked-search"
-	maxContinuationBytes      = 8 * 1024 * 1024
+	// Authored histories are written to a private local sidecar, never placed
+	// on a command line or forwarded through the daemon HTTP request. Eight
+	// MiB rejected ordinary long-running manager conversations before their
+	// provider could apply its own context policy. Keep a firm allocation/DoS
+	// bound, but leave enough room for real multi-week conversations.
+	maxContinuationBytes = 32 * 1024 * 1024
 )
 
 // ContinuationMessage is the deliberately small provider-neutral history
@@ -41,6 +46,7 @@ type ContinuationContext struct {
 	DestinationProvider string                `json:"destinationProvider"`
 	Mode                string                `json:"mode"`
 	Fork                bool                  `json:"fork,omitempty"`
+	TranscriptRecovery  bool                  `json:"transcriptRecovery,omitempty"`
 	ForkPointIndex      *int                  `json:"forkPointIndex,omitempty"`
 	ForkPointMessageID  string                `json:"forkPointMessageId,omitempty"`
 	Messages            []ContinuationMessage `json:"messages"`
@@ -61,7 +67,17 @@ func (c ContinuationContext) Validate() error {
 	if c.DestinationProvider != "claude" && c.DestinationProvider != "codex" {
 		return fmt.Errorf("unsupported continuation destination provider %q", c.DestinationProvider)
 	}
-	if c.SourceProvider == c.DestinationProvider && !c.Fork {
+	if c.TranscriptRecovery {
+		if c.Fork {
+			return errors.New("transcript recovery cannot also be a fork")
+		}
+		if c.SourceProvider != c.DestinationProvider {
+			return errors.New("transcript recovery must keep the original provider")
+		}
+		if strings.TrimSpace(c.SourceProviderID) != "" {
+			return errors.New("transcript recovery is only for a missing provider identity")
+		}
+	} else if c.SourceProvider == c.DestinationProvider && !c.Fork {
 		return errors.New("cross-provider continuation requires different source and destination providers")
 	}
 	if c.ForkPointIndex != nil {

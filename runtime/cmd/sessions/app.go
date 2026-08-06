@@ -32,6 +32,23 @@ func fail(code int, format string, args ...any) error {
 
 func status(code int) error { return &cliFailure{code: code, quiet: true} }
 
+// Exit codes an agent can branch on. A delegating agent has to tell "the
+// thing I waited for happened" from "I never found out" from "the target is
+// not coming back", and it cannot do that if every failure collapses into 1
+// or 2. These name the outcomes that waiting produces; commands that run a
+// child process still report that child's own status.
+const (
+	exitSatisfied = 0
+	exitUsage     = 1
+	exitTransport = 2
+	// exitWaitTimeout means the condition was never observed within the
+	// timeout. The target may still be working.
+	exitWaitTimeout = 3
+	// exitTargetUnavailable means waiting longer cannot help: the target is
+	// gone from the daemon, or it ended in a failed state.
+	exitTargetUnavailable = 4
+)
+
 func exitCode(err error) int {
 	var failure *cliFailure
 	if errors.As(err, &failure) {
@@ -43,16 +60,71 @@ func exitCode(err error) int {
 	return 2
 }
 
-func writeFailure(stderr io.Writer, err error) {
-	var failure *cliFailure
-	if errors.As(err, &failure) {
-		if failure.quiet || failure.message == "" {
+// countingWriter records whether a command has already produced output. Some
+// commands emit a structured report and then fail (a partially refused batch
+// kill, for one), and a synthesized error document appended after that report
+// would be a second JSON value on the same stream, which no decoder accepts.
+type countingWriter struct {
+	inner   io.Writer
+	written int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.inner.Write(p)
+	c.written += int64(n)
+	return n, err
+}
+
+// reportFailure explains a failed command in the format the caller asked for,
+// deferring to any structured report the command already emitted.
+func (a *app) reportFailure(err error) {
+	if a.wantJSON && a.output != nil && a.output.written > 0 {
+		var failure *cliFailure
+		if errors.As(err, &failure) && (failure.quiet || failure.message == "") {
 			return
 		}
-		fmt.Fprintf(stderr, "sessions: %s\n", failure.message)
+		message := err.Error()
+		if errors.As(err, &failure) && failure.message != "" {
+			message = failure.message
+		}
+		// The report on stdout is the machine answer; this line keeps the
+		// human channel honest about the non-zero exit.
+		fmt.Fprintf(a.stderr, "sessions: %s\n", message)
 		return
 	}
-	fmt.Fprintf(stderr, "sessions: %s\n", err)
+	writeFailure(a.stdout, a.stderr, a.wantJSON, err)
+}
+
+// writeFailure reports a failed command. Under --json it emits a JSON document
+// on stdout rather than prose on stderr, because the alternative is that every
+// `sessions --json ... | jq` in an agent's loop dies on empty input at exactly
+// the moment something went wrong. A caller that asked for JSON gets JSON on
+// every path, and `code` carries the same value as the process exit status so
+// the outcome can be branched on without inspecting $?.
+//
+// A quiet failure has already written its own structured answer and only
+// carries the status, so nothing is printed for it.
+func writeFailure(stdout, stderr io.Writer, wantJSON bool, err error) {
+	message := err.Error()
+	var failure *cliFailure
+	if errors.As(err, &failure) {
+		if failure.quiet {
+			return
+		}
+		if failure.message == "" {
+			return
+		}
+		message = failure.message
+	}
+	if wantJSON {
+		_ = writeJSON(stdout, struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+			Code  int    `json:"code"`
+		}{false, message, exitCode(err)}, false)
+		return
+	}
+	fmt.Fprintf(stderr, "sessions: %s\n", message)
 }
 
 type app struct {
@@ -60,32 +132,36 @@ type app struct {
 	stdout io.Writer
 	stderr io.Writer
 
-	args          []string
-	sub           string
-	host          string
-	port          string
-	wantJSON      bool
-	exitCode      int
-	home          string
-	now           func() time.Time
-	sleep         func(time.Duration)
-	api           *apiClient
-	listModels    func(context.Context) ([]codexapp.Model, error)
-	runUpdate     func(context.Context, bool) (nativeUpdateResult, error)
-	cliIsCurrent  func(string) bool
-	attachSupport func(context.Context, supportAttachmentRequest) (supportAttachmentReceipt, error)
-	commands      []commandSpec
+	output         *countingWriter
+	args           []string
+	sub            string
+	host           string
+	port           string
+	wantJSON       bool
+	exitCode       int
+	home           string
+	now            func() time.Time
+	sleep          func(time.Duration)
+	api            *apiClient
+	explicitTarget bool
+	listModels     func(context.Context) ([]codexapp.Model, error)
+	runUpdate      func(context.Context, bool) (nativeUpdateResult, error)
+	cliIsCurrent   func(string) bool
+	attachSupport  func(context.Context, supportAttachmentRequest) (supportAttachmentReceipt, error)
+	commands       []commandSpec
 }
 
 func newApp(arguments []string, stdin io.Reader, stdout, stderr io.Writer) (*app, error) {
 	args, host, port, wantJSON := parseGlobalArgs(arguments)
+	explicitTarget := hasExplicitConnectionTarget(arguments)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve home directory: %w", err)
 	}
+	output := &countingWriter{inner: stdout}
 	app := &app{
-		stdin: stdin, stdout: stdout, stderr: stderr,
-		args: args, host: host, port: port, wantJSON: wantJSON,
+		stdin: stdin, stdout: output, stderr: stderr, output: output,
+		args: args, host: host, port: port, wantJSON: wantJSON, explicitTarget: explicitTarget,
 		home: home, now: time.Now, sleep: time.Sleep, listModels: listLiveCodexModels,
 		runUpdate:    runNativeAppUpdate,
 		cliIsCurrent: installedCLIMatches,
@@ -122,6 +198,29 @@ func newApp(arguments []string, stdin io.Reader, stdout, stderr io.Writer) (*app
 	}
 	app.api = client
 	return app, nil
+}
+
+func hasExplicitConnectionTarget(arguments []string) bool {
+	if _, set := os.LookupEnv("SESSIONS_HOST"); set {
+		return true
+	}
+	if _, set := os.LookupEnv("SESSIONS_PORT"); set {
+		return true
+	}
+	for _, argument := range arguments {
+		if argument == "--" {
+			return false
+		}
+		switch argument {
+		case "--host", "--port", "--machine":
+			return true
+		case "--json":
+			continue
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func (a *app) close() {

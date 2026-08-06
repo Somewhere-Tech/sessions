@@ -15,7 +15,9 @@ including quirks; it is not a redesign.
   - `Vary: Origin`
   - `Access-Control-Allow-Methods: GET,POST,PUT,DELETE,OPTIONS` in the Go runtime
     (`GET,POST,DELETE,OPTIONS` in the retained Node compatibility fixture)
-  - `Access-Control-Allow-Headers: content-type, authorization`
+  - `Access-Control-Allow-Headers: content-type, authorization,
+    x-sessions-creator-session, x-sessions-owner-id, x-sessions-client,
+    x-sessions-filename, x-sessions-user-consent`
   - `Access-Control-Allow-Origin: <request Origin>` only when the Origin is
     allowed as described below.
 - Every `OPTIONS` request, regardless of path, returns 204 before auth or route
@@ -31,8 +33,11 @@ including quirks; it is not a redesign.
 
 ## Authentication
 
-`GET /api/health`, `GET /api/health/deep`, every `OPTIONS` request, and static
-GETs are exempt. Every other HTTP route requires either:
+`GET /api/health`, every `OPTIONS` request, and static GETs are exempt.
+`GET /api/health/deep` was previously exempt but now requires authentication:
+it enumerates live session identifiers and host process IDs, which must not be
+readable by an unauthenticated LAN or tailnet peer. Every other HTTP route
+requires either:
 
 - `Authorization: Bearer <token>`, or
 - `?token=<token>`.
@@ -119,6 +124,9 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `effort` | string, optional | effort parsed from effective arguments |
 | `fast` | boolean, optional | present as `true` for Codex priority service tier; otherwise omitted |
 | `setAsideAt` | number, optional | Unix epoch milliseconds when the live session was removed from the native app's default working set; this is organization, not lifecycle |
+| `delegation_kind` | `"user" \| "agent"`, optional | presentation provenance for a child session: explicitly started by the user or created by its parent agent |
+| `permissions` | `"constrained" \| "full"`, optional | daemon-resolved access class for this runtime; provider-specific approval and sandbox arguments remain visible in `args` |
+| `lifecycle` | `"task" \| "session"`, optional | `task` workers retire after a successful final response; `session` conversations remain live until explicitly ended |
 
 Exited sessions remain in the daemon map for 30 seconds. They are omitted from
 the default list but can be requested with `include_exited=1` during that grace
@@ -143,6 +151,12 @@ No auth. Returns 200:
   "name": "sessionsd",
   "version": "0.2.3",
   "listen": { "host": "127.0.0.1", "port": 8787 },
+  "lan": {
+    "enabled": true,
+    "url": "http://192.168.1.24:8787",
+    "bonjour": { "advertised": true, "service": "_sessions._tcp" }
+  },
+  "access": { "open": false },
   "system": { "os": "darwin", "arch": "arm64" },
   "compatibility": {
     "api": { "current": 1, "minimumClient": 1, "maximumClient": 1 },
@@ -153,19 +167,38 @@ No auth. Returns 200:
 }
 ```
 
-`host`, `port`, `system`, `discovering`, and the count vary. `system.os` uses
-Go's stable platform names (`darwin`, `windows`, `linux`, and so on) so native
-clients can choose a machine icon without guessing from a hostname.
-`compatibility.api` is the authoritative client acceptance range;
+`host`, `port`, `system`, `discovering`, and the count vary. `listen` always
+reports the main loopback listener's configured host and port, not the LAN
+listener's. `access.open` reports whether the `open` sentinel is present beside
+the token, so a client can tell an intentionally unauthenticated daemon from a
+misconfigured one.
+
+`lan.enabled` is `false` and `lan.url` is `null` whenever the user-enabled LAN
+listener is not running. When it is running, `lan.url` is **redacted to `null`
+for callers that have not proved they belong here**: the field survives only for
+a direct loopback peer or a caller whose `Authorization` header or `?token=`
+query parameter authorizes successfully
+(`runtime/internal/api/server.go` `mayReadLANEndpoint`). The route itself stays
+unauthenticated because native discovery, `sessions machines discover`, the
+updater, and the frontend's origin bootstrap all depend on it and on the
+200-vs-401 distinction; the selected private IPv4 address is withheld separately
+because it maps the user's network to anyone who can reach the port.
+`lan.enabled` and `lan.bonjour` are never redacted, so a probe can still tell
+whether the listener is up.
+
+`system.os` uses Go's stable platform names (`darwin`, `windows`, `linux`, and
+so on) so native clients can choose a machine icon without guessing from a
+hostname. `compatibility.api` is the authoritative client acceptance range;
 `compatibility.runner` describes the living runners this daemon can adopt.
 Clients preserve their legacy behavior when an older daemon omits the additive
 object, but must stop before normal use when their protocol is outside an
 advertised range. The count includes exited sessions still in their 30-second
-grace period. The deep-health response carries the same compatibility object.
+grace period. The deep-health response carries the same `compatibility` and
+`access` objects but no `listen` or `lan`.
 
 ### `GET /api/health/deep`
 
-No auth. Returns 200:
+Requires authentication (loopback peers are already authorized). Returns 200:
 
 ```json
 {
@@ -246,7 +279,7 @@ Auth required. Every request field is optional:
 | Field | JSON type | Source behavior/default |
 | --- | --- | --- |
 | `cmd` | string | `$SHELL`, else `/bin/bash` |
-| `args` | string[] | `[]`; Claude/Codex full-access defaults may be appended |
+| `args` | string[] | `[]`; the daemon resolves provider-specific constrained or full-access arguments |
 | `cwd` | string | `$HOME`, else OS home; must exist and be a directory |
 | `cols` | number | 300 |
 | `rows` | number | 50 |
@@ -257,13 +290,26 @@ Auth required. Every request field is optional:
 | `base` | string | optional worktree base ref; requires `worktree`; defaults to the source checkout's current branch |
 | `onIdle` | string | trimmed; empty becomes absent |
 | `waitReady` | boolean | only literal `true` waits for readiness, capped at 30 seconds |
+| `delegationKind` | `"user" \| "agent"` | optional child presentation provenance; requires a validated `X-Sessions-Creator-Session` parent |
+| `permissions` | `"inherit" \| "constrained" \| "full"` | optional requested access; `inherit` requires a parent, and a child cannot exceed its parent unless the user explicitly enabled autonomous delegated work |
+| `lifecycle` | `"task" \| "session"` | optional runtime lifetime; agent-created children default to `task`, while user-created sessions default to `session` |
 
 `RUNNER_*`, `NODE_OPTIONS`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, and
-`LD_PRELOAD` caller keys are stripped. Known Claude/Codex commands receive
-default full-access arguments unless any explicit mode flag is already present.
-Success is 201 with a bare `SessionInfo` object, not an envelope. Any caught
-failure is `400 {"error":"<message>"}`. Creating a session invokes launchd;
-there is no non-launchd create path in the normative implementation.
+`LD_PRELOAD` caller keys are stripped. User-created Claude/Codex sessions are
+constrained unless full access is explicitly requested. An agent-created child
+inherits the parent's exact Claude permission mode or Codex sandbox and
+approval flags. The daemon rejects self-escalation. A machine-level autonomous
+delegation choice can make new agent-created children full-access; only the
+explicit user-facing onboarding/Settings route can grant that choice. Success
+is 201 with a bare `SessionInfo` object, not an envelope. Any caught failure is
+`400 {"error":"<message>"}`. Creating a session invokes the platform runner
+supervisor; there is no unmanaged create path in the normative implementation.
+
+When a `task` worker produces a successful final response and becomes idle,
+the daemon records the normal durable end boundary and closes its runtime. Its
+transcript, parent/child lineage, and workspace stay available. A worker in
+`needs-input` or `failed` state is never auto-ended and Sessions never accepts
+its prompt by blindly sending Enter.
 
 Profile directories are created mode `0700` below
 `<UserStateRoot>/profiles/<tool>/<name>`. A profiled Claude launch receives
@@ -540,6 +586,20 @@ Successful input clears `setAsideAt` best-effort after the runner accepts the
 bytes. Failure to persist that organizational change is logged but does not
 turn accepted input into an error.
 
+### `POST /api/sessions/:id/submit`
+
+Auth required. Body is `{"data":"<one complete composer message>"}`. The
+daemon serializes logical submissions across callers, writes `data`, waits for
+the provider TUI to settle, and writes carriage return as a second PTY frame.
+This is the message boundary used by the CLI and desktop composer: concurrent
+agents cannot interleave one message's text with another message's Enter.
+Terminal keys and paste-without-submit continue to use `/input`.
+
+Success is `200 {"ok":true}`. Unknown/exited targets return `404`. If text was
+accepted but Enter could not be delivered, the error includes
+`{"delivered":true,"retry":false}` so an automated caller does not duplicate
+the prompt.
+
 ### `POST /api/sessions/:id/upload`
 
 Auth required. The request body is raw bytes, not JSON. Optional header
@@ -548,11 +608,18 @@ in the saved name or response. The filename is reduced to its basename,
 characters outside `[A-Za-z0-9_. -]` become `_`, and the result is limited to
 96 characters. The stored name is `<stem>-<first 8 chars of random UUID><ext>`.
 
-The destination is the fixed `~/.local/state/sessions/uploads/` directory,
-not the runner `SESSIONS_STATE_DIR`. Responses:
+The destination is the `uploads/` directory under the daemon's state root —
+`~/.local/state/sessions/uploads/` on Unix and the same child of
+`%LOCALAPPDATA%\Sessions\state` on Windows. In the Go runtime an explicitly set
+`SESSIONS_STATE_DIR` moves it, so a scratch daemon does not write into the
+installed daemon's uploads; see `state-dir.md`. The Node fixture keeps it fixed
+under `os.homedir()`. Responses:
 
 - `200 {"path":"<absolute path>","size":<byte count>}`
 - `404 {"error":"unknown session","id":"<id>"}` before reading the body
+- `403 {"error":"upload directory outside home"}` when the resolved uploads
+  directory is not inside the daemon's home directory, which an out-of-home
+  `SESSIONS_STATE_DIR` produces
 - `413 {"error":"file too large","max":26214400}` once the body exceeds 25
   MiB; the remainder is drained and no file is written
 - `500 {"error":"<message>"}` for filesystem/read errors
@@ -717,6 +784,76 @@ new session is displayed beneath the source as a branch; trusted creator
 provenance is not rewritten. The route never sends an end request, never marks
 the source as reopened, and never requires a force flag.
 
+### Cross-machine continuation
+
+Cross-machine continuation is client-mediated. The native app or CLI
+authenticates to the source and destination independently; neither daemon
+receives the other daemon's bearer credential. The source provider history is
+copied rather than deleted, and both ledgers record the continuation link only
+after the target runtime starts. Only ended Claude and Codex sessions using the
+default provider store are eligible. Isolated profile credentials, arbitrary
+attachments, usage data, PTY history, and the full Sessions ledger are never
+transferred.
+
+#### `POST /api/migrate/export`
+
+Auth required on the source. Body:
+
+```json
+{
+  "session_id": "<ended source id>",
+  "source_endpoint": "https://source.example.ts.net",
+  "runtime_mode": "rich",
+  "dry_run": true,
+  "allow_dirty": false
+}
+```
+
+`runtime_mode` is optional and must be `rich` or `terminal`. The route resolves
+the exact provider conversation and safe resume recipe from the source's own
+ledger and provider files. It rejects a live source with 409, an unsupported or
+profiled source with 400, and a missing session with 404. `dry_run` computes the
+plan without creating a checkpoint or writing a ledger event. A successful
+response contains `request`, the authenticated handoff the client will carry to
+the target, and `plan`, the operator review object. Conversation bytes are
+bounded to 64 MiB.
+
+#### `POST /api/migrate/receive`
+
+Auth required on the destination. It accepts the `request` returned by export,
+verifies the minimal provider resume recipe and conversation identity, prepares
+or validates the destination workspace, and writes a new mode-0600 provider
+history file. An identical existing file is idempotent; a different file at the
+same provider identity is never overwritten. This route does not start a
+runtime.
+
+#### `POST /api/migrate/create`
+
+Auth required on the destination. It accepts the same handoff metadata after a
+successful receive, validates it again, starts exactly one target runtime
+through the normal write-ahead create boundary, and records `moved_from`
+provenance. It returns 201 with the new `SessionInfo`, lineage status, and any
+recoverable annotation warning.
+
+#### `POST /api/migrate/complete`
+
+Auth required on the source. Body:
+
+```json
+{
+  "source_id": "<ended source id>",
+  "target_endpoint": "https://target.example.ts.net",
+  "target_id": "<new target id>",
+  "checkpoint_ref": "<optional Git checkpoint>"
+}
+```
+
+The client calls this only after target creation succeeds. It verifies that the
+source is still a known ended session, validates the target endpoint, and
+records `moved_to` on the source. Failure does not remove the target or source
+provider history; the returned error identifies that the target is live but the
+source lineage annotation needs repair.
+
 ### `GET /api/directories`
 
 Auth required. Returns `200 {"directories":[...]}`. Each entry is:
@@ -725,11 +862,14 @@ Auth required. Returns `200 {"directories":[...]}`. Each entry is:
 {"path":"/absolute/path","label":"~/sessions/path","kind":"home"}
 ```
 
-`kind` is `home`, `common`, or `project`. The source adds the home directory,
-existing common child names, then project-shaped children containing one of
-`.git`, `package.json`, `pyproject.toml`, `Cargo.toml`, or `go.mod`. Duplicates
-and nonexistent paths are skipped; the result is capped approximately (not
-strictly) around 50 by the outer scan logic.
+`kind` is `home`, `common`, `project`, or `somewhere`. The source offers
+project-shaped checkouts beneath `~/somewhere` (including `~/somewhere/wt`)
+first, followed by folders recently used by Sessions on that machine and
+conventional local development roots. A project-shaped directory contains one
+of `.git`, `package.json`, `pyproject.toml`, `Cargo.toml`, or `go.mod`.
+Protected broad folders are offered as explicit choices without background
+reads so discovery does not trigger unrelated macOS permission prompts.
+Duplicates are skipped and the result remains bounded to roughly 50 entries.
 
 ### `GET /api/fs/list`
 
@@ -878,26 +1018,32 @@ invalid JSON return 400; persistence errors return 500. Other methods return
 Returns the current machine-level user choice:
 
 ```json
-{"version":1,"complete":false,"remoteControl":"pending"}
+{"version":2,"complete":false,"remoteControl":"pending","delegatedAccess":"pending"}
 ```
 
 `remoteControl` is `pending`, `enabled`, or `local-only`. A missing, legacy, or
 older-version onboarding record is always `pending`; provider settings do not
-implicitly migrate into consent.
+implicitly migrate into consent. `delegatedAccess` is `pending`, `inherit`, or
+`autonomous`. `inherit` gives an agent-created child its manager's exact
+provider permission mode. `autonomous` is explicit user consent for newly
+created delegated children to use full access; it does not alter an existing
+runtime.
 
 ### `PUT /api/onboarding`
 
-The user-facing app submits either `{"remoteControl":"enabled"}` or
-`{"remoteControl":"local-only"}` with
-`X-Sessions-User-Consent: remote-control`. The daemon atomically records the
-current onboarding version and corresponding Claude launch default. A missing
-consent header returns 403; unknown choices and invalid JSON return 400.
+The user-facing app submits both choices, for example
+`{"remoteControl":"enabled","delegatedAccess":"inherit"}`, with
+`X-Sessions-User-Consent: onboarding`. A v1 client that omits
+`delegatedAccess` receives the conservative `inherit` behavior. The daemon
+atomically records the current onboarding version, corresponding Claude launch
+default, and delegated-access setting. A missing consent header returns 403;
+unknown choices and invalid JSON return 400.
 
-This is the only Sessions API that can grant Remote Control consent. The CLI
-exposes `sessions onboarding` as read-only status so an agent can inspect and
-explain the choice but cannot silently make it. All routes still require the
-normal daemon authorization. The extra header is a product-surface guard, not
-a second authentication factor.
+This is the only Sessions API that can grant Remote Control or autonomous
+delegation consent. The CLI exposes `sessions onboarding` as read-only status
+so an agent can inspect and explain either choice but cannot silently make it.
+All routes still require the normal daemon authorization. The extra header is a
+product-surface guard, not a second authentication factor.
 
 ### `GET /api/claude/settings`
 
@@ -972,6 +1118,14 @@ entries are evicted on their expiry timer even without another lookup.
 The existing authenticated `GET /api/history/<id>` route remains complete by
 default. The transcript response assigns a stable zero-based `index` to every
 normalized message.
+
+Every response on these routes may carry the additive `skipped_records` counter,
+omitted when zero, reporting records the torn-record policy could not decode and
+skipped. A nonzero value means the answer is degraded but usable — complete
+minus those records — and indices are assigned over the records that decoded.
+`GET /api/history` degrades per item for the same reason and adds
+`unreadable_sessions`; [`docs/INTEGRATIONS.md`](../../docs/INTEGRATIONS.md) is
+the field-level contract.
 
 Native search viewing first requests
 `GET /api/history/<id>/window?format=json&start=N&end=M`; `end` is exclusive.

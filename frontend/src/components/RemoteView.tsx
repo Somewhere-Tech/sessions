@@ -30,9 +30,10 @@ interface Props {
   // Codex supplies normalized rollout or app-server notifications.
   events: ClaudeSessionEvent[];
   historyPending: boolean;
-  // Live byte sender — used by InputBar to dispatch the actual
-  // keystrokes through the WS, and by retry() in useDispatch.
-  send: (data: string) => void;
+  // Composer sends use the acknowledged path. Raw terminal keystrokes stay
+  // inside SessionView and are never used for conversation dispatch.
+  sendConfirmed: (data: string) => Promise<void>;
+  submitMessage: (data: string) => Promise<void>;
   connected: boolean;
   hasEarlierClaudeEvents: boolean;
   loadingEarlierClaudeEvents: boolean;
@@ -58,6 +59,8 @@ interface Props {
     message: { role: 'user' | 'assistant'; content: string; createdAt: number },
     destinationProvider: 'claude' | 'codex'
   ) => Promise<void>;
+  forkMode?: boolean;
+  onExitForkMode?: () => void;
 }
 
 // Provider-neutral conversation view over the durable session transport.
@@ -75,7 +78,8 @@ export function RemoteView({
   sessionId,
   events,
   historyPending,
-  send,
+  sendConfirmed,
+  submitMessage,
   connected,
   hasEarlierClaudeEvents,
   loadingEarlierClaudeEvents,
@@ -91,7 +95,9 @@ export function RemoteView({
   onConfigureModel,
   onRename,
   onContinueInTerminal,
-  onForkFromMessage
+  onForkFromMessage,
+  forkMode = false,
+  onExitForkMode
 }: Props): JSX.Element {
   const providerName = provider === 'codex' ? 'Codex' : 'Claude';
   const providerIdentity: ProviderIdentity = provider === 'codex' ? 'codex' : 'claude';
@@ -114,10 +120,9 @@ export function RemoteView({
     return counts;
   }, [eventMessages]);
 
-  const { messages: dispatchMessages, recordSent, retry, remove, resetLog } = useDispatch({
+  const { messages: dispatchMessages, recordSent, restoreDraft, remove, resetLog } = useDispatch({
     sessionId,
-    eventUserContentCounts,
-    send
+    eventUserContentCounts
   });
   const hasRecoverableLocalState = dispatchMessages.some(
     (message) => message.status === 'pending' || message.status === 'failed'
@@ -192,6 +197,13 @@ export function RemoteView({
   const recoverDraft = latestFailedSend
     ? { id: latestFailedSend.id, text: latestFailedSend.content, version: latestFailedSend.createdAt }
     : null;
+  // The snapshot probe below only cares WHICH failed send it is looking at,
+  // never its contents. Naming that identity makes the effect's dependency
+  // list say exactly what the effect reads, instead of listing two fields of
+  // an object the body then dereferences by another name.
+  const failedSendKey = latestFailedSend
+    ? `${latestFailedSend.id}:${latestFailedSend.createdAt}`
+    : null;
   const [blockingState, setBlockingState] = useState<SnapshotComposerState | null>(null);
   const [forkPointId, setForkPointId] = useState<string | null>(null);
   const [forkBusy, setForkBusy] = useState(false);
@@ -211,19 +223,26 @@ export function RemoteView({
         createdAt: message.createdAt
       }, destinationProvider);
       setForkPointId(null);
+      onExitForkMode?.();
     } catch (reason) {
       setForkError(reason instanceof Error ? reason.message : 'Could not fork this conversation.');
     } finally {
       setForkBusy(false);
     }
-  }, [forkBusy, onForkFromMessage]);
+  }, [forkBusy, onExitForkMode, onForkFromMessage]);
+
+  useEffect(() => {
+    if (forkMode) return;
+    setForkPointId(null);
+    setForkError(null);
+  }, [forkMode]);
 
   useEffect(() => {
     // Snapshot prompt classification is a terminal-screen heuristic. Rich
     // sessions have structured provider events but no terminal stream, so
     // applying it there can turn ordinary conversation text into a false
     // "open Terminal" warning with an impossible action.
-    if (!terminalAvailable || !latestFailedSend) {
+    if (!terminalAvailable || !failedSendKey) {
       setBlockingState(null);
       return;
     }
@@ -246,7 +265,7 @@ export function RemoteView({
 
     void checkSnapshot();
     return () => { alive = false; };
-  }, [sessionId, terminalAvailable, latestFailedSend?.id, latestFailedSend?.createdAt]);
+  }, [failedSendKey, sessionId, terminalAvailable]);
 
   // Scroll-anchor preservation across window expansion. Prepending
   // older messages grows scrollHeight by ~the prepended block's
@@ -443,6 +462,12 @@ export function RemoteView({
               : (loadingEarlierClaudeEvents ? 'Loading earlier history…' : '↑ Load earlier history')}
           </button>
         ) : null}
+        {forkMode ? (
+          <div className="conversation-fork-mode-note" role="status">
+            <span>Choose a message to branch from.</span>
+            <small>The original conversation stays unchanged.</small>
+          </div>
+        ) : null}
         {visibleMessages.map((m, i) => (
           <RemoteMessage
             key={m.id}
@@ -452,12 +477,19 @@ export function RemoteView({
             provider={providerIdentity}
             isLatest={i === visibleMessages.length - 1}
             showAgentHeader={m.role === 'assistant' && visibleMessages[i - 1]?.role !== 'assistant'}
-            onRetry={() => retry(m.id)}
+            followedByToolActivity={Boolean(
+              m.role === 'assistant'
+              && m.content
+              && visibleMessages[i + 1]?.role === 'assistant'
+              && !visibleMessages[i + 1]?.content
+              && visibleMessages[i + 1]?.toolCalls?.length
+            )}
+            onRetry={() => restoreDraft(m.id)}
             onDelete={() => remove(m.id)}
             forkOpen={forkPointId === m.id}
             forkBusy={forkBusy}
             forkError={forkPointId === m.id ? forkError : null}
-            onToggleFork={onForkFromMessage && m.status === 'sent' && !m.queued && Boolean(m.content)
+            onToggleFork={forkMode && onForkFromMessage && m.status === 'sent' && !m.queued && Boolean(m.content)
               ? () => {
                 setForkError(null);
                 setForkPointId((current) => current === m.id ? null : m.id);
@@ -504,7 +536,8 @@ export function RemoteView({
 
       <div className="remote-input-wrap">
         <InputBar
-          send={send}
+          send={sendConfirmed}
+          submitMessage={submitMessage}
           connected={connected}
           sessionId={sessionId}
           onSubmitted={recordSent}
@@ -531,6 +564,7 @@ interface RemoteMessageProps {
   provider: ProviderIdentity;
   isLatest: boolean;
   showAgentHeader: boolean;
+  followedByToolActivity: boolean;
   onRetry: () => void;
   onDelete: () => void;
   forkOpen: boolean;
@@ -558,6 +592,7 @@ function RemoteMessageInner({
   provider,
   isLatest,
   showAgentHeader,
+  followedByToolActivity,
   onRetry,
   onDelete,
   forkOpen,
@@ -567,7 +602,8 @@ function RemoteMessageInner({
   onFork
 }: RemoteMessageProps): JSX.Element {
   const isUser = m.role === 'user';
-  const cls = `remote-msg remote-msg-${m.role} is-${m.status}${isLatest ? ' is-latest' : ''}${m.interrupted ? ' is-interrupted' : ''}${m.queued ? ' is-queued' : ''}${!isUser && !showAgentHeader ? ' is-continuation' : ''}`;
+  const toolOnly = !isUser && !m.content && Boolean(m.toolCalls?.length);
+  const cls = `remote-msg remote-msg-${m.role} is-${m.status}${isLatest ? ' is-latest' : ''}${m.interrupted ? ' is-interrupted' : ''}${m.queued ? ' is-queued' : ''}${!isUser && !showAgentHeader ? ' is-continuation' : ''}${toolOnly ? ' is-tool-only' : ''}${followedByToolActivity ? ' has-following-tool-activity' : ''}`;
   const timestamp = formatMessageTimestamp(m.createdAt);
   const timestampTitle = new Date(m.createdAt).toLocaleString();
 
@@ -638,7 +674,7 @@ function RemoteMessageInner({
             {m.status === 'failed' ? (
               <div className="remote-bubble-status remote-bubble-failed">
                 <span>{m.failureReason ? `not delivered: ${m.failureReason}` : 'not delivered'}</span>
-                <button type="button" className="remote-bubble-retry" onClick={onRetry}>retry</button>
+                <button type="button" className="remote-bubble-retry" onClick={onRetry}>restore draft</button>
                 <button
                   type="button"
                   className="remote-bubble-delete"
@@ -675,12 +711,6 @@ function RemoteMessageInner({
               <div className="remote-bubble-live" role="status">
                 <span className="remote-bubble-live-dot" aria-hidden />
                 <span>Codex is working</span>
-              </div>
-            ) : null}
-            {m.hadThinking && !m.reasoningSummary ? (
-              <div className="remote-bubble-thinking" aria-label="reasoning">
-                <span aria-hidden>💭</span>
-                <span>reasoned before replying</span>
               </div>
             ) : null}
             {m.reasoningSummary ? (
@@ -735,7 +765,7 @@ function RemoteMessageInner({
       {onToggleFork ? (
         <div className={`remote-message-fork${isUser ? ' is-user' : ''}`}>
           <button type="button" className="remote-message-fork-trigger" disabled={forkBusy} onClick={onToggleFork}>
-            Fork from here…
+            Fork here
           </button>
           {forkOpen ? (
             <div className="remote-message-fork-picker">
@@ -761,6 +791,8 @@ const RemoteMessage = memo(RemoteMessageInner, (a, b) => {
   // on every parent render but always do the same thing.
   if (a.isLatest !== b.isLatest) return false;
   if (a.showAgentHeader !== b.showAgentHeader) return false;
+  if (a.followedByToolActivity !== b.followedByToolActivity) return false;
+  if (Boolean(a.onToggleFork) !== Boolean(b.onToggleFork)) return false;
   if (a.forkOpen !== b.forkOpen || a.forkBusy !== b.forkBusy || a.forkError !== b.forkError) return false;
   if (a.cwd !== b.cwd) return false;
   if (a.agentName !== b.agentName || a.provider !== b.provider) return false;
@@ -803,8 +835,8 @@ function formatMessageTimestamp(value: number): string {
     : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-// Tool-calls panel: shows a collapsed "Used N tools" header by
-// default. Click to expand → list of every tool with input preview
+// Tool-calls panel: shows a compact, human-readable activity summary by
+// default. Click to expand → the ordered list with input previews
 // and a per-tool disclosure for the full output. Each chip is
 // data-no-copy so clicking inside doesn't trigger the bubble's
 // click-to-copy. Stops propagation so the bubble doesn't try to
@@ -821,6 +853,7 @@ function ToolCallsPanel({
     const status = call.status?.toLowerCase() ?? '';
     return status === 'inprogress' || status === 'running' || status === 'pending';
   }).length;
+  const summary = summarizeToolActivity(calls);
   return (
     <div
       className={`remote-bubble-tools${expanded ? ' is-expanded' : ''}`}
@@ -832,39 +865,28 @@ function ToolCallsPanel({
         className="remote-bubble-tools-toggle"
         onClick={() => setExpanded((v) => !v)}
       >
-        {expanded ? '▾' : '▸'} {providerActivity ? 'Activity' : `Used ${calls.length} ${calls.length === 1 ? 'tool' : 'tools'}`}
-        {providerActivity ? (
-          <span className="remote-bubble-tools-summary">
-            {' · '}{calls.length} {calls.length === 1 ? 'item' : 'items'}{runningCount > 0 ? ` · ${runningCount} running` : ''}
-          </span>
-        ) : null}
-        {!expanded && !providerActivity ? (
-          <span className="remote-bubble-tools-summary">
-            {' · '}
-            {Array.from(new Set(calls.map((t) => t.name))).slice(0, 4).join(', ')}
-            {new Set(calls.map((t) => t.name)).size > 4 ? '…' : ''}
-          </span>
-        ) : null}
+        <span>{summary}</span>
+        {providerActivity && runningCount > 0 ? <span className="remote-bubble-tools-summary">{runningCount} running</span> : null}
+        <span className="remote-bubble-tools-caret" aria-hidden>{expanded ? '⌄' : '›'}</span>
       </button>
       {expanded ? (
         <div className="remote-bubble-tools-list">
           {calls.map((t) => {
             const isOpen = openId === t.id;
             const hasResult = !!t.resultFull;
+            const normalizedStatus = t.status?.toLowerCase() ?? '';
+            const showStatus = Boolean(normalizedStatus && !['completed', 'success'].includes(normalizedStatus));
             return (
               <div key={t.id} className={`remote-bubble-tool-row${isOpen ? ' is-open' : ''}`}>
                 <button
                   type="button"
                   className="remote-bubble-tool"
                   onClick={() => setOpenId(isOpen ? null : t.id)}
-                  title={hasResult ? 'Click to view output' : 'No captured output'}
+                  title={`${t.name} · ${hasResult ? 'Open details' : 'No captured output'}`}
                 >
-                  <span className="remote-bubble-tool-name">{t.name}</span>
-                  {t.inputPreview ? (
-                    <span className="remote-bubble-tool-input">{t.inputPreview}</span>
-                  ) : null}
-                  {t.status ? (
-                    <span className={`remote-bubble-tool-status is-${t.status.toLowerCase()}`}>
+                  <span className="remote-bubble-tool-input">{toolActivityLabel(t)}</span>
+                  {showStatus ? (
+                    <span className={`remote-bubble-tool-status is-${normalizedStatus}`}>
                       {t.status}
                     </span>
                   ) : null}
@@ -902,6 +924,57 @@ function ToolCallsPanel({
       ) : null}
     </div>
   );
+}
+
+function isCommandTool(call: import('../hooks/useDispatch').ToolCall): boolean {
+  return call.kind === 'commandExecution' || ['Bash', 'BashOutput', 'KillBash', 'Command'].includes(call.name);
+}
+
+function summarizeToolActivity(calls: import('../hooks/useDispatch').ToolCall[]): string {
+  if (calls.length > 0 && calls.every(isCommandTool)) {
+    return calls.length === 1 ? 'Ran a command' : `Ran ${calls.length} commands`;
+  }
+  if (calls.length === 1) return 'Used a tool';
+  return `Used ${calls.length} tools`;
+}
+
+function toolActivityLabel(call: import('../hooks/useDispatch').ToolCall): string {
+  const preview = call.inputPreview?.trim();
+  if (isCommandTool(call)) return preview ? pastTenseLeadingVerb(preview) : 'Ran a command';
+  if (!preview) return call.name;
+  switch (call.name) {
+    case 'Read': return `Read ${preview}`;
+    case 'Write': return `Wrote ${preview}`;
+    case 'Edit': return `Edited ${preview}`;
+    case 'NotebookEdit': return `Edited ${preview}`;
+    case 'Glob': return `Matched files for ${preview}`;
+    case 'Grep': return `Searched for ${preview}`;
+    case 'WebFetch': return `Fetched ${preview}`;
+    case 'WebSearch': return `Searched the web for ${preview}`;
+    default: return `${call.name} · ${preview}`;
+  }
+}
+
+const TOOL_PAST_TENSE = new Map<string, string>([
+  ['add', 'Added'], ['build', 'Built'], ['check', 'Checked'], ['copy', 'Copied'],
+  ['create', 'Created'], ['delete', 'Deleted'], ['edit', 'Edited'], ['fetch', 'Fetched'],
+  ['find', 'Found'], ['inspect', 'Inspected'], ['install', 'Installed'], ['list', 'Listed'],
+  ['merge', 'Merged'], ['move', 'Moved'], ['read', 'Read'], ['regenerate', 'Regenerated'],
+  ['remove', 'Removed'], ['resolve', 'Resolved'], ['run', 'Ran'], ['search', 'Searched'],
+  ['see', 'Saw'], ['show', 'Showed'], ['test', 'Tested'], ['update', 'Updated'],
+  ['verify', 'Verified'], ['write', 'Wrote']
+]);
+
+function pastTenseLeadingVerb(value: string): string {
+  const match = value.match(/^([A-Za-z]+)(\b.*)$/);
+  if (!match) return value;
+  const replacement = TOOL_PAST_TENSE.get(match[1]!.toLowerCase());
+  if (!replacement) return value;
+  const rest = match[2]!.replace(/^ and ([A-Za-z]+)\b/i, (full, verb: string) => {
+    const second = TOOL_PAST_TENSE.get(verb.toLowerCase());
+    return second ? ` and ${second.toLowerCase()}` : full;
+  });
+  return `${replacement}${rest}`;
 }
 
 function PlanPanel({

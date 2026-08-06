@@ -20,6 +20,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/claudep"
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -86,7 +87,7 @@ func (r *claudeStructuredRunner) start() error {
 	}
 	r.sessionID = metadata.Info.ClaudeSessionID
 	if r.sessionID == "" {
-		r.sessionID = codexArgValue(r.cfg.args, "--session-id", "--resume", "-r")
+		r.sessionID = providerargs.ClaudeSessionID(r.cfg.args)
 	}
 	if r.sessionID == "" {
 		var err error
@@ -103,7 +104,7 @@ func (r *claudeStructuredRunner) start() error {
 	if err := r.openHistory(); err != nil {
 		return err
 	}
-	if codexArgValue(r.cfg.args, "--resume", "-r") != "" {
+	if providerargs.ClaudeResumeID(r.cfg.args) != "" {
 		r.initialized = true
 	}
 	if r.historyWorking() {
@@ -185,7 +186,7 @@ func (r *claudeStructuredRunner) writeMetadata() error {
 }
 
 func (r *claudeStructuredRunner) writeMetadataLocked() error {
-	return state.WriteMetadata(r.paths.Meta, state.Metadata{
+	return state.WriteRunnerMetadata(r.paths.Meta, state.Metadata{
 		ID: r.cfg.id, Name: r.cfg.name, Description: r.cfg.description,
 		DescriptionSource: r.cfg.descriptionSource, Kind: r.cfg.kind, SpecPath: r.cfg.specPath,
 		Profile: r.cfg.profile, ConfigDir: r.cfg.configDir,
@@ -345,8 +346,8 @@ func (r *claudeStructuredRunner) configureModel(control proto.ModelControl) erro
 		return errors.New("Claude turn is active")
 	}
 	previous := append([]string(nil), r.cfg.args...)
-	r.cfg.args = withArgumentValue(r.cfg.args, control.Model, "--model", "-m")
-	r.cfg.args = withArgumentValue(r.cfg.args, control.Effort, "--effort")
+	r.cfg.args = providerargs.WithValue(r.cfg.args, control.Model, providerargs.ModelFlags()...)
+	r.cfg.args = providerargs.WithValue(r.cfg.args, control.Effort, providerargs.ClaudeEffortFlags()...)
 	if err := r.writeMetadataLocked(); err != nil {
 		r.cfg.args = previous
 		return err
@@ -416,7 +417,7 @@ func (r *claudeStructuredRunner) runTurn(text string) {
 	}
 	stream, err := r.client.SendTurn(r.ctx, text, claudep.TurnOptions{
 		CWD: cfg.cwd, SessionID: r.sessionID, Resume: resume,
-		Model: codexArgValue(cfg.args, "--model", "-m"), ExtraArgs: cfg.args,
+		Model: providerargs.Value(cfg.args, providerargs.ModelFlags()...), ExtraArgs: cfg.args,
 	})
 	if err != nil {
 		if applyContinuation {
@@ -493,27 +494,7 @@ func (r *claudeStructuredRunner) snapshot() string {
 	r.mu.Lock()
 	history := cloneStructured(r.history)
 	r.mu.Unlock()
-	var output strings.Builder
-	for _, raw := range history {
-		var event map[string]any
-		if json.Unmarshal(raw, &event) != nil {
-			continue
-		}
-		message, ok := event["message"].(map[string]any)
-		if !ok {
-			continue
-		}
-		role, _ := message["role"].(string)
-		text := codexMessageText(message["content"])
-		if (role != "user" && role != "assistant") || strings.TrimSpace(text) == "" {
-			continue
-		}
-		if output.Len() > 0 {
-			output.WriteString("\n\n")
-		}
-		fmt.Fprintf(&output, "[%s]\n%s", role, text)
-	}
-	return output.String()
+	return structuredTranscript(history)
 }
 
 func (r *claudeStructuredRunner) shutdown(permanent bool, code int) {

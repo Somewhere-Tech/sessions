@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -35,6 +36,12 @@ type Adoption struct {
 	ProviderUUID      string   `json:"providerUuid"`
 	Cmd               string   `json:"cmd"`
 	Args              []string `json:"args"`
+	// SkippedRecords counts conversation records the identity scan could not
+	// read whole. It is never a reason to refuse an adoption — the conversation
+	// itself is untouched and the provider still replays it in full — but it is
+	// reported so a caller can say the scan was lossy rather than imply it read
+	// everything.
+	SkippedRecords int `json:"skippedRecords,omitempty"`
 }
 
 type AdoptResult struct {
@@ -54,6 +61,11 @@ type AdoptResult struct {
 	ForkPointIndex      *int                `json:"forkPointIndex,omitempty"`
 	ForkPointMessageID  string              `json:"forkPointMessageId,omitempty"`
 	SourceUntouched     bool                `json:"sourceUntouched,omitempty"`
+	// AlsoOpenIn names another live Claude process that had this conversation
+	// open, when one was found. Informational: both processes append to the
+	// same provider transcript, and Sessions' own copy keeps the union.
+	AlsoOpenIn         string `json:"alsoOpenIn,omitempty"`
+	TranscriptRecovery bool   `json:"transcriptRecovery,omitempty"`
 }
 
 type AdoptAnnotation string
@@ -205,7 +217,7 @@ func adoptionFromPath(path string) (Adoption, error) {
 	if err != nil {
 		return Adoption{}, err
 	}
-	provider, cwd, codex, err := readConversationIdentity(absolute)
+	provider, cwd, codex, skipped, err := readConversationIdentity(absolute)
 	if err != nil {
 		return Adoption{}, err
 	}
@@ -233,42 +245,73 @@ func adoptionFromPath(path string) (Adoption, error) {
 	return Adoption{
 		Path: absolute, Tool: tool, Cwd: cwd, ProviderUUID: provider,
 		Cmd: argv[0], Args: append([]string(nil), argv[1:]...),
+		SkippedRecords: skipped,
 	}, nil
 }
 
-func readConversationIdentity(path string) (provider, cwd string, codex bool, err error) {
+const (
+	// identityScanLines bounds how far into a conversation the identity scan
+	// looks before falling back to the file's own name and location.
+	identityScanLines = 256
+	// identityRecordCap is the largest single record the scan will hold in
+	// memory. One tool result can be far larger than every other record in a
+	// conversation combined, and that record is never the one carrying
+	// identity.
+	identityRecordCap = 2 * 1024 * 1024
+)
+
+// readConversationIdentity extracts provider identity and cwd from the head of
+// a conversation. A record larger than identityRecordCap is skipped and
+// counted, never fatal: the user can see the conversation exists, so refusing
+// to adopt it over one oversized tool result would put their work permanently
+// out of reach for a reason that has nothing to do with identity.
+//
+// A skipped record is not parsed from its truncated prefix either. A partial
+// record is not valid JSON, and scraping identity-shaped keys out of what is
+// almost always tool output would let that output impersonate the
+// conversation's cwd. The filename and project directory remain the honest
+// fallbacks, and the count tells the caller the scan was lossy.
+func readConversationIdentity(path string) (provider, cwd string, codex bool, skipped int, err error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", "", false, err
+		return "", "", false, 0, err
 	}
 	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
-	for lines := 0; lines < 256 && scanner.Scan(); lines++ {
-		var record map[string]any
-		if json.Unmarshal(scanner.Bytes(), &record) != nil {
-			continue
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for lines := 0; lines < identityScanLines; lines++ {
+		line, oversized, readErr := readCappedLine(reader, identityRecordCap)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return "", "", false, skipped, fmt.Errorf("read conversation %s: %w", path, readErr)
 		}
-		if value, ok := record["cwd"].(string); ok && cwd == "" {
-			cwd = value
+		if oversized {
+			skipped++
 		}
-		if record["type"] == "session_meta" {
-			codex = true
-			if payload, ok := record["payload"].(map[string]any); ok {
-				if value, ok := payload["cwd"].(string); ok && cwd == "" {
+		if len(line) > 0 && !oversized {
+			var record map[string]any
+			if json.Unmarshal(line, &record) == nil {
+				if value, ok := record["cwd"].(string); ok && cwd == "" {
 					cwd = value
 				}
-				if value, ok := payload["id"].(string); ok {
-					provider = value
+				if record["type"] == "session_meta" {
+					codex = true
+					if payload, ok := record["payload"].(map[string]any); ok {
+						if value, ok := payload["cwd"].(string); ok && cwd == "" {
+							cwd = value
+						}
+						// The id key has two spellings; watch owns the union.
+						if value := watch.CodexSessionMetaID(payload); value != "" {
+							provider = value
+						}
+					}
 				}
 			}
 		}
 		if provider != "" && cwd != "" {
 			break
 		}
-	}
-	if scanErr := scanner.Err(); scanErr != nil {
-		return "", "", false, fmt.Errorf("read conversation %s: %w", path, scanErr)
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
 	}
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	if !codex && strings.HasPrefix(base, "rollout-") {
@@ -285,12 +328,209 @@ func readConversationIdentity(path string) (provider, cwd string, codex bool, er
 		}
 	}
 	if cwd == "" && !codex {
-		cwd = strings.ReplaceAll(filepath.Base(filepath.Dir(path)), "-", "/")
-		if cwd != "" && !strings.HasPrefix(cwd, "/") {
-			cwd = "/" + cwd
+		cwd = claudeCWDForProjectDir(filepath.Dir(path), path)
+	}
+	return provider, cwd, codex, skipped, nil
+}
+
+// readCappedLine reads one newline-terminated record. A record longer than cap
+// is consumed to its end and reported as oversized rather than aborting the
+// scan, which is what bufio.Scanner does instead. The returned line is nil for
+// an oversized record: a truncated prefix is not a record.
+func readCappedLine(reader *bufio.Reader, limit int) (line []byte, oversized bool, err error) {
+	for {
+		fragment, readErr := reader.ReadSlice('\n')
+		if !oversized && len(line)+len(fragment) <= limit {
+			line = append(line, fragment...)
+		} else {
+			oversized = true
+			line = nil
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if readErr != nil {
+			return line, oversized, readErr
+		}
+		return line, oversized, nil
+	}
+}
+
+const (
+	// projectDirProbeFiles bounds how many sibling transcripts the bucket probe
+	// opens. One project directory can hold hundreds of conversations and this
+	// runs on a fallback path; a handful of agreeing neighbours is as much
+	// evidence as all of them.
+	projectDirProbeFiles = 32
+	// projectDirProbeLines bounds how deep into one sibling the probe reads.
+	// Records carrying a cwd appear within the first few lines.
+	projectDirProbeLines = 64
+)
+
+// claudeCWDForProjectDir answers the question the caller actually has: which
+// working directory does this project bucket stand for, when the conversation
+// itself never recorded one?
+//
+// The bucket name is a lossy encoding — Claude folds every non-alphanumeric
+// character to a dash, so /Users/u/a-b, /Users/u/a/b, /Users/u/a.b and
+// /Users/u/a_b all land in -Users-u-a-b — and inverting it is therefore a
+// guess. The answer becomes Adoption.Cwd, which is where Sessions launches the
+// resumed agent and what it writes into the ledger. A wrong guess does not
+// degrade the adoption, it points a live agent at the wrong repository. So
+// recorded fact is preferred over inference, and inference that cannot be
+// checked is refused.
+//
+// Order:
+//
+//  1. What the neighbours in this bucket recorded about themselves. Claude
+//     stamps the unencoded cwd into its transcripts, so a sibling that encodes
+//     back to this same directory is telling us what the directory means. This
+//     is the same move watch.resolveAmbiguousByRecordedCWD makes for an
+//     ambiguous bucket: reading a fact, not reconstructing one. Siblings that
+//     disagree mean two workspaces share the bucket, and the probe refuses
+//     rather than picking one.
+//  2. Inverting the name, and only if the result is an existing directory. The
+//     inversion assumes every dash was a separator, which is wrong for the very
+//     paths that made the strict encoding necessary. Requiring the result to
+//     exist is what separates "plausible" from "fabricated".
+//
+// Returning "" is a refusal: adoptionFromPath reports the conversation as
+// provider-unbound instead of adopting it into a directory nobody chose.
+func claudeCWDForProjectDir(dir, self string) string {
+	if recorded, ok := recordedCWDForProjectDir(dir, self); ok {
+		return recorded
+	}
+	decoded := decodeClaudeProjectDirName(filepath.Base(dir))
+	if decoded == "" {
+		return ""
+	}
+	if info, err := os.Stat(decoded); err != nil || !info.IsDir() {
+		return ""
+	}
+	return decoded
+}
+
+// recordedCWDForProjectDir reads the working directory the other conversations
+// in this bucket recorded for themselves.
+//
+// A sibling only counts as evidence if its recorded cwd encodes back to this
+// directory under some encoding Sessions or Claude uses. That filter is what
+// makes a migrated neighbour harmless: a conversation moved from another
+// machine still carries the source machine's cwd in its records, and the
+// destination bucket was named after the destination workspace, so the two do
+// not agree and the stale value is ignored instead of being adopted.
+func recordedCWDForProjectDir(dir, self string) (string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	found := ""
+	probed := 0
+	for _, entry := range entries {
+		if probed >= projectDirProbeFiles {
+			break
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if path == self {
+			continue
+		}
+		probed++
+		recorded, ok := transcriptRecordedCWD(path)
+		if !ok || !encodesToProjectDir(recorded, dir) {
+			continue
+		}
+		if found == "" {
+			found = recorded
+			continue
+		}
+		if found != recorded {
+			// Two workspaces share this bucket. Neither is more likely than the
+			// other, and adopting into the wrong one is worse than refusing.
+			return "", false
 		}
 	}
-	return provider, cwd, codex, nil
+	return found, found != ""
+}
+
+// encodesToProjectDir reports whether cwd is a working directory this project
+// directory could have been named after, under any encoding Sessions or Claude
+// writes. watch owns that list, so this asks watch rather than restating it.
+func encodesToProjectDir(cwd, dir string) bool {
+	cleaned := filepath.Clean(dir)
+	for _, candidate := range watch.ClaudeProjectDirsUnder(filepath.Dir(cleaned), cwd) {
+		if filepath.Clean(candidate) == cleaned {
+			return true
+		}
+	}
+	return false
+}
+
+// transcriptRecordedCWD reads the cwd a transcript stamped into its own
+// records, over a bounded prefix and with the same oversized-record rule the
+// identity scan uses: a truncated record is not a record, and tool output must
+// never get to impersonate a conversation's workspace.
+func transcriptRecordedCWD(path string) (string, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for lines := 0; lines < projectDirProbeLines; lines++ {
+		line, oversized, readErr := readCappedLine(reader, identityRecordCap)
+		if len(line) > 0 && !oversized {
+			var record struct {
+				CWD string `json:"cwd"`
+			}
+			if json.Unmarshal(line, &record) == nil && record.CWD != "" {
+				return record.CWD, true
+			}
+		}
+		if readErr != nil {
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// decodeClaudeProjectDirName inverts the project-directory encoding produced by
+// watch.EncodeClaudeCWD, which folds "/", "\\", and ":" to "-". A Windows cwd
+// therefore arrives as "C--Users-x-proj"; decoding that with the Unix rule
+// alone yielded "/C/Users/x/proj" and adoption resolved a directory that does
+// not exist on the host that recorded it.
+//
+// It does not invert watch.EncodeClaudeCWDStrict, and cannot: that encoding
+// folds every non-alphanumeric character, so "-Users-u-a-b" has as many
+// pre-images as there are punctuation marks. Callers must go through
+// claudeCWDForProjectDir, which prefers recorded fact and refuses an inversion
+// it cannot confirm on disk.
+//
+// The decision is made on the encoded shape rather than the running GOOS so a
+// transcript copied between machines still resolves to the cwd it was written
+// with. The encoding is lossy — a dash in the original path is indistinguishable
+// from a separator — so this stays a best-effort fallback used only when the
+// transcript itself carried no cwd.
+func decodeClaudeProjectDirName(base string) string {
+	if base == "" {
+		return ""
+	}
+	// "C--Users-x-proj" can only have come from a Windows drive-qualified path:
+	// a POSIX absolute path always encodes with a leading "-".
+	if len(base) >= 3 && isASCIILetter(base[0]) && base[1] == '-' && base[2] == '-' {
+		return string(base[0]) + `:\` + strings.ReplaceAll(base[3:], "-", `\`)
+	}
+	decoded := strings.ReplaceAll(base, "-", "/")
+	if !strings.HasPrefix(decoded, "/") {
+		decoded = "/" + decoded
+	}
+	return decoded
+}
+
+func isASCIILetter(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z')
 }
 
 type AdoptOptions struct {
@@ -299,6 +539,31 @@ type AdoptOptions struct {
 	Events      AdoptionEventReader
 	RuntimeMode string
 	Claude      *state.ClaudeSessionOptions
+	// ClaudeLive, when set, looks up which live Claude process already has
+	// this conversation open so the caller can say so. It never changes what
+	// adoption does.
+	ClaudeLive *watch.ClaudeLiveQuery
+}
+
+// describeClaudeHolder names the process holding a conversation in terms the
+// user can act on. The registry records what Claude itself displays, so the
+// name is the one they will recognise in their own window.
+func describeClaudeHolder(holder *watch.ClaudeLiveSession) string {
+	if holder == nil {
+		return ""
+	}
+	label := strings.TrimSpace(holder.Name)
+	if label == "" {
+		label = strings.TrimSpace(holder.CWD)
+	}
+	if label == "" {
+		return fmt.Sprintf("another Claude process (pid %d)", holder.PID)
+	}
+	described := fmt.Sprintf("%s (pid %d)", label, holder.PID)
+	if waiting := strings.TrimSpace(holder.WaitingFor); waiting != "" {
+		described += ", waiting on " + waiting
+	}
+	return described
 }
 
 type AdoptionEventReader interface {
@@ -342,6 +607,26 @@ func Adopt(
 	if adoption.ProviderUUID == "" || len(adoption.Args) == 0 {
 		return AdoptResult{}, errors.New("provider-unbound: adoption has no safe provider resume recipe")
 	}
+	// Report which live Claude process already has this conversation open, if
+	// the caller asked and the answer is knowable.
+	//
+	// This deliberately does not refuse. Sessions cannot make a provider
+	// conversation exclusive: Claude does not lock its transcript, the user
+	// can open one a second after any check, and this registry is
+	// undocumented. Refusing would claim a guarantee that does not exist, and
+	// would buy an override flag and a set of not-sure states to reason about.
+	// The exposure is already handled where it can be: the transcript mirror
+	// is append-only, so if two writers do collide, Sessions' copy holds the
+	// union. Making the consequence survivable is worth more than pretending
+	// to prevent the cause.
+	var liveHolder *watch.ClaudeLiveSession
+	if selected.ClaudeLive != nil && adoption.Tool == string(state.ToolClaude) &&
+		adoption.ProviderUUID != "" {
+		if check := watch.ClaudeConversationOpen(
+			adoption.ProviderUUID, *selected.ClaudeLive); check.External {
+			liveHolder = check.Holder
+		}
+	}
 	if selected.Source != nil && strings.TrimSpace(name) == "" {
 		name = selected.Source.Name
 	}
@@ -351,12 +636,14 @@ func Adopt(
 	description := ""
 	var tags map[string]string
 	profile := ""
+	configDir := ""
 	kind := ""
 	var displayParent *string
 	if selected.Source != nil {
 		description = selected.Source.Description
 		tags = state.CloneTags(selected.Source.Tags)
 		profile = selected.Source.Profile
+		configDir = selected.Source.ConfigDir
 		if selected.Source.DisplayParentSessionID != nil {
 			parent := *selected.Source.DisplayParentSessionID
 			displayParent = &parent
@@ -391,7 +678,7 @@ func Adopt(
 	created, err := creator.Create(ctx, state.CreateSessionRequest{
 		Cmd: adoption.Cmd, Args: append([]string(nil), adoption.Args...),
 		Cwd: adoption.Cwd, Name: name, Description: description, Tags: tags,
-		Profile: profile, Kind: kind, ConversationID: conversationID,
+		Profile: profile, ConfigDir: configDir, Kind: kind, ConversationID: conversationID,
 		DisplayParentSessionID: displayParent, Force: selected.Force,
 		Claude: selected.Claude,
 	})
@@ -402,6 +689,7 @@ func Adopt(
 		ctx, adoption, name, description, kind, created.ID, selected.Source,
 		selected.Events, boundaries, observations,
 	)
+	result.AlsoOpenIn = describeClaudeHolder(liveHolder)
 	return result, nil
 }
 

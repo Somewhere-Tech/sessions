@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -146,6 +147,28 @@ func TestSessionTablesAddProfileColumnOnlyWhenNeeded(t *testing.T) {
 			strings.Contains(stdout.String(), "PROFILE") {
 			t.Fatalf("%s default table exit=%d stdout=%q stderr=%q", command, code, stdout.String(), stderr.String())
 		}
+	}
+}
+
+func TestWaitReturnsProviderPromptWithoutTerminalBabysitting(t *testing.T) {
+	id := "23000000-0000-4000-8000-000000000001"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		if request.URL.Path != "/api/sessions" {
+			http.NotFound(response, request)
+			return
+		}
+		_, _ = response.Write([]byte(`{"sessions":[{"id":"` + id + `","cmd":"codex","cwd":"/tmp","createdAt":1,"pid":1,"tool":"codex","working":false,"idleReason":"needs-input","idleDetail":"Allow the focused regression test to open its local IPC socket?","lastSummary":"Waiting for approval."}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"--host", server.URL, "wait", id, "--idle", "1h", "--timeout", "1h", "--summary"},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if code != 0 || stderr.String() != "" || !strings.Contains(stdout.String(), "needs-input — Allow the focused regression test") {
+		t.Fatalf("wait prompt exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -363,4 +386,369 @@ func runOwnershipCLI(t *testing.T, host string, args ...string) (string, string,
 	var stdout, stderr bytes.Buffer
 	code := run(arguments, strings.NewReader(""), &stdout, &stderr)
 	return stdout.String(), stderr.String(), code
+}
+
+// killStubServer answers the daemon routes cmdKill needs and returns whatever
+// the batch responder produces, so tests can model a daemon that refuses,
+// partially ends, or silently accepts a batch.
+func killStubServer(t *testing.T, ids []string, batch func(http.ResponseWriter)) *httptest.Server {
+	t.Helper()
+	listed := make([]string, 0, len(ids))
+	for _, id := range ids {
+		listed = append(listed, `{"id":"`+id+`","cmd":"/bin/sh"}`)
+	}
+	sessionsBody := `{"sessions":[` + strings.Join(listed, ",") + `]}`
+	return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/lanes":
+			_, _ = response.Write([]byte(`{"lanes":[],"user_creator_id":"uid:424242"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_, _ = response.Write([]byte(sessionsBody))
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/end-batch":
+			_, _ = io.Copy(io.Discard, request.Body)
+			batch(response)
+		case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/api/sessions/"):
+			_, _ = io.Copy(io.Discard, request.Body)
+			_, _ = response.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+}
+
+func TestKillBatchReportsOnlyTargetsTheDaemonConfirmed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	targetA := "24000000-0000-4000-8000-000000000001"
+	targetB := "24000000-0000-4000-8000-000000000002"
+	server := killStubServer(t, []string{targetA, targetB}, func(response http.ResponseWriter) {
+		_, _ = response.Write([]byte(`{"ok":true,"ids":["` + targetA + `"]}`))
+	})
+	defer server.Close()
+
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "kill", targetA, targetB)
+	if code != 1 {
+		t.Fatalf("partial batch exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "killed "+targetA) || strings.Contains(stdout, "killed "+targetB) {
+		t.Fatalf("partial batch claimed an unconfirmed kill: stdout=%q", stdout)
+	}
+	if !strings.Contains(stderr, targetB) || !strings.Contains(stderr, "did not end") {
+		t.Fatalf("partial batch stderr=%q", stderr)
+	}
+
+	stdout, stderr, code = runOwnershipCLI(t, server.URL, "--json", "kill", targetA, targetB)
+	if code != 1 {
+		t.Fatalf("partial batch JSON exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var result killResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode kill JSON: %v\n%s", err, stdout)
+	}
+	if len(result.Items) != 2 || result.OperationID == "" {
+		t.Fatalf("kill JSON = %#v", result)
+	}
+	if result.Items[0].ID != targetA || result.Items[0].Status != killStatusKilled {
+		t.Fatalf("first item = %#v", result.Items[0])
+	}
+	if result.Items[1].ID != targetB || result.Items[1].Status != killStatusFailed || result.Items[1].Reason == "" {
+		t.Fatalf("second item = %#v", result.Items[1])
+	}
+}
+
+func TestKillBatchWithoutConfirmationIsAmbiguousNotSuccess(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	targetA := "24000000-0000-4000-8000-000000000003"
+	targetB := "24000000-0000-4000-8000-000000000004"
+	server := killStubServer(t, []string{targetA, targetB}, func(response http.ResponseWriter) {
+		_, _ = response.Write([]byte(`{}`))
+	})
+	defer server.Close()
+
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "kill", targetA, targetB)
+	if code != 2 {
+		t.Fatalf("unconfirmed batch exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "killed ") {
+		t.Fatalf("unconfirmed batch claimed a kill: stdout=%q", stdout)
+	}
+	if !strings.Contains(stderr, "could not confirm") {
+		t.Fatalf("unconfirmed batch stderr=%q", stderr)
+	}
+
+	server.Close()
+	explicitlyRefused := killStubServer(t, []string{targetA, targetB}, func(response http.ResponseWriter) {
+		_, _ = response.Write([]byte(`{"ok":false,"error":"guarded batch refused"}`))
+	})
+	defer explicitlyRefused.Close()
+	stdout, stderr, code = runOwnershipCLI(t, explicitlyRefused.URL, "kill", targetA, targetB)
+	if code != 1 || strings.Contains(stdout, "killed ") || !strings.Contains(stderr, "guarded batch refused") {
+		t.Fatalf("refused batch exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestKillEmitsJSONForOneTargetBeforeOrAfterTheCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	target := "24000000-0000-4000-8000-000000000005"
+	server := killStubServer(t, []string{target}, func(response http.ResponseWriter) {
+		http.Error(response, `{"error":"batch end requires at least two session ids"}`, http.StatusBadRequest)
+	})
+	defer server.Close()
+
+	for _, arguments := range [][]string{{"--json", "kill", target}, {"kill", "--json", target}} {
+		stdout, stderr, code := runOwnershipCLI(t, server.URL, arguments...)
+		if code != 0 || stderr != "" {
+			t.Fatalf("%v exit=%d stdout=%q stderr=%q", arguments, code, stdout, stderr)
+		}
+		var result killResult
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("decode %v JSON: %v\n%s", arguments, err, stdout)
+		}
+		if len(result.Items) != 1 || result.Items[0].ID != target || result.Items[0].Status != killStatusKilled {
+			t.Fatalf("%v result = %#v", arguments, result)
+		}
+		if result.OperationID != "" {
+			t.Fatalf("single kill invented a batch operation id: %#v", result)
+		}
+	}
+}
+
+func TestKillUnknownSessionReportsFailureInBothModes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	target := "24000000-0000-4000-8000-000000000006"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/lanes":
+			_, _ = response.Write([]byte(`{"lanes":[],"user_creator_id":"uid:424242"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_, _ = response.Write([]byte(`{"sessions":[{"id":"` + target + `","cmd":"/bin/sh"}]}`))
+		case request.Method == http.MethodDelete && request.URL.Path == "/api/sessions/"+target:
+			response.WriteHeader(http.StatusNotFound)
+			_, _ = response.Write([]byte(`{"error":"session not found"}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "kill", target)
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "no session matching") {
+		t.Fatalf("unknown kill exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	stdout, stderr, code = runOwnershipCLI(t, server.URL, "--json", "kill", target)
+	if code != 1 {
+		t.Fatalf("unknown kill JSON exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var result killResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode unknown kill JSON: %v\n%s", err, stdout)
+	}
+	if len(result.Items) != 1 || result.Items[0].Status != killStatusFailed {
+		t.Fatalf("unknown kill result = %#v", result)
+	}
+}
+
+// listSelectionServer answers /api/sessions and /api/lanes with one live
+// session, one ended session, one live lane, and one exited lane, honouring
+// include_exited exactly as the daemon does. It records every include_exited
+// value it was asked for so a test can prove the flag reached the wire.
+func listSelectionServer(t *testing.T, asked *[]string) *httptest.Server {
+	t.Helper()
+	const (
+		liveSession  = `{"id":"31000000-0000-4000-8000-000000000001","name":"live session","cmd":"/bin/sh","cwd":"/tmp","createdAt":1,"lastDataAt":1,"tool":"claude","exited":false,"root_creator_kind":"external","root_creator_id":"team:selection"}`
+		endedSession = `{"id":"31000000-0000-4000-8000-000000000002","name":"ended session","cmd":"/bin/sh","cwd":"/tmp","createdAt":1,"lastDataAt":1,"tool":"claude","exited":true,"exitCode":0,"root_creator_kind":"external","root_creator_id":"team:selection"}`
+		liveLane     = `{"id":"31000000-0000-4000-8000-000000000003","kind":"lane","name":"live lane","cmd":"/bin/sh","cwd":"/tmp","createdAt":1,"lastDataAt":1,"tool":"lane","exited":false,"root_creator_kind":"external","root_creator_id":"team:selection"}`
+		exitedLane   = `{"id":"31000000-0000-4000-8000-000000000004","kind":"lane","name":"exited lane","cmd":"/bin/sh","cwd":"/tmp","createdAt":1,"lastDataAt":1,"tool":"lane","exited":true,"exitCode":0,"root_creator_kind":"external","root_creator_id":"team:selection"}`
+	)
+	return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/api/sessions":
+			if asked != nil {
+				*asked = append(*asked, request.URL.Query().Get("include_exited"))
+			}
+			if request.URL.Query().Get("include_exited") == "1" {
+				_, _ = response.Write([]byte(`{"sessions":[` + liveSession + `,` + endedSession + `,` + liveLane + `,` + exitedLane + `]}`))
+				return
+			}
+			_, _ = response.Write([]byte(`{"sessions":[` + liveSession + `,` + liveLane + `]}`))
+		case "/api/lanes":
+			_, _ = response.Write([]byte(`{"lanes":[` + liveLane + `,` + exitedLane + `],"user_creator_id":"uid:selection"}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+}
+
+// --json used to mean "and also give me every session that ever ended", which
+// made the most common agent question — what is running? — unanswerable in the
+// machine-readable mode and turned -a into a no-op there.
+func TestLSJSONReturnsTheSameWorkingSetAsThePlainTable(t *testing.T) {
+	t.Setenv("SESSIONS_OWNER_ID", "team:selection")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	var asked []string
+	server := listSelectionServer(t, &asked)
+	defer server.Close()
+
+	decode := func(t *testing.T, args ...string) []map[string]any {
+		t.Helper()
+		stdout, stderr, code := runOwnershipCLI(t, server.URL, args...)
+		if code != 0 || stderr != "" {
+			t.Fatalf("%v exit=%d stdout=%q stderr=%q", args, code, stdout, stderr)
+		}
+		var listed []map[string]any
+		if err := json.Unmarshal([]byte(stdout), &listed); err != nil {
+			t.Fatalf("%v decode: %v\n%s", args, err, stdout)
+		}
+		return listed
+	}
+
+	live := decode(t, "--json", "ls")
+	if len(live) != 1 || live[0]["name"] != "live session" {
+		t.Fatalf("--json ls returned %#v, want only the live session", live)
+	}
+	if asked[len(asked)-1] != "" {
+		t.Fatalf("--json ls sent include_exited=%q, want the live-only default", asked[len(asked)-1])
+	}
+
+	everything := decode(t, "--json", "ls", "-a")
+	if len(everything) != 2 {
+		t.Fatalf("--json ls -a returned %#v, want the live and the ended session", everything)
+	}
+	if asked[len(asked)-1] != "1" {
+		t.Fatalf("--json ls -a sent include_exited=%q, want 1", asked[len(asked)-1])
+	}
+
+	// The plain table is the contract --json now matches on both settings.
+	plain, stderr, code := runOwnershipCLI(t, server.URL, "ls")
+	if code != 0 || stderr != "" || !strings.Contains(plain, "live session") || strings.Contains(plain, "ended session") {
+		t.Fatalf("ls exit=%d stdout=%q stderr=%q", code, plain, stderr)
+	}
+	plain, stderr, code = runOwnershipCLI(t, server.URL, "ls", "-a")
+	if code != 0 || stderr != "" || !strings.Contains(plain, "live session") || !strings.Contains(plain, "ended session") {
+		t.Fatalf("ls -a exit=%d stdout=%q stderr=%q", code, plain, stderr)
+	}
+}
+
+// One concept, one spelling, on every command that has it. -a and
+// --include-exited are canonical and --include-closed is the retained `list`
+// alias; all three have to be accepted identically or a script that moves
+// between commands breaks on a flag it already uses.
+func TestIncludeEndedHasOneMeaningOnLsListAndLanes(t *testing.T) {
+	t.Setenv("SESSIONS_OWNER_ID", "team:selection")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	for _, spelling := range []string{"-a", "--include-exited", "--include-closed"} {
+		for _, command := range []string{"ls", "list", "lanes"} {
+			t.Run(command+" "+spelling, func(t *testing.T) {
+				var asked []string
+				server := listSelectionServer(t, &asked)
+				defer server.Close()
+				stdout, stderr, code := runOwnershipCLI(t, server.URL, command, spelling)
+				if code != 0 || stderr != "" {
+					t.Fatalf("%s %s exit=%d stdout=%q stderr=%q", command, spelling, code, stdout, stderr)
+				}
+				if !strings.Contains(stdout, "exited") {
+					t.Fatalf("%s %s did not return ended records: %q", command, spelling, stdout)
+				}
+				if command != "lanes" && asked[len(asked)-1] != "1" {
+					t.Fatalf("%s %s sent include_exited=%q, want 1", command, spelling, asked[len(asked)-1])
+				}
+			})
+		}
+	}
+}
+
+// --all is the owner axis. It has never widened the state selection and must
+// not start; the two axes are independent and an agent has to be able to ask
+// for one without silently getting the other.
+func TestAllOwnersSelectsOwnersAndNotStates(t *testing.T) {
+	t.Setenv("SESSIONS_OWNER_ID", "team:selection")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	for _, spelling := range []string{"--all", "--all-owners"} {
+		for _, command := range []string{"ls", "list", "lanes"} {
+			t.Run(command+" "+spelling, func(t *testing.T) {
+				var asked []string
+				server := listSelectionServer(t, &asked)
+				defer server.Close()
+				stdout, stderr, code := runOwnershipCLI(t, server.URL, command, spelling)
+				if code != 0 || stderr != "" {
+					t.Fatalf("%s %s exit=%d stdout=%q stderr=%q", command, spelling, code, stdout, stderr)
+				}
+				if command == "lanes" {
+					return
+				}
+				if asked[len(asked)-1] != "" {
+					t.Fatalf("%s %s sent include_exited=%q; the owner axis must not widen the state axis", command, spelling, asked[len(asked)-1])
+				}
+				if strings.Contains(stdout, "ended session") {
+					t.Fatalf("%s %s returned ended records: %q", command, spelling, stdout)
+				}
+			})
+		}
+	}
+}
+
+// An agent reads the error, not the source. A rejected option has to say which
+// of the two axes each flag belongs to, or the reader retries with --all.
+func TestListSurfaceUsageErrorsSeparateTheStateAndOwnerAxes(t *testing.T) {
+	for _, command := range []string{"ls", "list", "lanes"} {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{command, "--include-everything"}, strings.NewReader(""), &stdout, &stderr)
+		if code != 1 {
+			t.Fatalf("%s bad option exit=%d stderr=%q", command, code, stderr.String())
+		}
+		for _, want := range []string{
+			"--include-everything", "--include-exited", "--include-closed", "--all-owners",
+			"also returns ended sessions and lanes", "it does not change which states are shown",
+		} {
+			if !strings.Contains(stderr.String(), want) {
+				t.Fatalf("%s usage error is missing %q: %q", command, want, stderr.String())
+			}
+		}
+	}
+}
+
+// A lane dispatched with `sessions run` is invisible to ls and drops out of the
+// default list view when it exits, so the one place an agent looks first has to
+// say where the work actually went.
+func TestEmptyLSPointsAtTheViewThatListsLanes(t *testing.T) {
+	t.Setenv("SESSIONS_OWNER_ID", "team:selection")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"sessions":[]}`))
+	}))
+	defer server.Close()
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "ls")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "(no sessions)") ||
+		!strings.Contains(stdout, "sessions list -a") {
+		t.Fatalf("empty ls exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+// `sessions list -a` is documented as the one view that answers "show me
+// everything", so it has to actually return both kinds in both states.
+func TestListIncludingEndedShowsEverySessionAndLane(t *testing.T) {
+	t.Setenv("SESSIONS_OWNER_ID", "team:selection")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	server := listSelectionServer(t, nil)
+	defer server.Close()
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "list", "-a")
+	if code != 0 || stderr != "" {
+		t.Fatalf("list -a exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{"live session", "ended session", "live lane", "exited lane"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("list -a is missing %q: %q", want, stdout)
+		}
+	}
 }

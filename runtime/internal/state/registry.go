@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
 const (
@@ -54,6 +55,9 @@ type PreparedSession struct {
 	WorktreeBranch    string
 	WorktreeBase      string
 	SourceRepo        string
+	DelegationKind    string
+	Permissions       string
+	Lifecycle         string
 }
 
 type SessionMetadata struct {
@@ -63,6 +67,9 @@ type SessionMetadata struct {
 	Tags                   map[string]string
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
+	DelegationKind         string
+	Permissions            string
+	Lifecycle              string
 	OnIdle                 string
 	Kind                   string
 	SpecPath               string
@@ -243,6 +250,7 @@ func (r *Registry) CreateWithLifecycle(
 		Profile: profile, ConfigDir: configDir,
 		WorktreePath: request.WorktreePath, WorktreeBranch: request.WorktreeBranch,
 		WorktreeBase: request.WorktreeBase, SourceRepo: request.SourceRepo,
+		DelegationKind: request.DelegationKind, Permissions: request.Permissions, Lifecycle: request.Lifecycle,
 	}
 	if prepared.Name != "" {
 		launchRequest.Env["RUNNER_NAME"] = prepared.Name
@@ -287,7 +295,8 @@ func (r *Registry) CreateWithLifecycle(
 		Name: prepared.Name, Description: prepared.Description, DescriptionSource: prepared.DescriptionSource,
 		Tags: CloneTags(prepared.Tags), DisplayParentSessionID: cloneStringPointer(request.DisplayParentSessionID),
 		OnIdle: strings.TrimSpace(request.OnIdle), Kind: prepared.Kind, SpecPath: prepared.SpecPath,
-		Profile: prepared.Profile, ConfigDir: prepared.ConfigDir,
+		Profile: prepared.Profile, ConfigDir: prepared.ConfigDir, DelegationKind: prepared.DelegationKind,
+		Permissions: prepared.Permissions, Lifecycle: prepared.Lifecycle,
 	}
 	if request.Continuation != nil {
 		continuation := *request.Continuation
@@ -330,8 +339,15 @@ func (r *Registry) CreateWithLifecycle(
 
 	runner, err := r.launcher.Launch(ctx, launchRequest)
 	if err != nil {
-		// Preserve the TS daemon's diagnostic posture: a failed launch leaves
-		// its plist and state metadata available for inspection/recovery.
+		// A failed create has no registered session that can own a lingering
+		// service. Remove only this exact launch registration so a runner that
+		// never published its socket cannot keep spinning invisibly. Metadata
+		// and logs remain available for diagnosis and recovery.
+		if reaper, ok := r.launcher.(interface{ Reap(string) error }); ok {
+			if reapErr := reaper.Reap(id); reapErr != nil {
+				return SessionInfo{}, errors.Join(err, fmt.Errorf("stop failed runner %s: %w", id, reapErr))
+			}
+		}
 		return SessionInfo{}, err
 	}
 	actual := runner.Info()
@@ -430,8 +446,9 @@ func (r *Registry) RegisterMetadata(ctx context.Context, runner proto.Runner, me
 	return r.register(ctx, runner, SessionMetadata{
 		Name: metadata.Name, Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
-		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt),
-		OnIdle:     onIdle, Kind: metadata.Kind, SpecPath: metadata.SpecPath,
+		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), DelegationKind: metadata.DelegationKind,
+		Permissions: metadata.Permissions, Lifecycle: metadata.Lifecycle,
+		OnIdle: onIdle, Kind: metadata.Kind, SpecPath: metadata.SpecPath,
 		Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  metadata.ContinuedFromProvider,
@@ -764,7 +781,14 @@ func (r *Registry) DeepDiagnostics() []map[string]any {
 	now := time.Now().UnixMilli()
 	result := make([]map[string]any, 0, len(list))
 	for _, info := range list {
-		session, _ := r.Get(info.ID)
+		// List(true) includes exited sessions, which the post-exit grace timer
+		// removes from the registry 30 seconds later. A diagnostics request
+		// racing that timer must report the session, not panic on a nil
+		// receiver.
+		claudeEvents := int64(0)
+		if session, ok := r.Get(info.ID); ok {
+			claudeEvents = session.ClaudeEventCount()
+		}
 		result = append(result, map[string]any{
 			"id":            info.ID,
 			"tool":          info.Tool,
@@ -773,7 +797,7 @@ func (r *Registry) DeepDiagnostics() []map[string]any {
 			"pid":           info.PID,
 			"working":       info.Working,
 			"exited":        info.Exited,
-			"claudeEvents":  session.ClaudeEventCount(),
+			"claudeEvents":  claudeEvents,
 			"lastDataAgeMs": now - info.LastDataAt,
 		})
 	}
@@ -867,8 +891,9 @@ func writeMetadata(dir string, info proto.RunnerInfo, sessionMetadata SessionMet
 		ID: info.ID, Name: sessionMetadata.Name, Description: sessionMetadata.Description,
 		DescriptionSource: sessionMetadata.DescriptionSource, Kind: sessionMetadata.Kind, SpecPath: sessionMetadata.SpecPath,
 		Tags: CloneTags(sessionMetadata.Tags), DisplayParentSessionID: cloneStringPointer(sessionMetadata.DisplayParentSessionID),
-		SetAsideAt: cloneInt64Pointer(sessionMetadata.SetAsideAt),
-		Profile:    sessionMetadata.Profile, ConfigDir: sessionMetadata.ConfigDir,
+		SetAsideAt: cloneInt64Pointer(sessionMetadata.SetAsideAt), DelegationKind: sessionMetadata.DelegationKind,
+		Permissions: sessionMetadata.Permissions, Lifecycle: sessionMetadata.Lifecycle,
+		Profile: sessionMetadata.Profile, ConfigDir: sessionMetadata.ConfigDir,
 		ContinuedFromHistoryID: sessionMetadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  sessionMetadata.ContinuedFromProvider,
 		ContinuationMode:       sessionMetadata.ContinuationMode,
@@ -894,6 +919,9 @@ type RunnerMetadata struct {
 	Tags                   map[string]string
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
+	DelegationKind         string
+	Permissions            string
+	Lifecycle              string
 	Kind                   string
 	SpecPath               string
 	Profile                string
@@ -930,8 +958,9 @@ func parseRunnerMetadata(encoded []byte) (RunnerMetadata, error) {
 		},
 		Name: metadata.Name, Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
-		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt),
-		Kind:       metadata.Kind, SpecPath: metadata.SpecPath, Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
+		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), DelegationKind: metadata.DelegationKind,
+		Permissions: metadata.Permissions, Lifecycle: metadata.Lifecycle,
+		Kind: metadata.Kind, SpecPath: metadata.SpecPath, Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  metadata.ContinuedFromProvider,
 		ContinuationMode:       metadata.ContinuationMode,
@@ -999,48 +1028,33 @@ func withToolDefaultArgs(cmd string, args []string) []string {
 	return append(result, defaults...)
 }
 
+// appendClaudeSessionID gives a fresh Claude session a stable identity. It must
+// recognize every spelling that already names a conversation, including the
+// `-r` short form and the joined `--flag=value` form. Missing one made Sessions
+// launch `claude -r <uuid> --session-id <fresh uuid>`, which contradicts the
+// resume the caller asked for; `sessions new` (cmd/sessions/commands.go) has
+// always treated `-r` as a resume flag.
 func appendClaudeSessionID(cmd string, args []string, id string) []string {
 	result := append([]string{}, args...)
 	if classifyTool(cmd) != ToolClaude {
 		return result
 	}
-	for i, arg := range result {
-		if (arg == "--session-id" || arg == "--resume") && i+1 < len(result) {
-			return result
-		}
+	if providerargs.HasClaudeIdentity(result) {
+		return result
 	}
-	return append(result, "--session-id", id)
+	return append(result, providerargs.ClaudeSessionIDFlag, id)
 }
 
+// spawnControls reads the model and effort a spawn argv carries. It used to
+// have its own inline copy of both parses, which missed the `--model=opus`
+// joined form the CLI accepts.
 func spawnControls(tool SessionTool, args []string) (model, effort string, fast bool) {
-	argValue := func(names ...string) string {
-		for i := 0; i+1 < len(args); i++ {
-			for _, name := range names {
-				if args[i] == name {
-					return args[i+1]
-				}
-			}
-		}
-		return ""
-	}
-	configValue := func(key string) string {
-		for i := 0; i+1 < len(args); i++ {
-			if args[i] != "-c" && args[i] != "--config" {
-				continue
-			}
-			prefix := key + "="
-			if strings.HasPrefix(args[i+1], prefix) {
-				return strings.Trim(strings.TrimPrefix(args[i+1], prefix), `"'`)
-			}
-		}
-		return ""
-	}
-	model = argValue("--model", "-m")
+	model = providerargs.Value(args, providerargs.ModelFlags()...)
 	if tool == ToolCodex {
-		effort = configValue("model_reasoning_effort")
-		fast = configValue("service_tier") == "priority"
+		effort = providerargs.ConfigValue(args, providerargs.CodexEffortKey)
+		fast = providerargs.ConfigValue(args, providerargs.CodexServiceTierKey) == "priority"
 	} else {
-		effort = argValue("--effort")
+		effort = providerargs.Value(args, providerargs.ClaudeEffortFlags()...)
 	}
 	return
 }

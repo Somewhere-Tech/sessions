@@ -60,23 +60,100 @@ jobs:
           npm --prefix frontend ci
           npm --prefix runtime/testdata/node-runtime ci
 
+      # `-timeout` is the difference between a test that fails and a test that
+      # hangs. Without it every package inherits Go's 10-minute default, so one
+      # blocked `<-channel` burns ten minutes, and two of them blow the 45-minute
+      # job cap — at which point GitHub kills the job and prints no test output
+      # at all. That has already happened here once. On timeout Go dumps every
+      # goroutine's stack, which names the blocked receive; the cost of this flag
+      # on a passing run is zero.
       - name: Verify Go runtime
         working-directory: runtime
         run: |
           go build ./...
           go vet ./...
-          go test ./...
+          go test -timeout 5m ./...
+
+      # The daemon is heavily concurrent: runners, watchers, the discovery loop,
+      # and every attached client share session state. Ordinary `go test` cannot
+      # see the data races that produces, so the detector runs as its own step.
+      # The detector makes everything 2–10x slower, hence the larger bound.
+      - name: Verify Go runtime under the race detector
+        working-directory: runtime
+        run: go test -race -timeout 15m ./...
+
+      # A Windows-only compile break has shipped from this repo once, and was
+      # caught by hand rather than by the gate: nothing on a pull request ever
+      # builds for Windows. The full Windows job needs a windows-2022 runner and
+      # bills at 2x; this cross-compile catches the same class of break on the
+      # runner that is already running, in well under two minutes.
+      #
+      # It proves compilation and vet only — not behavior. The behavior contracts
+      # still belong to the windows-2022 jobs.
+      - name: Verify the Windows target still compiles and vets
+        working-directory: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GOOS=windows GOARCH=amd64
+          go build ./...
+          # Test files are where GOOS-specific code rots unnoticed, because
+          # `go build` never looks at them. `go test -c` cross-compiles and links
+          # each test binary without running it — which is the only option here,
+          # since a windows/amd64 .exe cannot execute on the macOS runner.
+          for package in $(go list ./...); do
+            go test -c -o /dev/null "$package"
+          done
+          # HPCON is a pointer-shaped Windows handle and the Win32 attribute API
+          # wants its value as lpValue, so unsafeptr fires on that conversion.
+          # It is isolated to internal/winconpty, but excluding that package from
+          # the vet list does not silence it: vet reports a dependency's
+          # diagnostic while checking an importer, so cmd/sessions-runner failed
+          # too and this step was red. The relaxation therefore has to cover the
+          # package and everything that imports it, computed rather than listed
+          # so a new importer cannot quietly turn the step red again.
+          relaxed="$(go list -f '{{.ImportPath}} {{join .Deps " "}}' ./... \
+            | grep -E ' .*/internal/winconpty( |$)' | cut -d' ' -f1)"
+          relaxed="$(printf '%s\n' "$relaxed" ./internal/winconpty | grep -v '^$' | sort -u)"
+          strict="$(go list ./... | grep -v -F -x -f <(go list $relaxed))"
+          go vet $strict
+          go vet -unsafeptr=false $relaxed
 
       - name: Verify generated CLI reference
         run: |
           bash runtime/scripts/gen-cli-docs.sh
           git diff --exit-code -- docs/CLI.md
 
-      - name: Verify frontend
-        run: |
-          npm --prefix frontend run typecheck
-          npm --prefix frontend run build
-          npm --prefix frontend run test:smoke
+      # Split from one four-command step into four, so the GitHub UI names the
+      # thing that failed instead of showing a red "Verify frontend" whose cause
+      # is somewhere in a scrolled-off log.
+      - name: Typecheck frontend
+        run: npm --prefix frontend run typecheck
+
+      - name: Lint frontend
+        run: npm --prefix frontend run lint
+
+      - name: Build frontend
+        run: npm --prefix frontend run build
+
+      # scripts/run-smoke.mjs runs the suites sequentially, bounds each one so a
+      # hang fails instead of eating the job budget, and prints which suite and
+      # which scenario failed. It also refuses to start if package.json declares
+      # a `test:*` script that is in neither the gate nor its documented
+      # exclusions — that is how a new smoke suite stays gated.
+      - name: Verify frontend smoke suites
+        run: npm --prefix frontend run test:smoke
+
+      # The native shell had no lint gate at all — `cargo test` compiles it and
+      # nothing reads it. Clippy passes clean on this tree today, so `-D warnings`
+      # can be enforced from the first run rather than kept as an aspiration.
+      #
+      # Cost: a full check pass over the dependency graph (576 crates). Measured
+      # cold at 51 s wall / 2 m 38 s CPU on an 11-core arm64 box; expect roughly
+      # 2–4 min on the 3-core macos-14 runner, which has no Rust cache. It runs
+      # before `cargo test` so a lint failure costs a check pass, not a build.
+      - name: Lint native shell
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
       - name: Verify native shell
         run: cargo test --manifest-path src-tauri/Cargo.toml

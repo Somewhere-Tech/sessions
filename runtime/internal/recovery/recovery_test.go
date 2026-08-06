@@ -6,8 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
@@ -506,6 +507,9 @@ func TestRealityProbesClassifyRuntimeOnlyRunnerAsExternal(t *testing.T) {
 		LaunchdProbe: func(context.Context, string) (recovery.LaunchdStatus, error) {
 			return recovery.LaunchdStatus{Loaded: true, Running: false}, nil
 		},
+		// The recorded pid is fictional; a real probe would answer differently
+		// on every machine, and this test is about the socket signals.
+		ProcessProbe: func(context.Context, proto.RunnerInfo) bool { return false },
 	}).Report(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -520,6 +524,223 @@ func TestRealityProbesClassifyRuntimeOnlyRunnerAsExternal(t *testing.T) {
 	t.Logf("external=%s metadata=%t socket=%t hello=%t launchd_loaded=%t launchd_running=%t",
 		report.Lanes[0].Class, reality.MetadataPresent, reality.SocketPresent, reality.Hello,
 		reality.LaunchdLoaded, reality.LaunchdRunning)
+}
+
+// TestAdoptDegradesOnOversizedConversationRecord pins the difference between a
+// lossy read and a refusal. One huge tool result used to make an otherwise
+// adoptable conversation permanently unadoptable: the user could see it and
+// could not get it back.
+func TestAdoptDegradesOnOversizedConversationRecord(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	cwd := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	provider := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	claudeRoot := filepath.Join(root, ".claude", "projects")
+	dir := filepath.Join(claudeRoot, watch.EncodeClaudeCWD(cwd))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oversized, _ := json.Marshal(map[string]any{
+		"type": "assistant", "cwd": cwd,
+		"toolOutput": strings.Repeat("x", 4*1024*1024),
+	})
+	identity, _ := json.Marshal(map[string]any{
+		"type": "user", "cwd": cwd, "sessionId": provider,
+	})
+	body := make([]byte, 0, len(oversized)+len(identity)+2)
+	body = append(append(body, oversized...), '\n')
+	body = append(append(body, identity...), '\n')
+	path := filepath.Join(dir, provider+".jsonl")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	options := recovery.AdoptionOptions{ClaudeProjectsDir: claudeRoot}
+	adoption, err := recovery.ResolveAdoption(path, options)
+	if err != nil {
+		t.Fatalf("oversized record made the conversation unadoptable: %v", err)
+	}
+	if adoption.ProviderUUID != provider || adoption.Cwd != cwd ||
+		adoption.Cmd != "claude" || len(adoption.Args) != 2 {
+		t.Fatalf("degraded adoption lost identity: %+v", adoption)
+	}
+	if adoption.SkippedRecords != 1 {
+		t.Fatalf("skipped records = %d, want the one oversized record reported", adoption.SkippedRecords)
+	}
+	// The same conversation reached through its provider UUID must degrade
+	// identically; the UUID path re-reads the file through its own resolver.
+	byUUID, err := recovery.ResolveAdoption(provider, options)
+	if err != nil {
+		t.Fatalf("uuid adoption refused an oversized record: %v", err)
+	}
+	if byUUID.SkippedRecords != 1 || byUUID.ProviderUUID != provider {
+		t.Fatalf("uuid adoption = %+v", byUUID)
+	}
+
+	store := openScratchLedger(t, root)
+	creator := &adoptTestCreator{
+		boundaries: store.Boundaries(),
+		laneID:     "20000000-0000-4000-8000-000000000009", providerUUID: provider,
+	}
+	result, err := recovery.Adopt(
+		context.Background(), adoption, "", creator, store.Boundaries(), store.Observations(),
+		recovery.AdoptOptions{Events: store},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.Adoption.SkippedRecords != 1 {
+		t.Fatalf("adopt result did not carry the lossy count: %+v", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"skippedRecords":1`) {
+		t.Fatalf("lossy count is not visible to callers: %s", encoded)
+	}
+	t.Logf("adopted lossily: provider=%s cwd=%s skipped=%d", adoption.ProviderUUID, adoption.Cwd, adoption.SkippedRecords)
+}
+
+// TestProcessProbeSuppliesLivenessWhereLaunchdCannot covers the platforms with
+// no launchd: without a process probe the third liveness signal is simply
+// absent there, and a live session reads as unexpectedly lost.
+func TestProcessProbeSuppliesLivenessWhereLaunchdCannot(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		alive bool
+		want  ledger.Class
+	}{
+		{name: "runner process alive", alive: true, want: ledger.ClassLiveManaged},
+		{name: "runner process gone", alive: false, want: ledger.ClassUnexpectedlyLost},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("HOME", root)
+			store := openScratchLedger(t, root)
+			runnerDir := filepath.Join(root, "runners")
+			if err := os.MkdirAll(runnerDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			id := "44444444-4444-4444-8444-444444444444"
+			info := proto.RunnerInfo{
+				ID: id, Cmd: "/bin/sh", Cwd: root, PID: 4321,
+				SocketPath: filepath.Join(runnerDir, id+".sock"),
+			}
+			encoded, _ := json.Marshal(info)
+			if err := os.WriteFile(filepath.Join(runnerDir, id+".json"), encoded, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Boundaries().RecordCreated(context.Background(), ledger.Created{
+				Meta: ledger.Meta{LaneID: id}, Name: "windows lane", Tool: string(state.ToolTerminal),
+				Cwd: root, LaneUUID: id,
+				CreatorKind: ledger.CreatorUser, CreatorID: "uid:501",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var probed proto.RunnerInfo
+			report, err := recovery.New(recovery.Options{
+				Reader: store, RunnerStateDir: runnerDir,
+				HelloProbe: func(context.Context, string) (proto.RunnerInfo, error) {
+					return proto.RunnerInfo{}, errors.New("socket is gone")
+				},
+				// No launchd anywhere but darwin, which is the whole point.
+				LaunchdProbe: func(context.Context, string) (recovery.LaunchdStatus, error) {
+					return recovery.LaunchdStatus{}, nil
+				},
+				ProcessProbe: func(_ context.Context, observed proto.RunnerInfo) bool {
+					probed = observed
+					return test.alive
+				},
+			}).Report(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Lanes) != 1 {
+				t.Fatalf("report=%+v", report.Lanes)
+			}
+			lane := report.Lanes[0]
+			if probed.PID != info.PID {
+				t.Fatalf("process probe saw pid %d, want the recorded runner pid %d", probed.PID, info.PID)
+			}
+			if lane.Reality.ProcessAlive != test.alive || lane.Class != test.want {
+				t.Fatalf("class=%s process_alive=%t, want %s", lane.Class, lane.Reality.ProcessAlive, test.want)
+			}
+			t.Logf("pid liveness=%t launchd_running=%t class=%s",
+				lane.Reality.ProcessAlive, lane.Reality.LaunchdRunning, lane.Class)
+		})
+	}
+}
+
+// TestMirrorReportsRecoverabilityWithoutPromisingNativeResume keeps two facts
+// apart. Sessions' own transcript copy makes a conversation readable; it can
+// never make `claude --resume` work, so it must not silence the missing
+// resume source.
+func TestMirrorReportsRecoverabilityWithoutPromisingNativeResume(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	store := openScratchLedger(t, root)
+	runnerDir := filepath.Join(root, "runners")
+	if err := os.MkdirAll(runnerDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	claudeRoot := filepath.Join(root, ".claude", "projects")
+	if err := os.MkdirAll(claudeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "55555555-5555-4555-8555-555555555555"
+	provider := "66666666-6666-4666-8666-666666666666"
+	if err := store.Boundaries().RecordCreated(context.Background(), ledger.Created{
+		Meta: ledger.Meta{LaneID: id}, Name: "mirrored", Tool: string(state.ToolClaude),
+		Cwd: root, LaneUUID: id, ProviderUUID: provider,
+		ResumeArgv:  []string{"claude", "--resume", provider},
+		CreatorKind: ledger.CreatorUser, CreatorID: "uid:501",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mirror := watch.TranscriptMirrorPath(runnerDir, id)
+	record, _ := json.Marshal(map[string]any{"type": "user", "sessionId": provider, "cwd": root})
+	if err := os.WriteFile(mirror, append(record, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := recovery.New(recovery.Options{
+		Reader: store, RunnerStateDir: runnerDir, ClaudeProjectsDir: claudeRoot,
+		LaunchdProbe: func(context.Context, string) (recovery.LaunchdStatus, error) {
+			return recovery.LaunchdStatus{}, nil
+		},
+		HelloProbe: func(context.Context, string) (proto.RunnerInfo, error) {
+			return proto.RunnerInfo{}, errors.New("no socket")
+		},
+		ProcessProbe: func(context.Context, proto.RunnerInfo) bool { return false },
+	}).Report(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Lanes) != 1 {
+		t.Fatalf("report=%+v", report.Lanes)
+	}
+	lane := report.Lanes[0]
+	if lane.Reality.Conversation != "" {
+		t.Fatalf("provider conversation should be missing, got %q", lane.Reality.Conversation)
+	}
+	if lane.Reality.TranscriptMirror != mirror || !lane.Reality.ConversationRecoverable {
+		t.Fatalf("mirror facts = %+v", lane.Reality)
+	}
+	// The resume-source anomaly is the load-bearing "native resume will not
+	// work" signal. A mirror must not clear it.
+	missing := false
+	for _, anomaly := range lane.Anomalies {
+		missing = missing || anomaly == ledger.AnomalyResumeSourceMissing
+	}
+	if !missing {
+		t.Fatalf("mirror silenced the missing native resume source: %+v", lane.Anomalies)
+	}
+	t.Logf("conversation=%q mirror=%s recoverable=%t anomalies=%v",
+		lane.Reality.Conversation, lane.Reality.TranscriptMirror,
+		lane.Reality.ConversationRecoverable, lane.Anomalies)
 }
 
 func scratchConfig(root string) state.Config {
@@ -574,6 +795,9 @@ func scratchReport(
 		HelloProbe: func(context.Context, string) (proto.RunnerInfo, error) {
 			return proto.RunnerInfo{}, errors.New("scratch fake launcher has no socket")
 		},
+		// The fake launcher records a fixed pid that may belong to anything on
+		// the host, so liveness here comes from the manager's own view.
+		ProcessProbe: func(context.Context, proto.RunnerInfo) bool { return false },
 	}).Report(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -606,12 +830,11 @@ func hasEvent(t *testing.T, store *ledger.Store, id string, kind ledger.EventTyp
 
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
+	deadline := time.Now().Add(waitConditionBudget)
 	for !condition() {
-		select {
-		case <-t.Context().Done():
-			t.Fatal("test ended before scratch lifecycle event arrived")
-		default:
-			runtime.Gosched()
+		if time.Now().After(deadline) {
+			t.Fatalf("test ended before scratch lifecycle event arrived"+" (waited %s)", waitConditionBudget)
 		}
+		time.Sleep(waitConditionPoll)
 	}
 }

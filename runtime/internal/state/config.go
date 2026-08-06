@@ -24,8 +24,10 @@ type Config struct {
 	DefaultCols  int
 	DefaultRows  int
 	StateRoot    string
-	// UserStateRoot is always ~/.local/state/sessions. Unlike the runner
-	// directory, idle and push state do not follow SESSIONS_STATE_DIR.
+	// UserStateRoot is always the platform user state root
+	// (~/.local/state/sessions on Unix, %LOCALAPPDATA%\Sessions\state on
+	// Windows). Unlike the runner directory, idle and push state do not follow
+	// SESSIONS_STATE_DIR.
 	UserStateRoot   string
 	RunnerStateDir  string
 	TokenPath       string
@@ -78,7 +80,7 @@ func ConfigFromEnv() (Config, error) {
 		MachineIDPath:   filepath.Join(userStateRoot, "machine-id"),
 		SettingsPath:    filepath.Join(userStateRoot, "settings.json"),
 		LaunchAgentsDir: serviceDefinitionsDir(home),
-		GlobalHooksPath: filepath.Join(home, ".config", "sessions", "hooks.json"),
+		GlobalHooksPath: filepath.Join(userConfigRoot(home), "hooks.json"),
 		WebDir:          webDir,
 		RunnerPath:      resolveRunnerPath(os.Getenv("SESSIONS_RUNNER")),
 	}, nil
@@ -97,6 +99,42 @@ func LocalTokenPathFromEnv() (string, error) {
 		return "", err
 	}
 	return filepath.Join(stateRoot, "token"), nil
+}
+
+// UserStateRootFor is the platform user state root for one home directory:
+// ~/.local/state/sessions on Unix and %LOCALAPPDATA%\Sessions\state on
+// Windows. It is the single derivation every component must use instead of
+// rebuilding the Unix layout by hand, so state stays in one place per host.
+// SESSIONS_STATE_DIR deliberately does not move it; see Config.UserStateRoot.
+func UserStateRootFor(home string) string {
+	return defaultStateRoot(home)
+}
+
+// UserStateRootFromEnv is the sibling of LocalTokenPathFromEnv for callers that
+// need the user state root without loading unrelated daemon settings.
+func UserStateRootFromEnv() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return UserStateRootFor(home), nil
+}
+
+// UserConfigRootFor is the platform user configuration root for one home
+// directory: ~/.config/sessions on Unix and %LOCALAPPDATA%\Sessions\config on
+// Windows. Sessions' own configuration lives here; provider-owned config
+// (Claude, Codex, somewhere) keeps its own vendor convention.
+func UserConfigRootFor(home string) string {
+	return userConfigRoot(home)
+}
+
+// UserConfigRootFromEnv resolves UserConfigRootFor against the current user.
+func UserConfigRootFromEnv() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return UserConfigRootFor(home), nil
 }
 
 func stateRootsFromEnv(home string) (stateRoot, userStateRoot, runnerDir string, err error) {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
+	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
 
 type ErrorInput struct {
@@ -40,17 +41,58 @@ type ErrorsResponse struct {
 	SchemaVersion int          `json:"schemaVersion"`
 	Errors        []ErrorEvent `json:"errors"`
 	NextSeq       uint64       `json:"nextSeq"`
+	// SkippedRecords counts append-only records the torn-record policy below
+	// could not decode. A nonzero value means this feed is complete except for
+	// those records; it never means the feed failed.
+	SkippedRecords int `json:"skipped_records,omitempty"`
+	// TruncatedBefore is the lowest sequence still retained in memory when
+	// older events aged out of the retention window. A caller asking for
+	// `since` below it knows a gap exists and can read the log file directly.
+	TruncatedBefore uint64 `json:"truncated_before,omitempty"`
 }
+
+// Torn-record policy (canonical statement; internal/verdict/store.go and
+// internal/integrations/history.go follow it, and internal/watch already did).
+//
+// Every durable Sessions record is an append-only JSONL line, and a power cut,
+// a full disk, or a killed process can leave the final line half-written. The
+// product promise is that a session is never lost and never unfindable, so one
+// torn record must never disable a subsystem. Every reader of an append-only
+// log in these packages therefore:
+//
+//  1. skips a record it cannot decode or cannot validate and keeps reading the
+//     rest of the file;
+//  2. counts every skip;
+//  3. surfaces that count to its caller, so a silently degraded read can never
+//     be mistaken for a clean one — skipping quietly would just trade a hard
+//     failure for invisible data loss;
+//  4. never rewrites or truncates the file to "repair" it: the original bytes
+//     stay on disk for a later forensic read. Writers instead append a missing
+//     final newline before their own record, so a torn tail cannot swallow the
+//     next good record; and
+//  5. bounds what it keeps in memory, so an unbounded log cannot become an
+//     unbounded process.
+//
+// A hard failure stays correct only where the caller asked for one specific
+// object and no partial answer exists (verdict.Store.Emit's own write path, a
+// single-transcript fetch by id). Those sites say so where they fail.
+
+// maxRetainedErrorEvents bounds the in-memory feed. The JSONL log on disk stays
+// complete; only the served window is capped, and ErrorsResponse.TruncatedBefore
+// tells a caller when it lost the oldest events.
+const maxRetainedErrorEvents = 5000
 
 type ErrorRecorder struct {
 	path    string
 	machine string
 	now     func() time.Time
 
-	mu          sync.Mutex
-	initialized bool
-	events      []ErrorEvent
-	nextSeq     uint64
+	mu              sync.Mutex
+	initialized     bool
+	events          []ErrorEvent
+	nextSeq         uint64
+	skippedRecords  int
+	truncatedBefore uint64
 }
 
 func NewErrorRecorder(path, machine string, now func() time.Time) *ErrorRecorder {
@@ -93,12 +135,16 @@ func (r *ErrorRecorder) Emit(input ErrorInput) (ErrorEvent, error) {
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o700); err != nil {
 		return ErrorEvent{}, fmt.Errorf("create error event directory: %w", err)
 	}
-	file, err := os.OpenFile(r.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// O_RDWR (not O_WRONLY) so the record-boundary repair below can read the
+	// final byte. O_APPEND still forces every write to the end of the file.
+	file, err := os.OpenFile(r.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return ErrorEvent{}, fmt.Errorf("open error event log: %w", err)
 	}
 	writeErr := error(nil)
 	if err := os.Chmod(r.path, 0o600); err != nil {
+		writeErr = err
+	} else if err := ensureRecordBoundary(file); err != nil {
 		writeErr = err
 	} else if _, err := file.Write(append(encoded, '\n')); err != nil {
 		writeErr = err
@@ -107,11 +153,48 @@ func (r *ErrorRecorder) Emit(input ErrorInput) (ErrorEvent, error) {
 	}
 	closeErr := file.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {
-		return ErrorEvent{}, fmt.Errorf("append error event: %w", err)
+		// A recorder that cannot write is a hard failure for this one call:
+		// there is no partial success to report, and the caller must be told
+		// its error was not recorded. Later calls still work.
+		return ErrorEvent{}, fmt.Errorf("append error event to %s: %w", r.path, err)
 	}
-	r.events = append(r.events, event)
+	r.appendRetainedLocked(event)
 	r.nextSeq = event.Seq
 	return event, nil
+}
+
+// ensureRecordBoundary appends the newline a torn final record is missing, so
+// the record written next cannot be concatenated onto half of the previous one.
+// The torn bytes themselves are left in place for a later forensic read; the
+// readers in this package skip and count them. The file must be open O_APPEND.
+func ensureRecordBoundary(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	tail := make([]byte, 1)
+	if _, err := file.ReadAt(tail, info.Size()-1); err != nil {
+		return err
+	}
+	if tail[0] == '\n' {
+		return nil
+	}
+	_, err = file.Write([]byte("\n"))
+	return err
+}
+
+// appendRetainedLocked keeps the served window bounded (policy point 5).
+func (r *ErrorRecorder) appendRetainedLocked(event ErrorEvent) {
+	r.events = append(r.events, event)
+	if len(r.events) <= maxRetainedErrorEvents {
+		return
+	}
+	dropped := len(r.events) - maxRetainedErrorEvents
+	r.events = append(r.events[:0], r.events[dropped:]...)
+	r.truncatedBefore = r.events[0].Seq
 }
 
 func (r *ErrorRecorder) Feed(since uint64) (ErrorsResponse, error) {
@@ -130,7 +213,10 @@ func (r *ErrorRecorder) Feed(since uint64) (ErrorsResponse, error) {
 	if since > next {
 		next = since
 	}
-	return ErrorsResponse{SchemaVersion: SchemaVersion, Errors: events, NextSeq: next}, nil
+	return ErrorsResponse{
+		SchemaVersion: SchemaVersion, Errors: events, NextSeq: next,
+		SkippedRecords: r.skippedRecords, TruncatedBefore: r.truncatedBefore,
+	}, nil
 }
 
 func (r *ErrorRecorder) initializeLocked() error {
@@ -150,22 +236,33 @@ func (r *ErrorRecorder) initializeLocked() error {
 	lineNumber := 0
 	loaded := make([]ErrorEvent, 0)
 	var nextSeq uint64
+	skipped := 0
+	dropped := false
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
 			lineNumber++
 			trimmed := strings.TrimSpace(string(line))
 			if trimmed != "" {
+				// Torn-record policy: a line this reader cannot decode or
+				// validate is one lost error event, never a lost error log.
+				// Skip it, count it, keep loading the rest.
 				var event ErrorEvent
 				if err := json.Unmarshal([]byte(trimmed), &event); err != nil {
-					return fmt.Errorf("decode error event line %d: %w", lineNumber, err)
-				}
-				if event.Seq == 0 || event.Kind == "" || event.Summary == "" {
-					return fmt.Errorf("decode error event line %d: invalid event", lineNumber)
-				}
-				loaded = append(loaded, event)
-				if event.Seq > nextSeq {
-					nextSeq = event.Seq
+					skipped++
+				} else if event.Seq == 0 || event.Kind == "" || event.Summary == "" {
+					skipped++
+				} else {
+					loaded = append(loaded, event)
+					if event.Seq > nextSeq {
+						nextSeq = event.Seq
+					}
+					// Drop a whole window at a time rather than one event per
+					// line, so loading a very long log stays linear.
+					if len(loaded) >= 2*maxRetainedErrorEvents {
+						loaded = append(loaded[:0], loaded[maxRetainedErrorEvents:]...)
+						dropped = true
+					}
 				}
 			}
 		}
@@ -173,11 +270,22 @@ func (r *ErrorRecorder) initializeLocked() error {
 			break
 		}
 		if readErr != nil {
-			return fmt.Errorf("read error event log: %w", readErr)
+			// The log could not be read at all (unreadable device, permissions).
+			// That is not a torn record, and reporting an empty feed as complete
+			// would be a lie, so fail with the path to inspect.
+			return fmt.Errorf("read error event log %s: %w", r.path, readErr)
 		}
+	}
+	if len(loaded) > maxRetainedErrorEvents {
+		loaded = append(loaded[:0], loaded[len(loaded)-maxRetainedErrorEvents:]...)
+		dropped = true
 	}
 	r.events = loaded
 	r.nextSeq = nextSeq
+	r.skippedRecords = skipped
+	if dropped && len(loaded) > 0 {
+		r.truncatedBefore = loaded[0].Seq
+	}
 	r.initialized = true
 	return nil
 }
@@ -232,6 +340,14 @@ func (s *Service) SearchSessions(live []state.SessionInfo) ([]HistorySession, er
 
 func (s *Service) LookupHistory(live []state.SessionInfo, id string) (HistorySession, error) {
 	return s.history.Lookup(live, id)
+}
+
+func (s *Service) Source(live []state.SessionInfo, id string) (HistorySource, error) {
+	return s.history.Source(live, id)
+}
+
+func (s *Service) ResumableProviderConversations() []watch.ResumableSession {
+	return s.history.ResumableProviderConversations()
 }
 
 func (s *Service) Transcript(live []state.SessionInfo, id string) (TranscriptResponse, error) {

@@ -132,7 +132,7 @@ func TestStatusJSONFieldTableAgainstRealScratchSession(t *testing.T) {
 	wantKeys := []string{
 		"age_ms", "created_at", "cwd", "description", "description_source", "git", "id",
 		"idle_detail", "idle_reason", "idle_since_ms", "kind", "last_activity_at", "last_summary",
-		"last_verdict", "name", "runner_protocol", "state", "tool",
+		"last_verdict", "lifecycle", "name", "permissions", "runner_protocol", "state", "tool",
 	}
 	gotKeys := make([]string, 0, len(output))
 	for key := range output {

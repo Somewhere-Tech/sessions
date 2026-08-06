@@ -34,12 +34,10 @@ interface Block {
 // "what Claude did" without expanding the full tool output. Sourced
 // from `tool_use` content blocks inside an assistant event.
 //
-// Multi-step assistant turns (Claude calls 5 tools then replies)
-// arrive as a sequence of assistant events in the JSONL: each tool
-// is its own event with just thinking+tool_use, then a final event
-// with the text reply. We collapse all those into one logical
-// message and ship every ToolCall as part of the message's
-// `toolCalls`. The matching tool_result events (user role,
+// Multi-step assistant turns (Claude writes prose, calls 5 tools, then
+// writes more prose) arrive as a sequence of assistant events in the
+// JSONL. Consecutive tool events are grouped into one ordered activity
+// message between the surrounding prose. The matching tool_result events (user role,
 // content[].type=='tool_result') are indexed by tool_use_id and
 // stored on `resultPreview` + `resultFull` so the UI can show the
 // full output on click without an extra fetch.
@@ -88,9 +86,8 @@ export interface DispatchMessage {
   // under or alongside the message body.
   toolCalls?: ToolCall[];
   // For assistant messages: presence of a `thinking` content block.
-  // We don't display the raw reasoning (often signed/encrypted in
-  // recent Claude versions anyway) but a "💭 thought for …" badge
-  // tells the user Claude reasoned before answering.
+  // Raw reasoning is not shown; safe provider summaries, when present,
+  // are carried separately in reasoningSummary.
   hadThinking?: boolean;
   // Codex app-server exposes safe reasoning summaries and commentary as
   // first-class UI material. They stay separate from the final answer so a
@@ -127,15 +124,6 @@ const MAX_PER_SESSION = 200;       // localStorage budget cap
 const PENDING_TIMEOUT_MS = 6_000;  // pending → failed after this
 const SUFFIX_LEN = 30;             // chars at end-of-message used for matching
 const PENDING_TIMEOUT_REASON = 'no matching user event appeared within 6s';
-
-// Closed-loop Enter-retry: after the initial paste+Enter, if the parser
-// hasn't confirmed receipt by these offsets, send another `\r`. Each
-// retry is a single Enter byte — safe to repeat because once Claude
-// submits the input box, subsequent Enters land on an empty box (no-op)
-// until the user types again. We do NOT re-send the paste content
-// here — that would risk doubling whatever's still in Claude's input
-// buffer. Manual retry button (red bubble) does re-paste.
-const ENTER_RETRY_OFFSETS_MS = [2000, 4500];
 
 function storageKey(serverId: string, sessionId: string): string {
   return `${STORAGE_PREFIX}${serverId}:${sessionId}`;
@@ -214,7 +202,6 @@ interface Args {
   // required to distinguish "this exact send landed" from "this text has
   // appeared before").
   eventUserContentCounts?: ReadonlyMap<string, number>;
-  send: (data: string) => void;
 }
 
 export interface DispatchAPI {
@@ -224,9 +211,9 @@ export interface DispatchAPI {
   // send is owned by InputBar so the existing keyboard-input + paste
   // protocol stays in one place.
   recordSent: (content: string) => void;
-  // Re-dispatch a failed message's bytes and reset its status to
-  // pending. Used by the retry button on red-bordered entries.
-  retry: (id: string) => void;
+  // Restore a failed message to the visible composer. It never sends or
+  // queues bytes on its own; the user remains in control of the retry.
+  restoreDraft: (id: string) => void;
   // Drop a message from the local log. Useful for failed messages
   // that were actually delivered (false negatives) — the user wants
   // the misleading "not delivered" tombstone gone. If Claude really
@@ -240,7 +227,7 @@ export interface DispatchAPI {
   resetLog: () => void;
 }
 
-export function useDispatch({ sessionId, blocks = [], eventUserContentCounts, send }: Args): DispatchAPI {
+export function useDispatch({ sessionId, blocks = [], eventUserContentCounts }: Args): DispatchAPI {
   // Session views only mount behind App's active-server gate.
   const activeServerId = useServers((s) => s.activeId!);
   const [messages, setMessages] = useState<DispatchMessage[]>(() =>
@@ -566,66 +553,6 @@ export function useDispatch({ sessionId, blocks = [], eventUserContentCounts, se
     eventCountsRef.current = eventUserContentCounts;
   });
 
-  // Closed-loop dispatch — every pending message owns a small queue of
-  // scheduled Enter-retry timers. The reason: Claude's TUI sometimes
-  // swallows the first `\r` (paste-end marker still being processed,
-  // active streaming animation, autocomplete picker, etc.) and the
-  // user has to press Enter again manually. With closed-loop, the
-  // reconciler watches for a matching user_input block; if it doesn't
-  // appear, we automatically resend `\r` at backoff offsets. Each
-  // retry is safe because once Claude submits the input box, the box
-  // is empty and subsequent Enters are no-ops.
-  const retryTimersRef = useRef<Map<string, number[]>>(new Map());
-
-  const clearRetryTimers = useCallback((id: string): void => {
-    const timers = retryTimersRef.current.get(id);
-    if (!timers) return;
-    for (const t of timers) window.clearTimeout(t);
-    retryTimersRef.current.delete(id);
-  }, []);
-
-  const scheduleEnterRetries = useCallback((id: string): void => {
-    clearRetryTimers(id);
-    const timers: number[] = [];
-    for (const delay of ENTER_RETRY_OFFSETS_MS) {
-      const t = window.setTimeout(() => {
-        const cur = messagesRef.current.find((m) => m.id === id);
-        if (!cur || cur.status !== 'pending') return;
-        // Send a bare Enter. If Claude's input box still holds our
-        // earlier paste, this submits it. If the box is empty (e.g.,
-        // earlier Enter already submitted but our parser hasn't seen
-        // the user_input block yet), this is a no-op.
-        send('\r');
-      }, delay);
-      timers.push(t);
-    }
-    retryTimersRef.current.set(id, timers);
-  }, [send, clearRetryTimers]);
-
-  // When any pending message flips to a non-pending status (sent /
-  // failed / removed), cancel its retry timers. Hygiene only — the
-  // timers self-cancel via the status check when they fire, but this
-  // releases the timer slot earlier.
-  useEffect(() => {
-    for (const [id, timers] of retryTimersRef.current.entries()) {
-      const m = messages.find((x) => x.id === id);
-      if (!m || m.status !== 'pending') {
-        for (const t of timers) window.clearTimeout(t);
-        retryTimersRef.current.delete(id);
-      }
-    }
-  }, [messages]);
-
-  // Cleanup on unmount — clear all pending retry timers.
-  useEffect(() => {
-    return () => {
-      for (const timers of retryTimersRef.current.values()) {
-        for (const t of timers) window.clearTimeout(t);
-      }
-      retryTimersRef.current.clear();
-    };
-  }, []);
-
   const recordSent = useCallback((content: string): void => {
     if (!content.trim()) return;
     const now = Date.now();
@@ -673,44 +600,24 @@ export function useDispatch({ sessionId, blocks = [], eventUserContentCounts, se
       setMessages((p) => [...p, msg]);
     }
 
-    // Schedule Enter-retry watchers (outside setMessages so React
-    // doesn't double-fire under StrictMode).
-    scheduleEnterRetries(targetId);
-  }, [scheduleEnterRetries]);
+  }, []);
 
-  const retry = useCallback((id: string): void => {
+  const restoreDraft = useCallback((id: string): void => {
     const target = messagesRef.current.find((m) => m.id === id);
     if (!target || target.role !== 'user') return;
-    // Manual retry: re-paste + Enter, and schedule the same closed-loop
-    // Enter retries. We re-paste here (unlike the auto-retries) because
-    // the user explicitly clicked retry, so we should assume the
-    // original delivery is fully gone — not just stuck waiting on a
-    // missing Enter.
-    send('\x1b[200~' + target.content + '\x1b[201~');
-    window.setTimeout(() => send('\r'), 50);
-    const trimmed = target.content.trim();
-    const jsonlCount = eventCountsRef.current?.get(trimmed) ?? 0;
-    const queuedAhead = messagesRef.current.filter(
-      (m) => m.id !== id
-        && m.role === 'user'
-        && (m.status === 'pending' || m.status === 'failed')
-        && m.content.trim() === trimmed
-    ).length;
+    // Bump the recovery version so InputBar restores this text when its
+    // current draft is empty. Do not change status or transmit anything.
     setMessages((prev) =>
       prev.map((m) =>
         m.id === id
           ? {
               ...m,
-              status: 'pending' as const,
-              createdAt: Date.now(),
-              confirmBaseline: jsonlCount + queuedAhead,
-              failureReason: undefined
+              createdAt: Date.now()
             }
           : m
       )
     );
-    scheduleEnterRetries(id);
-  }, [send, scheduleEnterRetries]);
+  }, []);
 
   const remove = useCallback((id: string): void => {
     setMessages((prev) => prev.filter((m) => m.id !== id));
@@ -726,5 +633,5 @@ export function useDispatch({ sessionId, blocks = [], eventUserContentCounts, se
     setMessages([]);
   }, []);
 
-  return { messages, recordSent, retry, remove, resetLog };
+  return { messages, recordSent, restoreDraft, remove, resetLog };
 }

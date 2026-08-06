@@ -68,11 +68,55 @@ if [[ -z "$signing_identity" ]]; then
 fi
 
 build_staging="$(mktemp -d "${TMPDIR:-/tmp}/sessions-runtime.XXXXXX")"
-trap 'rm -rf "$build_staging"' EXIT
+
+# Both directories this script owns are wiped and repopulated in place. A
+# failure between the wipe and the repopulate used to leave a partial tree on
+# disk with nothing to restore it from: a partial embedded-asset set that the
+# next `go build -tags embedui` would silently embed, and a partial binary set
+# in src-tauri/runtime. Snapshot each directory before wiping it and put the
+# snapshot back if the swap does not complete.
+assets_backup="$build_staging/webassets-backup"
+runtime_backup="$build_staging/runtime-backup"
+restore_assets=0
+restore_runtime=0
+
+restore_from_backup() {
+  local backup="$1"
+  local target="$2"
+  [[ -d "$backup" ]] || return 0
+  rm -rf "$target"
+  mkdir -p "$target"
+  cp -R "$backup"/. "$target"/
+}
+
+cleanup() {
+  local status=$?
+  if ((restore_assets)); then
+    echo "build-app-runtime: build failed; restoring previous $embedded_assets" >&2
+    restore_from_backup "$assets_backup" "$embedded_assets" ||
+      echo "build-app-runtime: WARNING: could not restore $embedded_assets; rebuild before trusting it" >&2
+  fi
+  if ((restore_runtime)); then
+    echo "build-app-runtime: build failed; restoring previous $runtime_dir" >&2
+    restore_from_backup "$runtime_backup" "$runtime_dir" ||
+      echo "build-app-runtime: WARNING: could not restore $runtime_dir; rebuild before trusting it" >&2
+  fi
+  rm -rf "$build_staging"
+  return $status
+}
+trap cleanup EXIT
 
 mkdir -p "$embedded_assets"
+mkdir -p "$assets_backup"
+cp -R "$embedded_assets"/. "$assets_backup"/
+restore_assets=1
 find "$embedded_assets" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 cp -R "$frontend_dist"/. "$embedded_assets"/
+if [[ ! -f "$embedded_assets/index.html" ]]; then
+  echo "build-app-runtime: embedded asset copy did not produce $embedded_assets/index.html" >&2
+  exit 1
+fi
+restore_assets=0
 
 ldflags="-s -w -X main.version=$runtime_build_version -buildid=sessions/$runtime_build_version"
 build_one() {
@@ -105,15 +149,12 @@ build_one sessions ""
 build_one sessionsd embedui
 build_one sessions-runner ""
 
-mkdir -p "$runtime_dir"
-find "$runtime_dir" -mindepth 1 -maxdepth 1 ! -name '.gitkeep' -exec rm -rf {} +
-for binary_name in sessions sessionsd sessions-runner; do
-  install -m 0755 "$build_staging/$binary_name" "$runtime_dir/$binary_name"
-done
-
-sessions_sha="$(shasum -a 256 "$runtime_dir/sessions" | awk '{print $1}')"
-sessionsd_sha="$(shasum -a 256 "$runtime_dir/sessionsd" | awk '{print $1}')"
-runner_sha="$(shasum -a 256 "$runtime_dir/sessions-runner" | awk '{print $1}')"
+# Derive the identity and render the manifest from the STAGED binaries, before
+# $runtime_dir is touched. Everything that can fail now fails while the previous
+# runtime directory is still intact.
+sessions_sha="$(shasum -a 256 "$build_staging/sessions" | awk '{print $1}')"
+sessionsd_sha="$(shasum -a 256 "$build_staging/sessionsd" | awk '{print $1}')"
+runner_sha="$(shasum -a 256 "$build_staging/sessions-runner" | awk '{print $1}')"
 binary_fingerprint="$(printf '%s\n' "$sessions_sha" "$sessionsd_sha" "$runner_sha" | shasum -a 256 | awk '{print substr($1, 1, 12)}')"
 runtime_version="${runtime_build_version}-bin.$binary_fingerprint"
 if [[ ! "$runtime_version" =~ ^[A-Za-z0-9._-]+$ || ${#runtime_version} -gt 128 ]]; then
@@ -130,6 +171,43 @@ printf '%s\n' \
   "    \"sessionsd\": \"$sessionsd_sha\"," \
   "    \"sessions-runner\": \"$runner_sha\"" \
   '  }' \
-  '}' >"$runtime_dir/runtime-manifest.json"
+  '}' >"$build_staging/runtime-manifest.json"
+
+# Swap the complete, verified set in as one guarded step. If anything below
+# fails, the EXIT trap restores the directory that was there before, so the next
+# build never starts from a partial binary set or a manifest that disagrees with
+# the binaries next to it.
+mkdir -p "$runtime_dir"
+mkdir -p "$runtime_backup"
+cp -R "$runtime_dir"/. "$runtime_backup"/
+restore_runtime=1
+find "$runtime_dir" -mindepth 1 -maxdepth 1 ! -name '.gitkeep' -exec rm -rf {} +
+for binary_name in sessions sessionsd sessions-runner; do
+  install -m 0755 "$build_staging/$binary_name" "$runtime_dir/$binary_name"
+done
+install -m 0644 "$build_staging/runtime-manifest.json" "$runtime_dir/runtime-manifest.json"
+
+# The manifest is what the app trusts at runtime; prove the installed bytes are
+# the bytes it describes rather than assuming the copy succeeded.
+verify_installed_binary() {
+  local binary_name="$1"
+  local expected_sha="$2"
+  local installed_sha
+  installed_sha="$(shasum -a 256 "$runtime_dir/$binary_name" | awk '{print $1}')"
+  if [[ "$installed_sha" != "$expected_sha" ]]; then
+    echo "build-app-runtime: installed $binary_name does not match the manifest digest" >&2
+    echo "  expected $expected_sha" >&2
+    echo "  found    $installed_sha" >&2
+    exit 1
+  fi
+  if [[ ! -x "$runtime_dir/$binary_name" ]]; then
+    echo "build-app-runtime: installed $binary_name is not executable" >&2
+    exit 1
+  fi
+}
+verify_installed_binary sessions "$sessions_sha"
+verify_installed_binary sessionsd "$sessionsd_sha"
+verify_installed_binary sessions-runner "$runner_sha"
+restore_runtime=0
 
 echo "> Sessions runtime: signed binaries ready in $runtime_dir"

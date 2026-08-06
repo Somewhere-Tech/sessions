@@ -30,7 +30,7 @@ func (a *app) cmdRun(args []string) error {
 		}
 	}
 	if separator < 0 || separator+1 >= len(args) || args[separator+1] == "" {
-		return fail(1, "usage: sessions run [--name N] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--wait [--output]] -- <cmd args...>")
+		return fail(1, "usage: sessions run [--name N] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--wait [--timeout D] [--output]] -- <cmd args...>")
 	}
 	options := append([]string(nil), args[:separator]...)
 	if err := a.configureCreateOwner(&options); err != nil {
@@ -53,6 +53,23 @@ func (a *app) cmdRun(args []string) error {
 	output := removeFirst(&options, "--output")
 	if output && !wait {
 		return fail(1, "--output requires --wait")
+	}
+	// The wait used to be capped at 30 seconds with no way to raise it, which
+	// silently made the one-shot delegated form unusable for any real task:
+	// the lane kept running, but the caller was told it had timed out.
+	waitTimeout := defaultLaneWaitTimeout
+	if raw, present := pluck(&options, "--timeout"); present {
+		if !wait {
+			return fail(1, "--timeout requires --wait")
+		}
+		parsed, err := parseDuration(raw, 0)
+		if err != nil {
+			return err
+		}
+		if parsed <= 0 {
+			return fail(1, "--timeout must be greater than zero")
+		}
+		waitTimeout = parsed
 	}
 	name, hasName := pluck(&options, "--name")
 	if hasName && strings.TrimSpace(name) == "" {
@@ -101,6 +118,13 @@ func (a *app) cmdRun(args []string) error {
 		return err
 	}
 	if !wait && a.wantJSON {
+		// Dispatching without --wait answers with the lane record rather than a
+		// wait envelope, so it carried none of the fields an agent branches on.
+		// code is added here for the same reason it exists on the envelope:
+		// `sessions help` promises every --json document has one, and an agent
+		// that believes it must not read a missing key as zero. Reaching this
+		// line means the lane was created, which is all this document reports.
+		created["code"] = exitSatisfied
 		return writeJSON(a.stdout, created, true)
 	}
 	id, ok := created["id"].(string)
@@ -108,7 +132,7 @@ func (a *app) cmdRun(args []string) error {
 		return fail(2, "lane create response did not include an id")
 	}
 	if wait {
-		completedID, manifest, err := a.waitForLaneExit([]string{id}, defaultLaneWaitTimeout)
+		completedID, manifest, err := a.waitForLaneExit([]string{id}, waitTimeout)
 		if err != nil {
 			return err
 		}

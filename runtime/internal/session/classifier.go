@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/ansi"
 )
 
 type IdleOutcome string
@@ -23,14 +25,12 @@ type IdleClassification struct {
 }
 
 var (
-	oscControlRE      = regexp.MustCompile(`\x1b\][^\x07]*(?:\x07|\x1b\\)`)
-	stringControlRE   = regexp.MustCompile(`(?s)\x1b[P^_].*?\x1b\\`)
-	csiControlRE      = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-	escapeControlRE   = regexp.MustCompile(`\x1b[@-_]`)
 	horizontalSpaceRE = regexp.MustCompile(`[ \t]+`)
 
 	inputPromptRE            = regexp.MustCompile(`(?i)\b(?:y/n|yes/no|do you want)\b|\[[yn]/[yn]\]|\b(?:continue|proceed)\s*\?|\?\s*$`)
 	permissionPromptRE       = regexp.MustCompile(`(?i)^\s*[❯›]\s*(?:approve|allow|trust)\b|\b(?:approve|allow|trust)\b.*(?:\?|:)\s*$`)
+	confirmationFooterRE     = regexp.MustCompile(`(?i)\bpress\s+enter\s+to\s+(?:confirm|continue|approve|allow)\b|\benter\s+to\s+(?:confirm|continue|approve|allow)\b.*\besc\s+to\s+(?:cancel|go\s+back)\b`)
+	promptReasonRE           = regexp.MustCompile(`(?i)^\s*reason\s*:\s*(.+)$`)
 	choicePromptRE           = regexp.MustCompile(`(?i)\b(?:which|select|choose)\b.*(?:\?|:)\s*$`)
 	numberedChoiceRE         = regexp.MustCompile(`^\s*(?:[>❯›^]\s*)?\d+[.)]\s+\S`)
 	selectedNumberedChoiceRE = regexp.MustCompile(`^\s*[>❯›^]\s*\d+[.)]\s+\S`)
@@ -42,7 +42,6 @@ var (
 
 	workingSpinnerRE = regexp.MustCompile(`(?:…|\.\.\.)\s*\(\s*\d+\s*[hms]`)
 	workingFooterRE  = regexp.MustCompile(`(?i)[·•∙]\s*esc\s+to\s+interrupt`)
-	claudeANSI       = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[()][AB0]`)
 
 	codeFenceRE            = regexp.MustCompile("```[^\n]*\n?")
 	imageRE                = regexp.MustCompile(`!\[([^]]*)\]\([^)]*\)`)
@@ -61,7 +60,7 @@ func ClaudeWorkingFromSnapshot(snapshot string) bool {
 	if snapshot == "" {
 		return false
 	}
-	clean := claudeANSI.ReplaceAllString(snapshot, "")
+	clean := ansi.Strip(snapshot)
 	if workingSpinnerRE.MatchString(clean) {
 		return true
 	}
@@ -89,6 +88,14 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 	}
 	for i := len(trailing) - 1; i >= 0; i-- {
 		line := trailing[i]
+		if confirmationFooterRE.MatchString(line) {
+			for previous := i - 1; previous >= 0; previous-- {
+				if match := promptReasonRE.FindStringSubmatch(trailing[previous]); len(match) == 2 {
+					return IdleClassification{Outcome: IdleBlocked, Line: displayLine(match[1])}
+				}
+			}
+			return IdleClassification{Outcome: IdleBlocked, Line: displayLine(line)}
+		}
 		if inputPromptRE.MatchString(line) || permissionPromptRE.MatchString(line) || choicePromptRE.MatchString(line) {
 			return IdleClassification{Outcome: IdleBlocked, Line: displayLine(line)}
 		}
@@ -170,18 +177,7 @@ func snapshotLines(snapshot string) []string {
 	return lines
 }
 
-func stripTerminalControls(text string) string {
-	text = oscControlRE.ReplaceAllString(text, "")
-	text = stringControlRE.ReplaceAllString(text, "")
-	text = csiControlRE.ReplaceAllString(text, "")
-	text = escapeControlRE.ReplaceAllString(text, "")
-	return strings.Map(func(r rune) rune {
-		if r == '\t' || r == '\n' || r == '\r' || r >= 0x20 {
-			return r
-		}
-		return -1
-	}, text)
-}
+func stripTerminalControls(text string) string { return ansi.Strip(text) }
 
 func displayLine(line string) string {
 	runes := []rune(line)

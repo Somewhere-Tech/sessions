@@ -394,8 +394,12 @@ fn acl_sddl(user_sid: &str, directory: bool) -> String {
     format!("D:P(A;{inheritance};FA;;;SY)(A;{inheritance};FA;;;{user_sid})")
 }
 
+// Replace whatever the path inherited with a protected DACL granting full
+// access to SYSTEM and the signed-in user only. Shared with windows_runtime:
+// the staged daemon and runner binaries need the same owner-scoped policy the
+// credential vault gets, because they are launched at every logon.
 #[cfg(target_os = "windows")]
-fn apply_owner_acl(path: &Path, directory: bool) -> Result<(), String> {
+pub(crate) fn apply_owner_acl(path: &Path, directory: bool) -> Result<(), String> {
     use std::{os::windows::ffi::OsStrExt, ptr};
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree},
@@ -425,7 +429,8 @@ fn apply_owner_acl(path: &Path, directory: bool) -> Result<(), String> {
     } == 0
     {
         return Err(format!(
-            "build the Windows credential-file access policy (Windows error {})",
+            "build the Windows access policy for {} (Windows error {})",
+            path.display(),
             unsafe { GetLastError() }
         ));
     }
@@ -440,14 +445,17 @@ fn apply_owner_acl(path: &Path, directory: bool) -> Result<(), String> {
             || dacl.is_null()
         {
             return Err(format!(
-                "read the Windows credential-file access policy (Windows error {})",
+                "read the Windows access policy for {} (Windows error {})",
+                path.display(),
                 unsafe { GetLastError() }
             ));
         }
-        let mut path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // Keep `path` itself in scope: the failure message has to name the file
+        // whose policy could not be restricted.
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         let code = unsafe {
             SetNamedSecurityInfoW(
-                path.as_mut_ptr(),
+                wide.as_mut_ptr(),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
                 ptr::null_mut(),
@@ -458,7 +466,8 @@ fn apply_owner_acl(path: &Path, directory: bool) -> Result<(), String> {
         };
         if code != 0 {
             return Err(format!(
-                "restrict the Windows credential-file access policy (Windows error {code})"
+                "restrict the Windows access policy for {} (Windows error {code})",
+                path.display()
             ));
         }
         Ok(())
@@ -496,6 +505,21 @@ fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+// SAVE_LOCK serializes stores inside one process, but it says nothing about a
+// second Sessions process — an update handing off to a relaunched viewer, or a
+// second window's worker — staging at the same moment, and Windows reuses PIDs
+// freely enough that a bare PID is not a name. Two processes agreeing on the
+// staging path is not a lost write but a swapped vault: one verifies bytes the
+// other wrote and renames them over the real store. Name it the way
+// lifecycle.rs names every file it replaces, PID plus a monotonic suffix.
+fn staging_vault_name() -> String {
+    format!(
+        ".machine-credentials-{}-{}.tmp",
+        std::process::id(),
+        crate::lifecycle::unique_suffix()
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -545,9 +569,15 @@ pub(crate) fn save(
         .map_err(|error| format!("create the Windows credential directory: {error}"))?;
     apply_owner_acl(parent, true)?;
 
-    let temporary = parent.join(format!(".machine-credentials-{}.tmp", std::process::id()));
+    let temporary = parent.join(staging_vault_name());
     let write_result: Result<Vec<MachineCredential>, String> = (|| {
-        let mut file = fs::File::create(&temporary)
+        // create_new, not create: if two processes ever did pick the same name,
+        // the second one must fail loudly rather than truncate a vault the
+        // first is about to verify and rename into place.
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
             .map_err(|error| format!("stage the Windows machine credential store: {error}"))?;
         use std::io::Write as _;
         file.write_all(&bytes)
@@ -633,6 +663,23 @@ mod tests {
         assert!(validate_credentials(invalid)
             .unwrap_err()
             .contains("invalid device credential"));
+    }
+
+    #[test]
+    fn staged_vault_names_are_unique_per_attempt_not_per_process() {
+        let first = staging_vault_name();
+        let second = staging_vault_name();
+        assert_ne!(first, second);
+        for name in [&first, &second] {
+            assert!(name.starts_with(".machine-credentials-"), "{name}");
+            assert!(name.ends_with(".tmp"), "{name}");
+            // The PID stays in the name so a stray staging file can still be
+            // attributed; it is simply no longer the whole identity.
+            assert!(
+                name.contains(&format!("-{}-", std::process::id())),
+                "{name}"
+            );
+        }
     }
 
     #[test]

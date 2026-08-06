@@ -37,9 +37,14 @@ and scoped windows. The v2 release gate bundles the three Go binaries, installs
 or upgrades the per-user daemon, rolls back failed upgrades, and adds a signed,
 notarized updater. See [`docs/NATIVE_APP.md`](docs/NATIVE_APP.md).
 
-All production Go builds use `CGO_ENABLED=0`. The daemon embeds the React UI,
-so the browser and native shells share one frontend and end users do not need
-Node, npm, Vite, or a separate static-file server.
+All production Go builds use `CGO_ENABLED=0`. The daemon embeds the React UI, so
+end users do not need Node, npm, Vite, or a separate static-file server.
+
+The embedded browser surface is an implemented compatibility path, not a peer of
+the native client. Product direction deprecates interactive browser terminal and
+agent control, and that surface must not grow new features of either kind; see
+[`docs/NATIVE_APP.md`](docs/NATIVE_APP.md). Do not infer a browser feature
+commitment from the presence of the embedded assets.
 
 ## Compatibility boundary
 
@@ -106,18 +111,36 @@ The default runtime layout is:
     ├── <id>.json
     ├── <id>.sock
     ├── <id>.events
-    └── <id>.log
+    ├── <id>.log
+    ├── <id>.transcript.jsonl
+    └── <id>.transcript.meta.json
+
+~/.local/state/sessions/ledger/lanes.sqlite3
 
 ~/Library/LaunchAgents/
 ├── <configured-sessionsd-label>.plist
 └── tech.somewhere.sessions.runner.<id>.plist
-
-~/Library/Application Support/sessions/ledger/lanes.sqlite3
 ```
 
+The ledger sits under the platform user state root — `~/.local/state/sessions`
+on Unix, `%LOCALAPPDATA%\Sessions\state` on Windows — rather than a hardcoded
+macOS layout. On macOS only, a machine that already wrote the earlier
+`~/Library/Application Support/sessions/ledger/lanes.sqlite3` keeps using that
+file: the new path is preferred when it exists, otherwise the legacy file is
+adopted if present, and the legacy path is never created
+(`runtime/internal/ledger/store.go`).
+
 `SESSIONS_STATE_DIR` relocates runner and daemon state for interoperability and
-tests; isolated work also uses a scratch `HOME`. `SESSIONS_LEDGER_PATH`
-separately relocates the append-only lane ledger.
+tests, but not the user state root; isolated work also needs a scratch `HOME`
+and `SESSIONS_LEDGER_PATH`, which separately relocates the append-only lane
+ledger. See [`AGENTS.md`](AGENTS.md) rule 2 for the complete scratch recipe.
+
+`<id>.transcript.jsonl` is Sessions' own append-only copy of a Claude
+conversation, with a `.transcript.meta.json` provenance sidecar. It is never
+truncated, rotated, or unlinked when the session ends, and the provider's own
+file always wins while it still resolves — the copy is what answers once the
+provider's retention timer prunes the original. See
+[`docs/CODEBASE.md`](docs/CODEBASE.md).
 
 The ledger writes launch intent before process creation and a tombstone before
 requested termination. It distinguishes live managed, closed, external, and

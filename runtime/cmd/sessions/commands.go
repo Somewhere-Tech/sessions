@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -72,6 +73,8 @@ type createSessionRequest struct {
 	WaitReady   bool              `json:"waitReady,omitempty"`
 	Kind        string            `json:"kind,omitempty"`
 	Force       bool              `json:"force,omitempty"`
+	Permissions string            `json:"permissions,omitempty"`
+	Lifecycle   string            `json:"lifecycle,omitempty"`
 }
 
 type agentControls struct {
@@ -100,45 +103,14 @@ func applyToolDefault(body *createSessionRequest, fullAccess bool) error {
 		defaults = preset.fullArgs
 	}
 	body.Args = append(append([]string(nil), defaults...), body.Args...)
-	if base == "claude" && !hasAnyArg(body.Args, "--session-id", "--resume") {
+	if base == "claude" && !providerargs.HasClaudeIdentity(body.Args) {
 		id, err := randomUUID()
 		if err != nil {
 			return err
 		}
-		body.Args = append(body.Args, "--session-id", id)
+		body.Args = append(body.Args, providerargs.ClaudeSessionIDFlag, id)
 	}
 	return nil
-}
-
-func hasAnyArg(args []string, values ...string) bool {
-	for _, arg := range args {
-		for _, value := range values {
-			if arg == value {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func hasArgValue(args []string, values ...string) bool {
-	for index, arg := range args {
-		for _, value := range values {
-			if arg == value && index+1 < len(args) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func hasConfigValue(args []string, key string) bool {
-	for index, arg := range args {
-		if (arg == "-c" || arg == "--config") && index+1 < len(args) && strings.HasPrefix(args[index+1], key+"=") {
-			return true
-		}
-	}
-	return false
 }
 
 func applyAgentControls(body *createSessionRequest, controls agentControls) error {
@@ -155,17 +127,17 @@ func applyAgentControls(body *createSessionRequest, controls agentControls) erro
 	if base == "claude" && controls.fast {
 		return fail(1, "--fast is not supported for claude (claude has no service tier)")
 	}
-	if controls.model != nil && !hasArgValue(body.Args, "--model", "-m") {
+	if controls.model != nil && !providerargs.HasValue(body.Args, providerargs.ModelFlags()...) {
 		body.Args = append(body.Args, "--model", *controls.model)
 	}
 	if controls.effort != nil {
-		if base == "claude" && !hasArgValue(body.Args, "--effort") {
+		if base == "claude" && !providerargs.HasValue(body.Args, providerargs.ClaudeEffortFlags()...) {
 			body.Args = append(body.Args, "--effort", *controls.effort)
-		} else if base == "codex" && !hasConfigValue(body.Args, "model_reasoning_effort") {
+		} else if base == "codex" && !providerargs.HasConfigValue(body.Args, providerargs.CodexEffortKey) {
 			body.Args = append(body.Args, "-c", fmt.Sprintf("model_reasoning_effort=\"%s\"", *controls.effort))
 		}
 	}
-	if controls.fast && !hasConfigValue(body.Args, "service_tier") {
+	if controls.fast && !providerargs.HasConfigValue(body.Args, providerargs.CodexServiceTierKey) {
 		body.Args = append(body.Args, "-c", "service_tier=\"priority\"")
 	}
 	return nil
@@ -307,7 +279,35 @@ func (a *app) cmdNew(args []string) error {
 	}
 	body.WaitReady = removeFirst(&args, "--wait-ready")
 	tool, hasTool := pluck(&args, "--tool")
+	initialInput := ""
 	fullAccess := removeFirst(&args, "--full-access")
+	if value, present := pluck(&args, "--permissions"); present {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != state.PermissionsInherit && value != state.PermissionsConstrained && value != state.PermissionsFull {
+			return fail(1, "--permissions must be inherit, constrained, or full")
+		}
+		body.Permissions = value
+	}
+	if fullAccess {
+		if body.Permissions != "" && body.Permissions != state.PermissionsFull {
+			return fail(1, "--full-access conflicts with --permissions %s", body.Permissions)
+		}
+		body.Permissions = state.PermissionsFull
+	}
+	fullAccess = body.Permissions == state.PermissionsFull
+	if value, present := pluck(&args, "--lifecycle"); present {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != state.LifecycleTask && value != state.LifecycleSession {
+			return fail(1, "--lifecycle must be task or session")
+		}
+		body.Lifecycle = value
+	}
+	if removeFirst(&args, "--keep-alive") {
+		if body.Lifecycle == state.LifecycleTask {
+			return fail(1, "--keep-alive conflicts with --lifecycle task")
+		}
+		body.Lifecycle = state.LifecycleSession
+	}
 	// Compatibility for scripts written before constrained execution became
 	// the public default. It is now an explicit no-op, not a mode switch.
 	noSkipPermissions := removeFirst(&args, "--no-skip-perms")
@@ -337,6 +337,14 @@ func (a *app) cmdNew(args []string) error {
 			}
 			if fullAccess && !forcePTYCodex && (forceAppServer || codexAppServerEnabled()) {
 				body.Kind = "codex-app-server"
+				// The app-server runtime does not consume positional CLI arguments.
+				// Treat them as the first user request and deliver them through the
+				// same audited input route used by `sessions send` and the desktop UI.
+				// This is an immediate post-create send, never a hidden prompt queue.
+				if len(args) > 0 {
+					initialInput = strings.Join(args, " ")
+					body.Args = append([]string(nil), chosen...)
+				}
 			}
 		} else if forceAppServer || forcePTYCodex {
 			return fail(1, "--codex-appserver and --pty-codex are only valid with --tool codex")
@@ -348,12 +356,12 @@ func (a *app) cmdNew(args []string) error {
 		} else if forceStructuredClaude || forcePTYClaude {
 			return fail(1, "--structured and --pty-claude are only valid with --tool claude")
 		}
-		if strings.EqualFold(tool, "claude") && !hasAnyArg(body.Args, "--session-id", "--resume", "-r") {
+		if strings.EqualFold(tool, "claude") && !providerargs.HasClaudeIdentity(body.Args) {
 			id, err := randomUUID()
 			if err != nil {
 				return err
 			}
-			body.Args = append(body.Args, "--session-id", id)
+			body.Args = append(body.Args, providerargs.ClaudeSessionIDFlag, id)
 		}
 	} else {
 		if forceAppServer || forcePTYCodex {
@@ -399,6 +407,19 @@ func (a *app) cmdNew(args []string) error {
 	var info map[string]any
 	if err := a.postJSON("/api/sessions", body, &info, 2); err != nil {
 		return err
+	}
+	if strings.TrimSpace(initialInput) != "" {
+		id := strings.TrimSpace(fmt.Sprint(info["id"]))
+		if id == "" {
+			return fail(2, "session was created, but sessionsd did not return its id; first request was not sent")
+		}
+		result, err := a.sendAndConfirm(id, initialInput, 30*time.Second, false)
+		if err != nil {
+			return fail(2, "session %s was created, but its first request was not sent: %s", id, err)
+		}
+		if result.ExitCode != 0 {
+			return fail(2, "session %s was created, but its first request was not confirmed: %s", id, result.Reason)
+		}
 	}
 	if a.wantJSON {
 		return writeJSON(a.stdout, info, true)
@@ -452,15 +473,154 @@ func (a *app) cmdModel(args []string) error {
 	return err
 }
 
+const (
+	killStatusKilled        = "killed"
+	killStatusAlreadyExited = "already-exited"
+	killStatusFailed        = "failed"
+	killStatusUnconfirmed   = "unconfirmed"
+)
+
+// killItem and killResult mirror the per-target result shape already used by
+// archive and aside so agents parse one termination contract, not three.
+type killItem struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type killResult struct {
+	Items       []killItem `json:"items"`
+	OperationID string     `json:"operation_id,omitempty"`
+}
+
+// killBatchResponse is the /api/sessions/end-batch success contract: the
+// daemon confirms the batch with ok and echoes the ids it actually ended.
+// Anything it does not confirm is reported as such instead of assumed dead.
+type killBatchResponse struct {
+	OK    *bool    `json:"ok"`
+	IDs   []string `json:"ids"`
+	Error string   `json:"error,omitempty"`
+}
+
+func (r killBatchResponse) classify(targets []string) []killItem {
+	items := make([]killItem, 0, len(targets))
+	switch {
+	case r.OK != nil && !*r.OK:
+		reason := strings.TrimSpace(r.Error)
+		if reason == "" {
+			reason = "the daemon reported the batch termination as unsuccessful"
+		}
+		for _, id := range targets {
+			items = append(items, killItem{ID: id, Status: killStatusFailed, Reason: reason})
+		}
+	case len(r.IDs) > 0:
+		confirmed := make(map[string]struct{}, len(r.IDs))
+		for _, id := range r.IDs {
+			confirmed[id] = struct{}{}
+		}
+		for _, id := range targets {
+			if _, ok := confirmed[id]; ok {
+				items = append(items, killItem{ID: id, Status: killStatusKilled})
+				continue
+			}
+			items = append(items, killItem{
+				ID: id, Status: killStatusFailed,
+				Reason: "the daemon did not report this session as ended",
+			})
+		}
+	case r.OK != nil && *r.OK:
+		for _, id := range targets {
+			items = append(items, killItem{ID: id, Status: killStatusKilled})
+		}
+	default:
+		for _, id := range targets {
+			items = append(items, killItem{
+				ID: id, Status: killStatusUnconfirmed,
+				Reason: "the daemon accepted the batch without confirming which sessions ended",
+			})
+		}
+	}
+	return items
+}
+
+// reportKill prints per-target truth and fails when a requested termination
+// was refused (exit 1) or could not be confirmed at all (exit 2).
+func (a *app) reportKill(result killResult) error {
+	failed := make([]killItem, 0, len(result.Items))
+	unconfirmed := make([]killItem, 0, len(result.Items))
+	for _, item := range result.Items {
+		switch item.Status {
+		case killStatusFailed:
+			failed = append(failed, item)
+		case killStatusUnconfirmed:
+			unconfirmed = append(unconfirmed, item)
+		}
+	}
+	// One bad target explains itself in the failure message; a mixed batch needs
+	// a line per target so the caller can tell which ids still need attention.
+	detailed := len(failed)+len(unconfirmed) > 1
+	if a.wantJSON {
+		if err := writeJSON(a.stdout, result, true); err != nil {
+			return err
+		}
+	} else {
+		for _, item := range result.Items {
+			switch item.Status {
+			case killStatusKilled:
+				fmt.Fprintf(a.stdout, "killed %s\n", item.ID)
+			case killStatusAlreadyExited:
+				fmt.Fprintf(a.stdout, "lane %s already exited; nothing to kill\n", item.ID)
+			default:
+				if detailed {
+					fmt.Fprintf(a.stderr, "%s %s: %s\n", item.Status, item.ID, item.Reason)
+				}
+			}
+		}
+	}
+	if len(failed) == 1 && len(unconfirmed) == 0 {
+		return fail(1, "kill did not end %s: %s — run `sessions ls`, then retry `sessions kill %s`",
+			failed[0].ID, failed[0].Reason, failed[0].ID)
+	}
+	if len(unconfirmed) == 1 && len(failed) == 0 {
+		return fail(2, "kill could not confirm %s: %s — run `sessions ls` to see whether it ended before retrying",
+			unconfirmed[0].ID, unconfirmed[0].Reason)
+	}
+	if len(failed) > 0 {
+		return fail(1, "kill did not end %d of %d target(s): %s — run `sessions status <id>` on each one, then retry `sessions kill <id>`",
+			len(failed), len(result.Items), strings.Join(killItemIDs(failed), " "))
+	}
+	if len(unconfirmed) > 0 {
+		return fail(2, "kill could not confirm %d of %d target(s): %s — run `sessions ls` to see whether they ended before retrying",
+			len(unconfirmed), len(result.Items), strings.Join(killItemIDs(unconfirmed), " "))
+	}
+	return nil
+}
+
+func killItemIDs(items []killItem) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
 func (a *app) cmdKill(ids []string) error {
-	reason, hasReason := pluck(&ids, "--reason")
-	force := removeFirst(&ids, "--force")
-	if hasReason {
-		reason = strings.TrimSpace(reason)
+	// --reason takes the next word whatever it is, so `kill a --reason --force`
+	// used to record the literal reason "--force" and quietly drop the force
+	// the caller asked for. Every other option with a value refuses a flag
+	// here; this one now does too.
+	reasonValue, err := pluckControl(&ids, "--reason")
+	if err != nil {
+		return fail(1, "--reason needs an explanation, not the flag that follows it — quote it as `--reason \"...\"`")
+	}
+	reason := ""
+	if reasonValue != nil {
+		reason = strings.TrimSpace(*reasonValue)
 		if reason == "" {
 			return fail(1, "--reason needs a non-empty explanation")
 		}
 	}
+	force := removeFirst(&ids, "--force")
 	if len(ids) == 0 {
 		return fail(1, "usage: sessions kill <id> [<id>...] [--reason <text>] [--force]")
 	}
@@ -477,6 +637,7 @@ func (a *app) cmdKill(ids []string) error {
 			return fail(2, "create batch operation id: %s", err)
 		}
 	}
+	result := killResult{Items: make([]killItem, 0, len(ids)), OperationID: operationID}
 	resolved := make([]string, 0, len(ids))
 	for _, idArg := range ids {
 		laneID, isLane, err := a.resolveLaneID(idArg)
@@ -489,7 +650,7 @@ func (a *app) cmdKill(ids []string) error {
 				return err
 			}
 			if statusCode == http.StatusOK {
-				fmt.Fprintf(a.stdout, "lane %s already exited; nothing to kill\n", laneID)
+				result.Items = append(result.Items, killItem{ID: laneID, Status: killStatusAlreadyExited})
 				continue
 			}
 		}
@@ -512,7 +673,7 @@ func (a *app) cmdKill(ids []string) error {
 			}
 		}
 		if alreadyExitedLane {
-			fmt.Fprintf(a.stdout, "lane %s already exited; nothing to kill\n", id)
+			result.Items = append(result.Items, killItem{ID: id, Status: killStatusAlreadyExited})
 			continue
 		}
 		if !slices.Contains(resolved, id) {
@@ -520,20 +681,18 @@ func (a *app) cmdKill(ids []string) error {
 		}
 	}
 	if len(resolved) == 0 {
-		return nil
+		return a.reportKill(result)
 	}
 	if len(resolved) > 1 {
-		var result map[string]any
+		var response killBatchResponse
 		err := a.postJSON("/api/sessions/end-batch", map[string]any{
 			"ids": resolved, "reason": reason, "operationId": operationID, "force": force,
-		}, &result, 2)
+		}, &response, 2)
 		if err != nil {
 			return err
 		}
-		for _, id := range resolved {
-			fmt.Fprintf(a.stdout, "killed %s\n", id)
-		}
-		return nil
+		result.Items = append(result.Items, response.classify(resolved)...)
+		return a.reportKill(result)
 	}
 	path := "/api/sessions/" + escapeID(resolved[0])
 	if force {
@@ -546,11 +705,175 @@ func (a *app) cmdKill(ids []string) error {
 		return err
 	}
 	if !ok {
-		fmt.Fprintln(a.stderr, unknownSessionMessage(resolved[0]))
-		return status(1)
+		result.Items = append(result.Items, killItem{
+			ID: resolved[0], Status: killStatusFailed, Reason: unknownSessionMessage(resolved[0]),
+		})
+		return a.reportKill(result)
 	}
-	fmt.Fprintf(a.stdout, "killed %s\n", resolved[0])
-	return nil
+	result.Items = append(result.Items, killItem{ID: resolved[0], Status: killStatusKilled})
+	return a.reportKill(result)
+}
+
+// waitOutcome is the single shape every `sessions wait <session>` branch
+// returns. It used to be four different objects: the target's identity was
+// suppressed unless --summary, idleMs was missing from two of them, and `ok`
+// meant "the call worked" in one branch and "the condition was met" in
+// another. A delegating agent could not write one parser, and the branch that
+// mattered most — the target is gone — reported success.
+//
+// ok answers one question only: can the caller stop waiting and act? Idle and
+// needs-input are both actionable. Gone, failed, and timeout are not.
+//
+// Every other thing a caller can wait for — a lane exiting, a commit landing,
+// a literal appearing in a file, an idle window holding — now answers with this
+// same object. Those paths used to return three unrelated shapes that shared no
+// field with this one and disagreed about casing, so a delegator fanning out
+// over a mix of sessions and lanes needed a different parser per target. kind
+// says which sort of target answered, the target id is always in session, and
+// the payload that is genuinely specific to one kind lives in a nested object
+// rather than at the top level where it would collide.
+type waitOutcome struct {
+	OK      bool   `json:"ok"`
+	Kind    string `json:"kind"`
+	Reason  string `json:"reason"`
+	Session string `json:"session"`
+	// Code is the exit status this outcome produces. `sessions help` tells an
+	// agent that every --json document carries a code matching the exit status,
+	// and this envelope did not: an agent following that instruction read a
+	// missing key as zero and a lane that failed with exit 3 came back as
+	// success -- the same silent wrong-success that ok was introduced to end.
+	// It is never omitempty: zero is the answer that matters most.
+	Code      int   `json:"code"`
+	Working   bool  `json:"working"`
+	IdleMS    int64 `json:"idleMs"`
+	ElapsedMS int64 `json:"elapsedMs,omitempty"`
+	// Targets is populated only when one outcome covers several targets at
+	// once — a race that timed out without any of them answering — because
+	// then no single id produced it.
+	Targets    []string             `json:"targets,omitempty"`
+	IdleReason string               `json:"idleReason,omitempty"`
+	Detail     string               `json:"detail,omitempty"`
+	Summary    string               `json:"summary,omitempty"`
+	Lane       *laneManifest        `json:"lane,omitempty"`
+	Condition  *waitConditionDetail `json:"condition,omitempty"`
+}
+
+// waitConditionDetail carries what only a --until condition can report.
+type waitConditionDetail struct {
+	Cwd              string `json:"cwd,omitempty"`
+	Baseline         string `json:"baseline,omitempty"`
+	Commit           string `json:"commit,omitempty"`
+	Subject          string `json:"subject,omitempty"`
+	HistoryRewritten bool   `json:"history_rewritten,omitempty"`
+	File             string `json:"file,omitempty"`
+	Contains         string `json:"contains,omitempty"`
+	IdleStableMS     int64  `json:"idle_stable_ms,omitempty"`
+	Source           string `json:"source,omitempty"`
+}
+
+const (
+	waitReasonIdle       = "idle"
+	waitReasonNeedsInput = "needs-input"
+	waitReasonFailed     = "failed"
+	waitReasonGone       = "gone"
+	waitReasonTimeout    = "timeout"
+	// waitReasonExited is a lane that ran to completion with status 0. A lane
+	// that exited non-zero reports failed, which is the same answer a session
+	// that ended badly gives, so one branch covers both.
+	waitReasonExited = "exited"
+	// waitReasonSatisfied is a --until condition that was observed.
+	waitReasonSatisfied = "satisfied"
+)
+
+const (
+	waitKindSession    = "session"
+	waitKindLane       = "lane"
+	waitKindCommit     = "commit"
+	waitKindFile       = "file-contains"
+	waitKindIdleStable = "idle-stable"
+	// waitKindCondition labels a race between conditions of different kinds
+	// that ended without any of them being observed.
+	waitKindCondition = "condition"
+	// waitKindJoin labels the envelope `wait --all` returns.
+	waitKindJoin = "all"
+)
+
+// writeWaitOutcome emits the envelope and returns the exit status that matches
+// it, so the JSON and the exit code can never disagree.
+func (a *app) writeWaitOutcome(outcome waitOutcome, humanText string, humanToStderr bool) error {
+	return a.emitWaitOutcome(outcome, humanText, humanToStderr, waitExitStatus(outcome.Reason))
+}
+
+// emitWaitOutcome writes the envelope and returns the status the process exits
+// with. final is passed in rather than derived, because one caller has a more
+// specific status than the reason implies: a single lane wait propagates the
+// child's own exit code. Taking it here, and stamping it into the envelope on
+// the way out, is what keeps the printed code and the exit status equal by
+// construction -- a caller cannot report one and return the other.
+func (a *app) emitWaitOutcome(outcome waitOutcome, humanText string, humanToStderr bool, final error) error {
+	outcome.Code = statusCode(final)
+	if a.wantJSON {
+		if err := writeJSON(a.stdout, outcome, false); err != nil {
+			return err
+		}
+		return final
+	}
+	destination := a.stdout
+	if humanToStderr {
+		destination = a.stderr
+	}
+	if _, err := io.WriteString(destination, humanText+"\n"); err != nil {
+		return err
+	}
+	return final
+}
+
+// statusCode is the exit status an error stands for, with nil meaning success.
+// exitCode alone cannot be used: it reads a nil error as a transport failure,
+// because it is only ever reached on a path that already has one.
+func statusCode(err error) int {
+	if err == nil {
+		return exitSatisfied
+	}
+	return exitCode(err)
+}
+
+// waitOutcomeStatus is the exit status one outcome implies on its own, for
+// results nested inside a fan-out join, which are never emitted through
+// emitWaitOutcome and so never learn a status from it.
+func waitOutcomeStatus(outcome waitOutcome) int {
+	if outcome.Kind == waitKindLane && outcome.Lane != nil {
+		return outcome.Lane.ExitCode
+	}
+	return statusCode(waitExitStatus(outcome.Reason))
+}
+
+func waitExitStatus(reason string) error {
+	switch reason {
+	case waitReasonTimeout:
+		return status(exitWaitTimeout)
+	case waitReasonGone, waitReasonFailed:
+		return status(exitTargetUnavailable)
+	default:
+		return nil
+	}
+}
+
+// waitReasonSeverity orders outcomes so a fan-out join can report one aggregate
+// reason without hiding the worst thing that happened.
+func waitReasonSeverity(reason string) int {
+	switch reason {
+	case waitReasonGone:
+		return 4
+	case waitReasonFailed:
+		return 3
+	case waitReasonTimeout:
+		return 2
+	case waitReasonNeedsInput:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func (a *app) cmdWait(args []string) error {
@@ -586,6 +909,32 @@ func (a *app) cmdWait(args []string) error {
 		return err
 	}
 	start := a.now()
+	tracker := waitTracker{ref: waitTargetRef{id: id}}
+	for {
+		sessions, err := a.listSessions(false)
+		if err != nil {
+			return err
+		}
+		probe := a.probeSessionWait(&tracker, sessions, idle, includeSummary)
+		if probe.outcome != nil {
+			return a.writeWaitOutcome(*probe.outcome, probe.human, probe.humanToStderr)
+		}
+		if a.now().Sub(start) >= timeout {
+			return a.writeWaitOutcome(waitOutcome{
+				OK:      false,
+				Kind:    waitKindSession,
+				Reason:  waitReasonTimeout,
+				Session: id,
+				Working: probe.working,
+				IdleMS:  probe.idleMS,
+			}, fmt.Sprintf("timeout: still active after %dms (last %dms ago)",
+				timeout.Milliseconds(), probe.idleMS), true)
+		}
+		a.sleep(waitPollInterval(idle))
+	}
+}
+
+func waitPollInterval(idle time.Duration) time.Duration {
 	poll := idle / 4
 	if poll < 100*time.Millisecond {
 		poll = 100 * time.Millisecond
@@ -593,101 +942,115 @@ func (a *app) cmdWait(args []string) error {
 	if poll > 500*time.Millisecond {
 		poll = 500 * time.Millisecond
 	}
-	var notWorkingSince time.Time
-	for {
-		sessions, err := a.listSessions(false)
-		if err != nil {
-			return err
+	return poll
+}
+
+// waitProbe is one target's reading from one poll. A nil outcome means the
+// target has not reached a terminal state yet; working and idleMS are still
+// reported so the caller can describe a timeout without a second observation.
+type waitProbe struct {
+	outcome       *waitOutcome
+	human         string
+	humanToStderr bool
+	working       bool
+	idleMS        int64
+}
+
+// probeSessionWait decides, from one session-list snapshot, whether a session
+// target has finished waiting. `wait <id>` and the fan-out join share it so the
+// two can never drift into disagreeing about what idle means.
+func (a *app) probeSessionWait(tracker *waitTracker, sessions []session, idle time.Duration, includeSummary bool) waitProbe {
+	var current *session
+	for index := range sessions {
+		if sessions[index].ID == tracker.ref.id {
+			current = &sessions[index]
+			break
 		}
-		var current *session
-		for index := range sessions {
-			if sessions[index].ID == id {
-				current = &sessions[index]
-				break
-			}
-		}
-		if current == nil {
-			if a.wantJSON {
-				return writeJSON(a.stdout, struct {
-					OK     bool   `json:"ok"`
-					Reason string `json:"reason"`
-				}{true, "gone"}, false)
-			}
-			_, err := io.WriteString(a.stdout, "gone\n")
-			return err
-		}
-		idleFor := time.Duration(0)
-		if isConfirmableTool(toolOfSession(*current)) {
-			if current.Working {
-				notWorkingSince = time.Time{}
-			} else if notWorkingSince.IsZero() {
-				notWorkingSince = a.now()
-			}
-			if !notWorkingSince.IsZero() {
-				idleFor = a.now().Sub(notWorkingSince)
-			}
-		} else {
-			base := current.LastDataAt
-			if base == 0 {
-				base = current.CreatedAt
-			}
-			idleFor = a.now().Sub(time.UnixMilli(base))
-		}
-		if idleFor >= idle {
-			if a.wantJSON {
-				return writeJSON(a.stdout, struct {
-					OK         bool   `json:"ok"`
-					Session    string `json:"session,omitempty"`
-					Reason     string `json:"reason"`
-					IdleReason string `json:"idleReason,omitempty"`
-					Summary    string `json:"summary,omitempty"`
-					IdleMS     int64  `json:"idleMs"`
-					Working    bool   `json:"working"`
-				}{
-					true, func() string {
-						if includeSummary {
-							return current.ID
-						}
-						return ""
-					}(), "idle", current.IdleReason,
-					func() string {
-						if includeSummary {
-							return current.LastSummary
-						}
-						return ""
-					}(),
-					idleFor.Milliseconds(), current.Working,
-				}, false)
-			}
-			if includeSummary {
-				summary := current.LastSummary
-				if summary == "" {
-					summary = current.IdleDetail
-				}
-				if summary == "" {
-					summary = current.IdleReason
-				}
-				_, err := fmt.Fprintf(a.stdout, "%s — %s\n", current.ID, summary)
-				return err
-			}
-			_, err := fmt.Fprintf(a.stdout, "idle for %dms\n", idleFor.Milliseconds())
-			return err
-		}
-		if a.now().Sub(start) >= timeout {
-			if a.wantJSON {
-				writeJSON(a.stdout, struct {
-					OK      bool   `json:"ok"`
-					Reason  string `json:"reason"`
-					IdleMS  int64  `json:"idleMs"`
-					Working bool   `json:"working"`
-				}{false, "timeout", idleFor.Milliseconds(), current.Working}, false)
-			} else {
-				fmt.Fprintf(a.stderr, "timeout: still active after %dms (last %dms ago)\n", timeout.Milliseconds(), idleFor.Milliseconds())
-			}
-			return status(1)
-		}
-		a.sleep(poll)
 	}
+	if current == nil {
+		// A target that vanished is the outcome a delegating agent most
+		// needs to distinguish, and it used to report ok:true and exit 0 —
+		// so every loop written as `if rc == 0` treated a dead delegate as
+		// a finished one.
+		return waitProbe{outcome: &waitOutcome{
+			OK:      false,
+			Kind:    waitKindSession,
+			Reason:  waitReasonGone,
+			Session: tracker.ref.id,
+		}, human: "gone"}
+	}
+	if !current.Working && (current.IdleReason == state.IdleReasonNeedsInput || current.IdleReason == state.IdleReasonFailed) {
+		reason := waitReasonNeedsInput
+		if current.IdleReason == state.IdleReasonFailed {
+			reason = waitReasonFailed
+		}
+		message := current.LastSummary
+		if current.IdleReason == state.IdleReasonNeedsInput && current.IdleDetail != "" {
+			message = current.IdleDetail
+		}
+		if message == "" {
+			message = current.IdleReason
+		}
+		return waitProbe{outcome: &waitOutcome{
+			OK:         reason == waitReasonNeedsInput,
+			Kind:       waitKindSession,
+			Reason:     reason,
+			Session:    current.ID,
+			Working:    false,
+			IdleReason: current.IdleReason,
+			Detail:     current.IdleDetail,
+			Summary:    current.LastSummary,
+		}, human: fmt.Sprintf("%s — %s", current.IdleReason, message), humanToStderr: reason == waitReasonFailed}
+	}
+	idleFor := time.Duration(0)
+	if isConfirmableTool(toolOfSession(*current)) {
+		if current.Working {
+			tracker.notWorkingSince = time.Time{}
+		} else if tracker.notWorkingSince.IsZero() {
+			tracker.notWorkingSince = a.now()
+		}
+		if !tracker.notWorkingSince.IsZero() {
+			idleFor = a.now().Sub(tracker.notWorkingSince)
+		}
+	} else {
+		base := current.LastDataAt
+		if base == 0 {
+			base = current.CreatedAt
+		}
+		idleFor = a.now().Sub(time.UnixMilli(base))
+	}
+	probe := waitProbe{working: current.Working, idleMS: idleFor.Milliseconds()}
+	if idleFor < idle {
+		return probe
+	}
+	summary := current.LastSummary
+	if summary == "" {
+		summary = current.IdleDetail
+	}
+	if summary == "" {
+		summary = current.IdleReason
+	}
+	probe.human = fmt.Sprintf("idle for %dms", idleFor.Milliseconds())
+	if includeSummary {
+		probe.human = fmt.Sprintf("%s — %s", current.ID, summary)
+	}
+	// --summary now only decides how much prose comes back. It used to
+	// decide whether the caller learned which session answered, which
+	// made the schema depend on a display flag.
+	outcome := waitOutcome{
+		OK:         true,
+		Kind:       waitKindSession,
+		Reason:     waitReasonIdle,
+		Session:    current.ID,
+		Working:    current.Working,
+		IdleMS:     idleFor.Milliseconds(),
+		IdleReason: current.IdleReason,
+	}
+	if includeSummary {
+		outcome.Summary = current.LastSummary
+	}
+	probe.outcome = &outcome
+	return probe
 }
 
 func positiveInt(raw, label string) (int, error) {

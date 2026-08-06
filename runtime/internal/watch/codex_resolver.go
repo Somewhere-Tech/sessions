@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
 const (
@@ -27,14 +29,17 @@ var codexResumeIDPattern = regexp.MustCompile(`(?i)^[0-9a-f-]{8,}$`)
 type CodexResolveReason string
 
 const (
-	CodexResumeMatch   CodexResolveReason = "resume-match"
-	CodexResumeMissing CodexResolveReason = "resume-missing"
-	CodexFreshMatch    CodexResolveReason = "fresh-match"
-	CodexFreshFullScan CodexResolveReason = "fresh-match-fullscan"
-	CodexNoDir         CodexResolveReason = "no-dir"
-	CodexEmptyDir      CodexResolveReason = "empty-dir"
-	CodexNoCWDMatch    CodexResolveReason = "no-cwd-match"
-	CodexNoAfterSpawn  CodexResolveReason = "no-after-spawn"
+	CodexResumeMatch    CodexResolveReason = "resume-match"
+	CodexResumeMissing  CodexResolveReason = "resume-missing"
+	CodexFreshMatch     CodexResolveReason = "fresh-match"
+	CodexInputMatch     CodexResolveReason = "fresh-input-match"
+	CodexAwaitingInput  CodexResolveReason = "awaiting-input-match"
+	CodexInputAmbiguous CodexResolveReason = "input-match-ambiguous"
+	CodexFreshFullScan  CodexResolveReason = "fresh-match-fullscan"
+	CodexNoDir          CodexResolveReason = "no-dir"
+	CodexEmptyDir       CodexResolveReason = "empty-dir"
+	CodexNoCWDMatch     CodexResolveReason = "no-cwd-match"
+	CodexNoAfterSpawn   CodexResolveReason = "no-after-spawn"
 )
 
 // CodexResolution identifies the rollout to follow.
@@ -48,11 +53,12 @@ type CodexResolution struct {
 // isolated sessions root. SessionsDir defaults to ~/.codex/sessions, and Now
 // defaults to the current time.
 type CodexResolveOptions struct {
-	CWD         string
-	Args        []string
-	CreatedAt   time.Time
-	SessionsDir string
-	Now         time.Time
+	CWD           string
+	Args          []string
+	CreatedAt     time.Time
+	SessionsDir   string
+	Now           time.Time
+	ExpectedInput string
 }
 
 type rolloutCandidate struct {
@@ -62,6 +68,7 @@ type rolloutCandidate struct {
 }
 
 type codexSessionMeta struct {
+	id        string
 	cwd       string
 	timestamp time.Time
 }
@@ -146,19 +153,17 @@ func CodexWatchDirs(root string, now, createdAt time.Time) []string {
 }
 
 // ExtractCodexResumeID recognizes the same resume forms as the TypeScript
-// implementation: resume ID, --resume ID, and --resume=ID.
+// implementation: resume ID, --resume ID, and --resume=ID. The spellings come
+// from internal/providerargs so they cannot drift from the rest of the runtime.
+//
+// The permissive id shape is deliberate here and is not the ledger's
+// canonical-UUID rule. This value is matched as a substring against rollout
+// filenames, so an abbreviated id a user typed still resolves; nothing it
+// produces is durably recorded, which is where requiring a real UUID matters.
 func ExtractCodexResumeID(args []string) string {
-	for index, flag := range args {
-		if flag == "resume" || flag == "--resume" {
-			if index+1 < len(args) && codexResumeIDPattern.MatchString(args[index+1]) {
-				return args[index+1]
-			}
-		}
-		if strings.HasPrefix(flag, "--resume=") {
-			value := strings.TrimPrefix(flag, "--resume=")
-			if codexResumeIDPattern.MatchString(value) {
-				return value
-			}
+	for _, candidate := range providerargs.Values(args, providerargs.CodexResumeFlags()...) {
+		if codexResumeIDPattern.MatchString(candidate) {
+			return candidate
 		}
 	}
 	return ""
@@ -224,7 +229,12 @@ func readCodexFirstLine(path string) (string, error) {
 	return strings.TrimSpace(strings.TrimSuffix(line, "\n")), nil
 }
 
-func readCodexSessionMeta(path string) *codexSessionMeta {
+// readCodexSessionMetaPayload is the single reader of a rollout's session_meta
+// line. Identity, working directory, timestamp and provenance all come out of
+// the same payload, so they are decoded once here rather than by one reader per
+// question — a second reader is a second thing to keep in agreement with the
+// provider's format.
+func readCodexSessionMetaPayload(path string) map[string]any {
 	line, err := readCodexFirstLine(path)
 	if err != nil || line == "" {
 		return nil
@@ -237,19 +247,116 @@ func readCodexSessionMeta(path string) *codexSessionMeta {
 	if !ok {
 		return nil
 	}
+	if _, present := payload["timestamp"]; !present {
+		// The rollout timestamp lives on the envelope in older files. Carry it
+		// into the payload so callers see one shape.
+		if timestamp, ok := record["timestamp"].(string); ok {
+			payload["timestamp"] = timestamp
+		}
+	}
+	return payload
+}
+
+func readCodexSessionMeta(path string) *codexSessionMeta {
+	payload := readCodexSessionMetaPayload(path)
+	if payload == nil {
+		return nil
+	}
 	cwd, ok := payload["cwd"].(string)
 	if !ok {
 		return nil
 	}
 	timestamp, _ := payload["timestamp"].(string)
-	if timestamp == "" {
-		timestamp, _ = record["timestamp"].(string)
-	}
 	parsed, err := time.Parse(time.RFC3339Nano, timestamp)
 	if err != nil {
 		return nil
 	}
-	return &codexSessionMeta{cwd: cwd, timestamp: parsed}
+	return &codexSessionMeta{id: CodexSessionMetaID(payload), cwd: cwd, timestamp: parsed}
+}
+
+func normalizedCodexInput(value string) string {
+	value = strings.ReplaceAll(value, "\x1b[200~", "")
+	value = strings.ReplaceAll(value, "\x1b[201~", "")
+	return strings.TrimSpace(value)
+}
+
+func rolloutHasCodexUserInput(path, expected string) bool {
+	expected = normalizedCodexInput(expected)
+	if expected == "" {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(io.LimitReader(file, codexReadByteLimit))
+	scanner.Buffer(make([]byte, 64*1024), codexReadByteLimit)
+	for scanner.Scan() {
+		var record map[string]any
+		if json.Unmarshal(scanner.Bytes(), &record) != nil || record["type"] != "response_item" {
+			continue
+		}
+		payload, ok := record["payload"].(map[string]any)
+		if !ok || payload["type"] != "message" || payload["role"] != "user" {
+			continue
+		}
+		content, _ := payload["content"].([]any)
+		var text strings.Builder
+		for _, raw := range content {
+			block, _ := raw.(map[string]any)
+			if block["type"] != "input_text" {
+				continue
+			}
+			value, _ := block["text"].(string)
+			text.WriteString(value)
+		}
+		if normalizedCodexInput(text.String()) == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveCodexInputMatch(matches []rolloutCandidate, expected string) (CodexResolution, bool) {
+	if normalizedCodexInput(expected) == "" {
+		return CodexResolution{}, false
+	}
+	matched := make([]rolloutCandidate, 0, 1)
+	for _, candidate := range matches {
+		if rolloutHasCodexUserInput(candidate.path, expected) {
+			matched = append(matched, candidate)
+		}
+	}
+	if len(matched) == 1 {
+		return CodexResolution{Path: matched[0].path, Reason: CodexInputMatch}, true
+	}
+	if len(matched) > 1 {
+		return CodexResolution{Reason: CodexInputAmbiguous, AmbiguousCount: len(matched)}, true
+	}
+	return CodexResolution{Reason: CodexAwaitingInput}, true
+}
+
+// ReadCodexConversationIdentity returns the provider-owned identity recorded
+// in a rollout's session_meta line. Sessions uses this as a recovery fallback
+// when an older runner exited before copying the Codex thread id into its own
+// metadata. Reading the provider source is sufficient; the file is never
+// rewritten.
+func ReadCodexConversationIdentity(path string) (sessionID, cwd string, err error) {
+	meta := readCodexSessionMeta(path)
+	if meta == nil {
+		return "", "", errors.New("Codex rollout has no readable session_meta")
+	}
+	return meta.id, meta.cwd, nil
+}
+
+// ReadCodexConversationSurface returns where a rollout was started from, out of
+// the same session_meta line the resolver already reads. A rollout with no
+// readable session_meta reports not-known rather than a blank surface, so a
+// caller can tell "started somewhere we cannot name" from "started nowhere".
+func ReadCodexConversationSurface(path string) (ConversationSurface, bool) {
+	surface := CodexSurface(readCodexSessionMetaPayload(path))
+	return surface, surface.Known()
 }
 
 func resolveResumedCodex(root string, args []string) (CodexResolution, bool) {
@@ -319,6 +426,9 @@ func ResolveCodexRolloutPath(options CodexResolveOptions) CodexResolution {
 	}
 
 	if len(matches) > 0 {
+		if resolution, handled := resolveCodexInputMatch(matches, options.ExpectedInput); handled {
+			return resolution
+		}
 		sort.Slice(matches, func(i, j int) bool {
 			if !matches[i].meta.timestamp.Equal(matches[j].meta.timestamp) {
 				return matches[i].meta.timestamp.Before(matches[j].meta.timestamp)
@@ -350,6 +460,9 @@ func ResolveCodexRolloutPath(options CodexResolveOptions) CodexResolution {
 	}
 	if len(fullScan) == 0 {
 		return CodexResolution{Reason: CodexNoCWDMatch}
+	}
+	if resolution, handled := resolveCodexInputMatch(fullScan, options.ExpectedInput); handled {
+		return resolution
 	}
 	sort.Slice(fullScan, func(i, j int) bool {
 		iDistance := math.Abs(float64(fullScan[i].meta.timestamp.Sub(options.CreatedAt)))

@@ -26,6 +26,21 @@ func ContinueAcrossProviders(
 	return createProviderCopy(ctx, continuation, name, creator, observations, source, false)
 }
 
+// ResumeFromTranscript creates a same-provider successor only when the
+// provider-native handle is genuinely missing. It preserves the source record
+// and authored history, and records the successor link like a native resume.
+func ResumeFromTranscript(
+	ctx context.Context,
+	continuation state.ContinuationContext,
+	name string,
+	creator SessionCreator,
+	observations ledger.ObservationWriter,
+	source *AdoptSource,
+) (AdoptResult, error) {
+	continuation.TranscriptRecovery = true
+	return createProviderCopy(ctx, continuation, name, creator, observations, source, false)
+}
+
 // ForkConversation creates a new Rich conversation from one stable authored
 // history snapshot. The source runtime remains live and is never marked as
 // reopened or superseded. Display hierarchy records the new conversation as a
@@ -70,7 +85,7 @@ func createProviderCopy(
 	if source != nil {
 		description = source.Description
 		tags = state.CloneTags(source.Tags)
-		if fork && continuation.SourceProvider == continuation.DestinationProvider {
+		if (fork || continuation.TranscriptRecovery) && continuation.SourceProvider == continuation.DestinationProvider {
 			profile = source.Profile
 			configDir = source.ConfigDir
 		}
@@ -108,6 +123,7 @@ func createProviderCopy(
 		SourceProvider:      continuation.SourceProvider,
 		DestinationProvider: continuation.DestinationProvider,
 		Mode:                continuation.Mode, ImportedMessages: len(continuation.Messages),
+		TranscriptRecovery: continuation.TranscriptRecovery,
 		ForkPointIndex:     continuation.ForkPointIndex,
 		ForkPointMessageID: continuation.ForkPointMessageID,
 	}

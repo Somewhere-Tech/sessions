@@ -14,6 +14,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
 const scannerBuffer = 8 * 1024 * 1024
@@ -152,20 +154,38 @@ func turnArgs(prompt string, options TurnOptions) []string {
 	return append(args, prompt)
 }
 
+// ownedFlags are the flags turnArgs supplies itself. A caller's copy of any of
+// them has to be dropped or claude receives two conflicting answers. The
+// conversation-identity spellings come from providerargs so this list cannot
+// fall behind the readers of the same argv: when `-r` was missing here, a
+// caller-supplied `-r <uuid>` survived alongside the `--session-id` this client
+// appends, and claude was asked to resume and to start at once.
+var ownedFlags = append(
+	append([]string{"--output-format", "--input-format"}, providerargs.ClaudeIdentityFlags()...),
+	providerargs.ModelFlags()...,
+)
+
 func sanitizeExtraArgs(args []string) []string {
 	result := make([]string, 0, len(args))
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
-		skipValue := false
 		switch argument {
 		case "-p", "--print", "--verbose":
 			continue
-		case "--session-id", "--resume", "-r", "--output-format", "--input-format", "--model", "-m":
-			skipValue = true
 		}
-		if strings.HasPrefix(argument, "--session-id=") || strings.HasPrefix(argument, "--resume=") ||
-			strings.HasPrefix(argument, "--output-format=") || strings.HasPrefix(argument, "--input-format=") ||
-			strings.HasPrefix(argument, "--model=") {
+		joined := false
+		skipValue := false
+		for _, flag := range ownedFlags {
+			if argument == flag {
+				skipValue = true
+				break
+			}
+			if strings.HasPrefix(flag, "--") && strings.HasPrefix(argument, flag+"=") {
+				joined = true
+				break
+			}
+		}
+		if joined {
 			continue
 		}
 		if skipValue {

@@ -6,6 +6,7 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command, Output},
+    sync::{Mutex, MutexGuard, TryLockError},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -16,7 +17,36 @@ const LOOPBACK_HOST: &str = "127.0.0.1";
 const DEFAULT_LOOPBACK_PORT: u16 = 8787;
 const REQUIRED_BINARIES: [&str; 3] = ["sessions", "sessionsd", "sessions-runner"];
 
-type LifecycleResult<T> = Result<T, String>;
+pub(crate) type LifecycleResult<T> = Result<T, String>;
+
+// Every mutation of the per-user background service — startup reconciliation,
+// the Recover button, and a port change — funnels through install_runtime or
+// migrate_loaded_service, each of which boots the daemon out, writes a new
+// definition, boots it back in, and rolls back on failure. Two of those
+// interleaved can make one call's rollback boot out the service the other just
+// started, leaving the management plane wedged until the app is relaunched.
+// The UI's guards are per-webview React booleans and capabilities/default.json
+// grants this surface to "main" *and* every "win-*" window, so the only place
+// that can actually serialize the three callers is here.
+static SERVICE_MUTATION_LOCK: Mutex<()> = Mutex::new(());
+
+// Refuse rather than queue. A second Recover click that silently waited would
+// look like a hang, and the honest answer — the first attempt is still running
+// and re-adopting a large fleet is slow — is something the user can act on.
+fn lock_service_mutation() -> LifecycleResult<MutexGuard<'static, ()>> {
+    match SERVICE_MUTATION_LOCK.try_lock() {
+        Ok(guard) => Ok(guard),
+        // The guard protects launchd, not shared Rust state: a panicked holder
+        // leaves nothing inconsistent to observe here, and refusing every
+        // later repair behind a poisoned lock would wedge exactly the plane
+        // this lock exists to protect.
+        Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => Err(
+            "Sessions is already reconciling its background service. Wait for that attempt to finish — re-adopting a large set of live sessions can take a few minutes — and then try again. Your sessions keep running either way."
+                .to_string(),
+        ),
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct NativePreferences {
@@ -36,6 +66,7 @@ impl RuntimeStatus {
     pub fn menu_label(&self) -> String {
         match self.state.as_str() {
             "ready" => "Background service: ready".to_string(),
+            "starting" => "Background service: reconnecting".to_string(),
             "development" => "Background service: external (development)".to_string(),
             "client-only" => "Background service: runs on your Mac".to_string(),
             "disabled" => "Background service: automatic install disabled".to_string(),
@@ -83,6 +114,42 @@ impl RuntimeStatus {
     }
 }
 
+// Return a truthful first-frame status without touching launchd or waiting for
+// runner adoption. The native window must be able to paint before a release
+// update reconciles sessionsd: a large retained fleet can take minutes to
+// re-adopt, while every runner continues independently in the background.
+pub fn startup_status() -> RuntimeStatus {
+    if cfg!(debug_assertions) && cfg!(target_os = "macos") {
+        return RuntimeStatus::informational(
+            "development",
+            "debug builds use the separately managed development daemon",
+        );
+    }
+    if cfg!(mobile) {
+        return RuntimeStatus::informational(
+            "client-only",
+            "mobile clients connect to a Mac-hosted background service",
+        );
+    }
+    if cfg!(not(any(target_os = "macos", target_os = "windows"))) {
+        return RuntimeStatus::informational(
+            "client-only",
+            "this platform connects to a Sessions host",
+        );
+    }
+    if env::var_os("SESSIONS_DISABLE_RUNTIME_INSTALL").is_some() {
+        return RuntimeStatus::informational("disabled", "SESSIONS_DISABLE_RUNTIME_INSTALL is set");
+    }
+    RuntimeStatus::informational(
+        "starting",
+        "checking the local background service; agent sessions keep running",
+    )
+}
+
+pub fn needs_background_reconcile(status: &RuntimeStatus) -> bool {
+    status.state == "starting"
+}
+
 pub fn install_for_app(app: &AppHandle) -> RuntimeStatus {
     if cfg!(debug_assertions) && cfg!(target_os = "macos") {
         return RuntimeStatus::informational(
@@ -100,26 +167,40 @@ pub fn install_for_app(app: &AppHandle) -> RuntimeStatus {
         return RuntimeStatus::informational("disabled", "SESSIONS_DISABLE_RUNTIME_INSTALL is set");
     }
 
+    // Nothing above this point touches launchd, so the lock is taken only once
+    // a real mutation is about to start.
+    let _guard = match lock_service_mutation() {
+        Ok(guard) => guard,
+        // A concurrent reconcile is not a fault: it is the same repair already
+        // in flight. Report the calm transitional state and let the running
+        // attempt publish the settled one when it finishes.
+        Err(busy) => return RuntimeStatus::informational("starting", &busy),
+    };
+    let resolved = resolve_port(app);
+
     #[cfg(target_os = "macos")]
     {
-        match RuntimeConfig::from_app(app).and_then(|config| install_runtime(&config)) {
+        // RuntimeConfig::from_app resolves the same port; this call only needs
+        // the reason so it can reach the status the user reads.
+        let status = match RuntimeConfig::from_app(app).and_then(|config| install_runtime(&config))
+        {
             Ok((outcome, version)) => RuntimeStatus::ready(outcome, version),
             Err(error) => RuntimeStatus::failed(error),
-        }
+        };
+        resolved.annotate(status)
     }
     #[cfg(target_os = "windows")]
     {
-        match crate::windows_runtime::install(
-            app,
-            configured_port(app).unwrap_or(DEFAULT_LOOPBACK_PORT),
-        ) {
+        let status = match crate::windows_runtime::install(app, resolved.port()) {
             Ok(status) => status,
             Err(error) => RuntimeStatus::failed(error),
-        }
+        };
+        resolved.annotate(status)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = app;
+        let _ = resolved;
         RuntimeStatus::informational(
             "client-only",
             "this platform connects to a Mac-hosted background service",
@@ -127,11 +208,9 @@ pub fn install_for_app(app: &AppHandle) -> RuntimeStatus {
     }
 }
 
-pub fn default_port() -> u16 {
-    DEFAULT_LOOPBACK_PORT
-}
-
-pub fn configured_port(app: &AppHandle) -> LifecycleResult<u16> {
+// Prefer resolve_port over this: it is the only caller that decides what an
+// unreadable settings file means, and every other caller must agree with it.
+fn configured_port(app: &AppHandle) -> LifecycleResult<u16> {
     let path = preferences_path(app)?;
     let encoded = match fs::read(&path) {
         Ok(encoded) => encoded,
@@ -156,6 +235,65 @@ pub fn configured_port(app: &AppHandle) -> LifecycleResult<u16> {
     Ok(port)
 }
 
+// One answer for an unreadable or unparseable connections.json.
+//
+// Three callers used to disagree: the Tauri setup hook logged and fell back to
+// 8787, RuntimeConfig::from_app treated the same file as fatal, and the
+// Windows installer fell back silently. The viewer therefore reported port
+// 8787 in Settings while every reconcile failed against it, and no surface
+// told the user which file was wrong or how to repair it.
+//
+// The chosen answer is "not fatal, but never silent". Refusing to reconcile
+// would hand a single corrupt preferences file the power to wedge the
+// management plane with no in-app way out, which is exactly what this app must
+// not do. So fall back to the default loopback port and carry the reason into
+// the RuntimeStatus the tray and settings screen already display.
+pub struct ResolvedPort {
+    port: u16,
+    problem: Option<String>,
+}
+
+impl ResolvedPort {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn problem(&self) -> Option<&str> {
+        self.problem.as_deref()
+    }
+
+    // Keep the reason attached to whatever the install actually reported, so a
+    // healthy daemon on the fallback port still says why it is on that port.
+    pub fn annotate(&self, status: RuntimeStatus) -> RuntimeStatus {
+        let Some(problem) = self.problem.as_deref() else {
+            return status;
+        };
+        RuntimeStatus {
+            detail: format!("{}; {problem}", status.detail),
+            ..status
+        }
+    }
+}
+
+pub fn resolve_port(app: &AppHandle) -> ResolvedPort {
+    resolved_port(configured_port(app))
+}
+
+fn resolved_port(configured: LifecycleResult<u16>) -> ResolvedPort {
+    match configured {
+        Ok(port) => ResolvedPort {
+            port,
+            problem: None,
+        },
+        Err(error) => ResolvedPort {
+            port: DEFAULT_LOOPBACK_PORT,
+            problem: Some(format!(
+                "Sessions could not read its saved connection port ({error}), so it is using localhost:{DEFAULT_LOOPBACK_PORT}. Set the port again in Settings to rewrite that file."
+            )),
+        },
+    }
+}
+
 pub fn reconfigure_port(app: &AppHandle, port: u16) -> LifecycleResult<RuntimeStatus> {
     validate_port(port)?;
     if cfg!(debug_assertions) {
@@ -164,6 +302,11 @@ pub fn reconfigure_port(app: &AppHandle, port: u16) -> LifecycleResult<RuntimeSt
     if cfg!(mobile) {
         return Err("mobile clients do not own a local background-service port".to_string());
     }
+
+    // A port change boots the service out and back in exactly like an install
+    // does, so it shares the install lock. Without it a reconcile racing a port
+    // change can roll back onto the definition the other one just replaced.
+    let _guard = lock_service_mutation()?;
 
     #[cfg(target_os = "macos")]
     {
@@ -209,13 +352,21 @@ pub fn reconfigure_port(app: &AppHandle, port: u16) -> LifecycleResult<RuntimeSt
     }
     #[cfg(target_os = "windows")]
     {
-        let current = configured_port(app)?;
+        // A corrupt connections.json must not block the one action that
+        // rewrites it. Fall back to the default port as the presumed current
+        // one; if the daemon is not actually there, windows_runtime says so.
+        let current = resolve_port(app).port();
         let status = crate::windows_runtime::reconfigure_port(app, current, port)?;
         if current == port {
             return Ok(status);
         }
         if let Err(save_error) = save_configured_port(app, port) {
-            let rollback = crate::windows_runtime::reconfigure_port(app, port, current);
+            // restore_port, not reconfigure_port: the rollback must not be
+            // refused by a gate that already said yes to this exact move a
+            // moment ago, or the saved port and the running daemon end up
+            // disagreeing with no way back. macOS rolls back from its captured
+            // baseline for the same reason.
+            let rollback = crate::windows_runtime::restore_port(app, port, current);
             return match rollback {
                 Ok(_) => Err(format!(
                     "could not save the new Windows Sessions port and restored localhost:{current}: {save_error}"
@@ -232,6 +383,209 @@ pub fn reconfigure_port(app: &AppHandle, port: u16) -> LifecycleResult<RuntimeSt
         let _ = app;
         Err("this platform is a client and does not own a local Sessions daemon".to_string())
     }
+}
+
+// Uninstall.
+//
+// Sessions' own integration points are the things the package wrote *outside*
+// itself: the per-user service definition that brings the daemon back at every
+// login, and the `sessions` command it published on a shared command path.
+// Those come out. Everything else stays, and the two boundaries are worth
+// stating because both are easy to get wrong in the direction that costs work:
+//
+// Nothing is stopped. A runner is not owned by the viewer, and the daemon is
+// the only process that can still record what a live runner produces; ending
+// either during an uninstall would turn live sessions into orphans, which is
+// the one outcome this product refuses. Removing the definition is enough — the
+// daemon simply does not come back after the next sign-out, by which time the
+// user's own session has ended anyway. This is the same boundary as "quitting
+// the viewer never ends work", applied to the last thing the viewer does.
+//
+// Nothing of the user's is deleted. Session records, the ledger, the saved
+// port, window geometry, paired-machine credentials, and the staged runtime
+// bytes a live daemon and its runners are executing right now all survive, and
+// an uninstall reports that it left them rather than pretending it was
+// thorough. Provider credentials — Claude, Codex, Git, Somewhere — were never
+// Sessions' to begin with and are not touched or read.
+#[derive(Debug, Default)]
+pub struct IntegrationRemoval {
+    removed: Vec<String>,
+    absent: Vec<String>,
+    kept: Vec<String>,
+    problems: Vec<String>,
+}
+
+impl IntegrationRemoval {
+    pub(crate) fn removed(&mut self, what: &str) {
+        self.removed.push(what.to_string());
+    }
+
+    pub(crate) fn absent(&mut self, what: &str) {
+        self.absent.push(what.to_string());
+    }
+
+    pub(crate) fn kept(&mut self, what: &str) {
+        self.kept.push(what.to_string());
+    }
+
+    pub(crate) fn problem(&mut self, what: &str) {
+        self.problems.push(what.to_string());
+    }
+
+    // An uninstaller that cannot finish must say which piece it left behind and
+    // where, because that piece is now the user's to remove by hand.
+    pub fn is_complete(&self) -> bool {
+        self.problems.is_empty()
+    }
+
+    pub fn report(&self) -> String {
+        let mut lines = vec!["Sessions integration removal".to_string()];
+        for (label, entries) in [
+            ("removed", &self.removed),
+            ("already absent", &self.absent),
+            ("kept on purpose", &self.kept),
+            ("needs attention", &self.problems),
+        ] {
+            for entry in entries {
+                lines.push(format!("  {label}: {entry}"));
+            }
+        }
+        lines.join("\n")
+    }
+}
+
+pub fn remove_integration() -> IntegrationRemoval {
+    #[cfg(target_os = "macos")]
+    {
+        let mut removal = IntegrationRemoval::default();
+        let Some(home) = env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+        else {
+            removal.problem(
+                "HOME is unset, so Sessions could not locate the login service definition or CLI links it installed",
+            );
+            return removal;
+        };
+        remove_macos_integration(&macos_integration(&home))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows_runtime::remove_integration()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let mut removal = IntegrationRemoval::default();
+        removal.absent("this platform is a client and installs no local Sessions integration");
+        removal
+    }
+}
+
+// The paths install and uninstall must agree on, in one place so they cannot
+// drift into an uninstaller that misses what the installer wrote.
+#[cfg(target_os = "macos")]
+struct MacosIntegration {
+    managed_root: PathBuf,
+    plist_path: PathBuf,
+    cli_link_paths: Vec<PathBuf>,
+}
+
+#[cfg(target_os = "macos")]
+fn macos_integration(home: &Path) -> MacosIntegration {
+    MacosIntegration {
+        managed_root: home
+            .join("Library")
+            .join("Application Support")
+            .join("Sessions")
+            .join("runtime"),
+        plist_path: home
+            .join("Library")
+            .join("LaunchAgents")
+            .join(format!("{SERVICE_LABEL}.plist")),
+        cli_link_paths: vec![
+            PathBuf::from("/opt/homebrew/bin/sessions"),
+            PathBuf::from("/usr/local/bin/sessions"),
+            home.join(".local").join("bin").join("sessions"),
+        ],
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn remove_macos_integration(integration: &MacosIntegration) -> IntegrationRemoval {
+    let mut removal = IntegrationRemoval::default();
+    let plist = integration.plist_path.display().to_string();
+    // Deliberately no launchctl bootout: see the note above. Deleting the
+    // definition stops the daemon from returning at the next login without
+    // taking the current one, and its runners, down with it.
+    match fs::remove_file(&integration.plist_path) {
+        Ok(()) => removal.removed(&format!("login service definition {plist}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            removal.absent(&format!("login service definition {plist}"))
+        }
+        Err(error) => removal.problem(&format!("remove {plist}: {error}")),
+    }
+
+    for candidate in &integration.cli_link_paths {
+        let shown = candidate.display().to_string();
+        match managed_cli_link(candidate, &integration.managed_root) {
+            Ok(true) => match fs::remove_file(candidate) {
+                Ok(()) => removal.removed(&format!("`sessions` command link {shown}")),
+                Err(error) => removal.problem(&format!("remove {shown}: {error}")),
+            },
+            // A real file, or a link into something that is not Sessions'
+            // managed runtime, belongs to whoever put it there.
+            Ok(false) => {}
+            Err(error) => removal.problem(&error),
+        }
+    }
+
+    removal.kept(&format!(
+        "the staged runtime, sessions, ledger, saved port, and paired-machine credentials under {}",
+        integration
+            .managed_root
+            .parent()
+            .unwrap_or(&integration.managed_root)
+            .display()
+    ));
+    removal.kept("every running daemon, runner, and provider process");
+    removal
+}
+
+// The same ownership test install_cli_link applies before it replaces a link:
+// a symlink, named `sessions`, resolving into Sessions' managed runtime.
+// Anything else is someone else's tool and is left exactly as found.
+#[cfg(target_os = "macos")]
+fn managed_cli_link(candidate: &Path, managed_root: &Path) -> LifecycleResult<bool> {
+    let metadata = match fs::symlink_metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "inspect {}: {error}; remove it by hand if Sessions installed it",
+                candidate.display()
+            ))
+        }
+    };
+    if !metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| format!("{} has no parent", candidate.display()))?;
+    let target = match fs::read_link(candidate) {
+        Ok(target) if target.is_absolute() => target,
+        Ok(target) => parent.join(target),
+        Err(error) => {
+            return Err(format!(
+                "read {}: {error}; remove it by hand if Sessions installed it",
+                candidate.display()
+            ))
+        }
+    };
+    Ok(
+        target.file_name().and_then(|name| name.to_str()) == Some("sessions")
+            && target.starts_with(managed_root),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -276,22 +630,14 @@ impl RuntimeConfig {
             .path()
             .resource_dir()
             .map_err(|error| format!("resolve Sessions resources: {error}"))?;
+        // Shared with remove_integration, so an uninstall cannot look in a
+        // different place than the install wrote to.
+        let integration = macos_integration(&home);
         Ok(Self {
             source_dir: resources.join("runtime"),
-            managed_root: home
-                .join("Library")
-                .join("Application Support")
-                .join("Sessions")
-                .join("runtime"),
-            cli_link_paths: vec![
-                PathBuf::from("/opt/homebrew/bin/sessions"),
-                PathBuf::from("/usr/local/bin/sessions"),
-                home.join(".local").join("bin").join("sessions"),
-            ],
-            plist_path: home
-                .join("Library")
-                .join("LaunchAgents")
-                .join(format!("{SERVICE_LABEL}.plist")),
+            managed_root: integration.managed_root,
+            cli_link_paths: integration.cli_link_paths,
+            plist_path: integration.plist_path,
             log_path: home
                 .join("Library")
                 .join("Logs")
@@ -300,7 +646,9 @@ impl RuntimeConfig {
             label: SERVICE_LABEL.to_string(),
             domain: format!("gui/{uid}"),
             host: LOOPBACK_HOST.to_string(),
-            port: configured_port(app)?,
+            // Deliberately not fatal: see resolve_port. install_for_app carries
+            // the reason into the status the user reads.
+            port: resolve_port(app).port(),
             launchctl: PathBuf::from("/bin/launchctl"),
             codesign: PathBuf::from("/usr/bin/codesign"),
             shasum: PathBuf::from("/usr/bin/shasum"),
@@ -314,7 +662,10 @@ impl RuntimeConfig {
             // fleet size.
             health_timeout: Duration::from_secs(30),
             health_timeout_per_session: Duration::from_secs(15),
-            health_timeout_cap: Duration::from_secs(5 * 60),
+            // A manager machine can legitimately retain dozens of live
+            // runners. Keep a hard bound, but do not cut off the measured
+            // per-session budget before a fleet-sized restart can finish.
+            health_timeout_cap: Duration::from_secs(15 * 60),
             poll_interval: Duration::from_millis(200),
         })
     }
@@ -369,7 +720,7 @@ fn save_configured_port(app: &AppHandle, port: u16) -> LifecycleResult<()> {
     write_atomic(&path, &encoded, 0o600)
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeManifest {
     schema_version: u32,
@@ -396,7 +747,6 @@ enum InstallOutcome {
 struct HealthResponse {
     ok: bool,
     name: String,
-    discovering: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -412,6 +762,14 @@ struct SessionEnvelope {
 fn install_runtime(config: &RuntimeConfig) -> LifecycleResult<(InstallOutcome, String)> {
     validate_config(config)?;
     let installed = stage_runtime(config)?;
+    // launchd receives one stable runner path for the lifetime of the app.
+    // Existing runner processes keep their already-open executable when this
+    // file is atomically replaced, while future sessions retain a consistent
+    // macOS privacy identity across versioned runtime updates.
+    let stable_runner = stable_runner_path(config);
+    if !runner_is_usable(config, &stable_runner) {
+        activate_stable_runner(config, &installed)?;
+    }
     let plist = daemon_plist(config, &installed.directory);
     let previous_plist = match fs::read(&config.plist_path) {
         Ok(bytes) => Some(bytes),
@@ -427,7 +785,10 @@ fn install_runtime(config: &RuntimeConfig) -> LifecycleResult<(InstallOutcome, S
 
     let outcome = if loaded {
         if previous_plist.as_deref() == Some(plist.as_bytes()) {
-            wait_until_ready(config, &BTreeSet::new())?;
+            // Nothing is being replaced in this branch. The daemon can serve
+            // the UI as soon as it is listening while retained runners finish
+            // re-attaching in the background.
+            wait_until_listening(config)?;
             InstallOutcome::Current
         } else {
             let old_plist = previous_plist.as_ref().ok_or_else(|| {
@@ -453,12 +814,90 @@ fn install_runtime(config: &RuntimeConfig) -> LifecycleResult<(InstallOutcome, S
         InstallOutcome::Installed
     };
 
+    // Defer the normal version swap until the daemon update is known healthy.
+    // If rollback was needed, the previously active runner therefore remains
+    // paired with the restored daemon. Replacement is atomic and never stops
+    // a runner that is already serving a live session.
+    activate_stable_runner(config, &installed)?;
+
     if let Err(error) = install_cli_link(config, &installed.directory) {
         // CLI discoverability is useful but must never turn a healthy daemon
         // update into a rollback or put live sessions at risk.
         eprintln!("Sessions CLI PATH integration: {error}");
     }
     Ok((outcome, installed.manifest.runtime_version))
+}
+
+fn stable_runner_path(config: &RuntimeConfig) -> PathBuf {
+    config.managed_root.join("sessions-runner")
+}
+
+fn runner_is_usable(config: &RuntimeConfig, path: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.file_type().is_file() {
+        return false;
+    }
+    !config.verify_signatures
+        || run_checked_path(&config.codesign, &["--verify", "--strict"], path).is_ok()
+}
+
+fn activate_stable_runner(
+    config: &RuntimeConfig,
+    installed: &InstalledRuntime,
+) -> LifecycleResult<PathBuf> {
+    let source = installed.directory.join("sessions-runner");
+    let destination = stable_runner_path(config);
+    let expected_digest = installed
+        .manifest
+        .binaries
+        .get("sessions-runner")
+        .ok_or_else(|| "bundled runtime manifest is missing sessions-runner".to_string())?;
+    if runner_is_usable(config, &destination)
+        && verify_binary(config, &destination, expected_digest).is_ok()
+    {
+        return Ok(destination);
+    }
+
+    fs::create_dir_all(&config.managed_root).map_err(|error| {
+        format!(
+            "create Sessions runtime root {}: {error}",
+            config.managed_root.display()
+        )
+    })?;
+    set_directory_mode(&config.managed_root, 0o700)?;
+    let temporary = config.managed_root.join(format!(
+        ".sessions-runner-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let activated = (|| -> LifecycleResult<()> {
+        fs::copy(&source, &temporary).map_err(|error| {
+            format!(
+                "stage stable Sessions runner {} from {}: {error}",
+                temporary.display(),
+                source.display()
+            )
+        })?;
+        set_file_mode(&temporary, 0o755)?;
+        fs::File::open(&temporary)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| format!("sync stable Sessions runner: {error}"))?;
+        verify_binary(config, &temporary, expected_digest)?;
+        fs::rename(&temporary, &destination).map_err(|error| {
+            format!(
+                "activate stable Sessions runner {}: {error}",
+                destination.display()
+            )
+        })?;
+        verify_binary(config, &destination, expected_digest)
+    })();
+    if activated.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    activated?;
+    Ok(destination)
 }
 
 #[cfg(unix)]
@@ -620,13 +1059,7 @@ fn stage_runtime(config: &RuntimeConfig) -> LifecycleResult<InstalledRuntime> {
         )
     })?;
     validate_manifest(&manifest)?;
-    for binary in REQUIRED_BINARIES {
-        verify_binary(
-            config,
-            &config.source_dir.join(binary),
-            manifest.binaries.get(binary).unwrap(),
-        )?;
-    }
+    verify_runtime_directory(config, &config.source_dir, &manifest)?;
 
     fs::create_dir_all(&config.managed_root).map_err(|error| {
         format!(
@@ -746,17 +1179,24 @@ fn validate_manifest(manifest: &RuntimeManifest) -> LifecycleResult<()> {
     Ok(())
 }
 
+// Every present caller happens to run validate_manifest first, but this
+// function accepts an arbitrary &RuntimeManifest. An unwrap() here would turn
+// a manifest that is merely corrupt — the exact case a verifier exists to
+// catch — into an abort of the whole app, taking the recovery UI with it. Say
+// what is wrong and what repairs it instead.
 fn verify_runtime_directory(
     config: &RuntimeConfig,
     directory: &Path,
     manifest: &RuntimeManifest,
 ) -> LifecycleResult<()> {
     for binary in REQUIRED_BINARIES {
-        verify_binary(
-            config,
-            &directory.join(binary),
-            manifest.binaries.get(binary).unwrap(),
-        )?;
+        let expected = manifest.binaries.get(binary).ok_or_else(|| {
+            format!(
+                "the runtime manifest for {} is missing {binary}; reinstall Sessions to restore a complete runtime. Your daemon and runners keep running in the meantime.",
+                directory.display()
+            )
+        })?;
+        verify_binary(config, &directory.join(binary), expected)?;
     }
     Ok(())
 }
@@ -810,7 +1250,7 @@ fn daemon_plist(config: &RuntimeConfig, runtime_dir: &Path) -> String {
         ("SESSIONS_PORT".to_string(), config.port.to_string()),
         (
             "SESSIONS_RUNNER".to_string(),
-            runtime_dir.join("sessions-runner").display().to_string(),
+            stable_runner_path(config).display().to_string(),
         ),
     ];
     environment.extend(config.environment.clone());
@@ -876,7 +1316,11 @@ fn install_unloaded_service(
 ) -> LifecycleResult<()> {
     prepare_service_directories(config)?;
     write_atomic(&config.plist_path, new_plist, 0o644)?;
-    let start_result = bootstrap(config).and_then(|_| wait_until_ready(config, &BTreeSet::new()));
+    // A cold boot has no captured pre-update baseline to preserve. Treat the
+    // daemon as installed once its API is listening; discovery may take
+    // minutes on a machine with a large retained fleet and must not make a
+    // healthy service time out, get booted out, and disappear again.
+    let start_result = bootstrap(config).and_then(|_| wait_until_listening(config));
     if let Err(start_error) = start_result {
         let _ = bootout_if_loaded(config);
         let restore_result = restore_plist(config, previous_plist);
@@ -992,31 +1436,49 @@ fn capture_baseline(config: &RuntimeConfig) -> LifecycleResult<BTreeSet<String>>
     fetch_sessions(config)
 }
 
+fn wait_until_listening(config: &RuntimeConfig) -> LifecycleResult<()> {
+    let timeout = config.health_timeout;
+    let deadline = Instant::now() + timeout;
+    let mut last_error = "no response".to_string();
+    while Instant::now() < deadline {
+        match health_once(config) {
+            Ok(health) if health.ok && health.name == "sessionsd" => return Ok(()),
+            Ok(health) => {
+                last_error = format!("unexpected health response from {:?}", health.name);
+            }
+            Err(error) => last_error = error,
+        }
+        thread::sleep(config.poll_interval);
+    }
+    Err(format!(
+        "background service did not start listening at {} within {}s: {} (logs: {})",
+        config.health_url(),
+        timeout.as_secs(),
+        last_error,
+        config.log_path.display()
+    ))
+}
+
 fn wait_until_ready(config: &RuntimeConfig, baseline: &BTreeSet<String>) -> LifecycleResult<()> {
     let timeout = readiness_timeout(config, baseline.len());
     let deadline = Instant::now() + timeout;
     let mut last_error = "no response".to_string();
     while Instant::now() < deadline {
         match health_once(config) {
-            Ok(health) if health.ok && health.name == "sessionsd" && !health.discovering => {
-                match fetch_sessions(config) {
-                    Ok(current) => {
-                        let missing = baseline.difference(&current).cloned().collect::<Vec<_>>();
-                        if missing.is_empty() {
-                            return Ok(());
-                        }
-                        last_error = format!(
-                            "{} live sessions were not re-adopted: {}",
-                            missing.len(),
-                            missing.join(", ")
-                        );
+            Ok(health) if health.ok && health.name == "sessionsd" => match fetch_sessions(config) {
+                Ok(current) => {
+                    let missing = baseline.difference(&current).cloned().collect::<Vec<_>>();
+                    if missing.is_empty() {
+                        return Ok(());
                     }
-                    Err(error) => last_error = error,
+                    last_error = format!(
+                        "{} live sessions were not re-adopted: {}",
+                        missing.len(),
+                        missing.join(", ")
+                    );
                 }
-            }
-            Ok(health) if health.discovering => {
-                last_error = "daemon is healthy but discovery is still running".to_string();
-            }
+                Err(error) => last_error = error,
+            },
             Ok(health) => {
                 last_error = format!("unexpected health response from {:?}", health.name);
             }
@@ -1202,7 +1664,9 @@ fn restore_plist(config: &RuntimeConfig, previous: Option<&[u8]>) -> LifecycleRe
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> LifecycleResult<()> {
+// Shared with the native shell's window-geometry store: any file this app
+// rewrites in place needs temp-plus-rename, not a truncating fs::write.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> LifecycleResult<()> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("invalid destination path: {}", path.display()))?;
@@ -1255,7 +1719,7 @@ fn set_directory_mode(path: &Path, mode: u32) -> LifecycleResult<()> {
     set_file_mode(path, mode)
 }
 
-fn unique_suffix() -> u128 {
+pub(crate) fn unique_suffix() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -1348,12 +1812,222 @@ mod tests {
         let mut config = fixture_config(&root, "tech.somewhere.sessions.readiness", 47_869);
         config.health_timeout = Duration::from_secs(30);
         config.health_timeout_per_session = Duration::from_secs(15);
-        config.health_timeout_cap = Duration::from_secs(5 * 60);
+        config.health_timeout_cap = Duration::from_secs(15 * 60);
         assert_eq!(readiness_timeout(&config, 0), Duration::from_secs(30));
         assert_eq!(readiness_timeout(&config, 7), Duration::from_secs(135));
         assert_eq!(readiness_timeout(&config, 9), Duration::from_secs(165));
-        assert_eq!(readiness_timeout(&config, 19), Duration::from_secs(300));
-        assert_eq!(readiness_timeout(&config, 10_000), Duration::from_secs(300));
+        assert_eq!(readiness_timeout(&config, 19), Duration::from_secs(315));
+        assert_eq!(readiness_timeout(&config, 58), Duration::from_secs(900));
+        assert_eq!(readiness_timeout(&config, 10_000), Duration::from_secs(900));
+    }
+
+    #[test]
+    fn cold_start_accepts_a_healthy_daemon_while_runner_discovery_continues() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let body = r#"{"ok":true,"name":"sessionsd","discovering":true}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(), body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let root = env::temp_dir().join("sessions-cold-start-listening-test");
+        let mut config = fixture_config(&root, "tech.somewhere.sessions.cold-start", port);
+        config.health_timeout = Duration::from_secs(1);
+        config.poll_interval = Duration::from_millis(25);
+
+        wait_until_listening(&config).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn update_accepts_complete_baseline_while_unrelated_discovery_continues() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let count = stream.read(&mut request).unwrap_or_default();
+                let request = String::from_utf8_lossy(&request[..count]);
+                let body = if request.starts_with("GET /api/sessions ") {
+                    r#"{"sessions":[{"id":"alpha"},{"id":"beta"}]}"#
+                } else {
+                    r#"{"ok":true,"name":"sessionsd","discovering":true}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let root = env::temp_dir().join("sessions-update-discovery-baseline-test");
+        let mut config = fixture_config(&root, "tech.somewhere.sessions.update-discovery", port);
+        config.health_timeout = Duration::from_secs(1);
+        config.poll_interval = Duration::from_millis(25);
+        let baseline = BTreeSet::from(["alpha".to_string(), "beta".to_string()]);
+
+        wait_until_ready(&config, &baseline).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn concurrent_service_mutations_are_refused_instead_of_interleaved() {
+        let held = lock_service_mutation().unwrap();
+        let refused = lock_service_mutation().unwrap_err();
+        assert!(
+            refused.contains("already reconciling"),
+            "second caller was not told why it was refused: {refused}"
+        );
+        assert!(
+            refused.contains("try again"),
+            "refusal did not name a next action: {refused}"
+        );
+        drop(held);
+        // The lock must not stay wedged after the first caller finishes, or a
+        // single reconcile would disable Recover for the life of the app.
+        assert!(lock_service_mutation().is_ok());
+    }
+
+    #[test]
+    fn unreadable_connection_settings_fall_back_visibly_instead_of_wedging_reconcile() {
+        let healthy = resolved_port(Ok(9123));
+        assert_eq!(healthy.port(), 9123);
+        assert_eq!(healthy.problem(), None);
+        let unchanged = healthy.annotate(RuntimeStatus::informational("ready", "installed"));
+        assert_eq!(unchanged.detail, "installed");
+
+        let corrupt = resolved_port(Err(
+            "parse native connection settings /tmp/connections.json: expected value".to_string(),
+        ));
+        // Not fatal: reconcile still has a port to work with.
+        assert_eq!(corrupt.port(), DEFAULT_LOOPBACK_PORT);
+        // Not silent: the reason reaches the status the user actually reads.
+        let annotated = corrupt.annotate(RuntimeStatus::informational("ready", "installed"));
+        assert_eq!(annotated.state, "ready");
+        assert!(annotated.detail.starts_with("installed; "), "{annotated:?}");
+        assert!(annotated.detail.contains("/tmp/connections.json"));
+        assert!(annotated
+            .detail
+            .contains(&format!("localhost:{DEFAULT_LOOPBACK_PORT}")));
+        assert!(annotated.detail.contains("Settings"));
+    }
+
+    #[test]
+    fn a_corrupt_manifest_is_reported_rather_than_aborting_the_app() {
+        let root = env::temp_dir().join(format!(
+            "sessions-manifest-guard-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let mut config = fixture_config(&root, "tech.somewhere.sessions.manifest-guard", 47_873);
+        config.verify_signatures = false;
+        let mut manifest = RuntimeManifest {
+            schema_version: 1,
+            runtime_version: "v1".to_string(),
+            target: "darwin-arm64".to_string(),
+            binaries: REQUIRED_BINARIES
+                .iter()
+                .map(|name| (name.to_string(), "0".repeat(64)))
+                .collect(),
+        };
+        // The first binary the verifier looks up, so the missing entry is
+        // reached before any digest work can fail for another reason.
+        manifest.binaries.remove(REQUIRED_BINARIES[0]);
+
+        let error = verify_runtime_directory(&config, &root, &manifest).unwrap_err();
+        assert!(error.contains(REQUIRED_BINARIES[0]), "{error}");
+        assert!(error.contains("reinstall Sessions"), "{error}");
+        assert!(error.contains(&root.display().to_string()), "{error}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn uninstall_removes_only_what_sessions_installed_outside_itself() {
+        use std::os::unix::fs::symlink;
+
+        let root = env::temp_dir().join(format!(
+            "sessions-uninstall-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let integration = macos_integration(&root);
+        let managed = integration.managed_root.join("v1");
+        fs::create_dir_all(&managed).unwrap();
+        fs::write(managed.join("sessions"), b"cli").unwrap();
+        fs::create_dir_all(integration.plist_path.parent().unwrap()).unwrap();
+        fs::write(&integration.plist_path, b"<plist/>").unwrap();
+
+        let managed_link = root.join("bin").join("sessions");
+        let foreign_link = root.join("foreign").join("sessions");
+        let real_file = root.join("real").join("sessions");
+        let elsewhere = root.join("someone-elses-sessions");
+        for path in [&managed_link, &foreign_link, &real_file, &elsewhere] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::write(&elsewhere, b"another tool").unwrap();
+        fs::write(&real_file, b"a real binary someone installed").unwrap();
+        symlink(managed.join("sessions"), &managed_link).unwrap();
+        symlink(&elsewhere, &foreign_link).unwrap();
+
+        let integration = MacosIntegration {
+            cli_link_paths: vec![
+                managed_link.clone(),
+                foreign_link.clone(),
+                real_file.clone(),
+                root.join("never").join("existed"),
+            ],
+            ..integration
+        };
+        let removal = remove_macos_integration(&integration);
+        assert!(removal.is_complete(), "{}", removal.report());
+
+        // Gone: the definition that would restart the daemon at every login,
+        // and the link Sessions published on a shared command path.
+        assert!(!integration.plist_path.exists());
+        assert!(fs::symlink_metadata(&managed_link).is_err());
+        // Untouched: a real file at a candidate path, a link pointing outside
+        // Sessions' managed runtime, and everything the user owns.
+        assert_eq!(
+            fs::read(&real_file).unwrap(),
+            b"a real binary someone installed"
+        );
+        assert_eq!(fs::read_link(&foreign_link).unwrap(), elsewhere);
+        assert!(managed.join("sessions").is_file());
+        let report = removal.report();
+        assert!(report.contains("login service definition"), "{report}");
+        assert!(
+            report.contains(&managed_link.display().to_string()),
+            "{report}"
+        );
+        assert!(report.contains("kept on purpose"), "{report}");
+        assert!(report.contains("running daemon, runner"), "{report}");
+
+        // Running it twice must be a clean no-op, not a second round of errors:
+        // an uninstaller is retried far more often than it is designed for.
+        let again = remove_macos_integration(&integration);
+        assert!(again.is_complete(), "{}", again.report());
+        assert!(again.report().contains("already absent"));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn only_transitional_runtime_status_reconciles_in_background() {
+        assert!(needs_background_reconcile(&RuntimeStatus::informational(
+            "starting", "checking",
+        )));
+        for state in ["ready", "development", "client-only", "disabled", "error"] {
+            assert!(!needs_background_reconcile(&RuntimeStatus::informational(
+                state, "settled",
+            )));
+        }
     }
 
     use std::{io::Read, net::TcpListener};
@@ -1441,8 +2115,61 @@ mod tests {
         assert!(plist.contains("tech.somewhere.sessions.fixture"));
         assert!(plist.contains("/tmp/Sessions &amp; tests/runtime/v1/sessionsd"));
         assert!(plist.contains("SESSIONS_RUNNER"));
-        assert!(plist.contains("/tmp/Sessions &amp; tests/runtime/v1/sessions-runner"));
+        assert!(plist.contains(
+            "/tmp/Sessions &amp; tests/Application Support/Sessions/runtime/sessions-runner"
+        ));
         assert!(plist.contains("<key>KeepAlive</key>"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stable_runner_is_atomically_replaced_without_changing_its_path() {
+        let root = env::temp_dir().join(format!(
+            "sessions-stable-runner-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let mut config = fixture_config(&root, "tech.somewhere.sessions.stable-runner", 47872);
+        config.verify_signatures = false;
+
+        write_fixture_runtime(&config, "v1", None);
+        let v1 = stage_runtime(&config).unwrap();
+        let stable = activate_stable_runner(&config, &v1).unwrap();
+        assert_eq!(stable, config.managed_root.join("sessions-runner"));
+        let first_digest = command_text_path(&config.shasum, &["-a", "256"], &stable).unwrap();
+
+        let replacement = root.join("replacement-runner");
+        fs::copy("/usr/bin/true", &replacement).unwrap();
+        write_fixture_runtime(&config, "v2", Some(&replacement));
+        fs::copy(&replacement, config.source_dir.join("sessions-runner")).unwrap();
+        set_file_mode(&config.source_dir.join("sessions-runner"), 0o755).unwrap();
+        let mut manifest: RuntimeManifest = serde_json::from_slice(
+            &fs::read(config.source_dir.join("runtime-manifest.json")).unwrap(),
+        )
+        .unwrap();
+        manifest.binaries.insert(
+            "sessions-runner".to_string(),
+            command_text_path(
+                &config.shasum,
+                &["-a", "256"],
+                &config.source_dir.join("sessions-runner"),
+            )
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string(),
+        );
+        fs::write(
+            config.source_dir.join("runtime-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let v2 = stage_runtime(&config).unwrap();
+        assert_eq!(activate_stable_runner(&config, &v2).unwrap(), stable);
+        let second_digest = command_text_path(&config.shasum, &["-a", "256"], &stable).unwrap();
+        assert_ne!(first_digest, second_digest);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

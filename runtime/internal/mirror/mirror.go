@@ -137,15 +137,37 @@ func NewSize(cols, rows int) (*Mirror, error) {
 // close theirs.
 func (m *Mirror) Close() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closed {
+		m.mu.Unlock()
 		return nil
 	}
 	m.closed = true
-	if _, err := io.WriteString(m.term.InputPipe(), drainStopMarker); err != nil {
-		return err
+	m.mu.Unlock()
+
+	// The stop marker goes through vt's io.Pipe, whose writer blocks until a
+	// reader consumes it, and the drain goroutine can already have returned on
+	// its own (its Read fails, or it saw a marker). Writing under m.mu would
+	// then block forever and wedge every other operation on this session's
+	// mirror, so signal off the lock and never wait on the write itself:
+	// whichever of the two completes first is enough, and m.term.Close() below
+	// releases a writer nobody will ever read (vt closes the pipe with EOF).
+	marker := make(chan struct{})
+	go func() {
+		defer close(marker)
+		_, _ = io.WriteString(m.term.InputPipe(), drainStopMarker)
+	}()
+	select {
+	case <-m.drainDone:
+		// Drain already gone; nothing will consume the marker. Closing the
+		// emulator is what unblocks the write above.
+	case <-marker:
+		// The marker was delivered (or the pipe is already closed); either way
+		// the drain observes it and returns.
+		<-m.drainDone
 	}
-	<-m.drainDone
+	// Always release the emulator, including on a failed stop-marker write: a
+	// mirror that reports an error but keeps its emulator and pipe alive leaks
+	// both for the life of the daemon.
 	return m.term.Close()
 }
 
@@ -272,11 +294,17 @@ func (m *Mirror) writeTracked(raw []byte) error {
 				continue
 			}
 		}
-		protected := protectASCIICombining(token)
+		protected, wasProtected := protectASCIICombining(token)
 		if _, err := m.term.Write(protected); err != nil {
 			return err
 		}
-		m.restoreProtectedASCII()
+		if wasProtected {
+			// restoreProtectedASCII walks every cell on the screen. Only a token
+			// that actually carried a protected base can leave one behind, and
+			// each such token is restored before the next write, so the screen is
+			// already clean for the common unprotected token.
+			m.restoreProtectedASCII()
+		}
 		m.afterPrintable(width, start.X)
 		i += len(token)
 	}
@@ -613,8 +641,10 @@ func (m *Mirror) scrollWrapsDown(top, bottom, count int) {
 // emitted as a standalone width-zero cell and then overwritten. Temporarily
 // moving only such ASCII bases into the supplementary private-use area makes
 // x/vt's grapheme segmenter see the complete cluster. The cell content is
-// restored immediately after parsing.
-func protectASCIICombining(raw []byte) []byte {
+// restored immediately after parsing. The second result reports whether any
+// base was moved, so the caller can skip the full-screen restore pass for the
+// overwhelmingly common token that needed no protection.
+func protectASCIICombining(raw []byte) ([]byte, bool) {
 	var out bytes.Buffer
 	changed := false
 	for i := 0; i < len(raw); {
@@ -632,9 +662,9 @@ func protectASCIICombining(raw []byte) []byte {
 		i++
 	}
 	if !changed {
-		return raw
+		return raw, false
 	}
-	return out.Bytes()
+	return out.Bytes(), true
 }
 
 func (m *Mirror) restoreProtectedASCII() {
@@ -694,6 +724,40 @@ func (m *Mirror) SerializeANSI() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.serializeANSI()
+}
+
+// SerializeANSIWithScrollback returns one bulk ANSI stream containing the
+// retained main-buffer history followed by the current viewport. It is used
+// only to prime a real terminal view: the ordinary snapshot intentionally
+// remains viewport-only for status classification and reflowed views.
+//
+// The rows of blank output after the retained history push exactly that
+// history into a fresh terminal's scrollback. ED 2 then clears only the live
+// viewport (not scrollback) before the canonical active screen is painted.
+// Alternate-screen applications do not expose scrollback while that screen is
+// active, so retain the existing viewport-only behavior there.
+func (m *Mirror) SerializeANSIWithScrollback() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	scrollback := m.term.Scrollback()
+	if m.altScreen || scrollback == nil || scrollback.Len() == 0 {
+		return m.serializeANSI()
+	}
+
+	var out strings.Builder
+	for _, line := range scrollback.Lines() {
+		out.WriteString(line.Render())
+		out.WriteString("\r\n")
+	}
+	for row := 1; row < m.rows; row++ {
+		out.WriteString("\r\n")
+	}
+	// Clear the visible filler rows without erasing the scrollback we just
+	// restored, then repaint the active viewport using the proven serializer.
+	out.WriteString("\x1b[2J\x1b[H")
+	out.WriteString(m.serializeANSI())
+	return out.String()
 }
 
 // ReflowTo serializes the active screen and applies the exact server-side

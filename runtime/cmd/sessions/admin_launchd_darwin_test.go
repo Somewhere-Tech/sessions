@@ -141,8 +141,23 @@ func TestDaemonScratchLaunchdBootstrapHealthBootout(t *testing.T) {
 	if err := application.cmdUninstall(nil); err != nil {
 		t.Fatalf("idempotent uninstall %s: %s\n%s", label, err, readTestLog(logPath))
 	}
-	if output, err := exec.Command(launchctl, "print", serviceTarget).CombinedOutput(); err == nil {
-		t.Fatalf("scratch service remained loaded after bootout: %s", output)
+	// bootout is asynchronous: launchd reports the job as SIGTERMed until the
+	// process actually exits, so a single immediate probe is a race against
+	// however long that takes. It is slow enough to fail under -race. Poll for
+	// the service to disappear instead of assuming it already has.
+	var lastPrint []byte
+	booted := true
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
+		output, err := exec.Command(launchctl, "print", serviceTarget).CombinedOutput()
+		if err != nil {
+			booted = false
+			break
+		}
+		lastPrint = output
+		time.Sleep(100 * time.Millisecond)
+	}
+	if booted {
+		t.Fatalf("scratch service remained loaded 15s after bootout: %s", lastPrint)
 	}
 	if _, err := os.Stat(plistPath); !os.IsNotExist(err) {
 		t.Fatalf("scratch plist remained after uninstall: %v", err)

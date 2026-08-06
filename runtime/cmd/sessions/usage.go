@@ -70,23 +70,67 @@ func writeUsageTable(output io.Writer, report usage.Report) error {
 		return err
 	}
 	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "PERIOD\tINPUT\tOUTPUT\tREASONING\tCACHE WRITE\tCACHE READ\tTOTAL\tCOST")
+	fmt.Fprintln(writer, "PERIOD\tINPUT\tOUTPUT\tREASONING\tCACHE WRITE\tCACHE READ\tTOTAL\tEST COST")
 	for _, row := range report.Rows {
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t$%.4f\n", row.Key,
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", row.Key,
 			commaInt(row.Tokens.Input), commaInt(row.Tokens.Output), commaInt(row.Tokens.Reasoning), commaInt(row.Tokens.CacheCreation),
-			commaInt(row.Tokens.CacheRead), commaInt(row.Tokens.Total()), row.CostUSD)
+			commaInt(row.Tokens.CacheRead), commaInt(row.Tokens.Total()), formatEstimatedCost(row.CostUSD))
 	}
-	fmt.Fprintf(writer, "TOTAL\t%s\t%s\t%s\t%s\t%s\t%s\t$%.4f\n", commaInt(report.Totals.Tokens.Input),
+	fmt.Fprintf(writer, "TOTAL\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", commaInt(report.Totals.Tokens.Input),
 		commaInt(report.Totals.Tokens.Output), commaInt(report.Totals.Tokens.Reasoning), commaInt(report.Totals.Tokens.CacheCreation),
-		commaInt(report.Totals.Tokens.CacheRead), commaInt(report.Totals.Tokens.Total()), report.Totals.CostUSD)
+		commaInt(report.Totals.Tokens.CacheRead), commaInt(report.Totals.Tokens.Total()), formatEstimatedCost(report.Totals.CostUSD))
 	if err := writer.Flush(); err != nil {
 		return err
 	}
+	if _, err := io.WriteString(output, "\n"+estimatedCostDisclosure(report)); err != nil {
+		return err
+	}
 	if report.Totals.MissingPricing > 0 {
-		_, err := fmt.Fprintf(output, "\n%d usage entries have no price in the pinned ccusage snapshot; their calculated cost is $0.\n", report.Totals.MissingPricing)
+		_, err := fmt.Fprintf(output, "%d usage entries have no price in the pinned ccusage snapshot; their calculated cost is $0.\n", report.Totals.MissingPricing)
 		return err
 	}
 	return nil
+}
+
+// formatEstimatedCost renders a modelled figure at a precision it can actually
+// support. Four decimals read as a settled amount to the tenth of a cent, which
+// this number is not: it is reconstructed from a token stream that omits
+// server-side tool use and from prices pinned in this build. Cents are the
+// honest resolution, and anything that rounds away is reported as such rather
+// than shown as a clean $0.00.
+func formatEstimatedCost(value float64) string {
+	if value == 0 {
+		return "$0.00"
+	}
+	if value < 0 {
+		return "-" + formatEstimatedCost(-value)
+	}
+	if value < 0.005 {
+		return "<$0.01"
+	}
+	rounded := fmt.Sprintf("%.2f", value)
+	dollars, cents, _ := strings.Cut(rounded, ".")
+	whole, err := strconv.ParseInt(dollars, 10, 64)
+	if err != nil {
+		return "$" + rounded
+	}
+	return "$" + commaInt(whole) + "." + cents
+}
+
+// estimatedCostDisclosure states, on the surface that prints the number, what
+// the audit of internal/usage established. The JSON report already carries
+// report.Pricing.Note; a caller reading the table never saw it.
+func estimatedCostDisclosure(report usage.Report) string {
+	lines := []string{
+		"EST COST is a modelled estimate, not a bill: it answers \"what would this have cost on the API\".",
+		"Prices are pinned in this build with no as-of date, server-side tool use is billed but never appears",
+		"in the token stream, and 1-hour cache writes are underpriced. On a Max or ChatGPT subscription the",
+		"marginal cost of this usage is zero.",
+	}
+	if note := strings.TrimSpace(report.Pricing.Note); note != "" {
+		lines = append(lines, "Pricing source: "+note)
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func commaInt(value int64) string {

@@ -4,6 +4,7 @@ import {
   isTauri,
   loadNativeMachineCredentials,
   saveNativeMachineCredentials,
+  syncNativeAgentMachines,
   type NativeMachineCredential
 } from './tauriBridge';
 import { readWindowScope } from './windowScope';
@@ -22,6 +23,13 @@ export interface ServerConfig {
   // A machine can have LAN and Tailscale endpoints without becoming two fleet
   // entries; endpoint URLs are access paths, not machine identity.
   machineId?: string;
+  // The host-side revocation identity returned with a successful pairing.
+  deviceId?: string;
+  // The hostname most recently reported by the authenticated daemon. It may
+  // change while machineId stays stable (for example after renaming a Mac).
+  systemName?: string;
+  // A user-assigned Fleet label is separate from the reported hostname.
+  customName?: string;
   name: string;
   host: string;
   port: number;
@@ -33,6 +41,17 @@ export interface ServerConfig {
   // Transport scheme.  Defaults to 'http' so existing stored configs
   // (which have no scheme field) continue to work without migration.
   scheme?: 'http' | 'https';
+}
+
+export function serverDisplayName(server: ServerConfig, annotateLocal = false): string {
+  const reported = server.systemName?.trim();
+  const custom = server.customName?.trim();
+  const legacy = server.name?.trim();
+  const base = custom || reported || (legacy && legacy !== 'This machine' ? legacy : '') || 'This machine';
+  if (annotateLocal && server.isDefault && isLocalServer(server) && base !== 'This machine' && !/\(this machine\)$/i.test(base)) {
+    return `${base} (this machine)`;
+  }
+  return base;
 }
 
 const STORAGE_KEY = 'sessions:servers';
@@ -482,16 +501,23 @@ function hasStoredServerList(): boolean {
   }
 }
 
-function isSessionsDaemonHealth(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null) return false;
-  const health = value as Record<string, unknown>;
-  return health.ok === true || typeof health.name === 'string';
-}
-
 // A non-8787 page may still be the UI served by sessionsd itself (for example
 // its Tailscale HTTPS origin). With no saved configuration, probe that origin
 // and adopt it only when the response identifies a daemon. Static hosted
 // shells fall through unchanged when /api/health is absent or not sessionsd.
+//
+// This used to be a bare `fetch` with its own health test — `ok === true ||
+// typeof name === 'string'` — which is strictly weaker than the client's
+// `validateServerHealth`: it never looked at `compatibility.api`, so a daemon
+// whose API range excludes this client was adopted silently, and the user got
+// whatever confusing failure came next instead of the "Update Sessions on
+// this device or the host" message that every other entry point produces. It
+// now goes through the central client, which injects auth, translates 401,
+// and runs the range check.
+//
+// The import is dynamic on purpose: api/sessionsd.ts imports this module for
+// its server resolution, so a static import would close a module cycle for
+// one startup probe.
 export async function bootstrapCurrentOriginServer(): Promise<void> {
   if (typeof window === 'undefined') return;
   if (useServers.getState().servers.length > 0 || hasStoredServerList()) return;
@@ -500,24 +526,26 @@ export async function bootstrapCurrentOriginServer(): Promise<void> {
   // never wait for a startup probe.
   if (embeddedServer()) return;
 
-  let response: Response;
-  try {
-    response = await fetch(`${window.location.origin}/api/health`);
-  } catch {
-    return;
-  }
+  const { AuthError, ServerCompatibilityError, fetchServerHealth } = await import('../api/sessionsd');
 
   let tokenRequired = false;
-  if (response.status === 401) {
-    tokenRequired = true;
-  } else if (response.status === 200) {
-    try {
-      if (!isSessionsDaemonHealth(await response.json())) return;
-    } catch {
+  try {
+    await fetchServerHealth(currentOriginServer());
+  } catch (error) {
+    if (error instanceof AuthError) {
+      // A daemon that answers 401 has identified itself well enough to adopt;
+      // the token prompt is the next step, not a dead end.
+      tokenRequired = true;
+    } else if (error instanceof ServerCompatibilityError) {
+      // Reachable, definitely sessionsd, and unusable by this client. Adopting
+      // it would hide that; say so on the connect surface instead.
+      useServers.getState().setPairingError(error.message);
+      return;
+    } else {
+      // Unreachable, not a daemon, or an unrecognisable body: a static hosted
+      // shell. Fall through silently exactly as before.
       return;
     }
-  } else {
-    return;
   }
 
   await adoptCurrentOriginServer(undefined, tokenRequired);
@@ -557,6 +585,24 @@ export async function hydrateNativeMachineCredentials(): Promise<void> {
 export function blockNativeMachineCredentialPersistence(detail: string): void {
   nativeCredentialStoreEnabled = false;
   nativeCredentialStoreBlockedError = new Error(detail);
+}
+
+// Keep the native UI and the agent-facing CLI on one approved-machine list.
+// Only paired machines have a stable identity and device credential; manual
+// endpoint drafts remain UI-local until the host approves them.
+export async function syncNativeAgentMachineAccess(): Promise<void> {
+  if (!isTauri()) return;
+  const machines = useServers.getState().servers.flatMap((server) => {
+    if (server.isDefault || !server.machineId || !server.token) return [];
+    return [{
+      machineId: server.machineId,
+      name: serverDisplayName(server),
+      endpoint: `${server.scheme ?? 'http'}://${server.host}:${server.port}`,
+      ...(server.deviceId ? { deviceId: server.deviceId } : {}),
+      token: server.token
+    }];
+  });
+  await syncNativeAgentMachines(machines);
 }
 
 // Non-reactive accessor for use inside api/sessionsd.ts and similar — those

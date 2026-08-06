@@ -181,6 +181,10 @@ func (a *app) cmdTranscript(args []string) error {
 	if err != nil {
 		return err
 	}
+	return a.writeSessionTranscript(id)
+}
+
+func (a *app) writeSessionTranscript(id string) error {
 	var response eventsResponse
 	if err := a.getJSON("/api/sessions/"+escapeID(id)+"/events", &response); err != nil {
 		return err
@@ -231,6 +235,24 @@ func (a *app) cmdTranscript(args []string) error {
 	return nil
 }
 
+// askJSONResult is what ask returns once the message has been delivered and
+// only the reply is outstanding. The fields it shares with sendJSONResult —
+// submitted, confidence, reason — keep their meaning, so a caller that already
+// parses send's answer can read this one too; reply is always present so its
+// absence is a value rather than a missing key.
+type askJSONResult struct {
+	Submitted  bool      `json:"submitted"`
+	Confidence string    `json:"confidence"`
+	Reason     string    `json:"reason,omitempty"`
+	Working    *bool     `json:"working,omitempty"`
+	Reply      *askReply `json:"reply"`
+}
+
+type askReply struct {
+	Text      string `json:"text"`
+	Timestamp any    `json:"timestamp"`
+}
+
 func (a *app) cmdAsk(args []string) error {
 	if len(args) == 0 || args[0] == "" {
 		return fail(1, "usage: sessions ask <id> [--timeout Ns] [--idle Ns] [--wait-timeout Ns] <text...>")
@@ -272,11 +294,18 @@ func (a *app) cmdAsk(args []string) error {
 		return err
 	}
 	if result.Confirmed == nil {
+		// ask and send share sendAndConfirm, so they answer the same question
+		// with the same document. This branch used to omit confidence, and
+		// under --json it returned the document with status 0 for a failure
+		// that exits 1 in prose mode — an agent that switched on --json was
+		// told the ask had succeeded.
 		if a.wantJSON {
-			return writeJSON(a.stdout, struct {
-				Submitted *bool  `json:"submitted"`
-				Tool      string `json:"tool"`
-			}{nil, result.Tool}, false)
+			if err := writeJSON(a.stdout, sendJSONResult{
+				Submitted: nil, Confidence: "unconfirmed", Tool: result.Tool,
+			}, false); err != nil {
+				return err
+			}
+			return status(1)
 		}
 		fmt.Fprintf(a.stderr, "sessions ask: submission confirmation not available for tool '%s'\n", result.Tool)
 		io.WriteString(a.stderr, "  use 'sessions send' + 'sessions wait' instead\n")
@@ -284,13 +313,11 @@ func (a *app) cmdAsk(args []string) error {
 	}
 	if !*result.Confirmed {
 		if a.wantJSON {
-			output := struct {
-				Submitted               bool   `json:"submitted"`
-				Reason                  string `json:"reason"`
-				SessionState            string `json:"sessionState,omitempty"`
-				SessionStateDescription string `json:"sessionStateDescription,omitempty"`
-				ComposerTail            string `json:"composerTail"`
-			}{Submitted: false, Reason: result.Reason, ComposerTail: result.ComposerTail}
+			composerTail := result.ComposerTail
+			output := sendJSONResult{
+				Submitted: boolPointer(false), Confidence: "unconfirmed", Reason: result.Reason,
+				TextStillInComposer: result.TextStillInComposer, ComposerTail: &composerTail,
+			}
 			if result.SnapshotState != nil {
 				output.SessionState = result.SnapshotState.Kind
 				output.SessionStateDescription = result.SnapshotState.Description
@@ -310,7 +337,10 @@ func (a *app) cmdAsk(args []string) error {
 				fmt.Fprintln(a.stderr, result.ComposerTail)
 			}
 		}
-		return status(1)
+		// send distinguishes "the text is still sitting in the composer" (1)
+		// from "it left the composer and nothing acknowledged it" (2). ask
+		// collapsed both into 1 despite reading the same evidence.
+		return status(result.ExitCode)
 	}
 	a.sleep(500 * time.Millisecond)
 	waitStart := a.now()
@@ -354,15 +384,20 @@ func (a *app) cmdAsk(args []string) error {
 		}
 		if elapsed >= waitTimeout {
 			if a.wantJSON {
-				writeJSON(a.stdout, struct {
-					Submitted bool   `json:"submitted"`
-					Reason    string `json:"reason"`
-					Working   bool   `json:"working"`
-				}{true, "wait-timeout", current.Working}, false)
+				working := current.Working
+				if err := writeJSON(a.stdout, askJSONResult{
+					Submitted: true, Confidence: result.Confidence,
+					Reason: "wait-timeout", Working: &working,
+				}, false); err != nil {
+					return err
+				}
 			} else {
 				fmt.Fprintf(a.stderr, "sessions ask: timed out waiting for reply after %dms\n", waitTimeout.Milliseconds())
 			}
-			return status(1)
+			// The message was delivered and the target may still be working,
+			// which is exactly what exit 3 means everywhere else in Sessions.
+			// It used to report 1, the code reserved for a usage mistake.
+			return status(exitWaitTimeout)
 		}
 		a.sleep(poll)
 	}
@@ -378,26 +413,19 @@ func (a *app) cmdAsk(args []string) error {
 	}
 	if last == nil {
 		if a.wantJSON {
-			return writeJSON(a.stdout, struct {
-				Submitted bool `json:"submitted"`
-				Reply     any  `json:"reply"`
-			}{true, nil}, false)
+			return writeJSON(a.stdout, askJSONResult{
+				Submitted: true, Confidence: result.Confidence,
+			}, false)
 		}
 		_, err := io.WriteString(a.stdout, "(no assistant reply found)\n")
 		return err
 	}
 	replyText := extractEventText(last)
 	if a.wantJSON {
-		return writeJSON(a.stdout, struct {
-			Submitted bool `json:"submitted"`
-			Reply     struct {
-				Text      string `json:"text"`
-				Timestamp any    `json:"timestamp"`
-			} `json:"reply"`
-		}{Submitted: true, Reply: struct {
-			Text      string `json:"text"`
-			Timestamp any    `json:"timestamp"`
-		}{replyText, eventTimestamp(last)}}, false)
+		return writeJSON(a.stdout, askJSONResult{
+			Submitted: true, Confidence: result.Confidence,
+			Reply: &askReply{Text: replyText, Timestamp: eventTimestamp(last)},
+		}, false)
 	}
 	io.WriteString(a.stdout, trimEndJS(replyText))
 	if replyText != "" && !strings.HasSuffix(replyText, "\n") {

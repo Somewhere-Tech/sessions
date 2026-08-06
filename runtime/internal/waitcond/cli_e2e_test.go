@@ -37,25 +37,36 @@ func TestPrettyWaitCLIEndToEnd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit = %d, stdout=%s stderr=%s", code, stdout, stderr)
 		}
+		// The condition payload moved under "condition" when every wait path
+		// was unified onto one envelope; the target id stays top level so a
+		// fan-out caller can always tell who answered.
 		var commitOutput struct {
-			Session          string `json:"session"`
-			Subject          string `json:"subject"`
-			Baseline         string `json:"baseline"`
-			Commit           string `json:"commit"`
-			HistoryRewritten bool   `json:"history_rewritten"`
+			Session   string `json:"session"`
+			Condition struct {
+				Subject          string `json:"subject"`
+				Baseline         string `json:"baseline"`
+				Commit           string `json:"commit"`
+				HistoryRewritten bool   `json:"history_rewritten"`
+			} `json:"condition"`
 		}
 		if err := json.Unmarshal(stdout, &commitOutput); err != nil {
 			t.Fatal(err)
 		}
-		if commitOutput.Session != id || commitOutput.Subject != "CLI real commit" || commitOutput.Baseline != initial || commitOutput.Commit == commitOutput.Baseline || commitOutput.HistoryRewritten {
+		if commitOutput.Session != id || commitOutput.Condition.Subject != "CLI real commit" ||
+			commitOutput.Condition.Baseline != initial ||
+			commitOutput.Condition.Commit == commitOutput.Condition.Baseline ||
+			commitOutput.Condition.HistoryRewritten {
 			t.Fatalf("unexpected output: %#v", commitOutput)
 		}
 		t.Logf("commit JSON: %s", bytes.TrimSpace(stdout))
 
 		code, stdout, stderr = runPrettyCLI(t, binary, environment,
 			"--port", "1", "--json", "wait", id, "--until", "commit", "--timeout", "120ms")
-		if code != 2 {
-			t.Fatalf("exit = %d, want 2; stdout=%s stderr=%s", code, stdout, stderr)
+		// A timeout is exit 3. It used to share exit 2 with "the daemon could
+		// not be reached", so a caller could not tell a slow target from a
+		// broken connection.
+		if code != 3 {
+			t.Fatalf("exit = %d, want 3; stdout=%s stderr=%s", code, stdout, stderr)
 		}
 		var timeoutOutput struct {
 			Reason string `json:"reason"`
@@ -74,14 +85,17 @@ func TestPrettyWaitCLIEndToEnd(t *testing.T) {
 			t.Fatalf("exit = %d, stdout=%s stderr=%s", code, stdout, stderr)
 		}
 		var resetOutput struct {
-			HistoryRewritten bool   `json:"history_rewritten"`
-			Subject          string `json:"subject"`
-			Baseline         string `json:"baseline"`
+			Condition struct {
+				HistoryRewritten bool   `json:"history_rewritten"`
+				Subject          string `json:"subject"`
+				Baseline         string `json:"baseline"`
+			} `json:"condition"`
 		}
 		if err := json.Unmarshal(stdout, &resetOutput); err != nil {
 			t.Fatal(err)
 		}
-		if !resetOutput.HistoryRewritten || resetOutput.Subject != "initial" || resetOutput.Baseline != beforeReset {
+		if !resetOutput.Condition.HistoryRewritten || resetOutput.Condition.Subject != "initial" ||
+			resetOutput.Condition.Baseline != beforeReset {
 			t.Fatalf("unexpected force-reset output: %#v", resetOutput)
 		}
 		t.Logf("force-reset JSON: %s", bytes.TrimSpace(stdout))
@@ -92,22 +106,28 @@ func TestPrettyWaitCLIEndToEnd(t *testing.T) {
 		writeRunnerMetadata(t, stateDir, "first-session", root)
 		writeRunnerMetadata(t, stateDir, "second-session", root)
 		writeFile(t, filepath.Join(root, "second.log"), "SECOND WON\n")
+		// A relative path now resolves against the caller's cwd rather than
+		// the delegate's, because a delegator usually does not know where its
+		// delegate is running. These files belong to the session, so the test
+		// names them the way a caller would have to.
 		code, stdout, stderr := runPrettyCLI(t, binary, environment,
 			"--port", "1", "--json", "wait", "first-session", "second-session", "--any",
-			"--until-file-contains", "first.log", "FIRST WON",
-			"--until-file-contains", "second.log", "SECOND WON",
+			"--until-file-contains", filepath.Join(root, "first.log"), "FIRST WON",
+			"--until-file-contains", filepath.Join(root, "second.log"), "SECOND WON",
 			"--timeout", "2s")
 		if code != 0 {
 			t.Fatalf("exit = %d, stdout=%s stderr=%s", code, stdout, stderr)
 		}
 		var output struct {
-			Session string `json:"session"`
-			File    string `json:"file"`
+			Session   string `json:"session"`
+			Condition struct {
+				File string `json:"file"`
+			} `json:"condition"`
 		}
 		if err := json.Unmarshal(stdout, &output); err != nil {
 			t.Fatal(err)
 		}
-		if output.Session != "second-session" || filepath.Base(output.File) != "second.log" {
+		if output.Session != "second-session" || filepath.Base(output.Condition.File) != "second.log" {
 			t.Fatalf("unexpected --any winner: %#v", output)
 		}
 		t.Logf("--any JSON: %s", bytes.TrimSpace(stdout))
@@ -139,13 +159,15 @@ func TestPrettyWaitCLIEndToEnd(t *testing.T) {
 			t.Fatalf("exit = %d, stdout=%s stderr=%s", code, stdout, stderr)
 		}
 		var output struct {
-			Source       string `json:"source"`
-			IdleStableMS int64  `json:"idle_stable_ms"`
+			Condition struct {
+				Source       string `json:"source"`
+				IdleStableMS int64  `json:"idle_stable_ms"`
+			} `json:"condition"`
 		}
 		if err := json.Unmarshal(stdout, &output); err != nil {
 			t.Fatal(err)
 		}
-		if output.Source != "structured" || output.IdleStableMS != 80 {
+		if output.Condition.Source != "structured" || output.Condition.IdleStableMS != 80 {
 			t.Fatalf("unexpected idle result: %#v", output)
 		}
 		t.Logf("idle-stable JSON: %s", bytes.TrimSpace(stdout))

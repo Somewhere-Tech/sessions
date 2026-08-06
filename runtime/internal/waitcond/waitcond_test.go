@@ -2,9 +2,11 @@ package waitcond
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -185,6 +187,79 @@ func TestFileContainsAppendAndRecreate(t *testing.T) {
 		}
 		t.Logf("recreate observed: session=%s file=%s literal=%q", result.Session, result.File, result.Contains)
 	})
+}
+
+// TestFileContainsStaysQuietUnderUnrelatedDirectoryChurn pins the cost of
+// waiting. The watch covers the parent directory — normally the session cwd —
+// so an `npm install` running there wakes this condition tens of thousands of
+// times. Each wake used to re-read the watched file, which pinned a core for
+// the whole timeout and made the machine unusable while an agent waited.
+func TestFileContainsStaysQuietUnderUnrelatedDirectoryChurn(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "status.log")
+	writeFile(t, path, strings.Repeat("waiting for the agent\n", 24*1024))
+
+	condition, err := NewFileContains("churn-session", root, "status.log", "READY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileCondition := condition.(*fileContainsCondition)
+	ready := observeFileWatchRegistration(fileCondition)
+	done := startWait(t, fileCondition)
+	<-ready
+
+	events := 0
+	deadline := time.Now().Add(2 * time.Second)
+	for index := 0; time.Now().Before(deadline); index++ {
+		unrelated := filepath.Join(root, fmt.Sprintf("node_modules-%d.tmp", index))
+		writeFile(t, unrelated, "unrelated build output\n")
+		if err := os.Remove(unrelated); err != nil {
+			t.Fatal(err)
+		}
+		events += 2
+	}
+	checks := fileCondition.probe.checks.Load()
+	reads := fileCondition.probe.reads.Load()
+	select {
+	case observed := <-done:
+		t.Fatalf("unrelated churn satisfied the wait: %#v", observed)
+	default:
+	}
+	if events < 2000 {
+		t.Fatalf("churn produced only %d filesystem events, too few to be evidence", events)
+	}
+	// Observations are bounded by elapsed time, not by the event stream: the
+	// poll interval and the coalescing window are the only two things that can
+	// schedule one.
+	if maximum := int64(2 * (int(2*time.Second/watchDebounce) + int(2*time.Second/filePollInterval))); checks > maximum {
+		t.Fatalf("observations=%d over %d events, want at most %d", checks, events, maximum)
+	}
+	// And reads are bounded below observations, because a file whose identity,
+	// size, and modification time have not moved is answered without reading.
+	if reads >= checks {
+		t.Fatalf("every one of the %d observations re-read the file", checks)
+	}
+
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("READY\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := waitResult(done)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.File != path {
+		t.Fatalf("unexpected result after churn: %#v", result)
+	}
+	t.Logf("churn events=%d observations=%d file_reads=%d, then the sentinel was seen in %s",
+		events, checks, reads, result.Elapsed.Round(time.Millisecond))
 }
 
 func TestIdleStableResetsAndReportsEvidenceSource(t *testing.T) {

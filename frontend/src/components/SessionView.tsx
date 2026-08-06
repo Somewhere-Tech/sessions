@@ -4,20 +4,21 @@ import { useSessionSidebar } from '../hooks/useSessionSidebar';
 import { RemoteView } from './RemoteView';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import { useSessions } from '../store/sessions';
-import { fetchServerHistoryTranscript, wsMuxUrl } from '../api/sessionsd';
+import { fetchOnboardingState, fetchServerHistoryTranscript, wsMuxUrl } from '../api/sessionsd';
 import { classifySnapshotComposerState } from '../lib/detectMultiChoice';
 import { requestSnapshot } from '../lib/wsMux';
 import { SessionDetails } from './SessionDetails';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
-import { getActiveServer } from '../lib/servers';
+import { getActiveServer, serverDisplayName } from '../lib/servers';
 import { sessionLabel, useTabLabel } from '../lib/tabLabels';
 import { SessionHistoryView } from './SessionHistoryView';
-import { isCrashedSession, isDegradedSession } from '../lib/sessionStatus';
+import { classifySession } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
 import { MachineMark } from './MachineMark';
 import { readInitialSessionView, writeSessionView, type SessionViewMode } from '../lib/sessionViewPreference';
 import { LoadingShell } from './LoadingShell';
+import { ConversationForkButton } from './ConversationForkButton';
 
 import type { ActiveStatus } from '../App';
 
@@ -31,8 +32,7 @@ interface Props {
   onResume?: (
     session: import('../types').SessionInfo,
     destinationProvider?: 'claude' | 'codex',
-    runtimeMode?: 'rich' | 'terminal',
-    remoteControl?: boolean
+    runtimeMode?: 'rich' | 'terminal'
   ) => void;
   onFork?: (
     session: import('../types').SessionInfo,
@@ -77,6 +77,7 @@ let terminalNoticeShownThisLaunch = false;
 function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onFork, onCloseView, onBack, preferFullTerminal = false }: Props): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>(() => readInitialSessionView(sessionId));
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [forkMode, setForkMode] = useState(false);
   const [terminalExpanded, setTerminalExpanded] = useState(false);
   const sessionViewRef = useRef<HTMLDivElement>(null);
   const terminalModePillRef = useRef<HTMLSpanElement>(null);
@@ -99,8 +100,6 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     ? session.displayParentSessionId
     : session?.parentSessionId;
   const parent = displayParentID ? allSessions.find((item) => item.id === displayParentID) : null;
-  const crashedSession = session ? isCrashedSession(session) : false;
-  const degradedSession = session ? isDegradedSession(session) : false;
   const provider = normalizeProvider(session?.tool);
   const richSession = Boolean(session && sessionMode(session) === 'rich');
   const workspaceName = session?.cwd.split('/').filter(Boolean).pop() || 'Workspace';
@@ -165,34 +164,23 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     events: term.claudeEvents,
     daemonWorking: session?.working ?? false
   });
-  const statusLabel = sidebar.isWorking
-    ? 'Working'
-    : degradedSession
-    ? 'Limited'
-    : crashedSession
-    ? 'Failed'
-    : session?.idleReason === 'needs-input'
-    ? 'Needs you'
-    : session?.exited || session?.idleReason === 'completed'
-    ? 'Finished'
-    : session?.idleReason === 'never-started'
-    ? 'Not started'
-    : 'Idle';
-  const statusTone = sidebar.isWorking
-    ? ' is-running'
-    : degradedSession
-    ? ' is-limited'
-    : crashedSession
-    ? ' is-failed'
-    : session?.idleReason === 'needs-input'
-    ? ' is-needs-you'
-    : session?.exited || session?.idleReason === 'completed'
-    ? ' is-finished'
-    : '';
+  // One classifier, one vocabulary (lib/sessionStatus.ts). The sidebar's
+  // provider-event working signal is handed over as the live activity
+  // override; it deliberately cannot outrank a recorded needs-input, because
+  // an assistant turn stopped on `tool_use` IS a pending approval.
+  const sessionStatus = session
+    ? classifySession(session, { working: sidebar.isWorking })
+    : null;
+  const statusLabel = sessionStatus?.label ?? 'Ready';
+  const statusTone = sessionStatus ? ` ${sessionStatus.className}` : '';
 
   useEffect(() => {
     writeSessionView(viewMode);
   }, [viewMode]);
+
+  useEffect(() => {
+    setForkMode(false);
+  }, [sessionId]);
 
   useEffect(() => {
     if (!terminalWarningKey) return;
@@ -289,6 +277,14 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     term.sendInputRef.current(data);
   }, [term.sendInputRef]);
 
+  const sendConfirmedInput = useCallback((data: string): Promise<void> => {
+    return term.sendConfirmedInputRef.current(data);
+  }, [term.sendConfirmedInputRef]);
+
+  const submitMessage = useCallback((data: string): Promise<void> => {
+    return term.submitMessageRef.current(data);
+  }, [term.submitMessageRef]);
+
   const scrollTerminalToBottom = useCallback((): void => {
     term.scrollTerminalToBottomRef.current();
   }, [term.scrollTerminalToBottomRef]);
@@ -311,13 +307,33 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     if (session.working) {
       throw new Error('Claude is still working. Wait for this turn to finish; your draft will stay in the composer.');
     }
+    if (enableRemoteControl) {
+      // Remote Control is a machine-level consent boundary, not a per-session
+      // switch: the resumed Terminal session gets it only because this machine
+      // already opted in (Settings → Claude), and the daemon refuses to start
+      // one otherwise (runtime/internal/session/claude_defaults.go). Check
+      // before the ledgered termination — ending the Rich runtime first would
+      // spend an irreversible action on a request that cannot be honored, and
+      // leave the user with neither the session nor Remote Control.
+      const onboarding = await fetchOnboardingState();
+      if (onboarding.supported !== false && onboarding.remoteControl !== 'enabled') {
+        throw new Error(
+          'This machine keeps Claude sessions local, so nothing was changed and this session is still running. '
+          + 'Turn Remote Control on in Settings → Claude first, then continue in Terminal.'
+        );
+      }
+    }
     await endSession(
       session.id,
       enableRemoteControl
         ? 'Continuing the same Claude conversation in Terminal with Remote Control.'
         : 'Continuing the same Claude conversation in Terminal for slash commands.'
     );
-    onResume(session, 'claude', 'terminal', enableRemoteControl);
+    // No Remote Control argument: the resumed session inherits this machine's
+    // Settings choice, which the check above has already confirmed. Passing a
+    // per-resume flag here would be ignored — ResumeDialog deliberately has no
+    // such input — and would misrepresent where the decision is made.
+    onResume(session, 'claude', 'terminal');
   }, [endSession, onResume, richSession, session]);
 
   const forkFromVisibleMessage = useCallback(async (
@@ -473,7 +489,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           </div>
           <div className="session-active-meta">
             {provider ? <ProviderBadge provider={provider} compact size={20} /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}
-            <MachineMark machine={getActiveServer().name} size={18} />
+            <MachineMark machine={serverDisplayName(getActiveServer(), true)} size={18} />
             {session?.profile ? <span>{session.profile}</span> : null}
             <span title={session?.cwd}>{workspaceName}</span>
           </div>
@@ -493,6 +509,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             type="button"
             className={`view-toggle-btn terminal-drawer-toggle${effectiveView === 'terminal' ? ' is-active' : ''}`}
             onClick={() => {
+              setForkMode(false);
               if (effectiveView === 'terminal' && supportsConversation) {
                 setTerminalExpanded(false);
                 setViewMode('remote');
@@ -509,12 +526,27 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           </button>
         </div>
         {term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Reconnecting…' : 'Conversation stream unavailable'}</span> : null}
+        {supportsConversation && onFork ? (
+          <ConversationForkButton
+            active={forkMode}
+            onClick={() => {
+              const next = !forkMode;
+              setForkMode(next);
+              if (next) {
+                setDetailsOpen(false);
+                setTerminalExpanded(false);
+                setViewMode('remote');
+              }
+            }}
+          />
+        ) : null}
         {session ? (
           <button
             type="button"
             className={`details-inspector-button${detailsOpen ? ' is-active' : ''}`}
             onClick={() => {
               if (!detailsOpen && supportsConversation) {
+                setForkMode(false);
                 setTerminalExpanded(false);
                 setViewMode('remote');
               }
@@ -570,13 +602,14 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               <h2>No terminal for this Rich session</h2>
               <p>Sessions is connected through the provider’s structured interface, which makes messages, plans, tool activity, diffs, and Stop more reliable.</p>
               <p>A Terminal compatibility session would be a separate runtime. Its screen-read status and history can be incomplete or delayed.</p>
-              <small>To switch safely, end this runtime, choose Continue conversation, then select Terminal. Sessions will keep the same provider conversation and preserve this runtime in history.</small>
+              <small>To switch safely, end this runtime, choose Resume conversation, then select Terminal. Sessions will keep the same provider conversation and preserve this runtime in history.</small>
             </div>
           ) : (
             <>
               <div className="terminal-host" ref={term.containerRef} />
               <div className="mobile-terminal-keys" role="toolbar" aria-label="Terminal keys">
                 <button type="button" onClick={() => sendInput('\x1b')}>Esc</button>
+                <button type="button" onClick={() => sendInput('\x1b\x1b')}>↶ Earlier</button>
                 <button type="button" onClick={() => sendInput('\x1b[A')}>↑ Prev</button>
                 <button type="button" onClick={() => sendInput('\x1b[B')}>↓ Next</button>
                 <button type="button" onClick={() => sendInput('\x03')}>Ctrl-C</button>
@@ -593,7 +626,8 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             sessionId={sessionId}
             events={term.claudeEvents}
             historyPending={term.historyPending}
-            send={sendInput}
+            sendConfirmed={sendConfirmedInput}
+            submitMessage={submitMessage}
             connected={term.status === 'open'}
             hasEarlierClaudeEvents={term.hasEarlierClaudeEvents}
             loadingEarlierClaudeEvents={term.loadingEarlierClaudeEvents}
@@ -612,6 +646,8 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               ? continueInTerminal
               : undefined}
             onForkFromMessage={onFork ? forkFromVisibleMessage : undefined}
+            forkMode={forkMode}
+            onExitForkMode={() => setForkMode(false)}
           />
         </div>
         <div className="session-details-pane">
@@ -625,21 +661,25 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
 function SessionViewRouter(props: Props): JSX.Element {
   const session = useSessions((state) => state.sessions.find((item) => item.id === props.sessionId)) ?? null;
   const hydrated = useSessions((state) => state.hydrated);
+  // Read off `props` once: depending on the props object itself would re-run
+  // this on every parent render, and the deps below already name the only
+  // values the effect reads.
+  const { onStatusChange } = props;
   useEffect(() => {
-    if (!session?.exited || !props.onStatusChange) return;
-    props.onStatusChange({
+    if (!session?.exited || !onStatusChange) return;
+    onStatusChange({
       isWorking: false,
       parserIcon: session.tool === 'claude-code' ? '🟠' : session.tool === 'codex' ? '🟢' : '⬛',
       parserName: session.tool === 'claude-code' ? 'Claude' : session.tool === 'codex' ? 'Codex' : 'Terminal',
       terminalStatus: 'closed'
     });
-  }, [props.onStatusChange, session?.exited, session?.tool]);
+  }, [onStatusChange, session?.exited, session?.tool]);
   if (!session && !hydrated) return <LoadingShell label="Loading this session" />;
   if (!session) {
     return (
       <div className="session-missing-shell" role="status">
         <span>Session unavailable</span>
-        <h2>This session is no longer on this machine</h2>
+        <h2>This session is no longer available here</h2>
         <p>It may have been archived, moved, or removed since this view opened.</p>
         {props.onBack ? <button type="button" className="btn btn-secondary" onClick={props.onBack}>Back to Sessions</button> : null}
       </div>

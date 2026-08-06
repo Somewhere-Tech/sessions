@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,8 +21,35 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/usage"
 )
 
-var anyHosts = map[string]struct{}{"0.0.0.0": {}, "::": {}, "::0": {}, "*": {}}
 var version = "0.2.16"
+
+// isWildcardHost reports whether a bind host would expose the daemon on every
+// interface. A literal denylist is not enough, and neither is netip.ParseAddr
+// alone: net.Listen resolves the host through the system resolver, which is
+// more permissive than the parser. "0.0.0.000" is rejected by netip but still
+// binds every interface, so the final check asks the resolver the same question
+// the listener will ask.
+func isWildcardHost(host string) bool {
+	trimmed := strings.Trim(strings.TrimSpace(host), "[]")
+	if trimmed == "" || trimmed == "*" {
+		return true
+	}
+	if address, err := netip.ParseAddr(trimmed); err == nil {
+		return address.IsUnspecified()
+	}
+	// An unresolvable host is not a wildcard; net.Listen will fail on its own
+	// with a clearer message than this guard could produce.
+	resolved, err := net.LookupIP(trimmed)
+	if err != nil {
+		return false
+	}
+	for _, ip := range resolved {
+		if ip.IsUnspecified() {
+			return true
+		}
+	}
+	return false
+}
 
 func main() {
 	handled, err := runPlatformSupervisor(os.Args[1:])
@@ -33,7 +63,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, refused := anyHosts[config.Host]; refused {
+	if isWildcardHost(config.Host) {
 		fmt.Fprintf(os.Stderr,
 			"\n  sessionsd: refusing to bind to %s.\n  Set SESSIONS_HOST to a specific address — 127.0.0.1 for loopback only,\n  or a tailnet IP (100.x.y.z) for access from other devices on your tailnet.\n\n",
 			config.Host,

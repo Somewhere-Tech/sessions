@@ -34,6 +34,17 @@ func (s *Service) RecordStructured(ctx context.Context, info state.SessionInfo, 
 	if err != nil {
 		return err
 	}
+	if parsed.provider == "codex" {
+		// Pricing waits until here so it can use the same per-session tier the
+		// provider-log scanner will use for this event_key. Pricing from
+		// info.Fast alone made the recorded cost depend on which of the two
+		// writers reached the row first.
+		fast, err := s.codexTiersForSession(db, info).fast(ctx, parsed.sessionID)
+		if err != nil {
+			return err
+		}
+		parsed.calculated, parsed.pricingFound = price(parsed.model, parsed.tokens, fast)
+	}
 	return upsertEntry(ctx, db, *parsed)
 }
 
@@ -103,11 +114,12 @@ func liveCodexEntry(info state.SessionInfo, value map[string]any) *entry {
 	if sessionID == "" || turnID == "" {
 		return nil
 	}
-	calculated, found := price(info.Model, tokens, info.Fast)
+	// Cost is left to RecordStructured, which resolves this session's service
+	// tier against the ledger so live and backfill price the event alike.
 	return &entry{
 		key: liveCodexKey(sessionID, turnID), source: "live://" + info.ID, provider: "codex",
 		sessionID: sessionID, model: info.Model, timestampMS: parseTimestamp(text(value, "timestamp"), time.Now()).UnixMilli(),
-		tokens: tokens, calculated: calculated, pricingFound: found,
+		tokens: tokens,
 	}
 }
 

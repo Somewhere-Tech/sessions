@@ -6,7 +6,9 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
+import { smoke, closeBrowser, closeServer } from './lib/smoke.mjs';
 
+const t = smoke('structured-view');
 const work = await mkdtemp(join(tmpdir(), 'sessions-structured-view-'));
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const screenshot = process.env.STRUCTURED_VIEW_SCREENSHOT || join(work, 'structured-view.png');
@@ -39,7 +41,7 @@ try {
     define: { 'import.meta.env.BASE_URL': '"/"' },
     entryNames: 'app',
     assetNames: 'asset-[hash]',
-    external: ['/claude.png'],
+    external: ['/claude-icon.svg'],
     loader: { '.svg': 'dataurl', '.png': 'dataurl' },
     logLevel: 'silent'
   });
@@ -52,7 +54,7 @@ try {
   server = createServer(async (request, response) => {
     const name = request.url === '/' ? 'index.html' : request.url.slice(1);
     try {
-      const source = name === 'openai-icon.svg' || name === 'claude.png'
+      const source = name === 'openai-icon.svg' || name === 'claude-icon.svg'
         ? join(publicDir, name)
         : join(work, name);
       const body = await readFile(source);
@@ -83,14 +85,19 @@ try {
   await page.setViewport({ width: 1440, height: 960, deviceScaleFactor: 1 });
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  t.watch(page);
   await page.goto(`http://127.0.0.1:${address.port}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('.remote-bubble-plan');
+  t.scenario('the structured assistant bubble renders its plan, activity and reasoning');
+  await t.waitForSelector(page, '.remote-bubble-plan', 'the assistant bubble to render its plan block');
   await page.$eval('.remote-bubble-tools-toggle', (element) => element.click());
   await page.$eval('.remote-bubble-tool', (element) => element.click());
 
   const report = await page.evaluate(() => ({
     planSteps: document.querySelectorAll('.remote-bubble-plan-step').length,
     activityItems: document.querySelectorAll('.remote-bubble-tool-row').length,
+    activitySummary: document.querySelector('.remote-bubble-tools-toggle')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+    activityLabels: Array.from(document.querySelectorAll('.remote-bubble-tool-input')).map((element) => element.textContent?.trim() ?? ''),
+    activityListRadius: getComputedStyle(document.querySelector('.remote-bubble-tools-list')).borderRadius,
     reasoning: document.querySelector('.remote-bubble-reasoning')?.textContent ?? '',
     updates: document.querySelector('.remote-bubble-updates')?.textContent ?? '',
     attachControl: document.querySelector('.input-attach')?.textContent ?? '',
@@ -104,6 +111,11 @@ try {
   }));
   assert.equal(report.planSteps, 3);
   assert.equal(report.activityItems, 2);
+  assert.match(report.activitySummary, /Used 2 tools/);
+  assert.doesNotMatch(report.activitySummary, /Activity/);
+  assert.match(report.activityLabels[0] ?? '', /go test/);
+  assert.doesNotMatch(report.activityLabels[0] ?? '', /^Command\b/);
+  assert.notEqual(report.activityListRadius, '0px');
   assert.match(report.reasoning, /Reasoning summary/);
   assert.match(report.updates, /progress update/);
   assert.match(report.attachControl, /Attach/);
@@ -121,18 +133,15 @@ try {
       'screenshot'
     );
   }
-  process.stdout.write(`structured-view smoke passed${process.env.STRUCTURED_VIEW_SCREENSHOT ? `: ${screenshot}` : ''}\n`);
+  t.pass(`structured-view smoke passed${process.env.STRUCTURED_VIEW_SCREENSHOT ? `: ${screenshot}` : ''}`);
 } finally {
-  if (browser) {
-    const browserProcess = browser.process();
-    await Promise.race([browser.close().catch(() => {}), delay(3_000)]);
-    if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
-      browserProcess.kill('SIGKILL');
-    }
-  }
-  if (server) {
-    server.closeAllConnections?.();
-    await Promise.race([new Promise((resolve) => server.close(resolve)), delay(3_000)]);
-  }
+  t.release();
+  // Both of these are deadline-bounded so a wedged browser or an unreleased
+  // socket fails instead of hanging — and the deadline timers are unref'd, so
+  // a clean shutdown exits immediately instead of paying the deadline. The
+  // straightforward `Promise.race([close(), delay(3_000)])` this replaces was
+  // costing three seconds on every passing run of every suite that used it.
+  await closeBrowser(browser, 3_000);
+  await closeServer(server, 3_000);
   if (!process.env.STRUCTURED_VIEW_SCREENSHOT) await rm(work, { recursive: true, force: true });
 }

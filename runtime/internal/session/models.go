@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -53,42 +54,12 @@ func (m *Manager) resolveCodexModelChoice(
 
 func codexModelChoice(args []string) codexapp.ModelChoice {
 	return codexapp.ModelChoice{
-		Model:       codexArgValue(args, "--model", "-m"),
-		Effort:      codexConfigValue(args, "model_reasoning_effort"),
-		ServiceTier: codexConfigValue(args, "service_tier"),
+		Model:       providerargs.Value(args, providerargs.ModelFlags()...),
+		Effort:      providerargs.ConfigValue(args, providerargs.CodexEffortKey),
+		ServiceTier: providerargs.ConfigValue(args, providerargs.CodexServiceTierKey),
 	}
-}
-
-func codexArgValue(args []string, names ...string) string {
-	for index := 0; index+1 < len(args); index++ {
-		for _, name := range names {
-			if args[index] == name {
-				return strings.TrimSpace(args[index+1])
-			}
-		}
-	}
-	return ""
-}
-
-func codexConfigValue(args []string, key string) string {
-	for index := 0; index+1 < len(args); index++ {
-		if args[index] != "-c" && args[index] != "--config" {
-			continue
-		}
-		if value, ok := strings.CutPrefix(args[index+1], key+"="); ok {
-			return strings.Trim(strings.TrimSpace(value), `"'`)
-		}
-	}
-	return ""
 }
 
 func withCodexModel(args []string, model string) []string {
-	result := append([]string(nil), args...)
-	for index := 0; index+1 < len(result); index++ {
-		if result[index] == "--model" || result[index] == "-m" {
-			result[index+1] = model
-			return result
-		}
-	}
-	return append(result, "--model", model)
+	return providerargs.WithValue(args, model, providerargs.ModelFlags()...)
 }

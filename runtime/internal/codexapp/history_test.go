@@ -53,6 +53,27 @@ func TestHistoryEventsPreserveSourceMessagesAndLifecycle(t *testing.T) {
 	}
 }
 
+func TestInputRejectedEventReportsTheRefusedMessage(t *testing.T) {
+	event, err := InputRejectedEvent("thread-1", "Codex is still working.", time.Unix(5, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(event, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value["type"] != "system" || value["subtype"] != "input_rejected" ||
+		value["source"] != HistorySource || value["conversationId"] != "thread-1" ||
+		value["error"] != "Codex is still working." {
+		t.Fatalf("input rejection = %#v", value)
+	}
+	// A refusal is not a turn boundary; treating it as one would report the
+	// still-running conversation as finished.
+	if working, authoritative := HistoryLifecycle(event); working || authoritative {
+		t.Fatalf("rejection lifecycle = working:%v authoritative:%v", working, authoritative)
+	}
+}
+
 func TestHistoryEventPreservesCompleteThreadItemForGUI(t *testing.T) {
 	raw := json.RawMessage(`{
 		"id":"command-1",

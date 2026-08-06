@@ -3,9 +3,11 @@ import {
   assertServerPersisted,
   captureServerSelection,
   restoreServerSelection,
+  syncNativeAgentMachineAccess,
   useServers,
   type ServerConfig
 } from './servers';
+import { revokeServerDevice } from '../api/sessionsd';
 import { isLoopbackHost, isPrivateNetworkHost, parseServerEndpoint } from './serverEndpoint';
 import { claimNativePairingLink, type NativePairingClaim } from './tauriBridge';
 
@@ -28,7 +30,9 @@ function scrubFragment(): void {
 
 interface RememberServerOptions {
   name?: string;
+  systemName?: string;
   machineId?: string;
+  deviceId?: string;
   token?: string | null;
   select?: boolean;
   allowPrivateHTTP?: boolean;
@@ -62,13 +66,16 @@ export async function rememberServerEndpoint(
     ? {}
     : { token: options.token?.trim() || undefined };
   const name = options.name?.trim();
+  const systemName = options.systemName?.trim();
 
   if (existing) {
     await store.updateServer(existing.id, {
       ...endpoint,
       ...(machineId ? { machineId } : {}),
+      ...(options.deviceId ? { deviceId: options.deviceId } : {}),
       ...tokenUpdate,
-      ...(name ? { name } : {})
+      ...(name ? { name, customName: name } : {}),
+      ...(systemName ? { systemName, ...(!existing.customName ? { name: systemName } : {}) } : {})
     });
     // A pre-identity/manual entry can match the endpoint while another entry
     // already carries this machine ID. Collapse both access paths into the
@@ -90,8 +97,11 @@ export async function rememberServerEndpoint(
   }
 
   const created = await store.addServer({
-    name: name || endpoint.host,
+    name: name || systemName || endpoint.host,
+    ...(name ? { customName: name } : {}),
+    ...(systemName ? { systemName } : {}),
     ...(machineId ? { machineId } : {}),
+    ...(options.deviceId ? { deviceId: options.deviceId } : {}),
     ...endpoint,
     ...tokenUpdate
   });
@@ -107,12 +117,14 @@ export async function claimNativeMachinePairing(
   let server: ServerConfig;
   try {
     server = await rememberServerEndpoint(claim.endpoint, {
-      name: claim.machineName,
+      systemName: claim.machineName,
       machineId: claim.machineId,
+      deviceId: claim.deviceId,
       token: claim.token,
       allowPrivateHTTP: true
     });
     await assertServerPersisted(server);
+    await syncNativeAgentMachineAccess();
   } catch {
     await restoreServerSelection(previous).catch(() => { /* keep the original save failure */ });
     // Avoid leaving an invisible live credential on the source machine when
@@ -120,11 +132,14 @@ export async function claimNativeMachinePairing(
     // persistence error must remain the actionable message.
     let revoked = false;
     try {
-      const response = await fetch(`${claim.endpoint}/api/devices/${encodeURIComponent(claim.deviceId)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${claim.token}` }
-      });
-      revoked = response.ok;
+      // Through the central client (api/sessionsd.ts) so this request gets the
+      // same auth-header construction and 401 handling as every other call.
+      // The claim is not in the server store yet, so the endpoint it names is
+      // turned into a config here rather than looked up.
+      revoked = await revokeServerDevice(
+        { ...parseServerEndpoint(claim.endpoint), id: 'pairing-claim', name: claim.machineName, isDefault: false, token: claim.token },
+        claim.deviceId
+      );
     } catch { /* source device can also revoke it from Connections/CLI */ }
     throw new Error(
       revoked
@@ -143,12 +158,14 @@ export async function rememberNativeMachineClaim(
   let server: ServerConfig;
   try {
     server = await rememberServerEndpoint(claim.endpoint, {
-      name: claim.machineName,
+      systemName: claim.machineName,
       machineId: claim.machineId,
+      deviceId: claim.deviceId,
       token: claim.token,
       allowPrivateHTTP: claim.endpoint.toLowerCase().startsWith('http://')
     });
     await assertServerPersisted(server);
+    await syncNativeAgentMachineAccess();
     if (options.select === false) useServers.getState().setActive(previous.activeId);
   } catch {
     await restoreServerSelection(previous).catch(() => { /* keep the original save failure */ });
@@ -228,6 +245,13 @@ export async function claimCurrentOriginPairing(
   const ticket = pairingTicket(ticketValue);
   if (!ticket) throw new Error('Paste a pairing ticket from `sessions pair`.');
 
+  // Deliberately a bare fetch, not the central client. This is the call that
+  // OBTAINS the credential, so there is no token to inject; and a 401 here
+  // means "this ticket is not valid", which must stay the instructional
+  // `pairClaimError` message below rather than being translated into the
+  // AuthError that drives the "enter your daemon token" banner. The API-range
+  // check does not apply to a pairing claim either — it is validated against
+  // /api/health by adoptCurrentOriginServer's caller path immediately after.
   const response = await fetch(`${window.location.origin}/api/pair/claim`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

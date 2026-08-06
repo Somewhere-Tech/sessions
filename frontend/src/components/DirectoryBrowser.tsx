@@ -12,6 +12,7 @@ interface Props {
   // Select button — parents that want to auto-close on confirm can
   // distinguish that from passive navigation.
   onChange: (path: string, confirmed?: boolean) => void;
+  serverId?: string;
 }
 
 // Real directory browser. Click a folder to descend, click ".." to go
@@ -21,7 +22,7 @@ interface Props {
 // Hidden entries (dotfiles) are folded by default with a "Show hidden"
 // toggle; on a typical $HOME there are dozens of dotfiles that bury
 // the actual project dirs, but they're a click away when needed.
-export function DirectoryBrowser({ value, onChange }: Props): JSX.Element {
+export function DirectoryBrowser({ value, onChange, serverId }: Props): JSX.Element {
   const [listing, setListing] = useState<FsListing | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +32,7 @@ export function DirectoryBrowser({ value, onChange }: Props): JSX.Element {
     setLoading(true);
     setError(null);
     try {
-      const next = await listFs(path);
+      const next = await listFs(path, serverId);
       setListing(next);
       // Keep parent in sync with the path we ACTUALLY landed on (after
       // realpathSync). Don't fire confirmed=true — this is navigation,
@@ -42,7 +43,7 @@ export function DirectoryBrowser({ value, onChange }: Props): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, [onChange]);
+  }, [onChange, serverId]);
 
   useEffect(() => {
     // Initial load — use the current value if non-empty, otherwise
@@ -100,9 +101,9 @@ export function DirectoryBrowser({ value, onChange }: Props): JSX.Element {
             onClick={() => void load(listing.parent!)}
             disabled={loading}
           >
-            <span className="dir-browser-icon" aria-hidden>↰</span>
-            <span className="dir-browser-name">..</span>
-            <span className="dir-browser-meta">parent</span>
+            <span className="dir-browser-icon" aria-hidden>↑</span>
+            <span className="dir-browser-name">Up one folder</span>
+            <span className="dir-browser-meta">{listing.parent}</span>
           </button>
         ) : null}
         {loading && !listing ? (

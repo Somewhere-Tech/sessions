@@ -84,6 +84,9 @@ type SessionInfo struct {
 	CreatorKind            string            `json:"creator_kind,omitempty"`
 	CreatorID              string            `json:"creator_id,omitempty"`
 	ParentSessionID        string            `json:"parent_session_id,omitempty"`
+	DelegationKind         string            `json:"delegation_kind,omitempty"`
+	Permissions            string            `json:"permissions,omitempty"`
+	Lifecycle              string            `json:"lifecycle,omitempty"`
 	// DisplayParentSessionID is a user-controlled organizational override.
 	// nil preserves the creator-ledger hierarchy, a pointer to "" makes the
 	// session a visual root, and any other value groups it under that session.
@@ -115,6 +118,11 @@ const (
 	IdleReasonCompleted    = "completed"
 	IdleReasonNeedsInput   = "needs-input"
 	IdleReasonFailed       = "failed"
+	PermissionsInherit     = "inherit"
+	PermissionsConstrained = "constrained"
+	PermissionsFull        = "full"
+	LifecycleTask          = "task"
+	LifecycleSession       = "session"
 )
 
 type CreateSessionRequest struct {
@@ -140,6 +148,17 @@ type CreateSessionRequest struct {
 	// headers at the daemon boundary. They are deliberately not JSON fields.
 	CreatorSessionID string `json:"-"`
 	CreatorOwnerID   string `json:"-"`
+	// DelegationKind records whether a child was explicitly requested by a
+	// person or created by its parent agent. It is presentation provenance,
+	// not an authorization principal.
+	DelegationKind string `json:"delegationKind,omitempty"`
+	// Permissions is resolved by the daemon. "inherit" is accepted only for a
+	// child and can never give that child more access than its parent unless the
+	// user explicitly enabled autonomous delegated work.
+	Permissions string `json:"permissions,omitempty"`
+	// Lifecycle is "task" for a worker that should close after a successful
+	// final response, or "session" for a long-lived conversation.
+	Lifecycle string `json:"lifecycle,omitempty"`
 	// DisplayParentSessionID is copied only by trusted recovery code. It is
 	// never accepted from the public create-session JSON body.
 	DisplayParentSessionID *string              `json:"-"`

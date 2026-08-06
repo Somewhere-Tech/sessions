@@ -9,12 +9,10 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -23,6 +21,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
@@ -46,10 +45,25 @@ type MassKillGuard struct{ Limit int }
 type MassKillError struct {
 	Count int
 	Limit int
+	// Operation names the destructive action that was refused. Empty keeps
+	// the default runner-removal wording used by the kill paths.
+	Operation string
+	// Remedy states what was left untouched and the safe next action. Empty
+	// keeps the default force retry, which only callers with a force surface
+	// should rely on.
+	Remedy string
 }
 
 func (e *MassKillError) Error() string {
-	return fmt.Sprintf("mass-kill guard refused %d runner removals (limit %d); retry with force", e.Count, e.Limit)
+	operation := e.Operation
+	if operation == "" {
+		operation = "runner removals"
+	}
+	remedy := e.Remedy
+	if remedy == "" {
+		remedy = "retry with force"
+	}
+	return fmt.Sprintf("mass-kill guard refused %d %s (limit %d); %s", e.Count, operation, e.Limit, remedy)
 }
 
 func (g MassKillGuard) Check(count int, force bool) error {
@@ -174,6 +188,7 @@ type runtimeSession struct {
 	pushWorkingObserved        bool
 	workingStartedAt           time.Time
 	structuredDone             bool
+	terminalTurnDone           bool
 	waitingTimer               *time.Timer
 	waitingGeneration          uint64
 	stopped                    bool
@@ -183,6 +198,7 @@ type runtimeSession struct {
 	structuredEventArrived     chan struct{}
 	firstMessageInput          []byte
 	firstMessageDone           bool
+	providerInput              []byte
 }
 
 func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...ManagerOptions) *Manager {
@@ -378,7 +394,7 @@ func (m *Manager) recordCreated(ctx context.Context, prepared state.PreparedSess
 		WorktreePath: prepared.WorktreePath, Branch: prepared.WorktreeBranch,
 		Base: prepared.WorktreeBase, SourceRepo: prepared.SourceRepo,
 		ResumeArgv: resumeArgv, LaneUUID: info.ID, ProviderUUID: providerUUID,
-		CreatorKind: creatorKind, CreatorID: creatorID,
+		CreatorKind: creatorKind, CreatorID: creatorID, DelegationKind: prepared.DelegationKind,
 	}); err != nil {
 		return fmt.Errorf("record lane creation before launch: %w", err)
 	}
@@ -718,6 +734,7 @@ func (m *Manager) withProvenance(ctx context.Context, infos []state.SessionInfo)
 		}
 		infos[index].CreatorKind = string(current.CreatorKind)
 		infos[index].CreatorID = current.CreatorID
+		infos[index].DelegationKind = current.DelegationKind
 		infos[index].Profile = current.Profile
 		infos[index].ConfigDir = current.ConfigDir
 		infos[index].WorktreePath = current.WorktreePath
@@ -865,6 +882,20 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 	creatorKind, creatorID, err := m.resolveCreator(ctx, request)
 	if err != nil {
 		return state.SessionInfo{}, fmt.Errorf("resolve lane creator: %w", err)
+	}
+	if creatorKind == ledger.CreatorSession {
+		if request.DelegationKind == "" {
+			request.DelegationKind = "agent"
+		}
+		if request.DelegationKind != "user" && request.DelegationKind != "agent" {
+			return state.SessionInfo{}, errors.New("delegation kind must be user or agent")
+		}
+	} else if request.DelegationKind != "" {
+		return state.SessionInfo{}, errors.New("delegation kind requires a parent session")
+	}
+	request, err = m.resolveDelegatedExecution(ctx, request, creatorKind, creatorID)
+	if err != nil {
+		return state.SessionInfo{}, fmt.Errorf("resolve delegated execution: %w", err)
 	}
 
 	providerUUID, _ := ledger.ExistingProviderResume(request.Cmd, request.Args)
@@ -1149,6 +1180,7 @@ func (m *Manager) InputAttributed(ctx context.Context, id, data string, attribut
 	if !m.registry.Input(ctx, id, data) {
 		return &MessageInputUnavailableError{SessionID: id}
 	}
+	m.clearIdleAfterInput(id)
 	exact := sha256.Sum256([]byte(data))
 	normalizedText := strings.TrimSpace(data)
 	normalized := sha256.Sum256([]byte(normalizedText))
@@ -1164,6 +1196,13 @@ func (m *Manager) InputAttributed(ctx context.Context, id, data string, attribut
 }
 
 func (m *Manager) afterInput(ctx context.Context, id, data string, source ledger.ActivitySource) {
+	m.clearIdleAfterInput(id)
+	m.mu.Lock()
+	runtime := m.runtimes[id]
+	m.mu.Unlock()
+	if runtime != nil {
+		runtime.observeProviderInput(data)
+	}
 	if current, ok := m.registry.Get(id); ok && current.Info().SetAsideAt != nil {
 		if _, err := m.registry.UpdateSetAside(id, false); err != nil {
 			log.Printf("[working-set] bring back %s after input: %v", id, err)
@@ -1175,6 +1214,49 @@ func (m *Manager) afterInput(ctx context.Context, id, data string, source ledger
 			Meta: ledger.Meta{LaneID: id}, Source: source,
 		})
 	})
+}
+
+const providerInputLimit = 1024 * 1024
+
+func (r *runtimeSession) observeProviderInput(data string) {
+	if r.session.Info().Tool != state.ToolCodex || data == "" {
+		return
+	}
+	r.mu.Lock()
+	for _, value := range []byte(data) {
+		switch value {
+		case '\r':
+			prompt := normalizedTerminalPrompt(string(r.providerInput))
+			r.providerInput = r.providerInput[:0]
+			watcher := r.watcher
+			r.mu.Unlock()
+			if watcher != nil && prompt != "" {
+				watcher.ExpectInput(prompt)
+			}
+			return
+		case 0x7f:
+			if len(r.providerInput) > 0 {
+				r.providerInput = r.providerInput[:len(r.providerInput)-1]
+			}
+		default:
+			if len(r.providerInput) < providerInputLimit {
+				r.providerInput = append(r.providerInput, value)
+			}
+		}
+	}
+	r.mu.Unlock()
+}
+
+func normalizedTerminalPrompt(value string) string {
+	value = strings.ReplaceAll(value, "\x1b[200~", "")
+	value = strings.ReplaceAll(value, "\x1b[201~", "")
+	return strings.TrimSpace(value)
+}
+
+func (m *Manager) clearIdleAfterInput(id string) {
+	if current, ok := m.registry.Get(id); ok {
+		current.ClearIdleResult()
+	}
 }
 
 // MessageRelays returns the content-free attribution facts for one target
@@ -1410,13 +1492,17 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 		runtime.recentBytes += len(event.Data)
 	}
 	if !session.Info().Working && (len(attachment.Replay.Events) > 0 || len(attachment.ClaudeEvents) > 0) {
-		classification, summary := inspectIdle(session)
-		session.SetIdleResult(
-			idleReason(classification.Outcome),
-			classification.Line,
-			summary,
-			session.Info().LastDataAt,
-		)
+		if supportsTurnLifecycle(session.Info()) {
+			classification, summary := inspectIdle(session)
+			session.SetIdleResult(
+				idleReason(classification.Outcome),
+				classification.Line,
+				summary,
+				session.Info().LastDataAt,
+			)
+		} else {
+			session.ClearIdleResult()
+		}
 	}
 	m.runtimes[info.ID] = runtime
 	m.mu.Unlock()
@@ -1605,6 +1691,7 @@ func (r *runtimeSession) setWorking(next bool) {
 	if !previous && next {
 		r.workingStartedAt = now
 		r.structuredDone = false
+		r.terminalTurnDone = false
 		r.cancelWaitingLocked()
 		r.manager.removeIdleSentinel(r.session.Info().ID)
 	}
@@ -1621,6 +1708,8 @@ func (r *runtimeSession) setWorking(next bool) {
 	r.workingStartedAt = time.Time{}
 	suppressWaiting := r.structuredDone
 	r.structuredDone = false
+	authoritativeDone := r.terminalTurnDone
+	r.terminalTurnDone = false
 	r.cancelWaitingLocked()
 	r.mu.Unlock()
 	if exited {
@@ -1633,7 +1722,17 @@ func (r *runtimeSession) setWorking(next bool) {
 			duration = 0
 		}
 	}
-	classification := r.manager.handleIdle(r.session, duration)
+	classification := IdleClassification{Outcome: IdleDone}
+	if authoritativeDone {
+		classification = r.manager.handleCompletedTurn(r.session, duration)
+	} else {
+		classification = r.manager.handleIdle(r.session, duration)
+	}
+	if !supportsTurnLifecycle(r.session.Info()) && classification.Outcome == IdleDone {
+		// Shells have an idle edge for hooks and notifications, but remaining
+		// alive at a prompt is not a completed session lifecycle state.
+		r.session.ClearIdleResult()
+	}
 	if !suppressWaiting && classification.Outcome == IdleDone {
 		r.notifyDone()
 	} else if !suppressWaiting {
@@ -1652,8 +1751,14 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 		if info.ConfigDir != "" {
 			projectsDir = filepath.Join(info.ConfigDir, "projects")
 		}
+		// The provider owns this transcript and prunes it on its own
+		// schedule, so the watcher keeps Sessions' own copy as it reads.
+		// Without it a pruned conversation is simply gone: cat, source,
+		// search, and usage all resolve through the same provider path.
 		created, err := watch.WatchSessionFile(watch.ClaudeWatcherOptions{
 			CWD: info.Cwd, ClaudeSessionID: extractClaudeSessionID(info.Args), ProjectsDir: projectsDir,
+			SessionID:  info.ID,
+			MirrorPath: watch.TranscriptMirrorPath(r.manager.config.RunnerStateDir, info.ID),
 		})
 		if err != nil {
 			return
@@ -1666,6 +1771,7 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 		}
 		watcher = watch.WatchCodexRollout(watch.CodexWatcherOptions{
 			CWD: info.Cwd, Args: info.Args, CreatedAt: time.UnixMilli(info.CreatedAt), SessionsDir: sessionsDir,
+			RequireInputMatch: true,
 		})
 	default:
 		return
@@ -1688,6 +1794,9 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 				if !ok {
 					return
 				}
+				if !working {
+					r.markTerminalTurnDone()
+				}
 				r.mu.Lock()
 				value := working
 				r.structuredLifecycleWorking = &value
@@ -1704,6 +1813,10 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 	}) {
 		watcher.Close()
 	}
+}
+
+func supportsTurnLifecycle(info state.SessionInfo) bool {
+	return info.Tool == state.ToolClaude || info.Tool == state.ToolCodex
 }
 
 func (m *Manager) waitReady(ctx context.Context, runtime *runtimeSession) {
@@ -1729,12 +1842,17 @@ func (m *Manager) waitReady(ctx context.Context, runtime *runtimeSession) {
 	}
 }
 
+// extractClaudeSessionID reads the conversation a Claude spawn was launched
+// against. The spellings come from internal/providerargs; this copy used to
+// read only the two long flags in separated form, so `claude -r <uuid>` and
+// `claude --resume=<uuid>` both looked like sessions with no conversation.
+//
+// The id-shaped filter stays: this value is handed to the transcript resolver,
+// and a non-id argument that happened to follow the flag would send it looking
+// for a file that cannot exist. It is deliberately looser than the ledger's
+// canonical-UUID rule, which governs what may be durably recorded.
 func extractClaudeSessionID(args []string) string {
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] != "--session-id" && args[i] != "--resume" {
-			continue
-		}
-		value := args[i+1]
+	for _, value := range providerargs.Values(args, providerargs.ClaudeIdentityFlags()...) {
 		if len(value) < 8 {
 			continue
 		}
@@ -1851,6 +1969,14 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 	defer m.registry.MarkDiscovering(false)
 
 	candidates, deadArtifacts := m.orphanPlistCandidates()
+	for id := range candidates {
+		if _, exists := m.registry.Get(id); exists {
+			// A filesystem-only orphan signal cannot override the daemon's
+			// current ownership of a live session.
+			delete(candidates, id)
+			delete(deadArtifacts, id)
+		}
+	}
 	artifactIDs, err := state.RunnerArtifactIDs(m.config.RunnerStateDir)
 	if err != nil {
 		return fmt.Errorf("read runner state directory: %w", err)
@@ -1900,6 +2026,8 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 				command := m.options.ProcessCommand(metadata.Info.PID)
 				if runnerCommandMatches(command, id, metadata.Info.Cmd, metadata.Kind) {
 					log.Printf("[discover] runner %s unreachable but pid %d alive — leaving it alone", id, metadata.Info.PID)
+					delete(candidates, id)
+					delete(deadArtifacts, id)
 					continue
 				}
 				log.Printf("[discover] runner %s pid %d is PID reuse (%s) — treating as dead", id, metadata.Info.PID, truncate(command, 60))
@@ -1911,6 +2039,26 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 
 	ids := sortedKeys(candidates)
 	if err := m.guard.Check(len(ids), options.Force); err != nil {
+		// The guard only protects the destructive half of the sweep. Skipping
+		// reconciliation as well would wedge discovery permanently: nothing
+		// else records runner_lost, so every ledger-derived view would keep
+		// reporting these sessions as live and no later sweep could ever get
+		// back under the limit. Reconciliation writes observations only — it
+		// removes no socket, metadata document, or launch agent.
+		m.reconcileLedger(ctx)
+		var guardErr *MassKillError
+		if errors.As(err, &guardErr) {
+			return &MassKillError{
+				Count: guardErr.Count, Limit: guardErr.Limit,
+				Operation: "stale runner artifact removals during discovery",
+				Remedy: fmt.Sprintf(
+					"sockets, metadata, and launch agents were left in place and no session was touched, "+
+						"and lost runners were still recorded in the ledger. Review them with `sessions ls -a` and end "+
+						"the ones you no longer need with `sessions kill <id>...` (--force is required for more than %d "+
+						"targets); discovery finishes the cleanup by itself once at most %d runners are stale",
+					guardErr.Limit, guardErr.Limit),
+			}
+		}
 		return err
 	}
 	var cleanupErrors []error
@@ -2005,8 +2153,13 @@ func runnerCommandMatches(command, id, expectedCommand, kind string) bool {
 	// sessions-runner, so their process command does not contain the provider
 	// command or session ID. Treat another Sessions runner at the recorded PID
 	// as live rather than risk reaping a real session during a socket outage.
-	if (kind == state.KindCodexAppServer || kind == state.KindClaudeStructured) &&
-		strings.Contains(strings.ToLower(command), "sessions-runner") {
+	//
+	// This is not limited to the structured kinds. Every runner is the
+	// sessions-runner image whatever it hosts, and on Windows the probe can
+	// only report that image path — the session ID lives in a command line
+	// this code deliberately does not read. Without this, every Windows
+	// terminal session fails the match and is reaped as PID reuse.
+	if strings.Contains(strings.ToLower(command), "sessions-runner") {
 		return true
 	}
 	expectedBase := filepath.Base(strings.TrimSpace(expectedCommand))
@@ -2027,22 +2180,6 @@ func (m *Manager) reap(id string) error {
 		}
 	}
 	return errors.Join(reapErrors...)
-}
-
-func processAlive(pid int) bool {
-	process, err := os.FindProcess(pid)
-	return err == nil && process.Signal(syscall.Signal(0)) == nil
-}
-
-func processCommand(pid int) string {
-	commandCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	command := exec.CommandContext(commandCtx, "ps", "-p", fmt.Sprint(pid), "-o", "args=")
-	output, err := command.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(output))
 }
 
 func waitContext(ctx context.Context, duration time.Duration) bool {

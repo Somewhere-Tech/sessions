@@ -6,10 +6,14 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
-const remoteControlConsentHeader = "X-Sessions-User-Consent"
+const onboardingConsentHeader = "X-Sessions-User-Consent"
+
+// Retained for package-local compatibility tests and older call sites.
+const remoteControlConsentHeader = onboardingConsentHeader
 
 type onboardingPreferenceRequest struct {
-	RemoteControl string `json:"remoteControl"`
+	RemoteControl   string `json:"remoteControl"`
+	DelegatedAccess string `json:"delegatedAccess"`
 }
 
 func (s *Server) handleOnboardingRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
@@ -25,7 +29,8 @@ func (s *Server) handleOnboardingRoute(response http.ResponseWriter, request *ht
 		}
 		s.sendJSON(response, http.StatusOK, settings.EffectiveOnboarding(), corsOrigin)
 	case http.MethodPut:
-		if request.Header.Get(remoteControlConsentHeader) != "remote-control" {
+		consent := request.Header.Get(onboardingConsentHeader)
+		if consent != "onboarding" && consent != "remote-control" {
 			s.sendJSON(response, http.StatusForbidden, map[string]any{
 				"error": "this preference requires an explicit user choice in a Sessions user interface",
 			}, corsOrigin)
@@ -43,11 +48,25 @@ func (s *Server) handleOnboardingRoute(response http.ResponseWriter, request *ht
 			}, corsOrigin)
 			return true
 		}
+		if requested.DelegatedAccess == "" {
+			// A v1 client remains conservative when it completes onboarding
+			// against a v2 daemon.
+			requested.DelegatedAccess = state.DelegatedAccessConsentInherited
+		}
+		if requested.DelegatedAccess != state.DelegatedAccessConsentInherited &&
+			requested.DelegatedAccess != state.DelegatedAccessConsentAutonomous {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{
+				"error": "delegatedAccess must be inherit or autonomous",
+			}, corsOrigin)
+			return true
+		}
 		if err := state.UpdateSettings(s.lan.settingsPath, func(settings *state.Settings) error {
 			settings.Onboarding = &state.OnboardingSettings{
-				Version:              state.OnboardingCurrentVersion,
-				RemoteControlConsent: requested.RemoteControl,
+				Version:                state.OnboardingCurrentVersion,
+				RemoteControlConsent:   requested.RemoteControl,
+				DelegatedAccessConsent: requested.DelegatedAccess,
 			}
+			settings.Delegation = &state.DelegationSettings{Access: requested.DelegatedAccess}
 			claude := settings.EffectiveClaude()
 			if settings.Claude != nil {
 				claude = *settings.Claude

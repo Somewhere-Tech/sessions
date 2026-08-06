@@ -19,30 +19,34 @@ import { CommandPalette } from './components/CommandPalette';
 import { SessionsWorkspaceSkeleton } from './components/LoadingShell';
 import { OnboardingDialog } from './components/OnboardingDialog';
 import { useSessions } from './store/sessions';
-import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer } from './lib/servers';
+import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer, isLocalServer, serverDisplayName } from './lib/servers';
 import { SettingsMenu } from './components/SettingsMenu';
 import { TailnetAccessInbox } from './components/TailnetAccessInbox';
+import { MachineRecoveryNotice } from './components/MachineRecoveryNotice';
 import { useIsMobile } from './hooks/useMediaQuery';
 import { ParserIcon } from './components/ParserIcon';
 import { ConnectScreen } from './components/ConnectScreen';
 import { formatServerEndpoint } from './lib/serverEndpoint';
 import { readTabOrder, writeTabOrder, applyOrder, moveBefore } from './lib/tabOrder';
 import { useTabLabel } from './lib/tabLabels';
-import { getNativeConnectionSettings, getNativeRuntimeStatus, isTauri, notify, syncTrayServers } from './lib/tauriBridge';
+import { getNativeConnectionSettings, getNativeRuntimeStatus, isTauri, notify, recoverNativeRuntime, syncTrayServers } from './lib/tauriBridge';
 import { readTextSize, writeTextSize, type TextSize } from './lib/textSize';
 import { preloadUsage } from './lib/usageCache';
 import { preloadDaily } from './lib/dailyCache';
 import { providerConversationId } from './lib/sessionStatus';
 import { effectiveParentId } from './lib/workingSet';
 import { preferNextSessionView } from './lib/sessionViewPreference';
+import { handleExternalLinkClick } from './lib/externalLinks';
 import {
-  adoptConversation,
+  fetchServerMachineIdentity,
+  fetchServerHealth,
   fetchOnboardingState,
   forkConversation,
-  repairAdoption,
   updateOnboardingPreference,
-  type OnboardingState
+  type OnboardingState,
+  type ServerHealth
 } from './api/sessionsd';
+import { adoptConversationWithRepair, adoptionWarning } from './lib/adoptConversation';
 import type { SessionInfo, SessionTool } from './types';
 
 const TOOL_ICONS: Record<SessionTool, string> = {
@@ -86,6 +90,12 @@ function readSingleModeParams(): { sessionId: string } | null {
 // Persisted per-window in localStorage so each window remembers its
 // last choice. Grid is best when N ≥ 2 and the window is wide.
 type LayoutMode = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'settings' | 'feedback' | 'connections' | 'grid';
+// Shared empty list for "the loaded sessions belong to a different machine".
+// A `[]` literal in that position is a new array identity on every render,
+// which made every memo, callback, and effect derived from the session list
+// re-run continuously while the scope was mismatched.
+const NO_SESSIONS: SessionInfo[] = [];
+
 const LAYOUT_KEY = 'sessions:layout-mode';
 const OPEN_TABS_KEY = 'sessions:open-tabs:v1';
 const THEME_KEY = 'sessions:theme:v1';
@@ -123,6 +133,22 @@ export function App(): JSX.Element {
   const servers = useServers((state) => state.servers);
   const pairingError = useServers((state) => state.pairingError);
   const credentialError = useServers((state) => state.credentialError);
+  const updateServer = useServers((state) => state.updateServer);
+  // Credentials are part of the endpoint's identity. Saving or replacing a
+  // token changes nothing else here, so without it a machine that answered 401
+  // would stay unnamed forever — identity is never re-fetched once it becomes
+  // reachable. Presence alone is not enough: swapping a rejected token for a
+  // working one has to re-probe too. This value is only ever an effect
+  // dependency; it is never rendered, logged, or sent anywhere.
+  const identityRefreshKey = servers.map((server) => [
+    server.id,
+    server.scheme ?? 'http',
+    server.host,
+    server.port,
+    server.token ?? '',
+    server.machineId ?? '',
+    server.systemName ?? ''
+  ].join('|')).join('\n');
   useEffect(() => {
     if (!isTauri()) return;
     let active = true;
@@ -141,6 +167,36 @@ export function App(): JSX.Element {
   useEffect(() => {
     void syncTrayServers(servers);
   }, [servers]);
+  useEffect(() => {
+    if (!nativeHydrated) return;
+    const controllers = servers.map(() => new AbortController());
+    servers.forEach((server, index) => {
+      void fetchServerMachineIdentity(server, controllers[index].signal)
+        .then(async (identity) => {
+          const current = useServers.getState().servers.find((candidate) => candidate.id === server.id);
+          if (!current) return;
+          // A paired endpoint changing stable identity is not a rename. Keep
+          // the approved record unchanged until the user pairs the new host.
+          if (current.machineId && current.machineId !== identity.machineId) return;
+          if (current.machineId === identity.machineId && current.systemName === identity.name) return;
+          await updateServer(current.id, {
+            machineId: current.machineId || identity.machineId,
+            systemName: identity.name,
+            // Keep legacy consumers current while systemName/customName
+            // remain the explicit source of truth for new UI.
+            name: current.customName || identity.name
+          });
+        })
+        .catch(() => { /* older/offline hosts keep their last known label */ });
+    });
+    return () => controllers.forEach((controller) => controller.abort());
+  // `servers` is intentionally not a dependency: the store hands back a new
+  // array on every write, so depending on it would abort and re-issue an
+  // identity probe to every configured machine on unrelated state changes.
+  // identityRefreshKey is the value-equal summary of exactly the fields these
+  // probes read, and it is kept in sync with them at its declaration above.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identityRefreshKey, nativeHydrated, updateServer]);
   if (!nativeHydrated) return <div className="native-hydration">Connecting to the Sessions runtime…</div>;
   return activeServerId && !pairingError && !credentialError
     ? <ConnectedApp nativeClientOnly={nativeClientOnly} />
@@ -148,27 +204,85 @@ export function App(): JSX.Element {
 }
 
 function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean }): JSX.Element {
-  const rawSessions = useSessions((s) => s.sessions);
-  const activeId = useSessions((s) => s.activeId);
+  const activeServerId = useServers((s) => s.activeId);
+  const servers = useServers((s) => s.servers);
+  const selectedServer = servers.find((server) => server.id === activeServerId) ?? null;
+  const sessionsServerId = useSessions((s) => s.serverId);
+  const serverScopeMatches = Boolean(activeServerId) && sessionsServerId === activeServerId;
+  const storedSessions = useSessions((s) => s.sessions);
+  const storedActiveId = useSessions((s) => s.activeId);
+  const rawSessions = serverScopeMatches ? storedSessions : NO_SESSIONS;
+  const activeId = serverScopeMatches ? storedActiveId : null;
   const setActive = useSessions((s) => s.setActive);
+  const setServerScope = useSessions((s) => s.setServerScope);
   const refresh = useSessions((s) => s.refresh);
   const kill = useSessions((s) => s.kill);
   const updateDisplayParent = useSessions((s) => s.updateDisplayParent);
   const updateSetAside = useSessions((s) => s.updateSetAside);
   // Track whether the session list has ever successfully loaded. While
   // hydrated is false, any error means we can't reach the daemon.
-  const sessionsError = useSessions((s) => s.error);
-  const sessionsHydrated = useSessions((s) => s.hydrated);
+  const storedSessionsError = useSessions((s) => s.error);
+  const storedSessionsHydrated = useSessions((s) => s.hydrated);
+  const sessionsError = serverScopeMatches ? storedSessionsError : null;
+  const sessionsHydrated = serverScopeMatches && storedSessionsHydrated;
+  const localRuntimeSelected = Boolean(
+    selectedServer?.isDefault && isLocalServer(selectedServer) && !nativeClientOnly
+  );
   const [nativeRuntimeError, setNativeRuntimeError] = useState<string | null>(null);
+  const [nativeRuntimeReconnecting, setNativeRuntimeReconnecting] = useState(false);
+  const [serverHealth, setServerHealth] = useState<ServerHealth | null>(null);
+  const [knownSessionCount, setKnownSessionCount] = useState(rawSessions.length);
+  const [manualRecoveryBusy, setManualRecoveryBusy] = useState(false);
   useEffect(() => {
-    if (!isTauri() || !sessionsError || sessionsHydrated) {
+    if (!isTauri() || !localRuntimeSelected || !sessionsError) {
       setNativeRuntimeError(null);
+      setNativeRuntimeReconnecting(false);
       return;
     }
     void getNativeRuntimeStatus()
-      .then((status) => setNativeRuntimeError(status?.state === 'error' ? status.detail : null))
-      .catch(() => setNativeRuntimeError(null));
-  }, [sessionsError, sessionsHydrated]);
+      .then((status) => {
+        setNativeRuntimeError(status?.state === 'error' ? status.detail : null);
+        setNativeRuntimeReconnecting(status?.state === 'starting');
+      })
+      .catch(() => {
+        setNativeRuntimeError(null);
+        setNativeRuntimeReconnecting(false);
+      });
+  }, [localRuntimeSelected, sessionsError]);
+  useEffect(() => {
+    setServerHealth(null);
+    setKnownSessionCount(rawSessions.length);
+  // Capture only the selected machine's first cached frame. Later refreshes
+  // can increase this count but never borrow another machine's total.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeServerId]);
+  useEffect(() => {
+    // Health polling is a recovery diagnostic, not another permanent network
+    // surface. The normal session-list request is enough while connected.
+    if (!selectedServer || !sessionsError) {
+      setServerHealth(null);
+      return;
+    }
+    let disposed = false;
+    let controller: AbortController | null = null;
+    const probe = (): void => {
+      controller?.abort();
+      controller = new AbortController();
+      void fetchServerHealth(selectedServer, controller.signal)
+        .then((health) => { if (!disposed) setServerHealth(health); })
+        .catch(() => { if (!disposed) setServerHealth(null); });
+    };
+    probe();
+    const interval = window.setInterval(probe, 3_000);
+    return () => {
+      disposed = true;
+      controller?.abort();
+      window.clearInterval(interval);
+    };
+  }, [activeServerId, selectedServer, sessionsError]);
+  useEffect(() => {
+    setKnownSessionCount((current) => Math.max(current, rawSessions.length, serverHealth?.sessionsLoaded ?? 0));
+  }, [rawSessions.length, serverHealth?.sessionsLoaded]);
 
   // User-defined tab order. Persisted in localStorage so the order
   // survives reloads. Server's session list comes back in creation
@@ -194,15 +308,17 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       historyId?: string;
       destinationProvider?: 'claude' | 'codex';
       runtimeMode?: 'rich' | 'terminal';
-      remoteControl?: boolean;
     }
   >(null);
+  // A resume whose history annotations did not finish. Previously this was a
+  // console.warn, so the same failure that ResumeDialog puts on screen was
+  // invisible when the user continued from Fleet, Search, or the palette.
+  const [adoptionNotice, setAdoptionNotice] = useState<string | null>(null);
   const [activeStatus, setActiveStatus] = useState<ActiveStatus>(INITIAL_STATUS);
   const [openTabIds, setOpenTabIds] = useState<string[]>(readOpenTabs);
   const [theme, setTheme] = useState<ThemeMode>(readTheme);
   const [mobileSessionDetail, setMobileSessionDetail] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const activeServerId = useServers((s) => s.activeId);
   const tokenRequiredServerId = useServers((s) => s.tokenRequiredServerId);
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
@@ -212,8 +328,16 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   const writeOpenTabs = useCallback((ids: string[]): void => {
     try { window.localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(ids)); } catch { /* non-fatal */ }
   }, []);
+  // Read the current rows through a ref rather than closing over them. With
+  // `rawSessions` in the dependency list this callback got a new identity
+  // every time any single session changed, and openSession is a prop on the
+  // memo()'d SessionView — so one session going working→idle re-rendered
+  // every mounted session view, which is exactly what that memo exists to
+  // prevent. Nothing here needs a render when the list changes.
+  const rawSessionsRef = useRef(rawSessions);
+  rawSessionsRef.current = rawSessions;
   const openSession = useCallback((id: string): void => {
-    if (rawSessions.find((session) => session.id === id)?.setAsideAt != null) {
+    if (rawSessionsRef.current.find((session) => session.id === id)?.setAsideAt != null) {
       void updateSetAside(id, false).catch(() => {
         // Opening remains useful even if an older daemon cannot persist the
         // working-set change. The next refresh will keep the row discoverable.
@@ -229,18 +353,23 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     setMobileSessionDetail(true);
   // setLayoutMode is a stable React setter declared below; callbacks run only
   // after the component has completed initialization.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawSessions, setActive, updateSetAside, writeOpenTabs]);
+  }, [setActive, updateSetAside, writeOpenTabs]);
   const resumeSession = useCallback((
     session: SessionInfo,
     destinationProvider?: 'claude' | 'codex',
-    runtimeMode?: 'rich' | 'terminal',
-    remoteControl?: boolean
+    runtimeMode?: 'rich' | 'terminal'
   ): void => {
     const providerId = providerConversationId(session);
-    setDialogOpen(providerId
-      ? { resumeProviderId: providerId, sourceSessionId: session.id, destinationProvider, runtimeMode, remoteControl }
-      : 'resume');
+    setDialogOpen({
+      // A Sessions history id is a valid recovery target even when an older
+      // runner did not persist the provider UUID. Keep the exact row the user
+      // clicked instead of falling back to an unrelated generic picker.
+      resumeProviderId: providerId ?? session.id,
+      sourceSessionId: session.id,
+      historyId: providerId ? undefined : session.id,
+      destinationProvider,
+      runtimeMode: providerId ? runtimeMode : 'rich'
+    });
   }, []);
   const forkSession = useCallback(async (
     session: SessionInfo,
@@ -290,6 +419,38 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // useful on phones and narrow Mac windows, so the mobile nav keeps them.
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(readStoredLayout);
   const effectiveLayout: LayoutMode = isMobile && layoutMode === 'grid' ? 'tabs' : layoutMode;
+  const openNewSession = useCallback((): void => {
+    setLayoutMode('tabs');
+    setMobileSessionDetail(true);
+    setDialogOpen('new');
+  }, []);
+  const localServer = servers.find((server) => server.isDefault && isLocalServer(server)) ?? null;
+  const selectedMachineName = selectedServer ? serverDisplayName(selectedServer, true) : 'this machine';
+  const recoveryVisible = Boolean(sessionsError || serverHealth?.discovering);
+  const recoverSelectedMachine = useCallback(async (): Promise<void> => {
+    if (!activeServerId || manualRecoveryBusy) return;
+    setManualRecoveryBusy(true);
+    try {
+      if (localRuntimeSelected && isTauri()) {
+        const status = await recoverNativeRuntime();
+        setNativeRuntimeError(status.state === 'error' ? status.detail : null);
+        setNativeRuntimeReconnecting(status.state === 'starting');
+      }
+      await refresh(activeServerId);
+    } catch (reason) {
+      setNativeRuntimeError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setManualRecoveryBusy(false);
+    }
+  }, [activeServerId, localRuntimeSelected, manualRecoveryBusy, refresh]);
+  const startOnLocalMachine = useCallback((): void => {
+    if (!localServer) return;
+    useServers.getState().setActive(localServer.id);
+    setServerScope(localServer.id);
+    setLayoutMode('tabs');
+    setMobileSessionDetail(true);
+    setDialogOpen('new');
+  }, [localServer, setServerScope]);
   useEffect(() => {
     if (single) return;
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -309,12 +470,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         event.preventDefault();
         event.stopPropagation();
         setCommandPaletteOpen(false);
-        setDialogOpen('new');
+        openNewSession();
       }
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [onboardingPending, single]);
+  }, [onboardingPending, openNewSession, single]);
   useEffect(() => {
     try { window.localStorage.setItem(LAYOUT_KEY, layoutMode); } catch { /* ignore */ }
   }, [layoutMode]);
@@ -352,14 +513,16 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
 
   const openFleetSession = useCallback((serverId: string, sessionId: string): void => {
     useServers.getState().setActive(serverId);
+    setServerScope(serverId);
     openSession(sessionId);
-  }, [openSession]);
+  }, [openSession, setServerScope]);
   const openFleetMachine = useCallback((serverId: string): void => {
     useServers.getState().setActive(serverId);
+    setServerScope(serverId);
     setActive(null);
     setLayoutMode('tabs');
     setMobileSessionDetail(false);
-  }, [setActive]);
+  }, [setActive, setServerScope]);
   const continueExactConversation = useCallback(async (
     serverId: string,
     providerSessionId: string,
@@ -367,24 +530,26 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     historyId?: string
   ): Promise<void> => {
     useServers.getState().setActive(serverId);
-    let result = await adoptConversation(providerSessionId, sourceSessionId, historyId);
-    if (result.partial && result.repair) {
-      try {
-        result = await repairAdoption(result.repair);
-      } catch (reason) {
-        // The first response already created the one live successor. Repair is
-        // record-only; never turn an annotation failure into a second runtime.
-        console.warn('Sessions continued the conversation but could not finish its history annotations.', reason);
-      }
-    }
-    await refresh();
-    // Same-provider continuation may immediately show an old-session,
-    // trust, update, or model picker that only exists in the provider TUI.
-    // Show that exact terminal first; the Conversation view remains one click
-    // away once the provider is ready.
-    preferNextSessionView(result.laneId, 'terminal');
+    setServerScope(serverId);
+    // Shared adopt-then-repair (lib/adoptConversation.ts): the same one
+    // ResumeDialog uses, so both entry points answer "did my history
+    // annotations finish?" identically. Repair is record-only and never
+    // turns an annotation failure into a second runtime.
+    const adopted = await adoptConversationWithRepair(providerSessionId, sourceSessionId, historyId);
+    const result = adopted.result;
+    setAdoptionNotice(adoptionWarning(adopted));
+    await refresh(serverId);
+    // Native Claude resume can immediately show a provider-only picker in its
+    // terminal. Imported Codex and Sessions transcript recovery are authored
+    // conversations, so open their Conversation view instead.
+    preferNextSessionView(
+      result.laneId,
+      result.transcriptRecovery || result.destinationProvider === 'codex' || result.mode
+        ? 'remote'
+        : 'terminal'
+    );
     openSession(result.laneId);
-  }, [openSession, refresh]);
+  }, [openSession, refresh, setServerScope]);
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
     const onMessage = (event: MessageEvent<unknown>): void => {
@@ -414,10 +579,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // re-runs whenever the active server changes so switching servers
   // immediately repopulates the tab strip from the new sessionsd.
   useEffect(() => {
-    void refresh();
-    const id = window.setInterval(() => { void refresh(); }, 3000);
+    if (!activeServerId) return;
+    setServerScope(activeServerId);
+    void refresh(activeServerId);
+    const id = window.setInterval(() => { void refresh(activeServerId); }, 3000);
     return () => window.clearInterval(id);
-  }, [refresh, activeServerId]);
+  }, [refresh, activeServerId, setServerScope]);
   useEffect(() => {
     if (!activeServerId || single) return;
     const controller = new AbortController();
@@ -430,7 +597,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
           // The daemon enforces the consent gate even if this read fails.
           // Keep the app usable and conservatively describe the machine as
           // local-only until the next reload or server switch.
-          setOnboarding({ version: 0, complete: true, remoteControl: 'local-only', supported: false });
+          setOnboarding({ version: 0, complete: true, remoteControl: 'local-only', delegatedAccess: 'inherit', supported: false });
         }
       });
     return () => controller.abort();
@@ -441,13 +608,14 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     setCommandPaletteOpen(false);
   }, [onboardingPending]);
   const chooseOnboardingPreference = useCallback(async (
-    choice: 'enabled' | 'local-only'
+    remoteControl: 'enabled' | 'local-only',
+    delegatedAccess: 'inherit' | 'autonomous'
   ): Promise<void> => {
     if (onboardingBusy) return;
     setOnboardingBusy(true);
     setOnboardingError(null);
     try {
-      setOnboarding(await updateOnboardingPreference(choice));
+      setOnboarding(await updateOnboardingPreference(remoteControl, delegatedAccess));
     } catch (reason) {
       setOnboardingError(reason instanceof Error ? reason.message : 'Could not save this choice.');
     } finally {
@@ -487,16 +655,24 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // SessionView — that's strictly more accurate than the cmd-based
   // classification because it reads the actual buffer, but it's only
   // available for the session we're currently attached to.
-  const statusBySession: Record<string, TabStatus> = {};
-  const iconBySession: Record<string, string> = {};
-  for (const s of sessions) {
-    statusBySession[s.id] = s.working ? 'working' : 'idle';
-    iconBySession[s.id] = TOOL_ICONS[s.tool];
-  }
-  if (activeId) {
-    statusBySession[activeId] = activeStatus.isWorking ? 'working' : 'idle';
-    iconBySession[activeId] = activeStatus.parserIcon;
-  }
+  //
+  // Memoised on purpose: store/sessions.ts goes to real trouble to hand back
+  // the SAME array and the SAME session objects when a poll changes nothing,
+  // and rebuilding these two maps inline on every render threw that away —
+  // each consumer received fresh object identities three seconds apart.
+  const { statusBySession, iconBySession } = useMemo(() => {
+    const status: Record<string, TabStatus> = {};
+    const icons: Record<string, string> = {};
+    for (const s of sessions) {
+      status[s.id] = s.working ? 'working' : 'idle';
+      icons[s.id] = TOOL_ICONS[s.tool];
+    }
+    if (activeId) {
+      status[activeId] = activeStatus.isWorking ? 'working' : 'idle';
+      icons[activeId] = activeStatus.parserIcon;
+    }
+    return { statusBySession: status, iconBySession: icons };
+  }, [activeId, activeStatus.isWorking, activeStatus.parserIcon, sessions]);
 
   // Working → idle desktop notifications. Track last-seen working state
   // per session id; fire whenever a session flips from true to false.
@@ -538,18 +714,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     );
   }
 
-  if (isTauri() && sessionsError && !sessionsHydrated) {
-    return (
-      <ConnectScreen
-        clientOnly={nativeClientOnly}
-        localDaemonUnavailable={!nativeClientOnly}
-        detail={nativeRuntimeError ?? sessionsError}
-        onRetry={() => void refresh()}
-      />
-    );
-  }
-
-  const machine = getActiveServer().name;
+  const machine = serverDisplayName(getActiveServer(), true);
   const liveSessions = sessions.filter((session) => !session.exited);
   const sessionWorkspace = effectiveLayout === 'tabs' || effectiveLayout === 'grid';
   const openedSessions = sessions.filter((session) => openTabIds.includes(session.id));
@@ -581,28 +746,58 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     if (view === 'tabs') setMobileSessionDetail(false);
   };
 
+  // One navigator, two mount points: the desktop rail and, on a phone, the
+  // session list itself. This used to be the same fourteen-prop block written
+  // out twice, so every new prop had to be added in both places or the two
+  // form factors quietly disagreed about the same session list.
+  const sessionNavigator = (
+    <SessionNavigator
+      sessions={sessions}
+      activeId={activeId}
+      machine={machine}
+      onOpen={openSession}
+      onOpenMachineSession={openFleetSession}
+      onNew={openNewSession}
+      onContinue={() => setDialogOpen('resume')}
+      onResumeSession={resumeSession}
+      onForkSession={forkSession}
+      onStartLinked={(id) => setDialogOpen({ delegateFrom: id })}
+      openSessionIds={openTabIds}
+      onCloseView={closeTab}
+      onReparent={updateDisplayParent}
+    />
+  );
+
   return (
-    <div className={`app-shell operations-shell text-size-${textSize.toLowerCase()}`} data-theme={theme}>
-      {!isMobile ? <ProductSidebar active={productView} theme={theme} onNavigate={navigateProduct} onNewSession={() => setDialogOpen('new')} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} /> : null}
+    <div className={`app-shell operations-shell text-size-${textSize.toLowerCase()}`} data-theme={theme} onClickCapture={handleExternalLinkClick}>
+      {!isMobile ? <ProductSidebar active={productView} theme={theme} onNavigate={navigateProduct} onNewSession={openNewSession} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} /> : null}
       <div className="operations-frame">
-        {sessionWorkspace && !isMobile ? (
-          <SessionNavigator
-            sessions={sessions}
-            activeId={activeId}
-            machine={machine}
-            onOpen={openSession}
-            onNew={() => setDialogOpen('new')}
-            onContinue={() => setDialogOpen('resume')}
-            onResumeSession={resumeSession}
-            onForkSession={forkSession}
-            onStartLinked={(id) => setDialogOpen({ delegateFrom: id })}
-            openSessionIds={openTabIds}
-            onCloseView={closeTab}
-            onReparent={updateDisplayParent}
-          />
-        ) : null}
+        {sessionWorkspace && !isMobile ? sessionNavigator : null}
         <section className="operations-content">
           <TailnetAccessInbox />
+          {adoptionNotice ? (
+            <section className="adoption-notice" role="status" aria-live="polite">
+              <div>
+                <strong>The conversation is live; its records are incomplete.</strong>
+                <span>{adoptionNotice}</span>
+              </div>
+              <button type="button" className="btn btn-ghost" onClick={() => setAdoptionNotice(null)}>Dismiss</button>
+            </section>
+          ) : null}
+          {recoveryVisible ? (
+            <MachineRecoveryNotice
+              machine={selectedMachineName}
+              local={localRuntimeSelected}
+              discovering={Boolean(serverHealth?.discovering)}
+              recovered={serverHealth?.sessionsLoaded ?? rawSessions.length}
+              expected={knownSessionCount}
+              busy={manualRecoveryBusy || nativeRuntimeReconnecting}
+              detail={nativeRuntimeError ?? sessionsError}
+              localAlternative={!localRuntimeSelected && localServer ? serverDisplayName(localServer, true) : undefined}
+              onRecover={() => void recoverSelectedMachine()}
+              onStartLocal={!localRuntimeSelected && localServer ? startOnLocalMachine : undefined}
+            />
+          ) : null}
           {sessionWorkspace && showManagerTabs && (!isMobile || mobileSessionDetail) ? (
             <header className="app-header operations-tabs-header">
               <SessionTabs
@@ -611,13 +806,13 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
                 statusBySession={statusBySession}
                 iconBySession={iconBySession}
                 onSwitch={openSession}
-                onAdd={() => setDialogOpen('new')}
+                onAdd={openNewSession}
                 onClose={closeTab}
                 onReorder={reorderTab}
               />
               {!isMobile ? <div className="session-layout-switch"><button type="button" className={effectiveLayout === 'tabs' ? 'is-active' : ''} onClick={() => setLayoutMode('tabs')}>Tabs</button><button type="button" className={effectiveLayout === 'grid' ? 'is-active' : ''} onClick={() => setLayoutMode('grid')}>Grid</button></div> : null}
               <ConnectionStatus machine={machine} hydrated={sessionsHydrated} error={sessionsError} />
-              <SettingsMenu textSize={textSize} onTextSizeChange={changeTextSize} onNewSession={() => setDialogOpen('new')} onOpenConnections={() => setLayoutMode('settings')} />
+              <SettingsMenu textSize={textSize} onTextSizeChange={changeTextSize} onNewSession={openNewSession} onOpenConnections={() => setLayoutMode('settings')} />
             </header>
           ) : null}
 
@@ -627,25 +822,19 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             error="sessionsd: authentication required (401)"
             onRetry={() => void refresh()}
           />
-        ) : sessionWorkspace && sessions.length === 0 && !sessionsHydrated && !sessionsError ? (
+        ) : sessionWorkspace && dialogOpen === 'new' ? (
+          <NewSessionDialog
+            embedded
+            onClose={() => setDialogOpen(null)}
+            onStarted={openSession}
+            onOpenResume={(providerId) => setDialogOpen(providerId ? { resumeProviderId: providerId } : 'resume')}
+          />
+        ) : sessionWorkspace && sessions.length === 0 && !sessionsHydrated ? (
           <SessionsWorkspaceSkeleton />
         ) : sessionWorkspace && isMobile && !mobileSessionDetail ? (
-          <SessionNavigator
-            sessions={sessions}
-            activeId={activeId}
-            machine={machine}
-            onOpen={openSession}
-            onNew={() => setDialogOpen('new')}
-            onContinue={() => setDialogOpen('resume')}
-            onResumeSession={resumeSession}
-            onForkSession={forkSession}
-            onStartLinked={(id) => setDialogOpen({ delegateFrom: id })}
-            openSessionIds={openTabIds}
-            onCloseView={closeTab}
-            onReparent={updateDisplayParent}
-          />
+          sessionNavigator
         ) : effectiveLayout === 'home' ? (
-          <HomeView sessions={sessions} machine={machine} onOpen={openSession} onNew={() => setDialogOpen('new')} onNavigate={(view) => setLayoutMode(view)} />
+          <HomeView sessions={sessions} machine={machine} onOpen={openSession} onNew={openNewSession} onNavigate={(view) => setLayoutMode(view)} />
         ) : effectiveLayout === 'fleet' ? (
           <FleetView onOpenSession={openFleetSession} onOpenMachine={openFleetMachine} />
         ) : effectiveLayout === 'today' ? (
@@ -653,6 +842,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         ) : effectiveLayout === 'search' ? (
           <SearchView
             onResumeConversation={continueExactConversation}
+            onOpenLiveSession={openFleetSession}
           />
         ) : effectiveLayout === 'usage' ? (
           <UsageDashboard />
@@ -676,18 +866,18 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
               // input rather than switching to tabs view.
               onExpand={(id) => { setActive(id); setLayoutMode('tabs'); }}
             />
-          ) : sessionsError && !sessionsHydrated ? (
-            <DaemonBanner error={sessionsError} onRetry={() => void refresh()} />
+          ) : recoveryVisible ? (
+            <SessionsWorkspaceSkeleton />
           ) : (
-            <EmptyState onNew={() => setDialogOpen("new")} />
+            <EmptyState onNew={openNewSession} />
           )
         ) : openedSessions.length === 0 ? (
-          sessionsError && !sessionsHydrated ? (
-            <DaemonBanner error={sessionsError} onRetry={() => void refresh()} />
+          recoveryVisible ? (
+            <SessionsWorkspaceSkeleton />
           ) : sessions.length > 0 ? (
-            <div className="session-workspace-empty"><span>Operations inbox</span><h1>Select a session</h1><p>Choose a manager or child from the navigator. It will open here without resuming or restarting anything.</p><button type="button" className="btn btn-primary" onClick={() => setDialogOpen('new')}>＋ New Session</button></div>
+            <div className="session-workspace-empty"><span>Operations inbox</span><h1>Select a session</h1><p>Choose a manager or child from the navigator. It will open here without resuming or restarting anything.</p><button type="button" className="btn btn-primary" onClick={openNewSession}>＋ New Session</button></div>
           ) : (
-            <EmptyState onNew={() => setDialogOpen("new")} />
+            <EmptyState onNew={openNewSession} />
           )
         ) : (
           // Mount a SessionView only for the LIVE set (active + a few
@@ -741,23 +931,16 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         sessions={sessions}
         onClose={() => setCommandPaletteOpen(false)}
         onNavigate={navigateProduct}
-        onNewSession={() => setDialogOpen('new')}
+        onNewSession={openNewSession}
         onContinue={() => setDialogOpen('resume')}
         onOpenSession={openSession}
       />
 
-      {dialogOpen === 'new' ? (
-        <NewSessionDialog
-          onClose={() => setDialogOpen(null)}
-          onStarted={openSession}
-          onOpenResume={(providerId) => setDialogOpen(providerId ? { resumeProviderId: providerId } : 'resume')}
-        />
-      ) : null}
       {dialogOpen === 'resume' || (dialogOpen && typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen) ? (
         <ResumeDialog
           onClose={() => setDialogOpen(null)}
           onResumed={(laneId) => openSession(laneId)}
-          onStartNew={() => setDialogOpen('new')}
+          onStartNew={openNewSession}
           preferredProviderId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
             ? dialogOpen.resumeProviderId
             : undefined}
@@ -934,7 +1117,7 @@ function SinglePopOut({
   }, [label, status.isWorking]);
 
   return (
-    <div className={`app-shell single-mode text-size-${textSize.toLowerCase()}`}>
+    <div className={`app-shell single-mode text-size-${textSize.toLowerCase()}`} onClickCapture={handleExternalLinkClick}>
       <header className="single-mode-header">
         <ParserIcon icon={status.parserIcon} size={18} />
         <span className="single-mode-label">{label}</span>

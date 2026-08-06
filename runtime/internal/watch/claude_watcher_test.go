@@ -1,6 +1,7 @@
 package watch
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -101,6 +102,21 @@ func TestClaudeWatcherFindsRealpathProjectForAliasCWD(t *testing.T) {
 	if watcher.Path() != path {
 		t.Fatalf("watcher path = %q, want realpath project %q", watcher.Path(), path)
 	}
+}
+
+// sessionEventBytes renders events as the JSONL a provider would write, so a
+// test can put them into a file by a route other than writeSessionEvents --
+// notably an in-place WriteAt that preserves the inode.
+func sessionEventBytes(t *testing.T, events []SessionEvent) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	for _, event := range events {
+		if err := encoder.Encode(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return buffer.Bytes()
 }
 
 func writeSessionEvents(t *testing.T, path string, events []SessionEvent, appendMode bool) {

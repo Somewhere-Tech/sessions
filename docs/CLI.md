@@ -16,33 +16,57 @@ Usage:
 
 With no command, Sessions lists agent sessions and headless lanes. Session ids may be full ids or unique prefixes from `sessions ls`.
 
+What this gives an agent that a plain terminal does not:
+  Work outlives you.        A session keeps running after the process that
+                            started it exits or is killed. Dispatch with
+                            `run`, collect from anywhere later with `wait`.
+  Conversations outlive     Providers prune their own transcripts on a timer.
+  the provider.             Sessions keeps its own copy, so `cat`, `search`,
+                            and `resume` still work after they do.
+  You can find what you     `history` browses every recorded Claude and Codex
+  already did.              conversation, on any machine and whatever
+                            directory you started it in — which neither
+                            provider's own resume picker can do — and
+                            `search` reads inside them.
+  Agents can hand off.      A Claude session can drive a Codex one and back;
+                            `send --from` records who asked.
+
+Exit codes: 0 satisfied · 1 usage · 2 daemon unreachable · 3 timed out ·
+4 target gone or failed. With --json every command prints exactly one JSON
+document, including on failure, and its `code` matches the exit status.
+
 Daily workflows:
   new                      create an interactive session
   profiles                 list Claude and Codex login profiles
-  onboarding               inspect user onboarding and Remote Control consent
+  onboarding               inspect user consent and delegated access
   providers                inspect or update agent CLIs
   run                      run a command in a headless lane
   tags                     view or edit session tags
   rename                   rename a session everywhere in Sessions
   worktrees                list or safely clean Sessions-created worktrees
+  transcripts              keep a durable copy of provider conversations
   gc                       archive old closed records safely
   archive                  hide selected closed sessions
   aside                    set live sessions aside or bring them back
-  ls                       list sessions
+  ls                       list interactive sessions
   list                     list agent sessions and headless lanes
   lanes                    list headless lanes
   send                     send text and Enter to a session
   ask                      send, wait, and print the reply
-  wait                     wait for session idle or lane exit
+  wait                     wait for session idle, lane exit, or a fan-out join
   last                     print recent conversation or lane output
-  search                   search normalized session chat history
+  history (conversations)  browse and preview every past conversation
+  grep                     search every approved machine
+  search                   search inside recorded conversations
   usage                    report local Claude and Codex token usage
   status                   show a compact session status card
   kill                     terminate sessions or lanes
   recover                  inspect or reopen recoverable sessions
   recall                   inspect integration recall data
+  source                   locate or read a saved conversation
   snap                     print the current terminal buffer
   tail                     print or follow recent terminal lines
+  cat                      print one durable conversation
   transcript               print the full conversation transcript
   input                    alias for send
   keys                     send a named key to a session
@@ -50,7 +74,7 @@ Daily workflows:
   verdict                  read or emit an explicit producer verdict
   move                     continue an ended conversation on another machine
   adopt                    bind an existing conversation into Sessions
-  continue                 continue one exact saved conversation
+  resume (continue, resurrect) resume one saved conversation
   fork                     copy a live conversation without stopping it
 
 Models and interactive:
@@ -78,6 +102,17 @@ Admin/operational:
   help                     show top-level or command help
   version (--version, -v)  print the CLI version
 
+Delegating to another agent:
+  Sessions is cross-agent and cross-provider: a Claude session can create and
+  drive a Codex delegate and the reverse, which native subagents cannot do, and
+  a delegate outlives the session that created it. Create one with `sessions new
+  --tool claude|codex` or `sessions run` for a headless lane, hand it work with
+  `sessions ask` or `sessions send --from <your-session>` so the message carries
+  durable attribution back to you, then join the results with `sessions wait
+  <id>` for one, `--any` for the first of several, or `--all` for every one.
+  `sessions list --mine` recovers the delegates you created after a compaction,
+  so ids never have to be remembered. See `sessions help wait`.
+
 Global flags:
   --json           machine-friendly output; may also appear among command options
   --machine NAME   use a saved Sessions machine and its device credential
@@ -93,17 +128,23 @@ Run `sessions help <command>` for one command or `sessions docs` for the complet
 
 ```text
 Usage:
-  sessions new [--tool claude|codex|shell] [--structured|--pty-claude|--codex-appserver|--pty-codex] [--full-access] [--profile NAME] [--cwd P] [--name L] [--description PURPOSE] [--tag KEY=VALUE ...] [--worktree [--base REF]] [options] [args...]
+  sessions new [--tool claude|codex|shell] [--permissions inherit|constrained|full] [--lifecycle task|session] [--profile NAME] [--cwd P] [--name L] [--model M] [--effort LEVEL] [--fast] [--structured] [--wait-ready] [--on-idle CMD] [--owner ID [--detach]] [--force] [--worktree [--base REF]] [--cmd PATH] [options] [args...]
 
 create an interactive session
 
-Create a session. --tool selects a built-in Claude, Codex, or shell preset; --cmd supplies a command directly. Claude defaults to its native interactive runtime, a clean Sessions Conversation view, and Terminal available for provider-only pickers. Remote Control is added only after the user enables it in first-run onboarding or Settings. --structured explicitly selects the headless structured Claude runtime for automation that does not need Remote Control or a terminal. --pty-claude is retained as a compatibility alias for the default interactive Claude runtime. Codex defaults to its sandboxed terminal mode because Sessions cannot yet present app-server approval prompts; --codex-appserver therefore requires the explicit --full-access choice. --pty-codex explicitly selects the provider's terminal UI. --full-access disables the selected provider's approval and sandbox protections for this new session only. Existing sessions keep their original runtime and permission mode. --profile selects a private Claude or Codex login under the Sessions user state; first use opens the tool's own login flow. --description (alias --desc) records why the session exists. Repeat --tag key=value for product, client, team, cost center, or any user-defined dimension. --worktree creates sessions/<name> from the current branch (or --base REF), records its provenance, and runs the session there. Sessions does not create node_modules symlinks; install dependencies in the worktree when needed. Session controls include --model, --effort, --fast, --on-idle, --wait-ready, and --force.
+Create a session. --tool selects Claude, Codex, or shell. For Claude and Codex, positional text after the options is sent immediately as the first request. Agent-created children inherit their manager's resolved permission policy by default; when the user has explicitly enabled autonomous delegated work, those children use full access instead. A child cannot escalate itself. --permissions makes the policy explicit, while --full-access remains an alias for --permissions full. Agent-created children default to the task lifecycle and close after a successful final response; --lifecycle session or --keep-alive creates a long-lived manager. User-created sessions remain long-lived. Approval questions become needs-input state and are never blindly accepted. Existing sessions keep their original runtime and permission mode. Claude defaults to its native interactive runtime; Codex defaults to its sandboxed terminal mode unless full access selects app-server. Remote Control remains separately consent-gated. --profile selects a private provider login. --description and repeated --tag values record purpose and dimensions. --worktree creates a Sessions-owned worktree, and --base picks its starting ref.
+
+Agent controls: --model chooses the provider model for the new session and --effort its reasoning effort; both are validated by the provider and are only valid for Claude or Codex. --fast requests the Codex priority service tier and is refused for Claude, which has no service tier. Explicit provider arguments you pass yourself always win over these controls.
+
+Runtime and lifecycle options: --structured creates a Rich structured Claude session instead of the interactive terminal, --pty-claude keeps the terminal explicitly, and --codex-appserver or --pty-codex select the Codex runtime; app-server currently requires full access. --wait-ready holds the create call until the new agent runtime has produced its first structured event or a short settle timeout expires, so an immediately following send is not lost. --on-idle registers a shell command the daemon runs in the session's working directory every time the session becomes idle. --force overrides the live or moved conversation guard. --no-skip-perms is an accepted no-op kept for scripts written before constrained execution became the default, and it cannot be combined with full access. --cmd runs an explicit executable instead of a tool preset.
+
+Ownership: --owner records an external principal as the creator instead of the inherited Sessions ancestry, and --detach is required with it when this process already belongs to a session, creating an external root rather than a child.
 
 Examples:
   sessions new --tool claude --cwd ~/work
-  sessions new --tool claude --pty-claude --name terminal-debug
-  sessions new --tool codex --pty-codex
-  sessions new --tool codex --codex-appserver --full-access
+  sessions new --tool codex --permissions inherit --name focused-worker
+  sessions new --tool codex --permissions full --lifecycle task 'Review this repository'
+  sessions new --tool claude --keep-alive --name manager
   sessions new --cmd /bin/zsh
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -132,9 +173,9 @@ Examples:
 Usage:
   sessions onboarding
 
-inspect user onboarding and Remote Control consent
+inspect user consent and delegated access
 
-Show whether this machine has completed Sessions onboarding and whether Claude Remote Control is enabled. This command is deliberately read-only: an agent can explain the state but cannot grant user consent. Open Sessions.app to make or change the choice.
+Show whether this machine has completed Sessions onboarding, whether Claude Remote Control is enabled, and whether agent-created task workers inherit or receive autonomous access. This command is deliberately read-only: an agent can explain the state but cannot grant user consent. Open Sessions.app to make or change either choice.
 
 Examples:
   sessions onboarding
@@ -165,15 +206,20 @@ Examples:
 
 ```text
 Usage:
-  sessions run [--name N] [--description PURPOSE] [--tag KEY=VALUE ...] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--wait [--output]] -- <cmd args...>
+  sessions run [--name N] [--description PURPOSE] [--tag KEY=VALUE ...] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--owner ID [--detach]] [--wait [--timeout D] [--output]] -- <cmd args...>
 
 run a command in a headless lane
 
-Create a headless lane for the command following the first -- separator. --description (alias --desc) records why the lane exists. --worktree creates an isolated Sessions-owned worktree; it does not symlink node_modules. Every child argument after the separator is passed unchanged. Without --wait, print the lane id and return. --wait blocks for completion and propagates the child exit code; --output prints the captured output tail.
+Create a headless lane for the command following the first -- separator. --description (alias --desc) records why the lane exists. --worktree creates an isolated Sessions-owned worktree; it does not symlink node_modules. Every child argument after the separator is passed unchanged. Without --wait, print the lane id and return. --wait blocks for completion and propagates the child exit code; --output prints the captured output tail. --timeout raises the 30-second default the wait would otherwise be capped at, which is shorter than most delegated work; the lane keeps running past a timeout, so `sessions wait <lane>` can still collect it. --owner records an external principal as the creator instead of the inherited Sessions ancestry, and --detach is required with it when this process already belongs to a session, creating an external root rather than a child.
+
+Under --wait the completion is reported in the shared wait envelope: ok, kind:"lane", reason, session, and a nested lane object with exit_code, signal, duration_ms, and last_output_tail.
+
+Finding the lane again: a lane is not an interactive session and never appears in `sessions ls`, and it drops out of the default `sessions list` view once it exits. Use `sessions lanes`, `sessions ls --kind lane`, or `sessions list -a` to see it in any state, and `sessions wait <lane>` to collect a lane whose --wait timed out.
 
 Examples:
   sessions run -- make test
   sessions run --name lint --worktree --wait --output -- npm run lint
+  sessions run --wait --timeout 30m -- ./slow-migration.sh
   sessions --json run --wait -- sh -c 'exit 3'
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -234,19 +280,38 @@ Examples:
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
+## `sessions transcripts`
+
+```text
+Usage:
+  sessions transcripts [--apply | --dry-run]
+
+keep a durable copy of provider conversations
+
+Copy conversations into storage Sessions owns, so they survive the provider deleting its own transcript. Claude Code prunes ~/.claude/projects on a retention timer, and once a transcript is gone nothing can recover that conversation unless Sessions already copied it. A session Sessions is actively watching is copied continuously and needs nothing here; this exists for ended sessions whose provider transcript is still on disk. The default is a dry run that reports what would be copied; --apply performs the copy. Copying is additive and idempotent, never moves or modifies the provider's files, and can be run repeatedly. A conversation Sessions already holds a copy of is reported as already kept: the provider deleting its transcript no longer loses it, and `sessions resume <id>` replays Sessions' copy, which is the only way back for it because a native provider resume would be refused. Only a conversation with no provider transcript and no Sessions copy is reported as unrecoverable, because that one really is.
+
+Examples:
+  sessions transcripts
+  sessions transcripts --apply
+  sessions --json transcripts
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
 ## `sessions gc`
 
 ```text
 Usage:
-  sessions gc [--older-than DURATION] [--apply]
+  sessions gc [--older-than DURATION] [--apply | --dry-run]
 
 archive old closed records safely
 
-Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. Live runners and ancestors with retained descendants are never archived. Recovery history, transcripts, and worktrees are preserved.
+Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. --dry-run only states that default explicitly and changes nothing; it cannot be combined with --apply. Live runners and ancestors with retained descendants are never archived. Recovery history, transcripts, and worktrees are preserved.
 
 Examples:
   sessions gc
   sessions gc --older-than 7d
+  sessions gc --older-than 7d --dry-run
   sessions gc --older-than 30d --apply
   sessions --json gc
 
@@ -294,17 +359,27 @@ Examples:
 
 ```text
 Usage:
-  sessions ls [--mine | --all] [-a | --include-exited] [--aside | --not-aside]
+  sessions ls [--mine | --all-owners] [-a | --include-exited] [--aside | --not-aside] [--kind lane]
 
-list sessions
+list interactive sessions
 
-List agent sessions known to the daemon. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Exited sessions are hidden by default; -a and --include-exited include them. Set-aside sessions remain listed and marked; --aside selects only them, while --not-aside reproduces the native default working set.
+List agent sessions known to the daemon. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Set-aside sessions remain listed and marked; --aside selects only them, while --not-aside reproduces the native default working set.
+
+Two independent axes decide what comes back, and they are easy to confuse. State: ended sessions are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's sessions and changes nothing about which states are shown. The same two spellings mean the same two things on ls, list, and lanes.
+
+--json selects a format, not a working set. It returns exactly the sessions the plain table would show, so `sessions --json ls` answers "what is running?" and needs -a to see ended records. This is a deliberate change: --json used to force every ended session into the answer and ignore -a entirely.
+
+ls lists interactive sessions only. A lane created by `sessions run` never appears here, in any state. Reach it with `sessions lanes`, `sessions ls --kind lane`, or `sessions list -a`, which is the single view of every session and lane in every state.
+
+ls lists sessions Sessions created, and only those. A conversation you started by running plain `claude` or `codex` yourself is recorded but never appears here, so this is not the place to look for one. `sessions history` browses every Claude and Codex conversation on the machine, whoever started it.
 
 Examples:
   sessions ls
+  sessions ls -a
   sessions ls --mine
   sessions ls --aside
   sessions ls --not-aside
+  sessions ls --kind lane
   sessions --json ls
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -314,16 +389,21 @@ Examples:
 
 ```text
 Usage:
-  sessions list [--mine | --owner ID | --all] [--include-closed]
+  sessions list [--mine | --owner ID | --all-owners] [-a | --include-exited]
 
 list agent sessions and headless lanes
 
-List agent sessions and headless lanes together. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Closed records are hidden unless --include-closed is supplied.
+List agent sessions and headless lanes together. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped.
+
+State: ended sessions and exited lanes are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's records and changes nothing about which states are shown.
+
+`sessions list -a` is the one command that answers "show me every session Sessions created": every agent session and every retained lane, live or ended, in a single table with a TYPE column. It does not reach conversations Sessions did not create — for those, and for reopening any past conversation, use `sessions history`. Use it when a lane you dispatched with `sessions run` is not where you expected to find it — ls never lists lanes, and a lane drops out of the default list view as soon as it exits.
 
 Examples:
   sessions
+  sessions list -a
   sessions list --mine
-  sessions list --mine --include-closed
+  sessions list --mine -a
   sessions list --owner team:mine
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -333,11 +413,13 @@ Examples:
 
 ```text
 Usage:
-  sessions lanes [--all | --mine [--owner ID] | --subtree ID] [--direct] [--detach]
+  sessions lanes [--all-owners | --mine [--owner ID] | --subtree ID] [--direct] [--detach]
 
 list headless lanes
 
-List retained headless lanes. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. --subtree selects session ancestry; --direct limits ancestry to immediate children.
+List retained headless lanes, including the ones `sessions run` created that `sessions ls` never shows. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. --subtree selects session ancestry; --direct limits ancestry to immediate children. --all-owners (alias --all) returns every owner's lanes; like everywhere else it selects owners, not states.
+
+Lanes are retained after they exit and are always listed here, so -a (--include-exited, --include-closed) is accepted for spelling parity with ls and list and changes nothing.
 
 Examples:
   sessions lanes
@@ -351,16 +433,19 @@ Examples:
 
 ```text
 Usage:
-  sessions send <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] <text...>
+  sessions send <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] [--] <text...>
 
 send text and Enter to a session
 
-Send a message and Enter. Claude and Codex sessions wait for receipt confirmation by default; --no-wait uses fire-and-forget behavior and --file reads the message body from a UTF-8 file. --from records a durable, content-free source-lane attribution; agents running inside Sessions inherit their source lane automatically.
+Send a message and Enter. Claude and Codex sessions wait for receipt confirmation by default; --no-wait uses fire-and-forget behavior and --file reads the message body from a UTF-8 file. --from records a durable, content-free source-lane attribution, so a delegate can see which session asked and reply to it by id; agents running inside Sessions inherit their source lane automatically, and the target may be running the other provider. An unrecognized option in front of the message is refused rather than typed into the session; put -- before a message that must begin with dashes.
+
+send delivers and returns; it does not wait for the reply. Follow it with `sessions wait <id>` for one delegate or `sessions wait <id>... --all` for a fan-out, or use `sessions ask` for a single request and answer.
 
 Examples:
   sessions send 0123abcd 'Run the focused tests.'
   sessions send 0123abcd --from 89abcdef 'Please review this result.'
   sessions send 0123abcd --file prompt.md
+  sessions send 0123abcd -- --json is a flag, not output
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -373,7 +458,11 @@ Usage:
 
 send, wait, and print the reply
 
-Send a confirmed message to a Claude or Codex session, wait for the reply to finish, and print the last assistant message.
+Send a confirmed message to a Claude or Codex session, wait for the reply to finish, and print the last assistant message. This is the request-and-answer form of delegation, including to a session running the other provider; use send plus wait when the reply should not be waited for inline.
+
+ask and send share one delivery path and report it identically: while the message is still being confirmed, ask answers with send's document — submitted, confidence, and on failure reason, sessionState, textStillInComposer, and composerTail — and exits with send's status, 1 when the text is still sitting in the composer and 2 when it left the composer with nothing acknowledging it. Once delivery is confirmed, the answer is {submitted, confidence, reply} with reply null when no assistant message followed. A target whose tool cannot confirm submission exits 1 in both plain and --json mode; use send plus wait for those.
+
+Exit codes: 0 a reply was printed, 1 or 2 the message was not confirmed delivered, 3 the message was delivered but no reply arrived within --wait-timeout — the session may still be working, so poll with `sessions wait`.
 
 Examples:
   sessions ask 0123abcd 'Summarize the failing test.'
@@ -386,15 +475,24 @@ Examples:
 
 ```text
 Usage:
-  sessions wait <id> [<id>... --any] [--idle D] [--timeout D] [--summary] [condition]
+  sessions wait <id> [<id>... --any | --all] [--idle D] [--timeout D] [--summary] [condition]
 
-wait for session idle or lane exit
+wait for session idle, lane exit, or a fan-out join
 
-Wait for a session to become idle or a lane to exit. --summary reports which target changed and its last useful assistant/output summary. Lane waits propagate the lane exit code. Conditions include --until commit, --until-file-contains FILE STRING, and --until-idle-stable D.
+Wait for a session to become idle or a lane to exit. --summary reports which target changed and its last useful assistant/output summary. A single lane wait propagates the lane exit code. Conditions include --until commit, --until-file-contains FILE STRING, and --until-idle-stable D.
+
+Every wait answers with the same JSON object: ok, kind, reason, session, working, idleMs, and the optional elapsedMs, idleReason, detail, summary, and a nested lane or condition object carrying what only that kind of target can report — a lane's exit_code, signal, duration_ms, and last_output_tail, or a condition's commit, file, or idle_stable_ms. kind is session, lane, commit, file-contains, or idle-stable, and the target id is always in session. reason is idle, needs-input, exited, satisfied, failed, gone, or timeout, and ok is true only when the caller can stop waiting and act. A lane that exits non-zero reports failed with its status in lane.exit_code. --summary adds prose; it never changes the shape.
+
+Fanning out to several delegates: --any returns the first target to finish, for a race. --all waits for every target and returns {ok, kind:"all", reason, waited, results:[...]} where results holds one envelope per target in the order they were named, ok is true only if every target is ok, and reason carries the worst outcome — so a delegator can join N delegates in one call instead of re-waiting them one at a time and losing the ones that died in between. Sessions and lanes may be mixed. --idle describes a settling session and governs only the session targets; it is refused when every target is a lane, whose wait ends when the process exits.
+
+--until-file-contains resolves a relative path against your own working directory, not the delegate's; an absolute path is used unchanged. The delegate's cwd is rarely what a caller expects, since `sessions new` defaults it to $HOME while `sessions run` inherits the caller's.
+
+Exit codes: 0 the condition was satisfied, 1 usage, 2 the daemon could not be reached, 3 timed out without observing the condition, 4 the target is gone or failed so waiting longer cannot help. With --all the worst per-target outcome decides. A vanished target reports ok:false and exit 4; treat exit 0 alone as success only for commands that do not wait.
 
 Examples:
   sessions wait 0123abcd --timeout 2m --summary
   sessions wait lane-a lane-b --any --summary
+  sessions --json wait 0123abcd 89abcdef lane-c --all --timeout 30m
   sessions wait 0123abcd --until commit --timeout 10m
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -418,15 +516,74 @@ Examples:
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
+## `sessions history`
+
+```text
+Usage:
+  sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [--pick] [-n N] [--all] [--wait-for-peers] [--json]
+
+browse and preview every past conversation
+
+Browse every Claude and Codex conversation recorded on this machine and every approved machine, newest first, without having to remember which directory you started it in. This is the view neither provider has: `claude --resume` only offers conversations belonging to the directory you are standing in and its git worktrees, and Codex's own picker filters by working directory too, so a conversation you started somewhere else is effectively lost. Sessions resolves conversation ids fleet-wide, so every row here can be reopened from anywhere.
+
+Browsing needs no search term. `sessions history --since today --tool codex` answers "what did I have open today", and any single narrowing option is enough on its own. WHEN accepts today, yesterday, a span like 3d, 6h or 2w, YYYY-MM-DD, or RFC3339. Give a QUERY as the first argument to keep only conversations whose text matched it; matching uses the same ranked engine as `sessions search`, but the unit here is the conversation rather than the message, and rows stay newest-first.
+
+Every row carries what it takes to recognise a conversation a week later — when it was last active, where it was started from, the working directory, its name derived from the opening message, and how many messages are in it — followed by the exact command that brings it back, runnable from any directory. That command is the one that actually works for that row, following the same discipline as `sessions recover`: `sessions resume` for a conversation Sessions can reopen, including one whose provider deleted its own transcript and which comes back from Sessions' copy; `sessions attach` for a conversation that is still running, which resume would refuse; and no command at all, with the reason, for one that neither the provider nor Sessions still holds.
+
+Where it was started from is the other thing neither provider's picker will tell you. Both providers record it and neither shows it, so a row says "Codex Desktop", "Codex CLI" or "Claude Desktop" rather than just the provider name, and a conversation Sessions itself started says so. Select on it with --surface: codex-cli, codex-desktop, codex-exec, claude-cli, claude-desktop, claude-sdk, sessions, or the raw value a provider recorded — an unrecognised value is accepted, and an empty answer lists the surfaces this machine actually has. --actor separates work you did from work something else did: user, automation, or agent. A row is annotated only when it was not you, because a history reads as yours until it says otherwise. A provider that never recorded the answer leaves it blank rather than being guessed at, so --actor user selects only conversations that recorded a person, and a machine running a Sessions too old to report any of this is named rather than silently dropped from a filtered answer. A last-active time marked "(file time)" is dated by the transcript file rather than by the conversation's own last record, which is what a history copied without preserving timestamps looks like.
+
+--preview prints the last few exchanges of each row so a candidate can be read before it is reopened. It reads the same stored conversation `sessions cat` prints, creates nothing, and marks nothing. It also narrows the page to five rows unless -n says otherwise, because previews are long.
+
+--pick numbers the rows and reopens the one you choose, so the command a row carries no longer has to be copied by hand. It is the only thing that makes this command interactive and it is never implied: without it the output is exactly what it has always been, so pipelines, scripts, and agents reading the plain listing are unaffected, and combining it with --json is refused rather than silently ignored. At the prompt, a row number reopens that conversation, `p N` prints the last ten exchanges of row N and returns to the prompt, `l` reprints the list after a preview has scrolled it away, and `q`, an empty line, or end of input leaves without doing anything. Selection runs that row's own printed command — resume for a saved conversation, attach for one that is still running — and a row that carries no command because nothing can bring it back is refused with its reason rather than reopened into a failure. The choice is confirmed with the name and the exact command before anything runs, because reopening starts a provider process and hands it the terminal.
+
+The default view is conversations you could plausibly return to: Claude and Codex, with messages in them, still readable. --all adds empty, shell, and unrecoverable records. The number that matched and the number recorded are always printed, so a narrowed view is never mistaken for an empty history.
+
+An approved machine that is not in the answer never disappears quietly. The count in the footer is scoped to the machines that answered, and a line beside it on stdout names the machine that is missing and how many conversations it held the last time this one reached it, so a browse showing a fraction of the fleet cannot be read as the whole of it, and a redirected browse keeps that line.
+
+A browse waits two seconds for the fleet and no longer. A machine whose history is large enough that listing it costs more than that is left out of later browses rather than waited for and dropped again, so the cost of missing it is nothing instead of the whole budget; it is re-checked every ten minutes, and a machine that is powered off fails at connect and is skipped for a few minutes. --wait-for-peers is the complete answer: it ignores those skips, waits for every approved machine as long as this one is allowed to take, and is what the shortfall line points at. Running it once is also what teaches a browse how much a slow machine holds.
+
+Examples:
+  sessions history
+  sessions history --since today --tool codex
+  sessions history --surface codex-desktop
+  sessions history --actor automation --since 1w
+  sessions history --preview -n 3
+  sessions history --pick
+  sessions history --since today --pick
+  sessions history 'sessions hardening' --tool codex
+  sessions history --cwd . --since 1w
+  sessions --json history --since yesterday
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions grep`
+
+```text
+Usage:
+  sessions grep [options] <query>
+
+search every approved machine
+
+Search normalized Claude and Codex history across this machine and every machine approved in Sessions.app or with `sessions machines connect`. Familiar -i and -C N flags are accepted; matching is already case-insensitive. Results carry durable machine::history-id references, duplicate copies of the same provider message are collapsed, and an offline machine produces a partial-result warning instead of hiding reachable history. Use --machine before the command to scope one machine.
+
+Examples:
+  sessions grep -i -C 3 'Google Ads'
+  sessions grep --tool claude --role user bolo
+  sessions --json grep 'release decision'
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
 ## `sessions search`
 
 ```text
 Usage:
-  sessions search <query> [--session ID[,ID...]] [--role user|assistant|tool] [--tool claude|codex|shell] [--name GLOB] [--cwd PATH] [--since DATE] [--until DATE] [--context N] [--timeline] [-n N] [--exact | --regex | --ranked] [--json]
+  sessions search <query> [--session ID[,ID...]] [--role user|assistant|tool] [--tool claude|codex|shell] [--name GLOB | --lane GLOB] [--cwd PATH] [--since DATE] [--until DATE] [--context N] [--timeline] [-n N] [--exact | --regex | --ranked] [--json]
 
-search normalized session chat history
+search inside recorded conversations
 
-Search chat history across every live and persisted session known to the daemon. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --timeline merges matching moments chronologically. Filters are evaluated by the daemon, so --host can search a remote Sessions instance.
+Search chat history across every live and persisted session on this machine and every approved machine by default. The unit of an answer here is the message. To find a conversation rather than a moment inside one — including with no search term at all, by time, provider, or directory — use `sessions history`, which lists conversations newest-first with the command that reopens each one. Ranked recall is the default and it is conjunctive: every bare word must appear, quoted phrases stay exact, and a pasted path matches by its trailing segments. When nothing satisfies all the words the search widens on its own, and the response says which expression actually ran. Bare AND, OR and NOT are ordinary words, not operators -- prefix the whole query with fts: to hand it to the index verbatim, where FTS5 syntax including OR and near(a,b,N) applies, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --lane is an accepted alias of --name; supplying both is refused. --timeline merges matching moments chronologically. Use global --machine or --host before the command to search only one daemon.
 
 Examples:
   sessions search 'drafts rollout' --role user --since 2026-07-23
@@ -446,6 +603,8 @@ Usage:
 report local Claude and Codex token usage
 
 Incrementally index the local Claude Code and Codex JSONL stores, then report token usage and estimated cost by day, week, month, session, provider, model, or one session-tag dimension. Reasoning tokens are reported separately but remain a subset of output tokens. auto uses a recorded cost when present and otherwise calculates with pinned ccusage pricing semantics; calculate always prices tokens; display shows recorded costs only. No usage data leaves the daemon.
+
+Token counts are measured; the money column is not. EST COST is a model of what this usage would have cost on the API: prices are pinned in this build with no as-of date, server-side tool use is billed by the provider but never appears in the token stream, and 1-hour cache writes are underpriced. On a Max or ChatGPT subscription the marginal cost is zero. It is printed to the cent because it cannot support more precision than that; the raw float and the pricing provenance are in --json.
 
 Examples:
   sessions usage
@@ -483,11 +642,15 @@ Usage:
 
 terminate sessions or lanes
 
-Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit.
+Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one, and it refuses to swallow a following flag as the explanation, so `--reason --force` is a usage error rather than a recorded reason of '--force' with the force silently dropped. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit.
+
+Results are reported per target from what the daemon confirmed, never assumed. Each target is killed, already-exited for a lane that had already finished, failed when the daemon refused or did not confirm it, or unconfirmed when the daemon accepted the request without saying which sessions ended. The command exits 1 when any target failed and 2 when any target could not be confirmed, so a partially refused batch is never reported as success. --json prints {"items":[{"id","status","reason"}],"operation_id"} on stdout with the same statuses, matching the per-target shape used by archive and aside.
 
 Examples:
   sessions kill 0123abcd
   sessions kill 0123abcd 89abcdef --reason "completed rollout batch"
+  sessions --json kill 0123abcd
+  sessions kill --json 0123abcd 89abcdef
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -500,7 +663,7 @@ Usage:
 
 inspect or reopen recoverable sessions
 
-List actionable recovery recipes. --all also shows blocked and unresumable lost records with reasons. --reopen creates replacement sessions for eligible records; --force overrides the live or moved conversation guard.
+List actionable recovery recipes. The RESUME column is always the command that actually recovers that conversation. For a record whose provider deleted its own transcript but whose conversation Sessions still holds a copy of, that command is `sessions resume <id>`, not the provider's resume flag, which the provider would refuse; --all labels those records transcript-recovery and --json reports transcriptRecovery on them. --all also shows blocked and unresumable lost records with reasons; blocked means neither the provider nor Sessions still has the conversation. --reopen creates replacement sessions for eligible records; --force overrides the live or moved conversation guard.
 
 Examples:
   sessions recover
@@ -528,6 +691,25 @@ Examples:
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
+## `sessions source`
+
+```text
+Usage:
+  sessions source <[machine::]name-or-id> [--text | --raw]
+
+locate or read a saved conversation
+
+Resolve a durable Sessions title, full id, id prefix, or machine::history-id across every approved machine. With no read flag, show the authoritative provider-owned JSONL path, provider, machine, workspace, size, and exact follow-up commands. --text streams the normalized user and agent conversation; --raw streams the untouched provider source. Ambiguous titles are never guessed. Sessions does not create or modify a transcript copy.
+
+Examples:
+  sessions source PM
+  sessions source db-final-review-sol --text
+  sessions source 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001' --raw
+  sessions --json source PM
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
 ## `sessions snap`
 
 ```text
@@ -549,15 +731,34 @@ Examples:
 
 ```text
 Usage:
-  sessions tail <id> [-f] [-n N]
+  sessions tail <id> [-f | --follow] [-n N | --lines N]
 
 print or follow recent terminal lines
 
-Print the last N terminal lines, defaulting to 50. -f keeps following new output.
+Print the last N terminal lines, defaulting to 50. -n and --lines are the same option and take a positive integer. -f and --follow are the same option and keep streaming new output until interrupted. An unknown option, or -n without a number, is refused rather than ignored, so a mistyped flag never silently prints the default instead of what was asked for.
 
 Examples:
   sessions tail 0123abcd
   sessions tail 0123abcd -n 200 -f
+  sessions tail 0123abcd --lines 200 --follow
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions cat`
+
+```text
+Usage:
+  sessions cat <session-id | machine::history-id>
+
+print one durable conversation
+
+Print the complete normalized conversation identified by a live session id, a unique session-id prefix, or a fleet-search reference. An unqualified argument that resolves to a session on this daemon prints that session's transcript; otherwise it is treated as a history reference. The machine qualifier selects the approved per-device credential without putting a token in argv. The conversation is read from its source machine; Sessions does not create a second transcript copy merely for search.
+
+Examples:
+  sessions cat 0123abcd
+  sessions cat 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'
+  sessions --json cat 'local::provider:codex:00000000-0000-4000-8000-000000000001'
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -583,14 +784,16 @@ Examples:
 
 ```text
 Usage:
-  sessions input <id> [send options] <text...>
+  sessions input <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] [--] <text...>
 
 alias for send
 
-Send text and Enter using the same confirmation behavior and options as sessions send.
+Send text and Enter using the same confirmation behavior, options, JSON result, and unknown-option refusal as sessions send.
 
 Examples:
   sessions input 0123abcd 'Continue.'
+  sessions --json input 0123abcd 'Continue.'
+  sessions input 0123abcd --json 'Continue.'
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -653,11 +856,13 @@ Usage:
 
 continue an ended conversation on another machine
 
-Continue an ended Claude or Codex conversation on another Sessions machine while preserving the source history. --machine reads the saved per-device credential from its private file; no token appears in argv. Run --dry-run first to verify workspace and conversation identity. Claude continues in its native interactive runtime, with Remote Control determined by the destination machine's explicit onboarding/Settings choice. Codex continues in its Rich app-server runtime. The target refuses to overwrite different provider history and records both sides of the continuation link. --terminal explicitly selects the provider terminal and is retained for Codex compatibility. --to/--token remains a low-level endpoint escape hatch. --allow-dirty creates a Git checkpoint without deleting or changing the source worktree.
+Continue an ended Claude or Codex conversation on another Sessions machine while preserving the source history. Put a global --machine before move when the source is another approved computer; the --machine after the session selects the destination. The client reads each saved per-device credential from its private file and sends neither credential to the other daemon. Run --dry-run first to verify workspace and conversation identity. Claude continues in its native interactive runtime, with Remote Control determined by the destination machine's explicit onboarding/Settings choice. Codex continues in its Rich app-server runtime. The target refuses to overwrite different provider history and records both sides of the continuation link. --terminal explicitly selects the provider terminal and is retained for Codex compatibility. --to/--token remains a low-level endpoint escape hatch. --allow-dirty creates a Git checkpoint without deleting or changing the source worktree.
 
 Examples:
   sessions move 0123abcd --machine mini --dry-run
   sessions move 0123abcd --machine mini
+  sessions --machine mini move 0123abcd --machine macbook --dry-run
+  sessions --machine mini move 0123abcd --machine macbook
   sessions move 0123abcd --machine mini --terminal
   sessions move 0123abcd --to https://mini.tailnet.ts.net --dry-run
 
@@ -682,21 +887,22 @@ Examples:
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
-## `sessions continue`
+## `sessions resume`
 
 ```text
 Usage:
-  sessions continue <history-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
+  sessions resume <[machine::]name-or-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
 
-continue one exact saved conversation
+resume one saved conversation
 
-Continue an exact conversation returned by Sessions history. The authenticated history id supplies provider identity and workspace. Claude resumes in its native interactive runtime by default, with Remote Control determined by this machine's explicit onboarding/Settings choice; Codex resumes in its Rich app-server runtime. Claude prompt-index-only records use the provider's native resume command from that recorded workspace; Sessions never guesses another folder or conversation. --structured explicitly selects headless Rich Claude when automation requires it. --terminal explicitly selects the original provider's terminal interface and cannot be combined with a cross-provider continuation. --remote-control remains a compatibility flag for an explicit Terminal Claude continuation and is rejected until the user has granted consent. --source links an ended Sessions runtime, and --repair only completes missing records for an already-live successor.
+Resume a conversation by its durable Sessions title, full id, id prefix, or exact machine::history-id across the approved fleet. Sessions first recovers a missing Codex identity from the provider's session_meta, then uses the native provider resume. If the provider handle is truly gone but the authored transcript remains, Sessions creates one linked same-provider successor from that transcript instead of losing the conversation. `continue` and `resurrect` remain compatibility aliases. Claude resumes in its native interactive runtime by default; Codex resumes in its Rich app-server runtime. --with creates a linked copy in the other provider. --source links the ended Sessions runtime, and --repair only completes missing records for an already-live successor.
 
 Examples:
-  sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001
-  sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --terminal --remote-control
-  sessions continue provider-history:claude:00000000-0000-4000-8000-000000000001 --with codex
-  sessions --json continue provider:codex:00000000-0000-4000-8000-000000000001
+  sessions resume db-final-review-sol
+  sessions resume PM
+  sessions resume 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'
+  sessions resume db-final-review-sol --with claude
+  sessions --json resume provider:codex:00000000-0000-4000-8000-000000000001
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -705,11 +911,11 @@ Examples:
 
 ```text
 Usage:
-  sessions fork <live-session> [--with claude|codex]
+  sessions fork <live-session> [--with claude|codex] [--at MESSAGE_INDEX [--message-id ID]]
 
 copy a live conversation without stopping it
 
-Create a new Rich conversation from a stable authored-history snapshot while the original session remains live and unchanged. Omit --with to fork into the same provider, or select Claude/Codex to open a copy in the other provider. Sessions copies user and assistant messages only; tool output, credentials, attachments, provider internals, and the source runtime are never modified. Wait for the current turn to finish before forking.
+Create a new Rich conversation from a stable authored-history snapshot while the original session remains live and unchanged. Omit --with to fork into the same provider, or select Claude/Codex to open a copy in the other provider. --at forks at one non-negative authored-message index, copying that user or agent message and everything before it instead of the whole history; --message-id is only valid with --at and pins the expected message identity, so a conversation that moved on is refused instead of forked from the wrong point. Sessions copies user and assistant messages only; tool output, credentials, attachments, provider internals, and the source runtime are never modified. Wait for the current turn to finish before forking.
 
 Examples:
   sessions fork 0123abcd
@@ -877,11 +1083,11 @@ Examples:
 
 ```text
 Usage:
-  sessions machines <discover [--timeout D] | connect ENDPOINT [--name ALIAS] [--timeout D] | list | forget ALIAS>
+  sessions machines <discover [--timeout D] | connect ENDPOINT [--name ALIAS] [--timeout D] | list | forget ALIAS | sync-native>
 
 discover, approve, and save Sessions machines
 
-Discover Sessions hosts announced with Bonjour on the nearby network, request host approval, and save the issued per-device credential in a mode-0600 file. `sessions --machine ALIAS <command>` then runs any daemon-backed CLI command against that saved machine. Discovery reveals no credentials or session data. Nearby HTTP traffic is not encrypted, so connect only on a private network you trust; use Tailscale HTTPS on untrusted networks. Forget removes the local credential but does not revoke it on the host.
+Discover Sessions hosts announced with Bonjour on the nearby network, request host approval, and save the issued per-device credential in a mode-0600 file. `sessions --machine ALIAS <command>` then runs any daemon-backed CLI command against that saved machine. Discovery reveals no credentials or session data. Nearby HTTP traffic is not encrypted, so connect only on a private network you trust; use Tailscale HTTPS on untrusted networks. Forget removes the local credential but does not revoke it on the host. sync-native reconciles the saved set against a native client's machine registry read as JSON on stdin.
 
 Examples:
   sessions machines discover
@@ -921,6 +1127,8 @@ Usage:
 manage same-network access
 
 Enable, disable, or inspect explicit HTTP access from other devices on the same Wi-Fi or Ethernet network. Enabling LAN access also advertises a low-sensitivity Bonjour record for native discovery. Protected routes still require a revocable device or daemon token. LAN HTTP traffic is unencrypted; use it only on a private network you trust.
+
+Under --json, status always answers with {enabled, verified, url, bonjour} and adds verificationError when a configured listener did not verify — an unreachable or stale listener is reported as enabled with verified:false rather than as a bare error, matching `remote status`. Without --json that same state is a diagnostic on stderr and exit 2.
 
 Examples:
   sessions lan enable

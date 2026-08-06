@@ -116,7 +116,26 @@ func (a *app) cmdBackupNow() error {
 	if a.wantJSON {
 		return writeJSON(a.stdout, result, true)
 	}
-	_, err := fmt.Fprintf(a.stdout, "Backup pushed: %d uploaded, %d unchanged, %d sessions.\n", result.Uploaded, result.Skipped, result.SessionCount)
+	if _, err := fmt.Fprintf(a.stdout, "Backup pushed: %d uploaded, %d unchanged, %d sessions.\n",
+		result.Uploaded, result.Skipped, result.SessionCount); err != nil {
+		return err
+	}
+	// A push that skipped a live transcript still succeeds. Saying so is the
+	// difference between a partial result and an apparently complete one.
+	if len(result.UnresolvedSessions) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(a.stdout,
+		"%d session(s) were not backed up this run and will be retried on the next push:\n",
+		len(result.UnresolvedSessions)); err != nil {
+		return err
+	}
+	for _, pending := range result.UnresolvedSessions {
+		if _, err := fmt.Fprintf(a.stdout, "  %s: %s\n", pending.ID, pending.Reason); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintf(a.stdout, "Run 'sessions backup now' again once those sessions are idle.\n")
 	return err
 }
 
@@ -156,6 +175,14 @@ func (a *app) cmdBackupStatus() error {
 		status.Project, status.Interval, lastPush, status.LastPushCount, status.LastPushSkipped, status.LastSessionCount,
 	); err != nil {
 		return err
+	}
+	if status.LastPushPending > 0 {
+		if _, err = fmt.Fprintf(a.stdout,
+			"%d session(s) from that push are still pending and retry automatically on the next one.\n",
+			status.LastPushPending,
+		); err != nil {
+			return err
+		}
 	}
 	return a.writeBackupEncryptionStatus(status.Encrypt)
 }

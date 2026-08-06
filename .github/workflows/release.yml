@@ -161,7 +161,7 @@ jobs:
 
       - name: Run the release gate
         run: |
-          (cd runtime && go build ./... && go vet ./... && go test ./...)
+          (cd runtime && go build ./... && go vet ./... && go test -timeout 5m ./...)
           bash runtime/scripts/gen-cli-docs.sh
           git diff --exit-code -- docs/CLI.md
           npm --prefix frontend run typecheck

@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	daemonapi "github.com/somewhere-tech/sessions/runtime/internal/api"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
@@ -155,6 +155,111 @@ func TestRecoverDefaultIsActionableAndAllExplainsBlockedRows(t *testing.T) {
 	}
 }
 
+// A conversation whose provider deleted its own transcript but which Sessions
+// still holds a copy of is recoverable, and it is not recoverable the way the
+// row above it is. The plan carries the provider resume argv that was recorded
+// when the session was created, and the provider will refuse it now, so
+// printing it would send someone to a failing command for a conversation that
+// was never lost. Every surface has to say which of the two it is.
+func TestRecoverSaysTranscriptRecoveryComesFromSessionsOwnCopy(t *testing.T) {
+	nativeID := "40000000-0000-4000-8000-000000000001"
+	mirroredID := "40000000-0000-4000-8000-000000000002"
+	blockedID := "40000000-0000-4000-8000-000000000003"
+	const prunedProviderUUID = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+	missing := []ledger.Anomaly{ledger.AnomalyResumeSourceMissing}
+	report := recovery.Report{
+		Lanes: []recovery.Lane{
+			{ID: nativeID, Name: "native", Tool: "codex", Cwd: "/work", Class: ledger.ClassUnexpectedlyLost},
+			{ID: mirroredID, Name: "mirrored", Tool: "claude-code", Cwd: "/work", Class: ledger.ClassUnexpectedlyLost, Anomalies: missing},
+			{ID: blockedID, Name: "lost", Tool: "claude-code", Cwd: "/work", Class: ledger.ClassUnexpectedlyLost, Anomalies: missing},
+		},
+		Plan: ledger.RecoveryPlan{Recipes: []ledger.RecoveryRecipe{
+			{SourceLaneID: nativeID, Cmd: "codex", Args: []string{"resume", "conversation"}},
+			{
+				SourceLaneID: mirroredID, Cmd: "claude", Args: []string{"--resume", prunedProviderUUID},
+				TranscriptRecovery: true, Anomalies: missing,
+			},
+			{
+				SourceLaneID: blockedID, Cmd: "claude", Args: []string{"--resume", "gone"},
+				Blocked: true, Anomalies: missing,
+			},
+		}},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/recovery" {
+			http.NotFound(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(report)
+	}))
+	defer server.Close()
+
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "recover")
+	if code != 0 || stderr != "" {
+		t.Fatalf("recover exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "mirrored") || !strings.Contains(stdout, "sessions resume "+mirroredID) {
+		t.Fatalf("recover hid the conversation Sessions can still bring back:\n%s", stdout)
+	}
+	if strings.Contains(stdout, prunedProviderUUID) {
+		t.Fatalf("recover offered the resume the provider will refuse:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "codex resume conversation") || strings.Contains(stdout, "lost") {
+		t.Fatalf("recover changed the native or blocked rows:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "1 conversation is recoverable only from Sessions' own copy") ||
+		!strings.Contains(stdout, "native provider resume would be refused") {
+		t.Fatalf("recover did not explain where the conversation comes from:\n%s", stdout)
+	}
+
+	stdout, stderr, code = runOwnershipCLI(t, server.URL, "recover", "--all")
+	if code != 0 || stderr != "" {
+		t.Fatalf("recover --all exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "transcript-recovery") ||
+		!strings.Contains(stdout, "provider transcript is gone; recover from Sessions' copy with sessions resume "+mirroredID) {
+		t.Fatalf("recover --all did not label transcript recovery:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "blocked") || !strings.Contains(stdout, "Sessions has no copy") {
+		t.Fatalf("recover --all stopped distinguishing a blocked row from a mirrored one:\n%s", stdout)
+	}
+
+	stdout, stderr, code = runOwnershipCLI(t, server.URL, "--json", "recover")
+	if code != 0 || stderr != "" {
+		t.Fatalf("recover --json exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var decoded struct {
+		Lanes []struct {
+			ID                 string   `json:"id"`
+			Status             string   `json:"status"`
+			Reason             string   `json:"reason"`
+			TranscriptRecovery bool     `json:"transcriptRecovery"`
+			Recover            []string `json:"recover"`
+		} `json:"lanes"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
+		t.Fatalf("recover --json is not one document: %v (%q)", err, stdout)
+	}
+	if len(decoded.Lanes) != 3 {
+		t.Fatalf("recover --json lanes = %+v", decoded.Lanes)
+	}
+	native, mirrored, blocked := decoded.Lanes[0], decoded.Lanes[1], decoded.Lanes[2]
+	if native.Status != "actionable" || native.TranscriptRecovery ||
+		strings.Join(native.Recover, " ") != "codex resume conversation" {
+		t.Fatalf("native lane = %+v", native)
+	}
+	if mirrored.Status != "transcript-recovery" || !mirrored.TranscriptRecovery ||
+		strings.Join(mirrored.Recover, " ") != "sessions resume "+mirroredID ||
+		!strings.Contains(mirrored.Reason, "Sessions' copy") {
+		t.Fatalf("mirrored lane = %+v", mirrored)
+	}
+	if blocked.Status != "blocked" || blocked.TranscriptRecovery || len(blocked.Recover) != 0 ||
+		!strings.Contains(blocked.Reason, "Sessions has no copy") {
+		t.Fatalf("blocked lane = %+v", blocked)
+	}
+}
+
 func TestAdoptCLIExplicitlyBindsScratchCodexConversation(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
@@ -278,12 +383,11 @@ func cliHasLedgerEvent(t *testing.T, store *ledger.Store, laneID string, kind le
 
 func cliWaitFor(t *testing.T, condition func() bool) {
 	t.Helper()
+	deadline := time.Now().Add(waitConditionBudget)
 	for !condition() {
-		select {
-		case <-t.Context().Done():
-			t.Fatal("test ended before scratch recovery state arrived")
-		default:
-			runtime.Gosched()
+		if time.Now().After(deadline) {
+			t.Fatalf("test ended before scratch recovery state arrived"+" (waited %s)", waitConditionBudget)
 		}
+		time.Sleep(waitConditionPoll)
 	}
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SessionInfo } from '../types';
 import { sessionLabel } from '../lib/tabLabels';
+import { classifySession } from '../lib/sessionStatus';
 import { normalizeProvider, ProviderMark } from './ProviderBadge';
 import type { ProductView } from './ProductSidebar';
 
@@ -28,7 +29,7 @@ const VIEW_ACTIONS: Array<{ view: ProductView; label: string; detail: string; ke
   { view: 'home', label: 'Home', detail: 'Agent operations overview', keywords: 'dashboard overview' },
   { view: 'tabs', label: 'Sessions', detail: 'Running and recently ended work', keywords: 'agents conversations lanes' },
   { view: 'today', label: 'Daily', detail: 'Today’s work and saved recaps', keywords: 'journal recap today' },
-  { view: 'search', label: 'Search history', detail: 'Find and continue Claude or Codex conversations', keywords: 'resume recall history' },
+  { view: 'search', label: 'Conversation history', detail: 'Browse or search every Claude and Codex conversation', keywords: 'resume recall history search find codex claude' },
   { view: 'fleet', label: 'Fleet', detail: 'Machines and sessions across your network', keywords: 'computers mac windows linux' },
   { view: 'usage', label: 'Usage', detail: 'Tokens, cost, projects, and tags', keywords: 'budget tokens cost' },
   { view: 'settings', label: 'Settings', detail: 'Agents, connections, updates, and appearance', keywords: 'preferences configuration' },
@@ -80,7 +81,7 @@ export function CommandPalette({
       },
       {
         id: 'continue',
-        label: 'Continue an earlier chat',
+        label: 'Resume a conversation',
         detail: 'Search provider history and resume the exact conversation',
         group: 'Actions',
         keywords: 'resume reopen claude codex history',
@@ -96,13 +97,7 @@ export function CommandPalette({
       })),
       ...sessions.slice(0, 160).map((session): PaletteAction => {
         const provider = normalizeProvider(session.tool);
-        const status = session.exited
-          ? 'Ended'
-          : session.working
-          ? 'Working'
-          : session.idleReason === 'needs-input'
-          ? 'Needs you'
-          : 'Live';
+        const status = classifySession(session).label;
         return {
           id: `session:${session.id}`,
           label: sessionLabel(session),

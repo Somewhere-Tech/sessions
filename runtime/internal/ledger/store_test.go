@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -380,5 +381,120 @@ func TestResolvePathHonorsEnvironmentOverride(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("resolved=%q, want %q", got, want)
+	}
+}
+
+// ExistingProviderResume is the sole input to the duplicate-conversation
+// binding guard in session.Manager.Create. An unrecognized but real resume
+// spelling yields an empty provider UUID, which skips the guard entirely and
+// lets two live sessions drive one provider conversation.
+func TestExistingProviderResumeRecognizesEveryRealResumeSpelling(t *testing.T) {
+	provider := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	tests := []struct {
+		name         string
+		cmd          string
+		args         []string
+		wantProvider string
+		wantArgv     []string
+	}{
+		{
+			name: "claude long flag", cmd: "claude", args: []string{"--resume", provider},
+			wantProvider: provider, wantArgv: []string{"claude", "--resume", provider},
+		},
+		{
+			name: "claude short flag", cmd: "claude", args: []string{"-r", provider},
+			wantProvider: provider, wantArgv: []string{"claude", "--resume", provider},
+		},
+		{
+			name: "claude joined long flag", cmd: "/opt/homebrew/bin/claude", args: []string{"--resume=" + provider},
+			wantProvider: provider, wantArgv: []string{"/opt/homebrew/bin/claude", "--resume", provider},
+		},
+		{
+			name: "claude short flag among other arguments", cmd: "claude",
+			args:         []string{"--model", "opus", "-r", provider, "--verbose"},
+			wantProvider: provider, wantArgv: []string{"claude", "--resume", provider},
+		},
+		{
+			name: "codex subcommand", cmd: "codex", args: []string{"resume", provider},
+			wantProvider: provider, wantArgv: []string{"codex", "resume", provider},
+		},
+		{
+			name: "codex joined long flag", cmd: "codex", args: []string{"--resume=" + provider},
+			wantProvider: provider, wantArgv: []string{"codex", "resume", provider},
+		},
+		{
+			// --session-id is a fresh Sessions-generated identity, not a reattach.
+			name: "claude session id is not a resume", cmd: "claude", args: []string{"--session-id", provider},
+		},
+		{name: "claude dashes are not a conversation", cmd: "claude", args: []string{"--resume", "--------"}},
+		{name: "claude short flag dashes are not a conversation", cmd: "claude", args: []string{"-r", "--------"}},
+		{name: "claude truncated uuid is not a conversation", cmd: "claude", args: []string{"--resume", "aaaaaaaa-bbbb"}},
+		{name: "claude bare resume takes no value", cmd: "claude", args: []string{"--resume"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotProvider, gotArgv := ExistingProviderResume(test.cmd, test.args)
+			if gotProvider != test.wantProvider || !reflect.DeepEqual(gotArgv, test.wantArgv) {
+				t.Fatalf("ExistingProviderResume(%q, %q) = %q %q, want %q %q",
+					test.cmd, test.args, gotProvider, gotArgv, test.wantProvider, test.wantArgv)
+			}
+			// The recorded recipe must agree with the guard, or a session
+			// created through one spelling is invisible to the next one.
+			if test.wantProvider != "" {
+				safeProvider, safeArgv := SafeResumeRecipe("", test.cmd, test.args)
+				if safeProvider != test.wantProvider || !reflect.DeepEqual(safeArgv, test.wantArgv) {
+					t.Fatalf("SafeResumeRecipe(%q, %q) = %q %q, want %q %q",
+						test.cmd, test.args, safeProvider, safeArgv, test.wantProvider, test.wantArgv)
+				}
+			}
+		})
+	}
+}
+
+// A durable resume recipe must name a real conversation. The former
+// `^[0-9a-f-]{8,}$` accepted an all-dashes string and any unbounded run of hex
+// and dashes, so `claude --resume --------` was persisted as a resume recipe.
+func TestProviderUUIDMustBeACanonicalConversationUUID(t *testing.T) {
+	valid := []string{
+		"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		"AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+		"00000000-0000-0000-0000-000000000000",
+	}
+	for _, candidate := range valid {
+		if !providerargs.IsConversationUUID(candidate) {
+			t.Fatalf("canonical conversation UUID %q rejected", candidate)
+		}
+		if argv := ResumeRecipeForProvider("claude-code", "claude", candidate); len(argv) != 3 {
+			t.Fatalf("ResumeRecipeForProvider(%q) = %q", candidate, argv)
+		}
+	}
+	invalid := []string{
+		"--------",
+		"aaaaaaaa",
+		"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee-extra",
+		"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee",
+		"-------------------------------------",
+		"zzzzzzzz-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		"",
+	}
+	for _, candidate := range invalid {
+		if providerargs.IsConversationUUID(candidate) {
+			t.Fatalf("non-conversation value %q accepted as a provider UUID", candidate)
+		}
+		if argv := ResumeRecipeForProvider("claude-code", "claude", candidate); argv != nil {
+			t.Fatalf("ResumeRecipeForProvider(%q) = %q, want no recipe", candidate, argv)
+		}
+	}
+	if provider, argv := SafeResumeRecipe("claude-code", "claude", []string{"--resume", "--------"}); provider != "" || argv != nil {
+		t.Fatalf("all-dashes resume recorded as %q %q", provider, argv)
+	}
+	store := openTestStore(t, Options{})
+	err := store.Boundaries().RecordCreated(context.Background(), Created{
+		Meta: Meta{LaneID: "dashes"}, Tool: "claude-code", Cwd: "/tmp", LaneUUID: "dashes",
+		ProviderUUID: "--------", ResumeArgv: []string{"claude", "--resume", "--------"},
+		CreatorKind: CreatorExternal, CreatorID: "store-test",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid provider UUID") {
+		t.Fatalf("all-dashes provider UUID accepted by the writer: %v", err)
 	}
 }

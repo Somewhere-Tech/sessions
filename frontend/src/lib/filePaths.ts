@@ -8,7 +8,10 @@
 
 const PATH_RE =
   // (boundary)(optional leading /)(at least one dir/)(filename.ext)(optional :line)
-  /(^|[\s(\[<>"'])((?:\/|\.{1,2}\/)?(?:[\w@.-]+\/)+[\w@.-]+\.[A-Za-z][\w]{0,9})(?::(\d+))?/g;
+  // `[` needs no escape inside a character class (this pattern has no `v`
+  // flag). Verified identical, match-for-match, on the boundary corpus:
+  // space, `(`, `[`, `<`, `>`, quote, tab, `]`, and no-boundary.
+  /(^|[\s([<>"'])((?:\/|\.{1,2}\/)?(?:[\w@.-]+\/)+[\w@.-]+\.[A-Za-z][\w]{0,9})(?::(\d+))?/g;
 
 // Patterns we should NOT treat as file paths even if they slip through.
 const VERSION_RE = /^v?\d+\.\d+(?:\.\d+)?$/;

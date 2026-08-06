@@ -4,11 +4,34 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 )
+
+func TestProviderExecutableFindsUserLocalBinOutsideDaemonPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", "/usr/bin:/bin")
+	path := filepath.Join(home, ".local", "bin", "claude")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 2.1.221\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := providerExecutable("claude")
+	if err != nil || got != path {
+		t.Fatalf("providerExecutable() = %q, %v; want %q", got, err, path)
+	}
+	status := localProviderStatus(context.Background(), "claude")
+	if !status.Installed || status.Version != "2.1.221" {
+		t.Fatalf("provider status = %+v", status)
+	}
+}
 
 func TestVersionLess(t *testing.T) {
 	for _, test := range []struct {

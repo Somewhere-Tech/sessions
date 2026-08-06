@@ -33,10 +33,11 @@ func (s *Server) handleUsageRoute(response http.ResponseWriter, request *http.Re
 func usageOptions(request *http.Request) (usage.ReportOptions, error) {
 	query := request.URL.Query()
 	options := usage.ReportOptions{
-		Group:     strings.ToLower(strings.TrimSpace(query.Get("group"))),
-		Mode:      strings.ToLower(strings.TrimSpace(query.Get("mode"))),
-		Provider:  strings.ToLower(strings.TrimSpace(query.Get("provider"))),
-		Dimension: strings.ToLower(strings.TrimSpace(query.Get("dimension"))),
+		Group:         strings.ToLower(strings.TrimSpace(query.Get("group"))),
+		Mode:          strings.ToLower(strings.TrimSpace(query.Get("mode"))),
+		Provider:      strings.ToLower(strings.TrimSpace(query.Get("provider"))),
+		Dimension:     strings.ToLower(strings.TrimSpace(query.Get("dimension"))),
+		IncludeEvents: query.Get("events") == "1",
 	}
 	if options.Group != "" && !usageValueAllowed(options.Group, "daily", "weekly", "monthly", "session", "tag", "provider", "model") {
 		return usage.ReportOptions{}, &usageQueryError{"group must be daily, weekly, monthly, session, tag, provider, or model"}

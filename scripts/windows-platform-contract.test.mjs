@@ -14,6 +14,8 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
     sidebar,
     bridge,
     fleet,
+    servers,
+    smokeRunner,
     health,
     workflow,
     frontendPackageText,
@@ -28,6 +30,8 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
     read('frontend/src/components/ProductSidebar.tsx'),
     read('frontend/src/lib/tauriBridge.ts'),
     read('frontend/src/components/FleetView.tsx'),
+    read('frontend/src/lib/servers.ts'),
+    read('frontend/scripts/run-smoke.mjs'),
     read('runtime/internal/api/server.go'),
     read('.github/workflows/windows-preview.yml'),
     read('frontend/package.json'),
@@ -74,14 +78,28 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
   assert.match(health, /goruntime\.GOOS/);
   assert.match(health, /goruntime\.GOARCH/);
   assert.match(fleet, /reported\.includes\('windows'\)/);
-  assert.match(fleet, /if \(platform === 'windows'\) return 'This PC'/);
+  // The local machine used to be labelled per platform, so Windows needed its
+  // own branch to avoid reading "This Mac". Naming is platform-neutral now --
+  // servers.ts calls it "This machine" -- which satisfies the same concern
+  // structurally, so the assertion pins that rather than the removed branch:
+  // no Mac-specific label may reach the fleet naming path on any host.
+  assert.match(servers, /'This machine'/,
+    'the local machine needs a platform-neutral default name');
+  assert.doesNotMatch(servers, /'This Mac'|'This PC'/,
+    'fleet naming must not hard-code a platform label; it runs on Windows too');
   assert.match(fleet, /machineVersionState/);
   assert.match(fleet, /Sessions \$\{version\}/);
 
   assert.match(workflow, /npm run test:updater-release/);
   assert.match(workflow, /npm --prefix frontend run test:smoke/);
   const frontendPackage = JSON.parse(frontendPackageText);
-  assert.match(frontendPackage.scripts['test:smoke'], /npm run test:fleet-clarity/);
+  // test:smoke used to chain every suite with && ; it now delegates to a
+  // runner that owns the list, so the gate membership is asserted where the
+  // list actually lives. The invariant is unchanged: fleet clarity is gated.
+  assert.match(frontendPackage.scripts['test:smoke'], /run-smoke\.mjs/);
+  assert.match(frontendPackage.scripts['test:fleet-clarity'], /fleet-clarity-smoke\.mjs/);
+  assert.match(smokeRunner, /'fleet-clarity'/,
+    'fleet clarity must stay in the smoke gate');
   assert.match(workflow, /runs-on: windows-2022/);
   assert.match(windowsRuntimeBuild, /package\.json/);
   assert.match(windowsRuntimeBuild, /v\$AppVersion-dev\.g\$SourceCommit/);
