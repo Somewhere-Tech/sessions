@@ -76,10 +76,17 @@ func CollectSessions(live []state.SessionInfo, runnerStateDir string) []Session 
 	entries, _ := os.ReadDir(runnerStateDir)
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".manifest.json") {
+		if entry.IsDir() {
 			continue
 		}
-		id := strings.TrimSuffix(name, ".json")
+		// Sidecar names are decided in one place, with a drift-guard test that
+		// fails when a new Paths field adds a ".json" artifact. A local copy of
+		// that rule would silently start collecting phantom sessions the next
+		// time one is added.
+		id, ok := state.RunnerIDFromMetadataName(name)
+		if !ok {
+			continue
+		}
 		if _, exists := collected[id]; exists {
 			continue
 		}

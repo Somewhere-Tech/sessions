@@ -78,6 +78,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions worktrees", "sessions --json worktrees", "sessions worktrees clean --dry-run", "sessions worktrees clean"}, run: (*app).cmdWorktrees,
 	},
 	{
+		name: "transcripts", usage: "transcripts [--apply | --dry-run]",
+		summary: "keep a durable copy of provider conversations", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Copy conversations into storage Sessions owns, so they survive the provider deleting its own transcript. Claude Code prunes ~/.claude/projects on a retention timer, and once a transcript is gone the conversation cannot be recovered by anything. A session Sessions is actively watching is copied continuously and needs nothing here; this exists for ended sessions whose provider transcript is still on disk. The default is a dry run that reports what would be copied; --apply performs the copy. Copying is additive and idempotent, never moves or modifies the provider's files, and can be run repeatedly. Conversations the provider has already deleted are reported as unrecoverable, because they are.",
+		examples: []string{"sessions transcripts", "sessions transcripts --apply", "sessions --json transcripts"}, run: (*app).cmdTranscripts,
+	},
+	{
 		name: "gc", usage: "gc [--older-than DURATION] [--apply | --dry-run]",
 		summary: "archive old closed records safely", group: dailyCommandGroup, localJSON: true,
 		longHelp: "Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. --dry-run only states that default explicitly and changes nothing; it cannot be combined with --apply. Live runners and ancestors with retained descendants are never archived. Recovery history, transcripts, and worktrees are preserved.",

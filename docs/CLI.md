@@ -25,6 +25,7 @@ Daily workflows:
   tags                     view or edit session tags
   rename                   rename a session everywhere in Sessions
   worktrees                list or safely clean Sessions-created worktrees
+  transcripts              keep a durable copy of provider conversations
   gc                       archive old closed records safely
   archive                  hide selected closed sessions
   aside                    set live sessions aside or bring them back
@@ -253,6 +254,24 @@ Examples:
   sessions --json worktrees
   sessions worktrees clean --dry-run
   sessions worktrees clean
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions transcripts`
+
+```text
+Usage:
+  sessions transcripts [--apply | --dry-run]
+
+keep a durable copy of provider conversations
+
+Copy conversations into storage Sessions owns, so they survive the provider deleting its own transcript. Claude Code prunes ~/.claude/projects on a retention timer, and once a transcript is gone the conversation cannot be recovered by anything. A session Sessions is actively watching is copied continuously and needs nothing here; this exists for ended sessions whose provider transcript is still on disk. The default is a dry run that reports what would be copied; --apply performs the copy. Copying is additive and idempotent, never moves or modifies the provider's files, and can be run repeatedly. Conversations the provider has already deleted are reported as unrecoverable, because they are.
+
+Examples:
+  sessions transcripts
+  sessions transcripts --apply
+  sessions --json transcripts
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
