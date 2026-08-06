@@ -97,11 +97,18 @@ type conversationRow struct {
 	ApproximateTime bool `json:"approximate_time,omitempty"`
 	// LastActiveAt and LastActiveAtMS are the same instant twice: the string is
 	// what a human reads back, the milliseconds are what a caller sorts on.
-	LastActiveAt   string   `json:"last_active_at,omitempty"`
-	LastActiveAtMS int64    `json:"last_active_at_ms"`
-	Status         string   `json:"status"`
-	Reason         string   `json:"reason,omitempty"`
-	Resume         []string `json:"resume,omitempty"`
+	LastActiveAt   string `json:"last_active_at,omitempty"`
+	LastActiveAtMS int64  `json:"last_active_at_ms"`
+	// StartedAt and StartedAtMS are when the conversation began, which is not
+	// recoverable from anything else on the row. A Codex rollout is filed under
+	// the date it started and may still be written to weeks later, so the only
+	// two questions a person asks about a half-remembered session -- when did I
+	// start this, and when did I last touch it -- need both numbers.
+	StartedAt   string   `json:"started_at,omitempty"`
+	StartedAtMS int64    `json:"started_at_ms,omitempty"`
+	Status      string   `json:"status"`
+	Reason      string   `json:"reason,omitempty"`
+	Resume      []string `json:"resume,omitempty"`
 	// Hits and Snippets are only present when a query narrowed the browse, and
 	// say why this conversation is in the answer.
 	Hits     int      `json:"hits,omitempty"`
@@ -587,6 +594,12 @@ func (r conversationRow) fill(
 	if r.LastActiveAtMS > 0 {
 		r.LastActiveAt = time.UnixMilli(r.LastActiveAtMS).Format(time.RFC3339)
 	}
+	// The daemon has always sent this and the row discarded it, so "when did
+	// this start" could not be answered from the browse a person answers it in.
+	r.StartedAtMS = session.CreatedAt
+	if r.StartedAtMS > 0 {
+		r.StartedAt = time.UnixMilli(r.StartedAtMS).Format(time.RFC3339)
+	}
 	r.Status, r.Reason, r.Resume = conversationRecovery(session, reference, live)
 	return r
 }
@@ -1060,6 +1073,24 @@ func conversationCount(count int) string {
 // They are real provenance and they are all carried in --json and in `sessions
 // source`, but none of them is how a person recognises a conversation a week
 // later, and a meta line long enough to wrap is one nobody reads.
+// startedOnAnEarlierDay reports the start date when the conversation began on a
+// different calendar day from its last activity, which is the case where the
+// two timestamps carry different information. Both are read in local time,
+// because the question being asked -- "was this the one from last Tuesday?" --
+// is asked about the local day.
+func (row conversationRow) startedOnAnEarlierDay() (string, bool) {
+	if row.StartedAtMS <= 0 || row.LastActiveAtMS <= 0 {
+		return "", false
+	}
+	started := time.UnixMilli(row.StartedAtMS)
+	last := time.UnixMilli(row.LastActiveAtMS)
+	startedDay := started.Format("2006-01-02")
+	if startedDay == last.Format("2006-01-02") || started.After(last) {
+		return "", false
+	}
+	return startedDay, true
+}
+
 func (a *app) conversationMetaLine(row conversationRow) string {
 	parts := make([]string, 0, 8)
 	when := "no recorded activity"
@@ -1077,7 +1108,15 @@ func (a *app) conversationMetaLine(row conversationRow) string {
 	if row.Surface != "" {
 		origin = row.Surface
 	}
-	parts = append(parts, when, origin, row.messageCountText())
+	parts = append(parts, when)
+	// Only worth a column when it says something the last-active stamp does
+	// not. A session started and finished this afternoon repeating its own
+	// date is noise on every row; one started three weeks ago and touched
+	// yesterday is the whole reason the user could not place it.
+	if started, ok := row.startedOnAnEarlierDay(); ok {
+		parts = append(parts, "started "+started)
+	}
+	parts = append(parts, origin, row.messageCountText())
 	if row.CWD != "" {
 		parts = append(parts, a.shortenHome(row.CWD))
 	}
