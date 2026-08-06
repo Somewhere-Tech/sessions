@@ -128,7 +128,7 @@ var commandTable = []commandSpec{
 	{
 		name: "wait", usage: "wait <id> [<id>... --any] [--idle D] [--timeout D] [--summary] [condition]",
 		summary: "wait for session idle or lane exit", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Wait for a session to become idle or a lane to exit. --summary reports which target changed and its last useful assistant/output summary. Lane waits propagate the lane exit code. Conditions include --until commit, --until-file-contains FILE STRING, and --until-idle-stable D.",
+		longHelp: "Wait for a session to become idle or a lane to exit. --summary reports which target changed and its last useful assistant/output summary. Lane waits propagate the lane exit code. Conditions include --until commit, --until-file-contains FILE STRING, and --until-idle-stable D.\n\nWaiting on a session always answers with the same JSON object: ok, reason, session, working, idleMs, and the optional idleReason, detail, and summary. reason is one of idle, needs-input, failed, gone, or timeout, and ok is true only when the caller can stop waiting and act — idle and needs-input. --summary adds prose; it never changes the shape.\n\nExit codes: 0 the condition was satisfied, 1 usage, 2 the daemon could not be reached, 3 timed out without observing the condition, 4 the target is gone or failed so waiting longer cannot help. A vanished target reports ok:false and exit 4; treat exit 0 alone as success only for commands that do not wait.",
 		examples: []string{"sessions wait 0123abcd --timeout 2m --summary", "sessions wait lane-a lane-b --any --summary", "sessions wait 0123abcd --until commit --timeout 10m"}, run: (*app).cmdWaitDispatch,
 	},
 	{

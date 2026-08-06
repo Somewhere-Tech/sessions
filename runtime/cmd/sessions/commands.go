@@ -736,6 +736,60 @@ func (a *app) cmdKill(ids []string) error {
 	return a.reportKill(result)
 }
 
+// waitOutcome is the single shape every `sessions wait <session>` branch
+// returns. It used to be four different objects: the target's identity was
+// suppressed unless --summary, idleMs was missing from two of them, and `ok`
+// meant "the call worked" in one branch and "the condition was met" in
+// another. A delegating agent could not write one parser, and the branch that
+// mattered most — the target is gone — reported success.
+//
+// ok answers one question only: can the caller stop waiting and act? Idle and
+// needs-input are both actionable. Gone, failed, and timeout are not.
+type waitOutcome struct {
+	OK         bool   `json:"ok"`
+	Reason     string `json:"reason"`
+	Session    string `json:"session"`
+	Working    bool   `json:"working"`
+	IdleMS     int64  `json:"idleMs"`
+	IdleReason string `json:"idleReason,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+}
+
+const (
+	waitReasonIdle       = "idle"
+	waitReasonNeedsInput = "needs-input"
+	waitReasonFailed     = "failed"
+	waitReasonGone       = "gone"
+	waitReasonTimeout    = "timeout"
+)
+
+// writeWaitOutcome emits the envelope and returns the exit status that matches
+// it, so the JSON and the exit code can never disagree.
+func (a *app) writeWaitOutcome(outcome waitOutcome, humanText string, humanToStderr bool) error {
+	if a.wantJSON {
+		if err := writeJSON(a.stdout, outcome, false); err != nil {
+			return err
+		}
+	} else {
+		destination := a.stdout
+		if humanToStderr {
+			destination = a.stderr
+		}
+		if _, err := io.WriteString(destination, humanText+"\n"); err != nil {
+			return err
+		}
+	}
+	switch outcome.Reason {
+	case waitReasonTimeout:
+		return status(exitWaitTimeout)
+	case waitReasonGone, waitReasonFailed:
+		return status(exitTargetUnavailable)
+	default:
+		return nil
+	}
+}
+
 func (a *app) cmdWait(args []string) error {
 	if isWaitUntilArgs(args) {
 		return a.cmdWaitUntil(args)
@@ -790,26 +844,20 @@ func (a *app) cmdWait(args []string) error {
 			}
 		}
 		if current == nil {
-			if a.wantJSON {
-				return writeJSON(a.stdout, struct {
-					OK     bool   `json:"ok"`
-					Reason string `json:"reason"`
-				}{true, "gone"}, false)
-			}
-			_, err := io.WriteString(a.stdout, "gone\n")
-			return err
+			// A target that vanished is the outcome a delegating agent most
+			// needs to distinguish, and it used to report ok:true and exit 0 —
+			// so every loop written as `if rc == 0` treated a dead delegate as
+			// a finished one.
+			return a.writeWaitOutcome(waitOutcome{
+				OK:      false,
+				Reason:  waitReasonGone,
+				Session: id,
+			}, "gone", false)
 		}
 		if !current.Working && (current.IdleReason == state.IdleReasonNeedsInput || current.IdleReason == state.IdleReasonFailed) {
-			if a.wantJSON {
-				return writeJSON(a.stdout, struct {
-					OK         bool   `json:"ok"`
-					Session    string `json:"session,omitempty"`
-					Reason     string `json:"reason"`
-					IdleReason string `json:"idleReason"`
-					Detail     string `json:"detail,omitempty"`
-					Summary    string `json:"summary,omitempty"`
-					Working    bool   `json:"working"`
-				}{true, current.ID, current.IdleReason, current.IdleReason, current.IdleDetail, current.LastSummary, false}, false)
+			reason := waitReasonNeedsInput
+			if current.IdleReason == state.IdleReasonFailed {
+				reason = waitReasonFailed
 			}
 			message := current.LastSummary
 			if current.IdleReason == state.IdleReasonNeedsInput && current.IdleDetail != "" {
@@ -818,8 +866,15 @@ func (a *app) cmdWait(args []string) error {
 			if message == "" {
 				message = current.IdleReason
 			}
-			_, err := fmt.Fprintf(a.stdout, "%s — %s\n", current.IdleReason, message)
-			return err
+			return a.writeWaitOutcome(waitOutcome{
+				OK:         reason == waitReasonNeedsInput,
+				Reason:     reason,
+				Session:    current.ID,
+				Working:    false,
+				IdleReason: current.IdleReason,
+				Detail:     current.IdleDetail,
+				Summary:    current.LastSummary,
+			}, fmt.Sprintf("%s — %s", current.IdleReason, message), reason == waitReasonFailed)
 		}
 		idleFor := time.Duration(0)
 		if isConfirmableTool(toolOfSession(*current)) {
@@ -839,57 +894,42 @@ func (a *app) cmdWait(args []string) error {
 			idleFor = a.now().Sub(time.UnixMilli(base))
 		}
 		if idleFor >= idle {
-			if a.wantJSON {
-				return writeJSON(a.stdout, struct {
-					OK         bool   `json:"ok"`
-					Session    string `json:"session,omitempty"`
-					Reason     string `json:"reason"`
-					IdleReason string `json:"idleReason,omitempty"`
-					Summary    string `json:"summary,omitempty"`
-					IdleMS     int64  `json:"idleMs"`
-					Working    bool   `json:"working"`
-				}{
-					true, func() string {
-						if includeSummary {
-							return current.ID
-						}
-						return ""
-					}(), "idle", current.IdleReason,
-					func() string {
-						if includeSummary {
-							return current.LastSummary
-						}
-						return ""
-					}(),
-					idleFor.Milliseconds(), current.Working,
-				}, false)
+			summary := current.LastSummary
+			if summary == "" {
+				summary = current.IdleDetail
+			}
+			if summary == "" {
+				summary = current.IdleReason
+			}
+			humanText := fmt.Sprintf("idle for %dms", idleFor.Milliseconds())
+			if includeSummary {
+				humanText = fmt.Sprintf("%s — %s", current.ID, summary)
+			}
+			// --summary now only decides how much prose comes back. It used to
+			// decide whether the caller learned which session answered, which
+			// made the schema depend on a display flag.
+			outcome := waitOutcome{
+				OK:         true,
+				Reason:     waitReasonIdle,
+				Session:    current.ID,
+				Working:    current.Working,
+				IdleMS:     idleFor.Milliseconds(),
+				IdleReason: current.IdleReason,
 			}
 			if includeSummary {
-				summary := current.LastSummary
-				if summary == "" {
-					summary = current.IdleDetail
-				}
-				if summary == "" {
-					summary = current.IdleReason
-				}
-				_, err := fmt.Fprintf(a.stdout, "%s — %s\n", current.ID, summary)
-				return err
+				outcome.Summary = current.LastSummary
 			}
-			_, err := fmt.Fprintf(a.stdout, "idle for %dms\n", idleFor.Milliseconds())
-			return err
+			return a.writeWaitOutcome(outcome, humanText, false)
 		}
 		if a.now().Sub(start) >= timeout {
-			if a.wantJSON {
-				writeJSON(a.stdout, struct {
-					OK      bool   `json:"ok"`
-					Reason  string `json:"reason"`
-					IdleMS  int64  `json:"idleMs"`
-					Working bool   `json:"working"`
-				}{false, "timeout", idleFor.Milliseconds(), current.Working}, false)
-			} else {
-				fmt.Fprintf(a.stderr, "timeout: still active after %dms (last %dms ago)\n", timeout.Milliseconds(), idleFor.Milliseconds())
-			}
-			return status(1)
+			return a.writeWaitOutcome(waitOutcome{
+				OK:      false,
+				Reason:  waitReasonTimeout,
+				Session: current.ID,
+				Working: current.Working,
+				IdleMS:  idleFor.Milliseconds(),
+			}, fmt.Sprintf("timeout: still active after %dms (last %dms ago)",
+				timeout.Milliseconds(), idleFor.Milliseconds()), true)
 		}
 		a.sleep(poll)
 	}

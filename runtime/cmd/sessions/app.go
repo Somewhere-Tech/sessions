@@ -32,6 +32,23 @@ func fail(code int, format string, args ...any) error {
 
 func status(code int) error { return &cliFailure{code: code, quiet: true} }
 
+// Exit codes an agent can branch on. A delegating agent has to tell "the
+// thing I waited for happened" from "I never found out" from "the target is
+// not coming back", and it cannot do that if every failure collapses into 1
+// or 2. These name the outcomes that waiting produces; commands that run a
+// child process still report that child's own status.
+const (
+	exitSatisfied = 0
+	exitUsage     = 1
+	exitTransport = 2
+	// exitWaitTimeout means the condition was never observed within the
+	// timeout. The target may still be working.
+	exitWaitTimeout = 3
+	// exitTargetUnavailable means waiting longer cannot help: the target is
+	// gone from the daemon, or it ended in a failed state.
+	exitTargetUnavailable = 4
+)
+
 func exitCode(err error) int {
 	var failure *cliFailure
 	if errors.As(err, &failure) {

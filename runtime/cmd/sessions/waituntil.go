@@ -308,7 +308,10 @@ func (a *app) writeWaitTimeout(timeout, elapsed time.Duration, count int) error 
 	} else {
 		fmt.Fprintf(a.stderr, "timeout: no condition satisfied after %dms\n", timeout.Milliseconds())
 	}
-	return status(2)
+	// A timeout is not a transport failure. This branch used to share exit
+	// code 2 with "the daemon could not be reached", so a caller could not
+	// tell a slow target from a broken connection.
+	return status(exitWaitTimeout)
 }
 
 func (a *app) writeWaitUntilResult(result waitcond.Result) error {
