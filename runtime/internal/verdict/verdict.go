@@ -41,6 +41,13 @@ type Record struct {
 	Meta          map[string]any `json:"meta,omitempty"`
 	Seq           uint64         `json:"seq"`
 	EmittedAt     string         `json:"emitted_at"`
+	// SkippedRecords reports how many records in this lane's log the
+	// torn-record policy skipped while producing this answer. It is a read-side
+	// diagnostic only: Store.Emit always writes it as zero (omitempty), so it
+	// never appears in a persisted record, and a reader that sees it nonzero
+	// knows the returned verdict is the newest *usable* one rather than
+	// provably the newest one.
+	SkippedRecords int `json:"skipped_records,omitempty"`
 }
 
 type Summary struct {

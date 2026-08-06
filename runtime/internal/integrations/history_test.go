@@ -21,7 +21,7 @@ import (
 func TestTranscriptNormalizationStopsWhenSearchIsCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := normalizeTranscriptReaderContext(ctx, bufio.NewReader(strings.NewReader(
+	_, _, err := normalizeTranscriptReaderContext(ctx, bufio.NewReader(strings.NewReader(
 		`{"message":{"role":"user","content":"should not be parsed"}}`+"\n",
 	)), "fixture.jsonl", "claude")
 	if !errors.Is(err, context.Canceled) {
@@ -401,7 +401,7 @@ func TestTranscriptIndexesMessagesAndExpandsOnlySearchableRelayPayloads(t *testi
 			t.Fatal(err)
 		}
 	}
-	messages, err := normalizeTranscriptReader(bufio.NewReader(&encoded), "fixture.jsonl", "claude")
+	messages, _, err := normalizeTranscriptReader(bufio.NewReader(&encoded), "fixture.jsonl", "claude")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,5 +433,206 @@ func TestTranscriptIndexesMessagesAndExpandsOnlySearchableRelayPayloads(t *testi
 	}
 	if strings.Contains(joined, "provider control") || strings.Contains(joined, "command-name") {
 		t.Fatalf("provider control records leaked into transcript: %q", joined)
+	}
+}
+
+// writeCodexSession creates one managed Sessions lane whose Codex rollout holds
+// the given raw JSONL bytes, so tests can hand the history store deliberately
+// torn files.
+func writeCodexSession(t *testing.T, runnerDir, sessionsDir, cwd, laneID, providerID, raw string, created time.Time) string {
+	t.Helper()
+	if err := state.WriteMetadata(filepath.Join(runnerDir, laneID+".json"), state.Metadata{
+		ID: laneID, Name: "lane " + laneID[:8], Cmd: "codex", Args: []string{"resume", providerID},
+		Cwd: cwd, CreatedAt: created.UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rolloutPath := filepath.Join(sessionsDir, "2026", "08", "05", "rollout-"+providerID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rolloutPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rolloutPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return rolloutPath
+}
+
+func codexTranscriptLines(cwd string, texts ...string) string {
+	lines := []string{
+		`{"timestamp":"2026-08-05T09:00:00Z","type":"session_meta","payload":{"cwd":"` + cwd + `","timestamp":"2026-08-05T09:00:00Z"}}`,
+	}
+	for _, text := range texts {
+		lines = append(lines, `{"timestamp":"2026-08-05T09:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"`+text+`"}]}}`)
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// A torn final record and an undecodable line cost exactly those records. The
+// conversation still opens, and the skip is reported rather than hidden.
+func TestHistorySkipsTornTranscriptRecordsAndReportsTheSkip(t *testing.T) {
+	root := t.TempDir()
+	runnerDir := filepath.Join(root, "runners")
+	sessionsDir := filepath.Join(root, "codex-sessions")
+	cwd := filepath.Join(root, "worktree")
+	for _, dir := range []string{runnerDir, sessionsDir, cwd} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, time.August, 5, 9, 0, 0, 0, time.UTC)
+	laneID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	providerID := "01234567-89ab-4cde-8fab-0123456789ab"
+	// A valid conversation, then invalid UTF-8, then a record truncated
+	// mid-line by a power cut with no trailing newline.
+	raw := codexTranscriptLines(cwd, "first question", "second question") +
+		"\xff\xfe\x00 not utf-8 and not json\n" +
+		`{"timestamp":"2026-08-05T09:00:02Z","type":"response_item","payload":{"type":"mess`
+	writeCodexSession(t, runnerDir, sessionsDir, cwd, laneID, providerID, raw, now)
+
+	store := NewHistoryStore(HistoryOptions{
+		RunnerStateDir: runnerDir, CodexSessionsDir: sessionsDir, Machine: "fixture-mac",
+		Now: func() time.Time { return now },
+	})
+	history, err := store.List(nil)
+	if err != nil {
+		t.Fatalf("a torn transcript must not fail the list: %v", err)
+	}
+	if len(history.Sessions) != 1 {
+		t.Fatalf("history = %#v", history)
+	}
+	session := history.Sessions[0]
+	if session.Unreadable || session.MessageCount != 2 || !session.ConversationAvailable {
+		t.Fatalf("session = %#v", session)
+	}
+	if session.SkippedRecords != 2 || history.SkippedRecords != 2 {
+		t.Fatalf("skips must be surfaced: session=%d response=%d", session.SkippedRecords, history.SkippedRecords)
+	}
+
+	transcript, err := store.Transcript(nil, laneID)
+	if err != nil {
+		t.Fatalf("a torn transcript must still open: %v", err)
+	}
+	if len(transcript.Messages) != 2 || transcript.SkippedRecords != 2 {
+		t.Fatalf("transcript = %#v", transcript)
+	}
+	preview, err := store.TranscriptPreview(nil, laneID, 1<<20, 50)
+	if err != nil {
+		t.Fatalf("preview of a torn transcript: %v", err)
+	}
+	if len(preview.Messages) != 2 || preview.SkippedRecords != 2 {
+		t.Fatalf("preview = %#v", preview)
+	}
+	window, err := store.TranscriptWindow(nil, laneID, TranscriptWindowOptions{Start: 0, End: 10})
+	if err != nil {
+		t.Fatalf("window of a torn transcript: %v", err)
+	}
+	if len(window.Messages) != 2 || window.SkippedRecords != 2 {
+		t.Fatalf("window = %#v", window)
+	}
+	t.Logf("torn transcript: messages=%d skipped=%d", len(transcript.Messages), transcript.SkippedRecords)
+}
+
+// One unreadable file must cost one row, never the whole history: a user with a
+// single bad transcript keeps the ability to browse every other session.
+func TestHistoryListDegradesOneUnreadableSession(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the unreadable-file permissions this test relies on")
+	}
+	root := t.TempDir()
+	runnerDir := filepath.Join(root, "runners")
+	sessionsDir := filepath.Join(root, "codex-sessions")
+	cwd := filepath.Join(root, "worktree")
+	for _, dir := range []string{runnerDir, sessionsDir, cwd} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, time.August, 5, 9, 0, 0, 0, time.UTC)
+	healthyLane := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	brokenLane := "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+	writeCodexSession(t, runnerDir, sessionsDir, cwd, healthyLane,
+		"01234567-89ab-4cde-8fab-0123456789ab", codexTranscriptLines(cwd, "healthy question"), now)
+	brokenPath := writeCodexSession(t, runnerDir, sessionsDir, cwd, brokenLane,
+		"11111111-89ab-4cde-8fab-0123456789ab", codexTranscriptLines(cwd, "lost question"), now)
+	// Stat still succeeds; opening the file does not, the way a stale network
+	// mount or a revoked ACL behaves.
+	if err := os.Chmod(brokenPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(brokenPath, 0o600) })
+
+	store := NewHistoryStore(HistoryOptions{
+		RunnerStateDir: runnerDir, CodexSessionsDir: sessionsDir, Machine: "fixture-mac",
+		Now: func() time.Time { return now },
+	})
+	history, err := store.List(nil)
+	if err != nil {
+		t.Fatalf("one unreadable transcript emptied the whole history: %v", err)
+	}
+	if len(history.Sessions) != 2 {
+		t.Fatalf("history = %#v", history)
+	}
+	if history.UnreadableSessions != 1 {
+		t.Fatalf("unreadable_sessions = %d, want 1", history.UnreadableSessions)
+	}
+	byID := make(map[string]HistorySession, len(history.Sessions))
+	for _, session := range history.Sessions {
+		byID[session.ID] = session
+	}
+	healthy, ok := byID[healthyLane]
+	if !ok || healthy.Unreadable || healthy.MessageCount != 1 || !healthy.ConversationAvailable {
+		t.Fatalf("healthy session = %#v", healthy)
+	}
+	broken, ok := byID[brokenLane]
+	if !ok {
+		t.Fatalf("the unreadable session disappeared from history: %#v", history.Sessions)
+	}
+	if !broken.Unreadable || broken.ConversationAvailable {
+		t.Fatalf("broken session = %#v", broken)
+	}
+	if broken.Name == "" || broken.CWD != cwd {
+		t.Fatalf("an unreadable session must stay findable: %#v", broken)
+	}
+	for _, want := range []string{"transcript could not be read", "reachable", "reload history"} {
+		if !strings.Contains(broken.UnreadableReason, want) {
+			t.Fatalf("reason %q must explain the failure and the next action", broken.UnreadableReason)
+		}
+	}
+	// The same file fetched by id still fails loudly: the caller asked for that
+	// one conversation and no partial answer exists.
+	if _, err := store.Transcript(nil, brokenLane); err == nil {
+		t.Fatal("a direct transcript fetch of an unreadable file must fail")
+	}
+	t.Logf("degraded row: unreadable=%t reason=%q", broken.Unreadable, broken.UnreadableReason)
+}
+
+func TestHistoryMessageCountCacheStaysBounded(t *testing.T) {
+	root := t.TempDir()
+	store := NewHistoryStore(HistoryOptions{RunnerStateDir: root, Machine: "fixture-mac"})
+	path := filepath.Join(root, "transcript.jsonl")
+	if err := os.WriteFile(path, []byte(codexTranscriptLines(root, "only question")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range maxHistoryCacheEntries + 200 {
+		// Distinct keys, same bytes: the cache is keyed by path and a daemon
+		// sees an unbounded number of paths over its lifetime.
+		if _, _, err := store.messageCount(path, "codex", info); err != nil {
+			t.Fatal(err)
+		}
+		store.cacheMu.Lock()
+		entry := store.cache[path]
+		store.cache[fmt.Sprintf("%s.%d", path, index)] = entry
+		store.evictHistoryCacheLocked()
+		store.cacheMu.Unlock()
+	}
+	store.cacheMu.Lock()
+	size := len(store.cache)
+	store.cacheMu.Unlock()
+	if size > maxHistoryCacheEntries {
+		t.Fatalf("cache size = %d, want at most %d", size, maxHistoryCacheEntries)
 	}
 }

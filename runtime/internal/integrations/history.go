@@ -51,11 +51,27 @@ type HistorySession struct {
 	MovedFromEndpoint     string `json:"moved_from_endpoint,omitempty"`
 	MovedFromSessionID    string `json:"moved_from_session_id,omitempty"`
 	SourceFingerprint     string `json:"-"`
+	// Unreadable marks a session whose transcript could not be read on this
+	// pass. The session itself is still listed, named, and addressable: losing
+	// one file must never make a session unfindable, and must never remove the
+	// other sessions from the list.
+	Unreadable bool `json:"unreadable,omitempty"`
+	// UnreadableReason states what failed and what to do about it.
+	UnreadableReason string `json:"unreadable_reason,omitempty"`
+	// SkippedRecords counts torn or undecodable records skipped inside this
+	// session's transcript, so a degraded message count is never mistaken for
+	// an exact one.
+	SkippedRecords int `json:"skipped_records,omitempty"`
 }
 
 type HistoryResponse struct {
 	SchemaVersion int              `json:"schemaVersion"`
 	Sessions      []HistorySession `json:"sessions"`
+	// UnreadableSessions and SkippedRecords aggregate the per-session
+	// degradation above, so a client can tell a complete list from a partial
+	// one without inspecting every entry.
+	UnreadableSessions int `json:"unreadable_sessions,omitempty"`
+	SkippedRecords     int `json:"skipped_records,omitempty"`
 }
 
 type HistorySource struct {
@@ -92,6 +108,10 @@ type TranscriptResponse struct {
 	Truncated     bool                `json:"truncated,omitempty"`
 	HasMore       bool                `json:"has_more,omitempty"`
 	NextIndex     int                 `json:"next_index,omitempty"`
+	// SkippedRecords counts torn or undecodable records skipped while reading
+	// this transcript. Nonzero means the conversation is shown minus those
+	// records, not that the read failed.
+	SkippedRecords int `json:"skipped_records,omitempty"`
 }
 
 type TranscriptWindowOptions struct {
@@ -112,15 +132,23 @@ type HistoryOptions struct {
 	DiscoverProviderHistory bool
 }
 
+// maxHistoryCacheEntries bounds the path-keyed message-count cache. The cache
+// is keyed by transcript path, and a long-lived daemon sees an unbounded number
+// of paths over its lifetime, so it is evicted rather than grown forever.
+const maxHistoryCacheEntries = 4096
+
 type historyCacheEntry struct {
 	size        int64
 	modTimeNano int64
 	count       int
+	skipped     int
+	used        uint64
 }
 
 type HistoryStore struct {
 	options          HistoryOptions
 	cacheMu          sync.Mutex
+	cacheClock       uint64
 	cache            map[string]historyCacheEntry
 	providerMu       sync.Mutex
 	providerCachedAt time.Time
@@ -144,7 +172,14 @@ func (h *HistoryStore) List(live []state.SessionInfo) (HistoryResponse, error) {
 	if err != nil {
 		return HistoryResponse{}, err
 	}
-	return HistoryResponse{SchemaVersion: SchemaVersion, Sessions: sessions}, nil
+	response := HistoryResponse{SchemaVersion: SchemaVersion, Sessions: sessions}
+	for _, session := range sessions {
+		if session.Unreadable {
+			response.UnreadableSessions++
+		}
+		response.SkippedRecords += session.SkippedRecords
+	}
+	return response, nil
 }
 
 // SearchSessions returns the known history sources without parsing every
@@ -217,9 +252,13 @@ func (h *HistoryStore) list(live []state.SessionInfo, countMessages bool) ([]His
 	sessions := make([]HistorySession, 0, len(sources))
 	managedByProvider := make(map[string]int, len(sources))
 	for _, source := range sources {
+		// Torn-record policy, applied per item: one unreadable transcript
+		// degrades that one row. Returning the error here emptied the whole
+		// history UI, so a single JSONL on a stale mount cost the user the
+		// ability to browse every other session they own.
 		session, _, _, err := h.describe(source, countMessages)
 		if err != nil {
-			return nil, err
+			session = markUnreadable(session, source.ID, err)
 		}
 		if session.ProviderSessionID != "" {
 			managedByProvider[historyProviderKey(session.Tool, session.ProviderSessionID)] = len(sessions)
@@ -237,7 +276,7 @@ func (h *HistoryStore) list(live []state.SessionInfo, countMessages bool) ([]His
 			}
 			session, _, _, err := h.describeExternal(source, countMessages)
 			if err != nil {
-				return nil, err
+				session = markUnreadable(session, source.SessionID, err)
 			}
 			sessions = append(sessions, session)
 		}
@@ -284,7 +323,7 @@ func (h *HistoryStore) TranscriptWindow(live []state.SessionInfo, id string, opt
 	if path == "" || !session.ConversationAvailable {
 		return TranscriptResponse{}, ErrHistoryNotFound
 	}
-	messages, messageCount, matchedExpected, err := normalizeTranscriptWindow(path, tool, options)
+	messages, messageCount, skipped, matchedExpected, err := normalizeTranscriptWindow(path, tool, options)
 	if err != nil {
 		return TranscriptResponse{}, fmt.Errorf("read history transcript window %s: %w", id, err)
 	}
@@ -292,15 +331,17 @@ func (h *HistoryStore) TranscriptWindow(live []state.SessionInfo, id string, opt
 		return TranscriptResponse{}, ErrHistoryChanged
 	}
 	session.MessageCount = messageCount
+	session.SkippedRecords = skipped
 	nextIndex := options.End
 	hasMore := nextIndex >= 0 && nextIndex < messageCount
 	return TranscriptResponse{
-		SchemaVersion: SchemaVersion,
-		Session:       session,
-		Messages:      messages,
-		Truncated:     len(messages) != messageCount,
-		HasMore:       hasMore,
-		NextIndex:     nextIndex,
+		SchemaVersion:  SchemaVersion,
+		Session:        session,
+		Messages:       messages,
+		Truncated:      len(messages) != messageCount,
+		HasMore:        hasMore,
+		NextIndex:      nextIndex,
+		SkippedRecords: skipped,
 	}, nil
 }
 
@@ -337,16 +378,18 @@ func (h *HistoryStore) TranscriptPreview(live []state.SessionInfo, id string, ma
 	if path == "" || !session.ConversationAvailable {
 		return TranscriptResponse{}, ErrHistoryNotFound
 	}
-	messages, truncated, err := normalizeTranscriptTail(path, tool, maxBytes, maxMessages)
+	messages, skipped, truncated, err := normalizeTranscriptTail(path, tool, maxBytes, maxMessages)
 	if err != nil {
 		return TranscriptResponse{}, fmt.Errorf("read history transcript preview %s: %w", id, err)
 	}
 	session.MessageCount = len(messages)
+	session.SkippedRecords = skipped
 	return TranscriptResponse{
-		SchemaVersion: SchemaVersion,
-		Session:       session,
-		Messages:      messages,
-		Truncated:     truncated,
+		SchemaVersion:  SchemaVersion,
+		Session:        session,
+		Messages:       messages,
+		Truncated:      truncated,
+		SkippedRecords: skipped,
 	}, nil
 }
 
@@ -368,15 +411,17 @@ func (h *HistoryStore) transcript(ctx context.Context, live []state.SessionInfo,
 	if path == "" || !session.ConversationAvailable {
 		return TranscriptResponse{}, ErrHistoryNotFound
 	}
-	messages, err := normalizeTranscriptContext(ctx, path, tool, maxBytes)
+	messages, skipped, err := normalizeTranscriptContext(ctx, path, tool, maxBytes)
 	if err != nil {
 		return TranscriptResponse{}, fmt.Errorf("read history transcript %s: %w", id, err)
 	}
 	session.MessageCount = len(messages)
+	session.SkippedRecords = skipped
 	return TranscriptResponse{
-		SchemaVersion: SchemaVersion,
-		Session:       session,
-		Messages:      messages,
+		SchemaVersion:  SchemaVersion,
+		Session:        session,
+		Messages:       messages,
+		SkippedRecords: skipped,
 	}, nil
 }
 
@@ -435,6 +480,26 @@ func (h *HistoryStore) find(live []state.SessionInfo, id string) (resolvedHistor
 	return resolvedHistorySource{}, false
 }
 
+// markUnreadable degrades one history row instead of the whole listing. The
+// session keeps its identity, name, cwd, and timestamps, so it stays findable
+// and resumable; only its conversation is reported as unavailable, with the
+// reason and the next action attached to the row itself.
+func markUnreadable(session HistorySession, fallbackID string, err error) HistorySession {
+	if session.ID == "" {
+		session.ID = fallbackID
+	}
+	if session.Name == "" {
+		session.Name = session.ID
+	}
+	session.Unreadable = true
+	session.ConversationAvailable = false
+	session.MessageCount = 0
+	session.UnreadableReason = fmt.Sprintf(
+		"transcript could not be read (%v); the session record is intact — check that its provider file and any network volume are reachable, then reload history",
+		err)
+	return session
+}
+
 func (h *HistoryStore) describeSource(source resolvedHistorySource, countMessages bool) (HistorySession, string, string, error) {
 	if source.managed != nil {
 		return h.describe(*source.managed, countMessages)
@@ -489,7 +554,10 @@ func (h *HistoryStore) describe(source backup.Session, countMessages bool) (Hist
 		return result, "", tool, nil
 	}
 	if err != nil {
-		return HistorySession{}, "", "", fmt.Errorf("stat history transcript %s: %w", source.ID, err)
+		// The partial session travels with the error so a listing can degrade
+		// this row (see markUnreadable) while a single-session fetch still
+		// fails loudly with the same instructional message.
+		return result, "", tool, fmt.Errorf("stat history transcript %s: %w", source.ID, err)
 	}
 	if !info.Mode().IsRegular() {
 		return result, "", tool, nil
@@ -515,11 +583,12 @@ func (h *HistoryStore) describe(source backup.Session, countMessages bool) (Hist
 	if !countMessages {
 		return result, path, tool, nil
 	}
-	count, err := h.messageCount(path, tool, info)
+	count, skipped, err := h.messageCount(path, tool, info)
 	if err != nil {
-		return HistorySession{}, "", "", fmt.Errorf("count history transcript %s: %w", source.ID, err)
+		return result, "", tool, fmt.Errorf("count history transcript %s: %w", source.ID, err)
 	}
 	result.MessageCount = count
+	result.SkippedRecords = skipped
 	return result, path, tool, nil
 }
 
@@ -546,7 +615,7 @@ func (h *HistoryStore) describeExternal(source watch.ResumableSession, countMess
 		return result, "", tool, nil
 	}
 	if err != nil {
-		return HistorySession{}, "", "", fmt.Errorf("stat provider history %s: %w", source.SessionID, err)
+		return result, "", tool, fmt.Errorf("stat provider history %s: %w", source.SessionID, err)
 	}
 	if !info.Mode().IsRegular() {
 		return result, "", tool, nil
@@ -555,11 +624,12 @@ func (h *HistoryStore) describeExternal(source watch.ResumableSession, countMess
 	if !countMessages {
 		return result, source.SourcePath, tool, nil
 	}
-	count, err := h.messageCount(source.SourcePath, tool, info)
+	count, skipped, err := h.messageCount(source.SourcePath, tool, info)
 	if err != nil {
-		return HistorySession{}, "", "", fmt.Errorf("count provider history %s: %w", source.SessionID, err)
+		return result, "", tool, fmt.Errorf("count provider history %s: %w", source.SessionID, err)
 	}
 	result.MessageCount = count
+	result.SkippedRecords = skipped
 	return result, source.SourcePath, tool, nil
 }
 
@@ -755,23 +825,62 @@ func historySourceFingerprint(path string, info os.FileInfo) string {
 	return fmt.Sprintf("%x", sum[:16])
 }
 
-func (h *HistoryStore) messageCount(path, tool string, info os.FileInfo) (int, error) {
+// messageCount reports the normalized message count of one transcript and how
+// many torn records were skipped to get it. Counting still parses the file —
+// a message count is not derivable from line counts — but it never retains the
+// messages, so listing a multi-gigabyte history costs constant memory instead
+// of a full transcript per session.
+func (h *HistoryStore) messageCount(path, tool string, info os.FileInfo) (int, int, error) {
 	h.cacheMu.Lock()
 	cached, ok := h.cache[path]
 	if ok && cached.size == info.Size() && cached.modTimeNano == info.ModTime().UnixNano() {
+		h.cacheClock++
+		cached.used = h.cacheClock
+		h.cache[path] = cached
 		h.cacheMu.Unlock()
-		return cached.count, nil
+		return cached.count, cached.skipped, nil
 	}
 	h.cacheMu.Unlock()
-	messages, err := normalizeTranscript(path, tool, 0)
+	file, err := os.Open(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	entry := historyCacheEntry{size: info.Size(), modTimeNano: info.ModTime().UnixNano(), count: len(messages)}
+	// discardEveryMessage keeps the streaming normalizer's counting and
+	// skip-accounting while retaining none of the messages it builds.
+	discardEveryMessage := func(TranscriptMessage) bool { return false }
+	_, count, skipped, err := normalizeTranscriptReaderSelected(
+		context.Background(), bufio.NewReader(file), path, tool, discardEveryMessage)
+	closeErr := file.Close()
+	if err != nil {
+		return 0, 0, err
+	}
+	if closeErr != nil {
+		return 0, 0, closeErr
+	}
 	h.cacheMu.Lock()
-	h.cache[path] = entry
+	h.cacheClock++
+	h.cache[path] = historyCacheEntry{
+		size: info.Size(), modTimeNano: info.ModTime().UnixNano(),
+		count: count, skipped: skipped, used: h.cacheClock,
+	}
+	h.evictHistoryCacheLocked()
 	h.cacheMu.Unlock()
-	return entry.count, nil
+	return count, skipped, nil
+}
+
+// evictHistoryCacheLocked drops the least recently used quarter once the cache
+// passes its bound. Transcript paths are unbounded over a daemon's lifetime, so
+// the cache must have a ceiling; dropping a quarter keeps the O(n) sweep rare.
+func (h *HistoryStore) evictHistoryCacheLocked() {
+	if len(h.cache) <= maxHistoryCacheEntries {
+		return
+	}
+	cutoff := h.cacheClock - uint64(maxHistoryCacheEntries*3/4)
+	for path, entry := range h.cache {
+		if entry.used <= cutoff {
+			delete(h.cache, path)
+		}
+	}
 }
 
 func historyTool(tool state.SessionTool, resolved string) string {
@@ -790,14 +899,14 @@ func historyTool(tool state.SessionTool, resolved string) string {
 	}
 }
 
-func normalizeTranscript(path, tool string, maxBytes int64) ([]TranscriptMessage, error) {
+func normalizeTranscript(path, tool string, maxBytes int64) ([]TranscriptMessage, int, error) {
 	return normalizeTranscriptContext(context.Background(), path, tool, maxBytes)
 }
 
-func normalizeTranscriptContext(ctx context.Context, path, tool string, maxBytes int64) ([]TranscriptMessage, error) {
+func normalizeTranscriptContext(ctx context.Context, path, tool string, maxBytes int64) ([]TranscriptMessage, int, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer file.Close()
 
@@ -808,15 +917,15 @@ func normalizeTranscriptContext(ctx context.Context, path, tool string, maxBytes
 	return normalizeTranscriptReaderContext(ctx, bufio.NewReader(source), path, tool)
 }
 
-func normalizeTranscriptWindow(path, tool string, options TranscriptWindowOptions) ([]TranscriptMessage, int, bool, error) {
+func normalizeTranscriptWindow(path, tool string, options TranscriptWindowOptions) ([]TranscriptMessage, int, int, bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, 0, false, err
+		return nil, 0, 0, false, err
 	}
 	defer file.Close()
 
 	matchedExpected := options.ExpectedMessage == ""
-	messages, messageCount, err := normalizeTranscriptReaderSelected(context.Background(), bufio.NewReader(file), path, tool, func(message TranscriptMessage) bool {
+	messages, messageCount, skipped, err := normalizeTranscriptReaderSelected(context.Background(), bufio.NewReader(file), path, tool, func(message TranscriptMessage) bool {
 		if message.Index == options.ExpectedIndex && message.ID == options.ExpectedMessage {
 			matchedExpected = true
 		}
@@ -825,21 +934,21 @@ func normalizeTranscriptWindow(path, tool string, options TranscriptWindowOption
 		}
 		return options.Role == "" || message.Role == options.Role
 	})
-	return messages, messageCount, matchedExpected, err
+	return messages, messageCount, skipped, matchedExpected, err
 }
 
-func normalizeTranscriptTail(path, tool string, maxBytes int64, maxMessages int) ([]TranscriptMessage, bool, error) {
+func normalizeTranscriptTail(path, tool string, maxBytes int64, maxMessages int) ([]TranscriptMessage, int, bool, error) {
 	if maxBytes <= 0 || maxMessages <= 0 {
-		return nil, false, errors.New("preview limits must be positive")
+		return nil, 0, false, errors.New("preview limits must be positive: pass a positive byte and message budget")
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
 	offset := max(int64(0), info.Size()-maxBytes)
 	truncated := offset > 0
@@ -848,59 +957,66 @@ func normalizeTranscriptTail(path, tool string, maxBytes int64, maxMessages int)
 		// Keep a record that begins exactly at the window boundary. Otherwise
 		// discard the partial first JSONL record before normalization.
 		if _, err := file.Seek(offset-1, io.SeekStart); err != nil {
-			return nil, false, err
+			return nil, 0, false, err
 		}
 		previous := []byte{0}
 		if _, err := io.ReadFull(file, previous); err != nil {
-			return nil, false, err
+			return nil, 0, false, err
 		}
 		reader = bufio.NewReader(io.LimitReader(file, maxBytes))
 		if previous[0] != '\n' {
 			if _, err := reader.ReadBytes('\n'); err != nil && !errors.Is(err, io.EOF) {
-				return nil, false, err
+				return nil, 0, false, err
 			}
 		} else if _, err := file.Seek(offset, io.SeekStart); err != nil {
-			return nil, false, err
+			return nil, 0, false, err
 		} else {
 			reader = bufio.NewReader(io.LimitReader(file, maxBytes))
 		}
 	} else {
 		reader = bufio.NewReader(io.LimitReader(file, maxBytes))
 	}
-	messages, err := normalizeTranscriptReader(reader, path, tool)
+	messages, skipped, err := normalizeTranscriptReader(reader, path, tool)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
 	if len(messages) > maxMessages {
 		messages = messages[len(messages)-maxMessages:]
 		truncated = true
 	}
-	return messages, truncated, nil
+	return messages, skipped, truncated, nil
 }
 
-func normalizeTranscriptReader(reader *bufio.Reader, path, tool string) ([]TranscriptMessage, error) {
+func normalizeTranscriptReader(reader *bufio.Reader, path, tool string) ([]TranscriptMessage, int, error) {
 	return normalizeTranscriptReaderContext(context.Background(), reader, path, tool)
 }
 
-func normalizeTranscriptReaderContext(ctx context.Context, reader *bufio.Reader, path, tool string) ([]TranscriptMessage, error) {
-	messages, _, err := normalizeTranscriptReaderSelected(ctx, reader, path, tool, nil)
-	return messages, err
+func normalizeTranscriptReaderContext(ctx context.Context, reader *bufio.Reader, path, tool string) ([]TranscriptMessage, int, error) {
+	messages, _, skipped, err := normalizeTranscriptReaderSelected(ctx, reader, path, tool, nil)
+	return messages, skipped, err
 }
 
+// normalizeTranscriptReaderSelected streams one provider transcript. It follows
+// the torn-record policy stated in runtime/internal/integrations/errors.go: a
+// JSONL line it cannot decode is skipped, counted, and reported as the third
+// result, so a truncated tail from a power cut costs exactly that record and
+// the caller can still tell the read was degraded. include may be nil to keep
+// every message, or return false for every message to count without retaining.
 func normalizeTranscriptReaderSelected(
 	ctx context.Context,
 	reader *bufio.Reader,
 	path, tool string,
 	include func(TranscriptMessage) bool,
-) ([]TranscriptMessage, int, error) {
+) ([]TranscriptMessage, int, int, error) {
 	messages := make([]TranscriptMessage, 0)
 	relayCalls := make(map[string]string)
 	lineIndex := 0
 	messageIndex := 0
+	skipped := 0
 	for {
 		if lineIndex%256 == 0 {
 			if err := ctx.Err(); err != nil {
-				return nil, 0, err
+				return nil, 0, 0, err
 			}
 		}
 		line, readErr := reader.ReadBytes('\n')
@@ -910,7 +1026,9 @@ func normalizeTranscriptReaderSelected(
 			lineIndex++
 			if trimmed != "" {
 				var decoded map[string]any
-				if json.Unmarshal([]byte(trimmed), &decoded) == nil {
+				if json.Unmarshal([]byte(trimmed), &decoded) != nil {
+					skipped++
+				} else {
 					if tool == "codex" {
 						normalized := watch.NormalizeCodexRolloutLine(decoded, watch.CodexNormalizeContext{
 							RolloutBasename: filepath.Base(path), LineIndex: currentIndex,
@@ -942,10 +1060,14 @@ func normalizeTranscriptReaderSelected(
 			break
 		}
 		if readErr != nil {
-			return nil, 0, readErr
+			// The file itself stopped being readable mid-stream. Unlike a torn
+			// record this is not recoverable by skipping ahead, so the caller
+			// is told rather than handed a silently short conversation; a
+			// listing degrades that one row instead of dropping every session.
+			return nil, 0, skipped, fmt.Errorf("read transcript %s: %w", path, readErr)
 		}
 	}
-	return messages, messageIndex, nil
+	return messages, messageIndex, skipped, nil
 }
 
 func transcriptMessageID(message TranscriptMessage) string {

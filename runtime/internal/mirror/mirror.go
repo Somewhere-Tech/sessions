@@ -137,15 +137,37 @@ func NewSize(cols, rows int) (*Mirror, error) {
 // close theirs.
 func (m *Mirror) Close() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closed {
+		m.mu.Unlock()
 		return nil
 	}
 	m.closed = true
-	if _, err := io.WriteString(m.term.InputPipe(), drainStopMarker); err != nil {
-		return err
+	m.mu.Unlock()
+
+	// The stop marker goes through vt's io.Pipe, whose writer blocks until a
+	// reader consumes it, and the drain goroutine can already have returned on
+	// its own (its Read fails, or it saw a marker). Writing under m.mu would
+	// then block forever and wedge every other operation on this session's
+	// mirror, so signal off the lock and never wait on the write itself:
+	// whichever of the two completes first is enough, and m.term.Close() below
+	// releases a writer nobody will ever read (vt closes the pipe with EOF).
+	marker := make(chan struct{})
+	go func() {
+		defer close(marker)
+		_, _ = io.WriteString(m.term.InputPipe(), drainStopMarker)
+	}()
+	select {
+	case <-m.drainDone:
+		// Drain already gone; nothing will consume the marker. Closing the
+		// emulator is what unblocks the write above.
+	case <-marker:
+		// The marker was delivered (or the pipe is already closed); either way
+		// the drain observes it and returns.
+		<-m.drainDone
 	}
-	<-m.drainDone
+	// Always release the emulator, including on a failed stop-marker write: a
+	// mirror that reports an error but keeps its emulator and pipe alive leaks
+	// both for the life of the daemon.
 	return m.term.Close()
 }
 

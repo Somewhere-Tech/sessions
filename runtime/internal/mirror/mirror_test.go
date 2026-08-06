@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -328,4 +329,83 @@ func TestCombiningMarksSurviveSurroundingUnprotectedWrites(t *testing.T) {
 		t.Fatalf("Snapshot() = %q, want %q", got, want)
 	}
 	assertNoProtectedResidue(t, m)
+}
+
+// The drain goroutine can return on its own, after which nothing reads the
+// stop marker. Close must still finish instead of blocking forever while
+// holding m.mu, which would wedge every other operation on that session.
+func TestCloseDoesNotBlockWhenTheDrainAlreadyReturned(t *testing.T) {
+	// The pipe stays open with no reader left: this is the state in which a
+	// stop-marker write under m.mu blocks forever and wedges every operation on
+	// the session's mirror. The other way a drain can exit — its emulator read
+	// failing — cannot be simulated here, because reaching it from a test means
+	// closing the emulator while its own goroutine is inside vt's
+	// unsynchronized Read; Close itself never does that, it waits for drainDone
+	// first.
+	cases := map[string]func(t *testing.T, m *Mirror){
+		"drain returned with the pipe still open": func(t *testing.T, m *Mirror) {
+			if _, err := io.WriteString(m.term.InputPipe(), drainStopMarker); err != nil {
+				t.Fatal(err)
+			}
+			<-m.drainDone
+		},
+	}
+	for name, wedge := range cases {
+		t.Run(name, func(t *testing.T) {
+			m, err := NewSize(20, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wedge(t, m)
+
+			done := make(chan error, 1)
+			go func() { done <- m.Close() }()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Close after an early drain exit: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Close blocked after the drain goroutine had already returned")
+			}
+
+			// A wedged Close would also have held m.mu forever; every other
+			// operation must remain answerable.
+			if _, err := m.Write([]byte("x")); err == nil {
+				t.Fatal("Write after Close should report a closed mirror")
+			}
+			if got := m.Snapshot(); got != "" {
+				t.Fatalf("Snapshot after Close = %q", got)
+			}
+			if err := m.Close(); err != nil {
+				t.Fatalf("second Close: %v", err)
+			}
+		})
+	}
+}
+
+func TestCloseUnblocksOperationsAndIsIdempotent(t *testing.T) {
+	m, err := NewSize(20, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeString(t, m, "hello")
+	// A terminal query queues a reply the drain must consume before Close.
+	writeString(t, m, "\x1b[c\x1b[6n")
+	done := make(chan error, 2)
+	go func() { done <- m.Close() }()
+	go func() { done <- m.Close() }()
+	for range 2 {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Close blocked with a pending terminal reply")
+		}
+	}
+	if err := m.Resize(10, 2); err == nil {
+		t.Fatal("Resize after Close should report a closed mirror")
+	}
 }
