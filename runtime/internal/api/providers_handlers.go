@@ -31,7 +31,14 @@ var (
 )
 
 func (s *Server) handleProvidersRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
-	if request.URL.Path == "/api/providers" && request.Method == http.MethodGet {
+	if request.URL.Path == "/api/providers" {
+		// A wrong method on a route this handler owns is 405 here, as it is on
+		// every sibling route family; returning false handed the request to the
+		// router's catch-all 404 and told the caller the endpoint did not exist.
+		if request.Method != http.MethodGet {
+			s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+			return true
+		}
 		statuses := []providerStatus{
 			localProviderStatus(request.Context(), "claude"),
 			localProviderStatus(request.Context(), "codex"),
@@ -45,7 +52,8 @@ func (s *Server) handleProvidersRoute(response http.ResponseWriter, request *htt
 		return false
 	}
 	if request.Method != http.MethodPost {
-		return false
+		s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+		return true
 	}
 	principal, ok := request.Context().Value(authPrincipalContextKey{}).(authPrincipal)
 	if !ok || !principal.Local {

@@ -295,12 +295,11 @@ func (s *Server) sendIntegrationBytes(
 	corsOrigin string,
 ) {
 	response.Header().Set("Content-Type", contentType)
-	if corsOrigin != "" {
-		response.Header().Set("Access-Control-Allow-Origin", corsOrigin)
-	}
-	response.Header().Set("Vary", "Origin")
-	response.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
-	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization")
+	// The same CORS answer sendJSON gives. This helper used to advertise a
+	// narrower method list and a shorter allowed-header list, so a browser
+	// client that preflighted against a transcript download learned different
+	// rules than one that preflighted against any JSON route.
+	setCORSHeaders(response, corsOrigin)
 	response.Header().Set("Access-Control-Expose-Headers", "X-Sessions-Schema-Version")
 	response.WriteHeader(status)
 	_, _ = response.Write(body)

@@ -17,7 +17,6 @@ import (
 	goruntime "runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -67,7 +66,7 @@ type Server struct {
 	smartSearch          *smartsearch.Service
 	identity             machineIdentity
 	identityError        error
-	submitMu             sync.Mutex
+	submits              *sessionMutexes
 }
 
 type authPrincipal struct {
@@ -146,6 +145,7 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 		config: config, registry: registry, push: notifications, tokens: tokenStore{path: config.TokenPath},
 		pair:          newPairService(config),
 		tailnetAccess: newTailnetAccessService(),
+		submits:       newSessionMutexes(),
 		identity:      identity, identityError: identityErr,
 		integrationEndpoints: integrations.NewService(integrations.ServiceOptions{
 			StateDir: config.StateRoot, RunnerStateDir: config.RunnerStateDir,
@@ -798,7 +798,14 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 	if suffix == "/tags" && request.Method == http.MethodGet {
 		tags, err := s.registry.Tags(id)
 		if err != nil {
-			s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "unknown session", "id": id}, corsOrigin)
+			// The PUT on this same path already distinguishes "no such session"
+			// from "this machine could not read it". The GET reported both as
+			// 404, so a caller retried forever against a lane that exists.
+			if errors.Is(err, state.ErrSessionNotFound) || errors.Is(err, os.ErrNotExist) {
+				s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "unknown session", "id": id}, corsOrigin)
+				return
+			}
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error(), "id": id}, corsOrigin)
 			return
 		}
 		s.sendJSON(response, http.StatusOK, map[string]any{"tags": tags}, corsOrigin)
@@ -876,9 +883,8 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			return
 		}
 		response.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		response.Header().Set("Vary", "Origin")
+		setCORSHeaders(response, corsOrigin)
 		if corsOrigin != "" {
-			response.Header().Set("Access-Control-Allow-Origin", corsOrigin)
 			response.Header().Set("Access-Control-Expose-Headers", "X-Sessions-Seq")
 		}
 		response.Header().Set("X-Sessions-Seq", strconv.FormatUint(uint64(seq), 10))
@@ -894,22 +900,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		since := queryIndex(request.URL.Query(), "since")
 		tail := queryIndex(request.URL.Query(), "tail")
 		before := queryIndex(request.URL.Query(), "before")
-		window := session.EventsWindow(since, tail, before)
-		events := window.Events
-		full := session.EventsWindow(nil, nil, nil)
-		if annotated, err := s.annotateRawEvents(request.Context(), id, full.Events); err != nil {
-			log.Printf("[attribution] annotate live events for %s: %v", id, err)
-		} else {
-			start := window.StartIndex - full.StartIndex
-			end := window.EndIndex - full.StartIndex
-			if start >= 0 && end >= start && end <= int64(len(annotated)) {
-				events = annotated[start:end]
-			}
-		}
-		s.sendJSON(response, http.StatusOK, map[string]any{
-			"events": events, "nextIndex": window.NextIndex, "totalCount": window.TotalCount,
-			"startIndex": window.StartIndex, "endIndex": window.EndIndex,
-		}, corsOrigin)
+		s.sendJSON(response, http.StatusOK, s.eventsWindowBody(request.Context(), session, id, since, tail, before), corsOrigin)
 		return
 	}
 	if (suffix == "/input" || suffix == "/submit") && request.Method == http.MethodPost {
@@ -926,8 +917,9 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			return
 		}
 		if suffix == "/submit" {
-			s.submitMu.Lock()
-			defer s.submitMu.Unlock()
+			// Keyed by session: the text and its Enter stay adjacent for THIS
+			// session while submits to other sessions run at the same time.
+			defer s.submits.lock(id)()
 		}
 		if !ok {
 			s.sendJSON(response, http.StatusNotFound, map[string]any{"ok": false}, corsOrigin)
@@ -974,14 +966,21 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 	s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": request.URL.Path}, corsOrigin)
 }
 
-func (s *Server) sendJSON(response http.ResponseWriter, status int, body any, corsOrigin string) {
-	response.Header().Set("Content-Type", "application/json")
+// setCORSHeaders writes the one CORS answer this daemon gives. Every response
+// helper calls it, so a client cannot learn a different allowed-method or
+// allowed-header set from one endpoint than from another.
+func setCORSHeaders(response http.ResponseWriter, corsOrigin string) {
 	if corsOrigin != "" {
 		response.Header().Set("Access-Control-Allow-Origin", corsOrigin)
 	}
 	response.Header().Set("Vary", "Origin")
 	response.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 	response.Header().Set("Access-Control-Allow-Headers", "content-type, authorization, x-sessions-creator-session, x-sessions-owner-id, x-sessions-client, x-sessions-filename, x-sessions-user-consent")
+}
+
+func (s *Server) sendJSON(response http.ResponseWriter, status int, body any, corsOrigin string) {
+	response.Header().Set("Content-Type", "application/json")
+	setCORSHeaders(response, corsOrigin)
 	response.WriteHeader(status)
 	if status == http.StatusNoContent {
 		return
@@ -1153,16 +1152,27 @@ func creatorHeaderValue(header http.Header, name string) (string, bool, error) {
 	return values[0], true, nil
 }
 
+// checkJSONContentType is the content-type guard every JSON POST shares. It is
+// separate from readJSON so routes that must decode with their own decoder
+// still enforce the same rule.
+func checkJSONContentType(request *http.Request) error {
+	if request.ContentLength == 0 {
+		return nil
+	}
+	contentTypes := request.Header.Values("Content-Type")
+	if len(contentTypes) != 1 {
+		return errors.New("content-type must be application/json")
+	}
+	mediaType, _, err := mime.ParseMediaType(contentTypes[0])
+	if err != nil || mediaType != "application/json" {
+		return errors.New("content-type must be application/json")
+	}
+	return nil
+}
+
 func readJSON(request *http.Request, target any) error {
-	if request.ContentLength != 0 {
-		contentTypes := request.Header.Values("Content-Type")
-		if len(contentTypes) != 1 {
-			return errors.New("content-type must be application/json")
-		}
-		mediaType, _, err := mime.ParseMediaType(contentTypes[0])
-		if err != nil || mediaType != "application/json" {
-			return errors.New("content-type must be application/json")
-		}
+	if err := checkJSONContentType(request); err != nil {
+		return err
 	}
 	reader := http.MaxBytesReader(nil, request.Body, maxJSONBody)
 	encoded, err := io.ReadAll(reader)

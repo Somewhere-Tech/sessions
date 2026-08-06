@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +61,44 @@ func TestRecapSettingsAndGeneration(t *testing.T) {
 	if badDate.Code != http.StatusBadRequest {
 		t.Fatalf("bad date: status=%d body=%s", badDate.Code, badDate.Body.String())
 	}
+}
+
+// TestRecapErrorsAreClassifiedByIdentityNotMessageText pins the two request
+// errors to 400 without matching on error text. The handler used to compare
+// err.Error() against two exact sentences, so a reworded message in another
+// package silently became a 500.
+func TestRecapErrorsAreClassifiedByIdentityNotMessageText(t *testing.T) {
+	daemon := newTestDaemon(t)
+	badDate := serve(t, daemon.handler, http.MethodPost, "/api/recap/generate",
+		strings.NewReader(`{"date":"yesterday"}`), "127.0.0.1:1", nil)
+	if badDate.Code != http.StatusBadRequest {
+		t.Fatalf("bad date: status=%d body=%s", badDate.Code, badDate.Body.String())
+	}
+	// Default settings leave the recap provider off.
+	off := serve(t, daemon.handler, http.MethodPost, "/api/recap/generate",
+		strings.NewReader(`{"date":"2026-07-22"}`), "127.0.0.1:1", nil)
+	if off.Code != http.StatusBadRequest || !strings.Contains(off.Body.String(), "daily recap is off") {
+		t.Fatalf("recap off: status=%d body=%s", off.Code, off.Body.String())
+	}
+	if got := sendRecapStatus(t, daemon, errors.New("disk exploded")); got != http.StatusInternalServerError {
+		t.Fatalf("unclassified recap failure status = %d", got)
+	}
+	// A request error keeps its class when a caller adds context to it. Text
+	// matching turned exactly this into a 500.
+	wrapped := fmt.Errorf("recap for %q: %w", "yesterday", errRecapDateFormat)
+	if got := sendRecapStatus(t, daemon, wrapped); got != http.StatusBadRequest {
+		t.Fatalf("wrapped date error status = %d, want 400", got)
+	}
+	if got := sendRecapStatus(t, daemon, fmt.Errorf("generate: %w", errRecapOff)); got != http.StatusBadRequest {
+		t.Fatalf("wrapped recap-off error status = %d, want 400", got)
+	}
+}
+
+func sendRecapStatus(t *testing.T, daemon testDaemon, err error) int {
+	t.Helper()
+	response := httptest.NewRecorder()
+	daemon.handler.sendRecapError(response, err, "")
+	return response.Code
 }
 
 func TestRecapKeepsSavedDocumentWhenFactsChange(t *testing.T) {

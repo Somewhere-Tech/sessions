@@ -425,3 +425,53 @@ func TestTailnetIssuanceGetsASeparateAcknowledgementWindow(t *testing.T) {
 		t.Fatalf("near-expiry issued token status = %d, body=%s", authorized.Code, authorized.Body.String())
 	}
 }
+
+// TestAccessRequestAliasesStayCompatibleAndNameTheCanonicalPath pins both
+// spellings of the access-request collection. The frontend calls the canonical
+// path and falls back to the legacy one; the sessions CLI calls the canonical
+// one only. Neither may break, so the legacy path keeps working and says in
+// its response headers that it is deprecated and where its successor is.
+func TestAccessRequestAliasesStayCompatibleAndNameTheCanonicalPath(t *testing.T) {
+	daemon := newTestDaemon(t)
+	created := serve(
+		t, daemon.handler, http.MethodPost, "/api/tailnet/access/request",
+		strings.NewReader(`{"client_id":"77777777-7777-4777-8777-777777777777","name":"Alias Mac"}`),
+		"127.0.0.1:4040", tailnetHeaders("alias@example.com", "Alias User"),
+	)
+	if created.Code != http.StatusAccepted {
+		t.Fatalf("request status = %d, body=%s", created.Code, created.Body.String())
+	}
+	var pending tailnetAccessRequestResponse
+	decodeBody(t, created, &pending)
+
+	canonical := serve(t, daemon.handler, http.MethodGet, accessRequestsPath, nil, "127.0.0.1:5050", nil)
+	legacy := serve(t, daemon.handler, http.MethodGet, legacyTailnetAccessRequestsPath, nil, "127.0.0.1:5050", nil)
+	if canonical.Code != http.StatusOK || legacy.Code != http.StatusOK {
+		t.Fatalf("canonical status=%d legacy status=%d", canonical.Code, legacy.Code)
+	}
+	if canonical.Body.String() != legacy.Body.String() {
+		t.Fatalf("aliases disagree:\ncanonical=%s\nlegacy=%s", canonical.Body.String(), legacy.Body.String())
+	}
+	if canonical.Header().Get("Deprecation") != "" || canonical.Header().Get("Link") != "" {
+		t.Fatalf("canonical path advertised deprecation: %#v", canonical.Header())
+	}
+	if legacy.Header().Get("Deprecation") != "true" {
+		t.Fatalf("legacy path did not advertise deprecation: %#v", legacy.Header())
+	}
+	if got, want := legacy.Header().Get("Link"), `<`+accessRequestsPath+`>; rel="successor-version"`; got != want {
+		t.Fatalf("legacy Link = %q, want %q", got, want)
+	}
+
+	decision := serve(
+		t, daemon.handler, http.MethodPost, legacyTailnetAccessRequestsPath+"/"+pending.RequestID,
+		strings.NewReader(`{"decision":"accept"}`), "127.0.0.1:5050",
+		http.Header{"Content-Type": {"application/json"}},
+	)
+	if decision.Code != http.StatusOK {
+		t.Fatalf("legacy decision status = %d, body=%s", decision.Code, decision.Body.String())
+	}
+	want := `<` + accessRequestsPath + "/" + pending.RequestID + `>; rel="successor-version"`
+	if got := decision.Header().Get("Link"); got != want {
+		t.Fatalf("legacy item Link = %q, want %q", got, want)
+	}
+}

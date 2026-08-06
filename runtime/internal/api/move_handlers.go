@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/migrate"
@@ -171,9 +173,31 @@ func (s *Server) handleMoveRoute(response http.ResponseWriter, request *http.Req
 		s.sendJSON(response, http.StatusCreated, result, corsOrigin)
 		return true
 	}
+	// /api/migrate/receive decodes with migrate.DecodeReceive rather than
+	// readJSON because it accepts a much larger body and rejects unknown
+	// fields. It still owes callers the same request guards every other POST
+	// gets, so apply them here instead of letting this one route skip them.
+	if err := checkJSONContentType(request); err != nil {
+		s.sendJSON(response, http.StatusUnsupportedMediaType, map[string]any{"error": err.Error()}, corsOrigin)
+		return true
+	}
 	request.Body = http.MaxBytesReader(response, request.Body, migrate.MaxReceiveBodyBytes)
+	encoded, err := io.ReadAll(request.Body)
+	if err != nil {
+		status := http.StatusBadRequest
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		s.sendJSON(response, status, map[string]any{"error": jsonRequestError(err).Error()}, corsOrigin)
+		return true
+	}
+	if !utf8.Valid(encoded) {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "request body must be valid UTF-8"}, corsOrigin)
+		return true
+	}
 	var body migrate.ReceiveRequest
-	if err := migrate.DecodeReceive(request.Body, &body); err != nil {
+	if err := migrate.DecodeReceive(bytes.NewReader(encoded), &body); err != nil {
 		status := http.StatusBadRequest
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) || errors.Is(err, io.ErrUnexpectedEOF) {

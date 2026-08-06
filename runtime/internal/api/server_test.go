@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -367,64 +369,160 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 }
 
+// TestConcurrentSubmitKeepsEachMessageWithItsTarget pins the invariant the
+// submit lock exists for: a message and the Enter that sends it reach a session
+// with no other write to THAT session in between, so two agents submitting to
+// one session never commit each other's half-typed line.
+//
+// It deliberately does not assert a global order across sessions. Submits to
+// different sessions are independent work and are expected to interleave; the
+// previous whole-daemon assertion also pinned the serialisation that made ten
+// agents on ten sessions queue behind each other's settle delay.
 func TestConcurrentSubmitKeepsEachMessageWithItsTarget(t *testing.T) {
 	daemon := newTestDaemon(t)
 	recorder := &recordingSessionInput{sessionService: daemon.registry}
 	daemon.handler.registry = recorder
-	targets := make(map[string]string)
-	for _, text := range []string{"ALPHA", "BRAVO", "CHARLIE"} {
+	targets := make(map[string][]string)
+	for _, prefix := range []string{"ALPHA", "BRAVO", "CHARLIE"} {
 		created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
 			Cmd: "/bin/bash", Cwd: daemon.root,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		targets[created.ID] = text
+		targets[created.ID] = []string{prefix + "-1", prefix + "-2"}
 	}
 	server := httptest.NewServer(daemon.handler)
 	defer server.Close()
 
 	var wait sync.WaitGroup
-	errorsByID := make(chan string, len(targets))
-	for id, text := range targets {
-		id, text := id, text
+	failures := make(chan string, 2*len(targets))
+	for id, texts := range targets {
+		for _, text := range texts {
+			id, text := id, text
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				body := strings.NewReader(`{"data":"` + text + `"}`)
+				response, err := http.Post(server.URL+"/api/sessions/"+id+"/submit", "application/json", body)
+				if err != nil {
+					failures <- id + ": " + err.Error()
+					return
+				}
+				defer response.Body.Close()
+				if response.StatusCode != http.StatusOK {
+					encoded, _ := io.ReadAll(response.Body)
+					failures <- id + ": " + response.Status + " " + string(encoded)
+				}
+			}()
+		}
+	}
+	wait.Wait()
+	close(failures)
+	for message := range failures {
+		t.Error(message)
+	}
+
+	recorder.mu.Lock()
+	calls := append([]recordedSessionInput(nil), recorder.calls...)
+	recorder.mu.Unlock()
+	if len(calls) != 4*len(targets) {
+		t.Fatalf("input calls = %#v", calls)
+	}
+	perSession := make(map[string][]string)
+	for _, call := range calls {
+		perSession[call.id] = append(perSession[call.id], call.data)
+	}
+	for id, texts := range targets {
+		got := perSession[id]
+		if len(got) != 4 {
+			t.Fatalf("session %s inputs = %q", id, got)
+		}
+		sent := map[string]bool{}
+		for index := 0; index < len(got); index += 2 {
+			if got[index+1] != "\r" {
+				t.Fatalf("session %s interleaved a write between a message and its Enter: %q", id, got)
+			}
+			sent[got[index]] = true
+		}
+		for _, text := range texts {
+			if !sent[text] {
+				t.Fatalf("session %s inputs = %q, want both of %q", id, got, texts)
+			}
+		}
+		if runnerInputs := daemon.launcher.Runner(id).Inputs(); len(runnerInputs) != 4 {
+			t.Fatalf("runner %s inputs = %q", id, runnerInputs)
+		}
+	}
+	if tracked := daemon.handler.submits.tracked(); tracked != 0 {
+		t.Fatalf("per-session submit locks retained after every submit finished: %d", tracked)
+	}
+}
+
+// TestSubmitsToDifferentSessionsRunConcurrently is the scaling half of the same
+// invariant. Every submit holds its session's lock across a fixed settle delay;
+// with one process-wide lock, N agents on N different sessions took N delays.
+func TestSubmitsToDifferentSessionsRunConcurrently(t *testing.T) {
+	daemon := newTestDaemon(t)
+	const sessions = 8
+	ids := make([]string, 0, sessions)
+	for index := 0; index < sessions; index++ {
+		created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+			Cmd: "/bin/bash", Cwd: daemon.root,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, created.ID)
+	}
+	server := httptest.NewServer(daemon.handler)
+	defer server.Close()
+
+	var ready, wait sync.WaitGroup
+	ready.Add(len(ids))
+	start := make(chan struct{})
+	failures := make(chan string, len(ids))
+	for _, id := range ids {
+		id := id
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			body := strings.NewReader(`{"data":"` + text + `"}`)
+			ready.Done()
+			<-start
+			body := strings.NewReader(`{"data":"parallel"}`)
 			response, err := http.Post(server.URL+"/api/sessions/"+id+"/submit", "application/json", body)
 			if err != nil {
-				errorsByID <- id + ": " + err.Error()
+				failures <- id + ": " + err.Error()
 				return
 			}
 			defer response.Body.Close()
 			if response.StatusCode != http.StatusOK {
 				encoded, _ := io.ReadAll(response.Body)
-				errorsByID <- id + ": " + response.Status + " " + string(encoded)
+				failures <- id + ": " + response.Status + " " + string(encoded)
 			}
 		}()
 	}
+	ready.Wait()
+	began := time.Now()
+	close(start)
 	wait.Wait()
-	close(errorsByID)
-	for message := range errorsByID {
+	elapsed := time.Since(began)
+	close(failures)
+	for message := range failures {
 		t.Error(message)
 	}
-	for id, text := range targets {
-		got := daemon.launcher.Runner(id).Inputs()
-		if len(got) != 2 || got[0] != text || got[1] != "\r" {
-			t.Fatalf("runner %s inputs = %q, want [%q CR]", id, got, text)
+	// Concurrent: about one settle delay for all of them. Serialised: eight.
+	if limit := 3 * submitSettleDelay; elapsed > limit {
+		t.Fatalf("%d submits to %d different sessions took %s, want under %s: they are serialising on a shared lock",
+			len(ids), len(ids), elapsed, limit)
+	}
+	for _, id := range ids {
+		if got := daemon.launcher.Runner(id).Inputs(); len(got) != 2 || got[0] != "parallel" || got[1] != "\r" {
+			t.Fatalf("runner %s inputs = %q", id, got)
 		}
 	}
-	recorder.mu.Lock()
-	calls := append([]recordedSessionInput(nil), recorder.calls...)
-	recorder.mu.Unlock()
-	if len(calls) != len(targets)*2 {
-		t.Fatalf("global input calls = %#v", calls)
-	}
-	for index := 0; index < len(calls); index += 2 {
-		if calls[index].id != calls[index+1].id || calls[index+1].data != "\r" {
-			t.Fatalf("submit calls interleaved at %d: %#v", index, calls)
-		}
+	if tracked := daemon.handler.submits.tracked(); tracked != 0 {
+		t.Fatalf("per-session submit locks retained after every submit finished: %d", tracked)
 	}
 }
 
@@ -471,17 +569,78 @@ func TestAuthenticatedMachineIdentityUsesStableIDAndCurrentName(t *testing.T) {
 
 func TestKnownMutationRoutesReturnMethodNotAllowed(t *testing.T) {
 	daemon := newTestDaemon(t)
+	info, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/bash", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, path := range []string{
 		"/api/retention/gc",
 		"/api/retention/archive",
 		"/api/worktrees",
 		"/api/worktrees/clean",
 		"/api/lanes",
+		// These four answered 404 for a wrong verb while every sibling
+		// answered 405, so a caller could not tell a mistyped method from a
+		// route or session that does not exist.
+		"/api/providers",
+		"/api/providers/claude/update",
+		"/api/sessions/" + info.ID + "/wait",
+		"/api/sessions/" + info.ID + "/wait-state",
 	} {
 		response := serve(t, daemon.handler, http.MethodPatch, path, nil, "127.0.0.1:4321", nil)
 		if response.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s status=%d body=%s", path, response.Code, response.Body.String())
 		}
+	}
+	// A wrong verb is still 405 for a session that does not exist, and a
+	// correct verb still reports the missing session as 404.
+	missing := serve(t, daemon.handler, http.MethodPatch, "/api/sessions/missing/wait", nil, "127.0.0.1:4321", nil)
+	if missing.Code != http.StatusMethodNotAllowed {
+		t.Errorf("PATCH wait on missing session status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	found := serve(t, daemon.handler, http.MethodGet, "/api/sessions/missing/wait", nil, "127.0.0.1:4321", nil)
+	if found.Code != http.StatusNotFound {
+		t.Errorf("GET wait on missing session status=%d body=%s", found.Code, found.Body.String())
+	}
+}
+
+type tagsFailureRegistry struct {
+	sessionService
+	err error
+}
+
+func (r *tagsFailureRegistry) Tags(string) (map[string]string, error) { return nil, r.err }
+
+// TestSessionTagsReadSeparatesMissingSessionFromReadFailure pins GET /tags to
+// the same distinction its own PUT already made. Reporting an unreadable tag
+// file as 404 told an agent its session was gone.
+func TestSessionTagsReadSeparatesMissingSessionFromReadFailure(t *testing.T) {
+	daemon := newTestDaemon(t)
+	info, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/bash", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.handler.registry = &tagsFailureRegistry{
+		sessionService: daemon.registry,
+		err:            errors.New("read session tags: permission denied"),
+	}
+	unreadable := serve(t, daemon.handler, http.MethodGet, "/api/sessions/"+info.ID+"/tags", nil, "127.0.0.1:1", nil)
+	if unreadable.Code != http.StatusInternalServerError ||
+		!strings.Contains(unreadable.Body.String(), "permission denied") {
+		t.Fatalf("unreadable tags status=%d body=%s", unreadable.Code, unreadable.Body.String())
+	}
+
+	daemon.handler.registry = &tagsFailureRegistry{
+		sessionService: daemon.registry,
+		err:            fmt.Errorf("%w: session %s", state.ErrSessionNotFound, "missing"),
+	}
+	gone := serve(t, daemon.handler, http.MethodGet, "/api/sessions/"+info.ID+"/tags", nil, "127.0.0.1:1", nil)
+	if gone.Code != http.StatusNotFound {
+		t.Fatalf("missing session tags status=%d body=%s", gone.Code, gone.Body.String())
 	}
 }
 

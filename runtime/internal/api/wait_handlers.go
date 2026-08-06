@@ -11,8 +11,15 @@ import (
 // working flag; "heuristic" means it came from raw terminal activity. Neither
 // label claims knowledge beyond that evidence.
 func (s *Server) handleWaitRoute(response http.ResponseWriter, request *http.Request, id, suffix, corsOrigin string) bool {
-	if (suffix != "/wait" && suffix != "/wait-state") || request.Method != http.MethodGet {
+	if suffix != "/wait" && suffix != "/wait-state" {
 		return false
+	}
+	// Every other route family answers a wrong method with 405. Falling through
+	// to the session router's catch-all 404 told a caller its session was gone
+	// when only its verb was wrong.
+	if request.Method != http.MethodGet {
+		s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+		return true
 	}
 	session, ok := s.registry.Get(id)
 	if !ok {

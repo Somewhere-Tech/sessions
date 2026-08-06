@@ -275,7 +275,10 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 				denyWrite(ctx, peer, message)
 				continue
 			}
-			s.submitMu.Lock()
+			// Same per-session lock the HTTP submit takes, so the two
+			// transports cannot interleave a message and its Enter on one
+			// session while leaving every other session free to run.
+			unlock := s.submits.lock(message.SessionID)
 			written := s.registry.Input(ctx, message.SessionID, message.Data)
 			if written {
 				timer := time.NewTimer(submitSettleDelay)
@@ -287,7 +290,7 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 					written = s.registry.Input(ctx, message.SessionID, "\r")
 				}
 			}
-			s.submitMu.Unlock()
+			unlock()
 			if message.RequestID != "" {
 				_ = peer.send(ctx, map[string]any{
 					"type": "submitAck", "requestId": message.RequestID,
@@ -317,6 +320,7 @@ type clientMessage struct {
 	ClaudeEventsSince int64  `json:"claudeEventsSince"`
 	Since             *int64 `json:"since"`
 	Tail              *int64 `json:"tail"`
+	Before            *int64 `json:"before"`
 	OutputReplay      *bool  `json:"outputReplay"`
 	ClaudeReplay      *bool  `json:"claudeReplay"`
 	ClaudeLive        *bool  `json:"claudeLive"`
@@ -451,11 +455,11 @@ func (s *Server) handleMuxEvents(ctx context.Context, peer *wsPeer, message clie
 		sendRPCError(ctx, peer, message.RequestID, "unknown session "+message.SessionID, "not_found", message.SessionID)
 		return
 	}
-	window := session.EventsWindow(message.Since, message.Tail, nil)
-	_ = peer.send(ctx, map[string]any{
-		"type": "events", "requestId": message.RequestID, "sessionId": message.SessionID,
-		"events": window.Events, "nextIndex": window.NextIndex, "totalCount": window.TotalCount,
-	})
+	body := s.eventsWindowBody(ctx, session, message.SessionID, message.Since, message.Tail, message.Before)
+	body["type"] = "events"
+	body["requestId"] = message.RequestID
+	body["sessionId"] = message.SessionID
+	_ = peer.send(ctx, body)
 }
 
 func sendRPCError(ctx context.Context, peer *wsPeer, requestID, message, code, sessionID string) {

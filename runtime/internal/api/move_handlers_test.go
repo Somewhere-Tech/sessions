@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
@@ -83,6 +84,80 @@ func TestMigrateExportRefusesLiveSourceWithoutChangingIt(t *testing.T) {
 	current, ok := daemon.registry.Get(created.ID)
 	if !ok || current.Info().Exited {
 		t.Fatal("export changed the live source")
+	}
+}
+
+// TestMigrateReceiveEnforcesTheSameRequestGuardsAsEveryOtherPost pins the
+// route that decodes with its own decoder to the guards readJSON applies. It
+// used to accept any content type and any byte sequence.
+func TestMigrateReceiveEnforcesTheSameRequestGuardsAsEveryOtherPost(t *testing.T) {
+	daemon := newTestDaemon(t)
+	remote := "198.51.100.20:7000"
+	authorized := http.Header{"Authorization": {"Bearer " + testToken}}
+
+	wrongType := http.Header{"Authorization": {"Bearer " + testToken}, "Content-Type": {"text/plain"}}
+	response := serve(t, daemon.handler, http.MethodPost, "/api/migrate/receive",
+		bytes.NewReader([]byte(`{"tool":"claude-code"}`)), remote, wrongType)
+	if response.Code != http.StatusUnsupportedMediaType ||
+		!bytes.Contains(response.Body.Bytes(), []byte("content-type must be application/json")) {
+		t.Fatalf("wrong content type: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	twoTypes := http.Header{
+		"Authorization": {"Bearer " + testToken},
+		"Content-Type":  {"application/json", "application/json"},
+	}
+	response = serve(t, daemon.handler, http.MethodPost, "/api/migrate/receive",
+		bytes.NewReader([]byte(`{"tool":"claude-code"}`)), remote, twoTypes)
+	if response.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("two content types: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	invalidUTF8 := append([]byte(`{"tool":"`), 0xff, 0xfe)
+	invalidUTF8 = append(invalidUTF8, []byte(`"}`)...)
+	response = serve(t, daemon.handler, http.MethodPost, "/api/migrate/receive",
+		bytes.NewReader(invalidUTF8), remote,
+		http.Header{"Authorization": {"Bearer " + testToken}, "Content-Type": {"application/json"}})
+	if response.Code != http.StatusBadRequest ||
+		!bytes.Contains(response.Body.Bytes(), []byte("valid UTF-8")) {
+		t.Fatalf("invalid UTF-8: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// A well-formed request still reaches migrate.Receive and fails on its own
+	// terms rather than on a transport guard.
+	response = serve(t, daemon.handler, http.MethodPost, "/api/migrate/receive",
+		bytes.NewReader([]byte(`{"tool":"claude-code"}`)), remote,
+		http.Header{"Authorization": {"Bearer " + testToken}, "Content-Type": {"application/json"}})
+	if response.Code == http.StatusUnsupportedMediaType {
+		t.Fatalf("valid request rejected as unsupported media type: body=%s", response.Body.String())
+	}
+	_ = authorized
+}
+
+// TestIntegrationBytesAndJSONAgreeOnCORS keeps one CORS answer across response
+// helpers: a browser preflighting a transcript download must not learn a
+// different allowed-method or allowed-header set than any JSON route gives.
+func TestIntegrationBytesAndJSONAgreeOnCORS(t *testing.T) {
+	daemon := newTestDaemon(t)
+	origin := "https://sessions.somewhere.tech"
+
+	jsonResponse := httptest.NewRecorder()
+	daemon.handler.sendJSON(jsonResponse, http.StatusOK, map[string]any{"ok": true}, origin)
+	bytesResponse := httptest.NewRecorder()
+	daemon.handler.sendIntegrationBytes(bytesResponse, http.StatusOK, "text/plain; charset=utf-8", []byte("x"), origin)
+
+	for _, header := range []string{
+		"Access-Control-Allow-Origin",
+		"Access-Control-Allow-Methods",
+		"Access-Control-Allow-Headers",
+		"Vary",
+	} {
+		if got, want := bytesResponse.Header().Get(header), jsonResponse.Header().Get(header); got != want {
+			t.Errorf("%s = %q on byte responses and %q on JSON responses", header, got, want)
+		}
+	}
+	if got := bytesResponse.Header().Get("Access-Control-Expose-Headers"); got != "X-Sessions-Schema-Version" {
+		t.Errorf("byte responses stopped exposing the schema version header: %q", got)
 	}
 }
 
