@@ -9,12 +9,16 @@ import (
 	"strings"
 )
 
+// sessionsAppRoot resolves the per-user application root for a given home.
+// The decision lives in resolveWindowsAppRoot, in a file without a build tag,
+// so it is covered by tests that run on every host rather than only where this
+// file compiles.
 func sessionsAppRoot(home string) string {
-	localAppData := os.Getenv("LOCALAPPDATA")
-	if localAppData == "" {
-		localAppData = filepath.Join(home, "AppData", "Local")
+	signedInHome, err := os.UserHomeDir()
+	if err != nil {
+		signedInHome = ""
 	}
-	return filepath.Join(localAppData, "Sessions")
+	return resolveWindowsAppRoot(home, signedInHome, os.Getenv("LOCALAPPDATA"))
 }
 
 func defaultStateRoot(home string) string {

@@ -75,6 +75,12 @@ private hosted-service designs do not belong in this repository.
    accepts at most 103 bytes, so a long scratch root fails every session with
    `runner did not create socket within 60s: ...: connect: invalid argument`
    after a full 60-second wait (`runtime/internal/state/launcher.go`).
+
+   On Windows set `USERPROFILE` instead of `HOME`: `os.UserHomeDir` reads
+   `USERPROFILE` there, so `HOME` alone leaves the scratch daemon pointed at the
+   real user's state. The application root follows `%LOCALAPPDATA%` only for the
+   signed-in user's own home, so a scratch `USERPROFILE` isolates without
+   touching `LOCALAPPDATA` (`runtime/internal/state/config_windows_root.go`).
    See `docs/DEV.md`.
 3. **Write ahead of destructive action.** Creation and termination intent are
    ledgered before process launch or control
