@@ -1750,8 +1750,14 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 		if info.ConfigDir != "" {
 			projectsDir = filepath.Join(info.ConfigDir, "projects")
 		}
+		// The provider owns this transcript and prunes it on its own
+		// schedule, so the watcher keeps Sessions' own copy as it reads.
+		// Without it a pruned conversation is simply gone: cat, source,
+		// search, and usage all resolve through the same provider path.
 		created, err := watch.WatchSessionFile(watch.ClaudeWatcherOptions{
 			CWD: info.Cwd, ClaudeSessionID: extractClaudeSessionID(info.Args), ProjectsDir: projectsDir,
+			SessionID:  info.ID,
+			MirrorPath: watch.TranscriptMirrorPath(r.manager.config.RunnerStateDir, info.ID),
 		})
 		if err != nil {
 			return

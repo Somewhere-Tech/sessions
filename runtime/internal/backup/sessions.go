@@ -42,7 +42,11 @@ type Session struct {
 type Resolver struct {
 	ClaudeProjectsDir string
 	CodexSessionsDir  string
-	Now               func() time.Time
+	// RunnerStateDir locates Sessions' own transcript copies. The provider
+	// prunes its transcripts on its own schedule, so when the original is
+	// gone the mirror is the conversation. Empty disables the fallback.
+	RunnerStateDir string
+	Now            func() time.Time
 }
 
 func CollectSessions(live []state.SessionInfo, runnerStateDir string) []Session {
@@ -126,7 +130,13 @@ func (r Resolver) Resolve(session Session) (path, tool string) {
 		if launchID == "" {
 			launchID = session.ID
 		}
-		resolution := watch.ResolveClaudeCWD(projects, session.CWD, launchID)
+		// The provider file wins whenever it resolves, so a session always
+		// has exactly one transcript and nothing is counted twice.
+		mirror := ""
+		if r.RunnerStateDir != "" {
+			mirror = watch.TranscriptMirrorPath(r.RunnerStateDir, session.ID)
+		}
+		resolution := watch.ResolveClaudeWithMirror(projects, session.CWD, launchID, mirror)
 		return resolution.Path, "claude"
 	case "codex":
 		now := time.Now()

@@ -54,8 +54,11 @@ func TestPrettyWaitCLIEndToEnd(t *testing.T) {
 
 		code, stdout, stderr = runPrettyCLI(t, binary, environment,
 			"--port", "1", "--json", "wait", id, "--until", "commit", "--timeout", "120ms")
-		if code != 2 {
-			t.Fatalf("exit = %d, want 2; stdout=%s stderr=%s", code, stdout, stderr)
+		// A timeout is exit 3. It used to share exit 2 with "the daemon could
+		// not be reached", so a caller could not tell a slow target from a
+		// broken connection.
+		if code != 3 {
+			t.Fatalf("exit = %d, want 3; stdout=%s stderr=%s", code, stdout, stderr)
 		}
 		var timeoutOutput struct {
 			Reason string `json:"reason"`

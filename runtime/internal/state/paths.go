@@ -24,6 +24,12 @@ type Paths struct {
 	Structured   string
 	ClaudeP      string
 	Continuation string
+	// Transcript is Sessions' own append-only copy of the provider
+	// conversation, and TranscriptMeta records where it came from. The
+	// provider owns the original and prunes it on its own schedule; these are
+	// what remain when it does.
+	Transcript     string
+	TranscriptMeta string
 }
 
 func For(dir, id string) Paths {
@@ -39,6 +45,9 @@ func For(dir, id string) Paths {
 		Structured:   base + ".codexapp.jsonl",
 		ClaudeP:      base + ".claudep.jsonl",
 		Continuation: base + ".continuation.json",
+
+		Transcript:     base + ".transcript.jsonl",
+		TranscriptMeta: base + ".transcript.meta.json",
 	}
 }
 
@@ -46,7 +55,11 @@ func For(dir, id string) Paths {
 // beside "<id>.json". Discovery on a host with no socket artifact keys off the
 // metadata name, so every suffix added to Paths must be listed here or each
 // session that has one produces a phantom runner id.
-var runnerSidecarJSONSuffixes = []string{".manifest.json", ".continuation.json"}
+var runnerSidecarJSONSuffixes = []string{
+	".manifest.json",
+	".continuation.json",
+	".transcript.meta.json",
+}
 
 // RunnerIDFromMetadataName returns the runner id for a "<id>.json" metadata
 // file and reports false for anything else in the runner state directory,

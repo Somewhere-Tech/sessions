@@ -199,6 +199,13 @@ func (h *HistoryStore) Source(live []state.SessionInfo, id string) (HistorySourc
 		result.SourceKind = "missing"
 		return result, nil
 	}
+	// Saying "provider-jsonl" when the provider no longer has the file would
+	// imply the conversation is still recoverable through the provider's own
+	// resume. It is not: this is the copy Sessions kept.
+	if source.managed != nil &&
+		watch.TranscriptMirrorPath(h.options.RunnerStateDir, source.managed.ID) == path {
+		result.SourceKind = string(watch.ClaudeMirror)
+	}
 	if info, statErr := os.Stat(path); statErr == nil && info.Mode().IsRegular() {
 		result.RawBytes = info.Size()
 	}
@@ -460,6 +467,7 @@ func (h *HistoryStore) describe(source backup.Session, countMessages bool) (Hist
 	path, conversationTool := (backup.Resolver{
 		ClaudeProjectsDir: h.options.ClaudeProjectsDir,
 		CodexSessionsDir:  h.options.CodexSessionsDir,
+		RunnerStateDir:    h.options.RunnerStateDir,
 		Now:               h.options.Now,
 	}).Resolve(source)
 	tool := historyTool(source.Tool, conversationTool)

@@ -122,6 +122,7 @@ func (p *Pusher) Push(ctx context.Context, live []state.SessionInfo) (Result, er
 	resolver := Resolver{
 		ClaudeProjectsDir: p.options.ClaudeProjectsDir,
 		CodexSessionsDir:  p.options.CodexSessionsDir,
+		RunnerStateDir:    p.options.RunnerStateDir,
 		Now:               p.options.Now,
 	}
 	for _, session := range CollectSessions(live, p.options.RunnerStateDir) {
