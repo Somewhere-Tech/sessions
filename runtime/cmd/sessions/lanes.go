@@ -315,32 +315,77 @@ func (a *app) cmdWaitDispatch(args []string) error {
 	if hasWaitCondition(args) {
 		return a.cmdWait(args)
 	}
-	ids, any, summary, timeout, parseErr := parseLaneWaitArgs(args)
+	request, parseErr := parseFanOutWaitArgs(args)
 	if parseErr != nil {
 		return a.cmdWait(args)
 	}
-	resolved := make([]string, 0, len(ids))
-	for _, candidate := range ids {
+	if request.any && request.all {
+		return fail(1, "--any and --all cannot be combined: --any returns the first target to finish, --all returns every target")
+	}
+	refs := make([]waitTargetRef, 0, len(request.ids))
+	lanes := 0
+	for _, candidate := range request.ids {
 		id, lane, err := a.resolveLaneID(candidate)
 		if err != nil {
 			return err
 		}
-		if !lane {
-			if len(ids) == 1 && !any {
-				return a.cmdWait(args)
-			}
-			return fail(1, "%s is not a lane", candidate)
+		if lane {
+			lanes++
+			refs = append(refs, waitTargetRef{id: id, lane: true})
+			continue
 		}
-		resolved = append(resolved, id)
+		// One bare session target keeps the original single-session path,
+		// which knows how to resolve prefixes and report an unknown id.
+		if len(request.ids) == 1 && !request.any && !request.all {
+			return a.cmdWait(args)
+		}
+		sessionID, err := a.resolveSessionID(candidate)
+		if err != nil {
+			return err
+		}
+		refs = append(refs, waitTargetRef{id: sessionID})
 	}
-	if len(resolved) > 1 && !any {
-		return fail(1, "multiple lanes require --any")
+	if request.idleSeen && lanes == len(refs) {
+		// The value used to be parsed and thrown away, so a caller who asked
+		// for a settle window on a lane silently got none. In a mixed join it
+		// still means something — it governs the session targets — so it is
+		// refused only when no target could ever use it.
+		return fail(1, "--idle describes a settling session, not a lane; a lane wait ends when the process exits — drop --idle or wait on the session instead")
 	}
-	completedID, manifest, err := a.waitForLaneExit(resolved, timeout)
+	if len(refs) > 1 && !request.any && !request.all {
+		return fail(1, "multiple targets require --any (first to finish) or --all (join every target)")
+	}
+	if request.all {
+		results, lines, err := a.runWaitJoin(refs, request.idle, request.timeout, request.summary, false)
+		if err != nil {
+			return err
+		}
+		return a.writeWaitJoin(results, lines)
+	}
+	if lanes == len(refs) && lanes > 0 {
+		// Lane-only waits keep propagating the winning lane's own exit code.
+		completedID, manifest, err := a.waitForLaneExit(idsOfWaitRefs(refs), request.timeout)
+		if err != nil {
+			return err
+		}
+		return a.writeLaneWaitCompletion(completedID, manifest, false, request.summary)
+	}
+	results, lines, err := a.runWaitJoin(refs, request.idle, request.timeout, request.summary, true)
 	if err != nil {
 		return err
 	}
-	return a.writeLaneWaitCompletion(completedID, manifest, false, summary)
+	if len(results) == 0 {
+		return fail(1, "no target answered")
+	}
+	return a.writeWaitOutcome(results[0], strings.TrimSpace(strings.Join(lines, " ")), !results[0].OK)
+}
+
+func idsOfWaitRefs(refs []waitTargetRef) []string {
+	ids := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ids = append(ids, ref.id)
+	}
+	return ids
 }
 
 func (a *app) waitForLaneExit(ids []string, timeout time.Duration) (string, laneManifest, error) {
@@ -354,7 +399,7 @@ func (a *app) waitForLaneExit(ids []string, timeout time.Duration) (string, lane
 	result, err := waitcond.WaitAny(ctx, conditions)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return "", laneManifest{}, a.writeWaitTimeout(timeout, time.Since(started), len(conditions))
+			return "", laneManifest{}, a.writeWaitTimeout(waitKindLane, ids, timeout, time.Since(started))
 		}
 		return "", laneManifest{}, fail(1, "%s", err)
 	}
@@ -368,27 +413,26 @@ func (a *app) waitForLaneExit(ids []string, timeout time.Duration) (string, lane
 	return result.Session, manifest, nil
 }
 
+// writeLaneWaitCompletion reports a finished lane in the shared wait envelope.
+// It used to answer with the completion manifest flattened at the top level
+// under an `id` key, which shared no field with what waiting on a session
+// returns — no ok, no reason — so a caller could not write one parser for both.
+//
+// The exit status is deliberately untouched: `sessions run --wait` and a lane
+// wait both still propagate the child's own exit code.
 func (a *app) writeLaneWaitCompletion(id string, manifest laneManifest, outputOnly, includeSummary bool) error {
-	if a.wantJSON {
-		output := struct {
-			ID      string `json:"id"`
-			Summary string `json:"summary,omitempty"`
-			laneManifest
-		}{ID: id, Summary: compactSummary(manifest.LastOutputTail), laneManifest: manifest}
-		if !includeSummary {
-			output.Summary = ""
-		}
-		if err := writeJSON(a.stdout, output, false); err != nil {
-			return err
-		}
-	} else if outputOnly {
+	outcome := laneWaitOutcome(id, manifest, includeSummary)
+	if !a.wantJSON && outputOnly {
 		if err := writeLaneOutputTail(a.stdout, manifest.LastOutputTail); err != nil {
 			return err
 		}
 	} else {
-		fmt.Fprintf(a.stdout, "%s exited %d after %s\n", id, manifest.ExitCode, formatLaneDuration(manifest.DurationMS))
+		human := fmt.Sprintf("%s exited %d after %s", id, manifest.ExitCode, formatLaneDuration(manifest.DurationMS))
 		if includeSummary {
-			fmt.Fprintf(a.stdout, "summary: %s\n", compactSummary(manifest.LastOutputTail))
+			human += "\nsummary: " + compactSummary(manifest.LastOutputTail)
+		}
+		if err := a.emitWaitOutcome(outcome, human, false); err != nil {
+			return err
 		}
 	}
 	if manifest.ExitCode != 0 {
@@ -418,52 +462,71 @@ func hasWaitCondition(args []string) bool {
 	return false
 }
 
-func parseLaneWaitArgs(args []string) ([]string, bool, bool, time.Duration, error) {
-	ids := make([]string, 0, 2)
-	any := false
-	summary := false
-	timeout := defaultLaneWaitTimeout
+// fanOutWaitRequest is a wait over one or more named targets with no --until
+// condition, which is the form a delegator uses to join work it handed out.
+type fanOutWaitRequest struct {
+	ids      []string
+	any      bool
+	all      bool
+	summary  bool
+	timeout  time.Duration
+	idle     time.Duration
+	idleSeen bool
+}
+
+func parseFanOutWaitArgs(args []string) (fanOutWaitRequest, error) {
+	request := fanOutWaitRequest{
+		ids: make([]string, 0, 2), timeout: defaultLaneWaitTimeout, idle: 2 * time.Second,
+	}
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
 		case "--any":
-			if any {
-				return nil, false, false, 0, errors.New("duplicate --any")
+			if request.any {
+				return request, errors.New("duplicate --any")
 			}
-			any = true
+			request.any = true
+		case "--all":
+			if request.all {
+				return request, errors.New("duplicate --all")
+			}
+			request.all = true
 		case "--summary":
-			if summary {
-				return nil, false, false, 0, errors.New("duplicate --summary")
+			if request.summary {
+				return request, errors.New("duplicate --summary")
 			}
-			summary = true
+			request.summary = true
 		case "--timeout":
 			if index+1 >= len(args) {
-				return nil, false, false, 0, errors.New("missing timeout")
+				return request, errors.New("missing timeout")
 			}
 			index++
 			parsed, err := parseDuration(args[index], 0)
 			if err != nil || parsed <= 0 {
-				return nil, false, false, 0, errors.New("invalid timeout")
+				return request, errors.New("invalid timeout")
 			}
-			timeout = parsed
+			request.timeout = parsed
 		case "--idle":
 			if index+1 >= len(args) {
-				return nil, false, false, 0, errors.New("missing idle duration")
+				return request, errors.New("missing idle duration")
 			}
 			index++
-			if parsed, err := parseDuration(args[index], 0); err != nil || parsed < 0 {
-				return nil, false, false, 0, errors.New("invalid idle duration")
+			parsed, err := parseDuration(args[index], 0)
+			if err != nil || parsed < 0 {
+				return request, errors.New("invalid idle duration")
 			}
+			request.idle = parsed
+			request.idleSeen = true
 		default:
 			if strings.HasPrefix(args[index], "-") || args[index] == "" {
-				return nil, false, false, 0, errors.New("not a lane wait")
+				return request, errors.New("not a fan-out wait")
 			}
-			ids = append(ids, args[index])
+			request.ids = append(request.ids, args[index])
 		}
 	}
-	if len(ids) == 0 {
-		return nil, false, false, 0, errors.New("no lanes")
+	if len(request.ids) == 0 {
+		return request, errors.New("no targets")
 	}
-	return ids, any, summary, timeout, nil
+	return request, nil
 }
 
 type laneExitCondition struct {

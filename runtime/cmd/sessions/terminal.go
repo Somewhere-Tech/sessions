@@ -22,15 +22,27 @@ func (a *app) cmdTail(args []string) error {
 	}
 	idArg := args[0]
 	args = args[1:]
-	follow := contains(args, "-f") || contains(args, "--follow")
+	// Unknown and half-written options used to be skipped in silence, so
+	// `tail X --lines` (no number) and `tail X --folow` both printed 50 lines
+	// as if they had been understood.
+	follow := false
 	linesCount := 50
 	for index := 0; index < len(args); index++ {
-		if (args[index] == "-n" || args[index] == "--lines") && index+1 < len(args) {
+		switch args[index] {
+		case "-f", "--follow":
+			follow = true
+		case "-n", "--lines":
+			if index+1 >= len(args) {
+				return fail(1, "%s needs a positive integer", args[index])
+			}
 			value, err := strconv.Atoi(args[index+1])
 			if err != nil || value < 1 {
 				return fail(1, "--lines must be a positive integer")
 			}
 			linesCount = value
+			index++
+		default:
+			return fail(1, "unknown tail option %s — valid options are -f/--follow and -n/--lines N", args[index])
 		}
 	}
 	id, err := a.resolveSessionID(idArg)

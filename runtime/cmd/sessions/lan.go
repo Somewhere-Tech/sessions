@@ -72,13 +72,37 @@ func (a *app) lanStatus() error {
 		_, err := io.WriteString(a.stdout, "LAN access is disabled. Enable it with: sessions lan enable\n")
 		return err
 	}
+	// A configured-but-unverified listener is the most common state this
+	// command reports, and it used to leave --json callers with a bare error:
+	// the URL, the enabled flag, and the Bonjour state were all thrown away
+	// even though the daemon had just reported them. `remote status` answers
+	// the analogous case with the configured state plus verified:false, and
+	// this now matches it, so a client can still show and pair the endpoint.
 	if !currentLANMatches(*current.URL) {
+		if a.wantJSON {
+			return a.writeLANStatus(current, "The current LAN IP no longer matches the listener; re-run `sessions lan enable` to bind sessionsd to this network.")
+		}
 		return fail(2, "LAN access is enabled at %s, but the current LAN IP no longer matches the listener. Re-run `sessions lan enable` to bind sessionsd to this network.", *current.URL)
 	}
 	if err := verifyLANEndpoint(*current.URL); err != nil {
+		if a.wantJSON {
+			return a.writeLANStatus(current, fmt.Sprintf("Health verification failed: %s. Make sure this Mac is still on that network and macOS Firewall allows sessionsd.", err))
+		}
 		return failLANVerification(*current.URL, err)
 	}
 	return a.printLANConnection(current)
+}
+
+// writeLANStatus reports a configured LAN listener that did not verify.
+func (a *app) writeLANStatus(current lanState, verificationError string) error {
+	endpoint := *current.URL
+	return writeJSON(a.stdout, struct {
+		Enabled           bool    `json:"enabled"`
+		Verified          bool    `json:"verified"`
+		URL               *string `json:"url"`
+		Bonjour           any     `json:"bonjour"`
+		VerificationError string  `json:"verificationError"`
+	}{true, false, &endpoint, current.Bonjour, verificationError}, false)
 }
 
 func (a *app) lanDisable() error {

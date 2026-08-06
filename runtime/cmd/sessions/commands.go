@@ -635,14 +635,22 @@ func killItemIDs(items []killItem) []string {
 }
 
 func (a *app) cmdKill(ids []string) error {
-	reason, hasReason := pluck(&ids, "--reason")
-	force := removeFirst(&ids, "--force")
-	if hasReason {
-		reason = strings.TrimSpace(reason)
+	// --reason takes the next word whatever it is, so `kill a --reason --force`
+	// used to record the literal reason "--force" and quietly drop the force
+	// the caller asked for. Every other option with a value refuses a flag
+	// here; this one now does too.
+	reasonValue, err := pluckControl(&ids, "--reason")
+	if err != nil {
+		return fail(1, "--reason needs an explanation, not the flag that follows it — quote it as `--reason \"...\"`")
+	}
+	reason := ""
+	if reasonValue != nil {
+		reason = strings.TrimSpace(*reasonValue)
 		if reason == "" {
 			return fail(1, "--reason needs a non-empty explanation")
 		}
 	}
+	force := removeFirst(&ids, "--force")
 	if len(ids) == 0 {
 		return fail(1, "usage: sessions kill <id> [<id>...] [--reason <text>] [--force]")
 	}
@@ -745,15 +753,45 @@ func (a *app) cmdKill(ids []string) error {
 //
 // ok answers one question only: can the caller stop waiting and act? Idle and
 // needs-input are both actionable. Gone, failed, and timeout are not.
+//
+// Every other thing a caller can wait for — a lane exiting, a commit landing,
+// a literal appearing in a file, an idle window holding — now answers with this
+// same object. Those paths used to return three unrelated shapes that shared no
+// field with this one and disagreed about casing, so a delegator fanning out
+// over a mix of sessions and lanes needed a different parser per target. kind
+// says which sort of target answered, the target id is always in session, and
+// the payload that is genuinely specific to one kind lives in a nested object
+// rather than at the top level where it would collide.
 type waitOutcome struct {
-	OK         bool   `json:"ok"`
-	Reason     string `json:"reason"`
-	Session    string `json:"session"`
-	Working    bool   `json:"working"`
-	IdleMS     int64  `json:"idleMs"`
-	IdleReason string `json:"idleReason,omitempty"`
-	Detail     string `json:"detail,omitempty"`
-	Summary    string `json:"summary,omitempty"`
+	OK        bool   `json:"ok"`
+	Kind      string `json:"kind"`
+	Reason    string `json:"reason"`
+	Session   string `json:"session"`
+	Working   bool   `json:"working"`
+	IdleMS    int64  `json:"idleMs"`
+	ElapsedMS int64  `json:"elapsedMs,omitempty"`
+	// Targets is populated only when one outcome covers several targets at
+	// once — a race that timed out without any of them answering — because
+	// then no single id produced it.
+	Targets    []string             `json:"targets,omitempty"`
+	IdleReason string               `json:"idleReason,omitempty"`
+	Detail     string               `json:"detail,omitempty"`
+	Summary    string               `json:"summary,omitempty"`
+	Lane       *laneManifest        `json:"lane,omitempty"`
+	Condition  *waitConditionDetail `json:"condition,omitempty"`
+}
+
+// waitConditionDetail carries what only a --until condition can report.
+type waitConditionDetail struct {
+	Cwd              string `json:"cwd,omitempty"`
+	Baseline         string `json:"baseline,omitempty"`
+	Commit           string `json:"commit,omitempty"`
+	Subject          string `json:"subject,omitempty"`
+	HistoryRewritten bool   `json:"history_rewritten,omitempty"`
+	File             string `json:"file,omitempty"`
+	Contains         string `json:"contains,omitempty"`
+	IdleStableMS     int64  `json:"idle_stable_ms,omitempty"`
+	Source           string `json:"source,omitempty"`
 }
 
 const (
@@ -762,31 +800,76 @@ const (
 	waitReasonFailed     = "failed"
 	waitReasonGone       = "gone"
 	waitReasonTimeout    = "timeout"
+	// waitReasonExited is a lane that ran to completion with status 0. A lane
+	// that exited non-zero reports failed, which is the same answer a session
+	// that ended badly gives, so one branch covers both.
+	waitReasonExited = "exited"
+	// waitReasonSatisfied is a --until condition that was observed.
+	waitReasonSatisfied = "satisfied"
+)
+
+const (
+	waitKindSession    = "session"
+	waitKindLane       = "lane"
+	waitKindCommit     = "commit"
+	waitKindFile       = "file-contains"
+	waitKindIdleStable = "idle-stable"
+	// waitKindCondition labels a race between conditions of different kinds
+	// that ended without any of them being observed.
+	waitKindCondition = "condition"
+	// waitKindJoin labels the envelope `wait --all` returns.
+	waitKindJoin = "all"
 )
 
 // writeWaitOutcome emits the envelope and returns the exit status that matches
 // it, so the JSON and the exit code can never disagree.
 func (a *app) writeWaitOutcome(outcome waitOutcome, humanText string, humanToStderr bool) error {
-	if a.wantJSON {
-		if err := writeJSON(a.stdout, outcome, false); err != nil {
-			return err
-		}
-	} else {
-		destination := a.stdout
-		if humanToStderr {
-			destination = a.stderr
-		}
-		if _, err := io.WriteString(destination, humanText+"\n"); err != nil {
-			return err
-		}
+	if err := a.emitWaitOutcome(outcome, humanText, humanToStderr); err != nil {
+		return err
 	}
-	switch outcome.Reason {
+	return waitExitStatus(outcome.Reason)
+}
+
+// emitWaitOutcome writes the envelope without deciding the exit status, for the
+// one caller that has a more specific status to report: a single lane wait
+// still propagates the child's own exit code.
+func (a *app) emitWaitOutcome(outcome waitOutcome, humanText string, humanToStderr bool) error {
+	if a.wantJSON {
+		return writeJSON(a.stdout, outcome, false)
+	}
+	destination := a.stdout
+	if humanToStderr {
+		destination = a.stderr
+	}
+	_, err := io.WriteString(destination, humanText+"\n")
+	return err
+}
+
+func waitExitStatus(reason string) error {
+	switch reason {
 	case waitReasonTimeout:
 		return status(exitWaitTimeout)
 	case waitReasonGone, waitReasonFailed:
 		return status(exitTargetUnavailable)
 	default:
 		return nil
+	}
+}
+
+// waitReasonSeverity orders outcomes so a fan-out join can report one aggregate
+// reason without hiding the worst thing that happened.
+func waitReasonSeverity(reason string) int {
+	switch reason {
+	case waitReasonGone:
+		return 4
+	case waitReasonFailed:
+		return 3
+	case waitReasonTimeout:
+		return 2
+	case waitReasonNeedsInput:
+		return 1
+	default:
+		return 0
 	}
 }
 
@@ -823,6 +906,32 @@ func (a *app) cmdWait(args []string) error {
 		return err
 	}
 	start := a.now()
+	tracker := waitTracker{ref: waitTargetRef{id: id}}
+	for {
+		sessions, err := a.listSessions(false)
+		if err != nil {
+			return err
+		}
+		probe := a.probeSessionWait(&tracker, sessions, idle, includeSummary)
+		if probe.outcome != nil {
+			return a.writeWaitOutcome(*probe.outcome, probe.human, probe.humanToStderr)
+		}
+		if a.now().Sub(start) >= timeout {
+			return a.writeWaitOutcome(waitOutcome{
+				OK:      false,
+				Kind:    waitKindSession,
+				Reason:  waitReasonTimeout,
+				Session: id,
+				Working: probe.working,
+				IdleMS:  probe.idleMS,
+			}, fmt.Sprintf("timeout: still active after %dms (last %dms ago)",
+				timeout.Milliseconds(), probe.idleMS), true)
+		}
+		a.sleep(waitPollInterval(idle))
+	}
+}
+
+func waitPollInterval(idle time.Duration) time.Duration {
 	poll := idle / 4
 	if poll < 100*time.Millisecond {
 		poll = 100 * time.Millisecond
@@ -830,109 +939,115 @@ func (a *app) cmdWait(args []string) error {
 	if poll > 500*time.Millisecond {
 		poll = 500 * time.Millisecond
 	}
-	var notWorkingSince time.Time
-	for {
-		sessions, err := a.listSessions(false)
-		if err != nil {
-			return err
+	return poll
+}
+
+// waitProbe is one target's reading from one poll. A nil outcome means the
+// target has not reached a terminal state yet; working and idleMS are still
+// reported so the caller can describe a timeout without a second observation.
+type waitProbe struct {
+	outcome       *waitOutcome
+	human         string
+	humanToStderr bool
+	working       bool
+	idleMS        int64
+}
+
+// probeSessionWait decides, from one session-list snapshot, whether a session
+// target has finished waiting. `wait <id>` and the fan-out join share it so the
+// two can never drift into disagreeing about what idle means.
+func (a *app) probeSessionWait(tracker *waitTracker, sessions []session, idle time.Duration, includeSummary bool) waitProbe {
+	var current *session
+	for index := range sessions {
+		if sessions[index].ID == tracker.ref.id {
+			current = &sessions[index]
+			break
 		}
-		var current *session
-		for index := range sessions {
-			if sessions[index].ID == id {
-				current = &sessions[index]
-				break
-			}
-		}
-		if current == nil {
-			// A target that vanished is the outcome a delegating agent most
-			// needs to distinguish, and it used to report ok:true and exit 0 —
-			// so every loop written as `if rc == 0` treated a dead delegate as
-			// a finished one.
-			return a.writeWaitOutcome(waitOutcome{
-				OK:      false,
-				Reason:  waitReasonGone,
-				Session: id,
-			}, "gone", false)
-		}
-		if !current.Working && (current.IdleReason == state.IdleReasonNeedsInput || current.IdleReason == state.IdleReasonFailed) {
-			reason := waitReasonNeedsInput
-			if current.IdleReason == state.IdleReasonFailed {
-				reason = waitReasonFailed
-			}
-			message := current.LastSummary
-			if current.IdleReason == state.IdleReasonNeedsInput && current.IdleDetail != "" {
-				message = current.IdleDetail
-			}
-			if message == "" {
-				message = current.IdleReason
-			}
-			return a.writeWaitOutcome(waitOutcome{
-				OK:         reason == waitReasonNeedsInput,
-				Reason:     reason,
-				Session:    current.ID,
-				Working:    false,
-				IdleReason: current.IdleReason,
-				Detail:     current.IdleDetail,
-				Summary:    current.LastSummary,
-			}, fmt.Sprintf("%s — %s", current.IdleReason, message), reason == waitReasonFailed)
-		}
-		idleFor := time.Duration(0)
-		if isConfirmableTool(toolOfSession(*current)) {
-			if current.Working {
-				notWorkingSince = time.Time{}
-			} else if notWorkingSince.IsZero() {
-				notWorkingSince = a.now()
-			}
-			if !notWorkingSince.IsZero() {
-				idleFor = a.now().Sub(notWorkingSince)
-			}
-		} else {
-			base := current.LastDataAt
-			if base == 0 {
-				base = current.CreatedAt
-			}
-			idleFor = a.now().Sub(time.UnixMilli(base))
-		}
-		if idleFor >= idle {
-			summary := current.LastSummary
-			if summary == "" {
-				summary = current.IdleDetail
-			}
-			if summary == "" {
-				summary = current.IdleReason
-			}
-			humanText := fmt.Sprintf("idle for %dms", idleFor.Milliseconds())
-			if includeSummary {
-				humanText = fmt.Sprintf("%s — %s", current.ID, summary)
-			}
-			// --summary now only decides how much prose comes back. It used to
-			// decide whether the caller learned which session answered, which
-			// made the schema depend on a display flag.
-			outcome := waitOutcome{
-				OK:         true,
-				Reason:     waitReasonIdle,
-				Session:    current.ID,
-				Working:    current.Working,
-				IdleMS:     idleFor.Milliseconds(),
-				IdleReason: current.IdleReason,
-			}
-			if includeSummary {
-				outcome.Summary = current.LastSummary
-			}
-			return a.writeWaitOutcome(outcome, humanText, false)
-		}
-		if a.now().Sub(start) >= timeout {
-			return a.writeWaitOutcome(waitOutcome{
-				OK:      false,
-				Reason:  waitReasonTimeout,
-				Session: current.ID,
-				Working: current.Working,
-				IdleMS:  idleFor.Milliseconds(),
-			}, fmt.Sprintf("timeout: still active after %dms (last %dms ago)",
-				timeout.Milliseconds(), idleFor.Milliseconds()), true)
-		}
-		a.sleep(poll)
 	}
+	if current == nil {
+		// A target that vanished is the outcome a delegating agent most
+		// needs to distinguish, and it used to report ok:true and exit 0 —
+		// so every loop written as `if rc == 0` treated a dead delegate as
+		// a finished one.
+		return waitProbe{outcome: &waitOutcome{
+			OK:      false,
+			Kind:    waitKindSession,
+			Reason:  waitReasonGone,
+			Session: tracker.ref.id,
+		}, human: "gone"}
+	}
+	if !current.Working && (current.IdleReason == state.IdleReasonNeedsInput || current.IdleReason == state.IdleReasonFailed) {
+		reason := waitReasonNeedsInput
+		if current.IdleReason == state.IdleReasonFailed {
+			reason = waitReasonFailed
+		}
+		message := current.LastSummary
+		if current.IdleReason == state.IdleReasonNeedsInput && current.IdleDetail != "" {
+			message = current.IdleDetail
+		}
+		if message == "" {
+			message = current.IdleReason
+		}
+		return waitProbe{outcome: &waitOutcome{
+			OK:         reason == waitReasonNeedsInput,
+			Kind:       waitKindSession,
+			Reason:     reason,
+			Session:    current.ID,
+			Working:    false,
+			IdleReason: current.IdleReason,
+			Detail:     current.IdleDetail,
+			Summary:    current.LastSummary,
+		}, human: fmt.Sprintf("%s — %s", current.IdleReason, message), humanToStderr: reason == waitReasonFailed}
+	}
+	idleFor := time.Duration(0)
+	if isConfirmableTool(toolOfSession(*current)) {
+		if current.Working {
+			tracker.notWorkingSince = time.Time{}
+		} else if tracker.notWorkingSince.IsZero() {
+			tracker.notWorkingSince = a.now()
+		}
+		if !tracker.notWorkingSince.IsZero() {
+			idleFor = a.now().Sub(tracker.notWorkingSince)
+		}
+	} else {
+		base := current.LastDataAt
+		if base == 0 {
+			base = current.CreatedAt
+		}
+		idleFor = a.now().Sub(time.UnixMilli(base))
+	}
+	probe := waitProbe{working: current.Working, idleMS: idleFor.Milliseconds()}
+	if idleFor < idle {
+		return probe
+	}
+	summary := current.LastSummary
+	if summary == "" {
+		summary = current.IdleDetail
+	}
+	if summary == "" {
+		summary = current.IdleReason
+	}
+	probe.human = fmt.Sprintf("idle for %dms", idleFor.Milliseconds())
+	if includeSummary {
+		probe.human = fmt.Sprintf("%s — %s", current.ID, summary)
+	}
+	// --summary now only decides how much prose comes back. It used to
+	// decide whether the caller learned which session answered, which
+	// made the schema depend on a display flag.
+	outcome := waitOutcome{
+		OK:         true,
+		Kind:       waitKindSession,
+		Reason:     waitReasonIdle,
+		Session:    current.ID,
+		Working:    current.Working,
+		IdleMS:     idleFor.Milliseconds(),
+		IdleReason: current.IdleReason,
+	}
+	if includeSummary {
+		outcome.Summary = current.LastSummary
+	}
+	probe.outcome = &outcome
+	return probe
 }
 
 func positiveInt(raw, label string) (int, error) {

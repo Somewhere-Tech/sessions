@@ -33,7 +33,7 @@ Daily workflows:
   lanes                    list headless lanes
   send                     send text and Enter to a session
   ask                      send, wait, and print the reply
-  wait                     wait for session idle or lane exit
+  wait                     wait for session idle, lane exit, or a fan-out join
   last                     print recent conversation or lane output
   grep                     search every approved machine
   search                   search normalized session chat history
@@ -80,6 +80,17 @@ Admin/operational:
   docs                     print the complete offline CLI reference
   help                     show top-level or command help
   version (--version, -v)  print the CLI version
+
+Delegating to another agent:
+  Sessions is cross-agent and cross-provider: a Claude session can create and
+  drive a Codex delegate and the reverse, which native subagents cannot do, and
+  a delegate outlives the session that created it. Create one with `sessions new
+  --tool claude|codex` or `sessions run` for a headless lane, hand it work with
+  `sessions ask` or `sessions send --from <your-session>` so the message carries
+  durable attribution back to you, then join the results with `sessions wait
+  <id>` for one, `--any` for the first of several, or `--all` for every one.
+  `sessions list --mine` recovers the delegates you created after a compaction,
+  so ids never have to be remembered. See `sessions help wait`.
 
 Global flags:
   --json           machine-friendly output; may also appear among command options
@@ -174,15 +185,18 @@ Examples:
 
 ```text
 Usage:
-  sessions run [--name N] [--description PURPOSE] [--tag KEY=VALUE ...] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--owner ID [--detach]] [--wait [--output]] -- <cmd args...>
+  sessions run [--name N] [--description PURPOSE] [--tag KEY=VALUE ...] [--cwd D] [--worktree [--base REF]] [--spec FILE] [--owner ID [--detach]] [--wait [--timeout D] [--output]] -- <cmd args...>
 
 run a command in a headless lane
 
-Create a headless lane for the command following the first -- separator. --description (alias --desc) records why the lane exists. --worktree creates an isolated Sessions-owned worktree; it does not symlink node_modules. Every child argument after the separator is passed unchanged. Without --wait, print the lane id and return. --wait blocks for completion and propagates the child exit code; --output prints the captured output tail. --owner records an external principal as the creator instead of the inherited Sessions ancestry, and --detach is required with it when this process already belongs to a session, creating an external root rather than a child.
+Create a headless lane for the command following the first -- separator. --description (alias --desc) records why the lane exists. --worktree creates an isolated Sessions-owned worktree; it does not symlink node_modules. Every child argument after the separator is passed unchanged. Without --wait, print the lane id and return. --wait blocks for completion and propagates the child exit code; --output prints the captured output tail. --timeout raises the 30-second default the wait would otherwise be capped at, which is shorter than most delegated work; the lane keeps running past a timeout, so `sessions wait <lane>` can still collect it. --owner records an external principal as the creator instead of the inherited Sessions ancestry, and --detach is required with it when this process already belongs to a session, creating an external root rather than a child.
+
+Under --wait the completion is reported in the shared wait envelope: ok, kind:"lane", reason, session, and a nested lane object with exit_code, signal, duration_ms, and last_output_tail.
 
 Examples:
   sessions run -- make test
   sessions run --name lint --worktree --wait --output -- npm run lint
+  sessions run --wait --timeout 30m -- ./slow-migration.sh
   sessions --json run --wait -- sh -c 'exit 3'
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -365,7 +379,9 @@ Usage:
 
 send text and Enter to a session
 
-Send a message and Enter. Claude and Codex sessions wait for receipt confirmation by default; --no-wait uses fire-and-forget behavior and --file reads the message body from a UTF-8 file. --from records a durable, content-free source-lane attribution; agents running inside Sessions inherit their source lane automatically. An unrecognized option in front of the message is refused rather than typed into the session; put -- before a message that must begin with dashes.
+Send a message and Enter. Claude and Codex sessions wait for receipt confirmation by default; --no-wait uses fire-and-forget behavior and --file reads the message body from a UTF-8 file. --from records a durable, content-free source-lane attribution, so a delegate can see which session asked and reply to it by id; agents running inside Sessions inherit their source lane automatically, and the target may be running the other provider. An unrecognized option in front of the message is refused rather than typed into the session; put -- before a message that must begin with dashes.
+
+send delivers and returns; it does not wait for the reply. Follow it with `sessions wait <id>` for one delegate or `sessions wait <id>... --all` for a fan-out, or use `sessions ask` for a single request and answer.
 
 Examples:
   sessions send 0123abcd 'Run the focused tests.'
@@ -384,7 +400,11 @@ Usage:
 
 send, wait, and print the reply
 
-Send a confirmed message to a Claude or Codex session, wait for the reply to finish, and print the last assistant message.
+Send a confirmed message to a Claude or Codex session, wait for the reply to finish, and print the last assistant message. This is the request-and-answer form of delegation, including to a session running the other provider; use send plus wait when the reply should not be waited for inline.
+
+ask and send share one delivery path and report it identically: while the message is still being confirmed, ask answers with send's document — submitted, confidence, and on failure reason, sessionState, textStillInComposer, and composerTail — and exits with send's status, 1 when the text is still sitting in the composer and 2 when it left the composer with nothing acknowledging it. Once delivery is confirmed, the answer is {submitted, confidence, reply} with reply null when no assistant message followed. A target whose tool cannot confirm submission exits 1 in both plain and --json mode; use send plus wait for those.
+
+Exit codes: 0 a reply was printed, 1 or 2 the message was not confirmed delivered, 3 the message was delivered but no reply arrived within --wait-timeout — the session may still be working, so poll with `sessions wait`.
 
 Examples:
   sessions ask 0123abcd 'Summarize the failing test.'
@@ -397,19 +417,24 @@ Examples:
 
 ```text
 Usage:
-  sessions wait <id> [<id>... --any] [--idle D] [--timeout D] [--summary] [condition]
+  sessions wait <id> [<id>... --any | --all] [--idle D] [--timeout D] [--summary] [condition]
 
-wait for session idle or lane exit
+wait for session idle, lane exit, or a fan-out join
 
-Wait for a session to become idle or a lane to exit. --summary reports which target changed and its last useful assistant/output summary. Lane waits propagate the lane exit code. Conditions include --until commit, --until-file-contains FILE STRING, and --until-idle-stable D.
+Wait for a session to become idle or a lane to exit. --summary reports which target changed and its last useful assistant/output summary. A single lane wait propagates the lane exit code. Conditions include --until commit, --until-file-contains FILE STRING, and --until-idle-stable D.
 
-Waiting on a session always answers with the same JSON object: ok, reason, session, working, idleMs, and the optional idleReason, detail, and summary. reason is one of idle, needs-input, failed, gone, or timeout, and ok is true only when the caller can stop waiting and act — idle and needs-input. --summary adds prose; it never changes the shape.
+Every wait answers with the same JSON object: ok, kind, reason, session, working, idleMs, and the optional elapsedMs, idleReason, detail, summary, and a nested lane or condition object carrying what only that kind of target can report — a lane's exit_code, signal, duration_ms, and last_output_tail, or a condition's commit, file, or idle_stable_ms. kind is session, lane, commit, file-contains, or idle-stable, and the target id is always in session. reason is idle, needs-input, exited, satisfied, failed, gone, or timeout, and ok is true only when the caller can stop waiting and act. A lane that exits non-zero reports failed with its status in lane.exit_code. --summary adds prose; it never changes the shape.
 
-Exit codes: 0 the condition was satisfied, 1 usage, 2 the daemon could not be reached, 3 timed out without observing the condition, 4 the target is gone or failed so waiting longer cannot help. A vanished target reports ok:false and exit 4; treat exit 0 alone as success only for commands that do not wait.
+Fanning out to several delegates: --any returns the first target to finish, for a race. --all waits for every target and returns {ok, kind:"all", reason, waited, results:[...]} where results holds one envelope per target in the order they were named, ok is true only if every target is ok, and reason carries the worst outcome — so a delegator can join N delegates in one call instead of re-waiting them one at a time and losing the ones that died in between. Sessions and lanes may be mixed. --idle describes a settling session and governs only the session targets; it is refused when every target is a lane, whose wait ends when the process exits.
+
+--until-file-contains resolves a relative path against your own working directory, not the delegate's; an absolute path is used unchanged. The delegate's cwd is rarely what a caller expects, since `sessions new` defaults it to $HOME while `sessions run` inherits the caller's.
+
+Exit codes: 0 the condition was satisfied, 1 usage, 2 the daemon could not be reached, 3 timed out without observing the condition, 4 the target is gone or failed so waiting longer cannot help. With --all the worst per-target outcome decides. A vanished target reports ok:false and exit 4; treat exit 0 alone as success only for commands that do not wait.
 
 Examples:
   sessions wait 0123abcd --timeout 2m --summary
   sessions wait lane-a lane-b --any --summary
+  sessions --json wait 0123abcd 89abcdef lane-c --all --timeout 30m
   sessions wait 0123abcd --until commit --timeout 10m
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -516,7 +541,7 @@ Usage:
 
 terminate sessions or lanes
 
-Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit.
+Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one, and it refuses to swallow a following flag as the explanation, so `--reason --force` is a usage error rather than a recorded reason of '--force' with the force silently dropped. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit.
 
 Results are reported per target from what the daemon confirmed, never assumed. Each target is killed, already-exited for a lane that had already finished, failed when the daemon refused or did not confirm it, or unconfirmed when the daemon accepted the request without saying which sessions ended. The command exits 1 when any target failed and 2 when any target could not be confirmed, so a partially refused batch is never reported as success. --json prints {"items":[{"id","status","reason"}],"operation_id"} on stdout with the same statuses, matching the per-target shape used by archive and aside.
 
@@ -609,7 +634,7 @@ Usage:
 
 print or follow recent terminal lines
 
-Print the last N terminal lines, defaulting to 50. -n and --lines are the same option and take a positive integer. -f and --follow are the same option and keep streaming new output until interrupted.
+Print the last N terminal lines, defaulting to 50. -n and --lines are the same option and take a positive integer. -f and --follow are the same option and keep streaming new output until interrupted. An unknown option, or -n without a number, is refused rather than ignored, so a mistyped flag never silently prints the default instead of what was asked for.
 
 Examples:
   sessions tail 0123abcd
@@ -957,11 +982,11 @@ Examples:
 
 ```text
 Usage:
-  sessions machines <discover [--timeout D] | connect ENDPOINT [--name ALIAS] [--timeout D] | list | forget ALIAS>
+  sessions machines <discover [--timeout D] | connect ENDPOINT [--name ALIAS] [--timeout D] | list | forget ALIAS | sync-native>
 
 discover, approve, and save Sessions machines
 
-Discover Sessions hosts announced with Bonjour on the nearby network, request host approval, and save the issued per-device credential in a mode-0600 file. `sessions --machine ALIAS <command>` then runs any daemon-backed CLI command against that saved machine. Discovery reveals no credentials or session data. Nearby HTTP traffic is not encrypted, so connect only on a private network you trust; use Tailscale HTTPS on untrusted networks. Forget removes the local credential but does not revoke it on the host.
+Discover Sessions hosts announced with Bonjour on the nearby network, request host approval, and save the issued per-device credential in a mode-0600 file. `sessions --machine ALIAS <command>` then runs any daemon-backed CLI command against that saved machine. Discovery reveals no credentials or session data. Nearby HTTP traffic is not encrypted, so connect only on a private network you trust; use Tailscale HTTPS on untrusted networks. Forget removes the local credential but does not revoke it on the host. sync-native reconciles the saved set against a native client's machine registry read as JSON on stdin.
 
 Examples:
   sessions machines discover
@@ -1001,6 +1026,8 @@ Usage:
 manage same-network access
 
 Enable, disable, or inspect explicit HTTP access from other devices on the same Wi-Fi or Ethernet network. Enabling LAN access also advertises a low-sensitivity Bonjour record for native discovery. Protected routes still require a revocable device or daemon token. LAN HTTP traffic is unencrypted; use it only on a private network you trust.
+
+Under --json, status always answers with {enabled, verified, url, bonjour} and adds verificationError when a configured listener did not verify — an unreachable or stale listener is reported as enabled with verified:false rather than as a bare error, matching `remote status`. Without --json that same state is a diagnostic on stderr and exit 2.
 
 Examples:
   sessions lan enable

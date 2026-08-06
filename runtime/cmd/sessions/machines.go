@@ -129,7 +129,9 @@ func (a *app) cmdMachines(args []string) error {
 	case "sync-native":
 		return a.syncNativeMachines(args[1:])
 	default:
-		return fail(1, "usage: sessions machines <discover|connect|list|forget>")
+		// sync-native is dispatched above but was missing from this line, so
+		// the one place a caller looks after a typo did not list it.
+		return fail(1, "usage: sessions machines <discover|connect|list|forget|sync-native>")
 	}
 }
 
