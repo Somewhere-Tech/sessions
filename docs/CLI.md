@@ -16,6 +16,22 @@ Usage:
 
 With no command, Sessions lists agent sessions and headless lanes. Session ids may be full ids or unique prefixes from `sessions ls`.
 
+What this gives an agent that a plain terminal does not:
+  Work outlives you.        A session keeps running after the process that
+                            started it exits or is killed. Dispatch with
+                            `run`, collect from anywhere later with `wait`.
+  Conversations outlive     Providers prune their own transcripts on a timer.
+  the provider.             Sessions keeps its own copy, so `cat`, `search`,
+                            and `resume` still work after they do.
+  You can ask what you      `search` reaches every recorded conversation on
+  already did.              this machine, not only the live ones.
+  Agents can hand off.      A Claude session can drive a Codex one and back;
+                            `send --from` records who asked.
+
+Exit codes: 0 satisfied · 1 usage · 2 daemon unreachable · 3 timed out ·
+4 target gone or failed. With --json every command prints exactly one JSON
+document, including on failure, and its `code` matches the exit status.
+
 Daily workflows:
   new                      create an interactive session
   profiles                 list Claude and Codex login profiles

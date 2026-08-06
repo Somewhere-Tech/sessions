@@ -422,7 +422,17 @@ func writeTopLevelHelp(writer io.Writer) error {
 }
 
 func writeTopLevelHelpFor(writer io.Writer, commands []commandSpec) error {
-	if _, err := io.WriteString(writer, "sessions — local session fleet CLI\n\nUsage:\n  sessions [global flags]\n  sessions [global flags] <command> [args]\n  sessions help <command>\n\nWith no command, Sessions lists agent sessions and headless lanes. Session ids may be full ids or unique prefixes from `sessions ls`.\n"); err != nil {
+	// This preamble is capability framing, not syntax, and it lives here on
+	// purpose. help.go generates docs/CLI.md and CI diffs the result, so
+	// anything written here cannot silently drift away from the code. A
+	// separate document describing the same things has no such gate.
+	//
+	// Everything claimed below is a property the product actually has and
+	// tests hold: a runner outlives the process that created it, the
+	// transcript mirror outlives provider pruning, search reaches recorded
+	// history rather than live sessions, and the exit codes are the ones
+	// writeWaitOutcome and reportFailure emit.
+	if _, err := io.WriteString(writer, "sessions — local session fleet CLI\n\nUsage:\n  sessions [global flags]\n  sessions [global flags] <command> [args]\n  sessions help <command>\n\nWith no command, Sessions lists agent sessions and headless lanes. Session ids may be full ids or unique prefixes from `sessions ls`.\n\nWhat this gives an agent that a plain terminal does not:\n  Work outlives you.        A session keeps running after the process that\n                            started it exits or is killed. Dispatch with\n                            `run`, collect from anywhere later with `wait`.\n  Conversations outlive     Providers prune their own transcripts on a timer.\n  the provider.             Sessions keeps its own copy, so `cat`, `search`,\n                            and `resume` still work after they do.\n  You can ask what you      `search` reaches every recorded conversation on\n  already did.              this machine, not only the live ones.\n  Agents can hand off.      A Claude session can drive a Codex one and back;\n                            `send --from` records who asked.\n\nExit codes: 0 satisfied · 1 usage · 2 daemon unreachable · 3 timed out ·\n4 target gone or failed. With --json every command prints exactly one JSON\ndocument, including on failure, and its `code` matches the exit status.\n"); err != nil {
 		return err
 	}
 	groups := []string{dailyCommandGroup, modelCommandGroup, adminCommandGroup}
