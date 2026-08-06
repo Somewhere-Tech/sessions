@@ -98,7 +98,10 @@ func (a *app) cmdTranscripts(args []string) error {
 			continue
 		}
 		if path == "" {
-			// Neither the provider nor a mirror has it. Nothing to rescue.
+			// Neither the provider nor a mirror has it. Nothing to rescue,
+			// and unlike every other branch here that is still true after
+			// the transcript mirror exists: the mirror check above already
+			// claimed every conversation Sessions kept a copy of.
 			report.Status = transcriptStatusUnrecoverable
 			result.Unrecoverable++
 			result.Sessions = append(result.Sessions, report)
@@ -194,10 +197,25 @@ func (a *app) writeTranscriptsText(result transcriptsResult) error {
 				"copying a guess would make it permanent.\n",
 			pluralConversations(result.Unverified, "was", "were"))
 	}
-	if result.Unrecoverable > 0 {
+	if result.AlreadyKept > 0 {
+		// The count alone reads like bookkeeping. What it actually means is
+		// the thing this command exists for: those conversations now survive
+		// the provider deleting its own transcript, and there is a command
+		// that brings one back. Saying which command matters, because the
+		// provider's own resume is exactly what will not work for them.
 		fmt.Fprintf(a.stdout,
-			"%s already deleted by the provider; nothing can restore %s.\n",
-			pluralConversations(result.Unrecoverable, "was", "were"),
+			"%s a Sessions copy and survives the provider deleting its own transcript; "+
+				"bring one back with `sessions resume <id>`, which replays Sessions' copy. "+
+				"A native provider resume cannot reach a conversation the provider has deleted.\n",
+			pluralConversations(result.AlreadyKept, "has", "have"))
+	}
+	if result.Unrecoverable > 0 {
+		// Precisely this branch and no other: no provider transcript and no
+		// Sessions copy. Naming both is what keeps the sentence true now that
+		// a missing provider transcript on its own no longer means loss.
+		fmt.Fprintf(a.stdout,
+			"%s no provider transcript and no Sessions copy; nothing can restore %s.\n",
+			pluralConversations(result.Unrecoverable, "has", "have"),
 			map[bool]string{true: "it", false: "them"}[result.Unrecoverable == 1])
 	}
 	if !result.Applied && result.Copyable > 0 {

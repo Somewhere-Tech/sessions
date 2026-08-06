@@ -122,6 +122,37 @@ func TestTranscriptsApplyRescuesWhatIsStillReadable(t *testing.T) {
 	}
 }
 
+// The two closing sentences carry the whole point of the command, and the
+// transcript mirror changed what each of them may claim. A conversation
+// Sessions copied is no longer lost when the provider prunes -- but it comes
+// back through Sessions, not through the provider's own resume -- while a
+// conversation with neither copy is still beyond help and has to keep saying
+// so without blaming a deletion nobody observed.
+func TestTranscriptsSaysWhatIsStillPossibleForEachKind(t *testing.T) {
+	transcriptFixture(t)
+	if _, stderr, code := runTranscripts(t, "--apply"); code != exitSatisfied {
+		t.Fatalf("apply exit = %d stderr = %q", code, stderr)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"transcripts"}, strings.NewReader(""), &stdout, &stderr); code != exitSatisfied {
+		t.Fatalf("exit = %d stderr = %q", code, stderr.String())
+	}
+	report := stdout.String()
+	if !strings.Contains(report, "1 conversation has a Sessions copy") ||
+		!strings.Contains(report, "sessions resume <id>") ||
+		!strings.Contains(report, "A native provider resume cannot reach") {
+		t.Fatalf("the kept conversation is not pointed at what it can still do:\n%s", report)
+	}
+	if !strings.Contains(report, "1 conversation has no provider transcript and no Sessions copy") ||
+		!strings.Contains(report, "nothing can restore it") {
+		t.Fatalf("the genuinely lost conversation stopped saying so:\n%s", report)
+	}
+	if !strings.Contains(report, "1 unrecoverable") {
+		t.Fatalf("the summary stopped counting the unrecoverable conversation:\n%s", report)
+	}
+}
+
 func TestTranscriptsRefusesContradictoryFlags(t *testing.T) {
 	transcriptFixture(t)
 	_, _, code := runTranscripts(t, "--apply", "--dry-run")

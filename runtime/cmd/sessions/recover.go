@@ -52,9 +52,45 @@ func (a *app) cmdRecover(args []string) error {
 	return writeRecoveryPlan(a, report, all)
 }
 
+// Recovery statuses a lost record can report. transcript-recovery is the one
+// that had no name before: the provider deleted its own transcript, so the
+// stored resume argv is a command the provider will refuse, but Sessions kept
+// its own copy of the conversation and can still bring it back.
+const (
+	recoveryStatusActionable         = "actionable"
+	recoveryStatusTranscriptRecovery = "transcript-recovery"
+	recoveryStatusBlocked            = "blocked"
+	recoveryStatusProviderUnbound    = "provider-unbound"
+	recoveryStatusUnresumable        = "unresumable"
+)
+
+// laneRecovery is the single answer every recover branch produces, so the
+// default table, the --all explanation, and the --json document cannot
+// disagree about how a conversation comes back. status names the branch,
+// reason says it in prose, and argv is the command that actually works -- or
+// nothing, when nothing does. Nothing else may be printed as a recovery
+// command, which is what kept a provider resume flag in front of users whose
+// provider had already deleted the transcript it names.
+type laneRecovery struct {
+	status             string
+	reason             string
+	argv               []string
+	transcriptRecovery bool
+}
+
 type recoveryLaneJSON struct {
 	recovery.Lane
 	Status string `json:"status"`
+	// Reason is the same sentence `recover --all` prints, so a JSON caller
+	// never has to re-derive an explanation from the status alone.
+	Reason string `json:"reason"`
+	// TranscriptRecovery marks a conversation that comes back from Sessions'
+	// own copy. Native provider resume is impossible for it, and `recover`
+	// carries `sessions resume` rather than the provider's resume argv.
+	TranscriptRecovery bool `json:"transcriptRecovery,omitempty"`
+	// Recover is the argv that recovers this conversation, absent when no
+	// command can.
+	Recover []string `json:"recover,omitempty"`
 }
 
 type recoveryReportJSON struct {
@@ -67,8 +103,14 @@ func recoveryJSONView(report recovery.Report) recoveryReportJSON {
 	recipes := recoveryRecipesByLane(report)
 	lanes := make([]recoveryLaneJSON, 0, len(report.Lanes))
 	for _, lane := range report.Lanes {
-		status, _ := recoveryStatusReason(lane, recipes[lane.ID])
-		lanes = append(lanes, recoveryLaneJSON{Lane: lane, Status: status})
+		outcome := recoveryOutcome(lane, recipes[lane.ID])
+		lanes = append(lanes, recoveryLaneJSON{
+			Lane:               lane,
+			Status:             outcome.status,
+			Reason:             outcome.reason,
+			TranscriptRecovery: outcome.transcriptRecovery,
+			Recover:            outcome.argv,
+		})
 	}
 	return recoveryReportJSON{GeneratedAtMS: report.GeneratedAtMS, Lanes: lanes, Plan: report.Plan}
 }
@@ -92,12 +134,17 @@ func writeRecoveryPlan(a *app, report recovery.Report, all bool) error {
 		return err
 	}
 	count := 0
+	fromMirror := 0
 	for _, lane := range report.Lanes {
 		if lane.Class != ledger.ClassUnexpectedlyLost {
 			continue
 		}
-		recipe, hasRecipe := recipes[lane.ID]
-		if !all && (!hasRecipe || recipe.Blocked) {
+		outcome := recoveryOutcome(lane, recipes[lane.ID])
+		// The default view lists what a caller can act on. That set is
+		// decided by whether a recovery command exists at all, not by
+		// recipe.Blocked, so a conversation recoverable only from Sessions'
+		// copy stays listed and keeps its own honest command.
+		if !all && len(outcome.argv) == 0 {
 			continue
 		}
 		name := lane.Name
@@ -105,17 +152,20 @@ func writeRecoveryPlan(a *app, report recovery.Report, all bool) error {
 			name = lane.ID
 		}
 		count++
+		if outcome.transcriptRecovery {
+			fromMirror++
+		}
 		if all {
-			status, reason := recoveryStatusReason(lane, recipe)
 			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				name, lane.Tool, lane.Cwd, recoveryTime(lane.LastActivityAtMS), status, reason); err != nil {
+				name, lane.Tool, lane.Cwd, recoveryTime(lane.LastActivityAtMS),
+				outcome.status, outcome.reason); err != nil {
 				return err
 			}
 			continue
 		}
-		resume := shellRecipe(append([]string{recipe.Cmd}, recipe.Args...))
 		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			name, lane.Tool, lane.Cwd, recoveryTime(lane.LastActivityAtMS), resume); err != nil {
+			name, lane.Tool, lane.Cwd, recoveryTime(lane.LastActivityAtMS),
+			shellRecipe(outcome.argv)); err != nil {
 			return err
 		}
 	}
@@ -128,25 +178,66 @@ func writeRecoveryPlan(a *app, report recovery.Report, all bool) error {
 			return err
 		}
 	}
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if fromMirror > 0 {
+		// Without this the table reads as if every row comes back the same
+		// way. These do not: the provider no longer holds the conversation,
+		// so the command in the RESUME column is a Sessions command and a
+		// native provider resume would be refused.
+		if _, err := fmt.Fprintf(a.stdout,
+			"\n%s recoverable only from Sessions' own copy: the provider deleted its transcript, "+
+				"so a native provider resume would be refused. Use the `sessions resume` command "+
+				"shown, which replays Sessions' copy into a new session.\n",
+			pluralConversations(fromMirror, "is", "are")); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func recoveryStatusReason(lane recovery.Lane, recipe ledger.RecoveryRecipe) (string, string) {
+func recoveryOutcome(lane recovery.Lane, recipe ledger.RecoveryRecipe) laneRecovery {
 	if lane.Class != ledger.ClassUnexpectedlyLost {
-		return string(lane.Class), "not unexpectedly lost"
+		return laneRecovery{status: string(lane.Class), reason: "not unexpectedly lost"}
 	}
 	if recipe.SourceLaneID != "" {
-		if recipe.Blocked {
-			return "blocked", "resume source is stale or missing"
+		switch {
+		case recipe.TranscriptRecovery:
+			// recipe.Cmd still names the provider resume that was recorded
+			// when the conversation was created, and the provider will refuse
+			// it now that its own transcript is gone. Printing it would send
+			// the user to a command that fails on a conversation Sessions can
+			// still bring back, so the recipe is replaced rather than shown.
+			argv := []string{"sessions", "resume", lane.ID}
+			return laneRecovery{
+				status:             recoveryStatusTranscriptRecovery,
+				reason:             "provider transcript is gone; recover from Sessions' copy with " + shellRecipe(argv),
+				argv:               argv,
+				transcriptRecovery: true,
+			}
+		case recipe.Blocked:
+			return laneRecovery{
+				status: recoveryStatusBlocked,
+				reason: "resume source is stale or missing, and Sessions has no copy",
+			}
 		}
-		return "actionable", "resume with " + shellRecipe(append([]string{recipe.Cmd}, recipe.Args...))
+		argv := append([]string{recipe.Cmd}, recipe.Args...)
+		return laneRecovery{
+			status: recoveryStatusActionable,
+			reason: "resume with " + shellRecipe(argv),
+			argv:   argv,
+		}
 	}
 	for _, anomaly := range lane.Anomalies {
 		if anomaly == ledger.AnomalyProviderUnbound {
-			return "provider-unbound", "provider did not bind; no safe resume recipe"
+			return laneRecovery{
+				status: recoveryStatusProviderUnbound,
+				reason: "provider did not bind; no safe resume recipe",
+			}
 		}
 	}
-	return "unresumable", "no safe resume recipe"
+	return laneRecovery{status: recoveryStatusUnresumable, reason: "no safe resume recipe"}
 }
 
 func writeReopenResult(a *app, result recovery.ReopenResult) error {

@@ -80,7 +80,7 @@ var commandTable = []commandSpec{
 	{
 		name: "transcripts", usage: "transcripts [--apply | --dry-run]",
 		summary: "keep a durable copy of provider conversations", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Copy conversations into storage Sessions owns, so they survive the provider deleting its own transcript. Claude Code prunes ~/.claude/projects on a retention timer, and once a transcript is gone the conversation cannot be recovered by anything. A session Sessions is actively watching is copied continuously and needs nothing here; this exists for ended sessions whose provider transcript is still on disk. The default is a dry run that reports what would be copied; --apply performs the copy. Copying is additive and idempotent, never moves or modifies the provider's files, and can be run repeatedly. Conversations the provider has already deleted are reported as unrecoverable, because they are.",
+		longHelp: "Copy conversations into storage Sessions owns, so they survive the provider deleting its own transcript. Claude Code prunes ~/.claude/projects on a retention timer, and once a transcript is gone nothing can recover that conversation unless Sessions already copied it. A session Sessions is actively watching is copied continuously and needs nothing here; this exists for ended sessions whose provider transcript is still on disk. The default is a dry run that reports what would be copied; --apply performs the copy. Copying is additive and idempotent, never moves or modifies the provider's files, and can be run repeatedly. A conversation Sessions already holds a copy of is reported as already kept: the provider deleting its transcript no longer loses it, and `sessions resume <id>` replays Sessions' copy, which is the only way back for it because a native provider resume would be refused. Only a conversation with no provider transcript and no Sessions copy is reported as unrecoverable, because that one really is.",
 		examples: []string{"sessions transcripts", "sessions transcripts --apply", "sessions --json transcripts"}, run: (*app).cmdTranscripts,
 	},
 	{
@@ -176,7 +176,7 @@ var commandTable = []commandSpec{
 	{
 		name: "recover", usage: "recover [--all | --reopen [--force]]",
 		summary: "inspect or reopen recoverable sessions", group: dailyCommandGroup, localJSON: true,
-		longHelp: "List actionable recovery recipes. --all also shows blocked and unresumable lost records with reasons. --reopen creates replacement sessions for eligible records; --force overrides the live or moved conversation guard.",
+		longHelp: "List actionable recovery recipes. The RESUME column is always the command that actually recovers that conversation. For a record whose provider deleted its own transcript but whose conversation Sessions still holds a copy of, that command is `sessions resume <id>`, not the provider's resume flag, which the provider would refuse; --all labels those records transcript-recovery and --json reports transcriptRecovery on them. --all also shows blocked and unresumable lost records with reasons; blocked means neither the provider nor Sessions still has the conversation. --reopen creates replacement sessions for eligible records; --force overrides the live or moved conversation guard.",
 		examples: []string{"sessions recover", "sessions recover --all", "sessions recover --reopen", "sessions --json recover --reopen --force"}, run: (*app).cmdRecover,
 	},
 	{
