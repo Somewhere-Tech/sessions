@@ -1,6 +1,7 @@
 use crate::{
     lifecycle::RuntimeStatus,
     windows_cli_path::merge_user_path,
+    windows_credentials::apply_owner_acl,
     windows_supervisor::{require_idle, SupervisorDefinition},
 };
 use serde::Deserialize;
@@ -76,12 +77,15 @@ pub fn install(app: &AppHandle, port: u16) -> Result<RuntimeStatus, String> {
         .app_local_data_dir()
         .map_err(|error| format!("resolve Windows Sessions data directory: {error}"))?
         .join("runtime");
-    fs::create_dir_all(&root)
-        .map_err(|error| format!("create Windows runtime root {}: {error}", root.display()))?;
+    prepare_runtime_root(&root)?;
     let destination = root.join(&manifest.runtime_version);
     let installed = destination.exists();
     if installed {
         verify_manifest(&destination, &manifest)?;
+        // A runtime staged by a build that predates the owner-scoped policy
+        // still carries the inherited profile ACL. Re-assert it on every launch
+        // so an update repairs an exposed installation instead of leaving it.
+        apply_owner_acl(&destination, true)?;
     } else {
         stage_runtime(&source, &destination, &manifest)?;
     }
@@ -197,11 +201,11 @@ pub fn reconfigure_port(
         .join("runtime");
     let destination = root.join(&manifest.runtime_version);
     if !destination.exists() {
-        fs::create_dir_all(&root)
-            .map_err(|error| format!("create Windows runtime root {}: {error}", root.display()))?;
+        prepare_runtime_root(&root)?;
         stage_runtime(&source, &destination, &manifest)?;
     } else {
         verify_manifest(&destination, &manifest)?;
+        apply_owner_acl(&destination, true)?;
     }
 
     ensure_port_available(requested_port)?;
@@ -297,6 +301,21 @@ fn verify_manifest(directory: &Path, manifest: &RuntimeManifest) -> Result<(), S
     Ok(())
 }
 
+// %LOCALAPPDATA%\Sessions\runtime\<version>\sessionsd.exe is the binary the
+// per-user logon supervisor launches at every sign-in. Created with a bare
+// create_dir_all it simply inherits whatever %LOCALAPPDATA% grants, which on a
+// machine with a relaxed or inherited profile ACL can include principals other
+// than the signed-in user — anyone who can rewrite that file owns the daemon.
+// macOS already narrows the equivalent root to 0o700; do the same here with the
+// owner-scoped policy the credential vault uses. The DACL is protected and
+// inheritable, so the versioned directories and binaries created underneath it
+// come out owner-scoped too.
+fn prepare_runtime_root(root: &Path) -> Result<(), String> {
+    fs::create_dir_all(root)
+        .map_err(|error| format!("create Windows runtime root {}: {error}", root.display()))?;
+    apply_owner_acl(root, true)
+}
+
 fn stage_runtime(
     source: &Path,
     destination: &Path,
@@ -320,7 +339,10 @@ fn stage_runtime(
             staging.display()
         )
     })?;
-    let result = (|| {
+    // Narrow the staging directory before any byte is copied into it, so the
+    // binaries are never briefly writable by anyone the parent happened to
+    // grant. They inherit this policy as they are created.
+    let result = apply_owner_acl(&staging, true).and_then(|()| {
         for binary in REQUIRED_BINARIES {
             fs::copy(source.join(binary), staging.join(binary)).map_err(|error| {
                 format!("copy bundled Windows runtime binary {binary}: {error}")
@@ -337,8 +359,12 @@ fn stage_runtime(
                 "activate immutable Windows runtime {}: {error}",
                 destination.display()
             )
-        })
-    })();
+        })?;
+        // The rename carries the staging DACL across, but the activated
+        // directory is the one that matters; assert the policy on it directly
+        // rather than trusting that it travelled.
+        apply_owner_acl(destination, true)
+    });
     if result.is_err() {
         let _ = fs::remove_dir_all(&staging);
     }

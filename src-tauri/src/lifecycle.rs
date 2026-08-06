@@ -6,6 +6,7 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command, Output},
+    sync::{Mutex, MutexGuard, TryLockError},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -16,7 +17,36 @@ const LOOPBACK_HOST: &str = "127.0.0.1";
 const DEFAULT_LOOPBACK_PORT: u16 = 8787;
 const REQUIRED_BINARIES: [&str; 3] = ["sessions", "sessionsd", "sessions-runner"];
 
-type LifecycleResult<T> = Result<T, String>;
+pub(crate) type LifecycleResult<T> = Result<T, String>;
+
+// Every mutation of the per-user background service — startup reconciliation,
+// the Recover button, and a port change — funnels through install_runtime or
+// migrate_loaded_service, each of which boots the daemon out, writes a new
+// definition, boots it back in, and rolls back on failure. Two of those
+// interleaved can make one call's rollback boot out the service the other just
+// started, leaving the management plane wedged until the app is relaunched.
+// The UI's guards are per-webview React booleans and capabilities/default.json
+// grants this surface to "main" *and* every "win-*" window, so the only place
+// that can actually serialize the three callers is here.
+static SERVICE_MUTATION_LOCK: Mutex<()> = Mutex::new(());
+
+// Refuse rather than queue. A second Recover click that silently waited would
+// look like a hang, and the honest answer — the first attempt is still running
+// and re-adopting a large fleet is slow — is something the user can act on.
+fn lock_service_mutation() -> LifecycleResult<MutexGuard<'static, ()>> {
+    match SERVICE_MUTATION_LOCK.try_lock() {
+        Ok(guard) => Ok(guard),
+        // The guard protects launchd, not shared Rust state: a panicked holder
+        // leaves nothing inconsistent to observe here, and refusing every
+        // later repair behind a poisoned lock would wedge exactly the plane
+        // this lock exists to protect.
+        Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => Err(
+            "Sessions is already reconciling its background service. Wait for that attempt to finish — re-adopting a large set of live sessions can take a few minutes — and then try again. Your sessions keep running either way."
+                .to_string(),
+        ),
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct NativePreferences {
@@ -137,26 +167,40 @@ pub fn install_for_app(app: &AppHandle) -> RuntimeStatus {
         return RuntimeStatus::informational("disabled", "SESSIONS_DISABLE_RUNTIME_INSTALL is set");
     }
 
+    // Nothing above this point touches launchd, so the lock is taken only once
+    // a real mutation is about to start.
+    let _guard = match lock_service_mutation() {
+        Ok(guard) => guard,
+        // A concurrent reconcile is not a fault: it is the same repair already
+        // in flight. Report the calm transitional state and let the running
+        // attempt publish the settled one when it finishes.
+        Err(busy) => return RuntimeStatus::informational("starting", &busy),
+    };
+    let resolved = resolve_port(app);
+
     #[cfg(target_os = "macos")]
     {
-        match RuntimeConfig::from_app(app).and_then(|config| install_runtime(&config)) {
+        // RuntimeConfig::from_app resolves the same port; this call only needs
+        // the reason so it can reach the status the user reads.
+        let status = match RuntimeConfig::from_app(app).and_then(|config| install_runtime(&config))
+        {
             Ok((outcome, version)) => RuntimeStatus::ready(outcome, version),
             Err(error) => RuntimeStatus::failed(error),
-        }
+        };
+        resolved.annotate(status)
     }
     #[cfg(target_os = "windows")]
     {
-        match crate::windows_runtime::install(
-            app,
-            configured_port(app).unwrap_or(DEFAULT_LOOPBACK_PORT),
-        ) {
+        let status = match crate::windows_runtime::install(app, resolved.port()) {
             Ok(status) => status,
             Err(error) => RuntimeStatus::failed(error),
-        }
+        };
+        resolved.annotate(status)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = app;
+        let _ = resolved;
         RuntimeStatus::informational(
             "client-only",
             "this platform connects to a Mac-hosted background service",
@@ -164,11 +208,9 @@ pub fn install_for_app(app: &AppHandle) -> RuntimeStatus {
     }
 }
 
-pub fn default_port() -> u16 {
-    DEFAULT_LOOPBACK_PORT
-}
-
-pub fn configured_port(app: &AppHandle) -> LifecycleResult<u16> {
+// Prefer resolve_port over this: it is the only caller that decides what an
+// unreadable settings file means, and every other caller must agree with it.
+fn configured_port(app: &AppHandle) -> LifecycleResult<u16> {
     let path = preferences_path(app)?;
     let encoded = match fs::read(&path) {
         Ok(encoded) => encoded,
@@ -193,6 +235,65 @@ pub fn configured_port(app: &AppHandle) -> LifecycleResult<u16> {
     Ok(port)
 }
 
+// One answer for an unreadable or unparseable connections.json.
+//
+// Three callers used to disagree: the Tauri setup hook logged and fell back to
+// 8787, RuntimeConfig::from_app treated the same file as fatal, and the
+// Windows installer fell back silently. The viewer therefore reported port
+// 8787 in Settings while every reconcile failed against it, and no surface
+// told the user which file was wrong or how to repair it.
+//
+// The chosen answer is "not fatal, but never silent". Refusing to reconcile
+// would hand a single corrupt preferences file the power to wedge the
+// management plane with no in-app way out, which is exactly what this app must
+// not do. So fall back to the default loopback port and carry the reason into
+// the RuntimeStatus the tray and settings screen already display.
+pub struct ResolvedPort {
+    port: u16,
+    problem: Option<String>,
+}
+
+impl ResolvedPort {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn problem(&self) -> Option<&str> {
+        self.problem.as_deref()
+    }
+
+    // Keep the reason attached to whatever the install actually reported, so a
+    // healthy daemon on the fallback port still says why it is on that port.
+    pub fn annotate(&self, status: RuntimeStatus) -> RuntimeStatus {
+        let Some(problem) = self.problem.as_deref() else {
+            return status;
+        };
+        RuntimeStatus {
+            detail: format!("{}; {problem}", status.detail),
+            ..status
+        }
+    }
+}
+
+pub fn resolve_port(app: &AppHandle) -> ResolvedPort {
+    resolved_port(configured_port(app))
+}
+
+fn resolved_port(configured: LifecycleResult<u16>) -> ResolvedPort {
+    match configured {
+        Ok(port) => ResolvedPort {
+            port,
+            problem: None,
+        },
+        Err(error) => ResolvedPort {
+            port: DEFAULT_LOOPBACK_PORT,
+            problem: Some(format!(
+                "Sessions could not read its saved connection port ({error}), so it is using localhost:{DEFAULT_LOOPBACK_PORT}. Set the port again in Settings to rewrite that file."
+            )),
+        },
+    }
+}
+
 pub fn reconfigure_port(app: &AppHandle, port: u16) -> LifecycleResult<RuntimeStatus> {
     validate_port(port)?;
     if cfg!(debug_assertions) {
@@ -201,6 +302,11 @@ pub fn reconfigure_port(app: &AppHandle, port: u16) -> LifecycleResult<RuntimeSt
     if cfg!(mobile) {
         return Err("mobile clients do not own a local background-service port".to_string());
     }
+
+    // A port change boots the service out and back in exactly like an install
+    // does, so it shares the install lock. Without it a reconcile racing a port
+    // change can roll back onto the definition the other one just replaced.
+    let _guard = lock_service_mutation()?;
 
     #[cfg(target_os = "macos")]
     {
@@ -246,7 +352,10 @@ pub fn reconfigure_port(app: &AppHandle, port: u16) -> LifecycleResult<RuntimeSt
     }
     #[cfg(target_os = "windows")]
     {
-        let current = configured_port(app)?;
+        // A corrupt connections.json must not block the one action that
+        // rewrites it. Fall back to the default port as the presumed current
+        // one; if the daemon is not actually there, windows_runtime says so.
+        let current = resolve_port(app).port();
         let status = crate::windows_runtime::reconfigure_port(app, current, port)?;
         if current == port {
             return Ok(status);
@@ -337,7 +446,9 @@ impl RuntimeConfig {
             label: SERVICE_LABEL.to_string(),
             domain: format!("gui/{uid}"),
             host: LOOPBACK_HOST.to_string(),
-            port: configured_port(app)?,
+            // Deliberately not fatal: see resolve_port. install_for_app carries
+            // the reason into the status the user reads.
+            port: resolve_port(app).port(),
             launchctl: PathBuf::from("/bin/launchctl"),
             codesign: PathBuf::from("/usr/bin/codesign"),
             shasum: PathBuf::from("/usr/bin/shasum"),
@@ -748,13 +859,7 @@ fn stage_runtime(config: &RuntimeConfig) -> LifecycleResult<InstalledRuntime> {
         )
     })?;
     validate_manifest(&manifest)?;
-    for binary in REQUIRED_BINARIES {
-        verify_binary(
-            config,
-            &config.source_dir.join(binary),
-            manifest.binaries.get(binary).unwrap(),
-        )?;
-    }
+    verify_runtime_directory(config, &config.source_dir, &manifest)?;
 
     fs::create_dir_all(&config.managed_root).map_err(|error| {
         format!(
@@ -874,17 +979,24 @@ fn validate_manifest(manifest: &RuntimeManifest) -> LifecycleResult<()> {
     Ok(())
 }
 
+// Every present caller happens to run validate_manifest first, but this
+// function accepts an arbitrary &RuntimeManifest. An unwrap() here would turn
+// a manifest that is merely corrupt — the exact case a verifier exists to
+// catch — into an abort of the whole app, taking the recovery UI with it. Say
+// what is wrong and what repairs it instead.
 fn verify_runtime_directory(
     config: &RuntimeConfig,
     directory: &Path,
     manifest: &RuntimeManifest,
 ) -> LifecycleResult<()> {
     for binary in REQUIRED_BINARIES {
-        verify_binary(
-            config,
-            &directory.join(binary),
-            manifest.binaries.get(binary).unwrap(),
-        )?;
+        let expected = manifest.binaries.get(binary).ok_or_else(|| {
+            format!(
+                "the runtime manifest for {} is missing {binary}; reinstall Sessions to restore a complete runtime. Your daemon and runners keep running in the meantime.",
+                directory.display()
+            )
+        })?;
+        verify_binary(config, &directory.join(binary), expected)?;
     }
     Ok(())
 }
@@ -1352,7 +1464,9 @@ fn restore_plist(config: &RuntimeConfig, previous: Option<&[u8]>) -> LifecycleRe
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> LifecycleResult<()> {
+// Shared with the native shell's window-geometry store: any file this app
+// rewrites in place needs temp-plus-rename, not a truncating fs::write.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> LifecycleResult<()> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("invalid destination path: {}", path.display()))?;
@@ -1561,6 +1675,76 @@ mod tests {
 
         wait_until_ready(&config, &baseline).unwrap();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn concurrent_service_mutations_are_refused_instead_of_interleaved() {
+        let held = lock_service_mutation().unwrap();
+        let refused = lock_service_mutation().unwrap_err();
+        assert!(
+            refused.contains("already reconciling"),
+            "second caller was not told why it was refused: {refused}"
+        );
+        assert!(
+            refused.contains("try again"),
+            "refusal did not name a next action: {refused}"
+        );
+        drop(held);
+        // The lock must not stay wedged after the first caller finishes, or a
+        // single reconcile would disable Recover for the life of the app.
+        assert!(lock_service_mutation().is_ok());
+    }
+
+    #[test]
+    fn unreadable_connection_settings_fall_back_visibly_instead_of_wedging_reconcile() {
+        let healthy = resolved_port(Ok(9123));
+        assert_eq!(healthy.port(), 9123);
+        assert_eq!(healthy.problem(), None);
+        let unchanged = healthy.annotate(RuntimeStatus::informational("ready", "installed"));
+        assert_eq!(unchanged.detail, "installed");
+
+        let corrupt = resolved_port(Err(
+            "parse native connection settings /tmp/connections.json: expected value".to_string(),
+        ));
+        // Not fatal: reconcile still has a port to work with.
+        assert_eq!(corrupt.port(), DEFAULT_LOOPBACK_PORT);
+        // Not silent: the reason reaches the status the user actually reads.
+        let annotated = corrupt.annotate(RuntimeStatus::informational("ready", "installed"));
+        assert_eq!(annotated.state, "ready");
+        assert!(annotated.detail.starts_with("installed; "), "{annotated:?}");
+        assert!(annotated.detail.contains("/tmp/connections.json"));
+        assert!(annotated
+            .detail
+            .contains(&format!("localhost:{DEFAULT_LOOPBACK_PORT}")));
+        assert!(annotated.detail.contains("Settings"));
+    }
+
+    #[test]
+    fn a_corrupt_manifest_is_reported_rather_than_aborting_the_app() {
+        let root = env::temp_dir().join(format!(
+            "sessions-manifest-guard-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let mut config = fixture_config(&root, "tech.somewhere.sessions.manifest-guard", 47_873);
+        config.verify_signatures = false;
+        let mut manifest = RuntimeManifest {
+            schema_version: 1,
+            runtime_version: "v1".to_string(),
+            target: "darwin-arm64".to_string(),
+            binaries: REQUIRED_BINARIES
+                .iter()
+                .map(|name| (name.to_string(), "0".repeat(64)))
+                .collect(),
+        };
+        // The first binary the verifier looks up, so the missing entry is
+        // reached before any digest work can fail for another reason.
+        manifest.binaries.remove(REQUIRED_BINARIES[0]);
+
+        let error = verify_runtime_directory(&config, &root, &manifest).unwrap_err();
+        assert!(error.contains(REQUIRED_BINARIES[0]), "{error}");
+        assert!(error.contains("reinstall Sessions"), "{error}");
+        assert!(error.contains(&root.display().to_string()), "{error}");
     }
 
     #[test]

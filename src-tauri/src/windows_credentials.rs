@@ -394,8 +394,12 @@ fn acl_sddl(user_sid: &str, directory: bool) -> String {
     format!("D:P(A;{inheritance};FA;;;SY)(A;{inheritance};FA;;;{user_sid})")
 }
 
+// Replace whatever the path inherited with a protected DACL granting full
+// access to SYSTEM and the signed-in user only. Shared with windows_runtime:
+// the staged daemon and runner binaries need the same owner-scoped policy the
+// credential vault gets, because they are launched at every logon.
 #[cfg(target_os = "windows")]
-fn apply_owner_acl(path: &Path, directory: bool) -> Result<(), String> {
+pub(crate) fn apply_owner_acl(path: &Path, directory: bool) -> Result<(), String> {
     use std::{os::windows::ffi::OsStrExt, ptr};
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree},
@@ -425,7 +429,8 @@ fn apply_owner_acl(path: &Path, directory: bool) -> Result<(), String> {
     } == 0
     {
         return Err(format!(
-            "build the Windows credential-file access policy (Windows error {})",
+            "build the Windows access policy for {} (Windows error {})",
+            path.display(),
             unsafe { GetLastError() }
         ));
     }
@@ -440,14 +445,17 @@ fn apply_owner_acl(path: &Path, directory: bool) -> Result<(), String> {
             || dacl.is_null()
         {
             return Err(format!(
-                "read the Windows credential-file access policy (Windows error {})",
+                "read the Windows access policy for {} (Windows error {})",
+                path.display(),
                 unsafe { GetLastError() }
             ));
         }
-        let mut path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // Keep `path` itself in scope: the failure message has to name the file
+        // whose policy could not be restricted.
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         let code = unsafe {
             SetNamedSecurityInfoW(
-                path.as_mut_ptr(),
+                wide.as_mut_ptr(),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
                 ptr::null_mut(),
@@ -458,7 +466,8 @@ fn apply_owner_acl(path: &Path, directory: bool) -> Result<(), String> {
         };
         if code != 0 {
             return Err(format!(
-                "restrict the Windows credential-file access policy (Windows error {code})"
+                "restrict the Windows access policy for {} (Windows error {code})",
+                path.display()
             ));
         }
         Ok(())
