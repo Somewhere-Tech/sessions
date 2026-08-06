@@ -190,6 +190,13 @@ func (a *app) cmdSearch(args []string) error {
 // move is to distrust search rather than to rephrase. `--json` has carried
 // match_mode all along; this is the same fact for a person, and it stays quiet
 // on a strict search of exactly what was typed.
+//
+// It used to say "No message had all of those words", which stopped being true.
+// The ladder now leaves a rung that matched a handful as well as one that
+// matched nothing, because on a sentence-length query a lone match is more
+// likely a coincidence than an answer. Saying "no message" in that case tells
+// the reader something false about their own corpus, and the one thing this
+// sentence exists to do is keep them trusting what they are looking at.
 func (a *app) writeSearchWidening(result historysearch.Response) error {
 	relaxation := ""
 	switch result.MatchMode {
@@ -201,7 +208,7 @@ func (a *app) writeSearchWidening(result historysearch.Response) error {
 		return nil
 	}
 	if _, err := fmt.Fprintf(a.stdout,
-		"No message had all of those words, %s — expect looser matches.\n", relaxation); err != nil {
+		"Too few messages had all of those words, %s — expect looser matches.\n", relaxation); err != nil {
 		return err
 	}
 	if result.EffectiveQuery != "" {
