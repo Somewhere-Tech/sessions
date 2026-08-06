@@ -41,6 +41,13 @@ type Options struct {
 	Timeline  bool
 	Regex     bool
 	Ranked    bool
+	// RawSyntax hands the query to the FTS5 parser verbatim. It is opt-in
+	// because the alternative — inferring it from a bare AND, OR, or NOT
+	// anywhere in the text — silently rewrote ordinary prose into a boolean
+	// expression and collapsed its recall with nothing in the response to say
+	// so. A caller that cannot set this field can prefix the query with "fts:"
+	// instead.
+	RawSyntax bool
 	Limit     int
 }
 
@@ -80,6 +87,52 @@ type Response struct {
 	Total    int            `json:"total"`
 	Machines []MachineState `json:"machines,omitempty"`
 	Partial  bool           `json:"partial,omitempty"`
+	// Sessions rolls the matches up to the question that was actually asked.
+	// A caller looking for a lost session wants to know which session, and a
+	// page of messages cannot say: the counts and timestamps here cover every
+	// hit, not just the page.
+	Sessions []SessionHits `json:"sessions,omitempty"`
+	// EffectiveQuery is the expression that ran. A query layer that rewrites
+	// what it was given — dropping stopwords, requiring terms, expanding a
+	// pasted path, relaxing a conjunction that matched nothing — owes the
+	// caller the result of that rewrite, or the caller cannot tell a real
+	// absence from a query it should have phrased differently.
+	EffectiveQuery string `json:"effective_query,omitempty"`
+	// MatchMode names the rung of the relaxation ladder that produced these
+	// results: strict, quorum, broad, or raw.
+	MatchMode string `json:"match_mode,omitempty"`
+	// TotalHits counts every matching message in the index. Total counts the
+	// ones on this page, and the two differ whenever a page was truncated.
+	TotalHits int `json:"total_hits,omitempty"`
+	// TotalSessions counts the distinct sessions behind TotalHits.
+	TotalSessions int `json:"total_sessions,omitempty"`
+	// RollupPartial marks a rollup whose per-session counts are lower bounds
+	// because the scan behind it was truncated.
+	RollupPartial bool `json:"rollup_partial,omitempty"`
+}
+
+// SessionHits summarizes one session's contribution to a result set.
+type SessionHits struct {
+	SessionID string `json:"session_id"`
+	Name      string `json:"name"`
+	CWD       string `json:"cwd,omitempty"`
+	Tool      string `json:"tool,omitempty"`
+	Machine   string `json:"machine,omitempty"`
+	Hits      int    `json:"hits"`
+	// TitleMatch marks a session whose own name satisfies the query. It is the
+	// strongest available answer to "which session was that": someone who
+	// remembers a title remembers it exactly.
+	TitleMatch bool `json:"title_match,omitempty"`
+	// Score is the best score any message in this session reached, on the same
+	// absolute scale as Match.Score.
+	Score float64 `json:"score"`
+	// FirstHitAt and LastHitAt bracket every hit in this session, not just the
+	// ones on the page, so they say how long the subject was live in it.
+	FirstHitAt string `json:"first_hit_at,omitempty"`
+	LastHitAt  string `json:"last_hit_at,omitempty"`
+	// Snippets are drawn from the returned page, so a session that matched but
+	// did not reach the page has counts and timestamps without them.
+	Snippets []string `json:"snippets,omitempty"`
 }
 
 type MachineState struct {

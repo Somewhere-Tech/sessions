@@ -70,7 +70,8 @@ func TestRankedSearchReturnsScoreAnchorAndContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.Total != 1 || result.Matches[0].MessageIndex != 1 ||
-		result.Matches[0].ProviderSessionID != "codex-provider-ranked" || result.Matches[0].Score != 1 ||
+		result.Matches[0].ProviderSessionID != "codex-provider-ranked" ||
+		result.Matches[0].Score <= 0 || result.Matches[0].Score >= 1 ||
 		len(result.Matches[0].ContextBefore) != 1 || len(result.Matches[0].ContextAfter) != 1 ||
 		result.Matches[0].ContextBefore[0].Text != "before marker" ||
 		result.Matches[0].ContextAfter[0].Text != "after marker" {
@@ -78,11 +79,24 @@ func TestRankedSearchReturnsScoreAnchorAndContext(t *testing.T) {
 	}
 }
 
-func TestRankedSearchSupportsBooleanNot(t *testing.T) {
+// Excluding a term stays possible without the bare word NOT, which prose uses
+// far too often to be an operator.
+func TestRankedSearchExcludesTermsWithRawSyntax(t *testing.T) {
 	fixture := rankedFixture("alpha gamma", "alpha beta")
-	result := runRankedFixture(t, fixture, "alpha NOT beta", filepath.Join(t.TempDir(), "search-index.db"))
-	if result.Total != 1 || result.Matches[0].Text != "alpha gamma" {
+	result := runRankedFixture(t, fixture, "fts:alpha NOT beta", filepath.Join(t.TempDir(), "search-index.db"))
+	if result.Total != 1 || result.Matches[0].Text != "alpha gamma" || result.MatchMode != "raw" {
 		t.Fatalf("boolean result = %#v", result)
+	}
+}
+
+// A leading dash is a character in a pasted flag far more often than it is an
+// exclusion marker, and a wrong exclusion loses results with nothing to show
+// for it.
+func TestRankedSearchTreatsLeadingDashAsPartOfTheTerm(t *testing.T) {
+	fixture := rankedFixture("run the suite with -race enabled", "run the suite without it")
+	result := runRankedFixture(t, fixture, "suite -race", filepath.Join(t.TempDir(), "search-index.db"))
+	if result.Total != 1 || result.Matches[0].Text != "run the suite with -race enabled" {
+		t.Fatalf("dash result = %#v (effective %q)", result, result.EffectiveQuery)
 	}
 }
 
@@ -154,7 +168,7 @@ func TestRankedSearchRejectsMalformedAndRegexQueries(t *testing.T) {
 	fixture := rankedFixture("alpha")
 	indexPath := filepath.Join(t.TempDir(), "search-index.db")
 	for _, options := range []Options{
-		{Query: `"unterminated`, Ranked: true},
+		{Query: `fts:"unterminated`, Ranked: true},
 		{Query: "alpha", Ranked: true, Regex: true},
 	} {
 		if _, err := Run(context.Background(), fixture, nil, options, indexPath); err == nil || !IsOptionError(err) {
@@ -170,9 +184,9 @@ func TestRankedSearchExplainsRejectedQueriesWithoutSQLiteInternals(t *testing.T)
 	fixture := rankedFixture("alpha beta")
 	indexPath := filepath.Join(t.TempDir(), "search-index.db")
 	for _, test := range []struct{ query, want string }{
-		{query: "NOT beta", want: `near "NOT"`},
-		{query: "alpha NOT", want: "ends where a term was expected"},
-		{query: `"unterminated`, want: "quote is opened and never closed"},
+		{query: "fts:NOT beta", want: `near "NOT"`},
+		{query: "fts:alpha NOT", want: "ends where a term was expected"},
+		{query: `fts:"unterminated`, want: "quote is opened and never closed"},
 	} {
 		t.Run(test.query, func(t *testing.T) {
 			_, err := Run(context.Background(), fixture, nil, Options{Query: test.query, Ranked: true}, indexPath)
@@ -203,10 +217,14 @@ func TestRankedHighlightSpanIndexesTheOriginalText(t *testing.T) {
 	for _, test := range []struct{ name, query, text, want string }{
 		{name: "offset after a shrinking rune", query: "deploy", text: "İstanbul deploy notes", want: "deploy"},
 		{name: "span covers the matched text", query: "kelvin", text: "Kelvin scale", want: "Kelvin"},
-		{name: "operators are skipped", query: "NOT deploy", text: "İstanbul deploy notes", want: "deploy"},
+		{name: "excluded terms are skipped", query: "-notes deploy", text: "İstanbul deploy notes", want: "deploy"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			start, end := rankedHighlightSpan(rankedHighlightPatterns(test.query), test.text)
+			parsed, err := parseSearchQuery(test.query, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			start, end := rankedHighlightSpan(rankedHighlightPatterns(parsed.highlights), test.text)
 			if start < 0 || end > len(test.text) || end < start {
 				t.Fatalf("span = [%d,%d) for text of %d bytes", start, end, len(test.text))
 			}
