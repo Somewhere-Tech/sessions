@@ -497,10 +497,116 @@ func ReadTranscriptMirrorMeta(mirrorPath string) (TranscriptMirrorMeta, bool) {
 	return meta, true
 }
 
+// TranscriptMirrorHealth is the read side of the health the sidecar already
+// records. The mirror durably knows when it stopped accepting appends and when
+// an append failed, but until something reads those fields back a mirror that
+// stopped recording presents itself exactly like one that did not -- which is
+// the single failure the mirror exists to prevent.
+//
+// Known is the field that keeps this honest. A mirror whose sidecar is absent
+// or undecodable has unknown health, and unknown is not unhealthy: mirrors
+// written by an earlier build have no sidecar, and a sidecar lost to a crash
+// says nothing about the conversation stored beside it. Reporting those as
+// damaged would teach users to ignore the warning that matters.
+type TranscriptMirrorHealth struct {
+	// Known reports that a sidecar was found and decoded. Every other field is
+	// meaningless when it is false.
+	Known bool
+
+	// Capped reports that the mirror reached its size cap and stopped storing
+	// records. Everything the provider produced after that point was never
+	// copied.
+	Capped   bool
+	CapBytes int64
+
+	// WriteErrors counts appends that failed. Each one is a provider record
+	// the mirror does not hold.
+	WriteErrors int
+	LastError   string
+
+	Records     int
+	Generations int
+}
+
+// Degraded reports that the mirror is known to be missing conversation it was
+// asked to store. It is deliberately false for unknown health.
+func (h TranscriptMirrorHealth) Degraded() bool {
+	return h.Known && (h.Capped || h.WriteErrors > 0)
+}
+
+// Detail states what went wrong, in the plain terms a user needs to judge
+// whether the copy they are looking at is the whole conversation. Callers add
+// the next action, which differs by where they are read.
+func (h TranscriptMirrorHealth) Detail() string {
+	switch {
+	case !h.Known:
+		return ""
+	case h.Capped && h.WriteErrors > 0:
+		return fmt.Sprintf(
+			"Sessions' copy reached its %s size limit and stopped storing records, and %s also failed; records after that point were never copied (last error: %s)",
+			transcriptMirrorCapText(h.CapBytes), pluralWrites(h.WriteErrors), h.LastError)
+	case h.Capped:
+		return fmt.Sprintf(
+			"Sessions' copy reached its %s size limit and stopped storing records; everything the provider wrote after that point was never copied",
+			transcriptMirrorCapText(h.CapBytes))
+	case h.WriteErrors > 0:
+		return fmt.Sprintf(
+			"%s to Sessions' copy failed, so that many provider records are missing from it (last error: %s)",
+			pluralWrites(h.WriteErrors), h.LastError)
+	}
+	return ""
+}
+
+func pluralWrites(count int) string {
+	if count == 1 {
+		return "1 write"
+	}
+	return fmt.Sprintf("%d writes", count)
+}
+
+// transcriptMirrorCapText renders the cap the way the user would recognize it.
+// An unrecorded cap is possible in a sidecar written before CapBytes was
+// persisted, and inventing "0 MB" there would read as a bug in Sessions.
+func transcriptMirrorCapText(capBytes int64) string {
+	if capBytes <= 0 {
+		return "configured"
+	}
+	const mebibyte = 1 << 20
+	if capBytes >= mebibyte {
+		return fmt.Sprintf("%d MB", capBytes/mebibyte)
+	}
+	return fmt.Sprintf("%d bytes", capBytes)
+}
+
+// ReadTranscriptMirrorHealth reads a mirror's recorded health without opening
+// the mirror. A missing or undecodable sidecar yields unknown health rather
+// than an error, because the caller's question is always "can I trust this
+// copy" and "I cannot tell" is a real, distinct answer to it.
+func ReadTranscriptMirrorHealth(mirrorPath string) TranscriptMirrorHealth {
+	meta, ok := ReadTranscriptMirrorMeta(mirrorPath)
+	if !ok {
+		return TranscriptMirrorHealth{}
+	}
+	return TranscriptMirrorHealth{
+		Known:       true,
+		Capped:      meta.Capped,
+		CapBytes:    meta.CapBytes,
+		WriteErrors: meta.WriteErrors,
+		LastError:   meta.LastError,
+		Records:     meta.Records,
+		Generations: meta.Generations,
+	}
+}
+
 // TranscriptMirrorUsable reports whether a mirror holds recorded conversation.
 // An empty or missing mirror is not a usable fallback, and offering one would
 // turn "the provider deleted it" into a more confusing "Sessions has it, but
 // it is blank".
+//
+// It deliberately says nothing about health: a capped mirror is still the best
+// copy of the conversation that exists, and refusing to serve it would destroy
+// what it did manage to keep. Callers that present a mirror to a person should
+// pair this with ReadTranscriptMirrorHealth and say so.
 func TranscriptMirrorUsable(mirrorPath string) bool {
 	if mirrorPath == "" {
 		return false

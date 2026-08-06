@@ -133,6 +133,17 @@ type HistorySource struct {
 	RawBytes      int64          `json:"raw_bytes,omitempty"`
 	RawAvailable  bool           `json:"raw_available"`
 	TextAvailable bool           `json:"text_available"`
+	// MirrorDamaged reports that this conversation is being served from
+	// Sessions' own copy and that the copy records having stopped storing
+	// provider records. Reading a known-incomplete conversation is exactly the
+	// moment the reader needs telling, so the fact travels with the source
+	// rather than staying in the sidecar nobody reads.
+	//
+	// Both fields are absent when the source is not a mirror, and absent when
+	// the mirror's health is unknown -- a mirror with no readable sidecar is
+	// not thereby a damaged one.
+	MirrorDamaged bool   `json:"mirror_damaged,omitempty"`
+	MirrorDetail  string `json:"mirror_detail,omitempty"`
 }
 
 type TranscriptMessage struct {
@@ -352,6 +363,13 @@ func (h *HistoryStore) Source(live []state.SessionInfo, id string) (HistorySourc
 	if source.managed != nil &&
 		watch.TranscriptMirrorPath(h.options.RunnerStateDir, source.managed.ID) == path {
 		result.SourceKind = string(watch.ClaudeMirror)
+		// "sessions-mirror" already says the provider's file is gone. It does
+		// not say whether the copy that replaced it is the whole conversation,
+		// and that is the one thing a reader cannot find out for themselves.
+		if health := watch.ReadTranscriptMirrorHealth(path); health.Degraded() {
+			result.MirrorDamaged = true
+			result.MirrorDetail = health.Detail()
+		}
 	}
 	if info, statErr := os.Stat(path); statErr == nil && info.Mode().IsRegular() {
 		result.RawBytes = info.Size()

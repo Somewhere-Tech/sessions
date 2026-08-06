@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -95,6 +96,15 @@ func (a *app) cmdSource(args []string) error {
 	fmt.Fprintf(a.stdout, "Source        %s\n", source.SourcePath)
 	fmt.Fprintf(a.stdout, "Source kind   %s\n", source.SourceKind)
 	fmt.Fprintf(a.stdout, "Raw bytes     %d\n", source.RawBytes)
+	if source.MirrorDamaged {
+		// Placed above the read recipes on purpose: the person about to run one
+		// of them is the one who needs to know that what comes back is part of
+		// the conversation rather than the whole of it.
+		fmt.Fprintf(a.stdout, "Damaged       %s.\n", source.MirrorDetail)
+		io.WriteString(a.stdout,
+			"              Reading this conversation gives you the part Sessions stored, not all of it, and the rest "+
+				"cannot be recovered from here. If the provider still holds its own transcript, that copy is the complete one.\n")
+	}
 	if source.TextAvailable {
 		fmt.Fprintf(a.stdout, "Read text     sessions source %s --text\n", shellRecipe([]string{resolution.Reference}))
 	}

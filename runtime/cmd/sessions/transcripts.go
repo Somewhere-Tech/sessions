@@ -21,21 +21,27 @@ type transcriptReport struct {
 }
 
 type transcriptsResult struct {
-	Applied       bool               `json:"applied"`
-	Examined      int                `json:"examined"`
-	Copyable      int                `json:"copyable"`
-	Copied        int                `json:"copied"`
-	AlreadyKept   int                `json:"already_kept"`
-	Unrecoverable int                `json:"unrecoverable"`
-	Unverified    int                `json:"unverified"`
-	Incomplete    int                `json:"incomplete"`
-	Sessions      []transcriptReport `json:"sessions"`
+	Applied       bool `json:"applied"`
+	Examined      int  `json:"examined"`
+	Copyable      int  `json:"copyable"`
+	Copied        int  `json:"copied"`
+	AlreadyKept   int  `json:"already_kept"`
+	Unrecoverable int  `json:"unrecoverable"`
+	Unverified    int  `json:"unverified"`
+	Incomplete    int  `json:"incomplete"`
+	// KeptDamaged counts conversations Sessions holds a copy of that the copy
+	// itself reports is missing records. They are excluded from AlreadyKept
+	// rather than added to it, because AlreadyKept is what the closing summary
+	// promises has survived, and a copy that stopped recording has not.
+	KeptDamaged int                `json:"kept_damaged"`
+	Sessions    []transcriptReport `json:"sessions"`
 }
 
 const (
 	transcriptStatusCopied        = "copied"
 	transcriptStatusWouldCopy     = "would-copy"
 	transcriptStatusAlreadyKept   = "already-kept"
+	transcriptStatusKeptDamaged   = "kept-damaged"
 	transcriptStatusUnrecoverable = "unrecoverable"
 	transcriptStatusIncomplete    = "incomplete"
 	transcriptStatusUnverified    = "unverified"
@@ -92,8 +98,22 @@ func (a *app) cmdTranscripts(args []string) error {
 		report := transcriptReport{Session: session.ID, Tool: tool}
 
 		if watch.TranscriptMirrorUsable(mirrorPath) {
-			report.Status = transcriptStatusAlreadyKept
-			result.AlreadyKept++
+			// A mirror that stopped recording is still a mirror, so it is still
+			// reported as kept rather than offered for re-copying: backfilling
+			// into a capped mirror stores nothing, and a mirror is never
+			// rewritten. What changes is the word, because "already kept" is a
+			// promise that the conversation survived, and this one did not
+			// survive whole.
+			health := watch.ReadTranscriptMirrorHealth(mirrorPath)
+			if health.Degraded() {
+				report.Status = transcriptStatusKeptDamaged
+				report.Detail = health.Detail()
+				report.Records = health.Records
+				result.KeptDamaged++
+			} else {
+				report.Status = transcriptStatusAlreadyKept
+				result.AlreadyKept++
+			}
 			result.Sessions = append(result.Sessions, report)
 			continue
 		}
@@ -180,11 +200,20 @@ func (a *app) writeTranscriptsText(result transcriptsResult) error {
 		case transcriptStatusIncomplete:
 			fmt.Fprintf(a.stdout, "%s  copied %d records, incomplete: %s\n",
 				shortID(report.Session), report.Records, report.Detail)
+		case transcriptStatusKeptDamaged:
+			// Named per session, unlike the other kept conversations. A count
+			// alone would leave the user unable to act: the whole point is that
+			// this particular conversation is not the one they think they have.
+			fmt.Fprintf(a.stdout, "%s  kept but damaged: %s\n", shortID(report.Session), report.Detail)
 		}
 	}
+	damaged := ""
+	if result.KeptDamaged > 0 {
+		damaged = fmt.Sprintf(", %d kept but damaged", result.KeptDamaged)
+	}
 	fmt.Fprintf(a.stdout,
-		"\n%d conversations examined: %d already kept, %d unverified, %d unrecoverable, %d %s.\n",
-		result.Examined, result.AlreadyKept, result.Unverified, result.Unrecoverable, result.Copyable,
+		"\n%d conversations examined: %d already kept%s, %d unverified, %d unrecoverable, %d %s.\n",
+		result.Examined, result.AlreadyKept, damaged, result.Unverified, result.Unrecoverable, result.Copyable,
 		map[bool]string{true: "copied", false: "copyable"}[result.Applied],
 	)
 	if result.Incomplete > 0 {
@@ -204,10 +233,26 @@ func (a *app) writeTranscriptsText(result transcriptsResult) error {
 		// that brings one back. Saying which command matters, because the
 		// provider's own resume is exactly what will not work for them.
 		fmt.Fprintf(a.stdout,
-			"%s a Sessions copy and survives the provider deleting its own transcript; "+
+			"%s a Sessions copy and %s the provider deleting its own transcript; "+
 				"bring one back with `sessions resume <id>`, which replays Sessions' copy. "+
 				"A native provider resume cannot reach a conversation the provider has deleted.\n",
-			pluralConversations(result.AlreadyKept, "has", "have"))
+			pluralConversations(result.AlreadyKept, "has", "have"),
+			map[bool]string{true: "survives", false: "survive"}[result.AlreadyKept == 1])
+	}
+	if result.KeptDamaged > 0 {
+		// The one thing this command must never do is let a copy that stopped
+		// recording pass as a copy that survived. Say what it holds, say that
+		// re-running cannot mend it -- a mirror is append-only and is never
+		// rewritten, so there is no repair to offer -- and point at the copy
+		// that may still be complete while it still exists.
+		fmt.Fprintf(a.stdout,
+			"%s a Sessions copy that stopped recording, so it holds part of the conversation and nothing after that point. "+
+				"Running this again cannot mend it: a copy is only ever appended to, never rewritten. "+
+				"While the provider still has its own transcript, that one is complete -- `sessions source <id>` names the file "+
+				"a conversation is read from, and `sessions source <id> --raw` writes it out somewhere Sessions does not manage. "+
+				"A copy that failed on write means the runner state directory was full or unwritable; fixing that is what stops "+
+				"the next conversation losing records the same way.\n",
+			pluralConversations(result.KeptDamaged, "has", "have"))
 	}
 	if result.Unrecoverable > 0 {
 		// Precisely this branch and no other: no provider transcript and no
