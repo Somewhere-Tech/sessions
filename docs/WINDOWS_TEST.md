@@ -39,7 +39,7 @@ first; among the rest, severity beats breadth, and a cheap probe beats an
 elaborate one. Steps 1–5 are roughly an hour and cover the changes most likely
 to be wrong, because they are the ones a Unix developer cannot feel.
 
-Destructive steps are last on purpose: step 9 removes the installation.
+Destructive steps are last on purpose: step 10 removes the installation.
 
 ### 1. Does the host exist at all — 5 minutes
 
@@ -458,7 +458,47 @@ Sessions writing to a conversation another process owns. Repeat the check with
 Terminal A elevated; that split is common on Windows and is the case most likely
 to break.
 
-### 9. Uninstall, last, because it ends the run — 15 minutes
+### 9. The cross-process lock, before anything relies on it — 5 minutes
+
+`internal/filelock` is the advisory lock that will serialise the daemon and a
+runner writing the same session document. It has no callers yet, and it should
+not get any until this passes: atomic rename guarantees no reader sees half a
+document and guarantees nothing about two processes that each read, each modify
+their own copy, and each rename theirs back. The Unix half is verified. The
+Windows half compiles, vets, and links its test binary, and not one instruction
+of it has ever executed.
+
+```powershell
+cd runtime
+go test -timeout 300s -v .\internal\filelock\
+go test -timeout 900s -count=20 .\internal\filelock\
+go test -race -timeout 900s -count=5 .\internal\filelock\
+```
+
+**Pass:** all three runs green, and specifically —
+`TestAcquireBlocksWhileAnotherProcessHoldsTheLockAndProceedsWhenItIsReleased`
+blocks rather than returning; `TestConcurrentProcessesDoNotLoseUpdates` lands
+exactly 160 of 160 updates **and** its unlocked control still loses most of
+them; `TestAcquireIsNotReentrantWithinOneProcess` blocks on a second acquire in
+the same process.
+
+**A failure proves:** an `Acquire` error instead of a block means `LockFileEx`
+reports contention as something other than `ERROR_LOCK_VIOLATION`, so the retry
+path never fires and every contended write fails loudly — read the error's
+number and add it beside `ERROR_LOCK_VIOLATION`. A locked run that lands fewer
+than 160 means `LockFileEx` is not excluding at all and nothing may be built on
+this package. An unlocked control that lands all 160 means the test is not
+racing hard enough on this machine to prove anything, so the locked result is
+not evidence either — raise the increment count until the control fails. A
+second acquire that succeeds means the handle-per-`Acquire` model does not give
+Windows the non-re-entrancy Unix has, which would let two goroutines in the
+daemon into the same read-modify-write.
+
+**Known gap even when it passes:** the leak subtest reports "descriptor count
+unavailable on this platform" on Windows, so only its goroutine assertion is
+live. A handle leak in the cancellation path is not covered by a green run.
+
+### 10. Uninstall, last, because it ends the run — 15 minutes
 
 Uninstall removes the two things Sessions wrote outside its own package: the
 `HKCU\…\Run` value `Somewhere Sessions` and the managed entry in
@@ -584,7 +624,7 @@ is not Windows runtime evidence.
 - Confirm the supervisor definition names the pinned runner directly under the
   managed runtime root, not a versioned copy of it.
 - Uninstall behaviour, what it keeps, and the install-location overlap are
-  covered by step 9 above.
+  covered by step 10 above.
 
 ## Terminal and providers
 
