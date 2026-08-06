@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"unicode/utf16"
 )
 
 const (
@@ -101,9 +103,12 @@ func encodeClaudePath(cwd string) string {
 // writes -Users-uzair-pretty-tmux and the narrow encoder looks in
 // -Users-uzair-pretty_tmux.
 //
-// It is only ever used to widen the set of directories resolution probes. It
-// never becomes a write path, because two cwds can share a strict bucket and a
-// file written into a shared bucket cannot be attributed back.
+// This is both a read and a write path: resolution probes it to widen the set
+// of candidate directories, and internal/migrate writes a moved conversation
+// into it, because a file written anywhere else is one the provider will never
+// read. The encoding is lossy -- two cwds can share a bucket -- so a reader
+// that needs the real working directory takes it from what the transcripts in
+// that bucket recorded rather than by inverting the name.
 func EncodeClaudeCWDStrict(cwd string) string {
 	return encodeClaudePathStrict(normalizeCWD(cwd))
 }
@@ -130,7 +135,40 @@ func encodeClaudePathStrict(cwd string) string {
 			encoded = append(encoded, '-')
 		}
 	}
+	// Past its limit the provider keeps a prefix and appends a hash of the
+	// original path, so two long directories that share the first 200
+	// characters still land in different buckets. Without this a deeply nested
+	// workspace is not merely encoded differently, it is encoded into a name
+	// no reader and no writer can agree on.
+	if len(encoded) > claudeProjectDirMaxLength {
+		return string(encoded[:claudeProjectDirMaxLength]) + "-" + claudeProjectDirHash(cleaned)
+	}
 	return string(encoded)
+}
+
+// claudeProjectDirMaxLength is the prefix the provider keeps before it starts
+// hashing.
+const claudeProjectDirMaxLength = 200
+
+// claudeProjectDirHash reproduces the provider's suffix for an over-long path.
+//
+// The original is `t = (t << 5) - t + charCodeAt(i) | 0`, i.e. a 31-multiplier
+// hash truncated to a signed 32-bit integer, then Math.abs, then base 36. Two
+// details decide whether this agrees with it. The iteration is over UTF-16
+// code units rather than runes, so a non-BMP character contributes its two
+// surrogates. And the absolute value is taken in a wider type, because the
+// most negative 32-bit integer has no positive counterpart -- JavaScript
+// numbers do not wrap there and neither can this.
+func claudeProjectDirHash(path string) string {
+	var hash int32
+	for _, unit := range utf16.Encode([]rune(path)) {
+		hash = hash*31 + int32(unit)
+	}
+	magnitude := int64(hash)
+	if magnitude < 0 {
+		magnitude = -magnitude
+	}
+	return strconv.FormatInt(magnitude, 36)
 }
 
 // ClaudeProjectsDir returns Claude Code's per-user project-session root.
