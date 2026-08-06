@@ -239,6 +239,11 @@ func (e *Engine) Report(ctx context.Context) (Report, error) {
 				reality.LaunchdRunning || reality.ProcessAlive,
 			ResumeSourceKnown:  known,
 			ResumeSourceExists: exists,
+			// Carried separately from ResumeSourceExists so classification can
+			// keep raising the missing-source anomaly -- the provider file
+			// really is gone -- while the plan stops calling the conversation
+			// unrecoverable.
+			TranscriptMirrorUsable: reality.TranscriptMirror != "",
 		}
 		realities[id] = reality
 	}

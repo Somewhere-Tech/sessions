@@ -297,16 +297,26 @@ type RuntimeState struct {
 	Running            bool
 	ResumeSourceKnown  bool
 	ResumeSourceExists bool
+	// TranscriptMirrorUsable reports that Sessions holds its own readable copy
+	// of the conversation. It is deliberately separate from
+	// ResumeSourceExists, which means only that the provider's file is still
+	// there: a mirror makes the conversation recoverable, it does not make a
+	// native provider resume possible.
+	TranscriptMirrorUsable bool
 }
 
 type Classification struct {
 	Lane      LaneState
 	Class     Class
 	Anomalies []Anomaly
+	// TranscriptMirrorUsable carries the runtime observation forward so
+	// BuildRecoveryPlan, which sees only classifications, can tell a
+	// conversation that is gone from one Sessions can still read.
+	TranscriptMirrorUsable bool
 }
 
 func ClassifyLane(lane LaneState, runtime RuntimeState) Classification {
-	classification := Classification{Lane: lane}
+	classification := Classification{Lane: lane, TranscriptMirrorUsable: runtime.TranscriptMirrorUsable}
 	closed := lane.UserKillRequested || lane.RunnerExited || lane.Reaped || lane.ReopenedAs != "" || lane.Archived
 	switch {
 	case closed:
@@ -378,7 +388,11 @@ type RecoveryRecipe struct {
 	LastActivityAtMS   int64          `json:"lastActivityAtMs"`
 	LastActivitySource ActivitySource `json:"lastActivitySource,omitempty"`
 	Blocked            bool           `json:"blocked"`
-	Anomalies          []Anomaly      `json:"anomalies"`
+	// TranscriptRecovery reports that the provider's own transcript is gone
+	// but Sessions kept a copy, so this recipe must be recovered from that
+	// copy rather than by handing the provider a resume flag it will reject.
+	TranscriptRecovery bool      `json:"transcriptRecovery,omitempty"`
+	Anomalies          []Anomaly `json:"anomalies"`
 }
 
 type RecoveryPlan struct {
@@ -408,7 +422,14 @@ func BuildRecoveryPlan(classifications []Classification) RecoveryPlan {
 			LastActivitySource: lane.LastActivitySource,
 			Anomalies:          append([]Anomaly(nil), classification.Anomalies...),
 		}
-		recipe.Blocked = HasAnomaly(classification, AnomalyResumeSourceMissing)
+		// The anomaly still stands -- the provider's transcript really is
+		// missing, and a caller that hands `claude --resume` this id will
+		// still be refused. What changes is that a conversation Sessions kept
+		// its own copy of is no longer presented as unrecoverable, which is
+		// the whole reason the copy exists.
+		missingSource := HasAnomaly(classification, AnomalyResumeSourceMissing)
+		recipe.TranscriptRecovery = missingSource && classification.TranscriptMirrorUsable
+		recipe.Blocked = missingSource && !classification.TranscriptMirrorUsable
 		plan.Recipes = append(plan.Recipes, recipe)
 	}
 	sort.Slice(plan.Recipes, func(i, j int) bool {
