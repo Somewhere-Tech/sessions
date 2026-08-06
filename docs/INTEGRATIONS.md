@@ -20,6 +20,35 @@ with the user's normal Sessions token.
 - Conversation files are sensitive. Token access to these endpoints grants
   access to the normalized transcript and exact raw file bytes.
 
+## Degraded reads
+
+Every durable Sessions record is an append-only JSONL line, so a power cut, a
+full disk, or a killed process can leave the final line half-written. A reader
+that met one skips it, keeps reading the rest of the file, and counts the skip
+rather than failing the request or rewriting the file
+(`runtime/internal/integrations/errors.go` states the policy;
+`runtime/internal/integrations/history.go` and
+`runtime/internal/verdict/store.go` follow it).
+
+That accounting is surfaced so a consumer can tell a degraded answer from a
+clean one. Every counter below is additive and omitted when it is zero, so an
+absent field means nothing was lost:
+
+| Field | Where | Meaning |
+| --- | --- | --- |
+| `skipped_records` | history session, history response, transcript response, error feed | Count of records this read could not decode and skipped |
+| `unreadable` | history session | The transcript could not be read on this pass |
+| `unreadable_reason` | history session | What failed and the next action to take |
+| `unreadable_sessions` | history response | How many listed sessions are `unreadable` |
+| `truncated_before` | error feed | Lowest sequence still served from memory |
+
+A nonzero `skipped_records` means the answer is **degraded but usable**: it is
+the complete answer minus those records, not a failed read. Use it, and treat a
+`message_count` or transcript that carries one as a floor rather than an exact
+figure. The skipped bytes stay on disk untouched for a later forensic read;
+Sessions never repairs or truncates the file, so the same read returns the same
+answer next time.
+
 ## Session-history recall
 
 History is assembled from live sessions and durable runner metadata in the
@@ -52,7 +81,7 @@ lifecycle records, and Codex environment preambles are not counted.
 }
 ```
 
-Each session object always contains all ten fields:
+Each session object always contains these nine fields:
 
 | Field | JSON type | Meaning |
 | --- | --- | --- |
@@ -67,6 +96,16 @@ Each session object always contains all ten fields:
 | `conversation_available` | boolean | Whether a resolved regular conversation file can be recalled |
 
 An empty result is `{"schemaVersion":1,"sessions":[]}`.
+
+One unreadable transcript no longer fails the whole listing. The affected row is
+still returned with its identity, name, cwd, and timestamps intact — so the
+session stays findable and resumable — but with `conversation_available:false`,
+`unreadable:true`, and an instructional `unreadable_reason`. The response then
+carries `unreadable_sessions` and a summed `skipped_records` beside `sessions`,
+so a consumer can tell a complete list from a partial one without inspecting
+every entry. Fetching that one session by id still fails loudly with the
+underlying error, because for a caller asking for one named conversation there
+is no partial answer to return.
 
 ### `GET /api/history/:id?format=json`
 
@@ -113,6 +152,11 @@ Message fields are stable:
 Claude's canonical event records are reduced directly. Codex rollout records
 first pass through Sessions' `internal/watch` Codex normalizer, so recall and the
 live daemon share the same filtering and role semantics.
+
+When a record in the source could not be decoded, the response adds
+`skipped_records` beside `messages` and repeats it on the embedded session. The
+conversation is shown minus those records; message indices are assigned over the
+records that decoded.
 
 ### `GET /api/history/:id?format=text`
 
@@ -208,6 +252,14 @@ Error event fields are stable:
 | `summary` | string | Short human-readable failure summary |
 | `detail` | string | Diagnostic detail; consumers must not parse this as a stable sub-schema |
 | `machine` | string | Hostname of the emitting Sessions daemon |
+
+Two additive counters describe a degraded feed. `skipped_records` counts lines
+of `errors.jsonl` that could not be decoded or validated when the daemon loaded
+it; the feed is complete except for those events and is still safe to consume.
+`truncated_before` is the lowest sequence still served from memory: the daemon
+retains at most the newest 5,000 events, and a consumer whose `since` is below
+that value knows a gap exists and can read `errors.jsonl` directly, which stays
+complete on disk. Both are omitted when zero.
 
 If no new event exists, `errors` is an empty array and `nextSeq` remains the
 current cursor. Invalid cursors return 400:

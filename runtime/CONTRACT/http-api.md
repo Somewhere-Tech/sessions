@@ -1119,6 +1119,14 @@ The existing authenticated `GET /api/history/<id>` route remains complete by
 default. The transcript response assigns a stable zero-based `index` to every
 normalized message.
 
+Every response on these routes may carry the additive `skipped_records` counter,
+omitted when zero, reporting records the torn-record policy could not decode and
+skipped. A nonzero value means the answer is degraded but usable — complete
+minus those records — and indices are assigned over the records that decoded.
+`GET /api/history` degrades per item for the same reason and adds
+`unreadable_sessions`; [`docs/INTEGRATIONS.md`](../../docs/INTEGRATIONS.md) is
+the field-level contract.
+
 Native search viewing first requests
 `GET /api/history/<id>/window?format=json&start=N&end=M`; `end` is exclusive.
 One response spans at most 500 original message positions; omitting `end`

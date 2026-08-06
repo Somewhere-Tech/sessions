@@ -23,7 +23,9 @@ root.
     ├── <session-id>.sock
     ├── <session-id>.events
     ├── <session-id>.events.tmp       # transient trim file only
-    └── <session-id>.log
+    ├── <session-id>.log
+    ├── <session-id>.transcript.jsonl      # Go runtime only
+    └── <session-id>.transcript.meta.json  # Go runtime only
 
 ~/Library/LaunchAgents/
 └── tech.somewhere.sessions.runner.<session-id>.plist
@@ -57,7 +59,8 @@ always derived from the home directory: `settings.json`, `machine-id`,
 VAPID/subscriptions, and the `idle/` sentinels. Neither does the lane ledger,
 which has its own `SESSIONS_LEDGER_PATH` override, nor
 `~/Library/LaunchAgents`. A safe isolated test must therefore set `HOME`,
-`SESSIONS_STATE_DIR`, and `SESSIONS_LEDGER_PATH` together.
+`SESSIONS_STATE_DIR`, and `SESSIONS_LEDGER_PATH` together, plus `SESSIONS_PORT`
+so it does not contend for the installed daemon's default `8787`.
 
 One consequence of relocating uploads: `POST /api/sessions/:id/upload` still
 requires the resolved uploads directory to be inside the daemon's home
@@ -204,6 +207,37 @@ Both launchd `StandardOutPath` and `StandardErrorPath` point here. The runner
 does not explicitly create, chmod, rotate, truncate, or unlink it; launchd owns
 opening/appending behavior. Despite stale source comments describing stdio-log
 removal, current cleanup code leaves `.log` behind.
+
+### `runners/<id>.transcript.jsonl` and `.transcript.meta.json`
+
+Go runtime only; the Node fixture has no equivalent. The transcript file is
+Sessions' own append-only copy of a Claude conversation, written by the daemon's
+PTY-backed Claude watcher rather than by the runner
+(`runtime/internal/watch/transcript_mirror.go`). Provider lines are stored
+verbatim and in observed order, deduplicated by each record's own `uuid`, so the
+file is itself a legal Claude transcript. The transcript file is opened 0600 and
+re-chmoded on every open; the sidecar is written 0600.
+
+The provider file wins whenever it still resolves, so a session resolves to
+exactly one transcript path and no reader can count a conversation twice
+(`watch.ResolveClaudeWithMirror`). This copy is the answer only once the
+provider's file cannot be resolved at all, and it is deliberately outside every
+cleanup path: it is not truncated, rotated, repaired, or unlinked when the
+session ends, when discovery reaps a dead runner, or when retention archives the
+record. Reaching the 512 MiB cap stops appends and is recorded in the sidecar
+instead of discarding stored conversation.
+
+`.transcript.meta.json` is one compact JSON object plus newline, carrying
+`version`, the Sessions and provider identifiers, the observed `providerPath`,
+`records`, `bytes`, first/last observed times, a `generations` count of observed
+provider truncations or replacements, and `capped`/`writeErrors`/`lastError`
+when they apply. It is replaced by temp-file rename. The transcript is authoritative
+over a sidecar a crash left mid-write: opening the mirror rescans it and
+recomputes `records` and `bytes`.
+
+Neither name is a runner metadata document. `.transcript.meta.json` is listed in
+`runtime/internal/state/paths.go` `runnerSidecarJSONSuffixes` so discovery does
+not read it as `<id>.json` and invent a phantom runner id.
 
 ## Runner launch environment
 

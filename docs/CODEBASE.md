@@ -376,7 +376,15 @@ for deliberate integrations. `TranscriptWindow` returns role/range-selected
 stable indices for the native reader; the older tail-bounded
 `TranscriptPreview` remains available to compatibility surfaces.
 It also keeps append-only integration failures and records lost or nonzero
-runner exits (`runtime/internal/integrations/errors.go`).
+runner exits (`runtime/internal/integrations/errors.go`), which is where the
+torn-record policy for every append-only log in the runtime is stated: a record
+that cannot be decoded is skipped, counted, and reported to the caller, and the
+file is never rewritten to repair it. History applies that policy per item, so
+one unreadable transcript degrades its own row — `unreadable` plus an
+instructional `unreadable_reason` — instead of emptying the listing, while a
+single-session fetch still fails loudly. The counters are contract fields;
+[`docs/INTEGRATIONS.md`](INTEGRATIONS.md) documents what a consumer does with
+them.
 
 ### `lan`
 
@@ -469,6 +477,16 @@ provider credentials.
 
 `recovery` reconciles ledger state with live runners and provider files without
 mutating anything while it builds a report (`runtime/internal/recovery/report.go`).
+Its per-lane `Reality` reports readability and native resumability as two
+separate facts. `conversation` is the provider's own file and
+`resumeSourceExists` means only that this file is present, which is what makes
+`claude --resume` or `codex resume` possible. `transcriptMirror` is the path to
+Sessions' own copy when one exists and holds records, and
+`conversationRecoverable` is true when either source can still be read. A
+conversation is therefore routinely fully readable through Sessions while
+provider-native resume is impossible; the mirror is never folded into
+`resumeSourceExists`, because promising a native resume a mirror cannot deliver
+would fail in the user's terminal.
 Reopen operations only use validated safe recipes and avoid creating duplicate
 live ownership (`runtime/internal/recovery/mutate.go`). Adoption requires an
 explicit, unambiguous provider artifact (`runtime/internal/recovery/adopt.go`).
@@ -610,13 +628,32 @@ Pricing is an explicit pinned `ccusage`-compatible table: recorded costs remain
 distinguishable from estimates, and unknown models remain visibly unpriced
 (`runtime/internal/usage/pricing.go`).
 
+Every calculated cost is an estimate, and the known gaps are worth stating
+rather than discovering. The rate table is hand-maintained in source with a
+pinned upstream revision but no as-of date, so it lags a vendor price change
+until someone edits it. Server-side tool use is billed by the provider but never
+appears in the token stream Sessions reads, so it is absent from the total.
+Cache writes are priced from one `cache_creation_input_tokens` figure and the
+ephemeral 5-minute/1-hour split is not read, so a longer cache TTL is
+under-priced. A Codex session's service tier is inferred from launch arguments
+and profile configuration rather than reported by the provider. And on a Claude
+Max or ChatGPT subscription the marginal cost of a session is zero, so the
+figure is a list-price valuation of the tokens spent, not money owed. Treat the
+totals as directional; recorded provider costs, where present, are the only
+non-estimated numbers.
+
 ### `verdict`
 
 `verdict` accepts explicit producer-authored JSON verdicts and never infers them
 from prose or terminal output (`runtime/internal/verdict/verdict.go`). It appends
 records per session, enforces increasing sequence numbers, and retrieves the
 latest record (`runtime/internal/verdict/store.go`); the ledger stores only a
-pointer to verdict state.
+pointer to verdict state. `Emit` writes that ledger pointer *before* the durable
+JSONL record, following the write-ahead rule. A consumer should read the
+resulting partial state accordingly: an interrupted emit can leave a lane event
+saying a verdict was attempted with no record behind it, which is visible and
+retryable, rather than a durable record whose caller was told the write failed
+and whose retry would append a duplicate verdict.
 
 ### `waitcond`
 
@@ -636,6 +673,36 @@ exact conversation UUID and refuses ambiguous candidates
 working directory, and creation time with a broader fallback
 (`runtime/internal/watch/codex_resolver.go`). Watchers combine filesystem hints
 with polling so missed notifications do not stop progress.
+
+`watch` also owns the transcript mirror: Sessions' own durable, append-only copy
+of a Claude conversation at `<runner-state-dir>/<id>.transcript.jsonl` with a
+`<id>.transcript.meta.json` provenance sidecar
+(`runtime/internal/watch/transcript_mirror.go`). A PTY-backed Claude watcher tees
+provider lines into it verbatim and in observed order, deduplicated by each
+record's own `uuid`, so the mirror is itself a legal Claude transcript that every
+existing reader handles by substituting the path. Structured Claude and Codex
+app-server kinds start no watcher, and the Codex tailer is not mirrored.
+
+The contract has three parts. The provider file always wins whenever it still
+resolves, so a session resolves to exactly one transcript path and nothing is
+counted twice (`watch.ResolveClaudeWithMirror`, used by `backup.Resolver.Resolve`).
+The mirror is never truncated, rotated, or repaired — reaching its 512 MiB cap
+stops appends and is recorded in the sidecar rather than discarding recorded
+conversation, and it is not unlinked when the session ends. And it becomes the
+answer once the provider prunes, renames the bucket it wrote into, or leaves the
+resolver unable to choose: `sessions source` and `GET /api/history/<id>/source`
+then report `source_kind: "sessions-mirror"` instead of `provider-jsonl`, because
+saying `provider-jsonl` would imply a provider-native resume that is no longer
+possible.
+
+`sessions transcripts` backfills that copy for conversations nobody is watching —
+ended sessions whose provider transcript is still on disk and next in line for
+the provider's retention timer (`runtime/cmd/sessions/transcripts.go`). It is a
+dry run by default and copies only on an exact provider-id match. The resolver's
+single-file fallback is a reasonable guess for *reading* a bucket that holds one
+transcript, but writing a guess into a mirror makes it permanent, and once the
+provider prunes there is nothing left to correct it against; anything less than
+an exact match is reported as unverified and left alone.
 
 ### `webassets`
 
@@ -722,6 +789,7 @@ daily driver's ledger and sweep the daily driver's runner plists (`docs/DEV.md`)
 | State | Default location | Source |
 | --- | --- | --- |
 | Runner socket, metadata, frames, logs, manifests, structured histories | `~/.local/state/sessions/runners/` | `runtime/internal/state/paths.go` |
+| Sessions' own copy of a Claude conversation | `~/.local/state/sessions/runners/<session-id>.transcript.jsonl` plus a `.transcript.meta.json` sidecar; append-only, mode 0600, never truncated, rotated, or unlinked when the session ends | `runtime/internal/watch/transcript_mirror.go`, `runtime/internal/state/paths.go` |
 | Daemon settings | `~/.local/state/sessions/settings.json` | `runtime/internal/state/config.go` |
 | Access token and open sentinel | Unix: `~/.local/state/sessions/{token,open}`; Windows: `%LOCALAPPDATA%\Sessions\state\{token,open}` with the token DPAPI-protected | `runtime/internal/state/config.go`, `runtime/internal/tokenstore/` |
 | Approved machine metadata and per-device credentials | `~/.local/state/sessions/clients.json` plus `clients/<machine-id>.token`; private files on Unix and DPAPI-protected credential files on Windows | `runtime/cmd/sessions/machines.go`, `runtime/internal/tokenstore/` |
@@ -733,7 +801,7 @@ daily driver's ledger and sweep the daily driver's runner plists (`docs/DEV.md`)
 | Browser push keys and subscriptions | `~/.local/state/sessions/{vapid.json,push-subscriptions.json}` | `runtime/internal/session/push.go` |
 | Idle completion sentinels | `~/.local/state/sessions/idle/<session-id>` | `runtime/internal/session/idle.go` |
 | Saved provider profiles | `~/.local/state/sessions/profiles/<tool>/<name>` | `runtime/internal/session/profiles.go` |
-| Fleet-search peer health cache (CLI-local, best effort) | `~/.local/state/sessions/fleet-search-health.json`; a literal Unix path written only by the CLI, holding the last failure and a five-minute cooldown per approved peer | `runtime/cmd/sessions/fleet.go` |
+| Fleet-search peer health cache (CLI-local, best effort) | `<user state root>/fleet-search-health.json`, so Windows gets `%LOCALAPPDATA%\Sessions\state`; written only by the CLI, holding the last failure and a five-minute cooldown per approved peer | `runtime/cmd/sessions/fleet.go` |
 | Windows supervisor identity | `%LOCALAPPDATA%\Sessions\state\supervisor.json` | `runtime/cmd/sessionsd/supervisor_windows.go` |
 | Files uploaded to a session | `~/.local/state/sessions/uploads/<stem>-<8 hex><ext>`; an explicit `SESSIONS_STATE_DIR` keeps them inside that scratch state | `runtime/internal/api/files.go` |
 | Lane ledger | `<user state root>/ledger/lanes.sqlite3`; an existing `~/Library/Application Support/sessions/ledger/lanes.sqlite3` is adopted rather than abandoned | `runtime/internal/ledger/store.go` |
