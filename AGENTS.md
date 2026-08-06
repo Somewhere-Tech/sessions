@@ -54,9 +54,26 @@ private hosted-service designs do not belong in this repository.
 
 1. **Sessions are sacred.** Never kill, replace, mass-clean, or adopt a session
    you do not own.
-2. **Isolate development.** Use a worktree and branch. For a scratch daemon, set
-   both `SESSIONS_STATE_DIR` and `SESSIONS_PORT` so it cannot collide with
-   personal state (`docs/DEV.md`).
+2. **Isolate development.** Use a worktree and branch. `SESSIONS_STATE_DIR` plus
+   `SESSIONS_PORT` is **not** isolation. `SESSIONS_STATE_DIR` moves only the
+   runner artifact directory and the `token`/`open` sentinels beside it
+   (`runtime/internal/state/config.go` `stateRootsFromEnv`); the lane ledger
+   (`runtime/internal/ledger/store.go` `ResolvePath`), the user state root, and
+   `~/Library/LaunchAgents` still resolve from `HOME`. A scratch daemon missing
+   the rest reads the user's real provider history, writes lost-runner records
+   into their real ledger, and treats their real runner plists as orphans to boot
+   out and unlink. A scratch daemon needs all four, under a **short** root:
+
+   ```sh
+   HOME=/tmp/sX/home SESSIONS_STATE_DIR=/tmp/sX/runners \
+   SESSIONS_LEDGER_PATH=/tmp/sX/lanes.sqlite3 SESSIONS_PORT=8899 sessionsd
+   ```
+
+   The runner socket is `<SESSIONS_STATE_DIR>/<uuid>.sock` and macOS `sun_path`
+   accepts at most 103 bytes, so a long scratch root fails every session with
+   `runner did not create socket within 60s: ...: connect: invalid argument`
+   after a full 60-second wait (`runtime/internal/state/launcher.go`).
+   See `docs/DEV.md`.
 3. **Write ahead of destructive action.** Creation and termination intent are
    ledgered before process launch or control
    (`runtime/internal/session/manager.go`, `runtime/internal/ledger/store.go`).

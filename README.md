@@ -83,10 +83,13 @@ Agents created from a managed parent inherit that parent's exact provider
 permission mode by default. They cannot silently promote themselves to full
 access. An agent-created task worker also closes its runtime after a successful
 final response while its transcript, lineage, and workspace remain available.
-If a provider is waiting for approval, `sessions wait --summary` returns
-`needs-input` with the actual prompt instead of pretending that the worker is
-still making progress. Users can explicitly opt into autonomous delegated work
-during onboarding or later in Settings.
+If a provider is waiting for approval, `sessions wait` returns `reason:
+needs-input` with the actual prompt instead of pretending that the worker is
+still making progress; `--summary` adds prose but never changes the shape.
+Waiting on a session always answers with one JSON object and an exit code that
+agrees with it: 0 satisfied, 1 usage, 2 daemon unreachable, 3 timed out, 4 the
+target is gone or failed. Users can explicitly opt into autonomous delegated
+work during onboarding or later in Settings.
 
 ## The CLI in 60 seconds
 

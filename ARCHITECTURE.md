@@ -113,16 +113,25 @@ The default runtime layout is:
     ├── <id>.events
     └── <id>.log
 
+~/.local/state/sessions/ledger/lanes.sqlite3
+
 ~/Library/LaunchAgents/
 ├── <configured-sessionsd-label>.plist
 └── tech.somewhere.sessions.runner.<id>.plist
-
-~/Library/Application Support/sessions/ledger/lanes.sqlite3
 ```
 
+The ledger sits under the platform user state root — `~/.local/state/sessions`
+on Unix, `%LOCALAPPDATA%\Sessions\state` on Windows — rather than a hardcoded
+macOS layout. On macOS only, a machine that already wrote the earlier
+`~/Library/Application Support/sessions/ledger/lanes.sqlite3` keeps using that
+file: the new path is preferred when it exists, otherwise the legacy file is
+adopted if present, and the legacy path is never created
+(`runtime/internal/ledger/store.go`).
+
 `SESSIONS_STATE_DIR` relocates runner and daemon state for interoperability and
-tests; isolated work also uses a scratch `HOME`. `SESSIONS_LEDGER_PATH`
-separately relocates the append-only lane ledger.
+tests, but not the user state root; isolated work also needs a scratch `HOME`
+and `SESSIONS_LEDGER_PATH`, which separately relocates the append-only lane
+ledger. See [`AGENTS.md`](AGENTS.md) rule 2 for the complete scratch recipe.
 
 The ledger writes launch intent before process creation and a tombstone before
 requested termination. It distinguishes live managed, closed, external, and

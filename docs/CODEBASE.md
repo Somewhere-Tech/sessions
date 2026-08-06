@@ -314,11 +314,19 @@ needs-input tasks remain visible and resumable.
 
 `agentcall` is the shared one-shot boundary for explicitly requested AI
 features (`runtime/internal/agentcall/agentcall.go`). It invokes the user's
-already-authenticated Codex or Claude CLI in a temporary directory, strips
-provider API-key environment variables, disables tools and persistence, and
-does not hardcode a model. Codex runs ephemeral/read-only with user config and
-rules ignored; its supported isolation features are preflighted so an older CLI
-fails with an update/provider instruction rather than weakening the boundary.
+already-authenticated Codex or Claude CLI in a temporary directory, disables
+tools and persistence, and does not hardcode a model. The child environment is
+built from an allowlist rather than by stripping known API-key names: only
+variables needed to locate the CLI, let it read credentials the user already
+stored on disk, and reach the network at all are passed through, and `PATH` is
+rebuilt rather than inherited verbatim. Nothing that selects a model, an
+account, or an endpoint is on the list, so a name a vendor ships later —
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `ANTHROPIC_BASE_URL`,
+`OPENAI_BASE_URL` — is dropped without needing a denylist update. Names are
+compared case-insensitively for Windows parity. Codex runs ephemeral/read-only
+with user config and rules ignored; its supported isolation features are
+preflighted so an older CLI fails with an update/provider instruction rather
+than weakening the boundary.
 Claude runs in safe mode with Chrome, slash commands, settings sources, tools,
 MCP, and persistence disabled.
 
@@ -659,7 +667,8 @@ while `embedui` builds embed the built SPA and provide guarded route fallback
 
 Idle classification treats a provider approval or confirmation footer as
 `needs-input` and preserves its actual `Reason:` line. That state flows through
-status, list, Fleet, notifications, JSON, and `sessions wait --summary`; no
+status, list, Fleet, notifications, JSON, and `sessions wait`, whose envelope
+reports `reason: needs-input` with or without `--summary`; no
 watcher sends Enter on the user's behalf. A task-lifecycle child with a
 successful final summary is the one exception to indefinite runtime lifetime:
 the manager records an attributed end boundary and closes the process while
@@ -703,9 +712,12 @@ own configuration root is `~/.config/sessions` on Unix and
 `%LOCALAPPDATA%\Sessions\config` on Windows. Derive both from
 `state.UserStateRootFor`/`state.UserConfigRootFor` rather than rebuilding either
 layout by hand (`runtime/internal/state/config.go`). `SESSIONS_STATE_DIR` relocates runner,
-token, and open-sentinel state for a scratch daemon, while user settings stay
-under the default user state root; the override is mandatory for scratch work
-so the daily driver's registry is not reused (`docs/DEV.md`).
+token, open-sentinel, uploads, recap, usage, and integration-error state for a
+scratch daemon, while the user state root — settings, machine identity, approved
+machines, search index, idle sentinels — stays where `HOME` puts it. The
+override is necessary but not sufficient for scratch work: a scratch daemon also
+needs `SESSIONS_LEDGER_PATH` and its own `HOME`, or it will still write into the
+daily driver's ledger and sweep the daily driver's runner plists (`docs/DEV.md`).
 
 | State | Default location | Source |
 | --- | --- | --- |
@@ -713,8 +725,16 @@ so the daily driver's registry is not reused (`docs/DEV.md`).
 | Daemon settings | `~/.local/state/sessions/settings.json` | `runtime/internal/state/config.go` |
 | Access token and open sentinel | Unix: `~/.local/state/sessions/{token,open}`; Windows: `%LOCALAPPDATA%\Sessions\state\{token,open}` with the token DPAPI-protected | `runtime/internal/state/config.go`, `runtime/internal/tokenstore/` |
 | Approved machine metadata and per-device credentials | `~/.local/state/sessions/clients.json` plus `clients/<machine-id>.token`; private files on Unix and DPAPI-protected credential files on Windows | `runtime/cmd/sessions/machines.go`, `runtime/internal/tokenstore/` |
+| Paired-device records | `~/.local/state/sessions/devices.json` | `runtime/internal/api/pair.go` |
+| Durable machine identity | `~/.local/state/sessions/machine-id` | `runtime/internal/api/identity.go` |
 | Search index | `~/.local/state/sessions/search-index.db` | `runtime/internal/api/search_handlers.go` |
-| Integration errors | `~/.local/state/sessions/errors.jsonl` | `runtime/internal/integrations/errors.go` |
+| Integration errors | `~/.local/state/sessions/errors.jsonl`; follows an explicit `SESSIONS_STATE_DIR` | `runtime/internal/integrations/errors.go` |
+| Daily recaps and local usage rollup | `~/.local/state/sessions/recaps/` and `usage.sqlite3`; both follow an explicit `SESSIONS_STATE_DIR` | `runtime/internal/recap/service.go`, `runtime/internal/usage/config.go` |
+| Browser push keys and subscriptions | `~/.local/state/sessions/{vapid.json,push-subscriptions.json}` | `runtime/internal/session/push.go` |
+| Idle completion sentinels | `~/.local/state/sessions/idle/<session-id>` | `runtime/internal/session/idle.go` |
+| Saved provider profiles | `~/.local/state/sessions/profiles/<tool>/<name>` | `runtime/internal/session/profiles.go` |
+| Fleet-search peer health cache (CLI-local, best effort) | `~/.local/state/sessions/fleet-search-health.json`; a literal Unix path written only by the CLI, holding the last failure and a five-minute cooldown per approved peer | `runtime/cmd/sessions/fleet.go` |
+| Windows supervisor identity | `%LOCALAPPDATA%\Sessions\state\supervisor.json` | `runtime/cmd/sessionsd/supervisor_windows.go` |
 | Files uploaded to a session | `~/.local/state/sessions/uploads/<stem>-<8 hex><ext>`; an explicit `SESSIONS_STATE_DIR` keeps them inside that scratch state | `runtime/internal/api/files.go` |
 | Lane ledger | `<user state root>/ledger/lanes.sqlite3`; an existing `~/Library/Application Support/sessions/ledger/lanes.sqlite3` is adopted rather than abandoned | `runtime/internal/ledger/store.go` |
 | Global idle hook | `<user config root>/hooks.json` | `runtime/internal/state/config.go` |

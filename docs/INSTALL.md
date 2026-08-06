@@ -177,9 +177,12 @@ wildcard hosts such as `0.0.0.0`. `SESSIONS_HOST` and `SESSIONS_PORT` select a
 specific alternative address and port.
 
 Runtime state is under `~/.local/state/sessions/`, with runner artifacts in
-`~/.local/state/sessions/runners/`. The lane ledger is stored separately at
-`~/Library/Application Support/sessions/ledger/lanes.sqlite3` in the current
-implementation. Treat both locations as private user data.
+`~/.local/state/sessions/runners/`. The lane ledger is stored beside them at
+`~/.local/state/sessions/ledger/lanes.sqlite3`. On macOS only, an installation
+that already wrote the earlier ledger under
+`~/Library/Application Support/sessions/ledger/lanes.sqlite3` keeps using that
+file instead of starting an empty one; the legacy path is adopted when present
+but never created. Treat every one of these locations as private user data.
 
 ## Upgrade
 

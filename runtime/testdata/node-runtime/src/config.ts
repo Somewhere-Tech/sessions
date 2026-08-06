@@ -42,6 +42,12 @@ export function isAuthOpen(): boolean {
  * route except /api/health and /api/health/deep, and every WS upgrade,
  * requires this token — either as an `Authorization: Bearer <t>` header
  * or a `?token=<t>` query parameter.
+ *
+ * That exemption list describes THIS frozen fixture, not the shipped
+ * product. The Go runtime moved /api/health/deep behind authorization
+ * because it enumerates live session identifiers and host process IDs.
+ * Do not carry this file's exemption list into new work; see
+ * runtime/CONTRACT/http-api.md.
  */
 export function getAuthToken(): string {
   try {

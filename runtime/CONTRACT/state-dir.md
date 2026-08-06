@@ -1,8 +1,10 @@
 # sessionsd state and discovery contract
 
-This records the paths and lifecycle actually used by the TypeScript source.
-The current layout is split: runner artifacts live in a `runners/` subdirectory
-by default, while auth, push, uploads, and idle state live at the root.
+This records the paths and lifecycle actually used by the TypeScript source,
+with the shipped Go runtime's deliberate divergences called out where they
+exist. The current layout is split: runner artifacts live in a `runners/`
+subdirectory by default, while auth, push, uploads, and idle state live at the
+root.
 
 ## Default layout
 
@@ -27,13 +29,41 @@ by default, while auth, push, uploads, and idle state live at the root.
 └── tech.somewhere.sessions.runner.<session-id>.plist
 ```
 
-`SESSIONS_STATE_DIR` replaces only the runner artifact directory used by
-`sessions.ts` and passed to runners as `RUNNER_STATE_DIR`. For example,
-`SESSIONS_STATE_DIR=/tmp/ct-state` places `<id>.json/.sock/.events/.log` directly
-in `/tmp/ct-state`, not `/tmp/ct-state/runners`. It does **not** relocate
-`token`, `open`, VAPID/subscriptions, uploads, or idle sentinels. Those use
-`os.homedir()` and the fixed root above. A safe isolated test must therefore set
-both `HOME` and `SESSIONS_STATE_DIR`.
+The Unix root above is the platform user state root. Windows uses
+`%LOCALAPPDATA%\Sessions\state` with the same children, and the launch-agent
+tree has no Windows equivalent. Derive it from `state.UserStateRootFor` rather
+than rebuilding either layout by hand.
+
+`SESSIONS_STATE_DIR` names the runner artifact directory passed to runners as
+`RUNNER_STATE_DIR`. For example, `SESSIONS_STATE_DIR=/tmp/ct-state` places
+`<id>.json/.sock/.events/.log` directly in `/tmp/ct-state`, not
+`/tmp/ct-state/runners`.
+
+The Go runtime deliberately diverges from the Node fixture on what else follows
+it. Setting it also derives a separate *state root* — the parent when the
+configured directory is named `runners`, otherwise the directory itself — so a
+scratch daemon never reads the installed daemon's credentials or ledgers
+(`runtime/internal/state/config.go` `stateRootsFromEnv`). These follow the
+override:
+
+- `token` and `open`;
+- `uploads/` (`runtime/internal/api/files.go` `uploadsDir`), matching how recap,
+  usage, and integration-error state already resolve;
+- `recaps/`, `usage.sqlite3`, and `errors.jsonl`.
+
+These do **not** follow it, and resolve from the user state root, which is
+always derived from the home directory: `settings.json`, `machine-id`,
+`clients.json` and `clients/`, `devices.json`, `profiles/`, `search-index.db`,
+VAPID/subscriptions, and the `idle/` sentinels. Neither does the lane ledger,
+which has its own `SESSIONS_LEDGER_PATH` override, nor
+`~/Library/LaunchAgents`. A safe isolated test must therefore set `HOME`,
+`SESSIONS_STATE_DIR`, and `SESSIONS_LEDGER_PATH` together.
+
+One consequence of relocating uploads: `POST /api/sessions/:id/upload` still
+requires the resolved uploads directory to be inside the daemon's home
+directory and answers
+`403 {"error":"upload directory outside home"}` otherwise. A scratch
+`SESSIONS_STATE_DIR` outside its scratch `HOME` therefore cannot accept uploads.
 
 ## Files
 
@@ -88,10 +118,11 @@ Subscribe replaces by endpoint; unsubscribe filters by endpoint. Push responses
 
 ### `uploads/*`
 
-Uploaded raw request bodies for known sessions. The fixed uploads directory is
-created recursively with requested mode 0700 and files are written mode 0600.
-Names and the 25 MiB limit are specified in `http-api.md`. There is no automatic
-cleanup in the normative source.
+Uploaded raw request bodies for known sessions. The uploads directory is created
+recursively with requested mode 0700 and files are written mode 0600. Names and
+the 25 MiB limit are specified in `http-api.md`. There is no automatic cleanup.
+In the Go runtime this directory follows an explicit `SESSIONS_STATE_DIR` as
+described above; in the Node fixture it is fixed under `os.homedir()`.
 
 ### `idle/<id>`
 

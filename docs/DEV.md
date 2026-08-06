@@ -7,9 +7,32 @@
    focused branch from the current product branch. The old
    `pty-runner-architecture` branch is historical production state, not a base
    for new work.
-3. **Isolate every test daemon.** Set both `SESSIONS_STATE_DIR` and
-   `SESSIONS_PORT`; also relocate `SESSIONS_LEDGER_PATH` and use a scratch home
-   whenever a test touches user-level auth, provider, or launchd state.
+3. **Isolate every test daemon.** All four of `HOME`, `SESSIONS_STATE_DIR`,
+   `SESSIONS_LEDGER_PATH`, and `SESSIONS_PORT` are required, not optional
+   extras. `SESSIONS_STATE_DIR` relocates only the runner artifact directory and
+   the `token`/`open` sentinels beside it
+   (`runtime/internal/state/config.go`); the ledger has its own override
+   (`runtime/internal/ledger/store.go`), and the user state root, provider
+   history, and `~/Library/LaunchAgents` all follow `HOME`. A daemon started with
+   only the first two enumerates the daily driver's real provider sessions,
+   writes lost-runner records into the real ledger, and offers the real runner
+   plists to its discovery sweep for bootout and unlink — stopped only by the
+   mass-kill guard, which does not protect the ledger writes. Keep the scratch
+   root short:
+
+   ```sh
+   HOME=/tmp/sX/home SESSIONS_STATE_DIR=/tmp/sX/runners \
+   SESSIONS_LEDGER_PATH=/tmp/sX/lanes.sqlite3 SESSIONS_PORT=8899 sessionsd
+   ```
+
+   The runner socket is `<SESSIONS_STATE_DIR>/<uuid>.sock`, and macOS `sun_path`
+   accepts at most 103 bytes. Exceeding it does not fail fast: the daemon retries
+   the connect for the full 60 seconds and then reports `runner did not create
+   socket within 60s: <path>: ... connect: invalid argument`, which names the
+   timeout rather than the length (`runtime/internal/state/launcher.go`). The
+   `<uuid>.sock` name and its separator cost 42 bytes, so `SESSIONS_STATE_DIR`
+   itself must stay at or below 61 bytes. A scratch directory nested inside a
+   worktree can exceed that; `/tmp/sX/runners` cannot.
 4. **Protect the daily driver.** The only development daemon label is
    `tech.somewhere.sessions.dev.daemon`. Record the live-session baseline before a
    reload and verify `soak-d2` plus the full baseline afterward.

@@ -27,8 +27,17 @@ is not Windows runtime evidence.
   entry rather than creating a side-by-side duplicate.
 - Verify one per-user supervisor definition and one managed Sessions PATH entry.
 - Confirm the CLI, daemon, and viewer agree on version and state location.
-- Confirm uninstall removes only Sessions-owned integration and does not end or
-  delete unrelated work.
+- Confirm uninstall does not end or delete unrelated work.
+- Uninstall does not yet remove Sessions' per-user integration, and the matrix
+  must not be signed off as if it did. The NSIS bundle declares no installer
+  hooks, nothing calls `write_logon_supervisor(None)` outside the failed-start
+  rollback, and there is no counterpart to `merge_user_path`
+  (`src-tauri/tauri.windows.conf.json`, `src-tauri/src/windows_runtime.rs`).
+  Record what survives an uninstall — expected today: the
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `Somewhere
+  Sessions`, the managed Sessions entry in `HKCU\Environment\Path`, and all
+  state under `%LOCALAPPDATA%\Sessions` — and remove those by hand before a
+  clean-install test.
 
 ## Terminal and providers
 

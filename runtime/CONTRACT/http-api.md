@@ -151,6 +151,12 @@ No auth. Returns 200:
   "name": "sessionsd",
   "version": "0.2.3",
   "listen": { "host": "127.0.0.1", "port": 8787 },
+  "lan": {
+    "enabled": true,
+    "url": "http://192.168.1.24:8787",
+    "bonjour": { "advertised": true, "service": "_sessions._tcp" }
+  },
+  "access": { "open": false },
   "system": { "os": "darwin", "arch": "arm64" },
   "compatibility": {
     "api": { "current": 1, "minimumClient": 1, "maximumClient": 1 },
@@ -161,15 +167,34 @@ No auth. Returns 200:
 }
 ```
 
-`host`, `port`, `system`, `discovering`, and the count vary. `system.os` uses
-Go's stable platform names (`darwin`, `windows`, `linux`, and so on) so native
-clients can choose a machine icon without guessing from a hostname.
-`compatibility.api` is the authoritative client acceptance range;
+`host`, `port`, `system`, `discovering`, and the count vary. `listen` always
+reports the main loopback listener's configured host and port, not the LAN
+listener's. `access.open` reports whether the `open` sentinel is present beside
+the token, so a client can tell an intentionally unauthenticated daemon from a
+misconfigured one.
+
+`lan.enabled` is `false` and `lan.url` is `null` whenever the user-enabled LAN
+listener is not running. When it is running, `lan.url` is **redacted to `null`
+for callers that have not proved they belong here**: the field survives only for
+a direct loopback peer or a caller whose `Authorization` header or `?token=`
+query parameter authorizes successfully
+(`runtime/internal/api/server.go` `mayReadLANEndpoint`). The route itself stays
+unauthenticated because native discovery, `sessions machines discover`, the
+updater, and the frontend's origin bootstrap all depend on it and on the
+200-vs-401 distinction; the selected private IPv4 address is withheld separately
+because it maps the user's network to anyone who can reach the port.
+`lan.enabled` and `lan.bonjour` are never redacted, so a probe can still tell
+whether the listener is up.
+
+`system.os` uses Go's stable platform names (`darwin`, `windows`, `linux`, and
+so on) so native clients can choose a machine icon without guessing from a
+hostname. `compatibility.api` is the authoritative client acceptance range;
 `compatibility.runner` describes the living runners this daemon can adopt.
 Clients preserve their legacy behavior when an older daemon omits the additive
 object, but must stop before normal use when their protocol is outside an
 advertised range. The count includes exited sessions still in their 30-second
-grace period. The deep-health response carries the same compatibility object.
+grace period. The deep-health response carries the same `compatibility` and
+`access` objects but no `listen` or `lan`.
 
 ### `GET /api/health/deep`
 
@@ -583,11 +608,18 @@ in the saved name or response. The filename is reduced to its basename,
 characters outside `[A-Za-z0-9_. -]` become `_`, and the result is limited to
 96 characters. The stored name is `<stem>-<first 8 chars of random UUID><ext>`.
 
-The destination is the fixed `~/.local/state/sessions/uploads/` directory,
-not the runner `SESSIONS_STATE_DIR`. Responses:
+The destination is the `uploads/` directory under the daemon's state root —
+`~/.local/state/sessions/uploads/` on Unix and the same child of
+`%LOCALAPPDATA%\Sessions\state` on Windows. In the Go runtime an explicitly set
+`SESSIONS_STATE_DIR` moves it, so a scratch daemon does not write into the
+installed daemon's uploads; see `state-dir.md`. The Node fixture keeps it fixed
+under `os.homedir()`. Responses:
 
 - `200 {"path":"<absolute path>","size":<byte count>}`
 - `404 {"error":"unknown session","id":"<id>"}` before reading the body
+- `403 {"error":"upload directory outside home"}` when the resolved uploads
+  directory is not inside the daemon's home directory, which an out-of-home
+  `SESSIONS_STATE_DIR` produces
 - `413 {"error":"file too large","max":26214400}` once the body exceeds 25
   MiB; the remainder is drained and no file is written
 - `500 {"error":"<message>"}` for filesystem/read errors
