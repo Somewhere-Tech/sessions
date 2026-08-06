@@ -61,12 +61,11 @@ type AdoptResult struct {
 	ForkPointIndex      *int                `json:"forkPointIndex,omitempty"`
 	ForkPointMessageID  string              `json:"forkPointMessageId,omitempty"`
 	SourceUntouched     bool                `json:"sourceUntouched,omitempty"`
-	// LiveCheckInconclusive records that Claude's live-process registry could
-	// not be consulted, so nobody verified the conversation was not already
-	// open elsewhere. It is surfaced rather than swallowed: "we did not check"
-	// must never read the same as "we checked and it was free".
-	LiveCheckInconclusive bool `json:"liveCheckInconclusive,omitempty"`
-	TranscriptRecovery    bool `json:"transcriptRecovery,omitempty"`
+	// AlsoOpenIn names another live Claude process that had this conversation
+	// open, when one was found. Informational: both processes append to the
+	// same provider transcript, and Sessions' own copy keeps the union.
+	AlsoOpenIn         string `json:"alsoOpenIn,omitempty"`
+	TranscriptRecovery bool   `json:"transcriptRecovery,omitempty"`
 }
 
 type AdoptAnnotation string
@@ -393,13 +392,9 @@ type AdoptOptions struct {
 	Events      AdoptionEventReader
 	RuntimeMode string
 	Claude      *state.ClaudeSessionOptions
-	// ClaudeLive enables the double-open check against Claude's per-process
-	// registry. It is nil by default, and deliberately so: ownership is
-	// decided by process ancestry, but Sessions launches runners through
-	// launchd rather than as its own children, so a caller that does not list
-	// its runner PIDs in OwnedPIDs would see every Sessions-owned session as
-	// somebody else's and refuse a legitimate resume. Enabling this without
-	// supplying those PIDs trades one failure for a worse one.
+	// ClaudeLive, when set, looks up which live Claude process already has
+	// this conversation open so the caller can say so. It never changes what
+	// adoption does.
 	ClaudeLive *watch.ClaudeLiveQuery
 }
 
@@ -408,7 +403,7 @@ type AdoptOptions struct {
 // name is the one they will recognise in their own window.
 func describeClaudeHolder(holder *watch.ClaudeLiveSession) string {
 	if holder == nil {
-		return "another Claude process"
+		return ""
 	}
 	label := strings.TrimSpace(holder.Name)
 	if label == "" {
@@ -465,29 +460,24 @@ func Adopt(
 	if adoption.ProviderUUID == "" || len(adoption.Args) == 0 {
 		return AdoptResult{}, errors.New("provider-unbound: adoption has no safe provider resume recipe")
 	}
-	// Claude keeps a per-process registry of live conversations. Consult it
-	// before anything irreversible happens: resuming a conversation the user
-	// has open in their own terminal gives one conversation two writers, and
-	// the loser's work is what the provider transcript ends up without.
+	// Report which live Claude process already has this conversation open, if
+	// the caller asked and the answer is knowable.
 	//
-	// Only an external holder refuses. A conversation held by a process
-	// Sessions already owns is a duplicate-open the caller should resolve by
-	// attaching, and a registry that could not be read is inconclusive rather
-	// than clear -- recorded on the result so nobody mistakes "we did not
-	// check" for "we checked and it was free".
-	liveCheckInconclusive := false
+	// This deliberately does not refuse. Sessions cannot make a provider
+	// conversation exclusive: Claude does not lock its transcript, the user
+	// can open one a second after any check, and this registry is
+	// undocumented. Refusing would claim a guarantee that does not exist, and
+	// would buy an override flag and a set of not-sure states to reason about.
+	// The exposure is already handled where it can be: the transcript mirror
+	// is append-only, so if two writers do collide, Sessions' copy holds the
+	// union. Making the consequence survivable is worth more than pretending
+	// to prevent the cause.
+	var liveHolder *watch.ClaudeLiveSession
 	if selected.ClaudeLive != nil && adoption.Tool == string(state.ToolClaude) &&
 		adoption.ProviderUUID != "" {
-		check := watch.ClaudeConversationOpen(adoption.ProviderUUID, *selected.ClaudeLive)
-		switch {
-		case check.External && !selected.Force:
-			return AdoptResult{}, fmt.Errorf(
-				"conversation %s is already open in %s; close it there and retry, "+
-					"or pass --force to resume anyway and accept that both writers "+
-					"will append to the same provider transcript",
-				adoption.ProviderUUID, describeClaudeHolder(check.Holder))
-		case check.Reason == watch.ClaudeLiveUnknown:
-			liveCheckInconclusive = true
+		if check := watch.ClaudeConversationOpen(
+			adoption.ProviderUUID, *selected.ClaudeLive); check.External {
+			liveHolder = check.Holder
 		}
 	}
 	if selected.Source != nil && strings.TrimSpace(name) == "" {
@@ -552,7 +542,7 @@ func Adopt(
 		ctx, adoption, name, description, kind, created.ID, selected.Source,
 		selected.Events, boundaries, observations,
 	)
-	result.LiveCheckInconclusive = liveCheckInconclusive
+	result.AlsoOpenIn = describeClaudeHolder(liveHolder)
 	return result, nil
 }
 
