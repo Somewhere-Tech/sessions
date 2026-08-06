@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -176,6 +177,9 @@ func EnsureWorkspace(ctx context.Context, cwd string, workspace Workspace) error
 	if workspace.RemoteURL == "" || workspace.Branch == "" || workspace.Revision == "" {
 		return errors.New("target Git workspace metadata is incomplete")
 	}
+	if err := validateRemoteURL(workspace.RemoteURL); err != nil {
+		return err
+	}
 	if info, err := os.Stat(workspace.Root); err == nil {
 		if !info.IsDir() {
 			return fmt.Errorf("target Git root is not a directory: %s", workspace.Root)
@@ -197,7 +201,7 @@ func EnsureWorkspace(ctx context.Context, cwd string, workspace Workspace) error
 	if err := os.MkdirAll(filepath.Dir(workspace.Root), 0o700); err != nil {
 		return fmt.Errorf("create target Git parent: %w", err)
 	}
-	if _, err := gitOutput(ctx, filepath.Dir(workspace.Root), nil, "clone", "--no-checkout", workspace.RemoteURL, workspace.Root); err != nil {
+	if _, err := gitOutput(ctx, filepath.Dir(workspace.Root), nil, append(gitTransportOptions(), "clone", "--no-checkout", "--", workspace.RemoteURL, workspace.Root)...); err != nil {
 		return fmt.Errorf("clone target workspace: %w", err)
 	}
 	cleanup := true
@@ -207,7 +211,7 @@ func EnsureWorkspace(ctx context.Context, cwd string, workspace Workspace) error
 		}
 	}()
 	if workspace.CheckpointRef != "" {
-		if _, err := gitOutput(ctx, workspace.Root, nil, "fetch", "origin", workspace.CheckpointRef); err != nil {
+		if _, err := gitOutput(ctx, workspace.Root, nil, append(gitTransportOptions(), "fetch", "origin", workspace.CheckpointRef)...); err != nil {
 			return fmt.Errorf("fetch target checkpoint: %w", err)
 		}
 		if _, err := gitOutput(ctx, workspace.Root, nil, "checkout", "--detach", workspace.Revision); err != nil {
@@ -215,7 +219,7 @@ func EnsureWorkspace(ctx context.Context, cwd string, workspace Workspace) error
 		}
 	} else {
 		remoteRef := "refs/heads/" + workspace.Branch + ":refs/remotes/origin/" + workspace.Branch
-		if _, err := gitOutput(ctx, workspace.Root, nil, "fetch", "origin", remoteRef); err != nil {
+		if _, err := gitOutput(ctx, workspace.Root, nil, append(gitTransportOptions(), "fetch", "origin", remoteRef)...); err != nil {
 			return fmt.Errorf("fetch target branch: %w", err)
 		}
 		if _, err := gitOutput(ctx, workspace.Root, nil, "checkout", "-B", workspace.Branch, workspace.Revision); err != nil {
@@ -228,6 +232,81 @@ func EnsureWorkspace(ctx context.Context, cwd string, workspace Workspace) error
 	}
 	cleanup = false
 	return nil
+}
+
+// allowedRemoteSchemes are the transports EnsureWorkspace will hand to git.
+// Each one is a plain fetch protocol: none of them can name a command to run.
+// http is included alongside https because internal Git servers really do run
+// plaintext, and it reaches git through the same smart-HTTP code path as https.
+var allowedRemoteSchemes = []string{"file", "git", "http", "https", "ssh"}
+
+var remoteSchemePattern = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*)://`)
+
+// gitTransportOptions pin the remote-helper protocols off for one invocation.
+// git has defaulted protocol.ext.allow to never since 2.12, so this is not the
+// thing standing between a move and a compromise — validateRemoteURL is. It is
+// here so that a machine whose operator set protocol.ext.allow=always for some
+// unrelated tool does not quietly hand that setting to a peer-supplied URL.
+func gitTransportOptions() []string {
+	return []string{"-c", "protocol.ext.allow=never"}
+}
+
+// validateRemoteURL checks a remote URL that arrived from another machine
+// before it becomes an argument to git. The URL is captured by
+// `git remote get-url` on the source machine, so in the ordinary case it is
+// whatever the user configured; this is the check that keeps it ordinary.
+//
+// Errors quote the remote with credentials stripped, so a URL carrying a token
+// does not end up in a log or a terminal.
+func validateRemoteURL(raw string) error {
+	remote := strings.TrimSpace(raw)
+	if remote == "" {
+		return errors.New("target Git workspace has no remote URL; set an upstream on the source branch and retry the move")
+	}
+	if strings.ContainsAny(remote, "\x00\n\r") {
+		return remoteURLError(remote, "contains a control character")
+	}
+	if strings.HasPrefix(remote, "-") {
+		return remoteURLError(remote, "starts with \"-\", which git would read as an option")
+	}
+	// `transport::address` selects a git remote helper. `ext::` and `fd::` take
+	// a command or descriptor rather than a host, so no allowlist of schemes
+	// can catch them — they are rejected by shape.
+	if index := strings.Index(remote, "::"); index >= 0 && !strings.ContainsAny(remote[:index], "/\\") {
+		helper := remote[:index]
+		if helper == "" {
+			helper = "(empty)"
+		}
+		return remoteURLError(remote, fmt.Sprintf("selects the git remote helper %q, which can name a command instead of a host", helper))
+	}
+	if match := remoteSchemePattern.FindStringSubmatch(remote); match != nil {
+		if !slices.Contains(allowedRemoteSchemes, strings.ToLower(match[1])) {
+			return remoteURLError(remote, fmt.Sprintf("uses the %q transport", match[1]))
+		}
+		return nil
+	}
+	// scp-like `[user@]host:path`, the form `git remote get-url` returns for
+	// most SSH remotes. The host part never contains a slash.
+	if host, path, found := strings.Cut(remote, ":"); found && !strings.Contains(host, "/") {
+		if host == "" || strings.TrimPrefix(host, "@") == "" {
+			return remoteURLError(remote, "names no host")
+		}
+		if path == "" {
+			return remoteURLError(remote, "names no repository path")
+		}
+		return nil
+	}
+	if filepath.IsAbs(remote) {
+		return nil
+	}
+	return remoteURLError(remote, "is not an https, ssh, git, or absolute local path remote")
+}
+
+func remoteURLError(remote, reason string) error {
+	return fmt.Errorf(
+		"refusing to clone target workspace: remote %s %s; point the source branch at an https or ssh remote, then retry the move",
+		DisplayRemote(remote), reason,
+	)
 }
 
 func gitOutput(ctx context.Context, dir string, environment []string, args ...string) (string, error) {

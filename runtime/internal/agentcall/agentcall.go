@@ -1,7 +1,17 @@
 // Package agentcall runs a bounded, tool-disabled request through a user's
 // already-authenticated Codex or Claude CLI. It deliberately contains no model
-// client and strips provider API-key environment variables so Sessions never
-// turns an opt-in convenience into an accidental pay-per-token API path.
+// client, and it builds the child environment from an allowlist so Sessions
+// never turns an opt-in convenience into an accidental pay-per-token API path
+// and never redirects the call to a host the user did not choose.
+//
+// The allowlist is the whole promise. A denylist of "known billing variables"
+// loses to the next one a vendor ships: ANTHROPIC_AUTH_TOKEN is a supported
+// Claude Code credential, CLAUDE_CODE_USE_BEDROCK and CLAUDE_CODE_USE_VERTEX
+// reroute the same call onto a cloud account with its own bill, and
+// ANTHROPIC_BASE_URL or OPENAI_BASE_URL send the prompt — which contains the
+// user's session titles and text — to a third party. None of those names
+// appear below, because nothing appears below that is not needed to find and
+// run the CLI the user already signed in to.
 package agentcall
 
 import (
@@ -12,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -190,39 +201,147 @@ func Executable(provider string) (string, error) {
 	if resolved, err := exec.LookPath(name); err == nil {
 		return resolved, nil
 	}
-	home, _ := os.UserHomeDir()
-	for _, candidate := range []string{
-		filepath.Join(home, ".local", "bin", name),
-		filepath.Join("/opt/homebrew/bin", name),
-		filepath.Join("/usr/local/bin", name),
-	} {
-		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
-			return candidate, nil
+	// exec.LookPath honours PATH as the daemon inherited it, which under a GUI
+	// launcher or a service manager often omits the user's package-manager
+	// directories. Probe them directly, with the platform's executable
+	// extensions applied.
+	for _, directory := range providerSearchDirectories() {
+		for _, candidate := range executableCandidates(filepath.Join(directory, name)) {
+			if isExecutableFile(candidate) {
+				return candidate, nil
+			}
 		}
 	}
 	return "", fmt.Errorf("%s CLI is not installed or not on PATH; install it and sign in before using %s", name, name)
 }
 
+// passedThroughEnvironment is the complete set of variable names an agent call
+// inherits. Everything else is dropped. Names are compared case-insensitively
+// because Windows environment blocks are case-insensitive; on Unix the extra
+// tolerance only ever admits an oddly-cased spelling of a name already listed
+// here, which the child would ignore anyway.
+//
+// Each entry earns its place by being needed to locate the CLI, let it read
+// the credentials the user already stored on disk, or let it talk to the
+// network at all. Nothing here selects a model, an account, or an endpoint.
+var passedThroughEnvironment = map[string]struct{}{
+	// Locate the user's home and per-user configuration.
+	"HOME": {}, "USERPROFILE": {}, "HOMEDRIVE": {}, "HOMEPATH": {},
+	"XDG_CONFIG_HOME": {}, "XDG_CACHE_HOME": {}, "XDG_DATA_HOME": {}, "XDG_STATE_HOME": {},
+	"APPDATA": {}, "LOCALAPPDATA": {}, "PROGRAMDATA": {},
+
+	// Where each CLI keeps the session the user already signed in with.
+	"CLAUDE_CONFIG_DIR": {}, "CODEX_HOME": {},
+
+	// Process basics. PATH is rebuilt below rather than inherited verbatim.
+	"PATH": {}, "PATHEXT": {}, "SHELL": {}, "COMSPEC": {}, "TERM": {},
+	"TMPDIR": {}, "TMP": {}, "TEMP": {},
+	"USER": {}, "USERNAME": {}, "LOGNAME": {},
+	"LANG": {}, "LC_ALL": {}, "LC_CTYPE": {},
+
+	// Windows needs these for a Node-based CLI to start at all.
+	"SYSTEMROOT": {}, "SYSTEMDRIVE": {}, "WINDIR": {}, "PROGRAMFILES": {}, "PROGRAMFILES(X86)": {},
+	"PROCESSOR_ARCHITECTURE": {}, "NUMBER_OF_PROCESSORS": {}, "OS": {},
+
+	// Corporate egress. A proxy or a private CA bundle decides how the call
+	// reaches the provider the CLI already chose; neither picks the provider,
+	// and without them the CLI cannot reach the network on a managed machine.
+	"HTTP_PROXY": {}, "HTTPS_PROXY": {}, "NO_PROXY": {}, "ALL_PROXY": {},
+	"http_proxy": {}, "https_proxy": {}, "no_proxy": {}, "all_proxy": {},
+	"NODE_EXTRA_CA_CERTS": {}, "SSL_CERT_FILE": {}, "SSL_CERT_DIR": {},
+}
+
 func Environment() []string {
-	environment := make([]string, 0, len(os.Environ())+1)
+	environment := make([]string, 0, len(passedThroughEnvironment)+1)
+	inheritedPATH := ""
 	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "ANTHROPIC_API_KEY=") || strings.HasPrefix(entry, "OPENAI_API_KEY=") {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if _, allowed := passedThroughEnvironment[strings.ToUpper(name)]; !allowed {
+			continue
+		}
+		if strings.EqualFold(name, "PATH") {
+			inheritedPATH = value
 			continue
 		}
 		environment = append(environment, entry)
 	}
+	return append(environment, "PATH="+childPATH(inheritedPATH))
+}
+
+// childPATH puts the directories package managers actually install these CLIs
+// into ahead of whatever the daemon inherited. It joins with the platform's
+// list separator: on Windows that is ';', and using ':' would fuse the prefix
+// and the first inherited entry into one unusable path split at a drive colon.
+func childPATH(inherited string) string {
+	directories := append([]string(nil), providerSearchDirectories()...)
+	if inherited != "" {
+		directories = append(directories, inherited)
+	}
+	return strings.Join(directories, string(os.PathListSeparator))
+}
+
+// providerSearchDirectories are the platform's usual install locations for the
+// Codex and Claude CLIs. They are also the fallback probe list in Executable.
+func providerSearchDirectories() []string {
 	home, _ := os.UserHomeDir()
-	extra := strings.Join([]string{filepath.Join(home, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"}, ":")
-	found := false
-	for index, entry := range environment {
-		if strings.HasPrefix(entry, "PATH=") {
-			environment[index] = "PATH=" + extra + ":" + strings.TrimPrefix(entry, "PATH=")
-			found = true
-			break
+	if runtime.GOOS == "windows" {
+		directories := make([]string, 0, 6)
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			directories = append(directories, filepath.Join(appData, "npm"))
+		}
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			directories = append(directories, filepath.Join(localAppData, "Programs"))
+		}
+		if programFiles := os.Getenv("ProgramFiles"); programFiles != "" {
+			directories = append(directories, filepath.Join(programFiles, "nodejs"))
+		}
+		if systemRoot := os.Getenv("SystemRoot"); systemRoot != "" {
+			directories = append(directories, filepath.Join(systemRoot, "System32"), systemRoot)
+		}
+		if home != "" {
+			directories = append(directories, filepath.Join(home, ".local", "bin"))
+		}
+		return directories
+	}
+	directories := make([]string, 0, 5)
+	if home != "" {
+		directories = append(directories, filepath.Join(home, ".local", "bin"))
+	}
+	return append(directories, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin")
+}
+
+// executableCandidates mirrors the PATHEXT-aware resolver in internal/state:
+// on Windows a bare name is not runnable, and the CLIs ship as .cmd or .exe.
+func executableCandidates(path string) []string {
+	if runtime.GOOS != "windows" || filepath.Ext(path) != "" {
+		return []string{path}
+	}
+	extensions := filepath.SplitList(os.Getenv("PATHEXT"))
+	if len(extensions) == 0 {
+		extensions = []string{".COM", ".EXE", ".BAT", ".CMD"}
+	}
+	candidates := []string{path}
+	for _, extension := range extensions {
+		if extension = strings.TrimSpace(extension); extension != "" {
+			candidates = append(candidates, path+strings.ToLower(extension), path+strings.ToUpper(extension))
 		}
 	}
-	if !found {
-		environment = append(environment, "PATH="+extra)
+	return candidates
+}
+
+// isExecutableFile answers the platform's own question. Go synthesizes 0666 for
+// every regular file on Windows, so an execute-bit test there is always false
+// and would silently disable the whole fallback.
+func isExecutableFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
 	}
-	return environment
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return info.Mode().Perm()&0o111 != 0
 }

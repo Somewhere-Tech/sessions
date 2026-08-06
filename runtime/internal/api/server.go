@@ -211,10 +211,22 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/health" && request.Method == http.MethodGet {
+		// /api/health stays unauthenticated on purpose: native discovery,
+		// `sessions machines discover`, the updater, and the frontend's
+		// bootstrapCurrentOriginServer all depend on it, the last on the
+		// 200-vs-401 distinction. The selected private IPv4 and port are a
+		// different matter — they map the user's network for anyone who can
+		// reach the port — so that one field is redacted unless the caller
+		// has already proved it belongs here. `lan.enabled` stays visible so
+		// probes can still tell whether the listener is up.
+		lanState := s.lan.state()
+		if !s.mayReadLANEndpoint(request) {
+			lanState.URL = nil
+		}
 		s.sendJSON(response, http.StatusOK, map[string]any{
 			"ok": true, "name": "sessionsd", "version": Version,
 			"listen": map[string]any{"host": s.config.Host, "port": s.config.Port},
-			"lan":    s.lan.state(),
+			"lan":    lanState,
 			"access": map[string]any{"open": s.openAccessEnabled()},
 			"system": map[string]any{"os": goruntime.GOOS, "arch": goruntime.GOARCH},
 			"compatibility": map[string]any{
@@ -242,7 +254,18 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 
 	principal, authorized, err := s.authorized(request)
 	if err != nil {
-		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
+		// This runs before the caller has proved anything, and the detail is
+		// usually an os.PathError naming the token file — an absolute path
+		// that spells out the state directory and the user's account name.
+		// The operator gets the whole error in the daemon log and over
+		// loopback; an unauthenticated peer gets the next action and nothing
+		// to enumerate.
+		log.Printf("sessionsd: authorization check failed for %s %s: %v", request.Method, path, err)
+		detail := "Sessions could not read this machine's auth token, so no request can be authorized. Check the sessionsd log, then restart the daemon."
+		if isLoopbackPeer(request) {
+			detail = err.Error()
+		}
+		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": detail}, corsOrigin)
 		return
 	}
 	if !authorized {
@@ -592,6 +615,23 @@ func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) 
 	return authPrincipal{
 		Kind: ledger.CreatorExternal, ID: "device:" + device.DeviceID, Name: device.Name,
 	}, true, nil
+}
+
+// mayReadLANEndpoint decides whether a caller of the unauthenticated
+// /api/health may see the LAN listener's address. A peer that presents no
+// credential at all is never charged the cost of a full authorization check,
+// so a flood of anonymous probes cannot make the daemon read the token file or
+// touch the device store.
+func (s *Server) mayReadLANEndpoint(request *http.Request) bool {
+	if isLoopbackPeer(request) {
+		return true
+	}
+	if strings.TrimSpace(request.Header.Get("Authorization")) == "" &&
+		strings.TrimSpace(request.URL.Query().Get("token")) == "" {
+		return false
+	}
+	_, authorized, err := s.authorized(request)
+	return err == nil && authorized
 }
 
 func (s *Server) openAccessEnabled() bool {
