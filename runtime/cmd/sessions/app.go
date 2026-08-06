@@ -60,16 +60,71 @@ func exitCode(err error) int {
 	return 2
 }
 
-func writeFailure(stderr io.Writer, err error) {
-	var failure *cliFailure
-	if errors.As(err, &failure) {
-		if failure.quiet || failure.message == "" {
+// countingWriter records whether a command has already produced output. Some
+// commands emit a structured report and then fail (a partially refused batch
+// kill, for one), and a synthesized error document appended after that report
+// would be a second JSON value on the same stream, which no decoder accepts.
+type countingWriter struct {
+	inner   io.Writer
+	written int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.inner.Write(p)
+	c.written += int64(n)
+	return n, err
+}
+
+// reportFailure explains a failed command in the format the caller asked for,
+// deferring to any structured report the command already emitted.
+func (a *app) reportFailure(err error) {
+	if a.wantJSON && a.output != nil && a.output.written > 0 {
+		var failure *cliFailure
+		if errors.As(err, &failure) && (failure.quiet || failure.message == "") {
 			return
 		}
-		fmt.Fprintf(stderr, "sessions: %s\n", failure.message)
+		message := err.Error()
+		if errors.As(err, &failure) && failure.message != "" {
+			message = failure.message
+		}
+		// The report on stdout is the machine answer; this line keeps the
+		// human channel honest about the non-zero exit.
+		fmt.Fprintf(a.stderr, "sessions: %s\n", message)
 		return
 	}
-	fmt.Fprintf(stderr, "sessions: %s\n", err)
+	writeFailure(a.stdout, a.stderr, a.wantJSON, err)
+}
+
+// writeFailure reports a failed command. Under --json it emits a JSON document
+// on stdout rather than prose on stderr, because the alternative is that every
+// `sessions --json ... | jq` in an agent's loop dies on empty input at exactly
+// the moment something went wrong. A caller that asked for JSON gets JSON on
+// every path, and `code` carries the same value as the process exit status so
+// the outcome can be branched on without inspecting $?.
+//
+// A quiet failure has already written its own structured answer and only
+// carries the status, so nothing is printed for it.
+func writeFailure(stdout, stderr io.Writer, wantJSON bool, err error) {
+	message := err.Error()
+	var failure *cliFailure
+	if errors.As(err, &failure) {
+		if failure.quiet {
+			return
+		}
+		if failure.message == "" {
+			return
+		}
+		message = failure.message
+	}
+	if wantJSON {
+		_ = writeJSON(stdout, struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+			Code  int    `json:"code"`
+		}{false, message, exitCode(err)}, false)
+		return
+	}
+	fmt.Fprintf(stderr, "sessions: %s\n", message)
 }
 
 type app struct {
@@ -77,6 +132,7 @@ type app struct {
 	stdout io.Writer
 	stderr io.Writer
 
+	output         *countingWriter
 	args           []string
 	sub            string
 	host           string
@@ -102,8 +158,9 @@ func newApp(arguments []string, stdin io.Reader, stdout, stderr io.Writer) (*app
 	if err != nil {
 		return nil, fmt.Errorf("resolve home directory: %w", err)
 	}
+	output := &countingWriter{inner: stdout}
 	app := &app{
-		stdin: stdin, stdout: stdout, stderr: stderr,
+		stdin: stdin, stdout: output, stderr: stderr, output: output,
 		args: args, host: host, port: port, wantJSON: wantJSON, explicitTarget: explicitTarget,
 		home: home, now: time.Now, sleep: time.Sleep, listModels: listLiveCodexModels,
 		runUpdate:    runNativeAppUpdate,
