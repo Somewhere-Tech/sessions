@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // A live transcript is the routine cause of a skipped session, so the reason
@@ -21,21 +22,43 @@ func TestReadStableFileReportsAGrowingTranscriptCalmly(t *testing.T) {
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
 		t.Skip("mkfifo is unavailable: " + err.Error())
 	}
+
+	// readStableFile opens the FIFO once per attempt, so a writer has to be
+	// there for each one. This serves writers in a loop rather than a fixed
+	// count: an earlier version opened exactly twice and deadlocked whenever
+	// the writer won the race for the first open, because the reader then saw
+	// an empty FIFO, accepted it, and left the second open with nobody to pair
+	// with. O_NONBLOCK is what makes that impossible now -- opening a FIFO for
+	// writing with no reader fails immediately instead of parking forever, so
+	// this goroutine always notices stop.
+	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// readStableFile makes two attempts; feed both.
-		for attempt := 0; attempt < 2; attempt++ {
-			writer, err := os.OpenFile(path, os.O_WRONLY, 0)
-			if err != nil {
+		for {
+			select {
+			case <-stop:
 				return
+			default:
+			}
+			writer, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+			if err != nil {
+				time.Sleep(time.Millisecond)
+				continue
 			}
 			_, _ = writer.WriteString("{\"type\":\"user\"}\n")
 			_ = writer.Close()
 		}
 	}()
+
 	_, _, err := readStableFile(path)
-	<-done
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the writer goroutine never stopped; readStableFile is holding the FIFO open")
+	}
+
 	if err == nil {
 		t.Fatal("readStableFile accepted an unstable read")
 	}
