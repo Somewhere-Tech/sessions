@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
@@ -108,7 +109,10 @@ func TestSavedMachineGlobalSelectsEndpointAndTokenWithoutPrintingIt(t *testing.T
 func TestRawRemoteHostNeverReusesLocalDaemonToken(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	localToken := filepath.Join(home, ".local", "state", "sessions", "token")
+	// Derive the local token location instead of spelling out the Unix layout,
+	// or on Windows this plants the decoy somewhere the CLI never looks and the
+	// test passes without exercising anything.
+	localToken := filepath.Join(sessionstate.UserStateRootFor(home), "token")
 	if err := writePrivateFile(localToken, []byte("local-master-token\n")); err != nil {
 		t.Fatal(err)
 	}

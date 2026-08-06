@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/waitcond"
 )
 
@@ -303,9 +304,12 @@ func selectWaitTarget(idOrPrefix string, candidates []waitTarget) (waitTarget, e
 }
 
 func (a *app) runnerMetadataTargets() ([]waitTarget, error) {
+	// Mirror state.stateRootsFromEnv: SESSIONS_STATE_DIR *is* the runner
+	// directory, and its absence falls back to <user state root>/runners. The
+	// root is derived, never spelled out, so this resolves on Windows too.
 	dir := os.Getenv("SESSIONS_STATE_DIR")
 	if dir == "" {
-		dir = filepath.Join(a.home, ".local", "state", "sessions", "runners")
+		dir = filepath.Join(sessionstate.UserStateRootFor(a.home), "runners")
 	}
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {

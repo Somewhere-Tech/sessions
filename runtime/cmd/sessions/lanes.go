@@ -128,24 +128,25 @@ type laneListOptions struct {
 func parseLaneListOptions(args []string) (laneListOptions, error) {
 	options := laneListOptions{}
 	for index := 0; index < len(args); index++ {
-		switch args[index] {
-		case "-a", "--include-exited":
-			// Lanes have always included retained exited entries; preserve this
-			// compatibility spelling as a no-op.
-		case "--all":
+		switch argument := args[index]; {
+		case isIncludeEndedFlag(argument):
+			// Lanes are retained after they exit and are always listed, so the
+			// shared ended-records flag is accepted here purely so one spelling
+			// means one thing on every list surface.
+		case isAllOwnersFlag(argument):
 			options.all = true
-		case "--mine":
+		case argument == "--mine":
 			options.mine = true
-		case "--direct":
+		case argument == "--direct":
 			options.direct = true
-		case "--detach":
+		case argument == "--detach":
 			options.detach = true
-		case "--owner", "--subtree":
+		case argument == "--owner", argument == "--subtree":
 			if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" || strings.HasPrefix(args[index+1], "--") {
-				return options, fail(1, "%s needs a non-empty id", args[index])
+				return options, fail(1, "%s needs a non-empty id", argument)
 			}
 			value := strings.TrimSpace(args[index+1])
-			if args[index] == "--owner" {
+			if argument == "--owner" {
 				options.owner = value
 				options.explicitOwner = true
 				options.mine = true
@@ -154,11 +155,11 @@ func parseLaneListOptions(args []string) (laneListOptions, error) {
 			}
 			index++
 		default:
-			return options, fail(1, "usage: sessions lanes [--all | --mine [--owner ID] | --subtree ID] [--direct] [--detach]")
+			return options, unknownListOption("lanes", argument, lanesUsageText)
 		}
 	}
 	if options.all && (options.mine || options.subtree != "" || options.direct || options.detach) {
-		return options, fail(1, "--all cannot be combined with provenance selectors")
+		return options, fail(1, "--all-owners cannot be combined with provenance selectors")
 	}
 	if options.mine && options.subtree != "" {
 		return options, fail(1, "--mine and --subtree cannot be combined")

@@ -29,7 +29,7 @@ Daily workflows:
   gc                       archive old closed records safely
   archive                  hide selected closed sessions
   aside                    set live sessions aside or bring them back
-  ls                       list sessions
+  ls                       list interactive sessions
   list                     list agent sessions and headless lanes
   lanes                    list headless lanes
   send                     send text and Enter to a session
@@ -194,6 +194,8 @@ Create a headless lane for the command following the first -- separator. --descr
 
 Under --wait the completion is reported in the shared wait envelope: ok, kind:"lane", reason, session, and a nested lane object with exit_code, signal, duration_ms, and last_output_tail.
 
+Finding the lane again: a lane is not an interactive session and never appears in `sessions ls`, and it drops out of the default `sessions list` view once it exits. Use `sessions lanes`, `sessions ls --kind lane`, or `sessions list -a` to see it in any state, and `sessions wait <lane>` to collect a lane whose --wait timed out.
+
 Examples:
   sessions run -- make test
   sessions run --name lint --worktree --wait --output -- npm run lint
@@ -337,17 +339,25 @@ Examples:
 
 ```text
 Usage:
-  sessions ls [--mine | --all] [-a | --include-exited] [--aside | --not-aside]
+  sessions ls [--mine | --all-owners] [-a | --include-exited] [--aside | --not-aside] [--kind lane]
 
-list sessions
+list interactive sessions
 
-List agent sessions known to the daemon. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Exited sessions are hidden by default; -a and --include-exited include them. Set-aside sessions remain listed and marked; --aside selects only them, while --not-aside reproduces the native default working set.
+List agent sessions known to the daemon. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Set-aside sessions remain listed and marked; --aside selects only them, while --not-aside reproduces the native default working set.
+
+Two independent axes decide what comes back, and they are easy to confuse. State: ended sessions are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's sessions and changes nothing about which states are shown. The same two spellings mean the same two things on ls, list, and lanes.
+
+--json selects a format, not a working set. It returns exactly the sessions the plain table would show, so `sessions --json ls` answers "what is running?" and needs -a to see ended records. This is a deliberate change: --json used to force every ended session into the answer and ignore -a entirely.
+
+ls lists interactive sessions only. A lane created by `sessions run` never appears here, in any state. Reach it with `sessions lanes`, `sessions ls --kind lane`, or `sessions list -a`, which is the single view of every session and lane in every state.
 
 Examples:
   sessions ls
+  sessions ls -a
   sessions ls --mine
   sessions ls --aside
   sessions ls --not-aside
+  sessions ls --kind lane
   sessions --json ls
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -357,16 +367,21 @@ Examples:
 
 ```text
 Usage:
-  sessions list [--mine | --owner ID | --all] [--include-closed]
+  sessions list [--mine | --owner ID | --all-owners] [-a | --include-exited]
 
 list agent sessions and headless lanes
 
-List agent sessions and headless lanes together. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Closed records are hidden unless --include-closed is supplied.
+List agent sessions and headless lanes together. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped.
+
+State: ended sessions and exited lanes are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's records and changes nothing about which states are shown.
+
+`sessions list -a` is the one command that answers "show me everything": every agent session and every retained lane, live or ended, in a single table with a TYPE column. Use it when a lane you dispatched with `sessions run` is not where you expected to find it — ls never lists lanes, and a lane drops out of the default list view as soon as it exits.
 
 Examples:
   sessions
+  sessions list -a
   sessions list --mine
-  sessions list --mine --include-closed
+  sessions list --mine -a
   sessions list --owner team:mine
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -376,11 +391,13 @@ Examples:
 
 ```text
 Usage:
-  sessions lanes [--all | --mine [--owner ID] | --subtree ID] [--direct] [--detach]
+  sessions lanes [--all-owners | --mine [--owner ID] | --subtree ID] [--direct] [--detach]
 
 list headless lanes
 
-List retained headless lanes. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. --subtree selects session ancestry; --direct limits ancestry to immediate children.
+List retained headless lanes, including the ones `sessions run` created that `sessions ls` never shows. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. --subtree selects session ancestry; --direct limits ancestry to immediate children. --all-owners (alias --all) returns every owner's lanes; like everywhere else it selects owners, not states.
+
+Lanes are retained after they exit and are always listed here, so -a (--include-exited, --include-closed) is accepted for spelling parity with ls and list and changes nothing.
 
 Examples:
   sessions lanes
@@ -523,6 +540,8 @@ Usage:
 report local Claude and Codex token usage
 
 Incrementally index the local Claude Code and Codex JSONL stores, then report token usage and estimated cost by day, week, month, session, provider, model, or one session-tag dimension. Reasoning tokens are reported separately but remain a subset of output tokens. auto uses a recorded cost when present and otherwise calculates with pinned ccusage pricing semantics; calculate always prices tokens; display shows recorded costs only. No usage data leaves the daemon.
+
+Token counts are measured; the money column is not. EST COST is a model of what this usage would have cost on the API: prices are pinned in this build with no as-of date, server-side tool use is billed by the provider but never appears in the token stream, and 1-hour cache writes are underpriced. On a Max or ChatGPT subscription the marginal cost is zero. It is printed to the cent because it cannot support more precision than that; the raw float and the pricing provenance are in --json.
 
 Examples:
   sessions usage

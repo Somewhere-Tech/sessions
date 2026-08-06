@@ -556,3 +556,199 @@ func TestKillUnknownSessionReportsFailureInBothModes(t *testing.T) {
 		t.Fatalf("unknown kill result = %#v", result)
 	}
 }
+
+// listSelectionServer answers /api/sessions and /api/lanes with one live
+// session, one ended session, one live lane, and one exited lane, honouring
+// include_exited exactly as the daemon does. It records every include_exited
+// value it was asked for so a test can prove the flag reached the wire.
+func listSelectionServer(t *testing.T, asked *[]string) *httptest.Server {
+	t.Helper()
+	const (
+		liveSession  = `{"id":"31000000-0000-4000-8000-000000000001","name":"live session","cmd":"/bin/sh","cwd":"/tmp","createdAt":1,"lastDataAt":1,"tool":"claude","exited":false,"root_creator_kind":"external","root_creator_id":"team:selection"}`
+		endedSession = `{"id":"31000000-0000-4000-8000-000000000002","name":"ended session","cmd":"/bin/sh","cwd":"/tmp","createdAt":1,"lastDataAt":1,"tool":"claude","exited":true,"exitCode":0,"root_creator_kind":"external","root_creator_id":"team:selection"}`
+		liveLane     = `{"id":"31000000-0000-4000-8000-000000000003","kind":"lane","name":"live lane","cmd":"/bin/sh","cwd":"/tmp","createdAt":1,"lastDataAt":1,"tool":"lane","exited":false,"root_creator_kind":"external","root_creator_id":"team:selection"}`
+		exitedLane   = `{"id":"31000000-0000-4000-8000-000000000004","kind":"lane","name":"exited lane","cmd":"/bin/sh","cwd":"/tmp","createdAt":1,"lastDataAt":1,"tool":"lane","exited":true,"exitCode":0,"root_creator_kind":"external","root_creator_id":"team:selection"}`
+	)
+	return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/api/sessions":
+			if asked != nil {
+				*asked = append(*asked, request.URL.Query().Get("include_exited"))
+			}
+			if request.URL.Query().Get("include_exited") == "1" {
+				_, _ = response.Write([]byte(`{"sessions":[` + liveSession + `,` + endedSession + `,` + liveLane + `,` + exitedLane + `]}`))
+				return
+			}
+			_, _ = response.Write([]byte(`{"sessions":[` + liveSession + `,` + liveLane + `]}`))
+		case "/api/lanes":
+			_, _ = response.Write([]byte(`{"lanes":[` + liveLane + `,` + exitedLane + `],"user_creator_id":"uid:selection"}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+}
+
+// --json used to mean "and also give me every session that ever ended", which
+// made the most common agent question — what is running? — unanswerable in the
+// machine-readable mode and turned -a into a no-op there.
+func TestLSJSONReturnsTheSameWorkingSetAsThePlainTable(t *testing.T) {
+	t.Setenv("SESSIONS_OWNER_ID", "team:selection")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	var asked []string
+	server := listSelectionServer(t, &asked)
+	defer server.Close()
+
+	decode := func(t *testing.T, args ...string) []map[string]any {
+		t.Helper()
+		stdout, stderr, code := runOwnershipCLI(t, server.URL, args...)
+		if code != 0 || stderr != "" {
+			t.Fatalf("%v exit=%d stdout=%q stderr=%q", args, code, stdout, stderr)
+		}
+		var listed []map[string]any
+		if err := json.Unmarshal([]byte(stdout), &listed); err != nil {
+			t.Fatalf("%v decode: %v\n%s", args, err, stdout)
+		}
+		return listed
+	}
+
+	live := decode(t, "--json", "ls")
+	if len(live) != 1 || live[0]["name"] != "live session" {
+		t.Fatalf("--json ls returned %#v, want only the live session", live)
+	}
+	if asked[len(asked)-1] != "" {
+		t.Fatalf("--json ls sent include_exited=%q, want the live-only default", asked[len(asked)-1])
+	}
+
+	everything := decode(t, "--json", "ls", "-a")
+	if len(everything) != 2 {
+		t.Fatalf("--json ls -a returned %#v, want the live and the ended session", everything)
+	}
+	if asked[len(asked)-1] != "1" {
+		t.Fatalf("--json ls -a sent include_exited=%q, want 1", asked[len(asked)-1])
+	}
+
+	// The plain table is the contract --json now matches on both settings.
+	plain, stderr, code := runOwnershipCLI(t, server.URL, "ls")
+	if code != 0 || stderr != "" || !strings.Contains(plain, "live session") || strings.Contains(plain, "ended session") {
+		t.Fatalf("ls exit=%d stdout=%q stderr=%q", code, plain, stderr)
+	}
+	plain, stderr, code = runOwnershipCLI(t, server.URL, "ls", "-a")
+	if code != 0 || stderr != "" || !strings.Contains(plain, "live session") || !strings.Contains(plain, "ended session") {
+		t.Fatalf("ls -a exit=%d stdout=%q stderr=%q", code, plain, stderr)
+	}
+}
+
+// One concept, one spelling, on every command that has it. -a and
+// --include-exited are canonical and --include-closed is the retained `list`
+// alias; all three have to be accepted identically or a script that moves
+// between commands breaks on a flag it already uses.
+func TestIncludeEndedHasOneMeaningOnLsListAndLanes(t *testing.T) {
+	t.Setenv("SESSIONS_OWNER_ID", "team:selection")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	for _, spelling := range []string{"-a", "--include-exited", "--include-closed"} {
+		for _, command := range []string{"ls", "list", "lanes"} {
+			t.Run(command+" "+spelling, func(t *testing.T) {
+				var asked []string
+				server := listSelectionServer(t, &asked)
+				defer server.Close()
+				stdout, stderr, code := runOwnershipCLI(t, server.URL, command, spelling)
+				if code != 0 || stderr != "" {
+					t.Fatalf("%s %s exit=%d stdout=%q stderr=%q", command, spelling, code, stdout, stderr)
+				}
+				if !strings.Contains(stdout, "exited") {
+					t.Fatalf("%s %s did not return ended records: %q", command, spelling, stdout)
+				}
+				if command != "lanes" && asked[len(asked)-1] != "1" {
+					t.Fatalf("%s %s sent include_exited=%q, want 1", command, spelling, asked[len(asked)-1])
+				}
+			})
+		}
+	}
+}
+
+// --all is the owner axis. It has never widened the state selection and must
+// not start; the two axes are independent and an agent has to be able to ask
+// for one without silently getting the other.
+func TestAllOwnersSelectsOwnersAndNotStates(t *testing.T) {
+	t.Setenv("SESSIONS_OWNER_ID", "team:selection")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	for _, spelling := range []string{"--all", "--all-owners"} {
+		for _, command := range []string{"ls", "list", "lanes"} {
+			t.Run(command+" "+spelling, func(t *testing.T) {
+				var asked []string
+				server := listSelectionServer(t, &asked)
+				defer server.Close()
+				stdout, stderr, code := runOwnershipCLI(t, server.URL, command, spelling)
+				if code != 0 || stderr != "" {
+					t.Fatalf("%s %s exit=%d stdout=%q stderr=%q", command, spelling, code, stdout, stderr)
+				}
+				if command == "lanes" {
+					return
+				}
+				if asked[len(asked)-1] != "" {
+					t.Fatalf("%s %s sent include_exited=%q; the owner axis must not widen the state axis", command, spelling, asked[len(asked)-1])
+				}
+				if strings.Contains(stdout, "ended session") {
+					t.Fatalf("%s %s returned ended records: %q", command, spelling, stdout)
+				}
+			})
+		}
+	}
+}
+
+// An agent reads the error, not the source. A rejected option has to say which
+// of the two axes each flag belongs to, or the reader retries with --all.
+func TestListSurfaceUsageErrorsSeparateTheStateAndOwnerAxes(t *testing.T) {
+	for _, command := range []string{"ls", "list", "lanes"} {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{command, "--include-everything"}, strings.NewReader(""), &stdout, &stderr)
+		if code != 1 {
+			t.Fatalf("%s bad option exit=%d stderr=%q", command, code, stderr.String())
+		}
+		for _, want := range []string{
+			"--include-everything", "--include-exited", "--include-closed", "--all-owners",
+			"also returns ended sessions and lanes", "it does not change which states are shown",
+		} {
+			if !strings.Contains(stderr.String(), want) {
+				t.Fatalf("%s usage error is missing %q: %q", command, want, stderr.String())
+			}
+		}
+	}
+}
+
+// A lane dispatched with `sessions run` is invisible to ls and drops out of the
+// default list view when it exits, so the one place an agent looks first has to
+// say where the work actually went.
+func TestEmptyLSPointsAtTheViewThatListsLanes(t *testing.T) {
+	t.Setenv("SESSIONS_OWNER_ID", "team:selection")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"sessions":[]}`))
+	}))
+	defer server.Close()
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "ls")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "(no sessions)") ||
+		!strings.Contains(stdout, "sessions list -a") {
+		t.Fatalf("empty ls exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+// `sessions list -a` is documented as the one view that answers "show me
+// everything", so it has to actually return both kinds in both states.
+func TestListIncludingEndedShowsEverySessionAndLane(t *testing.T) {
+	t.Setenv("SESSIONS_OWNER_ID", "team:selection")
+	t.Setenv("SESSIONS_SESSION_ID", "")
+	server := listSelectionServer(t, nil)
+	defer server.Close()
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "list", "-a")
+	if code != 0 || stderr != "" {
+		t.Fatalf("list -a exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{"live session", "ended session", "live lane", "exited lane"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("list -a is missing %q: %q", want, stdout)
+		}
+	}
+}

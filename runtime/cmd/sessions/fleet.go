@@ -193,8 +193,12 @@ type fleetPeerFailure struct {
 
 const fleetPeerHealthVersion = 1
 
+// fleetPeerHealthPath derives the cache location from the platform user state
+// root rather than rebuilding the Unix layout, so Windows gets
+// %LOCALAPPDATA%\Sessions\state instead of a literal ~/.local/state tree that
+// means nothing there.
 func fleetPeerHealthPath(home string) string {
-	return filepath.Join(home, ".local", "state", "sessions", "fleet-search-health.json")
+	return filepath.Join(sessionstate.UserStateRootFor(home), "fleet-search-health.json")
 }
 
 // readFleetPeerHealth is deliberately forgiving: this file is an optimization,

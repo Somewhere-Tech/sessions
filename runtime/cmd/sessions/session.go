@@ -206,10 +206,13 @@ func (a *app) cmdLS(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Preserve the historical JSON behavior of including closed sessions while
-	// keeping the raw daemon objects (and their existing field casing) intact.
-	includeClosed := options.includeClosed || a.wantJSON
-	records, err := a.fetchSessionRecords(includeClosed)
+	// --json selects a format, never a working set. It used to also force
+	// closed sessions into the answer, so `sessions --json ls` returned every
+	// record the daemon had ever seen and -a was a no-op there: an agent asking
+	// the most common question there is — what is running? — got a pile of dead
+	// sessions and no way to say otherwise. The flag now means the same thing
+	// in both modes.
+	records, err := a.fetchSessionRecords(options.includeClosed)
 	if err != nil {
 		return err
 	}
@@ -241,7 +244,11 @@ func (a *app) cmdLS(args []string) error {
 		writeOSUserScope(a.stdout, scope)
 	}
 	if len(records) == 0 {
-		_, err := io.WriteString(a.stdout, "(no sessions)\n")
+		// An empty ls is the moment an agent is most likely to conclude that
+		// the work it dispatched never happened, so name the two things this
+		// view deliberately excludes rather than leaving it to the help text.
+		_, err := io.WriteString(a.stdout, "(no sessions)\n"+
+			"ls hides ended sessions and never lists lanes; `sessions list -a` shows every session and lane in any state\n")
 		return err
 	}
 	showProfile := recordsHaveProfiles(records)

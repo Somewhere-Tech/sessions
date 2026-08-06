@@ -39,26 +39,72 @@ type lsListOptions struct {
 	notAside      bool
 }
 
+// Selecting which records come back has two independent axes, and conflating
+// them is the single most common way an agent mis-reads these commands. State
+// is widened by -a; owner is widened by --all-owners. Each axis has exactly one
+// canonical spelling accepted identically by ls, list, and lanes, with the
+// historical spellings retained as aliases so existing scripts keep working.
+const (
+	// includeEndedCanonicalFlag is the long canonical spelling; -a is its short
+	// form and --include-closed is the older `list` spelling kept as an alias.
+	includeEndedCanonicalFlag = "--include-exited"
+	// allOwnersCanonicalFlag is the unambiguous spelling of the owner axis.
+	// --all is the historical alias and means the same thing: every owner, not
+	// every state.
+	allOwnersCanonicalFlag = "--all-owners"
+
+	lsUsageText    = "usage: sessions ls [--mine | --all-owners] [-a | --include-exited] [--aside | --not-aside] [--kind lane]"
+	listUsageText  = "usage: sessions list [--mine | --owner ID | --all-owners] [-a | --include-exited]"
+	lanesUsageText = "usage: sessions lanes [--all-owners | --mine [--owner ID] | --subtree ID] [--direct] [--detach]"
+
+	// selectionAxisHint is appended to every list-surface usage error because
+	// the failure it prevents is silent: an agent that reaches for --all when
+	// it wanted ended records gets a plausible-looking answer to the wrong
+	// question.
+	selectionAxisHint = "state: -a (long form --include-exited, alias --include-closed) also returns ended sessions and lanes\n" +
+		"owner: --all-owners (alias --all) returns every owner's records — it does not change which states are shown"
+)
+
+// isIncludeEndedFlag reports whether an argument selects the ended-records
+// axis. All three spellings mean exactly one thing on every command that
+// accepts them.
+func isIncludeEndedFlag(argument string) bool {
+	switch argument {
+	case "-a", includeEndedCanonicalFlag, "--include-closed":
+		return true
+	}
+	return false
+}
+
+// isAllOwnersFlag reports whether an argument selects the all-owners axis.
+func isAllOwnersFlag(argument string) bool {
+	return argument == allOwnersCanonicalFlag || argument == "--all"
+}
+
+func unknownListOption(command, argument, usageText string) error {
+	return fail(1, "unknown %s option %s\n%s\n%s", command, argument, usageText, selectionAxisHint)
+}
+
 func parseLSListOptions(args []string) (lsListOptions, error) {
 	options := lsListOptions{}
 	for _, arg := range args {
-		switch arg {
-		case "--mine":
+		switch {
+		case arg == "--mine":
 			options.mine = true
-		case "--all":
+		case isAllOwnersFlag(arg):
 			options.all = true
-		case "-a", "--include-exited", "--include-closed":
+		case isIncludeEndedFlag(arg):
 			options.includeClosed = true
-		case "--aside":
+		case arg == "--aside":
 			options.asideOnly = true
-		case "--not-aside":
+		case arg == "--not-aside":
 			options.notAside = true
 		default:
-			return options, fail(1, "usage: sessions ls [--mine | --all] [-a | --include-exited] [--aside | --not-aside]")
+			return options, unknownListOption("ls", arg, lsUsageText)
 		}
 	}
 	if options.mine && options.all {
-		return options, fail(1, "--mine and --all are mutually exclusive")
+		return options, fail(1, "--mine and --all-owners are mutually exclusive")
 	}
 	if options.asideOnly && options.notAside {
 		return options, fail(1, "--aside and --not-aside are mutually exclusive")
@@ -69,21 +115,21 @@ func parseLSListOptions(args []string) (lsListOptions, error) {
 func parseSessionsListOptions(args []string) (sessionsListOptions, error) {
 	options := sessionsListOptions{}
 	for index := 0; index < len(args); index++ {
-		switch args[index] {
-		case "--mine":
+		switch argument := args[index]; {
+		case argument == "--mine":
 			options.mine = true
-		case "--all":
+		case isAllOwnersFlag(argument):
 			options.all = true
-		case "--include-closed":
+		case isIncludeEndedFlag(argument):
 			options.includeClosed = true
-		case "--owner":
+		case argument == "--owner":
 			if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" || strings.HasPrefix(args[index+1], "--") {
 				return options, fail(1, "--owner needs a non-empty id")
 			}
 			options.owner = strings.TrimSpace(args[index+1])
 			index++
 		default:
-			return options, fail(1, "usage: sessions list [--mine | --owner ID | --all] [--include-closed]")
+			return options, unknownListOption("list", argument, listUsageText)
 		}
 	}
 	selectors := 0
@@ -97,7 +143,7 @@ func parseSessionsListOptions(args []string) (sessionsListOptions, error) {
 		selectors++
 	}
 	if selectors > 1 {
-		return options, fail(1, "--mine, --owner, and --all are mutually exclusive")
+		return options, fail(1, "--mine, --owner, and --all-owners are mutually exclusive")
 	}
 	return options, nil
 }
