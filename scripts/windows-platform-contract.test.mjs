@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const root = new URL('../', import.meta.url);
@@ -107,4 +107,27 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
     assert.match(script, /\[System\.Security\.Cryptography\.SHA256\]::Create\(\)/);
     assert.doesNotMatch(script, /Get-FileHash/);
   }
+});
+
+// A file URL's pathname keeps the leading slash before a Windows drive letter,
+// so "/D:/…/x.ts" reaches whatever consumes it and nothing resolves. It cost a
+// full Windows CI run to find one of these in a smoke script that ran green on
+// macOS forever. The conversion that works on both is fileURLToPath.
+test('no script turns import.meta.url into a path with URL.pathname', async () => {
+  const directories = ['frontend/scripts/', 'scripts/'];
+  const offenders = [];
+  for (const directory of directories) {
+    const entries = await readdir(new URL(directory, root));
+    for (const entry of entries) {
+      if (!entry.endsWith('.mjs') && !entry.endsWith('.js')) continue;
+      const source = await read(directory + entry);
+      // Only file URLs matter. A request URL's pathname is the right thing to
+      // read and several scripts legitimately do that.
+      if (/import\.meta\.url\s*\)*\s*\)?\.pathname/.test(source)) {
+        offenders.push(directory + entry);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [],
+    'use fileURLToPath(new URL(...)) instead; URL.pathname breaks on Windows');
 });

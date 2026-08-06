@@ -3,13 +3,18 @@ import { build } from 'esbuild';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const work = await mkdtemp(join(tmpdir(), 'sessions-fleet-usage-'));
 try {
   const outfile = join(work, 'fleet-usage.mjs');
   await build({
-    entryPoints: [new URL('../src/lib/fleetUsage.ts', import.meta.url).pathname],
+    // fileURLToPath, not URL.pathname: on Windows the pathname of a file URL
+    // keeps the leading slash before the drive letter, so esbuild was handed
+    // "/D:/…/fleetUsage.ts" and could not resolve it. Every other smoke script
+    // already converts properly; this one did not, and no Windows job had run
+    // to say so.
+    entryPoints: [fileURLToPath(new URL('../src/lib/fleetUsage.ts', import.meta.url))],
     outfile,
     bundle: true,
     platform: 'node',
