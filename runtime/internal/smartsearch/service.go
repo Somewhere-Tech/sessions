@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/agentcall"
+	"github.com/somewhere-tech/sessions/runtime/internal/search"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -173,6 +174,15 @@ func decodePlan(raw string) (Plan, error) {
 	}
 	if len(plan.Query) > maxPlannedQueryBytes {
 		return Plan{}, fmt.Errorf("smart search query exceeds %d bytes", maxPlannedQueryBytes)
+	}
+	// The prompt asks the planner for FTS5 -- OR between synonyms, near() for
+	// proximity, quotes for a remembered phrase -- so the result has to be run
+	// as FTS5. Ordinary queries are parsed conjunctively now, and that parser
+	// treats a bare OR as a stopword: an unmarked `auth OR login` would come
+	// back meaning every one of those words must appear, which is the exact
+	// inverse of the recall the planner was asked to optimise for.
+	if !strings.HasPrefix(plan.Query, search.RawSyntaxPrefix) {
+		plan.Query = search.RawSyntaxPrefix + plan.Query
 	}
 	return plan, nil
 }

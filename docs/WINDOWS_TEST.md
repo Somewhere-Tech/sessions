@@ -28,15 +28,24 @@ is not Windows runtime evidence.
 - Verify one per-user supervisor definition and one managed Sessions PATH entry.
 - Confirm the CLI, daemon, and viewer agree on version and state location.
 - Confirm uninstall does not end or delete unrelated work.
-- Uninstall does not yet remove Sessions' per-user integration, and the matrix
-  must not be signed off as if it did. The NSIS bundle declares no installer
-  hooks, nothing calls `write_logon_supervisor(None)` outside the failed-start
-  rollback, and there is no counterpart to `merge_user_path`
-  (`src-tauri/tauri.windows.conf.json`, `src-tauri/src/windows_runtime.rs`).
-  Record what survives an uninstall — expected today: the
+- Uninstall now removes Sessions' per-user integration. The NSIS
+  pre-uninstall hook runs `Sessions.exe --remove-integration`
+  (`src-tauri/windows/installer-hooks.nsh`,
+  `src-tauri/tauri.windows.conf.json`), which clears the
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `Somewhere
-  Sessions`, the managed Sessions entry in `HKCU\Environment\Path`, and all
-  state under `%LOCALAPPDATA%\Sessions` — and remove those by hand before a
+  Sessions` and the managed Sessions entry in `HKCU\Environment\Path`
+  (`src-tauri/src/windows_runtime.rs`, `src-tauri/src/windows_cli_path.rs`).
+  Verify both are gone afterwards, and that a PATH entry Sessions did not
+  write is untouched.
+- Verify what it deliberately keeps, because thoroughness here would cost work:
+  no process is stopped, so the running daemon, its runners, and their provider
+  children must all still be alive with their original PIDs after the
+  uninstall completes, and everything under `%LOCALAPPDATA%\Sessions` — session
+  records, ledger, saved port, paired-machine credentials, and the staged
+  runtime bytes a live daemon is executing — must survive. Confirm the removal
+  report lists those under `kept on purpose` rather than claiming a clean
+  sweep, and that an incomplete removal exits non-zero naming what it left.
+- Remove the remaining `%LOCALAPPDATA%\Sessions` state by hand before a
   clean-install test.
 
 ## Terminal and providers

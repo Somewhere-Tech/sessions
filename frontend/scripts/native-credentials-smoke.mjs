@@ -4,7 +4,9 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
+import { smoke } from './lib/smoke.mjs';
 
+const t = smoke('native-credentials');
 const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = path.join(frontendDir, 'dist');
 if (!fs.existsSync(path.join(distDir, 'index.html'))) {
@@ -147,12 +149,13 @@ async function openCase({
 }
 
 try {
+  t.scenario('a plaintext token in localStorage is migrated into the native vault before the first request');
   const migrated = await openCase({
     storedServer: legacyServer,
     nativeCredentials: []
   });
-  await migrated.page.waitForSelector('.app-shell', { timeout: 10_000 });
-  await migrated.page.waitForFunction(() => document.querySelector('.empty-state') !== null);
+  await t.waitForSelector(migrated.page, '.app-shell', 'the app shell to mount for the legacy plaintext-token server', { timeout: 10_000 });
+  await t.waitForFunction(migrated.page, () => document.querySelector('.empty-state') !== null, 'the empty session list to render, proving the migrated credential authorized /api/sessions');
   const migratedState = await migrated.page.evaluate(() => ({
     metadata: JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]'),
     native: window.__credentialSmokeState
@@ -170,12 +173,13 @@ try {
   assert.deepEqual(migrated.pageErrors, []);
   await migrated.page.close();
 
+  t.scenario('an existing native vault entry is used as-is, with no rewrite');
   const hydrated = await openCase({
     storedServer: { ...legacyServer, token: undefined },
     nativeCredentials: [{ serverId: legacyServer.id, token: legacyServer.token }]
   });
-  await hydrated.page.waitForSelector('.app-shell', { timeout: 10_000 });
-  await hydrated.page.waitForFunction(() => document.querySelector('.empty-state') !== null);
+  await t.waitForSelector(hydrated.page, '.app-shell', 'the app shell to mount from a vault-only credential', { timeout: 10_000 });
+  await t.waitForFunction(hydrated.page, () => document.querySelector('.empty-state') !== null, 'the empty session list to render using the already-stored vault credential');
   const hydratedState = await hydrated.page.evaluate(() => ({
     metadata: JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]'),
     native: window.__credentialSmokeState
@@ -186,13 +190,14 @@ try {
   assert.deepEqual(hydrated.pageErrors, []);
   await hydrated.page.close();
 
+  t.scenario('a failed metadata write rolls the vault back and blocks daemon requests');
   const rolledBack = await openCase({
     storedServer: legacyServer,
     nativeCredentials: [],
     metadataWriteError: true
   });
-  await rolledBack.page.waitForSelector('[data-testid="connect-screen"]', { timeout: 10_000 });
-  await rolledBack.page.waitForSelector('.connect-error', { timeout: 10_000 });
+  await t.waitForSelector(rolledBack.page, '[data-testid="connect-screen"]', 'the connect picker to appear after the metadata write failed', { timeout: 10_000 });
+  await t.waitForSelector(rolledBack.page, '.connect-error', 'the rollback explanation to be rendered rather than a silent half-migration', { timeout: 10_000 });
   const rolledBackState = await rolledBack.page.evaluate(() => ({
     error: document.querySelector('.connect-error')?.textContent?.trim() ?? '',
     metadata: JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]'),
@@ -232,8 +237,21 @@ try {
     }
   }, null, 2));
 } finally {
-  await browser.close();
-  await new Promise((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
-  });
+  t.release();
+  // Both of these used to be unbounded. `server.close()` waits for every socket
+  // the browser may not have released yet, so a finished suite could hang with
+  // nothing to report. A gate must fail, never wait.
+  const browserProcess = browser.process();
+  await Promise.race([
+    browser.close().catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 5_000))
+  ]);
+  if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
+    browserProcess.kill('SIGKILL');
+  }
+  server.closeAllConnections?.();
+  await Promise.race([
+    new Promise((resolve) => server.close(resolve)),
+    new Promise((resolve) => setTimeout(resolve, 5_000))
+  ]);
 }

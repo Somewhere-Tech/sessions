@@ -118,20 +118,12 @@ func Receive(ctx context.Context, request ReceiveRequest, options ReceiveOptions
 // conversation in two buckets -- a duplicate would make the UUID resolve to
 // several Claude projects and break adoption by UUID outright.
 //
-// Known remaining gap, which belongs to watch's encoder and not to this
-// function: Claude also caps the bucket name at 200 characters and appends a
-// hash of the unencoded cwd past that (2.1.222, K2e=200):
-//
-//	function rA(e){let t=e.replace(/[^a-zA-Z0-9]/g,"-");
-//	  if(t.length<=K2e)return t;
-//	  return `${t.slice(0,K2e)}-${Math.abs(Fat(e)).toString(36)}`}
-//
-// EncodeClaudeCWDStrict does not truncate, so a workspace whose encoded path
-// exceeds 200 characters still lands beside Claude's bucket. Reproducing the
-// truncation here alone would be worse than not doing it: every Sessions reader
-// probes watch's encodings, so a name only this function knows how to build is
-// one no reader could find. It has to be fixed in watch, for readers and
-// writers together.
+// Claude also caps the bucket name at 200 characters and appends a hash of the
+// unencoded cwd past that. EncodeClaudeCWDStrict reproduces both, so a long
+// workspace lands in the same directory the provider reads -- and it lives in
+// watch rather than here, because every Sessions reader probes watch's
+// encodings and a name only this function knew how to build would be one no
+// reader could find.
 func claudeConversationDestination(projects, cwd, uuid string) string {
 	name := uuid + ".jsonl"
 	destination := filepath.Join(projects, watch.EncodeClaudeCWDStrict(cwd), name)

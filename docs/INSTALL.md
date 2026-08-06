@@ -200,8 +200,10 @@ separate and continue to own their PTYs.
 
 ## Uninstall
 
-End or record any sessions you still need before removing their runtime. On
-macOS, stop the daemon and remove its launchd registration idempotently:
+There are two removal paths, because there are two things that install.
+
+For the runtime you installed yourself, `sessions uninstall` stops the
+development daemon and removes its launchd registration idempotently on macOS:
 
 ```sh
 sessions uninstall
@@ -210,8 +212,31 @@ sessions uninstall
 Then use `brew uninstall sessions`, or remove `sessions`, `sessionsd`, and `sessions-runner`
 from the directory where you installed the static archive.
 
-State is deliberately not deleted during uninstall. After confirming no
-session or recovery data is needed, you may remove it separately.
+For Sessions.app, the app binary removes the integration points the package
+wrote outside itself — the LaunchAgent that brings the daemon back at every
+login, and the Sessions-managed `sessions` symlinks in
+`/opt/homebrew/bin`, `/usr/local/bin`, and `~/.local/bin`:
+
+```sh
+/Applications/Sessions.app/Contents/MacOS/Sessions --remove-integration
+```
+
+Windows runs the same step automatically from the uninstaller, where it also
+clears the logon supervisor value and the managed PATH entry. Run it by hand on
+macOS, which ships as a bundle with no uninstaller of its own. It prints what it
+removed, what was already absent, and what it kept, and exits non-zero naming
+anything it could not finish.
+
+You do not need to end sessions first. This path deliberately stops no process:
+the daemon is the only thing that can still record what a live runner produces,
+so ending it during removal would turn live sessions into orphans. Deleting the
+LaunchAgent is enough — the daemon does not come back after the next login. A
+`sessions` symlink that is a real file, or that points outside Sessions' managed
+runtime, belongs to whoever put it there and is left exactly as found.
+
+State is deliberately not deleted during either path. Session records, the
+ledger, the saved port, and paired-machine credentials all survive. After
+confirming no session or recovery data is needed, you may remove it separately.
 
 ## Troubleshooting
 

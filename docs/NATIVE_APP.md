@@ -32,6 +32,19 @@ Explicit lifecycle verbs stay literal:
   linked cross-provider continuation.
 - **Archive** removes a retained row from the routine list without deleting
   provider history.
+- **Remove integration** (`--remove-integration`, run by the Windows
+  uninstaller and by hand on macOS) removes the per-user integration points the
+  package wrote outside itself: the login service definition, Sessions-managed
+  `sessions` symlinks, and on Windows the logon supervisor value and managed
+  PATH entry. It stops no process and deletes no user data, and it reports what
+  it kept rather than implying it was thorough.
+
+That last verb is the lifetime boundary applied to the last thing the viewer
+does. Ending the daemon during a removal would orphan every live runner, and
+the daemon is the only process that can still record what a runner produces —
+so deleting the definition, which simply stops the daemon returning at the next
+login, is the whole of it. Session records, the ledger, the saved port, paired
+credentials, and the runtime bytes a live daemon is executing all survive.
 
 ## Native and runtime responsibilities
 

@@ -66,6 +66,28 @@ The viewer uses a current-user installer. A public update additionally requires
 Authenticode, the updater signature pinned by the application, exact artifact
 hash verification, rollback rehearsal, and the hardware matrix.
 
+A port change or version handoff no longer refuses merely because sessions are
+live. The supervisor owns only the daemon and runners are started detached, so
+that refusal protected nothing it claimed to. What protects a session is the
+same rule macOS uses: capture the exact live baseline first, require every one
+of those IDs back before calling the change good, and otherwise restore the
+previous runtime on the previous port and say so. The discovery half of the old
+gate stays, because a baseline captured while the daemon is still finding
+runners is not a baseline.
+
+## Removal
+
+Uninstall removes the per-user integration Sessions wrote outside its own
+package — the logon supervisor value and the managed PATH entry — and nothing
+else. It stops no process: the daemon is the only thing that can still record
+what a live runner produces, so ending it during an uninstall would convert
+live sessions into orphans. Deleting the supervisor definition is enough,
+because the daemon simply does not return after the next sign-out. It deletes
+nothing of the user's either: session records, the ledger, the saved port,
+paired-machine credentials, and the staged runtime bytes a live daemon is
+executing all survive, and the removal reports what it kept rather than
+implying it was thorough.
+
 The read-only evidence collector in
 [`scripts/collect-windows-host-evidence.ps1`](../scripts/collect-windows-host-evidence.ps1)
 records package identity, signatures, process ownership, and runner preservation

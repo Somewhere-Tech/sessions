@@ -22,7 +22,7 @@ func TestPlanUsesSelectedProviderAndOnlyNaturalQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if provider != state.AIProviderClaude || plan.Provider != state.AIProviderClaude || plan.Query != "apple AND notarization" {
+	if provider != state.AIProviderClaude || plan.Provider != state.AIProviderClaude || plan.Query != "fts:apple AND notarization" {
 		t.Fatalf("provider=%q plan=%#v", provider, plan)
 	}
 	if !strings.Contains(prompt, "the session where I discussed Apple signing") || strings.Contains(prompt, "transcript") {
@@ -48,7 +48,7 @@ func TestPlanCachesIdenticalProviderQuery(t *testing.T) {
 	})
 	for range 2 {
 		plan, err := service.Plan(context.Background(), state.DefaultAISettings(), "find the cached result")
-		if err != nil || plan.Query != "cached result" {
+		if err != nil || plan.Query != "fts:cached result" {
 			t.Fatalf("plan=%#v err=%v", plan, err)
 		}
 	}

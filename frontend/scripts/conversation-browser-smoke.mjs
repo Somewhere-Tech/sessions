@@ -25,7 +25,9 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
+import { smoke } from './lib/smoke.mjs';
 
+const t = smoke('conversation-browser');
 const work = await mkdtemp(join(tmpdir(), 'sessions-conversation-browser-'));
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const screenshot = process.env.CONVERSATION_BROWSER_SCREENSHOT || join(work, 'conversation-browser.png');
@@ -95,11 +97,17 @@ localStorage.removeItem('sessions:search-state:v3');
   await page.setViewport({ width: 1440, height: 1400, deviceScaleFactor: 1 });
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  t.watch(page);
   await page.goto(`http://127.0.0.1:${address.port}`, { waitUntil: 'domcontentloaded' });
 
   // ── 1. Browsing is the default state of the surface ─────────────────────
   // No query typed, nothing clicked: the conversations are already there.
-  await page.waitForSelector('#surface-search .conversation-browser .search-result-card');
+  t.scenario('browsing is the default state: conversations are listed with nothing typed');
+  await t.waitForSelector(
+    page,
+    '#surface-search .conversation-browser .search-result-card',
+    'the browser to list conversations with no query typed and nothing clicked'
+  );
 
   const shot = async (name) => {
     if (!process.env.CONVERSATION_BROWSER_SCREENSHOT) return;
@@ -202,17 +210,23 @@ localStorage.removeItem('sessions:search-state:v3');
   await page.$$eval('#surface-search .conversation-browser-foot-actions button', (buttons) => {
     buttons.find((button) => button.textContent.includes('Show 6 more'))?.click();
   });
-  await page.waitForFunction(
-    () => document.querySelectorAll('#surface-search .conversation-browser .search-result-card').length === 26
+  await t.waitForFunction(
+    page,
+    () => document.querySelectorAll('#surface-search .conversation-browser .search-result-card').length === 26,
+    '"Show 6 more" to extend the page from 20 rows to all 26 that survive the default filters'
   );
 
   await page.$$eval('#surface-search .conversation-browser-foot-actions button', (buttons) => {
     buttons.find((button) => button.textContent.includes('Show everything'))?.click();
   });
-  await page.waitForFunction(() => Boolean(
-    Array.from(document.querySelectorAll('#surface-search .search-result-source strong'))
-      .find((node) => node.textContent.trim() === 'Deleted experiment')
-  ));
+  await t.waitForFunction(
+    page,
+    () => Boolean(
+      Array.from(document.querySelectorAll('#surface-search .search-result-source strong'))
+        .find((node) => node.textContent.trim() === 'Deleted experiment')
+    ),
+    '"Show everything" to reveal the unrecoverable conversations the default cut hides'
+  );
   const everything = await readScreen();
   await shot('everything');
 
@@ -228,8 +242,10 @@ localStorage.removeItem('sessions:search-state:v3');
   await page.$$eval('#surface-search .conversation-browser-foot-actions button', (buttons) => {
     buttons.find((button) => button.textContent.includes('Show conversations only'))?.click();
   });
-  await page.waitForFunction(
-    () => document.querySelectorAll('#surface-search .conversation-browser .search-result-card').length === 20
+  await t.waitForFunction(
+    page,
+    () => document.querySelectorAll('#surface-search .conversation-browser .search-result-card').length === 20,
+    '"Show conversations only" to restore the default 20-row cut'
   );
 
   // ── 9. Preview reads; it does not resume ────────────────────────────────
@@ -238,7 +254,8 @@ localStorage.removeItem('sessions:search-state:v3');
     Array.from(card.querySelectorAll('.search-result-actions button'))
       .find((button) => button.textContent.trim() === 'Preview')?.click();
   });
-  await page.waitForSelector('#surface-search .conversation-preview-line');
+  t.scenario('preview reads the conversation tail; it must not resume or attach');
+  await t.waitForSelector(page, '#surface-search .conversation-preview-line', 'Preview to render the tail of the conversation inline');
   const previewed = await readScreen();
   await shot('preview');
   const preview = rowByTitle(previewed, 'Hardening sweep notes').preview;
@@ -267,15 +284,16 @@ localStorage.removeItem('sessions:search-state:v3');
 
   // A conversation that survives only in Sessions' own copy: no provider
   // handle, so it must be addressed by its history id or it cannot come back.
+  t.scenario('resume carries the handle that actually works for each kind of conversation');
   await clickResume('Hardening sweep notes');
-  await page.waitForFunction(() => (window.__actions ?? []).length === 1);
+  await t.waitForFunction(page, () => (window.__actions ?? []).length === 1, 'Resume on the Sessions-copy conversation to dispatch exactly one action');
   const [sessionsCopyResume] = await page.evaluate(() => window.__actions);
   assert.equal(sessionsCopyResume, 'resume fixture provider=sessions-copy source=sessions-copy history=sessions-copy');
 
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#surface-search .conversation-browser .search-result-card');
+  await t.waitForSelector(page, '#surface-search .conversation-browser .search-result-card', 'the browser to relist conversations after a reload');
   await clickResume('Release notes for 0.2.16');
-  await page.waitForFunction(() => (window.__actions ?? []).length === 1);
+  await t.waitForFunction(page, () => (window.__actions ?? []).length === 1, 'Resume on the provider-native conversation to dispatch exactly one action');
   const [nativeResume] = await page.evaluate(() => window.__actions);
   assert.equal(
     nativeResume,
@@ -285,26 +303,27 @@ localStorage.removeItem('sessions:search-state:v3');
 
   // Attaching goes to the live session, not to a second runtime on top of it.
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#surface-search .conversation-browser .search-result-card');
+  await t.waitForSelector(page, '#surface-search .conversation-browser .search-result-card', 'the browser to relist conversations after a reload');
   await page.$$eval('#surface-search .conversation-browser .search-result-card', (cards) => {
     const card = cards.find((node) => node.textContent.includes('Quota calculator with Codex'));
     Array.from(card.querySelectorAll('.search-result-actions button'))
       .find((button) => button.textContent.trim() === 'Open the live session')?.click();
   });
-  await page.waitForFunction(() => (window.__actions ?? []).length === 1);
+  await t.waitForFunction(page, () => (window.__actions ?? []).length === 1, '"Open the live session" to dispatch exactly one attach action');
   const [attach] = await page.evaluate(() => window.__actions);
   assert.equal(attach, 'attach fixture lane-99', 'attach must target the session that holds the conversation');
 
   // ── 11. Opening a browsed conversation is read-only, and honest about it ─
+  t.scenario('opening a browsed conversation is read-only and calls nothing a match');
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#surface-search .conversation-browser .search-result-card');
+  await t.waitForSelector(page, '#surface-search .conversation-browser .search-result-card', 'the browser to relist conversations after a reload');
   await page.$$eval('#surface-search .conversation-browser .search-result-card', (cards) => {
     const card = cards.find((node) => node.textContent.includes('Hardening sweep notes'));
     Array.from(card.querySelectorAll('.search-result-actions button'))
       .find((button) => button.textContent.trim().startsWith('Open conversation'))?.click();
   });
-  await page.waitForSelector('#surface-search .search-conversation-view');
-  await page.waitForFunction(() => document.querySelectorAll('#surface-search .search-transcript-message').length > 0);
+  await t.waitForSelector(page, '#surface-search .search-conversation-view', 'the browsed conversation to open into the transcript reader');
+  await t.waitForFunction(page, () => document.querySelectorAll('#surface-search .search-transcript-message').length > 0, 'the transcript to load at least one message');
   const reader = await page.evaluate(() => ({
     kicker: (document.querySelector('#surface-search .search-conversation-kicker')?.textContent ?? '').replace(/\s+/g, ' ').trim(),
     title: (document.querySelector('#surface-search .search-conversation-heading h1')?.textContent ?? '').trim(),
@@ -316,24 +335,29 @@ localStorage.removeItem('sessions:search-state:v3');
   assert.equal(reader.markers, 0);
 
   // ── 12. Filters narrow the browse, and an empty answer stays honest ─────
+  t.scenario('filters narrow the browse, and an empty answer still says what exists behind it');
   await page.$eval('#surface-search .search-back', (element) => element.click());
-  await page.waitForSelector('#surface-search .conversation-browser');
+  await t.waitForSelector(page, '#surface-search .conversation-browser', 'the back control to return to the conversation browser');
   await page.$$eval('#surface-search .search-filter-group button', (buttons) => {
     buttons.find((button) => button.textContent.includes('Codex'))?.click();
   });
-  await page.waitForFunction(
-    () => document.querySelectorAll('#surface-search .conversation-browser .search-result-card').length === 2
+  await t.waitForFunction(
+    page,
+    () => document.querySelectorAll('#surface-search .conversation-browser .search-result-card').length === 2,
+    'the Codex provider filter to narrow the browse to its two conversations'
   );
   const codexOnly = await readScreen();
   assert.deepEqual(codexOnly.order, ['Quota calculator with Codex', 'Release notes for 0.2.16']);
 
   await page.$eval('#surface-search .search-more-filters', (element) => element.click());
-  await page.waitForSelector('#surface-search .search-advanced-filters input[placeholder^="~/"]');
+  await t.waitForSelector(page, '#surface-search .search-advanced-filters input[placeholder^="~/"]', 'the advanced filter panel to expose its workspace input');
   await page.type('#surface-search .search-advanced-filters input[placeholder^="~/"]', '/no/such/folder');
   // A workspace nothing was recorded under must empty the list. If the filter
   // is not applied at all this wait is what fails.
-  await page.waitForFunction(
+  await t.waitForFunction(
+    page,
     () => Boolean(document.querySelector('#surface-search .conversation-browser .usage-empty')),
+    'a workspace nothing was recorded under to empty the list — if this times out the filter is not being applied at all',
     { timeout: 5_000 }
   );
   const empty = await readScreen();
@@ -346,8 +370,9 @@ localStorage.removeItem('sessions:search-state:v3');
   if (process.env.CONVERSATION_BROWSER_SCREENSHOT) {
     await page.screenshot({ path: screenshot, fullPage: true, captureBeyondViewport: false });
   }
-  process.stdout.write(`conversation-browser smoke passed${process.env.CONVERSATION_BROWSER_SCREENSHOT ? `: ${screenshot}` : ''}\n`);
+  t.pass(`conversation-browser smoke passed${process.env.CONVERSATION_BROWSER_SCREENSHOT ? `: ${screenshot}` : ''}`);
 } finally {
+  t.release();
   if (browser) {
     const browserProcess = browser.process();
     await Promise.race([browser.close().catch(() => {}), delay(3_000)]);

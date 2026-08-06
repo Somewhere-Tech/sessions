@@ -55,9 +55,11 @@ private hosted-service designs do not belong in this repository.
 1. **Sessions are sacred.** Never kill, replace, mass-clean, or adopt a session
    you do not own.
 2. **Isolate development.** Use a worktree and branch. `SESSIONS_STATE_DIR` plus
-   `SESSIONS_PORT` is **not** isolation. `SESSIONS_STATE_DIR` moves only the
-   runner artifact directory and the `token`/`open` sentinels beside it
-   (`runtime/internal/state/config.go` `stateRootsFromEnv`); the lane ledger
+   `SESSIONS_PORT` is **not** isolation. `SESSIONS_STATE_DIR` moves the runner
+   artifact directory, the `token`/`open` sentinels beside it, and the state
+   that follows the derived root -- uploads, recap, usage, integration errors
+   (`runtime/internal/state/config.go` `stateRootsFromEnv`, and the callers
+   that prefer `StateRoot` in `runtime/internal/api/server.go`); the lane ledger
    (`runtime/internal/ledger/store.go` `ResolvePath`), the user state root, and
    `~/Library/LaunchAgents` still resolve from `HOME`. A scratch daemon missing
    the rest reads the user's real provider history, writes lost-runner records

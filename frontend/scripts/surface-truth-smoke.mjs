@@ -18,7 +18,9 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
+import { smoke } from './lib/smoke.mjs';
 
+const t = smoke('surface-truth');
 const work = await mkdtemp(join(tmpdir(), 'sessions-surface-truth-'));
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const screenshot = process.env.SURFACE_TRUTH_SCREENSHOT || join(work, 'surface-truth.png');
@@ -85,12 +87,22 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
       response.end();
     }
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.scenario('the fixture server binds and the browser launches');
+  await t.bounded(
+    new Promise((resolve) => server.listen(0, '127.0.0.1', resolve)),
+    'the fixture static server to bind on 127.0.0.1',
+    15_000
+  );
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('fixture server did not bind');
 
-  browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
+  browser = await t.bounded(
+    puppeteer.launch({ headless: true, args: ['--no-sandbox'] }),
+    'puppeteer to launch a headless browser',
+    60_000
+  );
   const page = await browser.newPage();
+  t.watch(page);
   page.setDefaultTimeout(15_000);
   page.setDefaultNavigationTimeout(15_000);
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
@@ -98,10 +110,15 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.goto(`http://127.0.0.1:${address.port}`, { waitUntil: 'domcontentloaded' });
 
-  await page.waitForSelector('#surface-navigator .session-nav-row');
-  await page.waitForSelector('#surface-home .home-session-list button');
-  await page.waitForSelector('#surface-grid .grid-cell');
-  await page.waitForSelector('#surface-fleet .fleet-session-row');
+  t.scenario('all four surfaces mount over the one fixture list');
+  // Named individually: which of the four failed to mount is the whole
+  // diagnosis. A bare `waitForSelector` here reported only a CSS string, so a
+  // bundle that never executed and a Fleet view that renders no rows produced
+  // the same message.
+  await t.waitForSelector(page, '#surface-navigator .session-nav-row', 'the navigator to render its first session row');
+  await t.waitForSelector(page, '#surface-home .home-session-list button', 'Home to render its session list');
+  await t.waitForSelector(page, '#surface-grid .grid-cell', 'the grid to render its first cell');
+  await t.waitForSelector(page, '#surface-fleet .fleet-session-row', 'Fleet to render its first session row');
 
   // The navigator collapses Ended by default and Fleet hides history behind a
   // toggle. Both are user-reachable; open them so every surface is showing the
@@ -111,9 +128,12 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
     (element) => element.click()
   );
   await page.$eval('#surface-fleet .fleet-history-toggle input', (element) => element.click());
-  await page.waitForFunction(
+  await t.waitForFunction(
+    page,
     () => document.querySelectorAll('#surface-fleet .fleet-session-row').length === 5
-      && document.querySelectorAll('#surface-navigator .session-nav-row').length === 5
+      && document.querySelectorAll('#surface-navigator .session-nav-row').length === 5,
+    'Fleet and the navigator to each list all 5 fixture sessions after the '
+      + 'Ended group and the Fleet history toggle were opened'
   );
 
   const readSurfaces = () => page.evaluate(() => {
@@ -161,6 +181,7 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
     };
   });
 
+  t.scenario('every surface reports the same status word for the same session');
   const surfaces = await readSurfaces();
 
   // ── An exited session that is still carrying idleReason 'needs-input' ────
@@ -194,11 +215,14 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
   assert.equal(surfaces.counts.navigatorNeedsYou, surfaces.counts.homeNeedsYou);
 
   // The badge is only honest if the filter behind it selects the same set.
+  t.scenario('the "Needs you" filter selects exactly the set its badge counts');
   await page.$$eval('#surface-navigator .session-filter-row button', (buttons) => {
     buttons.find((button) => (button.textContent ?? '').startsWith('Needs you'))?.click();
   });
-  await page.waitForFunction(
-    () => document.querySelectorAll('#surface-navigator .session-nav-row').length === 1
+  await t.waitForFunction(
+    page,
+    () => document.querySelectorAll('#surface-navigator .session-nav-row').length === 1,
+    'the navigator to narrow to the single "Needs you" session after its filter was clicked'
   );
   const needsRows = await page.$$eval(
     '#surface-navigator .session-nav-row .session-nav-title',
@@ -213,17 +237,30 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
   // The fixture daemon refuses the DELETE. The confirmation must stay up, say
   // what the daemon said, and offer the retry — silently closing would tell
   // the user a runtime had stopped while it is still running.
+  t.scenario('a DELETE the daemon refuses leaves the end-session decision open');
   await page.$eval(
     '#surface-navigator .session-nav-row[data-session-id="busy-runtime"] .session-row-action-trigger',
     (element) => element.click()
   );
-  await page.waitForSelector('[data-session-action-menu="busy-runtime"]');
+  await t.waitForSelector(
+    page,
+    '[data-session-action-menu="busy-runtime"]',
+    'the row action menu for the busy-runtime session to open'
+  );
   await page.$$eval('[data-session-action-menu="busy-runtime"] button', (buttons) => {
     buttons.find((button) => (button.textContent ?? '').startsWith('End session'))?.click();
   });
-  await page.waitForSelector('.session-end-sheet [role="dialog"]');
+  await t.waitForSelector(
+    page,
+    '.session-end-sheet [role="dialog"]',
+    'the end-session confirmation sheet to open'
+  );
   await page.$eval('.session-end-sheet .session-end-actions .btn-primary', (element) => element.click());
-  await page.waitForSelector('.session-end-sheet .session-end-error');
+  await t.waitForSelector(
+    page,
+    '.session-end-sheet .session-end-error',
+    'the sheet to surface the daemon\'s 503 refusal instead of closing silently'
+  );
 
   const endState = await page.evaluate(() => {
     const sheet = document.querySelector('.session-end-sheet');
@@ -263,8 +300,9 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
   if (process.env.SURFACE_TRUTH_SCREENSHOT) {
     await page.screenshot({ path: screenshot, fullPage: true, captureBeyondViewport: false });
   }
-  process.stdout.write(`surface-truth smoke passed${process.env.SURFACE_TRUTH_SCREENSHOT ? `: ${screenshot}` : ''}\n`);
+  t.pass(`surface-truth smoke passed${process.env.SURFACE_TRUTH_SCREENSHOT ? `: ${screenshot}` : ''}`);
 } finally {
+  t.release();
   if (browser) {
     const browserProcess = browser.process();
     await Promise.race([browser.close().catch(() => {}), delay(3_000)]);

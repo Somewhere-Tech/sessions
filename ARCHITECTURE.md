@@ -111,7 +111,9 @@ The default runtime layout is:
     ├── <id>.json
     ├── <id>.sock
     ├── <id>.events
-    └── <id>.log
+    ├── <id>.log
+    ├── <id>.transcript.jsonl
+    └── <id>.transcript.meta.json
 
 ~/.local/state/sessions/ledger/lanes.sqlite3
 
@@ -132,6 +134,13 @@ adopted if present, and the legacy path is never created
 tests, but not the user state root; isolated work also needs a scratch `HOME`
 and `SESSIONS_LEDGER_PATH`, which separately relocates the append-only lane
 ledger. See [`AGENTS.md`](AGENTS.md) rule 2 for the complete scratch recipe.
+
+`<id>.transcript.jsonl` is Sessions' own append-only copy of a Claude
+conversation, with a `.transcript.meta.json` provenance sidecar. It is never
+truncated, rotated, or unlinked when the session ends, and the provider's own
+file always wins while it still resolves — the copy is what answers once the
+provider's retention timer prunes the original. See
+[`docs/CODEBASE.md`](docs/CODEBASE.md).
 
 The ledger writes launch intent before process creation and a tombstone before
 requested termination. It distinguishes live managed, closed, external, and

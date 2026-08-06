@@ -6,7 +6,9 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
+import { smoke } from './lib/smoke.mjs';
 
+const t = smoke('structured-view');
 const work = await mkdtemp(join(tmpdir(), 'sessions-structured-view-'));
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const screenshot = process.env.STRUCTURED_VIEW_SCREENSHOT || join(work, 'structured-view.png');
@@ -83,8 +85,10 @@ try {
   await page.setViewport({ width: 1440, height: 960, deviceScaleFactor: 1 });
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  t.watch(page);
   await page.goto(`http://127.0.0.1:${address.port}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('.remote-bubble-plan');
+  t.scenario('the structured assistant bubble renders its plan, activity and reasoning');
+  await t.waitForSelector(page, '.remote-bubble-plan', 'the assistant bubble to render its plan block');
   await page.$eval('.remote-bubble-tools-toggle', (element) => element.click());
   await page.$eval('.remote-bubble-tool', (element) => element.click());
 
@@ -129,8 +133,9 @@ try {
       'screenshot'
     );
   }
-  process.stdout.write(`structured-view smoke passed${process.env.STRUCTURED_VIEW_SCREENSHOT ? `: ${screenshot}` : ''}\n`);
+  t.pass(`structured-view smoke passed${process.env.STRUCTURED_VIEW_SCREENSHOT ? `: ${screenshot}` : ''}`);
 } finally {
+  t.release();
   if (browser) {
     const browserProcess = browser.process();
     await Promise.race([browser.close().catch(() => {}), delay(3_000)]);

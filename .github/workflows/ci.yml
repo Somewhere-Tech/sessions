@@ -60,19 +60,53 @@ jobs:
           npm --prefix frontend ci
           npm --prefix runtime/testdata/node-runtime ci
 
+      # `-timeout` is the difference between a test that fails and a test that
+      # hangs. Without it every package inherits Go's 10-minute default, so one
+      # blocked `<-channel` burns ten minutes, and two of them blow the 45-minute
+      # job cap — at which point GitHub kills the job and prints no test output
+      # at all. That has already happened here once. On timeout Go dumps every
+      # goroutine's stack, which names the blocked receive; the cost of this flag
+      # on a passing run is zero.
       - name: Verify Go runtime
         working-directory: runtime
         run: |
           go build ./...
           go vet ./...
-          go test ./...
+          go test -timeout 5m ./...
 
       # The daemon is heavily concurrent: runners, watchers, the discovery loop,
       # and every attached client share session state. Ordinary `go test` cannot
       # see the data races that produces, so the detector runs as its own step.
+      # The detector makes everything 2–10x slower, hence the larger bound.
       - name: Verify Go runtime under the race detector
         working-directory: runtime
-        run: go test -race ./...
+        run: go test -race -timeout 15m ./...
+
+      # A Windows-only compile break has shipped from this repo once, and was
+      # caught by hand rather than by the gate: nothing on a pull request ever
+      # builds for Windows. The full Windows job needs a windows-2022 runner and
+      # bills at 2x; this cross-compile catches the same class of break on the
+      # runner that is already running, in well under two minutes.
+      #
+      # It proves compilation and vet only — not behavior. The behavior contracts
+      # still belong to the windows-2022 jobs.
+      - name: Verify the Windows target still compiles and vets
+        working-directory: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GOOS=windows GOARCH=amd64
+          go build ./...
+          # Test files are where GOOS-specific code most often rots unnoticed,
+          # because `go build` never looks at them. `-run '^$'` compiles every
+          # test binary and runs nothing.
+          go test -run '^$' -count=1 ./...
+          packages="$(go list ./... | grep -v -E '/internal/winconpty$')"
+          go vet $packages
+          # HPCON is a pointer-shaped Windows handle and the Win32 attribute API
+          # wants its value as lpValue; that unavoidable conversion is isolated
+          # to this package, matching windows-preview.yml.
+          go vet -unsafeptr=false ./internal/winconpty
 
       - name: Verify generated CLI reference
         run: |

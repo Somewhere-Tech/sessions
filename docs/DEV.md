@@ -9,16 +9,19 @@
    for new work.
 3. **Isolate every test daemon.** All four of `HOME`, `SESSIONS_STATE_DIR`,
    `SESSIONS_LEDGER_PATH`, and `SESSIONS_PORT` are required, not optional
-   extras. `SESSIONS_STATE_DIR` relocates only the runner artifact directory and
-   the `token`/`open` sentinels beside it
-   (`runtime/internal/state/config.go`); the ledger has its own override
-   (`runtime/internal/ledger/store.go`), and the user state root, provider
-   history, and `~/Library/LaunchAgents` all follow `HOME`. A daemon started with
-   only the first two enumerates the daily driver's real provider sessions,
-   writes lost-runner records into the real ledger, and offers the real runner
-   plists to its discovery sweep for bootout and unlink — stopped only by the
-   mass-kill guard, which does not protect the ledger writes. Keep the scratch
-   root short:
+   extras. `SESSIONS_STATE_DIR` relocates the runner artifact directory, the
+   `token`/`open` sentinels beside it, and the uploads, recap, usage, and
+   integration-error state derived from the same root
+   (`runtime/internal/state/config.go` `stateRootsFromEnv`) — but not the user
+   state root, which keeps settings, machine identity, approved machines, the
+   search index, saved profiles, and idle sentinels. The ledger has its own
+   override (`runtime/internal/ledger/store.go`), and the user state root,
+   provider history, and `~/Library/LaunchAgents` all follow `HOME`. A daemon
+   started with only the first two enumerates the daily driver's real provider
+   sessions, writes lost-runner records into the real ledger, and offers the
+   real runner plists to its discovery sweep for bootout and unlink — stopped
+   only by the mass-kill guard, which does not protect the ledger writes. Keep
+   the scratch root short:
 
    ```sh
    HOME=/tmp/sX/home SESSIONS_STATE_DIR=/tmp/sX/runners \

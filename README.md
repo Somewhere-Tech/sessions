@@ -76,8 +76,10 @@ sessions wait "$id" --timeout 10m --summary
 sessions last "$id" --role assistant
 ```
 
-Open Sessions.app for terminal and structured conversation views. Session IDs
-may be replaced with a unique prefix shown by `sessions ls`.
+Open Sessions.app for terminal and structured conversation views; its History
+surface browses the same conversations `sessions history` does, and typing
+narrows them. Session IDs may be replaced with a unique prefix shown by
+`sessions ls`.
 
 Agents created from a managed parent inherit that parent's exact provider
 permission mode by default. They cannot silently promote themselves to full
@@ -101,7 +103,8 @@ command registry.
 | Command | Purpose |
 | --- | --- |
 | `sessions new --tool claude\|codex\|shell [--cwd DIR]` | Start an interactive session |
-| `sessions ls` | List live sessions |
+| `sessions ls` | List the live sessions Sessions itself created |
+| `sessions history [QUERY]` | Browse and preview every recorded Claude and Codex conversation, whoever started it |
 | `sessions send <id> <message...>` | Submit text and confirm receipt |
 | `sessions ask <id> <message...>` | Send, wait, and print the reply |
 | `sessions wait <id> [--timeout 10m] [--summary]` | Wait for completion or return an actionable approval prompt |
@@ -111,18 +114,23 @@ command registry.
 | `sessions recover [--reopen]` | Inspect or reopen unexpectedly lost lanes |
 | `sessions grep -C 3 "Google Ads"` | Search Claude and Codex history across every approved machine |
 | `sessions cat <machine::history-id>` | Read the complete durable conversation returned by search |
-| `sessions resurrect <machine::history-id>` | Continue the exact conversation on its source machine |
-| `sessions continue <history-id> [--with claude\|codex]` | Continue the original chat or start a cross-provider continuation |
+| `sessions resume <[machine::]name-or-id> [--with claude\|codex]` | Reopen the exact conversation, or start a cross-provider continuation |
 | `sessions fork <live-id> [--with claude\|codex]` | Branch a live chat without stopping the original |
 | `sessions remote enable\|status\|disable` | Manage early-access Tailscale HTTPS access |
 | `sessions model <id> <model> [--effort LEVEL]` | Switch an idle supported Claude session model |
 | `sessions support [--diagnostics]` | Open feedback/support channels and preview a redacted local diagnostic summary |
 | `sessions kill <id> [<id>...]` | Explicitly terminate selected sessions |
 
+`continue` and `resurrect` are accepted spellings of `resume`. `ls` lists only
+what Sessions itself started, so a conversation you opened by running plain
+`claude` or `codex` is recorded but never appears there — `sessions history`
+is the view that reaches it, with no search term required and the command that
+reopens each row printed beside it.
+
 Fleet search is the default when no connection flag is supplied. Use global
 `--machine NAME` before a command to target only one approved machine. Search
-reports unreachable machines as partial coverage and never copies transcripts
-just to make them greppable.
+and history report unreachable machines as partial coverage and never copy
+transcripts just to make them greppable.
 
 Also useful: `sessions snap`, `last`, `transcript`, `tail`, `keys`, `attach`,
 `verdict`, `doctor`, `docs`, and `help`. Global flags are `--json`, `--host`, and

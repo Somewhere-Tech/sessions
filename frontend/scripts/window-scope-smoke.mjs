@@ -4,7 +4,9 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
+import { smoke } from './lib/smoke.mjs';
 
+const t = smoke('window-scope');
 const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = path.join(frontendDir, 'dist');
 const appSource = fs.readFileSync(path.join(frontendDir, 'src', 'App.tsx'), 'utf8');
@@ -155,7 +157,15 @@ async function openCase(query, selector = '.session-view-host:not(.is-hidden)') 
     window.localStorage.setItem('sessions:active-server', 'primary-server');
   }, storedServers);
   await page.goto(`${origin}/${query}`, { waitUntil: 'domcontentloaded', timeout: 15_000 });
-  await page.waitForSelector(selector, { timeout: 10_000 });
+  // Every scope case enters through here, so the wait has to say which URL it
+  // opened. Without the query string, six different scenarios failed with one
+  // indistinguishable message.
+  await t.waitForSelector(
+    page,
+    selector,
+    `the window opened at "/${query}" to settle on ${selector}`,
+    { timeout: 10_000 }
+  );
   return { page, pageErrors };
 }
 
@@ -181,14 +191,20 @@ async function managerTabIds() {
     if (!(child instanceof HTMLElement)) throw new Error('finished child row is missing');
     child.click();
   });
-  await current.page.waitForSelector('.session-view-host[data-session-id="finished-child"]:not(.is-hidden)');
+  await t.waitForSelector(
+    current.page,
+    '.session-view-host[data-session-id="finished-child"]:not(.is-hidden)',
+    'clicking the finished child row to make its view the visible one'
+  );
   await current.page.evaluate(() => {
     const manager = document.querySelector('.session-nav-row[data-session-id="finished-parent"]');
     if (!(manager instanceof HTMLElement)) throw new Error('finished manager row is missing');
     manager.click();
   });
-  await current.page.waitForFunction(
-    () => document.querySelectorAll('[role="tab"][data-tab-id]').length === 2
+  await t.waitForFunction(
+    current.page,
+    () => document.querySelectorAll('[role="tab"][data-tab-id]').length === 2,
+    'selecting the manager to expose exactly its two leaf tabs'
   );
   const ids = await current.page.evaluate(() =>
     [...document.querySelectorAll('[role="tab"][data-tab-id]')]
@@ -217,7 +233,11 @@ async function assertFinishedSessionIsReadOnly() {
     if (!(row instanceof HTMLElement)) throw new Error('finished parent row is missing');
     row.click();
   });
-  await current.page.waitForSelector('.session-view-host:not(.is-hidden) .session-history-body');
+  await t.waitForSelector(
+    current.page,
+    '.session-view-host:not(.is-hidden) .session-history-body',
+    'a finished session to open as read-only history rather than a live terminal'
+  );
   const state = await current.page.evaluate(() => {
     const node = document.querySelector('.session-view-host:not(.is-hidden)');
     if (!node) throw new Error('active finished session is missing');
@@ -277,6 +297,7 @@ try {
   assert.deepEqual(await navigatorIds(''), ['finished-parent', 'finished-child', 'live-grandchild', 'shell-1', 'claude-1', 'codex-1']);
   await assertFinishedSessionIsReadOnly();
   await assertTreeDisclosureIsClear();
+  t.scenario('an unscoped window opens the first session, and tool/server scopes narrow it');
   assert.deepEqual(await activeView(''), { sessionID: 'codex-1', tabIDs: [] });
   assert.deepEqual(await activeView('?tool=codex'), { sessionID: 'codex-1', tabIDs: [] });
   assert.deepEqual(await activeView('?tool=claude'), { sessionID: 'claude-1', tabIDs: [] });
@@ -292,9 +313,12 @@ try {
   assert.equal(primary.sessionRequests, primaryBefore);
   assert.ok(scoped.sessionRequests > scopedBefore);
 
+  t.scenario('?session=…&mode=single pins one session and hides the pop-out chrome');
   const single = await openCase('?session=codex-1&mode=single', '.single-mode');
-  await single.page.waitForFunction(
-    () => document.querySelector('.single-mode-label')?.textContent?.trim() === 'codex'
+  await t.waitForFunction(
+    single.page,
+    () => document.querySelector('.single-mode-label')?.textContent?.trim() === 'codex',
+    'single-session mode to label the window with the codex session it was pinned to'
   );
   const singleLabel = await single.page.evaluate(
     () => document.querySelector('.single-mode-label')?.textContent?.trim()
@@ -318,10 +342,27 @@ try {
     result: 'ok'
   }));
 } finally {
-  await browser.close();
-  await Promise.all([
-    new Promise((resolve) => uiServer.close(resolve)),
-    new Promise((resolve) => primary.server.close(resolve)),
-    new Promise((resolve) => scoped.server.close(resolve))
+  t.release();
+  // Three servers and a browser, all closed with unbounded awaits. Any one
+  // socket the browser had not released turned a finished suite into a silent
+  // hang; bound every one of them.
+  const browserProcess = browser.process();
+  await Promise.race([
+    browser.close().catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 5_000))
+  ]);
+  if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
+    browserProcess.kill('SIGKILL');
+  }
+  for (const closing of [uiServer, primary.server, scoped.server]) {
+    closing.closeAllConnections?.();
+  }
+  await Promise.race([
+    Promise.all([
+      new Promise((resolve) => uiServer.close(resolve)),
+      new Promise((resolve) => primary.server.close(resolve)),
+      new Promise((resolve) => scoped.server.close(resolve))
+    ]),
+    new Promise((resolve) => setTimeout(resolve, 5_000))
   ]);
 }

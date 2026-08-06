@@ -22,7 +22,9 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
+import { smoke } from './lib/smoke.mjs';
 
+const t = smoke('search-rollup');
 const work = await mkdtemp(join(tmpdir(), 'sessions-search-rollup-'));
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const screenshot = process.env.SEARCH_ROLLUP_SCREENSHOT || join(work, 'search-rollup.png');
@@ -88,8 +90,10 @@ localStorage.setItem('sessions:active-server','fixture');
   await page.setViewport({ width: 1440, height: 1200, deviceScaleFactor: 1 });
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  t.watch(page);
   await page.goto(`http://127.0.0.1:${address.port}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#surface-search .search-query-row input');
+  t.scenario('the search surface mounts');
+  await t.waitForSelector(page, '#surface-search .search-query-row input', 'the search box to mount');
 
   // Type it and press Search, the way a person does.
   const search = async (text) => {
@@ -99,8 +103,19 @@ localStorage.setItem('sessions:active-server','fixture');
     await page.click('#surface-search .search-ai-submit');
     // The view goes busy synchronously on submit and leaves busy in the same
     // commit that publishes the results, so this brackets exactly one search.
-    await page.waitForFunction(() => Boolean(document.querySelector('#surface-search .search-progress')));
-    await page.waitForFunction(() => !document.querySelector('#surface-search .search-progress'));
+    // Both halves are named: "never went busy" means the submit never fired,
+    // "never left busy" means the fixture daemon never answered. Those are
+    // different bugs and used to produce the same message.
+    await t.waitForFunction(
+      page,
+      () => Boolean(document.querySelector('#surface-search .search-progress')),
+      `the search for "${text}" to enter its busy state after submit`
+    );
+    await t.waitForFunction(
+      page,
+      () => !document.querySelector('#surface-search .search-progress'),
+      `the search for "${text}" to leave its busy state with results published`
+    );
   };
 
   // Screenshots are opt-in; each scenario writes its own so the states can be
@@ -136,6 +151,7 @@ localStorage.setItem('sessions:active-server','fixture');
   });
 
   // ── 1. A current daemon: the session rollup leads ───────────────────────
+  t.scenario('a current daemon: the session rollup leads and counts the whole index');
   await search('rollout');
   const current = await readScreen();
   await shot('current');
@@ -187,8 +203,12 @@ localStorage.setItem('sessions:active-server','fixture');
   await page.$$eval('#surface-search .search-result-card.is-rollup-only .search-result-actions button', (buttons) => {
     buttons[0]?.click();
   });
-  await page.waitForSelector('#surface-search .search-conversation-view');
-  await page.waitForFunction(() => document.querySelectorAll('#surface-search .search-transcript-message').length > 0);
+  await t.waitForSelector(page, '#surface-search .search-conversation-view', 'the rollup-only session to open into the transcript reader');
+  await t.waitForFunction(
+    page,
+    () => document.querySelectorAll('#surface-search .search-transcript-message').length > 0,
+    'the transcript to load at least one message from the start of the conversation'
+  );
   const reader = await page.evaluate(() => ({
     kicker: (document.querySelector('#surface-search .search-conversation-kicker')?.textContent ?? '').replace(/\s+/g, ' ').trim(),
     title: (document.querySelector('#surface-search .search-conversation-heading h1')?.textContent ?? '').trim(),
@@ -206,9 +226,10 @@ localStorage.setItem('sessions:active-server','fixture');
     'the transcript must be requested from the start, not around a guessed anchor'
   );
   await page.$eval('#surface-search .search-back', (element) => element.click());
-  await page.waitForSelector('#surface-search .search-results');
+  await t.waitForSelector(page, '#surface-search .search-results', 'the back control to return to the result list');
 
   // ── 2. The daemon relaxed the query ─────────────────────────────────────
+  t.scenario('a daemon that relaxed the query says so, once, with the expression it ran');
   await search('how should the drafts rollout work');
   const relaxed = await readScreen();
   await shot('relaxed');
@@ -223,6 +244,7 @@ localStorage.setItem('sessions:active-server','fixture');
   );
 
   // ── 3. The rollup did not finish ────────────────────────────────────────
+  t.scenario('a truncated rollup reads as a lower bound, not a complete count');
   await search('partial');
   const partial = await readScreen();
   await shot('partial');
@@ -239,6 +261,7 @@ localStorage.setItem('sessions:active-server','fixture');
   // ── 4. A daemon older than the rollup ───────────────────────────────────
   // matches and total, nothing else. The screen must fall back to what it can
   // see, and must not print a count it was never given.
+  t.scenario('a daemon older than the rollup renders matches without inventing rollup language');
   await search('legacy');
   const legacy = await readScreen();
   assert.deepEqual(Object.keys(legacy.cards), ['Legacy daemon chat'], 'an older daemon still renders its matches');
@@ -252,8 +275,9 @@ localStorage.setItem('sessions:active-server','fixture');
   if (process.env.SEARCH_ROLLUP_SCREENSHOT) {
     await page.screenshot({ path: screenshot, fullPage: true, captureBeyondViewport: false });
   }
-  process.stdout.write(`search-rollup smoke passed${process.env.SEARCH_ROLLUP_SCREENSHOT ? `: ${screenshot}` : ''}\n`);
+  t.pass(`search-rollup smoke passed${process.env.SEARCH_ROLLUP_SCREENSHOT ? `: ${screenshot}` : ''}`);
 } finally {
+  t.release();
   if (browser) {
     const browserProcess = browser.process();
     await Promise.race([browser.close().catch(() => {}), delay(3_000)]);
