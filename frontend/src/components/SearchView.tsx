@@ -20,8 +20,20 @@ import {
   type FleetSearchResult,
   type SearchConversationGroup
 } from '../lib/searchConversations';
+import {
+  compactMachineName,
+  compactPath,
+  isPromptHistoryOnly,
+  managedSourceSessionID,
+  plural,
+  relativeDate,
+  type BrowseFilters,
+  type ConversationRow,
+  type ResumeTarget
+} from '../lib/conversationBrowser';
 import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
+import { ConversationBrowser } from './ConversationBrowser';
 import { ProviderBadge, normalizeProvider, type Provider } from './ProviderBadge';
 import { ParserIcon } from './ParserIcon';
 import type { SessionInfo } from '../types';
@@ -130,9 +142,15 @@ interface SearchViewProps {
     sourceSessionId?: string,
     historyId?: string
   ) => Promise<void>;
+  /**
+   * Attach to a session that is already running. A live conversation cannot be
+   * resumed — the daemon refuses it (session.ConversationLiveError) — so the
+   * browse rows need somewhere real to send the user instead.
+   */
+  onOpenLiveSession?: (serverId: string, sessionId: string) => void;
 }
 
-export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Element {
+export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchViewProps): JSX.Element {
   const initial = useMemo(readSearchState, []);
   const nativeClient = isTauri();
   const servers = useServers((state) => state.servers);
@@ -460,6 +478,44 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
     }, result.title_match ? undefined : result.message_id);
   };
 
+  // The browse list under an empty query answers the other half of "which
+  // conversation was that": the one the user cannot name a word from, only a
+  // day and a folder. It reads the same filters this screen already carries.
+  const browseFilters = useMemo<Omit<BrowseFilters, 'all'>>(() => ({
+    tool,
+    since: dates.since ? new Date(`${dates.since}T00:00:00`).getTime() : 0,
+    until: dates.until ? new Date(`${dates.until}T23:59:59.999`).getTime() : 0,
+    name: sessionName,
+    cwd
+  }), [tool, dates.since, dates.until, sessionName, cwd]);
+  const browseFiltered = Boolean(tool || dates.since || dates.until || sessionName.trim() || cwd.trim());
+
+  const viewBrowsedConversation = (row: ConversationRow): void => {
+    openConversation({
+      key: `browse:${row.key}`,
+      serverId: row.serverId,
+      serverName: row.serverName,
+      sessionId: row.id,
+      providerSessionId: row.providerSessionId,
+      tool: row.tool,
+      title: row.name || row.id.slice(0, 8),
+      // Nothing was searched for, so there is no message to anchor on and no
+      // match count to claim. Both stay null rather than pointing at message 1.
+      anchor: null,
+      matchCount: null
+    });
+  };
+
+  const resumeBrowsedConversation = (row: ConversationRow, target: ResumeTarget): void => {
+    void continueConversation(
+      `browse:${row.key}`,
+      row.serverId,
+      target.providerSessionId,
+      target.sourceSessionId,
+      target.historyId
+    );
+  };
+
   // Opening a session Search only knows from the rollup: it has the session and
   // the hit count, but not where in the transcript the hits are, so it opens at
   // the beginning and says so rather than pointing at a message it guessed.
@@ -515,8 +571,8 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
     <div className="search-view">
       <div className="search-shell">
         <header className="search-heading">
-          <h1>Search</h1>
-          <p>Find something you or an agent said—then reopen the whole conversation around it.</p>
+          <h1>History</h1>
+          <p>Every Claude and Codex conversation recorded on your machines. Browse the recent ones, or search for something that was said.</p>
         </header>
         <form className="search-query-row" aria-busy={searchBusy} onSubmit={(event) => {
           event.preventDefault();
@@ -562,12 +618,16 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
         </div>
 
         <section className="search-filter-panel" aria-label="Search filters">
-          <FilterGroup label="Search in">
-            <FilterButton active={speaker === 'user'} onClick={() => setSpeaker('user')}>What you said</FilterButton>
-            <FilterButton active={speaker === ''} onClick={() => setSpeaker('')}>Everything</FilterButton>
-            <FilterButton active={speaker === 'assistant'} onClick={() => setSpeaker('assistant')}>Agent answers</FilterButton>
-            <FilterButton active={speaker === 'tool'} onClick={() => setSpeaker('tool')}>Operations</FilterButton>
-          </FilterGroup>
+          {/* Who spoke narrows a search and means nothing to a browse, so it is
+              only offered once there is a query to apply it to. */}
+          {hasSearch ? (
+            <FilterGroup label="Search in">
+              <FilterButton active={speaker === 'user'} onClick={() => setSpeaker('user')}>What you said</FilterButton>
+              <FilterButton active={speaker === ''} onClick={() => setSpeaker('')}>Everything</FilterButton>
+              <FilterButton active={speaker === 'assistant'} onClick={() => setSpeaker('assistant')}>Agent answers</FilterButton>
+              <FilterButton active={speaker === 'tool'} onClick={() => setSpeaker('tool')}>Operations</FilterButton>
+            </FilterGroup>
+          ) : null}
           <FilterGroup label="Provider">
             <FilterButton active={tool === ''} onClick={() => setTool('')}>All</FilterButton>
             <FilterButton active={tool === 'claude'} onClick={() => setTool('claude')}><ProviderBadge provider="claude" compact /></FilterButton>
@@ -632,11 +692,19 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
             <span /><span /><span />
           </div>
         ) : !hasSearch ? (
-          <div className="search-welcome">
-            <span>⌕</span>
-            <h2>Start with what you remember</h2>
-            <p>Smart Search sends only your question to the pre-authenticated Codex or Claude CLI. Transcripts stay local. Results open read-only at the exact matching message.</p>
-          </div>
+          // No query is not an empty screen. It is the case the CLI's
+          // `sessions history` exists for: the conversation you cannot quote a
+          // word from, only place in a folder and a day.
+          <ConversationBrowser
+            filters={browseFilters}
+            filtered={browseFiltered}
+            resumingKey={continuingKey}
+            onOpen={viewBrowsedConversation}
+            onResume={resumeBrowsedConversation}
+            onAttach={onOpenLiveSession ? (row) => {
+              if (row.liveSessionId) onOpenLiveSession(row.serverId, row.liveSessionId);
+            } : undefined}
+          />
         ) : rows.length === 0 && !loading ? (
           <div className="usage-empty">No matching conversations.</div>
         ) : (
@@ -1194,28 +1262,10 @@ function rankedMatchLabel(score: number): string {
   return 'Related';
 }
 
-function compactPath(value: string): string {
-  return value.replace(/^\/(Users|home)\/[^/]+/, '~');
-}
-
-function compactMachineName(value: string): string {
-  const clean = value.trim().replace(/\.local$/i, '');
-  if (/^mac[-\s]?mini(?:[-\s]?\d+)?$/i.test(clean)) return 'Mac mini';
-  if (/^macbook(?:[-\s]?pro)?(?:[-\s]?\d+)?$/i.test(clean)) return 'MacBook';
-  return clean.replace(/-/g, ' ') || 'Unknown computer';
-}
-
-function managedSourceSessionID(sessionID: string): string | undefined {
-  return sessionID.startsWith('provider:') ? undefined : sessionID;
-}
-
-function isPromptHistoryOnly(sessionID: string): boolean {
-  return sessionID.startsWith('provider-history:');
-}
-
-function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
-  return `${count} ${count === 1 ? singular : pluralForm}`;
-}
+// compactPath, compactMachineName, managedSourceSessionID, isPromptHistoryOnly,
+// plural and relativeDate now live in lib/conversationBrowser.ts: the browse
+// rows below the search box draw the same conversation row and must read a
+// path, a machine, a date and a resume target identically.
 
 // Adds one conversation's rollup rows together. Several Sessions runs can
 // continue the same conversation, and the user asked about the conversation.
@@ -1402,8 +1452,3 @@ function filterTitleSearchResumable(
   });
 }
 
-function relativeDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-}

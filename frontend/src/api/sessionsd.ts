@@ -687,6 +687,12 @@ export interface HistorySession {
   creator_id?: string;
   created_at: number;
   last_activity_at: number;
+  // When the conversation itself was last written to, read from the transcript
+  // rather than from the Sessions record. A shutdown sweep that drains a dozen
+  // finished runners moves every `last_activity_at` to the same instant without
+  // a word being said, so this is the field to order a browse by. Absent on
+  // records with no transcript behind them, and on daemons older than it.
+  conversation_updated_at?: number;
   message_count: number;
   conversation_available: boolean;
   external?: boolean;
@@ -697,11 +703,29 @@ export interface HistorySession {
   moved_to_session_id?: string;
   moved_from_endpoint?: string;
   moved_from_session_id?: string;
+  // One row that could not be read on this pass. The session is still listed,
+  // named and addressable — losing one file must never lose the conversation.
+  unreadable?: boolean;
+  unreadable_reason?: string;
+  skipped_records?: number;
 }
 
 export interface HistoryResponse {
   schemaVersion: number;
   sessions: HistorySession[];
+  unreadable_sessions?: number;
+  skipped_records?: number;
+  transcripts_unread?: boolean;
+}
+
+/** One machine's answer to "every conversation you have recorded". */
+export interface HistoryListing {
+  sessions: HistorySession[];
+  /** Rows the daemon listed but could not read. Always a count, never silence. */
+  unreadableSessions: number;
+  skippedRecords: number;
+  /** True on the cheap view, which stats transcripts without parsing them. */
+  transcriptsUnread: boolean;
 }
 
 export interface HistoryMessage {
@@ -760,6 +784,27 @@ export async function fetchServerHistory(
   const r = await serverFetch(server, `${httpBaseForServer(server)}/api/history?summary=true`, { signal });
   if (!r.ok) throw new Error(`Sessions history ${r.status}`);
   return (await json<HistoryResponse>(r)).sessions;
+}
+
+// The full listing, which is what a conversation browser needs and what
+// `sessions history` reads. `?summary=true` above deliberately stats each
+// transcript without parsing it, so on that view `message_count` is 0 for
+// every row — a browser built on it could neither show how big a conversation
+// is nor tell an empty shell from a real one. The daemon caches its per-file
+// counts by size and mtime, so the extra cost is paid once per changed file.
+export async function fetchServerHistoryListing(
+  server: ServerConfig,
+  signal?: AbortSignal
+): Promise<HistoryListing> {
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/history`, { signal });
+  if (!r.ok) throw new Error(`Sessions history ${r.status}`);
+  const body = await json<HistoryResponse>(r);
+  return {
+    sessions: body.sessions ?? [],
+    unreadableSessions: body.unreadable_sessions ?? 0,
+    skippedRecords: body.skipped_records ?? 0,
+    transcriptsUnread: body.transcripts_unread === true
+  };
 }
 
 export async function fetchServerHistoryTranscript(

@@ -842,6 +842,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         ) : effectiveLayout === 'search' ? (
           <SearchView
             onResumeConversation={continueExactConversation}
+            onOpenLiveSession={openFleetSession}
           />
         ) : effectiveLayout === 'usage' ? (
           <UsageDashboard />

@@ -44,7 +44,7 @@ export function MobileNav({
         <MobileDestination label="Home" icon={<HomeIcon />} active={layoutMode === 'home'} onClick={() => go('home')} />
         <MobileDestination label="Sessions" icon={<SessionsIcon />} active={layoutMode === 'tabs'} onClick={onShowSessions} detail={showingSessionDetail} />
         <MobileDestination label="Daily" icon={<DailyIcon />} active={layoutMode === 'today'} onClick={() => go('today')} />
-        <MobileDestination label="Search" icon={<SearchIcon />} active={layoutMode === 'search'} onClick={() => go('search')} />
+        <MobileDestination label="History" icon={<SearchIcon />} active={layoutMode === 'search'} onClick={() => go('search')} />
         <MobileDestination label="More" icon={<MoreIcon />} active={moreActive || moreOpen} onClick={() => setMoreOpen(true)} />
       </nav>
 
