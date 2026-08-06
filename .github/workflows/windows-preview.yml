@@ -57,21 +57,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Every `go test` below carries `-timeout`: without it each package
+          # inherits Go's 10-minute default, so one blocked receive burns ten
+          # minutes and two of them blow the 45-minute job cap — at which point
+          # the job is killed with no test output at all. On timeout Go dumps
+          # every goroutine's stack, which names the blocked receive.
           packages="$(go list ./... | grep -v -E '/internal/(interop|winconpty)$')"
-          go test ./internal/tokenstore -run '^TestWindowsTokenStore' -count=1
-          go test ./internal/state -run '^TestConfigFromEnvParityAndScratchIsolation$' -count=1
-          go test ./cmd/sessions -run '^TestTokenCommandPrintsDaemonToken$' -count=1
-          go test ./cmd/sessions -run '^TestWindowsScratchDaemonTokenContract$' -count=1
-          go test ./cmd/sessions -run '^TestWindowsRunnerProtocolReAdoption$' -count=1
-          go test ./internal/ipc -run '^TestWindowsNamedPipe' -count=1
-          go test ./cmd/sessions-runner -run '^TestWindowsConPTYContract$' -count=1
-          go test ./cmd/sessions-runner -run '^TestWaitChildSyncsLastEventBeforeExit$' -count=1
-          go test ./cmd/sessionsd -run 'Test(SupervisorStopEvent|PlatformStopEvent)'
+          go test -timeout 5m ./internal/tokenstore -run '^TestWindowsTokenStore' -count=1
+          go test -timeout 5m ./internal/state -run '^TestConfigFromEnvParityAndScratchIsolation$' -count=1
+          go test -timeout 5m ./cmd/sessions -run '^TestTokenCommandPrintsDaemonToken$' -count=1
+          go test -timeout 5m ./cmd/sessions -run '^TestWindowsScratchDaemonTokenContract$' -count=1
+          go test -timeout 5m ./cmd/sessions -run '^TestWindowsRunnerProtocolReAdoption$' -count=1
+          go test -timeout 5m ./internal/ipc -run '^TestWindowsNamedPipe' -count=1
+          go test -timeout 5m ./cmd/sessions-runner -run '^TestWindowsConPTYContract$' -count=1
+          go test -timeout 5m ./cmd/sessions-runner -run '^TestWaitChildSyncsLastEventBeforeExit$' -count=1
+          go test -timeout 5m ./cmd/sessionsd -run 'Test(SupervisorStopEvent|PlatformStopEvent)'
           # Compile every package and its test binary on Windows. The complete
           # behavior suite remains a required Unix gate; many of those tests
           # deliberately assert Unix mode bits, paths, and process semantics.
-          go test $packages -run '^$' -count=1
-          go test ./internal/winconpty -run '^$' -count=1
+          go test -timeout 5m $packages -run '^$' -count=1
+          go test -timeout 5m ./internal/winconpty -run '^$' -count=1
           go vet $packages
           # HPCON is a pointer-shaped Windows handle. The Win32 attribute API
           # requires its value directly as lpValue; isolate that unavoidable

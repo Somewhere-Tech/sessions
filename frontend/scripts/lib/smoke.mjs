@@ -14,7 +14,123 @@
 //
 // This module gives every wait a sentence and every timeout a snapshot of the
 // page it was waiting on. It changes no assertion and relaxes no timeout.
+//
+// It also removes the one shared mutable input the gate had — see
+// stableDistSnapshot, which is where the reproducible flake actually lived.
+import { cp, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { inspect } from 'node:util';
+
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+/**
+ * A deadline for a teardown step that must not become a hang.
+ *
+ * The obvious spelling — `Promise.race([close(), delay(5_000)])` — is a trap:
+ * when `close()` wins, the timer is still pending and still referenced, so node
+ * cannot exit until it fires. That silently adds the full deadline to every
+ * *passing* run. It was costing this gate five seconds per suite it was used
+ * in. Unref the timer: it still fires if the loop is otherwise alive (which it
+ * is, when something is genuinely wedged) and never delays a clean exit.
+ */
+function withDeadline(promise, milliseconds) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => {
+      const timer = setTimeout(resolve, milliseconds);
+      timer.unref?.();
+    })
+  ]);
+}
+
+/**
+ * Close a puppeteer browser without ever waiting forever for it. A wedged
+ * Chromium must not turn a finished suite into a silent hang.
+ */
+export async function closeBrowser(browser, milliseconds = 5_000) {
+  if (!browser) return;
+  const child = browser.process();
+  await withDeadline(browser.close().catch(() => {}), milliseconds);
+  if (child && child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+  }
+}
+
+/**
+ * Close an http.Server without waiting on sockets the browser may not have
+ * released. `server.close()` alone does not return until every connection is
+ * gone, which is how a passing suite became a hang.
+ */
+export async function closeServer(server, milliseconds = 5_000) {
+  if (!server) return;
+  server.closeAllConnections?.();
+  await withDeadline(new Promise((resolve) => server.close(resolve)), milliseconds);
+}
+
+/**
+ * An immutable copy of `frontend/dist` for a suite to serve.
+ *
+ * Three suites (window-scope, same-origin-bootstrap, native-credentials) serve
+ * the real build over a static server and drive it with puppeteer. They used to
+ * serve `frontend/dist` directly, which makes a shared, mutable directory an
+ * input to the gate — and `vite build` *empties* dist before it rewrites it.
+ * So any concurrent build on the machine (another agent, a watch task, a second
+ * checkout's `npm run build`) pulls the app out from under a running suite.
+ *
+ * This is reproducible and it is not subtle. Running `vite build` in a loop
+ * beside these three suites failed 4 of ~9 suite runs, in two shapes:
+ *
+ *   - dist gone at start-up: "frontend/dist is missing" (at least legible);
+ *   - dist emptied mid-run: every asset request 404s, the app never mounts,
+ *     and the suite dies on a selector wait — which reads exactly like a slow
+ *     machine and is why re-running "fixes" it.
+ *
+ * A copy costs ~1.5 MB and a few milliseconds, and removes the shared input
+ * entirely. It asserts nothing less than before: the same real build, read from
+ * somewhere nobody else is writing.
+ *
+ * The copy itself can catch dist mid-rewrite, so the snapshot is verified
+ * complete — index.html plus every local asset it references — and retried.
+ */
+export async function stableDistSnapshot(label, { attempts = 6 } = {}) {
+  const dist = fileURLToPath(new URL('../../dist/', import.meta.url));
+  let problem = 'unknown';
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let target;
+    try {
+      await stat(join(dist, 'index.html'));
+      target = await mkdtemp(join(tmpdir(), `sessions-dist-${label}-`));
+      await cp(dist, target, { recursive: true });
+      const html = await readFile(join(target, 'index.html'), 'utf8');
+      const referenced = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g)].map((match) => match[1]);
+      const missing = [];
+      for (const reference of referenced) {
+        try {
+          await stat(join(target, reference.replace(/^\/+/, '')));
+        } catch {
+          missing.push(reference);
+        }
+      }
+      if (missing.length === 0) return target;
+      problem = `index.html referenced assets that were not in dist: ${missing.join(', ')}`;
+    } catch (error) {
+      problem = error.message;
+    }
+    if (target) await rm(target, { recursive: true, force: true });
+    // A build is mid-flight. Wait for it to finish rather than reading a
+    // half-written tree; the retry budget below is what turns "someone is
+    // building forever" into a failure with a reason.
+    await delay(1_000);
+  }
+  throw new Error(
+    `${label}: could not take a consistent snapshot of frontend/dist after ${attempts} attempts.\n`
+    + `Last problem: ${problem}\n`
+    + 'Either the build has not been run (npm --prefix frontend run build), or something '
+    + 'is rewriting frontend/dist continuously while this suite tries to read it.'
+  );
+}
 
 const isTimeout = (error) => Boolean(error)
   && (error.name === 'TimeoutError' || /timed? ?out|exceeded/i.test(error.message ?? ''));
@@ -65,7 +181,10 @@ async function describePage(page) {
           ).slice(0, 25),
           bodyText: trim(document.body?.innerText)
         };
-      }),
+      // The race below can finish first, leaving this promise to settle with
+      // nobody listening. Swallow it here: an unhandled rejection from the
+      // diagnostic would replace the real failure report with its own.
+      }).catch((error) => ({ note: `page digest failed: ${error.message}` })),
       new Promise((resolve) => setTimeout(() => resolve({ note: 'page did not answer the digest probe' }), 3_000))
     ]);
     return digest;

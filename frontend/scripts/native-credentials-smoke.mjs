@@ -1,17 +1,20 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { rm } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
-import { smoke } from './lib/smoke.mjs';
+import { smoke, stableDistSnapshot, closeBrowser, closeServer } from './lib/smoke.mjs';
 
 const t = smoke('native-credentials');
 const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const distDir = path.join(frontendDir, 'dist');
-if (!fs.existsSync(path.join(distDir, 'index.html'))) {
-  throw new Error('frontend/dist is missing; run npm --prefix frontend run build first');
-}
+// The suites below serve the real build. They serve a private snapshot of it
+// rather than frontend/dist itself: `vite build` empties dist before rewriting
+// it, so any concurrent build on the machine used to yank the app out from
+// under a running suite — dist missing at start-up, or every asset 404ing
+// mid-run, which reads exactly like a slow machine. See stableDistSnapshot.
+const distDir = await stableDistSnapshot('native-credentials');
 
 const contentTypes = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -241,17 +244,8 @@ try {
   // Both of these used to be unbounded. `server.close()` waits for every socket
   // the browser may not have released yet, so a finished suite could hang with
   // nothing to report. A gate must fail, never wait.
-  const browserProcess = browser.process();
-  await Promise.race([
-    browser.close().catch(() => {}),
-    new Promise((resolve) => setTimeout(resolve, 5_000))
-  ]);
-  if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
-    browserProcess.kill('SIGKILL');
-  }
-  server.closeAllConnections?.();
-  await Promise.race([
-    new Promise((resolve) => server.close(resolve)),
-    new Promise((resolve) => setTimeout(resolve, 5_000))
-  ]);
+  await closeBrowser(browser);
+  await closeServer(server);
+  // The dist snapshot is this suite's private copy; nothing else will remove it.
+  await rm(distDir, { recursive: true, force: true });
 }

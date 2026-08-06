@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer';
+import { closeBrowser } from './lib/smoke.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const [app, palette, picker, launcher, sessionView, preference, sidebar, navigator, fleetSessions, styles] = await Promise.all([
@@ -199,7 +200,10 @@ try {
   assert.ok(navigatorBounds.filtersBottom <= navigatorBounds.treeTop, 'status filters must remain above the scrollable tree');
   assert.ok(navigatorBounds.treeHeight > 0, 'the session tree must absorb remaining height instead of shrinking controls');
 } finally {
-  await browser.close();
+  // Bounded: `browser.close()` waits on the browser's own shutdown, and a
+  // wedged Chromium on a loaded machine turns a finished suite into a hang with
+  // no assertion to report. Fail, never wait.
+  await closeBrowser(browser);
 }
 
 console.log('Sessions workspace UX smoke: ok');

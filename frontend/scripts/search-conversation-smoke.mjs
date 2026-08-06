@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
+import { closeBrowser } from './lib/smoke.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const [searchView, searchAPI, app, styles] = await Promise.all([
@@ -216,7 +217,10 @@ try {
     assert.ok(readerGeometry.transcriptBottom <= readerGeometry.viewportHeight, 'reader should keep its transcript inside the window');
     assert.ok(readerGeometry.chromeTop >= 0, 'reader controls should remain inside the visible window');
   } finally {
-    await browser.close();
+    // Bounded: `browser.close()` waits on the browser's own shutdown, and a
+    // wedged Chromium on a loaded machine turns a finished suite into a hang with
+    // no assertion to report. Fail, never wait.
+    await closeBrowser(browser);
   }
 } finally {
   await rm(scratch, { recursive: true, force: true });

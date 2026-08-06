@@ -1,18 +1,21 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { rm } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
-import { smoke } from './lib/smoke.mjs';
+import { smoke, stableDistSnapshot, closeBrowser, closeServer } from './lib/smoke.mjs';
 
 const t = smoke('window-scope');
 const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const distDir = path.join(frontendDir, 'dist');
 const appSource = fs.readFileSync(path.join(frontendDir, 'src', 'App.tsx'), 'utf8');
-if (!fs.existsSync(path.join(distDir, 'index.html'))) {
-  throw new Error('frontend/dist is missing; run npx vite build first');
-}
+// The suites below serve the real build. They serve a private snapshot of it
+// rather than frontend/dist itself: `vite build` empties dist before rewriting
+// it, so any concurrent build on the machine used to yank the app out from
+// under a running suite — dist missing at start-up, or every asset 404ing
+// mid-run, which reads exactly like a slow machine. See stableDistSnapshot.
+const distDir = await stableDistSnapshot('window-scope');
 
 const sessions = [
   {
@@ -346,23 +349,8 @@ try {
   // Three servers and a browser, all closed with unbounded awaits. Any one
   // socket the browser had not released turned a finished suite into a silent
   // hang; bound every one of them.
-  const browserProcess = browser.process();
-  await Promise.race([
-    browser.close().catch(() => {}),
-    new Promise((resolve) => setTimeout(resolve, 5_000))
-  ]);
-  if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
-    browserProcess.kill('SIGKILL');
-  }
-  for (const closing of [uiServer, primary.server, scoped.server]) {
-    closing.closeAllConnections?.();
-  }
-  await Promise.race([
-    Promise.all([
-      new Promise((resolve) => uiServer.close(resolve)),
-      new Promise((resolve) => primary.server.close(resolve)),
-      new Promise((resolve) => scoped.server.close(resolve))
-    ]),
-    new Promise((resolve) => setTimeout(resolve, 5_000))
-  ]);
+  await closeBrowser(browser);
+  await Promise.all([uiServer, primary.server, scoped.server].map((s) => closeServer(s)));
+  // The dist snapshot is this suite's private copy; nothing else will remove it.
+  await rm(distDir, { recursive: true, force: true });
 }

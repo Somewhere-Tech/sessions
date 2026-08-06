@@ -25,7 +25,7 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
-import { smoke } from './lib/smoke.mjs';
+import { smoke, closeBrowser, closeServer } from './lib/smoke.mjs';
 
 const t = smoke('conversation-browser');
 const work = await mkdtemp(join(tmpdir(), 'sessions-conversation-browser-'));
@@ -34,7 +34,6 @@ const screenshot = process.env.CONVERSATION_BROWSER_SCREENSHOT || join(work, 'co
 let browser;
 let server;
 
-const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 try {
   await build({
@@ -373,16 +372,12 @@ localStorage.removeItem('sessions:search-state:v3');
   t.pass(`conversation-browser smoke passed${process.env.CONVERSATION_BROWSER_SCREENSHOT ? `: ${screenshot}` : ''}`);
 } finally {
   t.release();
-  if (browser) {
-    const browserProcess = browser.process();
-    await Promise.race([browser.close().catch(() => {}), delay(3_000)]);
-    if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
-      browserProcess.kill('SIGKILL');
-    }
-  }
-  if (server) {
-    server.closeAllConnections?.();
-    await Promise.race([new Promise((resolve) => server.close(resolve)), delay(3_000)]);
-  }
+  // Both of these are deadline-bounded so a wedged browser or an unreleased
+  // socket fails instead of hanging — and the deadline timers are unref'd, so
+  // a clean shutdown exits immediately instead of paying the deadline. The
+  // straightforward `Promise.race([close(), delay(3_000)])` this replaces was
+  // costing three seconds on every passing run of every suite that used it.
+  await closeBrowser(browser, 3_000);
+  await closeServer(server, 3_000);
   if (!process.env.CONVERSATION_BROWSER_SCREENSHOT) await rm(work, { recursive: true, force: true });
 }

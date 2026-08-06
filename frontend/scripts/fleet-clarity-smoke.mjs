@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer';
+import { closeBrowser } from './lib/smoke.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const [fleet, servers, api, styles, status] = await Promise.all([
@@ -137,7 +138,10 @@ try {
   assert.equal(layout.windowsPlatformMark, 'Windows');
   assert.ok(layout.windowsCardOverflow <= 0, `Windows machine card overflowed by ${layout.windowsCardOverflow}px`);
 } finally {
-  await browser.close();
+  // Bounded: `browser.close()` waits on the browser's own shutdown, and a
+  // wedged Chromium on a loaded machine turns a finished suite into a hang with
+  // no assertion to report. Fail, never wait.
+  await closeBrowser(browser);
 }
 
 console.log('fleet clarity smoke: ok');

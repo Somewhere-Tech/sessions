@@ -42,6 +42,62 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Under `set -e` a bare `[[ ... ]]` or `grep -q` ends the script with exit 1 and
+# no sentence. The cleanup trap then prints two process logs and leaves the
+# reader to work out which of the twenty checks above produced them. `require`
+# makes each check say what it was checking.
+require() {
+  local description="$1"; shift
+  if ! "$@"; then
+    echo "interop: FAILED — $description" >&2
+    echo "interop: the check that failed was: $*" >&2
+    return 1
+  fi
+}
+
+# Every poll in this script was `for _ in $(seq 1 100); sleep 0.05` — bounded,
+# so it could not hang, but silent when it ran out. `await` keeps the bound and
+# adds the sentence, so "the runner never published its socket" is not reported
+# as "line 123".
+#
+# The budgets are wall-clock seconds where the originals counted attempts. 100
+# attempts each also paid a curl round-trip, so on a loaded machine they waited
+# well past five seconds; the 15s deadlines below are chosen to be no stricter
+# than what they replace. Naming a failure must not create new ones.
+await() {
+  local description="$1" seconds="$2"; shift 2
+  local deadline=$((SECONDS + seconds))
+  while ((SECONDS < deadline)); do
+    if "$@"; then return 0; fi
+    sleep 0.05
+  done
+  echo "interop: TIMED OUT after ${seconds}s waiting for $description" >&2
+  echo "interop: the condition that never became true was: $*" >&2
+  return 1
+}
+
+# `wait` on a process that ignores the signal it was sent blocks forever. That
+# turns a failing interop run into a hung one, which is strictly worse: a hang
+# has no exit code to report and no log to read. Bound it, and say so.
+# AWAIT_EXIT_STATUS carries the waited process's own exit status, which the
+# script reports; the function's return value is only whether it exited in time.
+AWAIT_EXIT_STATUS=0
+await_exit() {
+  local pid="$1" description="$2" seconds="$3"
+  local deadline=$((SECONDS + seconds))
+  while ((SECONDS < deadline)); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      set +e; wait "$pid" 2>/dev/null; AWAIT_EXIT_STATUS=$?; set -e
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "interop: TIMED OUT after ${seconds}s waiting for $description (pid $pid) to exit" >&2
+  kill -KILL "$pid" 2>/dev/null || true
+  set +e; wait "$pid" 2>/dev/null; AWAIT_EXIT_STATUS=$?; set -e
+  return 1
+}
+
 # `lsof` missing or failing must never be read as "the port is free": the next
 # thing this script does is `rm -rf` fixed state directories, and doing that
 # while a previous run's daemon/runner is still live destroys its state out from
@@ -116,11 +172,9 @@ env -i \
 runner_pid=$!
 echo "runner_pid=$runner_pid"
 
-for _ in $(seq 1 100); do
-  [[ -S "$STATE/$id.sock" && -f "$STATE/$id.json" && -f "$STATE/$id.events" && -f "$STATE/$id.log" ]] && break
-  sleep 0.05
-done
-[[ -S "$STATE/$id.sock" ]]
+await 'the Go runner to publish its socket, record, event log and output log' 15 \
+  test -S "$STATE/$id.sock" -a -f "$STATE/$id.json" -a -f "$STATE/$id.events" -a -f "$STATE/$id.log"
+require 'the runner control socket to exist' test -S "$STATE/$id.sock"
 echo '$ ls -l /tmp/gorunner-state'
 ls -l "$STATE"
 
@@ -135,11 +189,10 @@ env -i \
 daemon_pid=$!
 echo "daemon_pid=$daemon_pid"
 
-for _ in $(seq 1 100); do
-  curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break
-  sleep 0.05
-done
-curl -fsS "http://127.0.0.1:$PORT/api/health"
+daemon_healthy() { curl -fsS --max-time 2 "http://127.0.0.1:$PORT/api/health" -o /dev/null 2>/dev/null; }
+await 'the TypeScript daemon to answer /api/health' 15 daemon_healthy
+require 'the daemon health endpoint to answer' \
+  curl -fsS --max-time 5 "http://127.0.0.1:$PORT/api/health"
 echo
 
 # The protected request creates an auth token under SCRATCH_HOME only.
@@ -148,16 +201,15 @@ token=$(tr -d '\r\n' <"$SCRATCH_HOME/.local/state/pretty-PTY/token")
 auth="Authorization: Bearer $token"
 
 sessions=
-for _ in $(seq 1 100); do
-  sessions=$(curl -fsS -H "$auth" "http://127.0.0.1:$PORT/api/sessions")
-  if /opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id && !s.exited) ? 0 : 1)' "$sessions" "$id"; then
-    break
-  fi
-  sleep 0.05
-done
+live_session_visible() {
+  sessions=$(curl -fsS --max-time 5 -H "$auth" "http://127.0.0.1:$PORT/api/sessions") || return 1
+  /opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id && !s.exited) ? 0 : 1)' "$sessions" "$id"
+}
+await "the TypeScript daemon to discover the Go runner's session $id as live" 15 live_session_visible
 echo '$ curl -H "Authorization: Bearer <scratch-token>" http://127.0.0.1:8898/api/sessions'
 echo "$sessions"
-/opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id && !s.exited) ? 0 : 1)' "$sessions" "$id"
+require 'the daemon to list the Go runner session as live' \
+  /opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id && !s.exited) ? 0 : 1)' "$sessions" "$id"
 
 echo '$ curl -X POST .../api/sessions/<id>/input --data {"data":"echo INTEROP_<random>\\r"}'
 input_result=$(curl -fsS -H "$auth" -H 'Content-Type: application/json' \
@@ -166,14 +218,15 @@ input_result=$(curl -fsS -H "$auth" -H 'Content-Type: application/json' \
 echo "$input_result"
 
 snapshot=/tmp/gorunner-snapshot.txt
-for _ in $(seq 1 100); do
-  curl -fsS -H "$auth" "http://127.0.0.1:$PORT/api/sessions/$id/snapshot" >"$snapshot"
-  grep -Fq "$marker" "$snapshot" && break
-  sleep 0.05
-done
+marker_in_snapshot() {
+  curl -fsS --max-time 5 -H "$auth" "http://127.0.0.1:$PORT/api/sessions/$id/snapshot" >"$snapshot" || return 1
+  grep -Fq "$marker" "$snapshot"
+}
+await "the echoed marker $marker to appear in the session snapshot" 15 marker_in_snapshot
 echo '$ curl .../snapshot | grep -o "INTEROP_[0-9]*" | tail -1'
 grep -ao 'INTEROP_[0-9]*' "$snapshot" | tail -1
-grep -Fq "$marker" "$snapshot"
+require "the snapshot to contain the marker $marker the shell was asked to echo" \
+  grep -Fq "$marker" "$snapshot"
 
 echo '$ existing TypeScript PersistentLog.restoreFrom(<go-events-file>)'
 MODULE="$ROOT/runtime/testdata/node-runtime/dist/persistentLog.js" EVENTS="$STATE/$id.events" MARKER="$marker" \
@@ -187,10 +240,10 @@ MODULE="$ROOT/runtime/testdata/node-runtime/dist/persistentLog.js" EVENTS="$STAT
 
 echo '$ kill -TERM <daemon-pid>; test -S /tmp/gorunner-state/<id>.sock'
 kill -TERM "$daemon_pid"
-wait "$daemon_pid"
+await_exit "$daemon_pid" 'the TypeScript daemon' 15
 daemon_pid=
-kill -0 "$runner_pid"
-test -S "$STATE/$id.sock"
+require 'the Go runner to survive the daemon disconnect' kill -0 "$runner_pid"
+require 'the runner control socket to survive the daemon disconnect' test -S "$STATE/$id.sock"
 echo 'runner_survived_daemon_disconnect=yes'
 
 echo '$ restart the same isolated TS daemon and rediscover the runner'
@@ -202,17 +255,17 @@ env -i \
   PRETTYD_PORT="$PORT" \
   /opt/homebrew/bin/node "$ROOT/runtime/testdata/node-runtime/dist/server.js" >"$DAEMON_OUT" 2>&1 &
 daemon_pid=$!
-for _ in $(seq 1 100); do
-  sessions=$(curl -fsS -H "$auth" "http://127.0.0.1:$PORT/api/sessions" 2>/dev/null || true)
-  if /opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); try { process.exit(JSON.parse(j).sessions.some(s => s.id === id && !s.exited) ? 0 : 1) } catch { process.exit(1) }' "$sessions" "$id"; then
-    break
-  fi
-  sleep 0.05
-done
+rediscovered() {
+  sessions=$(curl -fsS --max-time 5 -H "$auth" "http://127.0.0.1:$PORT/api/sessions" 2>/dev/null || true)
+  /opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); try { process.exit(JSON.parse(j).sessions.some(s => s.id === id && !s.exited) ? 0 : 1) } catch { process.exit(1) }' "$sessions" "$id"
+}
+await 'the restarted daemon to rediscover the surviving runner' 15 rediscovered
 echo "sessions_after_reattach=$sessions"
-/opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id && !s.exited) ? 0 : 1)' "$sessions" "$id"
-curl -fsS -H "$auth" "http://127.0.0.1:$PORT/api/sessions/$id/snapshot" >"$snapshot"
-grep -Fq "$marker" "$snapshot"
+require 'the restarted daemon to list the surviving runner as live' \
+  /opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id && !s.exited) ? 0 : 1)' "$sessions" "$id"
+curl -fsS --max-time 10 -H "$auth" "http://127.0.0.1:$PORT/api/sessions/$id/snapshot" >"$snapshot"
+require 'the snapshot to replay the pre-disconnect marker after reattach' \
+  grep -Fq "$marker" "$snapshot"
 echo "snapshot_replay_after_reattach=$marker"
 
 echo '$ curl -X DELETE .../api/sessions/<id>'
@@ -220,41 +273,36 @@ kill_result=$(curl -fsS -H "$auth" -X DELETE "http://127.0.0.1:$PORT/api/session
 echo "$kill_result"
 
 exited=
-for _ in $(seq 1 100); do
-  exited=$(curl -fsS -H "$auth" "http://127.0.0.1:$PORT/api/sessions?include_exited=1")
-  if /opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id && s.exited) ? 0 : 1)' "$exited" "$id"; then
-    break
-  fi
-  sleep 0.05
-done
+exit_recorded() {
+  exited=$(curl -fsS --max-time 5 -H "$auth" "http://127.0.0.1:$PORT/api/sessions?include_exited=1") || return 1
+  /opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id && s.exited) ? 0 : 1)' "$exited" "$id"
+}
+await 'the deleted session to appear in the exited list' 15 exit_recorded
 echo "exit_record=$exited"
-/opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id && s.exited) ? 0 : 1)' "$exited" "$id"
+require 'the exited session to carry an exit record' \
+  /opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id && s.exited) ? 0 : 1)' "$exited" "$id"
 
-for _ in $(seq 1 100); do
-  sessions=$(curl -fsS -H "$auth" "http://127.0.0.1:$PORT/api/sessions")
-  if ! /opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id) ? 0 : 1)' "$sessions" "$id"; then
-    break
-  fi
-  sleep 0.05
-done
+dropped_from_live_list() {
+  sessions=$(curl -fsS --max-time 5 -H "$auth" "http://127.0.0.1:$PORT/api/sessions") || return 1
+  ! /opt/homebrew/bin/node -e 'const [j,id]=process.argv.slice(1); process.exit(JSON.parse(j).sessions.some(s => s.id === id) ? 0 : 1)' "$sessions" "$id"
+}
+await 'the killed session to drop out of the live session list' 15 dropped_from_live_list
 echo "sessions_after_kill=$sessions"
 
 # runner.ts keeps an exited runner for a 30 second reconnect grace. Prove the
 # matching Go lifecycle eventually removes its live state while retaining log.
-for _ in $(seq 1 350); do
-  kill -0 "$runner_pid" 2>/dev/null || break
-  sleep 0.1
-done
-set +e
-wait "$runner_pid"
-runner_status=$?
-set -e
+# `wait` here used to be unbounded: if the runner never exited, the script
+# stopped forever with nothing printed. Bound it, name it, and kill it so the
+# run ends with a reportable failure instead of a hang.
+await_exit "$runner_pid" 'the Go runner to exit after its reconnect grace' 40
+runner_status=$AWAIT_EXIT_STATUS
 runner_pid=
 echo "runner_exit_status=$runner_status"
 echo '$ find /tmp/gorunner-state -maxdepth 1 -type f -o -type s'
 find "$STATE" -maxdepth 1 \( -type f -o -type s \) -print | sort
-[[ -f "$STATE/$id.log" ]]
-[[ ! -e "$STATE/$id.sock" && ! -e "$STATE/$id.json" && ! -e "$STATE/$id.events" ]]
+require 'the output log to be retained after the runner exits' test -f "$STATE/$id.log"
+require 'the live-state files (socket, record, events) to be removed after the runner exits' \
+  test ! -e "$STATE/$id.sock" -a ! -e "$STATE/$id.json" -a ! -e "$STATE/$id.events"
 
 echo '$ tail -n 5 /tmp/gorunner-daemon.out'
 tail -n 5 "$DAEMON_OUT"

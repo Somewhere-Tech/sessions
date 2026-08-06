@@ -67,7 +67,14 @@ const NOT_IN_GATE = {
     + '(SESSIONS_WEBAPP_URL / SESSIONS_ENDPOINT), so it cannot run unattended here'
 };
 
-const SUITE_TIMEOUT_MS = Number(process.env.SMOKE_SUITE_TIMEOUT_MS ?? 180_000);
+// Two bounds guard a hung suite, and the order matters. lib/smoke.mjs arms an
+// in-process watchdog at SMOKE_SUITE_TIMEOUT_MS; it knows which scenario the
+// suite was in, so it must get to speak first. This external bound is the
+// backstop for the cases the in-process one cannot cover — a suite that never
+// reached `smoke()`, or one wedged somewhere the event loop cannot run — so it
+// is deliberately a little later, and it kills the whole process group.
+const SUITE_WATCHDOG_MS = Number(process.env.SMOKE_SUITE_TIMEOUT_MS ?? 180_000);
+const SUITE_TIMEOUT_MS = SUITE_WATCHDOG_MS + 20_000;
 const TOTAL_TIMEOUT_MS = Number(process.env.SMOKE_TOTAL_TIMEOUT_MS ?? 20 * 60_000);
 const TAIL_LINES = Number(process.env.SMOKE_TAIL_LINES ?? 40);
 

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
+import { closeBrowser } from './lib/smoke.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const mux = await source('src/lib/wsMux.ts');
@@ -336,7 +337,10 @@ try {
   assert.ok(jumpBounds.jumpBottom <= jumpBounds.bodyBottom, 'jump-to-latest button must stay inside the history viewport');
   assert.ok(jumpBounds.jumpRight <= jumpBounds.bodyRight, 'jump-to-latest button must stay inside the history viewport');
 } finally {
-  await browser.close();
+  // Bounded: `browser.close()` waits on the browser's own shutdown, and a
+  // wedged Chromium on a loaded machine turns a finished suite into a hang with
+  // no assertion to report. Fail, never wait.
+  await closeBrowser(browser);
 }
 
 const scratch = await mkdtemp(join(tmpdir(), 'sessions-mode-smoke-'));

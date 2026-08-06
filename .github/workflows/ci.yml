@@ -97,10 +97,13 @@ jobs:
           set -euo pipefail
           export GOOS=windows GOARCH=amd64
           go build ./...
-          # Test files are where GOOS-specific code most often rots unnoticed,
-          # because `go build` never looks at them. `-run '^$'` compiles every
-          # test binary and runs nothing.
-          go test -run '^$' -count=1 ./...
+          # Test files are where GOOS-specific code rots unnoticed, because
+          # `go build` never looks at them. `go test -c` cross-compiles and links
+          # each test binary without running it — which is the only option here,
+          # since a windows/amd64 .exe cannot execute on the macOS runner.
+          for package in $(go list ./...); do
+            go test -c -o /dev/null "$package"
+          done
           packages="$(go list ./... | grep -v -E '/internal/winconpty$')"
           go vet $packages
           # HPCON is a pointer-shaped Windows handle and the Win32 attribute API
@@ -113,12 +116,36 @@ jobs:
           bash runtime/scripts/gen-cli-docs.sh
           git diff --exit-code -- docs/CLI.md
 
-      - name: Verify frontend
-        run: |
-          npm --prefix frontend run typecheck
-          npm --prefix frontend run lint
-          npm --prefix frontend run build
-          npm --prefix frontend run test:smoke
+      # Split from one four-command step into four, so the GitHub UI names the
+      # thing that failed instead of showing a red "Verify frontend" whose cause
+      # is somewhere in a scrolled-off log.
+      - name: Typecheck frontend
+        run: npm --prefix frontend run typecheck
+
+      - name: Lint frontend
+        run: npm --prefix frontend run lint
+
+      - name: Build frontend
+        run: npm --prefix frontend run build
+
+      # scripts/run-smoke.mjs runs the suites sequentially, bounds each one so a
+      # hang fails instead of eating the job budget, and prints which suite and
+      # which scenario failed. It also refuses to start if package.json declares
+      # a `test:*` script that is in neither the gate nor its documented
+      # exclusions — that is how a new smoke suite stays gated.
+      - name: Verify frontend smoke suites
+        run: npm --prefix frontend run test:smoke
+
+      # The native shell had no lint gate at all — `cargo test` compiles it and
+      # nothing reads it. Clippy passes clean on this tree today, so `-D warnings`
+      # can be enforced from the first run rather than kept as an aspiration.
+      #
+      # Cost: a full check pass over the dependency graph (576 crates). Measured
+      # cold at 51 s wall / 2 m 38 s CPU on an 11-core arm64 box; expect roughly
+      # 2–4 min on the 3-core macos-14 runner, which has no Rust cache. It runs
+      # before `cargo test` so a lint failure costs a check pass, not a build.
+      - name: Lint native shell
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
       - name: Verify native shell
         run: cargo test --manifest-path src-tauri/Cargo.toml
