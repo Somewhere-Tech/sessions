@@ -23,8 +23,11 @@ What this gives an agent that a plain terminal does not:
   Conversations outlive     Providers prune their own transcripts on a timer.
   the provider.             Sessions keeps its own copy, so `cat`, `search`,
                             and `resume` still work after they do.
-  You can ask what you      `search` reaches every recorded conversation on
-  already did.              this machine, not only the live ones.
+  You can find what you     `history` browses every recorded Claude and Codex
+  already did.              conversation, on any machine and whatever
+                            directory you started it in — which neither
+                            provider's own resume picker can do — and
+                            `search` reads inside them.
   Agents can hand off.      A Claude session can drive a Codex one and back;
                             `send --from` records who asked.
 
@@ -52,8 +55,9 @@ Daily workflows:
   ask                      send, wait, and print the reply
   wait                     wait for session idle, lane exit, or a fan-out join
   last                     print recent conversation or lane output
+  history (conversations)  browse and preview every past conversation
   grep                     search every approved machine
-  search                   search normalized session chat history
+  search                   search inside recorded conversations
   usage                    report local Claude and Codex token usage
   status                   show a compact session status card
   kill                     terminate sessions or lanes
@@ -367,6 +371,8 @@ Two independent axes decide what comes back, and they are easy to confuse. State
 
 ls lists interactive sessions only. A lane created by `sessions run` never appears here, in any state. Reach it with `sessions lanes`, `sessions ls --kind lane`, or `sessions list -a`, which is the single view of every session and lane in every state.
 
+ls lists sessions Sessions created, and only those. A conversation you started by running plain `claude` or `codex` yourself is recorded but never appears here, so this is not the place to look for one. `sessions history` browses every Claude and Codex conversation on the machine, whoever started it.
+
 Examples:
   sessions ls
   sessions ls -a
@@ -391,7 +397,7 @@ List agent sessions and headless lanes together. --mine follows SESSIONS_OWNER_I
 
 State: ended sessions and exited lanes are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's records and changes nothing about which states are shown.
 
-`sessions list -a` is the one command that answers "show me everything": every agent session and every retained lane, live or ended, in a single table with a TYPE column. Use it when a lane you dispatched with `sessions run` is not where you expected to find it — ls never lists lanes, and a lane drops out of the default list view as soon as it exits.
+`sessions list -a` is the one command that answers "show me every session Sessions created": every agent session and every retained lane, live or ended, in a single table with a TYPE column. It does not reach conversations Sessions did not create — for those, and for reopening any past conversation, use `sessions history`. Use it when a lane you dispatched with `sessions run` is not where you expected to find it — ls never lists lanes, and a lane drops out of the default list view as soon as it exits.
 
 Examples:
   sessions
@@ -510,6 +516,35 @@ Examples:
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
+## `sessions history`
+
+```text
+Usage:
+  sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [-n N] [--all] [--json]
+
+browse and preview every past conversation
+
+Browse every Claude and Codex conversation recorded on this machine and every approved machine, newest first, without having to remember which directory you started it in. This is the view neither provider has: `claude --resume` only offers conversations belonging to the directory you are standing in and its git worktrees, and Codex's own picker filters by working directory too, so a conversation you started somewhere else is effectively lost. Sessions resolves conversation ids fleet-wide, so every row here can be reopened from anywhere.
+
+Browsing needs no search term. `sessions history --since today --tool codex` answers "what did I have open today", and any single narrowing option is enough on its own. WHEN accepts today, yesterday, a span like 3d, 6h or 2w, YYYY-MM-DD, or RFC3339. Give a QUERY as the first argument to keep only conversations whose text matched it; matching uses the same ranked engine as `sessions search`, but the unit here is the conversation rather than the message, and rows stay newest-first.
+
+Every row carries what it takes to recognise a conversation a week later — when it was last active, which provider, the working directory, its name derived from the opening message, and how many messages are in it — followed by the exact command that brings it back, runnable from any directory. That command is the one that actually works for that row, following the same discipline as `sessions recover`: `sessions resume` for a conversation Sessions can reopen, including one whose provider deleted its own transcript and which comes back from Sessions' copy; `sessions attach` for a conversation that is still running, which resume would refuse; and no command at all, with the reason, for one that neither the provider nor Sessions still holds.
+
+--preview prints the last few exchanges of each row so a candidate can be read before it is reopened. It reads the same stored conversation `sessions cat` prints, creates nothing, and marks nothing. It also narrows the page to five rows unless -n says otherwise, because previews are long.
+
+The default view is conversations you could plausibly return to: Claude and Codex, with messages in them, still readable. --all adds empty, shell, and unrecoverable records. The number that matched and the number recorded are always printed, so a narrowed view is never mistaken for an empty history. An approved machine that does not answer in time leaves a partial-result warning rather than silently dropping its conversations.
+
+Examples:
+  sessions history
+  sessions history --since today --tool codex
+  sessions history --preview -n 3
+  sessions history 'sessions hardening' --tool codex
+  sessions history --cwd . --since 1w
+  sessions --json history --since yesterday
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
 ## `sessions grep`
 
 ```text
@@ -534,9 +569,9 @@ Examples:
 Usage:
   sessions search <query> [--session ID[,ID...]] [--role user|assistant|tool] [--tool claude|codex|shell] [--name GLOB | --lane GLOB] [--cwd PATH] [--since DATE] [--until DATE] [--context N] [--timeline] [-n N] [--exact | --regex | --ranked] [--json]
 
-search normalized session chat history
+search inside recorded conversations
 
-Search chat history across every live and persisted session on this machine and every approved machine by default. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --lane is an accepted alias of --name; supplying both is refused. --timeline merges matching moments chronologically. Use global --machine or --host before the command to search only one daemon.
+Search chat history across every live and persisted session on this machine and every approved machine by default. The unit of an answer here is the message. To find a conversation rather than a moment inside one — including with no search term at all, by time, provider, or directory — use `sessions history`, which lists conversations newest-first with the command that reopens each one. Ranked token recall is the default: bare words are alternatives, quoted phrases stay exact, boolean AND/OR/NOT and near(a,b,N) are supported, and results include a stable content-derived message bookmark plus optional surrounding turns. --exact uses a case-insensitive contiguous substring; --regex uses a Go regular expression. Filter to real user requests, agent replies, or typed delegation/handoff/automation/status operations with --role; scope by sessions, lane-name glob, workspace, provider, and date. --lane is an accepted alias of --name; supplying both is refused. --timeline merges matching moments chronologically. Use global --machine or --host before the command to search only one daemon.
 
 Examples:
   sessions search 'drafts rollout' --role user --since 2026-07-23

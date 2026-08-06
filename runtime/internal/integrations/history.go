@@ -30,16 +30,27 @@ var ErrHistoryNotFound = errors.New("history session not found")
 var ErrHistoryChanged = errors.New("history changed since search")
 
 type HistorySession struct {
-	ID                    string `json:"id"`
-	Name                  string `json:"name"`
-	Tool                  string `json:"tool"`
-	ProviderSessionID     string `json:"provider_session_id,omitempty"`
-	CWD                   string `json:"cwd"`
-	Machine               string `json:"machine"`
-	CreatorKind           string `json:"creator_kind,omitempty"`
-	CreatorID             string `json:"creator_id,omitempty"`
-	CreatedAt             int64  `json:"created_at"`
-	LastActivityAt        int64  `json:"last_activity_at"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Tool              string `json:"tool"`
+	ProviderSessionID string `json:"provider_session_id,omitempty"`
+	CWD               string `json:"cwd"`
+	Machine           string `json:"machine"`
+	CreatorKind       string `json:"creator_kind,omitempty"`
+	CreatorID         string `json:"creator_id,omitempty"`
+	CreatedAt         int64  `json:"created_at"`
+	LastActivityAt    int64  `json:"last_activity_at"`
+	// ConversationUpdatedAt is when the conversation itself was last written
+	// to, taken from the transcript the conversation lives in. It is not the
+	// same question as LastActivityAt, which also counts activity on the
+	// Sessions record — a runner draining its terminal at shutdown, or the
+	// daemon rewriting its own bookkeeping, moves LastActivityAt without a
+	// single word being said. Ordering conversations by recency needs the
+	// former: otherwise a batch of long-finished sessions all touched by one
+	// housekeeping pass outranks the conversation the user was actually in.
+	// Zero when no transcript backs the record, in which case LastActivityAt
+	// remains the only answer available.
+	ConversationUpdatedAt int64  `json:"conversation_updated_at,omitempty"`
 	MessageCount          int    `json:"message_count"`
 	ConversationAvailable bool   `json:"conversation_available"`
 	External              bool   `json:"external,omitempty"`
@@ -519,7 +530,8 @@ func (h *HistoryStore) describeArchived(source watch.ArchivedClaudeConversation)
 		ID: archivedHistoryID(source.SessionID), Name: name, Tool: "claude",
 		ProviderSessionID: source.SessionID, CWD: source.Cwd, Machine: h.options.Machine,
 		CreatedAt: source.ModifiedAt, LastActivityAt: source.ModifiedAt,
-		MessageCount: len(source.Prompts), ConversationAvailable: len(source.Prompts) > 0,
+		ConversationUpdatedAt: source.ModifiedAt,
+		MessageCount:          len(source.Prompts), ConversationAvailable: len(source.Prompts) > 0,
 		External: true, PromptHistoryOnly: true,
 		SourceFingerprint: archivedSourceFingerprint(source),
 	}
@@ -578,6 +590,7 @@ func (h *HistoryStore) describe(source backup.Session, countMessages bool) (Hist
 		}
 	}
 	result.ConversationAvailable = true
+	result.ConversationUpdatedAt = info.ModTime().UnixMilli()
 	result.LastActivityAt = max(result.LastActivityAt, info.ModTime().UnixMilli())
 	result.SourceFingerprint = historySourceFingerprint(path, info)
 	if !countMessages {
@@ -621,6 +634,7 @@ func (h *HistoryStore) describeExternal(source watch.ResumableSession, countMess
 		return result, "", tool, nil
 	}
 	result.SourceFingerprint = historySourceFingerprint(source.SourcePath, info)
+	result.ConversationUpdatedAt = info.ModTime().UnixMilli()
 	if !countMessages {
 		return result, source.SourcePath, tool, nil
 	}

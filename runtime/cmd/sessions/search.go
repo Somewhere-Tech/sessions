@@ -16,6 +16,9 @@ func (a *app) cmdSearch(args []string) error {
 	if len(args) == 0 || args[0] == "" {
 		return searchUsage()
 	}
+	if err := searchNeedsWords(args); err != nil {
+		return err
+	}
 	queryText := args[0]
 	args = args[1:]
 	regex := removeFirst(&args, "--regex")
@@ -93,10 +96,10 @@ func (a *app) cmdSearch(args []string) error {
 		parameters.Set("cwd", cwd)
 	}
 	if hasSince {
-		parameters.Set("since", since)
+		parameters.Set("since", normalizeSearchDate(since, a.now(), false))
 	}
 	if hasUntil {
-		parameters.Set("until", until)
+		parameters.Set("until", normalizeSearchDate(until, a.now(), true))
 	}
 	if hasContext {
 		parameters.Set("context", strconv.Itoa(contextCount))
@@ -217,7 +220,7 @@ func (a *app) searchApprovedFleet(
 		target := targets[index]
 		if target.Endpoint != localFleetEndpoint {
 			if failure, retryAt, cooling := health.coolingDown(target.Alias, now); cooling {
-				outcomes[index].err = fleetPeerSkipped(target, failure, retryAt.Sub(now))
+				outcomes[index].err = fleetPeerSkipped(target, "search", failure, retryAt.Sub(now))
 				if target.Owned {
 					target.Client.close()
 				}
@@ -436,10 +439,13 @@ func fleetPeerTimedOut(target fleetTarget) error {
 	)
 }
 
-func fleetPeerSkipped(target fleetTarget, failure fleetPeerFailure, retryIn time.Duration) error {
+// fleetPeerSkipped names the command the reader was actually running. The
+// advice only helps if it retries their own command; a history browse that
+// told them to re-run a search would send them somewhere else.
+func fleetPeerSkipped(target fleetTarget, command string, failure fleetPeerFailure, retryIn time.Duration) error {
 	return fmt.Errorf(
-		"skipped after a recent failure (%s), retried automatically in %s; run `sessions --machine %s search ...` to try it now",
-		failure.Error, retryIn.Round(time.Second), target.Alias,
+		"skipped after a recent failure (%s), retried automatically in %s; run `sessions --machine %s %s ...` to try it now",
+		failure.Error, retryIn.Round(time.Second), target.Alias, command,
 	)
 }
 
@@ -567,6 +573,84 @@ func compactSearchText(value string) string {
 		return value[:239] + "…"
 	}
 	return value
+}
+
+// searchValueOptions are the search flags that consume the argument after
+// them, so a value is never mistaken for the query.
+var searchValueOptions = map[string]bool{
+	"--session": true, "--role": true, "--tool": true, "--name": true,
+	"--lane": true, "--cwd": true, "--since": true, "--until": true,
+	"--context": true, "-n": true,
+}
+
+// searchNarrowingOptions are the filters that also narrow a conversation
+// browse, so a filter-only search can be handed to `sessions history` intact.
+var searchNarrowingOptions = map[string]bool{
+	"--session": true, "--tool": true, "--name": true,
+	"--lane": true, "--cwd": true, "--since": true, "--until": true,
+}
+
+// searchNeedsWords answers the request that used to be refused as a typo. A
+// caller who typed only filters — `sessions search --since today --tool codex`
+// — is asking which conversations they had, not which messages contain a word,
+// and the old refusal ("the query must come before flags") sent them looking
+// for a word they would have had to remember in order to ask at all. Search's
+// unit is the message and it genuinely needs words; the browse they wanted is
+// a different command, so hand them that exact command rather than a rule.
+func searchNeedsWords(args []string) error {
+	positionals, narrowing := searchArgumentShape(args)
+	if len(positionals) > 0 {
+		return nil
+	}
+	if len(narrowing) == 0 {
+		return searchUsage()
+	}
+	return fail(1,
+		"sessions search looks for words inside conversations, so it needs some.\n"+
+			"Filters alone describe conversations, not words — browse them with:\n  %s\n\n%s",
+		shellRecipe(append([]string{"sessions", "history"}, narrowing...)), searchUsageText)
+}
+
+// searchArgumentShape reports which arguments were meant as the query and
+// which narrowing filters were supplied, without interpreting either.
+func searchArgumentShape(args []string) (positionals, narrowing []string) {
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		if !strings.HasPrefix(argument, "-") {
+			positionals = append(positionals, argument)
+			continue
+		}
+		if !searchValueOptions[argument] {
+			continue
+		}
+		value := ""
+		if index+1 < len(args) {
+			value = args[index+1]
+			index++
+		}
+		if searchNarrowingOptions[argument] {
+			narrowing = append(narrowing, argument, value)
+		}
+	}
+	return positionals, narrowing
+}
+
+// normalizeSearchDate lets search accept the same spoken dates the browser
+// does. The daemon's search route understands only YYYY-MM-DD and RFC3339, so
+// anything it already understands is passed through untouched and keeps the
+// daemon's own error message; only the spoken forms are resolved here.
+func normalizeSearchDate(raw string, now time.Time, endOfDay bool) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value != "today" && value != "yesterday" {
+		if _, ok := parseHistoryDuration(value); !ok {
+			return raw
+		}
+	}
+	millis, _, err := parseHistoryTime(raw, now, endOfDay)
+	if err != nil {
+		return raw
+	}
+	return time.UnixMilli(millis).Format(time.RFC3339)
 }
 
 const searchUsageText = "usage: sessions search <query> [--session ID[,ID...]] [--role user|assistant|tool] [--tool claude|codex|shell] [--name GLOB] [--cwd PATH] [--since DATE] [--until DATE] [--context N] [--timeline] [-n N] [--exact | --regex | --ranked] [--json]\nranked token search is the default; use --exact for a contiguous literal phrase. The query comes FIRST, before any flags"

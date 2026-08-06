@@ -636,3 +636,79 @@ func TestHistoryMessageCountCacheStaysBounded(t *testing.T) {
 		t.Fatalf("cache size = %d, want at most %d", size, maxHistoryCacheEntries)
 	}
 }
+
+// A history record carries two different "when"s and they answer different
+// questions. LastActivityAt moves whenever the Sessions record is touched --
+// a runner draining its terminal at shutdown, or a metadata rewrite -- while
+// ConversationUpdatedAt moves only when the conversation itself was written
+// to. Anything ordering conversations by recency needs the second one:
+// otherwise a housekeeping pass over a batch of long-finished sessions makes
+// all of them look like the most recent thing the user did.
+func TestHistoryReportsConversationActivitySeparatelyFromRecordActivity(t *testing.T) {
+	root := t.TempDir()
+	runnerDir := filepath.Join(root, "runners")
+	sessionsDir := filepath.Join(root, "codex-sessions")
+	cwd := filepath.Join(root, "worktree")
+	for _, dir := range []string{runnerDir, sessionsDir, cwd} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, time.August, 5, 21, 0, 0, 0, time.UTC)
+	spokenAt := now.Add(-8 * time.Hour)
+	sweptAt := now.Add(-1 * time.Minute)
+	id := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	resumeID := "01234567-89ab-4cde-8fab-0123456789ab"
+	if err := state.WriteMetadata(filepath.Join(runnerDir, id+".json"), state.Metadata{
+		ID: id, Name: "finished lane", Cmd: "codex", Args: []string{"resume", resumeID},
+		Cwd: cwd, CreatedAt: spokenAt.Add(-time.Minute).UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rolloutPath := filepath.Join(sessionsDir, "2026", "08", "05", "rollout-"+resumeID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rolloutPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := map[string]any{
+		"timestamp": spokenAt.Format(time.RFC3339Nano), "type": "response_item",
+		"payload": map[string]any{"type": "message", "role": "user",
+			"content": []any{map[string]any{"type": "input_text", "text": "the thing I said"}}},
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rolloutPath, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(rolloutPath, spokenAt, spokenAt); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewHistoryStore(HistoryOptions{
+		RunnerStateDir: runnerDir, CodexSessionsDir: sessionsDir, Machine: "fixture-mac",
+		Now: func() time.Time { return now },
+	})
+	// The daemon reports the record as having been touched by a sweep long
+	// after the conversation went quiet.
+	history, err := store.List([]state.SessionInfo{{
+		ID: id, Cmd: "codex", Args: []string{"resume", resumeID}, Cwd: cwd,
+		CreatedAt:  spokenAt.Add(-time.Minute).UnixMilli(),
+		LastDataAt: sweptAt.UnixMilli(), Exited: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Sessions) != 1 {
+		t.Fatalf("history = %#v", history.Sessions)
+	}
+	session := history.Sessions[0]
+	if session.LastActivityAt != sweptAt.UnixMilli() {
+		t.Fatalf("LastActivityAt = %d, want the record's own %d",
+			session.LastActivityAt, sweptAt.UnixMilli())
+	}
+	if session.ConversationUpdatedAt != spokenAt.UnixMilli() {
+		t.Fatalf("ConversationUpdatedAt = %d, want the transcript's %d",
+			session.ConversationUpdatedAt, spokenAt.UnixMilli())
+	}
+}
