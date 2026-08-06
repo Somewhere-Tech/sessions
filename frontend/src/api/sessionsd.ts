@@ -181,11 +181,12 @@ export interface MachineAccessRequest {
 }
 
 export async function listMachineAccessRequests(
-  server: ServerConfig = getActiveServer()
+  server: ServerConfig = getActiveServer(),
+  signal?: AbortSignal
 ): Promise<MachineAccessRequest[] | null> {
-  let r = await serverFetch(server, `${httpBaseForServer(server)}/api/access/requests`);
+  let r = await serverFetch(server, `${httpBaseForServer(server)}/api/access/requests`, { signal });
   if (r.status === 404) {
-    r = await serverFetch(server, `${httpBaseForServer(server)}/api/tailnet/access/requests`);
+    r = await serverFetch(server, `${httpBaseForServer(server)}/api/tailnet/access/requests`, { signal });
   }
   if (r.status === 404) return null;
   const body = await json<{ requests: MachineAccessRequest[] }>(r);
@@ -297,6 +298,18 @@ export interface ServerHealth {
 
 export const API_PROTOCOL_VERSION = 1;
 
+// A reachable, identified sessionsd whose API range excludes this client.
+// Distinguishable from "this origin is not a daemon at all" so a caller that
+// silently ignores the latter can still surface the instructional message for
+// the former — see bootstrapCurrentOriginServer in lib/servers.ts.
+export class ServerCompatibilityError extends Error {
+  readonly code = 'incompatible' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'ServerCompatibilityError';
+  }
+}
+
 function validateServerHealth(health: ServerHealth): ServerHealth {
   if (!health.ok || health.name !== 'sessionsd') {
     throw new Error('unexpected health response');
@@ -306,7 +319,7 @@ function validateServerHealth(health: ServerHealth): ServerHealth {
     range
     && (API_PROTOCOL_VERSION < range.minimumClient || API_PROTOCOL_VERSION > range.maximumClient)
   ) {
-    throw new Error(
+    throw new ServerCompatibilityError(
       `This client uses Sessions API ${API_PROTOCOL_VERSION}, but the machine accepts ${range.minimumClient}–${range.maximumClient}. Update Sessions on this device or the host.`
     );
   }
@@ -357,6 +370,22 @@ export async function fetchServerHealth(
     false
   );
   return validateServerHealth(await json<ServerHealth>(r));
+}
+
+// Revoking a device credential on ANOTHER machine, using the credential
+// itself. hostedBootstrap called `fetch` directly for this, which skipped the
+// client's auth header construction and its 401 translation; the request is
+// otherwise identical.
+export async function revokeServerDevice(
+  server: ServerConfig,
+  deviceId: string
+): Promise<boolean> {
+  const r = await serverFetch(
+    server,
+    `${httpBaseForServer(server)}/api/devices/${encodeURIComponent(deviceId)}`,
+    { method: 'DELETE' }
+  );
+  return r.ok;
 }
 
 export interface ServerMachineIdentity {

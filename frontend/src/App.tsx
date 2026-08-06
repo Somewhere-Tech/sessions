@@ -38,16 +38,15 @@ import { effectiveParentId } from './lib/workingSet';
 import { preferNextSessionView } from './lib/sessionViewPreference';
 import { handleExternalLinkClick } from './lib/externalLinks';
 import {
-  adoptConversation,
   fetchServerMachineIdentity,
   fetchServerHealth,
   fetchOnboardingState,
   forkConversation,
-  repairAdoption,
   updateOnboardingPreference,
   type OnboardingState,
   type ServerHealth
 } from './api/sessionsd';
+import { adoptConversationWithRepair, adoptionWarning } from './lib/adoptConversation';
 import type { SessionInfo, SessionTool } from './types';
 
 const TOOL_ICONS: Record<SessionTool, string> = {
@@ -311,6 +310,10 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       runtimeMode?: 'rich' | 'terminal';
     }
   >(null);
+  // A resume whose history annotations did not finish. Previously this was a
+  // console.warn, so the same failure that ResumeDialog puts on screen was
+  // invisible when the user continued from Fleet, Search, or the palette.
+  const [adoptionNotice, setAdoptionNotice] = useState<string | null>(null);
   const [activeStatus, setActiveStatus] = useState<ActiveStatus>(INITIAL_STATUS);
   const [openTabIds, setOpenTabIds] = useState<string[]>(readOpenTabs);
   const [theme, setTheme] = useState<ThemeMode>(readTheme);
@@ -520,16 +523,13 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   ): Promise<void> => {
     useServers.getState().setActive(serverId);
     setServerScope(serverId);
-    let result = await adoptConversation(providerSessionId, sourceSessionId, historyId);
-    if (result.partial && result.repair) {
-      try {
-        result = await repairAdoption(result.repair);
-      } catch (reason) {
-        // The first response already created the one live successor. Repair is
-        // record-only; never turn an annotation failure into a second runtime.
-        console.warn('Sessions resumed the conversation but could not finish its history annotations.', reason);
-      }
-    }
+    // Shared adopt-then-repair (lib/adoptConversation.ts): the same one
+    // ResumeDialog uses, so both entry points answer "did my history
+    // annotations finish?" identically. Repair is record-only and never
+    // turns an annotation failure into a second runtime.
+    const adopted = await adoptConversationWithRepair(providerSessionId, sourceSessionId, historyId);
+    const result = adopted.result;
+    setAdoptionNotice(adoptionWarning(adopted));
     await refresh(serverId);
     // Native Claude resume can immediately show a provider-only picker in its
     // terminal. Imported Codex and Sessions transcript recovery are authored
@@ -753,6 +753,15 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         ) : null}
         <section className="operations-content">
           <TailnetAccessInbox />
+          {adoptionNotice ? (
+            <section className="adoption-notice" role="status" aria-live="polite">
+              <div>
+                <strong>The conversation is live; its records are incomplete.</strong>
+                <span>{adoptionNotice}</span>
+              </div>
+              <button type="button" className="btn btn-ghost" onClick={() => setAdoptionNotice(null)}>Dismiss</button>
+            </section>
+          ) : null}
           {recoveryVisible ? (
             <MachineRecoveryNotice
               machine={selectedMachineName}

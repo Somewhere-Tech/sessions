@@ -136,6 +136,11 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
   const effectiveQuery = mode === 'ai' ? (plan?.query.trim() ?? '') : submittedQuery;
   const dates = useMemo(() => dateFilters(dateRange), [dateRange]);
 
+  // Title enrichment below deliberately uses `effectiveQuery`, not the live
+  // `query` input. The dependency list only ever carried `effectiveQuery`, so
+  // reading `query` here matched titles against whatever the user had typed
+  // since — highlighting and title hits for a search that was never run.
+  // The results are for `effectiveQuery`; so is their enrichment.
   useEffect(() => {
     if (!effectiveQuery) {
       setResults([]);
@@ -168,17 +173,17 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
           const managedMatches = enrichSearchResultsWithSessions(
             response.matches,
             filterTitleSearchSessions(sessions, { speaker, tool, sessionName, cwd, since: dates.since, until: dates.until }),
-            query
+            effectiveQuery
           );
           const historyMatches = enrichSearchResultsWithHistory(
             managedMatches,
             filterTitleSearchHistory(history, { speaker, tool, sessionName, cwd, since: dates.since, until: dates.until }),
-            query
+            effectiveQuery
           );
           const matches = enrichSearchResultsWithResumable(
             historyMatches,
             filterTitleSearchResumable(resumable, { speaker, tool, sessionName, cwd, since: dates.since, until: dates.until }),
-            query,
+            effectiveQuery,
             serverDisplayName(server, true)
           );
           return {

@@ -197,6 +197,13 @@ export function RemoteView({
   const recoverDraft = latestFailedSend
     ? { id: latestFailedSend.id, text: latestFailedSend.content, version: latestFailedSend.createdAt }
     : null;
+  // The snapshot probe below only cares WHICH failed send it is looking at,
+  // never its contents. Naming that identity makes the effect's dependency
+  // list say exactly what the effect reads, instead of listing two fields of
+  // an object the body then dereferences by another name.
+  const failedSendKey = latestFailedSend
+    ? `${latestFailedSend.id}:${latestFailedSend.createdAt}`
+    : null;
   const [blockingState, setBlockingState] = useState<SnapshotComposerState | null>(null);
   const [forkPointId, setForkPointId] = useState<string | null>(null);
   const [forkBusy, setForkBusy] = useState(false);
@@ -235,7 +242,7 @@ export function RemoteView({
     // sessions have structured provider events but no terminal stream, so
     // applying it there can turn ordinary conversation text into a false
     // "open Terminal" warning with an impossible action.
-    if (!terminalAvailable || !latestFailedSend) {
+    if (!terminalAvailable || !failedSendKey) {
       setBlockingState(null);
       return;
     }
@@ -258,7 +265,7 @@ export function RemoteView({
 
     void checkSnapshot();
     return () => { alive = false; };
-  }, [sessionId, terminalAvailable, latestFailedSend?.id, latestFailedSend?.createdAt]);
+  }, [failedSendKey, sessionId, terminalAvailable]);
 
   // Scroll-anchor preservation across window expansion. Prepending
   // older messages grows scrollHeight by ~the prepended block's

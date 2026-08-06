@@ -1,12 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchServerHealth, listServerProfiles, listServerSessions, type AccountProfile, type ServerHealth } from '../api/sessionsd';
-import { rememberNativeMachineClaim } from '../lib/hostedBootstrap';
 import { formatServerEndpoint } from '../lib/serverEndpoint';
 import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { tailnetClientID } from '../lib/tailnetClient';
 import {
-  claimNativeNearbyAccess,
-  claimNativeTailnetAccess,
   discoverNativeNearbyPeers,
   discoverNativeTailnetPeers,
   isTauri,
@@ -15,9 +12,13 @@ import {
   type NativeTailnetRequest
 } from '../lib/tauriBridge';
 import type { SessionInfo, SessionTool } from '../types';
-import { isCrashedSession, isDegradedSession } from '../lib/sessionStatus';
+import { classifySession, type SessionStatusState } from '../lib/sessionStatus';
 import { ParserIcon } from './ParserIcon';
 import { shortLabel } from './SessionTabs';
+import {
+  useMachineAccessPairing,
+  type PendingMachineAccess as SharedPendingMachineAccess
+} from '../hooks/useMachineAccessPairing';
 
 const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 5_000;
@@ -29,16 +30,6 @@ const TOOL_ICONS: Record<SessionTool, string> = {
 };
 
 type Reachability = 'checking' | 'reachable' | 'unreachable';
-type FleetSessionState = 'limited' | 'failed' | 'working' | 'needs-you' | 'finished' | 'idle';
-
-const FLEET_STATE_LABELS: Record<FleetSessionState, string> = {
-  limited: 'Limited',
-  failed: 'Failed',
-  working: 'Working',
-  'needs-you': 'Needs you',
-  finished: 'Finished',
-  idle: 'Ready'
-};
 
 interface ServerSnapshot {
   reachability: Reachability;
@@ -69,9 +60,8 @@ interface DiscoveredPeer {
   transport: 'tailnet' | 'nearby';
 }
 
-interface PendingMachineAccess {
+interface PendingMachineAccess extends SharedPendingMachineAccess {
   request: NativeTailnetRequest;
-  transport: 'tailnet' | 'nearby';
   label: string;
 }
 
@@ -156,45 +146,21 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
     }
   };
 
-  useEffect(() => {
-    if (!accessRequest) return;
-    let cancelled = false;
-    let checking = false;
-    const check = async (): Promise<void> => {
-      if (checking) return;
-      checking = true;
-      try {
-        const result = accessRequest.transport === 'nearby'
-          ? await claimNativeNearbyAccess(accessRequest.request)
-          : await claimNativeTailnetAccess(accessRequest.request);
-        if (cancelled || result.status === 'pending') return;
-        if (result.status === 'accepted' && result.claim) {
-          const server = await rememberNativeMachineClaim(result.claim, { select: false });
-          if (!cancelled) {
-            setAccessRequest(null);
-            setDiscoveryMessage(`${server.name} is now in Fleet.`);
-          }
-          return;
-        }
-        if (!cancelled) {
-          setAccessRequest(null);
-          setDiscoveryMessage(result.status === 'denied'
-            ? 'The other machine denied this request.'
-            : 'The request expired. Search again when someone is at the other machine.');
-        }
-      } catch (reason) {
-        if (!cancelled) setDiscoveryMessage(reason instanceof Error ? reason.message : String(reason));
-      } finally {
-        checking = false;
-      }
-    };
-    void check();
-    const interval = window.setInterval(() => { void check(); }, 2_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [accessRequest]);
+  // Shared approval poll — see hooks/useMachineAccessPairing.ts. Fleet adds
+  // the machine without stealing the user's current selection.
+  useMachineAccessPairing({
+    pending: accessRequest,
+    select: false,
+    onAccepted: (server) => {
+      setAccessRequest(null);
+      setDiscoveryMessage(`${server.name} is now in Fleet.`);
+    },
+    onSettled: (_outcome, text) => {
+      setAccessRequest(null);
+      setDiscoveryMessage(text);
+    },
+    onError: setDiscoveryMessage
+  });
 
   return (
     <div className="fleet-view" aria-label="Fleet sessions">
@@ -344,9 +310,31 @@ function FleetServerGroup({
   const [machineName, setMachineName] = useState(server.customName ?? serverDisplayName(server));
   const [renameError, setRenameError] = useState<string | null>(null);
 
+  // Depending on the resolved string rather than on three raw fields is what
+  // makes this effect's dependency list honest: `serverDisplayName` reads
+  // customName, systemName, name AND isDefault, so the old list was both
+  // incomplete and unable to satisfy the exhaustive-deps rule.
+  const resolvedMachineName = server.customName ?? serverDisplayName(server);
   useEffect(() => {
-    if (!renaming) setMachineName(server.customName ?? serverDisplayName(server));
-  }, [renaming, server.customName, server.systemName, server.name]);
+    if (!renaming) setMachineName(resolvedMachineName);
+  }, [renaming, resolvedMachineName]);
+
+  // The poll is keyed on the address it actually dials, not on the server
+  // object. `server` gets a new identity whenever ANY field changes, so with
+  // `[onVersion, server]` renaming a machine tore the poll down, reset the
+  // card to INITIAL_SNAPSHOT ("checking", no sessions, no version) and made
+  // the user watch a full round-trip come back — for an edit that never
+  // touched the endpoint. Only a change to where or how we connect should
+  // restart it and blank the card; everything else keeps the live snapshot.
+  const serverRef = useRef(server);
+  serverRef.current = server;
+  const endpointKey = [
+    server.id,
+    server.scheme ?? 'http',
+    server.host,
+    server.port,
+    server.token ?? ''
+  ].join('|');
 
   useEffect(() => {
     let stopped = false;
@@ -359,10 +347,14 @@ function FleetServerGroup({
       controller = new AbortController();
       const timeout = window.setTimeout(() => controller?.abort(), POLL_TIMEOUT_MS);
 
+      // Read the latest config at request time so a rename or metadata edit
+      // is picked up by the next tick without restarting the poll.
+      const target = serverRef.current;
+
       try {
-        const health = await fetchServerHealth(server, controller.signal);
+        const health = await fetchServerHealth(target, controller.signal);
         if (!stopped) {
-          onVersion(server.id, health.version);
+          onVersion(target.id, health.version);
           setSnapshot((current) => ({ ...current, health }));
         }
       } catch {
@@ -388,8 +380,8 @@ function FleetServerGroup({
 
       try {
         const [sessions, profiles] = await Promise.all([
-          listServerSessions(server, controller.signal),
-          listServerProfiles(server, controller.signal).catch(() => [])
+          listServerSessions(target, controller.signal),
+          listServerProfiles(target, controller.signal).catch(() => [])
         ]);
         if (!stopped) {
           setSnapshot((current) => ({ ...current, reachability: 'reachable', sessions, profiles, sessionsError: null }));
@@ -414,7 +406,7 @@ function FleetServerGroup({
       controller?.abort();
       window.clearTimeout(pollTimer);
     };
-  }, [onVersion, server]);
+  }, [endpointKey, onVersion]);
 
   const unavailable = snapshot.reachability === 'unreachable';
   const candidateSessions = snapshot.sessions.filter((session) => includeExited || !session.exited);
@@ -647,8 +639,8 @@ function FleetSessionRow({
   disabled: boolean;
   onOpen: () => void;
 }): JSX.Element {
-  const state = fleetSessionState(session);
-  const stateLabel = FLEET_STATE_LABELS[state];
+  const status = classifySession(session);
+  const stateLabel = status.label;
   const label = shortLabel(session);
   const context = fleetSessionContext(session);
   const details = [label, session.cwd, session.profile].filter(Boolean).join(' · ');
@@ -669,7 +661,7 @@ function FleetSessionRow({
         <span className="fleet-session-name">{label}</span>
         <span className="fleet-session-context">{context}</span>
       </span>
-      <span className={`fleet-session-state is-${state}`}>
+      <span className={`fleet-session-state ${status.className}`}>
         <span className="fleet-session-state-dot" aria-hidden />
         {stateLabel}
       </span>
@@ -677,26 +669,24 @@ function FleetSessionRow({
   );
 }
 
-function fleetSessionState(session: SessionInfo): FleetSessionState {
-  if (isDegradedSession(session)) return 'limited';
-  if (isCrashedSession(session)) return 'failed';
-  if (session.working) return 'working';
-  if (session.idleReason === 'needs-input') return 'needs-you';
-  if (session.exited || session.idleReason === 'completed') return 'finished';
-  return 'idle';
-}
+// Fleet orders by urgency rather than by the classifier's precedence: an
+// ended runtime is not urgent, but a failed one is. The classification itself
+// is not re-derived here — only its display order.
+const FLEET_SORT_PRIORITY: Record<SessionStatusState, number> = {
+  failed: 0,
+  'needs-you': 1,
+  limited: 2,
+  working: 3,
+  ready: 4,
+  'not-started': 5,
+  finished: 6,
+  ended: 7
+};
 
 function sortFleetSessions(sessions: SessionInfo[]): SessionInfo[] {
-  const priority: Record<FleetSessionState, number> = {
-    failed: 0,
-    'needs-you': 1,
-    limited: 2,
-    working: 3,
-    idle: 4,
-    finished: 5
-  };
   return [...sessions].sort((left, right) => {
-    const stateDifference = priority[fleetSessionState(left)] - priority[fleetSessionState(right)];
+    const stateDifference = FLEET_SORT_PRIORITY[classifySession(left).state]
+      - FLEET_SORT_PRIORITY[classifySession(right).state];
     if (stateDifference !== 0) return stateDifference;
     return fleetSessionActivity(right) - fleetSessionActivity(left);
   });

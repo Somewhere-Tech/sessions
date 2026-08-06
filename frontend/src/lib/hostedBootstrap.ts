@@ -7,6 +7,7 @@ import {
   useServers,
   type ServerConfig
 } from './servers';
+import { revokeServerDevice } from '../api/sessionsd';
 import { isLoopbackHost, isPrivateNetworkHost, parseServerEndpoint } from './serverEndpoint';
 import { claimNativePairingLink, type NativePairingClaim } from './tauriBridge';
 
@@ -131,11 +132,14 @@ export async function claimNativeMachinePairing(
     // persistence error must remain the actionable message.
     let revoked = false;
     try {
-      const response = await fetch(`${claim.endpoint}/api/devices/${encodeURIComponent(claim.deviceId)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${claim.token}` }
-      });
-      revoked = response.ok;
+      // Through the central client (api/sessionsd.ts) so this request gets the
+      // same auth-header construction and 401 handling as every other call.
+      // The claim is not in the server store yet, so the endpoint it names is
+      // turned into a config here rather than looked up.
+      revoked = await revokeServerDevice(
+        { ...parseServerEndpoint(claim.endpoint), id: 'pairing-claim', name: claim.machineName, isDefault: false, token: claim.token },
+        claim.deviceId
+      );
     } catch { /* source device can also revoke it from Connections/CLI */ }
     throw new Error(
       revoked
@@ -241,6 +245,13 @@ export async function claimCurrentOriginPairing(
   const ticket = pairingTicket(ticketValue);
   if (!ticket) throw new Error('Paste a pairing ticket from `sessions pair`.');
 
+  // Deliberately a bare fetch, not the central client. This is the call that
+  // OBTAINS the credential, so there is no token to inject; and a 401 here
+  // means "this ticket is not valid", which must stay the instructional
+  // `pairClaimError` message below rather than being translated into the
+  // AuthError that drives the "enter your daemon token" banner. The API-range
+  // check does not apply to a pairing claim either — it is validated against
+  // /api/health by adoptCurrentOriginServer's caller path immediately after.
   const response = await fetch(`${window.location.origin}/api/pair/claim`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

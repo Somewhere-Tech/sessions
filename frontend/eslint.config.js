@@ -11,6 +11,12 @@
 // `// eslint-disable-next-line react-hooks/exhaustive-deps` suppressions
 // predate this config. Each one now has to be justified against a rule that
 // actually runs; an unnecessary suppression is itself reported.
+//
+// This file used to end with a block of per-file rule overrides listing the
+// known pre-existing violations (FleetView, NewSessionDialog, RemoteView,
+// SearchView exhaustive-deps; detectMultiChoice and filePaths redundant
+// escapes). All seven are fixed in the code, so the block is gone: every rule
+// now applies to every file, with no exceptions.
 
 import js from '@eslint/js';
 import globals from 'globals';
@@ -77,35 +83,5 @@ export default tseslint.config(
       // intent, not a typo, and the default rule flags every one of them.
       'no-control-regex': 'off'
     }
-  },
-
-  // ───────────────────────────────────────────────────────────────────────
-  // Known pre-existing violations, listed file by file so the gate above is
-  // usable on new work today. These are NOT accepted as correct: each one is
-  // an open cleanup, deliberately left untouched rather than mass-edited
-  // blind. Delete an entry here as soon as its file is fixed — the config is
-  // meant to shrink.
-  //
-  //   FleetView.tsx:349        useEffect drops `server`
-  //   NewSessionDialog.tsx:273 useEffect drops `parentSession`
-  //   RemoteView.tsx:261       useEffect drops `latestFailedSend`
-  //   SearchView.tsx:210       useEffect drops `query`
-  //   detectMultiChoice.ts:48,79 redundant escapes in picker regexes
-  //   filePaths.ts:11          redundant escape in the path regex
-  //
-  // Each is scoped to the single rule it trips, so every other rule — and any
-  // NEW violation of a different rule in these same files — still fails.
-  {
-    files: [
-      'src/components/FleetView.tsx',
-      'src/components/NewSessionDialog.tsx',
-      'src/components/RemoteView.tsx',
-      'src/components/SearchView.tsx'
-    ],
-    rules: { 'react-hooks/exhaustive-deps': 'off' }
-  },
-  {
-    files: ['src/lib/detectMultiChoice.ts', 'src/lib/filePaths.ts'],
-    rules: { 'no-useless-escape': 'off' }
   }
 );

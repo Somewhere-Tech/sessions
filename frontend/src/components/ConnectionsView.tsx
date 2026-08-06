@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { fetchLANState, setLANEnabled, type LANState } from '../api/sessionsd';
 import {
-  claimNativeMachineAccess,
   discoverNativeMachines,
   getNativeConnectionSettings,
   isTauri,
@@ -13,8 +12,9 @@ import {
   type NativeTailnetRequest
 } from '../lib/tauriBridge';
 import { configureNativeLocalPort } from '../lib/servers';
-import { claimNativeMachinePairing, rememberNativeMachineClaim } from '../lib/hostedBootstrap';
+import { claimNativeMachinePairing } from '../lib/hostedBootstrap';
 import { tailnetClientID } from '../lib/tailnetClient';
+import { useMachineAccessPairing } from '../hooks/useMachineAccessPairing';
 import { SomewhereCard } from './SomewhereCard';
 
 interface RemoteState {
@@ -74,43 +74,25 @@ export function ConnectionsView(): JSX.Element {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  useEffect(() => {
-    if (!tailnetRequest) return;
-    let cancelled = false;
-    let checking = false;
-    const check = async (): Promise<void> => {
-      if (checking) return;
-      checking = true;
-      try {
-        const result = await claimNativeMachineAccess(tailnetRequest.transport, tailnetRequest);
-        if (cancelled || result.status === 'pending') return;
-        if (result.status === 'accepted' && result.claim) {
-          const server = await rememberNativeMachineClaim(result.claim);
-          if (!cancelled) {
-            setTailnetRequest(null);
-            setTailnetMessage(`Connected to ${server.name}. Sessions is switching to it now.`);
-          }
-          return;
-        }
-        if (!cancelled) {
-          setTailnetRequest(null);
-          setTailnetMessage(result.status === 'denied'
-            ? 'The other Mac denied this request.'
-            : 'The request expired. Send a new one when someone is at the other Mac.');
-        }
-      } catch (reason) {
-        if (!cancelled) setTailnetMessage(reason instanceof Error ? reason.message : String(reason));
-      } finally {
-        checking = false;
-      }
-    };
-    void check();
-    const interval = window.setInterval(() => { void check(); }, 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [tailnetRequest]);
+  // Shared approval poll — see hooks/useMachineAccessPairing.ts. The
+  // Mac-specific denial/expiry wording that used to live here was one of the
+  // three drifted copies; the shared, machine-neutral sentence replaces it.
+  const pendingAccess = useMemo(
+    () => tailnetRequest ? { transport: tailnetRequest.transport, request: tailnetRequest } : null,
+    [tailnetRequest]
+  );
+  useMachineAccessPairing({
+    pending: pendingAccess,
+    onAccepted: (server) => {
+      setTailnetRequest(null);
+      setTailnetMessage(`Connected to ${server.name}. Sessions is switching to it now.`);
+    },
+    onSettled: (_outcome, text) => {
+      setTailnetRequest(null);
+      setTailnetMessage(text);
+    },
+    onError: setTailnetMessage
+  });
 
   const changeLAN = async (enabled: boolean): Promise<void> => {
     if (busy) return;

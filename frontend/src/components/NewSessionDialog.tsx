@@ -267,10 +267,17 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     return () => controller.abort();
   }, [machineId, tool]);
 
+  // `inheritedProfile` reads only the parent's profile and tool, so listing
+  // those two fields was substantively right — but the rule could not see it
+  // through the call, and neither could a reader. Naming the resolved value
+  // (plus the parent's identity, so switching parents still clears a
+  // half-typed new-profile name) makes the list literally what is read.
+  const inheritedProfileChoice = inheritedProfile(parentSession, tool);
+  const parentSessionId = parentSession?.id ?? null;
   useEffect(() => {
-    setProfileChoice(inheritedProfile(parentSession, tool));
+    setProfileChoice(inheritedProfileChoice);
     setNewProfile('');
-  }, [parentSession?.id, parentSession?.profile, parentSession?.tool, tool]);
+  }, [inheritedProfileChoice, parentSessionId]);
 
   const openSessionWorkspaces = useMemo<DirectoryCandidate[]>(() => {
     if (sessionsServerId !== machineId) return [];

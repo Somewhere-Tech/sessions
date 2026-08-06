@@ -670,8 +670,24 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         } catch { /* fall through to plain attach — full replay */ }
       };
 
+      // Generation counter, same pattern SettingsView uses for its async
+      // loads. attachNow awaits the snapshot prefill and the HTTP tail between
+      // clearing `channel` and reassigning it. Rapid tab switching (or a
+      // reattach landing on top of the mount attach) could therefore run two
+      // attachNow calls through that window at once: both saw `channel` as
+      // null, both called attachSession, and the loser's socket was
+      // overwritten by the winner's assignment with nothing left holding a
+      // reference to detach it — a leaked mux subscription still receiving
+      // this session's bytes for the life of the mount.
+      //
+      // Every attach now takes a generation. Only the newest one is allowed to
+      // publish its channel; an older one that finishes late detaches whatever
+      // it opened and leaves the current attach alone.
+      let attachGeneration = 0;
+
       const attachNow = async (active: boolean): Promise<void> => {
         if (disposed) return;
+        const generation = ++attachGeneration;
         if (active) setHistoryPending(true);
         channel?.detach();
         sendInputRef.current = (): void => {};
@@ -683,7 +699,10 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         const tailPromise = active ? loadClaudeTail() : Promise.resolve(false);
         if (active && term) await prefillTerminalSnapshot();
         if (active) await tailPromise;
-        if (disposed) return;
+        // Stale generation: a newer attachNow started while this one was
+        // awaiting and now owns `channel`. Returning here is what keeps the
+        // winner's socket intact instead of overwriting it.
+        if (disposed || generation !== attachGeneration) return;
         channel = attachSession(muxUrl, sessionId, { onMessage, onStatus, getResume });
       };
       // Re-subscribe with flags recomputed for current activeness. Becoming

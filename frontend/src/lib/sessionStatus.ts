@@ -1,5 +1,182 @@
 import type { SessionInfo } from '../types';
 
+// ───────────────────────────────────────────────────────────────────────────
+// The one session classifier.
+//
+// Before this module owned the final answer, five surfaces each derived
+// "what state is this session in?" independently — SessionNavigator (twice:
+// once for its tree rows, once for its all-machines rows), FleetView,
+// HomeView, GridView, SessionView — with different precedence orders and
+// different words. Two of them could disagree about the same session while
+// both were on screen:
+//
+//   • An exited session still carrying idleReason:'needs-input' read "Ended"
+//     in the navigator and "Needs you" in Fleet.
+//   • A degraded session counted toward the navigator's "Needs you" filter
+//     badge but not toward Home's "Needs you" tile, so the two numbers on the
+//     same screen described different sets.
+//
+// One classifier, one vocabulary. Surfaces choose how much of it to render;
+// they never re-derive it.
+//
+// ── Precedence, and why it is in this order ────────────────────────────────
+//
+// 1. failed — isCrashedSession(). Highest because it is the only state where
+//    the user may have lost a runtime they did not choose to lose, and it is
+//    true of live sessions too (provenanceStatus 'lost'/'invalid' without an
+//    exit frame). Nothing below it may hide it.
+//
+// 2. ended — session.exited. Exit is terminal and it outranks every live
+//    hint below, because `working` and `idleReason` describe a process that
+//    no longer exists. A dead runtime cannot be waiting for you, so an exited
+//    record whose idleReason was frozen at 'needs-input' reads "Ended"
+//    everywhere. (The daemon overwrites idleReason on exit — see
+//    runtime/internal/state/session.go — so a needs-input+exited pair only
+//    reaches the UI from a cached, adopted, or fleet-snapshot record. Those
+//    are exactly the records that used to make two surfaces disagree.)
+//
+// 3. needs-you — idleReason === 'needs-input'. Deliberately ABOVE `working`,
+//    reversing what FleetView/HomeView/SessionNavigator each did before.
+//    docs/PRINCIPLES.md: provider approval prompts "are durable needs-input
+//    state for users and agents", and "cleanup must never hide an unresolved
+//    decision". `working` is a transient activity heuristic; needs-input is a
+//    recorded, durable, user-blocking fact. The durable fact wins.
+//
+//    In the daemon these are already mutually exclusive — SetWorking(true)
+//    clears IdleReason — so for a live snapshot this reorder changes nothing.
+//    It changes two real cases for the better: a stale cached snapshot, and
+//    SessionView, whose sidebar derives isWorking from the provider event
+//    stream and reports "working" for an assistant turn that stopped on
+//    stop_reason 'tool_use' — which is precisely a tool waiting on the user's
+//    approval. That surface used to label a pending approval "Working".
+//
+// 4. working.
+//
+// 5. limited — isDegradedSession(). The agent is alive and answering; one
+//    optional capability (typically an MCP server) did not start. Per
+//    "Calm, literal lifecycle language" this is not an alarm and it is not a
+//    question, so it must NOT inflate a "Needs you" count — that was the
+//    navigator's bug. It also sits below `working` so a degraded session that
+//    is actively working says so; `degraded` stays exposed on the result for
+//    surfaces that want to badge it alongside.
+//
+// 6. finished — live, idleReason 'completed'. The provider run finished but
+//    the runtime is still up and resumable.
+//
+// 7. not-started / 8. ready — idle with and without a recorded reason.
+//
+// Unknown idle state is never escalated: a provider that can recognise a
+// question records needs-input explicitly, and guessing would alarm the user
+// on no evidence.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type SessionStatusState =
+  | 'failed'
+  | 'ended'
+  | 'needs-you'
+  | 'working'
+  | 'limited'
+  | 'finished'
+  | 'not-started'
+  | 'ready';
+
+export type SessionStatusTone =
+  | 'attention'
+  | 'ended'
+  | 'needs'
+  | 'working'
+  | 'limited'
+  | 'completed'
+  | 'ready';
+
+export interface SessionStatus {
+  state: SessionStatusState;
+  /** The single user-facing word for this state. Do not re-word per surface. */
+  label: string;
+  /** `is-<state>` — the CSS token every surface styles this state with. */
+  className: string;
+  tone: SessionStatusTone;
+  /** True when the runtime is alive but one optional capability is missing. */
+  degraded: boolean;
+  /** True only for a recorded, user-blocking provider question. */
+  needsYou: boolean;
+  /** Ended cleanly, or live with the provider run completed. */
+  finished: boolean;
+  /** needs-you, failed, or limited — worth surfacing above routine work. */
+  wantsAttention: boolean;
+}
+
+const STATE_LABELS: Record<SessionStatusState, string> = {
+  failed: 'Failed',
+  ended: 'Ended',
+  'needs-you': 'Needs you',
+  working: 'Working',
+  limited: 'Limited',
+  finished: 'Finished',
+  'not-started': 'Not started',
+  ready: 'Ready'
+};
+
+const STATE_TONES: Record<SessionStatusState, SessionStatusTone> = {
+  failed: 'attention',
+  ended: 'ended',
+  'needs-you': 'needs',
+  working: 'working',
+  limited: 'limited',
+  finished: 'completed',
+  'not-started': 'ready',
+  ready: 'ready'
+};
+
+export interface ClassifyOptions {
+  /**
+   * A richer live activity signal than `session.working` — currently only
+   * SessionView's provider-event sidebar has one. It replaces the daemon flag
+   * at step 4; it cannot promote a session past `failed`, `ended`, or
+   * `needs-you`, which is the whole point of the ordering above.
+   */
+  working?: boolean;
+}
+
+function statusState(session: SessionInfo, options: ClassifyOptions): SessionStatusState {
+  if (isCrashedSession(session)) return 'failed';
+  if (session.exited) return 'ended';
+  if (session.idleReason === 'needs-input') return 'needs-you';
+  if (options.working ?? session.working) return 'working';
+  if (isDegradedSession(session)) return 'limited';
+  if (session.idleReason === 'completed') return 'finished';
+  if (session.idleReason === 'never-started') return 'not-started';
+  return 'ready';
+}
+
+/** The single source of truth for "what state is this session in?". */
+export function classifySession(session: SessionInfo, options: ClassifyOptions = {}): SessionStatus {
+  const state = statusState(session, options);
+  return {
+    state,
+    label: STATE_LABELS[state],
+    className: `is-${state}`,
+    tone: STATE_TONES[state],
+    degraded: isDegradedSession(session),
+    needsYou: state === 'needs-you',
+    finished: state === 'ended' || state === 'finished',
+    wantsAttention: state === 'needs-you' || state === 'failed' || state === 'limited'
+  };
+}
+
+/** Convenience predicates. Every one of them defers to classifySession. */
+export function sessionNeedsYou(session: SessionInfo): boolean {
+  return classifySession(session).needsYou;
+}
+
+export function sessionIsFinished(session: SessionInfo): boolean {
+  return classifySession(session).finished;
+}
+
+export function sessionWantsAttention(session: SessionInfo): boolean {
+  return classifySession(session).wantsAttention;
+}
+
 export interface EndedSummary {
   label: string;
   detail: string;

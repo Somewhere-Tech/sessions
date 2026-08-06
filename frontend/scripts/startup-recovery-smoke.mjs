@@ -24,7 +24,13 @@ requireSource(main, /window\.location\.reload\(\)/,
   'the startup and crash states need an in-place reload action');
 requireSource(css, /\.startup-shell\s*\{/,
   'the startup shell must have a visible full-window style');
-requireSource(native, /let runtime_status = lifecycle::startup_status\(\);[\s\S]*thread::spawn\(move \|\| \{[\s\S]*lifecycle::install_for_app\(&worker\)/,
+// The ordering is the contract, not the exact expression: setup must resolve
+// and publish a startup status before spawning background reconciliation. The
+// pattern used to pin `let runtime_status = lifecycle::startup_status();`
+// literally and went stale the moment the value was wrapped
+// (`resolved_port.annotate(...)`), asserting nothing about the property it
+// exists to protect.
+requireSource(native, /let runtime_status = [^;]*lifecycle::startup_status\(\)[^;]*;[\s\S]*thread::spawn\(move \|\| \{[\s\S]*lifecycle::install_for_app\(&worker\)/,
   'native setup must publish a first-frame status before background runtime reconciliation');
 requireSource(lifecycle, /agent sessions keep running/,
   'runtime reconciliation status must explain that agents keep running');

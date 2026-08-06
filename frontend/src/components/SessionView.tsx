@@ -12,7 +12,7 @@ import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import { getActiveServer, serverDisplayName } from '../lib/servers';
 import { sessionLabel, useTabLabel } from '../lib/tabLabels';
 import { SessionHistoryView } from './SessionHistoryView';
-import { isCrashedSession, isDegradedSession } from '../lib/sessionStatus';
+import { classifySession } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
 import { MachineMark } from './MachineMark';
@@ -100,8 +100,6 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     ? session.displayParentSessionId
     : session?.parentSessionId;
   const parent = displayParentID ? allSessions.find((item) => item.id === displayParentID) : null;
-  const crashedSession = session ? isCrashedSession(session) : false;
-  const degradedSession = session ? isDegradedSession(session) : false;
   const provider = normalizeProvider(session?.tool);
   const richSession = Boolean(session && sessionMode(session) === 'rich');
   const workspaceName = session?.cwd.split('/').filter(Boolean).pop() || 'Workspace';
@@ -166,30 +164,15 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     events: term.claudeEvents,
     daemonWorking: session?.working ?? false
   });
-  const statusLabel = sidebar.isWorking
-    ? 'Working'
-    : degradedSession
-    ? 'Limited'
-    : crashedSession
-    ? 'Failed'
-    : session?.idleReason === 'needs-input'
-    ? 'Needs you'
-    : session?.exited || session?.idleReason === 'completed'
-    ? 'Finished'
-    : session?.idleReason === 'never-started'
-    ? 'Not started'
-    : 'Idle';
-  const statusTone = sidebar.isWorking
-    ? ' is-running'
-    : degradedSession
-    ? ' is-limited'
-    : crashedSession
-    ? ' is-failed'
-    : session?.idleReason === 'needs-input'
-    ? ' is-needs-you'
-    : session?.exited || session?.idleReason === 'completed'
-    ? ' is-finished'
-    : '';
+  // One classifier, one vocabulary (lib/sessionStatus.ts). The sidebar's
+  // provider-event working signal is handed over as the live activity
+  // override; it deliberately cannot outrank a recorded needs-input, because
+  // an assistant turn stopped on `tool_use` IS a pending approval.
+  const sessionStatus = session
+    ? classifySession(session, { working: sidebar.isWorking })
+    : null;
+  const statusLabel = sessionStatus?.label ?? 'Ready';
+  const statusTone = sessionStatus ? ` ${sessionStatus.className}` : '';
 
   useEffect(() => {
     writeSessionView(viewMode);

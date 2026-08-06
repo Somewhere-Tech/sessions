@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSessions } from '../store/sessions';
 import {
-  adoptConversation,
   fetchResumableSessions,
-  repairAdoption,
-  type AdoptConversationResult,
   type ResumableSession
 } from '../api/sessionsd';
+import {
+  adoptConversationWithRepair,
+  adoptionWarning,
+  runAdoptionRepair,
+  type AdoptOutcome
+} from '../lib/adoptConversation';
 import { getCwdLabel } from '../lib/tabLabels';
 import { providerConversationId } from '../lib/sessionStatus';
 import { ProviderBadge } from './ProviderBadge';
@@ -107,7 +110,7 @@ export function ResumeDialog({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [partialResult, setPartialResult] = useState<AdoptConversationResult | null>(null);
+  const [partialResult, setPartialResult] = useState<AdoptOutcome | null>(null);
   const [view, setView] = useState<ViewMode>(readViewMode);
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all');
   const [query, setQuery] = useState('');
@@ -278,7 +281,12 @@ export function ResumeDialog({
       ));
       const sourceSessionId = preferredSourceSessionId
         ?? (matchingSources.length === 1 ? matchingSources[0]?.id : undefined);
-      const result = await adoptConversation(
+      // Shared adopt-then-repair (lib/adoptConversation.ts) — the same call
+      // App.tsx makes for Fleet/Search continues, so both entry points give
+      // the same answer about whether the history annotations finished. The
+      // record-only repair is attempted automatically; anything still
+      // unresolved after it stays on screen with a manual retry.
+      const outcome = await adoptConversationWithRepair(
         selected.sessionId,
         sourceSessionId,
         selected.historyId,
@@ -286,9 +294,9 @@ export function ResumeDialog({
         runtimeMode
       );
       await refresh();
-      onResumed(result.laneId);
-      if (result.partial) {
-        setPartialResult(result);
+      onResumed(outcome.result.laneId);
+      if (outcome.unresolved || outcome.repairError) {
+        setPartialResult(outcome);
         return;
       }
       onClose();
@@ -304,11 +312,11 @@ export function ResumeDialog({
     setBusy(true);
     setError(null);
     try {
-      const result = await repairAdoption(partialResult.repair);
+      const outcome = await runAdoptionRepair(partialResult.repair);
       await refresh();
-      onResumed(result.laneId);
-      if (result.partial) {
-        setPartialResult(result);
+      onResumed(outcome.result.laneId);
+      if (outcome.unresolved) {
+        setPartialResult(outcome);
         return;
       }
       setPartialResult(null);
@@ -464,10 +472,7 @@ export function ResumeDialog({
                   ? 'Resume is live; its records need repair.'
                   : 'The new conversation is live.'}
               </strong>
-              <span>{partialResult.warning}</span>
-              {partialResult.missingAnnotations?.length ? (
-                <span>Missing: {partialResult.missingAnnotations.join(', ')}.</span>
-              ) : null}
+              <span>{adoptionWarning(partialResult)}</span>
             </div>
             {partialResult.repair ? (
               <button

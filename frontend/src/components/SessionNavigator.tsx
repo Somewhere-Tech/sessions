@@ -5,10 +5,12 @@ import { getTabLabel, sessionLabel } from '../lib/tabLabels';
 import { ProviderMark, normalizeProvider } from './ProviderBadge';
 import {
   canContinueSession,
+  classifySession,
   endedAtLabel,
   endedSummary,
-  isCrashedSession,
-  isDegradedSession
+  sessionIsFinished,
+  sessionNeedsYou,
+  sessionWantsAttention
 } from '../lib/sessionStatus';
 import {
   effectiveParentId,
@@ -53,18 +55,9 @@ function projectName(session: SessionInfo): string {
   return path.split('/').filter(Boolean).pop() ?? path;
 }
 
-function isFinished(session: SessionInfo): boolean {
-  return (session.exited && !isCrashedSession(session))
-    || (!session.exited && !session.working && session.idleReason === 'completed');
-}
-function needsYou(session: SessionInfo): boolean {
-  if (session.exited || session.working) return false;
-  if (isDegradedSession(session)) return true;
-  if (session.idleReason) return session.idleReason === 'needs-input';
-  // Unknown idle state is not enough evidence to alarm the user. Providers
-  // that can identify a question or approval record needs-input explicitly.
-  return false;
-}
+// Status classification lives in lib/sessionStatus.ts. This file used to
+// answer "is it finished / does it need me?" twice, in two different ways,
+// and disagreed with Fleet and Home. It now only asks.
 
 function readMachineScope(activeMachineId: string | null): MachineScope {
   try {
@@ -76,14 +69,6 @@ function readMachineScope(activeMachineId: string | null): MachineScope {
 
 function writeMachineScope(scope: MachineScope): void {
   try { window.localStorage.setItem(MACHINE_SCOPE_KEY, scope); } catch { /* preference only */ }
-}
-
-function aggregateSessionStatus(session: SessionInfo): { label: string; tone: string } {
-  if (isCrashedSession(session) || isDegradedSession(session)) return { label: 'Needs attention', tone: 'is-attention' };
-  if (session.exited) return { label: 'Ended', tone: 'is-ended' };
-  if (needsYou(session)) return { label: 'Needs you', tone: 'is-needs' };
-  if (session.working) return { label: 'Working', tone: 'is-working' };
-  return { label: 'Ready', tone: 'is-ready' };
 }
 
 function orderedMachineRows(sessions: SessionInfo[]): Array<{ session: SessionInfo; depth: number }> {
@@ -317,7 +302,7 @@ export function SessionNavigator({
   const scopedSessions = showingAllMachines ? fleetSessions : sessions;
   const projects = useMemo(() => [...new Set(scopedSessions.map(projectName).filter(Boolean))].sort(), [scopedSessions]);
   const counts = useMemo(() => ({
-    needs: scopedSessions.filter(needsYou).length,
+    needs: scopedSessions.filter(sessionNeedsYou).length,
     live: showingAllMachines
       ? scopedSessions.filter((session) => !session.exited).length
       : sessions.filter((session) => liveIds.has(session.id)).length,
@@ -325,7 +310,7 @@ export function SessionNavigator({
   }), [liveIds, scopedSessions, sessions, showingAllMachines]);
 
   const matches = (session: SessionInfo): boolean => {
-    if (primary === 'needs' && !needsYou(session)) return false;
+    if (primary === 'needs' && !sessionNeedsYou(session)) return false;
     if (primary === 'working' && (!session.working || session.exited)) return false;
     if (primary === 'ended' && !session.exited) return false;
     const normalized = normalizeProvider(session.tool);
@@ -504,8 +489,8 @@ export function SessionNavigator({
     collect(session);
     return {
       working: descendants.filter((child) => !child.exited && child.working).length,
-      needs: descendants.filter(needsYou).length,
-      finished: descendants.filter((child) => child.exited || isFinished(child)).length
+      needs: descendants.filter(sessionNeedsYou).length,
+      finished: descendants.filter(sessionIsFinished).length
     };
   };
 
@@ -525,12 +510,10 @@ export function SessionNavigator({
     const helpersExpanded = expandedHelpers.has(session.id);
     const urgentAgentChildren = agentChildren.filter((child) => (
       child.id === activeId
-      || needsYou(child)
-      || isDegradedSession(child)
-      || isCrashedSession(child)
+      || sessionWantsAttention(child)
     ));
     const visibleAgentIDs = new Set((helpersExpanded ? agentChildren : urgentAgentChildren).map((child) => child.id));
-    const completed = userChildren.filter((child) => isFinished(child) && !hasLiveDescendant(child, groupIds));
+    const completed = userChildren.filter((child) => sessionIsFinished(child) && !hasLiveDescendant(child, groupIds));
     const completedIds = new Set(completed.map((child) => child.id));
     const visible = nested.filter((child) => (
       isAgentLedChild(child)
@@ -539,12 +522,11 @@ export function SessionNavigator({
     ));
     const helperRollup = {
       working: agentChildren.filter((child) => !child.exited && child.working).length,
-      needs: agentChildren.filter(needsYou).length,
-      finished: agentChildren.filter((child) => child.exited || isFinished(child)).length
+      needs: agentChildren.filter(sessionNeedsYou).length,
+      finished: agentChildren.filter(sessionIsFinished).length
     };
     const providerName = normalizeProvider(session.tool);
-    const degraded = isDegradedSession(session);
-    const status = session.exited ? 'finished' : degraded ? 'limited' : session.working ? 'running' : needsYou(session) ? 'needs' : 'idle';
+    const status = classifySession(session);
     const end = session.exited ? endedSummary(session, sessions) : null;
     const currentParentID = effectiveParentId(session);
     const parent = currentParentID ? sessions.find((candidate) => candidate.id === currentParentID) : null;
@@ -571,7 +553,7 @@ export function SessionNavigator({
           role="treeitem"
           tabIndex={0}
           aria-expanded={hasChildren ? !collapsed : undefined}
-          className={`session-nav-row is-${status}${session.id === activeId ? ' is-active' : ''}${draggingId === session.id ? ' is-dragging' : ''}${dropTargetId === session.id ? ' is-drop-target' : ''}`}
+          className={`session-nav-row ${status.className}${session.id === activeId ? ' is-active' : ''}${draggingId === session.id ? ' is-dragging' : ''}${dropTargetId === session.id ? ' is-drop-target' : ''}`}
           data-session-id={session.id}
           style={{ '--tree-depth': depth } as React.CSSProperties}
           onClick={() => selectingEnded && session.exited ? toggleEndedSelection(session.id) : onOpen(session.id)}
@@ -602,7 +584,7 @@ export function SessionNavigator({
             </button>
           ) : <span className="session-tree-toggle-placeholder" aria-hidden />}
           <span className="session-nav-branch" aria-hidden>{depth > 0 ? '└' : ''}</span>
-          <span className={`session-nav-status is-${status}`} aria-hidden />
+          <span className={`session-nav-status ${status.className}`} aria-hidden title={status.label} />
           <span className="session-nav-copy">
             <span className="session-nav-title">{label}</span>
             {end ? <span className={`session-nav-ended is-${end.tone}`}>{end.label}</span> : null}
@@ -746,7 +728,7 @@ export function SessionNavigator({
           <small>{eligible.length}</small>
         </header>
         {orderedMachineRows(eligible).map(({ session, depth }) => {
-          const status = aggregateSessionStatus(session);
+          const status = classifySession(session);
           const providerName = normalizeProvider(session.tool);
           return (
             <button
@@ -764,7 +746,7 @@ export function SessionNavigator({
                 <strong>{getTabLabel(session.id) ?? sessionLabel(session)}</strong>
                 <small>{projectName(session)}</small>
               </span>
-              <span className={`session-fleet-state ${status.tone}`}><i aria-hidden />{status.label}</span>
+              <span className={`session-fleet-state ${status.className}`}><i aria-hidden />{status.label}</span>
               <time>{relativeTime(lastActivity(session))}</time>
             </button>
           );

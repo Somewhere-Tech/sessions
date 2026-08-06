@@ -1,16 +1,16 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { fetchServerHealth } from '../api/sessionsd';
-import { claimNativeMachinePairing, rememberNativeMachineClaim, rememberServerEndpoint } from '../lib/hostedBootstrap';
+import { claimNativeMachinePairing, rememberServerEndpoint } from '../lib/hostedBootstrap';
 import { formatServerEndpoint } from '../lib/serverEndpoint';
 import { useServers, type ServerConfig } from '../lib/servers';
 import { tailnetClientID } from '../lib/tailnetClient';
 import {
-  claimNativeMachineAccess,
   discoverNativeMachines,
   requestNativeMachineAccess,
   type NativeMachinePeer,
   type NativeTailnetRequest
 } from '../lib/tauriBridge';
+import { useMachineAccessPairing } from '../hooks/useMachineAccessPairing';
 
 const LOCAL_ENDPOINT = 'http://localhost:8787';
 const HEALTH_TIMEOUT_MS = 8_000;
@@ -101,44 +101,25 @@ export function ConnectScreen({
     }
   };
 
-  useEffect(() => {
-    if (!accessRequest) return;
-    let cancelled = false;
-    let checking = false;
-    const check = async (): Promise<void> => {
-      if (checking) return;
-      checking = true;
-      try {
-        const result = await claimNativeMachineAccess(accessRequest.transport, accessRequest);
-        if (cancelled || result.status === 'pending') return;
-        if (result.status === 'accepted' && result.claim) {
-          const server = await rememberNativeMachineClaim(result.claim);
-          if (!cancelled) {
-            setAccessRequest(null);
-            setMessage(`${server.name} approved this device. Connecting…`);
-          }
-          return;
-        }
-        if (!cancelled) {
-          setAccessRequest(null);
-          setMessage(null);
-          setError(result.status === 'denied'
-            ? 'The other machine denied this request.'
-            : 'The request expired. Search again when someone is at the other machine.');
-        }
-      } catch (reason) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
-      } finally {
-        checking = false;
-      }
-    };
-    void check();
-    const interval = window.setInterval(() => { void check(); }, 2_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [accessRequest]);
+  // One shared implementation of the approval poll (hooks/useMachineAccessPairing.ts).
+  // This was one of three hand-rolled copies whose wording had already drifted.
+  const pendingAccess = useMemo(
+    () => accessRequest ? { transport: accessRequest.transport, request: accessRequest } : null,
+    [accessRequest]
+  );
+  useMachineAccessPairing({
+    pending: pendingAccess,
+    onAccepted: (server) => {
+      setAccessRequest(null);
+      setMessage(`${server.name} approved this device. Connecting…`);
+    },
+    onSettled: (_outcome, text) => {
+      setAccessRequest(null);
+      setMessage(null);
+      setError(text);
+    },
+    onError: setError
+  });
 
   const probe = async (server: ServerConfig): Promise<void> => {
     if (credentialError) {

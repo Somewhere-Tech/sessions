@@ -3,14 +3,21 @@ import { readFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-const [fleet, servers, api, styles] = await Promise.all([
+const [fleet, servers, api, styles, status] = await Promise.all([
   source('src/components/FleetView.tsx'),
   source('src/lib/servers.ts'),
   source('src/api/sessionsd.ts'),
-  source('src/styles/globals.css')
+  source('src/styles/globals.css'),
+  source('src/lib/sessionStatus.ts')
 ]);
 
-assert.match(fleet, /'needs-you': 'Needs you'/);
+// The state vocabulary lives in exactly one module. Fleet asks for it; it
+// must not carry its own label map or its own precedence order, which is how
+// it came to say "Needs you" about a session the navigator called "Ended".
+assert.match(status, /'needs-you': 'Needs you'/);
+assert.match(fleet, /classifySession/);
+assert.doesNotMatch(fleet, /'Needs you'/);
+assert.doesNotMatch(fleet, /function fleetSessionState/);
 assert.match(fleet, /sortFleetSessions\(candidateSessions\)/);
 assert.doesNotMatch(fleet, /quiet sessions/);
 assert.doesNotMatch(fleet, /Open Sessions to see and manage everything\./);

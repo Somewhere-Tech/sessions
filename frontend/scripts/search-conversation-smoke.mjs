@@ -27,7 +27,12 @@ assert.match(searchView, /Jump to latest ↓/);
 assert.match(searchView, /search-transcript-latest/);
 assert.match(searchAPI, /provider_session_id\?: string/);
 assert.match(app, /<SearchView[\s\S]*onResumeConversation=/);
-assert.match(app, /adoptConversation\(providerSessionId, sourceSessionId, historyId\)/);
+// Continuing from Search goes through the shared adopt-then-repair helper —
+// the same one ResumeDialog uses — so both entry points give the user the
+// same answer about whether the history annotations finished.
+assert.match(app, /adoptConversationWithRepair\(providerSessionId, sourceSessionId, historyId\)/);
+assert.match(app, /setAdoptionNotice\(adoptionWarning\(adopted\)\)/);
+assert.doesNotMatch(app, /console\.warn\('Sessions resumed the conversation/);
 assert.match(app, /result\.transcriptRecovery[\s\S]*\? 'remote'[\s\S]*: 'terminal'/);
 assert.doesNotMatch(app, /onResumeConversation=\{\(serverId,[\s\S]{0,240}setDialogOpen/);
 

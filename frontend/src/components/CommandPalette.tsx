@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SessionInfo } from '../types';
 import { sessionLabel } from '../lib/tabLabels';
+import { classifySession } from '../lib/sessionStatus';
 import { normalizeProvider, ProviderMark } from './ProviderBadge';
 import type { ProductView } from './ProductSidebar';
 
@@ -96,13 +97,7 @@ export function CommandPalette({
       })),
       ...sessions.slice(0, 160).map((session): PaletteAction => {
         const provider = normalizeProvider(session.tool);
-        const status = session.exited
-          ? 'Ended'
-          : session.working
-          ? 'Working'
-          : session.idleReason === 'needs-input'
-          ? 'Needs you'
-          : 'Live';
+        const status = classifySession(session).label;
         return {
           id: `session:${session.id}`,
           label: sessionLabel(session),

@@ -98,10 +98,28 @@ async function openCase(health, pairClaim = null) {
       healthRequests += 1;
       if (health === 'reject') {
         void request.abort('failed');
+      } else if (health === 'unauthorized') {
+        void request.respond({ status: 401, contentType: 'application/json', body: '' });
       } else {
-        const status = health === 'unauthorized' ? 401 : 200;
-        const body = status === 200 ? JSON.stringify({ name: 'sessionsd' }) : '';
-        void request.respond({ status, contentType: 'application/json', body });
+        // Contract-shaped health (runtime/CONTRACT/http-api.md § GET /api/health).
+        // The origin probe now runs the same validateServerHealth as every
+        // other entry point, so `ok` and the API range are both meaningful.
+        void request.respond({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ok: true,
+            name: 'sessionsd',
+            version: '0.2.16',
+            listen: { host: '127.0.0.1', port: address.port },
+            lan: { enabled: false, url: null },
+            discovering: false,
+            sessionsLoaded: 0,
+            compatibility: health === 'incompatible'
+              ? { api: { current: 9, minimumClient: 8, maximumClient: 9 }, runner: { current: 2, minimum: 0, maximum: 2 } }
+              : { api: { current: 1, minimumClient: 1, maximumClient: 1 }, runner: { current: 2, minimum: 0, maximum: 2 } }
+          })
+        });
       }
       return;
     }
@@ -187,6 +205,25 @@ try {
   assert.deepEqual(rejectedState, { servers: [], activeId: null });
   assert.deepEqual(rejected.pageErrors, []);
   await rejected.page.close();
+
+  // An out-of-range daemon must not be adopted silently. The probe used to
+  // accept any body with an `ok` or `name` field, so a machine this client
+  // cannot speak to became the active server and the user met whatever broke
+  // next instead of the instructional compatibility message.
+  const incompatible = await openCase('incompatible');
+  await incompatible.page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+  await incompatible.page.waitForSelector('[data-testid="connect-screen"]', { timeout: 10_000 });
+  await incompatible.page.waitForSelector('.connect-error', { timeout: 6_000 });
+  const incompatibleState = await incompatible.page.evaluate(() => ({
+    error: document.querySelector('.connect-error')?.textContent?.trim() ?? '',
+    servers: JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]'),
+    activeId: window.localStorage.getItem('sessions:active-server')
+  }));
+  assert.match(incompatibleState.error, /Sessions API 1, but the machine accepts 8–9/);
+  assert.deepEqual(incompatibleState.servers, []);
+  assert.equal(incompatibleState.activeId, null);
+  assert.deepEqual(incompatible.pageErrors, []);
+  await incompatible.page.close();
 
   const fragment = await openCase('healthy');
   const fragmentUrl = `${origin}/#endpoint=${encodeURIComponent(origin)}&token=fragment-smoke-token`;

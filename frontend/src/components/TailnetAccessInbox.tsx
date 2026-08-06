@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   decideMachineAccessRequest,
   listMachineAccessRequests,
@@ -17,10 +17,23 @@ export function TailnetAccessInbox(): JSX.Element | null {
       ?? state.servers.find((server) => server.isDefault)
   );
 
-  const refresh = useCallback(async (): Promise<void> => {
-    if (!isTauri() || unavailable || !localServer) return;
+  // The poll is cancellable and it stops. Both were missing:
+  //
+  //   • No abort/alive flag — a response landing after unmount, or after the
+  //     local machine changed, still called setState. Every await is now
+  //     gated on the run's own AbortController, and teardown aborts the
+  //     request in flight rather than only ignoring its answer.
+  //   • Once `unavailable` was set (this daemon has no approval endpoint) the
+  //     2s interval kept ticking for the life of the app doing nothing. This
+  //     component is mounted unconditionally in App.tsx, so that was forever.
+  //     The effect is now keyed on `unavailable` and never starts the timer.
+  const abortRef = useRef<AbortController | null>(null);
+
+  const refresh = useCallback(async (signal?: AbortSignal): Promise<void> => {
+    if (!isTauri() || !localServer) return;
     try {
-      const next = await listMachineAccessRequests(localServer);
+      const next = await listMachineAccessRequests(localServer, signal);
+      if (signal?.aborted) return;
       if (next === null) {
         setUnavailable(true);
         setRequests([]);
@@ -29,15 +42,23 @@ export function TailnetAccessInbox(): JSX.Element | null {
       setRequests(next);
     } catch {
       // The main connection surface owns authentication and reachability
-      // errors. A background approval poll should never obscure it.
+      // errors. A background approval poll should never obscure it — and an
+      // abort during teardown is not an error at all.
     }
-  }, [localServer, unavailable]);
+  }, [localServer]);
 
   useEffect(() => {
-    void refresh();
-    const interval = window.setInterval(() => { void refresh(); }, 2000);
-    return () => window.clearInterval(interval);
-  }, [refresh]);
+    if (!isTauri() || unavailable || !localServer) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    void refresh(controller.signal);
+    const interval = window.setInterval(() => { void refresh(controller.signal); }, 2000);
+    return () => {
+      window.clearInterval(interval);
+      controller.abort();
+      if (abortRef.current === controller) abortRef.current = null;
+    };
+  }, [localServer, refresh, unavailable]);
 
   const decide = async (
     request: MachineAccessRequest,
@@ -53,8 +74,8 @@ export function TailnetAccessInbox(): JSX.Element | null {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setBusy(null);
-      void refresh();
+      if (!abortRef.current?.signal.aborted) setBusy(null);
+      void refresh(abortRef.current?.signal);
     }
   };
 

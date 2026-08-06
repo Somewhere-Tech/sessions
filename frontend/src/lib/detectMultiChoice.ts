@@ -45,7 +45,9 @@ const FOOTER_RE = /Enter to select.*[↑↓].*to navigate/;
 const OPTION_RE = /^(\s*)([❯>])?\s*(\d+)\.\s+(.+?)\s*$/;
 const RULE_RE = /^\s*─{4,}\s*$/;
 const CURSOR_FORWARD_RE = /\x1b\[(\d+)C/g;
-const GENERIC_NUMBERED_OPTION_RE = /^\s*(?:[❯>]\s*)?\d+[\.)]\s+\S.+$/;
+// `.` is already literal inside a character class; `[.)]` matches exactly what
+// `[\.)]` did — "1." and "1)" option markers, and nothing else.
+const GENERIC_NUMBERED_OPTION_RE = /^\s*(?:[❯>]\s*)?\d+[.)]\s+\S.+$/;
 const TRUST_PROMPT_RE = /\b(?:do you trust|trust (?:this|the)|trusted (?:folder|directory|workspace|project)|trust the files|only grant access to directories you trust)\b/i;
 const TRUST_CONTEXT_RE = /\b(?:folder|directory|workspace|project|files in this)\b/i;
 const UPDATE_NOTICE_RE = /\b(?:update available|new version|latest version|release notes|what'?s new|restart to update|install update|update now|press enter to continue|notice)\b/i;
@@ -76,7 +78,7 @@ function hasGenericNumberedMenu(rawSnapshot: string): boolean {
   for (const line of lines) {
     const trimmed = line.trim();
     if (GENERIC_NUMBERED_OPTION_RE.test(trimmed)) optionCount++;
-    if (/^\s*[❯>]\s*\d+[\.)]\s+\S/.test(line)) hasSelectionMarker = true;
+    if (/^\s*[❯>]\s*\d+[.)]\s+\S/.test(line)) hasSelectionMarker = true;
     if (/\b(?:enter to select|navigate|select|choose|resume|continue|esc to cancel)\b/i.test(trimmed)) {
       hasPickerLanguage = true;
     }

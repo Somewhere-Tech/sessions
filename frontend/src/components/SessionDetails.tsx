@@ -2,9 +2,22 @@ import { useState } from 'react';
 import type { SessionInfo } from '../types';
 import { getActiveServer, serverDisplayName } from '../lib/servers';
 import { getTabLabel, sessionLabel } from '../lib/tabLabels';
-import { canContinueSession, endedAtLabel, endedSummary, isDegradedSession } from '../lib/sessionStatus';
+import { canContinueSession, classifySession, endedAtLabel, endedSummary, type SessionStatusState } from '../lib/sessionStatus';
 import { sessionModeName } from '../lib/sessionMode';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
+
+// Long-form expansions of the classifier's one-word state. Same ordering,
+// same meaning — this view has room for a sentence, not a different answer.
+const STATE_DETAIL: Record<SessionStatusState, string> = {
+  failed: 'The runtime stopped unexpectedly; saved history is still available',
+  ended: 'The runtime is no longer running',
+  'needs-you': 'Waiting for your response',
+  working: 'Agent is working',
+  limited: 'The agent is alive; one optional capability is unavailable',
+  finished: 'The provider run finished; the runtime is still live',
+  'not-started': 'The runtime has not produced output yet',
+  ready: 'Ready'
+};
 
 interface Props {
   session: SessionInfo;
@@ -16,6 +29,10 @@ interface Props {
 export function SessionDetails({ session, allSessions, onEnd, onResume }: Props): JSX.Element {
   const [confirming, setConfirming] = useState(false);
   const [endReason, setEndReason] = useState('');
+  // `onEnd` rejects when the daemon refuses. Swallowing it left the panel
+  // claiming nothing had happened; an unresolved end must stay visible.
+  const [ending, setEnding] = useState(false);
+  const [endError, setEndError] = useState<string | null>(null);
   const displayParentID = session.displayParentSessionId !== undefined
     ? session.displayParentSessionId
     : session.parentSessionId;
@@ -26,16 +43,26 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
   const value = (content: string | number | null | undefined): string => content === null || content === undefined || content === '' ? '—' : String(content);
   const provider = normalizeProvider(session.tool);
   const end = session.exited ? endedSummary(session, allSessions) : null;
-  const degraded = isDegradedSession(session);
-  const currentStatus = end
-    ? end.label
-    : session.working
-    ? 'Working now'
-    : session.idleReason === 'needs-input'
-    ? 'Waiting for you'
-    : degraded
-    ? 'Limited capability'
-    : 'Live · ready';
+  // Details is the one surface allowed to expand on the classifier's word,
+  // because it is a full record view — but the word itself still comes from
+  // the classifier, so it can never contradict the row the user clicked.
+  const status = classifySession(session);
+  const degraded = status.degraded;
+  const currentStatus = end ? end.label : status.label;
+  const endNow = async (): Promise<void> => {
+    if (ending) return;
+    setEnding(true);
+    setEndError(null);
+    try {
+      await onEnd(session.id, endReason.trim());
+      setConfirming(false);
+    } catch (reason) {
+      setEndError(reason instanceof Error ? reason.message : 'Sessions could not end this session.');
+    } finally {
+      setEnding(false);
+    }
+  };
+
   return (
     <div className="session-details-view">
       <section className="details-grid">
@@ -64,7 +91,7 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
               <Row label="Reason" value={session.endReason?.trim() || 'No reason supplied'}/>
               {session.endOperationId ? <Row label="Batch action" value="Yes · ended with other sessions"/> : null}
             </>
-          ) : <Row label="Current state" value={session.working ? 'Agent is working' : session.idleReason === 'needs-input' ? 'Waiting for your response' : degraded ? 'The agent is alive; one optional capability is unavailable' : 'Ready'}/>}
+          ) : <Row label="Current state" value={STATE_DETAIL[status.state]}/>}
           <Row label="Recovery" value={session.provenanceStatus === 'lost' ? 'Runner connection lost' : 'History is tracked'}/>
         </DetailsCard>
         <DetailsCard title="Relationships">
@@ -107,9 +134,12 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
           <div className="session-control-confirm">
             <p><strong>End this session?</strong> It will stop running. Its conversation is kept, and you can resume it later from Recently ended.</p>
             <input value={endReason} maxLength={280} onChange={(event) => setEndReason(event.currentTarget.value)} placeholder="Why are you ending it? (optional)" aria-label="Reason for ending session" />
+            {endError ? <p className="session-control-error" role="alert">{endError}</p> : null}
             <div className="session-control-actions">
-              <button type="button" className="btn btn-ghost" onClick={() => setConfirming(false)}>Cancel</button>
-              <button type="button" className="btn btn-secondary" onClick={() => void onEnd(session.id, endReason.trim())}>End session</button>
+              <button type="button" className="btn btn-ghost" disabled={ending} onClick={() => { setConfirming(false); setEndError(null); }}>Cancel</button>
+              <button type="button" className="btn btn-secondary" disabled={ending} onClick={() => void endNow()}>
+                {ending ? 'Ending…' : endError ? 'Try again' : 'End session'}
+              </button>
             </div>
           </div>
         ) : <button type="button" className="btn btn-secondary" onClick={() => setConfirming(true)}>End session</button>}
