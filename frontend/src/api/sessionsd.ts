@@ -479,7 +479,93 @@ export interface SearchMatch {
   context_after?: HistoryMessage[];
 }
 
-export interface SearchResponse { matches: SearchMatch[]; total: number }
+// One session's whole contribution to a result set. The daemon computes this
+// across the entire index, so `hits`, `first_hit_at` and `last_hit_at` describe
+// the session, not the page of messages that came back with it.
+export interface SearchSessionHits {
+  session_id: string;
+  name: string;
+  cwd?: string;
+  tool?: 'claude' | 'codex' | 'shell';
+  machine?: string;
+  hits: number;
+  title_match?: boolean;
+  score: number;
+  first_hit_at?: string;
+  last_hit_at?: string;
+  // Drawn from the returned page: a session that matched but did not reach the
+  // page has counts and timestamps without snippets.
+  snippets?: string[];
+}
+
+export interface SearchMachineState {
+  alias: string;
+  name: string;
+  endpoint?: string;
+  status: string;
+  error?: string;
+}
+
+export interface SearchResponse {
+  matches: SearchMatch[];
+  total: number;
+  machines?: SearchMachineState[];
+  partial?: boolean;
+  // Everything below is optional on purpose: a daemon older than the rollup
+  // omits all of it and the client must still work from `matches`/`total`.
+  sessions?: SearchSessionHits[];
+  // The expression that actually ran, after stopword removal, path expansion
+  // and conjunction. Differs from what was sent whenever the query was
+  // rewritten.
+  effective_query?: string;
+  // Which rung of the relaxation ladder produced these results: 'strict',
+  // 'quorum', 'broad' or 'raw'. Deliberately typed as a plain string so a
+  // daemon that adds a rung is not silently misread as one of these.
+  match_mode?: string;
+  // Counts across the whole index, not the returned page.
+  total_hits?: number;
+  total_sessions?: number;
+  // The rollup is incomplete: its counts are lower bounds.
+  rollup_partial?: boolean;
+}
+
+// A daemon is not a type checker. Anything the rollup says is either
+// well-formed or dropped here, so no view has to defend itself against a
+// missing array, a NaN count or a null timestamp.
+function normalizeSearchResponse(body: SearchResponse): SearchResponse {
+  const count = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+  const text = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.trim() ? value : undefined;
+  const sessions = Array.isArray(body.sessions)
+    ? body.sessions
+      .filter((session): session is SearchSessionHits => Boolean(session) && typeof session.session_id === 'string')
+      .map((session) => ({
+        ...session,
+        name: typeof session.name === 'string' ? session.name : '',
+        hits: count(session.hits) ?? 0,
+        score: typeof session.score === 'number' && Number.isFinite(session.score) ? session.score : 0,
+        cwd: text(session.cwd),
+        tool: session.tool === 'claude' || session.tool === 'codex' || session.tool === 'shell' ? session.tool : undefined,
+        machine: text(session.machine),
+        first_hit_at: text(session.first_hit_at),
+        last_hit_at: text(session.last_hit_at),
+        snippets: Array.isArray(session.snippets) ? session.snippets.filter((snippet) => typeof snippet === 'string') : undefined
+      }))
+    : undefined;
+  return {
+    ...body,
+    matches: Array.isArray(body.matches) ? body.matches : [],
+    total: count(body.total) ?? 0,
+    ...(sessions ? { sessions } : { sessions: undefined }),
+    effective_query: text(body.effective_query),
+    match_mode: text(body.match_mode),
+    total_hits: count(body.total_hits),
+    total_sessions: count(body.total_sessions),
+    rollup_partial: body.rollup_partial === true,
+    partial: body.partial === true
+  };
+}
 
 export type AIProvider = 'codex' | 'claude';
 export interface AISettings { provider: AIProvider }
@@ -516,7 +602,7 @@ export async function searchServer(
   if (options.context !== undefined) query.set('context', String(options.context));
   if (options.timeline) query.set('timeline', 'true');
   const r = await serverFetch(server, `${httpBaseForServer(server)}/api/search?${query.toString()}`, { signal });
-  return json<SearchResponse>(r);
+  return normalizeSearchResponse(await json<SearchResponse>(r));
 }
 
 export async function fetchAISettings(signal?: AbortSignal): Promise<AISettings> {

@@ -9,6 +9,7 @@ import {
   type HistoryTranscript,
   type ResumableSession,
   type SearchMatch,
+  type SearchSessionHits,
   type SmartSearchPlan
 } from '../api/sessionsd';
 import {
@@ -34,9 +35,57 @@ type ReaderMode = 'around' | 'after' | 'user' | 'full' | 'range';
 const READER_PAGE_SIZE = 500;
 
 type Result = FleetSearchResult;
+
+// The daemon's per-session rollup, tagged with the machine it came from. It
+// counts every hit in the index, not the page of messages that came back, so
+// it is the only thing on this screen that can answer "which session was that"
+// for a session whose messages never reached the page.
+interface RollupSession extends SearchSessionHits {
+  serverId: string;
+  serverName: string;
+}
+
+// What one machine said about the search itself. Every field is optional at
+// the wire: a daemon older than the rollup sends none of them and each of
+// these stays null, which is the signal to say nothing rather than to guess.
+interface SearchMeta {
+  serverId: string;
+  serverName: string;
+  rewrittenQuery: string | null;
+  matchMode: string | null;
+  totalHits: number | null;
+  totalSessions: number | null;
+  rollupPartial: boolean;
+}
+
+// One session's hits, summed over every Sessions run that continued the same
+// conversation. Null when this daemon did not send a rollup at all — which is
+// different from a rollup that says zero.
+interface RollupSummary {
+  hits: number;
+  firstHitAt: string | null;
+  lastHitAt: string | null;
+  titleMatch: boolean;
+}
+
+type ResultRow =
+  | { kind: 'group'; key: string; group: SearchConversationGroup; rollup: RollupSummary | null }
+  | { kind: 'rollup'; key: string; entry: RollupSession };
+
 interface SelectedConversation {
-  result: Result;
-  group: SearchConversationGroup;
+  token: number;
+  key: string;
+  serverId: string;
+  serverName: string;
+  sessionId: string;
+  providerSessionId?: string;
+  tool: string;
+  title: string;
+  // The message this view was opened at, or null when the session was opened
+  // from a rollup and Search does not know where in it the hits are. A null
+  // anchor must never be drawn as a match: message 1 is not the answer.
+  anchor: number | null;
+  matchCount: number | null;
   transcript: HistoryTranscript | null;
   loading: boolean;
   error: string | null;
@@ -101,11 +150,14 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
   const [plan, setPlan] = useState<SmartSearchPlan | null>(null);
   const [planning, setPlanning] = useState(false);
   const [results, setResults] = useState<Result[]>([]);
+  const [rollup, setRollup] = useState<RollupSession[]>([]);
+  const [metas, setMetas] = useState<SearchMeta[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [continuingKey, setContinuingKey] = useState<string | null>(null);
   const [continuationError, setContinuationError] = useState<string | null>(null);
   const [selected, setSelected] = useState<SelectedConversation | null>(null);
+  const selectionToken = useRef(0);
   const planGeneration = useRef(0);
   const planAbort = useRef<AbortController | null>(null);
   const transcriptAbort = useRef<AbortController | null>(null);
@@ -144,6 +196,8 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
   useEffect(() => {
     if (!effectiveQuery) {
       setResults([]);
+      setRollup([]);
+      setMetas([]);
       setErrors([]);
       setLoading(false);
       return;
@@ -186,23 +240,41 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
             effectiveQuery,
             serverDisplayName(server, true)
           );
+          const serverName = serverDisplayName(server, true);
           return {
             matches: matches.map((match) => ({
               ...match,
               serverId: server.id,
-              serverName: serverDisplayName(server, true)
+              serverName
             })),
+            // Absent fields stay absent. An older daemon sends matches and a
+            // total and nothing else, and every null below is what keeps this
+            // screen from inventing a rollup it was never given.
+            sessions: (response.sessions ?? []).map((session) => ({ ...session, serverId: server.id, serverName })),
+            meta: {
+              serverId: server.id,
+              serverName,
+              rewrittenQuery: response.effective_query ?? null,
+              matchMode: response.match_mode ?? null,
+              totalHits: response.total_hits ?? null,
+              totalSessions: response.total_sessions ?? null,
+              rollupPartial: response.rollup_partial === true || response.partial === true
+            } satisfies SearchMeta,
             error: null
           };
         } catch (reason) {
           return {
             matches: [] as Result[],
+            sessions: [] as RollupSession[],
+            meta: null,
             error: `${serverDisplayName(server, true)}: ${reason instanceof Error ? reason.message : 'unavailable'}`
           };
         }
       })).then((responses) => {
         if (controller.signal.aborted) return;
         setResults(responses.flatMap((response) => response.matches));
+        setRollup(responses.flatMap((response) => response.sessions));
+        setMetas(responses.flatMap((response) => response.meta ? [response.meta] : []));
         setErrors(responses.flatMap((response) => response.error ? [response.error] : []));
         setLoading(false);
       });
@@ -222,6 +294,52 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
   }), [results, sort]);
 
   const conversationGroups = useMemo(() => groupSearchResults(orderedResults), [orderedResults]);
+
+  // The rollup is keyed by the daemon's own session id, and one conversation
+  // can span several of those when it was continued across Sessions runs — so
+  // a group claims every rollup row its runs produced, and their hits add up.
+  const rows = useMemo<ResultRow[]>(() => {
+    const byKey = new Map(rollup.map((entry) => [`${entry.serverId}:${entry.session_id}`, entry]));
+    const claimed = new Set<string>();
+    const groupRows = conversationGroups.map<ResultRow>((group) => {
+      const entries = group.sourceSessionIds
+        .map((sessionID) => byKey.get(`${group.primary.serverId}:${sessionID}`))
+        .filter((entry): entry is RollupSession => Boolean(entry));
+      for (const entry of entries) claimed.add(`${entry.serverId}:${entry.session_id}`);
+      return { kind: 'group', key: group.key, group, rollup: summarizeRollup(entries) };
+    });
+    // Sessions the rollup counted but whose messages never reached the page.
+    // These are the ones a message list silently loses, so they get a row.
+    const orphans = rollup
+      .filter((entry) => !claimed.has(`${entry.serverId}:${entry.session_id}`) && entry.hits > 0)
+      .sort((left, right) => (right.score - left.score)
+        || (timestampValue(right.last_hit_at ?? null) - timestampValue(left.last_hit_at ?? null)))
+      .map<ResultRow>((entry) => ({ kind: 'rollup', key: `rollup:${entry.serverId}:${entry.session_id}`, entry }));
+    return [...groupRows, ...orphans];
+  }, [conversationGroups, rollup]);
+
+  // Fleet totals are only reported when every machine that answered supplied
+  // them. One old daemon in the fleet makes the sum a fiction, and a fiction
+  // is worse here than saying nothing.
+  const totals = useMemo(() => {
+    if (metas.length === 0 || !metas.every((meta) => meta.totalSessions !== null && meta.totalHits !== null)) return null;
+    return {
+      sessions: metas.reduce((sum, meta) => sum + (meta.totalSessions ?? 0), 0),
+      hits: metas.reduce((sum, meta) => sum + (meta.totalHits ?? 0), 0)
+    };
+  }, [metas]);
+
+  // A count is a lower bound whenever any part of the fleet did not finish:
+  // a truncated rollup, a machine that failed, or a machine that never replied.
+  const countsArePartial = metas.some((meta) => meta.rollupPartial)
+    || errors.length > 0
+    || metas.length < servers.length;
+
+  const queryNotice = useMemo(
+    () => describeQueryRewrite(effectiveQuery, metas),
+    [effectiveQuery, metas]
+  );
+
   const updateQuery = (value: string): void => {
     setQuery(value);
     setSubmittedQuery('');
@@ -254,6 +372,8 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
     setPlanning(true);
     setPlan(null);
     setResults([]);
+    setRollup([]);
+    setMetas([]);
     setErrors([]);
     try {
       const nextPlan = await planSmartSearch(naturalQuery, controller.signal);
@@ -273,6 +393,8 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
       return;
     }
     setResults([]);
+    setRollup([]);
+    setMetas([]);
     setErrors([]);
     setSubmittedQuery(query.trim());
   };
@@ -295,42 +417,74 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
     }
   };
 
-  const viewConversation = (group: SearchConversationGroup, result: Result = group.primary): void => {
-    const server = servers.find((candidate) => candidate.id === result.serverId);
+  const openConversation = (
+    target: Omit<SelectedConversation, 'token' | 'transcript' | 'loading' | 'error'>,
+    messageId?: string
+  ): void => {
+    const server = servers.find((candidate) => candidate.id === target.serverId);
     if (!server) {
-      setErrors([`The ${result.serverName} connection is no longer configured.`]);
+      setErrors([`The ${target.serverName} connection is no longer configured.`]);
       return;
     }
     transcriptAbort.current?.abort();
     const controller = new AbortController();
     transcriptAbort.current = controller;
-    setSelected({ result, group, transcript: null, loading: true, error: null });
-    const anchor = result.message_index ?? 0;
-    void fetchServerHistoryTranscript(server, result.session_id, controller.signal, {
-      start: Math.max(0, anchor - 2),
-      end: anchor + 11,
-      anchor,
-      messageId: result.title_match ? undefined : result.message_id
-    })
-      .then((transcript) => setSelected((current) => current?.result === result
+    selectionToken.current += 1;
+    const token = selectionToken.current;
+    setSelected({ ...target, token, transcript: null, loading: true, error: null });
+    const anchor = target.anchor;
+    void fetchServerHistoryTranscript(server, target.sessionId, controller.signal, anchor === null
+      ? { start: 0, end: 12 }
+      : { start: Math.max(0, anchor - 2), end: anchor + 11, anchor, messageId })
+      .then((transcript) => setSelected((current) => current?.token === token
         ? { ...current, transcript: normalizeTranscriptIndexes(transcript), loading: false }
         : current))
-      .catch((reason: unknown) => setSelected((current) => current?.result === result ? {
+      .catch((reason: unknown) => setSelected((current) => current?.token === token ? {
         ...current,
         loading: false,
         error: reason instanceof Error ? reason.message : 'Could not load the conversation'
       } : current));
   };
 
+  const viewConversation = (group: SearchConversationGroup, result: Result = group.primary): void => {
+    openConversation({
+      key: group.key,
+      serverId: result.serverId,
+      serverName: result.serverName,
+      sessionId: result.session_id,
+      providerSessionId: result.provider_session_id,
+      tool: result.tool,
+      title: group.title || result.name || result.session_id.slice(0, 8),
+      anchor: result.message_index ?? 0,
+      matchCount: group.matches.filter((match) => !match.title_match).length
+    }, result.title_match ? undefined : result.message_id);
+  };
+
+  // Opening a session Search only knows from the rollup: it has the session and
+  // the hit count, but not where in the transcript the hits are, so it opens at
+  // the beginning and says so rather than pointing at a message it guessed.
+  const viewRollupSession = (entry: RollupSession, key: string): void => {
+    openConversation({
+      key,
+      serverId: entry.serverId,
+      serverName: entry.serverName,
+      sessionId: entry.session_id,
+      tool: entry.tool ?? '',
+      title: entry.name || entry.session_id.slice(0, 8),
+      anchor: null,
+      matchCount: entry.hits
+    });
+  };
+
   if (selected) {
     return (
       <ConversationReader
         selected={selected}
-        server={servers.find((candidate) => candidate.id === selected.result.serverId)}
-        continuing={continuingKey === selected.group.key}
+        server={servers.find((candidate) => candidate.id === selected.serverId)}
+        continuing={continuingKey === selected.key}
         continuationError={continuationError}
         onResumeConversation={(serverId, providerSessionId, sourceSessionId, historyId) => continueConversation(
-          selected.group.key,
+          selected.key,
           serverId,
           providerSessionId,
           sourceSessionId,
@@ -348,9 +502,14 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
   const resultSummary = hasSearch
     ? loading
       ? `Searching ${servers.length} machine${servers.length === 1 ? '' : 's'}…`
-      : `${conversationGroups.length} conversation${conversationGroups.length === 1 ? '' : 's'}`
+      : totals
+        ? `${countsArePartial ? 'at least ' : ''}${plural(totals.sessions, 'conversation')} · ${plural(totals.hits, 'match', 'matches')}${totals.sessions > rows.length ? ` · ${rows.length} shown` : ''}`
+        : plural(rows.length, 'conversation')
     : `${servers.length} machines ready`;
   const searchBusy = planning || loading;
+  const showCountCaveat = countsArePartial
+    && !loading
+    && Boolean(totals || rows.some((row) => row.kind === 'rollup' || row.rollup));
 
   return (
     <div className="search-view">
@@ -447,6 +606,27 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
 
         {errors.length > 0 ? <div className="search-errors">{errors.join(' · ')}</div> : null}
         {continuationError ? <div className="search-errors">{continuationError}</div> : null}
+        {/* Both notices are silent on a normal strict search: a screen that
+            explains itself every time teaches people to stop reading it. */}
+        {hasSearch && !loading && queryNotice ? (
+          <div className={`search-notice${queryNotice.relaxed ? ' is-relaxed' : ''}`} role="status">
+            <span aria-hidden>{queryNotice.relaxed ? '⌁' : '⇢'}</span>
+            <span>
+              {queryNotice.text}
+              {queryNotice.query ? <> Results are for <code>{queryNotice.query}</code></> : null}
+            </span>
+          </div>
+        ) : null}
+        {showCountCaveat ? (
+          <div className="search-notice" role="status">
+            <span aria-hidden>±</span>
+            <span>
+              {errors.length > 0
+                ? 'A machine did not answer, so these counts are lower bounds — there is more history than this.'
+                : 'This count did not finish, so the numbers here are lower bounds — there is more history than this.'}
+            </span>
+          </div>
+        ) : null}
         {searchBusy && orderedResults.length === 0 ? (
           <div className="search-loading-results" aria-hidden>
             <span /><span /><span />
@@ -457,28 +637,37 @@ export function SearchView({ onResumeConversation }: SearchViewProps): JSX.Eleme
             <h2>Start with what you remember</h2>
             <p>Smart Search sends only your question to the pre-authenticated Codex or Claude CLI. Transcripts stay local. Results open read-only at the exact matching message.</p>
           </div>
-        ) : orderedResults.length === 0 && !loading ? (
+        ) : rows.length === 0 && !loading ? (
           <div className="usage-empty">No matching conversations.</div>
         ) : (
           <div className="search-results">
-            {conversationGroups.map((group) => (
+            {rows.map((row) => row.kind === 'group' ? (
               <SearchConversationCard
-                key={group.key}
-                group={group}
+                key={row.key}
+                group={row.group}
+                rollup={row.rollup}
+                countsArePartial={countsArePartial}
                 ranked={mode === 'ai' || mode === 'ranked'}
-                onView={(result) => viewConversation(group, result)}
-                onResume={normalizeProvider(group.primary.tool)
+                onView={(result) => viewConversation(row.group, result)}
+                onResume={normalizeProvider(row.group.primary.tool)
                   ? () => continueConversation(
-                    group.key,
-                    group.primary.serverId,
-                    group.primary.provider_session_id || group.primary.session_id,
-                    managedSourceSessionID(group.primary),
-                    !group.primary.provider_session_id || isPromptHistoryOnly(group.primary)
-                      ? group.primary.session_id
+                    row.key,
+                    row.group.primary.serverId,
+                    row.group.primary.provider_session_id || row.group.primary.session_id,
+                    managedSourceSessionID(row.group.primary.session_id),
+                    !row.group.primary.provider_session_id || isPromptHistoryOnly(row.group.primary.session_id)
+                      ? row.group.primary.session_id
                       : undefined
                   )
                   : undefined}
-                resumePending={continuingKey === group.key}
+                resumePending={continuingKey === row.key}
+              />
+            ) : (
+              <SearchRollupCard
+                key={row.key}
+                entry={row.entry}
+                countsArePartial={countsArePartial}
+                onView={() => viewRollupSession(row.entry, row.key)}
               />
             ))}
           </div>
@@ -498,12 +687,16 @@ function FilterButton({ active, onClick, children }: { active: boolean; onClick:
 
 function SearchConversationCard({
   group,
+  rollup,
+  countsArePartial,
   ranked,
   onView,
   onResume,
   resumePending = false
 }: {
   group: SearchConversationGroup;
+  rollup: RollupSummary | null;
+  countsArePartial: boolean;
   ranked: boolean;
   onView: (result: Result) => void;
   onResume?: () => Promise<void>;
@@ -512,12 +705,17 @@ function SearchConversationCard({
   const result = group.primary;
   const provider = normalizeProvider(result.tool);
   const messageMatches = group.matches.filter((match) => !match.title_match);
-  const titleMatched = group.matches.some((match) => match.title_match);
+  const titleMatched = group.matches.some((match) => match.title_match) || rollup?.titleMatch === true;
   const latest = group.matches.reduce<string | null>((current, match) => {
     if (!match.timestamp) return current;
     return !current || timestampValue(match.timestamp) > timestampValue(current) ? match.timestamp : current;
   }, null);
-  const promptHistoryOnly = isPromptHistoryOnly(result);
+  const promptHistoryOnly = isPromptHistoryOnly(result.session_id);
+  // The rollup counts the session; the page only carries what fitted. Taking
+  // the larger of the two keeps the number a lower bound either way, and never
+  // prints a total smaller than the matches listed right underneath it.
+  const hits = rollup ? Math.max(rollup.hits, messageMatches.length) : null;
+  const span = formatHitSpan(rollup?.firstHitAt ?? null, rollup?.lastHitAt ?? null);
   return (
     <article className={`search-result-card${provider ? ` is-${provider}` : ''}`}>
       <span className="search-result-provider" aria-label={provider ? `${provider} conversation` : 'Saved conversation'}>
@@ -531,9 +729,13 @@ function SearchConversationCard({
           </span>
           <span className="search-conversation-match-count">
             {promptHistoryOnly
-              ? `${messageMatches.length} retained user prompt${messageMatches.length === 1 ? '' : 's'} · full transcript not locally readable`
+              ? `${plural(messageMatches.length, 'retained user prompt')} · full transcript not locally readable`
+              : hits !== null
+              ? `${countsArePartial ? 'at least ' : ''}${plural(hits, 'matching message')}${hits > messageMatches.length
+                ? ` · ${messageMatches.length > 0 ? `${messageMatches.length} shown here` : 'none shown here'}`
+                : ''}`
               : messageMatches.length > 0
-              ? `${messageMatches.length} matching message${messageMatches.length === 1 ? '' : 's'}`
+              ? plural(messageMatches.length, 'matching message')
               : 'Named conversation'}
             {group.sourceSessionIds.length > 1 ? ` · continued across ${group.sourceSessionIds.length} Sessions runs` : ''}
           </span>
@@ -559,7 +761,9 @@ function SearchConversationCard({
             {provider ? <ProviderBadge provider={provider} compact /> : null}
             <span>{compactMachineName(result.serverName || result.machine)}</span>
             {result.cwd ? <code>{compactPath(result.cwd)}</code> : null}
-            {latest ? <time>{relativeDate(latest)}</time> : null}
+            {span
+              ? <time className="search-session-span" title={span.title}>{span.label}</time>
+              : latest ? <time>{relativeDate(latest)}</time> : null}
             {ranked && !titleMatched ? <span>{rankedMatchLabel(result.score)}</span> : null}
           </span>
           <span className="search-result-actions">
@@ -569,6 +773,62 @@ function SearchConversationCard({
                 {resumePending ? 'Resuming…' : 'Resume conversation'}
               </button>
             ) : null}
+          </span>
+        </span>
+      </span>
+    </article>
+  );
+}
+
+// A session the rollup counted whose messages never reached the returned page.
+// Without this card the conversation is simply invisible — which is the exact
+// failure the rollup exists to end.
+function SearchRollupCard({
+  entry,
+  countsArePartial,
+  onView
+}: {
+  entry: RollupSession;
+  countsArePartial: boolean;
+  onView: () => void;
+}): JSX.Element {
+  const provider = normalizeProvider(entry.tool ?? '');
+  const span = formatHitSpan(entry.first_hit_at ?? null, entry.last_hit_at ?? null);
+  const snippets = (entry.snippets ?? []).filter((snippet) => snippet.trim()).slice(0, 2);
+  return (
+    <article className={`search-result-card is-rollup-only${provider ? ` is-${provider}` : ''}`}>
+      <span className="search-result-provider" aria-label={provider ? `${provider} conversation` : 'Saved conversation'}>
+        <ParserIcon icon={provider === 'claude' ? '🟠' : provider === 'codex' ? '🟢' : '⬛'} size={24} />
+      </span>
+      <span className="search-result-body">
+        <button type="button" className="search-result-main" onClick={onView}>
+          <span className="search-result-source">
+            <strong>{entry.name.trim() || 'Saved conversation'}</strong>
+            {entry.title_match ? <span className="search-title-match">Title match</span> : null}
+          </span>
+          <span className="search-conversation-match-count">
+            {`${countsArePartial ? 'at least ' : ''}${plural(entry.hits, 'matching message')} · none shown here`}
+          </span>
+        </button>
+        {snippets.length > 0 ? (
+          <span className="search-conversation-matches">
+            {snippets.map((snippet, index) => (
+              <span className="search-conversation-match is-static" key={index}>
+                <span>In this chat</span>
+                <span className="search-snippet"><SearchSnippet value={snippet} /></span>
+              </span>
+            ))}
+          </span>
+        ) : null}
+        <span className="search-result-footer">
+          <span className="search-result-location">
+            {provider ? <ProviderBadge provider={provider} compact /> : null}
+            <span>{compactMachineName(entry.serverName || entry.machine || '')}</span>
+            {entry.cwd ? <code>{compactPath(entry.cwd)}</code> : null}
+            {span ? <time className="search-session-span" title={span.title}>{span.label}</time> : null}
+          </span>
+          <span className="search-result-actions">
+            <button type="button" onClick={onView}>Open conversation <span aria-hidden>→</span></button>
           </span>
         </span>
       </span>
@@ -644,8 +904,11 @@ function ConversationReader({
   const anchorRef = useRef<HTMLElement | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const readerAbort = useRef<AbortController | null>(null);
-  const provider = normalizeProvider(readerTranscript?.session.tool ?? selected.result.tool);
-  const anchor = selected.result.message_index;
+  const provider = normalizeProvider(readerTranscript?.session.tool ?? selected.tool);
+  // A rollup-opened session has no anchor. The reader still needs a number to
+  // page from, but nothing may be labelled "Match" on the strength of it.
+  const anchored = selected.anchor !== null;
+  const anchor = selected.anchor ?? 0;
 
   const visibleMessages = readerTranscript?.messages ?? [];
 
@@ -688,7 +951,7 @@ function ConversationReader({
       };
     }
     setReaderLimit(limit);
-    void fetchServerHistoryTranscript(server, selected.result.session_id, controller.signal, window)
+    void fetchServerHistoryTranscript(server, selected.sessionId, controller.signal, window)
       .then((transcript) => {
         if (!controller.signal.aborted) {
           const normalized = normalizeTranscriptIndexes(transcript);
@@ -720,7 +983,7 @@ function ConversationReader({
     readerAbort.current = controller;
     setReaderLoading(true);
     setReaderError(null);
-    void fetchServerHistoryTranscript(server, selected.result.session_id, controller.signal, {
+    void fetchServerHistoryTranscript(server, selected.sessionId, controller.signal, {
       start: readerNextIndex,
       end,
       role: readerMode === 'user' ? 'user' : undefined
@@ -756,9 +1019,9 @@ function ConversationReader({
   };
 
   const providerSessionID = readerTranscript?.session.provider_session_id
-    ?? selected.result.provider_session_id;
-  const historyID = readerTranscript?.session.id ?? selected.result.session_id;
-  const promptHistoryOnly = isPromptHistoryOnly(selected.result);
+    ?? selected.providerSessionId;
+  const historyID = readerTranscript?.session.id ?? selected.sessionId;
+  const promptHistoryOnly = isPromptHistoryOnly(selected.sessionId);
   const canResume = Boolean(historyID && provider);
 
   return (
@@ -769,12 +1032,12 @@ function ConversationReader({
           <header className="search-conversation-heading">
             <div>
               <span className="search-conversation-kicker">
-                {promptHistoryOnly ? 'Claude prompt history only' : 'Read-only transcript'} · {selected.group.matches.filter((match) => !match.title_match).length} message match{selected.group.matches.filter((match) => !match.title_match).length === 1 ? '' : 'es'} · opened at message {anchor + 1}
+                {promptHistoryOnly ? 'Claude prompt history only' : 'Read-only transcript'}{selected.matchCount === null ? '' : ` · ${plural(selected.matchCount, 'message match', 'message matches')}`} · {anchored ? `opened at message ${anchor + 1}` : 'opened from the start'}
               </span>
-              <h1>{readerTranscript?.session.name || selected.group.title || selected.result.name || selected.result.session_id.slice(0, 8)}</h1>
+              <h1>{readerTranscript?.session.name || selected.title || selected.sessionId.slice(0, 8)}</h1>
               <p>
                 {provider ? <ProviderBadge provider={provider} /> : null}
-                <span>{compactMachineName(server?.name ?? selected.result.serverName)}</span>
+                <span>{compactMachineName(server?.name ?? selected.serverName)}</span>
                 {readerTranscript?.session.cwd ? <code>{compactPath(readerTranscript.session.cwd)}</code> : null}
               </p>
             </div>
@@ -788,9 +1051,9 @@ function ConversationReader({
                   className="btn btn-primary"
                   disabled={continuing}
                   onClick={() => { void onResumeConversation(
-                    selected.result.serverId,
+                    selected.serverId,
                     providerSessionID || historyID,
-                    managedSourceSessionID(selected.result),
+                    managedSourceSessionID(selected.sessionId),
                     !providerSessionID || promptHistoryOnly ? historyID : undefined
                   ); }}
                 >
@@ -829,7 +1092,7 @@ function ConversationReader({
         {readerTranscript && !readerLoading ? (
           <div className="search-transcript" ref={transcriptScrollRef}>
             {visibleMessages.map((message) => {
-              const isAnchor = message.index === anchor;
+              const isAnchor = anchored && message.index === anchor;
               return (
                 <article
                   ref={isAnchor ? (node) => { anchorRef.current = node; } : undefined}
@@ -942,12 +1205,110 @@ function compactMachineName(value: string): string {
   return clean.replace(/-/g, ' ') || 'Unknown computer';
 }
 
-function managedSourceSessionID(result: SearchMatch): string | undefined {
-  return result.session_id.startsWith('provider:') ? undefined : result.session_id;
+function managedSourceSessionID(sessionID: string): string | undefined {
+  return sessionID.startsWith('provider:') ? undefined : sessionID;
 }
 
-function isPromptHistoryOnly(result: SearchMatch): boolean {
-  return result.session_id.startsWith('provider-history:');
+function isPromptHistoryOnly(sessionID: string): boolean {
+  return sessionID.startsWith('provider-history:');
+}
+
+function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+// Adds one conversation's rollup rows together. Several Sessions runs can
+// continue the same conversation, and the user asked about the conversation.
+function summarizeRollup(entries: RollupSession[]): RollupSummary | null {
+  if (entries.length === 0) return null;
+  let firstHitAt: string | null = null;
+  let lastHitAt: string | null = null;
+  for (const entry of entries) {
+    if (entry.first_hit_at && (!firstHitAt || timestampValue(entry.first_hit_at) < timestampValue(firstHitAt))) {
+      firstHitAt = entry.first_hit_at;
+    }
+    if (entry.last_hit_at && (!lastHitAt || timestampValue(entry.last_hit_at) > timestampValue(lastHitAt))) {
+      lastHitAt = entry.last_hit_at;
+    }
+  }
+  return {
+    hits: entries.reduce((sum, entry) => sum + entry.hits, 0),
+    firstHitAt,
+    lastHitAt,
+    titleMatch: entries.some((entry) => entry.title_match === true)
+  };
+}
+
+// What, if anything, to tell the user about the query that actually ran.
+// Returns null for the ordinary case — a strict search of exactly what was
+// typed — because a notice that appears every time is read no times.
+function describeQueryRewrite(
+  sentQuery: string,
+  metas: SearchMeta[]
+): { text: string; query: string | null; relaxed: boolean } | null {
+  if (!sentQuery || metas.length === 0) return null;
+  const rewritten = [...new Set(metas.map((meta) => meta.rewrittenQuery).filter((value): value is string => Boolean(value)))];
+  const differing = rewritten.filter((value) => normalizeQueryText(value) !== normalizeQueryText(sentQuery));
+  const shown = differing.length === 1 ? differing[0] : null;
+  const broad = metas.filter((meta) => meta.matchMode === 'broad');
+  if (broad.length > 0) {
+    const scope = broad.length === metas.length || metas.length === 1
+      ? ''
+      : ` on ${broad.length} of ${metas.length} machines`;
+    return {
+      text: `Nothing matched that exact phrasing${scope}, so this is a widened search — expect results that are related rather than exact.`,
+      query: shown,
+      relaxed: true
+    };
+  }
+  if (shown) {
+    return {
+      text: 'Search ran a trimmed version of what you typed.',
+      query: shown,
+      relaxed: false
+    };
+  }
+  if (differing.length > 1) {
+    return {
+      text: 'Your machines read this query differently, so their results are not directly comparable.',
+      query: null,
+      relaxed: false
+    };
+  }
+  return null;
+}
+
+function normalizeQueryText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
+// How long the subject was live in a conversation. Both ends come from the
+// rollup, so this covers every hit and not only the ones on the page.
+function formatHitSpan(first: string | null, last: string | null): { label: string; title: string } | null {
+  const start = first && timestampValue(first) ? first : null;
+  const end = last && timestampValue(last) ? last : null;
+  if (!start && !end) return null;
+  const startDay = start ? calendarDay(start) : '';
+  const endDay = end ? calendarDay(end) : '';
+  if (!start || !end || startDay === endDay) {
+    const only = (end ?? start) as string;
+    return { label: relativeDate(only), title: `Matched here on ${relativeDate(only)}` };
+  }
+  return {
+    label: `${shortDate(start)} → ${shortDate(end)}`,
+    title: `Matches here run from ${relativeDate(start)} to ${relativeDate(end)}`
+  };
+}
+
+function calendarDay(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toDateString();
+}
+
+function shortDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function filterTitleSearchSessions(
