@@ -68,6 +68,10 @@ func BackfillTranscriptMirror(providerPath string, options TranscriptMirrorOptio
 		_ = mirror.Close()
 	}()
 	mirror.NoteProviderPath(providerPath)
+	// One call reads the provider file from its first record, so it is one
+	// replay pass. Without this a second backfill would renumber repeated
+	// records and duplicate every one of them into the mirror.
+	mirror.BeginPass()
 
 	scanner := bufio.NewScanner(source)
 	scanner.Buffer(make([]byte, 0, 64*1024), transcriptScanLineCap)

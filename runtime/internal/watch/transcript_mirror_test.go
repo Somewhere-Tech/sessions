@@ -258,9 +258,22 @@ func TestMirrorAppendIsIdempotentAcrossReopen(t *testing.T) {
 	}
 }
 
-// TestMirrorDeduplicatesRecordsWithoutUUID covers provider lines that carry no
-// uuid, such as summary records. A content hash keeps them idempotent too.
-func TestMirrorDeduplicatesRecordsWithoutUUID(t *testing.T) {
+// TestMirrorKeepsRepeatedRecordsWithoutUUID pins the multiset rule for provider
+// lines that carry no uuid.
+//
+// This previously asserted the opposite -- that a repeated uuid-less line was
+// deduplicated by content -- and that was a data-loss bug rather than an
+// optimisation. Real Claude transcripts repeat these lines constantly: of 6607
+// uuid-less records in ~/.claude/projects on the development machine, 3879 were
+// byte-identical to an earlier one, almost all of them "mode",
+// "permission-mode", "agent-name" and "custom-title" state records. Those are
+// read back last-one-wins by native `claude --resume` to restore model,
+// permission mode, and agent. Collapsing them rewinds the restored state: a
+// conversation that toggled bypassPermissions -> normal -> bypassPermissions
+// would resume in normal mode.
+//
+// Within one replay pass every occurrence is therefore stored.
+func TestMirrorKeepsRepeatedRecordsWithoutUUID(t *testing.T) {
 	mirrorPath := TranscriptMirrorPath(t.TempDir(), "sess-05")
 	mirror, err := OpenTranscriptMirror(TranscriptMirrorOptions{Path: mirrorPath})
 	if err != nil {
@@ -271,11 +284,121 @@ func TestMirrorDeduplicatesRecordsWithoutUUID(t *testing.T) {
 	if appended, _ := mirror.Append(line); !appended {
 		t.Fatal("first append of uuid-less record should write")
 	}
-	if appended, _ := mirror.Append(line); appended {
-		t.Fatal("repeated uuid-less record should be deduplicated by content")
+	if appended, _ := mirror.Append(line); !appended {
+		t.Fatal("second occurrence of a uuid-less record is a distinct record and must be kept")
 	}
-	if got := mirror.Meta().Records; got != 1 {
-		t.Fatalf("records = %d, want 1", got)
+	if got := mirror.Meta().Records; got != 2 {
+		t.Fatalf("records = %d, want 2", got)
+	}
+}
+
+// TestMirrorRepeatedRecordsAreIdempotentAcrossPasses is the other half of the
+// rule. Keeping repeats would be worthless if a re-read of the same provider
+// file appended them all again on every attach, so a fresh pass renumbers
+// occurrences from the start and stores nothing it already holds.
+func TestMirrorRepeatedRecordsAreIdempotentAcrossPasses(t *testing.T) {
+	mirrorPath := TranscriptMirrorPath(t.TempDir(), "sess-passes")
+	mirror, err := OpenTranscriptMirror(TranscriptMirrorOptions{Path: mirrorPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mirror.Close()
+
+	// A realistic uuid-less state sequence: the same value returns after a
+	// different one, so it is a repeat that must not collapse.
+	pass := [][]byte{
+		[]byte(`{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"s"}`),
+		[]byte(`{"type":"permission-mode","permissionMode":"normal","sessionId":"s"}`),
+		[]byte(`{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"s"}`),
+	}
+	replay := func() int {
+		mirror.BeginPass()
+		written := 0
+		for _, line := range pass {
+			appended, appendErr := mirror.Append(line)
+			if appendErr != nil {
+				t.Fatal(appendErr)
+			}
+			if appended {
+				written++
+			}
+		}
+		return written
+	}
+
+	if got := replay(); got != 3 {
+		t.Fatalf("first pass wrote %d records, want 3", got)
+	}
+	if got := replay(); got != 0 {
+		t.Fatalf("replaying an unchanged pass wrote %d records, want 0", got)
+	}
+	if got := mirror.Meta().Records; got != 3 {
+		t.Fatalf("records = %d, want 3", got)
+	}
+
+	// The last record must still be bypassPermissions. That is the property a
+	// resume depends on, so assert the restored value rather than only a count.
+	if err := mirror.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	records, err := TranscriptMirrorRecords(mirrorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("mirror holds %d records, want 3", len(records))
+	}
+	if got := records[len(records)-1]["permissionMode"]; got != "bypassPermissions" {
+		t.Fatalf("last permission mode = %v, want bypassPermissions", got)
+	}
+}
+
+// TestMirrorReopenPreservesRepeatOrdinals covers the daemon-restart path. The
+// occurrence numbering has to be rebuilt from the mirror file itself, or the
+// first pass after a restart would treat every repeat as new and duplicate the
+// whole conversation's state records.
+func TestMirrorReopenPreservesRepeatOrdinals(t *testing.T) {
+	dir := t.TempDir()
+	mirrorPath := TranscriptMirrorPath(dir, "sess-reopen")
+	line := []byte(`{"type":"mode","mode":"normal","sessionId":"s"}`)
+
+	first, err := OpenTranscriptMirror(TranscriptMirrorOptions{Path: mirrorPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.BeginPass()
+	for range 3 {
+		if _, err := first.Append(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := first.Meta().Records; got != 3 {
+		t.Fatalf("records before reopen = %d, want 3", got)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := OpenTranscriptMirror(TranscriptMirrorOptions{Path: mirrorPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if got := second.Meta().Records; got != 3 {
+		t.Fatalf("records after reopen = %d, want 3", got)
+	}
+	second.BeginPass()
+	for range 3 {
+		if appended, err := second.Append(line); err != nil || appended {
+			t.Fatalf("replay after reopen wrote a duplicate: appended=%v err=%v", appended, err)
+		}
+	}
+	if got := second.Meta().Records; got != 3 {
+		t.Fatalf("records after replay = %d, want 3", got)
+	}
+	// A fourth genuine occurrence still lands.
+	if appended, err := second.Append(line); err != nil || !appended {
+		t.Fatalf("fourth occurrence = %v, %v; want a write", appended, err)
 	}
 }
 
@@ -394,12 +517,74 @@ func TestMirrorSurvivesAmbiguousProjectBucket(t *testing.T) {
 	if bare := ResolveClaudeJSONL(projectDir, ""); bare.Path != "" || bare.Reason != ClaudeAmbiguous {
 		t.Fatalf("expected ambiguous resolution, got %+v", bare)
 	}
+
+	// The sidecar recorded the exact provider file the watcher observed, so the
+	// ambiguity is now settled by evidence and the LIVE provider file wins. That
+	// is strictly better than the mirror: the mirror is a snapshot, and serving
+	// it to a session that is still running would freeze its conversation.
 	resolved := ResolveClaudeWithMirror(filepath.Dir(projectDir), projectDir, "", mirrorPath)
-	if resolved.Path != mirrorPath || resolved.Reason != ClaudeMirror {
-		t.Fatalf("resolution = %+v, want mirror fallback", resolved)
+	if resolved.Path != providerPath || resolved.Reason != ClaudeSidecarPath {
+		t.Fatalf("resolution = %+v, want the recorded provider path %q", resolved, providerPath)
 	}
 	if got := mirrorTexts(t, mirrorPath); len(got) != 1 || got[0] != "the work that matters" {
 		t.Fatalf("mirror conversation = %v, want the session's own turn", got)
+	}
+
+	// Once the provider file is gone the recorded path is no longer evidence of
+	// anything, and the mirror is the last copy. This is the ordering that keeps
+	// a conversation resolving to exactly one transcript at a time.
+	if err := os.Remove(providerPath); err != nil {
+		t.Fatal(err)
+	}
+	fallback := ResolveClaudeWithMirror(filepath.Dir(projectDir), projectDir, "", mirrorPath)
+	if fallback.Path != mirrorPath || fallback.Reason != ClaudeMirror {
+		t.Fatalf("resolution after provider deletion = %+v, want mirror fallback", fallback)
+	}
+}
+
+// TestResolveWithMirrorRecoversRenamedBucketByProviderID covers the other half
+// of the sidecar evidence. A renamed working directory orphans the bucket
+// Sessions writes into, so the recorded provider path stops existing while the
+// conversation is still on disk under a bucket the encoder no longer produces.
+// The recorded provider id still names the file exactly.
+func TestResolveWithMirrorRecoversRenamedBucketByProviderID(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, ".claude", "projects")
+	cwd := filepath.Join(root, "work")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bucket := filepath.Join(projects, EncodeClaudeCWD(cwd))
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const providerID = "abcdef00-1111-2222-3333-444444444444"
+	providerPath := filepath.Join(bucket, providerID+".jsonl")
+	writeSessionEvents(t, providerPath, conversationEvents("still here"), false)
+	// A second transcript makes the bucket ambiguous without an exact id.
+	writeSessionEvents(t, filepath.Join(bucket, "11111111-1111-2222-3333-444444444444.jsonl"),
+		conversationEvents("someone else"), false)
+
+	mirrorPath := TranscriptMirrorPath(t.TempDir(), "sess-renamed")
+	mirror, err := OpenTranscriptMirror(TranscriptMirrorOptions{
+		Path: mirrorPath, SessionID: "sess-renamed", ProviderSessionID: providerID, Tool: "claude",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A path that no longer exists, as a rename or a machine move would leave.
+	mirror.NoteProviderPath(filepath.Join(projects, "-gone", providerID+".jsonl"))
+	if _, err := mirror.Append([]byte(`{"uuid":"x","type":"user"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := mirror.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved := ResolveClaudeWithMirror(projects, cwd, "", mirrorPath)
+	if resolved.Path != providerPath || resolved.Reason != ClaudeSidecarID {
+		t.Fatalf("resolution = %+v, want %q via the recorded provider id", resolved, providerPath)
 	}
 }
 

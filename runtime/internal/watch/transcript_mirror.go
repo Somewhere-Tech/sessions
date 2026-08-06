@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -104,6 +105,7 @@ type TranscriptMirror struct {
 	metaPath string
 	file     *os.File
 	seen     map[string]struct{}
+	pass     map[string]int
 	meta     TranscriptMirrorMeta
 	capBytes int64
 	dirty    bool
@@ -156,6 +158,7 @@ func OpenTranscriptMirror(options TranscriptMirrorOptions) (*TranscriptMirror, e
 		metaPath: TranscriptMirrorMetaPath(options.Path),
 		file:     file,
 		seen:     make(map[string]struct{}),
+		pass:     make(map[string]int),
 		capBytes: options.CapBytes,
 	}
 	mirror.meta = loadTranscriptMirrorMeta(mirror.metaPath)
@@ -199,6 +202,10 @@ func scanTranscriptMirror(path string, into map[string]struct{}) (int, int64, er
 
 	records := 0
 	var size int64
+	// Ordinals are rebuilt in stored order, which is the same order a replay of
+	// the provider file presents them in. That is what makes a duplicate-bearing
+	// mirror reopen to exactly the state it was written with.
+	ordinals := make(map[string]int)
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), transcriptScanLineCap)
 	for scanner.Scan() {
@@ -208,7 +215,7 @@ func scanTranscriptMirror(path string, into map[string]struct{}) (int, int64, er
 			continue
 		}
 		if into != nil {
-			into[TranscriptRecordKey(line)] = struct{}{}
+			into[transcriptRecordIdentity(line, ordinals)] = struct{}{}
 		}
 		records++
 	}
@@ -220,10 +227,14 @@ func scanTranscriptMirror(path string, into map[string]struct{}) (int, int64, er
 	return records, size, nil
 }
 
-// TranscriptRecordKey is the identity of one transcript record. Claude stamps
-// every conversation record with a uuid, which is stable across the provider
-// rewriting or recreating its file. Records without one (some summary and
-// meta lines) fall back to a content hash, which is equally idempotent.
+// TranscriptRecordKey is the content identity of one transcript record. Claude
+// stamps every conversation record with a uuid, which is stable across the
+// provider rewriting or recreating its file. Records without one fall back to a
+// content hash.
+//
+// A content hash alone is NOT a record identity, because a transcript legally
+// contains the same bytes more than once. Use transcriptRecordIdentity for
+// storage decisions; this function is the shared first half of it.
 func TranscriptRecordKey(line []byte) string {
 	var probe struct {
 		UUID string `json:"uuid"`
@@ -233,6 +244,38 @@ func TranscriptRecordKey(line []byte) string {
 	}
 	sum := sha256.Sum256(line)
 	return "h:" + hex.EncodeToString(sum[:])
+}
+
+// transcriptRecordIdentity is the identity a mirror stores against. It is a
+// multiset identity, not a set identity, and that distinction is load bearing.
+//
+// A uuid is a true unique identity: Claude issues one per conversation record,
+// and two lines carrying the same uuid are the same record seen twice. Those
+// deduplicate globally.
+//
+// Everything else is content-hashed, and a content hash repeats legitimately.
+// Real Claude transcripts on this machine repeat non-uuid lines heavily: of
+// 6607 uuid-less records, 3879 are byte-identical to an earlier one -- almost
+// entirely the "mode", "permission-mode", "agent-name" and "custom-title"
+// state records. Those are exactly the records native `claude --resume` reads
+// back to restore model, permission mode, and agent, and they are last-one-wins.
+// Collapsing them to their first occurrence does not merely shrink the file; it
+// silently rewinds the restored state to an earlier value. A conversation that
+// ended in bypassPermissions would resume in normal mode.
+//
+// Codex rollouts have no uuid field at all, so every one of their records is
+// content-hashed and this is the only thing keeping a Codex mirror lossless.
+//
+// The ordinal is the count of this content within the current replay pass, so a
+// record that genuinely appears three times is stored three times, while a
+// re-read of the same prefix produces the same ordinals and stores nothing new.
+func transcriptRecordIdentity(line []byte, ordinals map[string]int) string {
+	key := TranscriptRecordKey(line)
+	if strings.HasPrefix(key, "u:") {
+		return key
+	}
+	ordinals[key]++
+	return key + "#" + strconv.Itoa(ordinals[key])
 }
 
 // Append stores one provider line verbatim if it has not been stored before.
@@ -251,7 +294,7 @@ func (m *TranscriptMirror) Append(line []byte) (bool, error) {
 	if m.closed || m.file == nil {
 		return false, os.ErrClosed
 	}
-	key := TranscriptRecordKey(line)
+	key := transcriptRecordIdentity(line, m.pass)
 	if _, duplicate := m.seen[key]; duplicate {
 		return false, nil
 	}
@@ -286,6 +329,25 @@ func (m *TranscriptMirror) Append(line []byte) (bool, error) {
 	m.meta.LastObservedAt = now
 	m.dirty = true
 	return true, nil
+}
+
+// BeginPass declares that the caller is about to replay a provider transcript
+// from its first record again. It resets the per-pass occurrence counters that
+// give repeated content its ordinal.
+//
+// Every reader that restarts at byte zero must call this first. Without it a
+// second pass would number the first duplicate line as occurrence N+1 rather
+// than 1 and append a copy of the whole conversation's repeated records on
+// every reattach. With it, a repeated pass over unchanged content stores
+// nothing, which is the property the watcher, the daemon restart path, and
+// repeated backfills all depend on.
+func (m *TranscriptMirror) BeginPass() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pass = make(map[string]int, len(m.pass))
 }
 
 // NoteProviderPath records which provider file the mirror is copying. It is
@@ -454,6 +516,14 @@ func TranscriptMirrorUsable(mirrorPath string) bool {
 // Sessions' own copy because the provider's file could not be resolved.
 const ClaudeMirror ClaudeResolveReason = "sessions-mirror"
 
+// ClaudeSidecarPath resolves the provider file from the exact path the mirror
+// recorded observing. See ResolveClaudeWithMirror.
+const ClaudeSidecarPath ClaudeResolveReason = "sidecar-provider-path"
+
+// ClaudeSidecarID resolves the provider file from the provider conversation id
+// the mirror recorded, used as an exact filename match.
+const ClaudeSidecarID ClaudeResolveReason = "sidecar-provider-id"
+
 // ResolveClaudeWithMirror is the durable form of ResolveClaudeCWD. It prefers
 // the provider file whenever the provider file can still be identified, so the
 // live conversation and native `claude --resume` stay authoritative and nothing
@@ -462,15 +532,49 @@ const ClaudeMirror ClaudeResolveReason = "sessions-mirror"
 //
 // That ordering is what keeps search and usage honest: a session still resolves
 // to exactly one transcript path, so there is no second copy to double-count.
+// Before falling back it spends the evidence the mirror already recorded. The
+// sidecar keeps the exact provider path the watcher observed and the provider
+// conversation id it belonged to, both written from direct observation rather
+// than inference. Either one identifies a single file by name, which clears an
+// ambiguous bucket at the same bar `sessions transcripts` uses: an exact
+// provider-id match, never a guess. Without this, a session whose bucket is
+// shared by another working directory serves its conversation from the mirror
+// while the live provider file sits unread beside it -- and a mirror is a
+// snapshot, so a still-running session would stop updating.
 func ResolveClaudeWithMirror(projects, cwd, launchUUID, mirrorPath string) ClaudeResolution {
 	resolution := ResolveClaudeCWD(projects, cwd, launchUUID)
 	if resolution.Path != "" {
 		return resolution
 	}
+
+	if meta, ok := ReadTranscriptMirrorMeta(mirrorPath); ok {
+		if path := meta.ProviderPath; path != "" && claudeTranscriptPresent(path) {
+			return ClaudeResolution{Path: path, Reason: ClaudeSidecarPath}
+		}
+		// The recorded path can be stale -- the bucket was renamed, or the file
+		// moved between machines -- while the conversation id stays valid. Retry
+		// resolution with it as the launch UUID, which only ever matches
+		// "<id>.jsonl" exactly.
+		if id := meta.ProviderSessionID; id != "" && id != launchUUID {
+			if retry := ResolveClaudeCWD(projects, cwd, id); retry.Reason == ClaudeExact {
+				return ClaudeResolution{Path: retry.Path, Reason: ClaudeSidecarID}
+			}
+		}
+	}
+
 	if TranscriptMirrorUsable(mirrorPath) {
 		return ClaudeResolution{Path: mirrorPath, Reason: ClaudeMirror}
 	}
 	return resolution
+}
+
+// claudeTranscriptPresent reports whether a recorded provider path still names
+// a readable, non-empty regular file. An empty one is treated as absent for the
+// same reason TranscriptMirrorUsable rejects an empty mirror: resolving to a
+// blank file is more confusing than resolving to nothing.
+func claudeTranscriptPresent(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
 // TranscriptMirrorRecords reads a mirror back as parsed events. Readers that

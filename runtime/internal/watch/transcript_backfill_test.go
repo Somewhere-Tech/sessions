@@ -150,3 +150,106 @@ func TestBackfillReportsWhatItCouldNotStore(t *testing.T) {
 		t.Fatalf("mirror = %d records (%v), want the one record that fit", len(records), readErr)
 	}
 }
+
+// codexRolloutLines is a rollout fixture shaped like the real thing: no uuid
+// field on any record, and a byte-identical repeat. Both properties are taken
+// from ~/.codex/sessions on the development machine, where 0 of 49,871 scanned
+// records carried a uuid and 4 of 175 rollouts contained byte-identical
+// duplicate lines -- one of them 554 of them in a single 7,743-line file.
+func codexRolloutLines() []string {
+	return []string{
+		`{"timestamp":"2026-08-05T11:50:32.000Z","type":"session_meta","payload":{"session_id":"019fd343-5368-7d40-92ac-3ff75509ab9a","cwd":"/Users/uzair/pretty-PTY"}}`,
+		`{"timestamp":"2026-08-05T11:50:33.000Z","type":"turn_context","payload":{"model":"gpt-5"}}`,
+		`{"timestamp":"2026-08-05T11:50:34.000Z","type":"response_item","payload":{"type":"message","role":"user"}}`,
+		// The repeat. Byte identical to the turn_context above.
+		`{"timestamp":"2026-08-05T11:50:33.000Z","type":"turn_context","payload":{"model":"gpt-5"}}`,
+		`{"timestamp":"2026-08-05T12:10:00.000Z","type":"compacted","payload":{}}`,
+		`{"timestamp":"2026-08-05T12:10:00.000Z","type":"event_msg","payload":{"type":"context_compacted"}}`,
+	}
+}
+
+// TestBackfillMirrorsCodexRolloutLosslessly is the evidence behind the decision
+// recorded at the top of codex_watcher.go: Codex is not mirrored by teeing the
+// watcher, but IS mirrorable through the provider-neutral backfill path. That
+// claim is only true if the mirror is lossless on rollout-shaped data, which it
+// was not before record identity became a multiset -- every repeated line was
+// dropped, silently, because Codex records carry no uuid to key on.
+func TestBackfillMirrorsCodexRolloutLosslessly(t *testing.T) {
+	dir := t.TempDir()
+	rollout := filepath.Join(dir, "rollout-2026-08-05T11-50-32-019fd343-5368-7d40-92ac-3ff75509ab9a.jsonl")
+	lines := codexRolloutLines()
+	if err := os.WriteFile(rollout, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mirrorPath := TranscriptMirrorPath(dir, "sess-codex")
+
+	result, err := BackfillTranscriptMirror(rollout, TranscriptMirrorOptions{
+		Path: mirrorPath, SessionID: "sess-codex", Tool: "codex",
+		ProviderSessionID: "019fd343-5368-7d40-92ac-3ff75509ab9a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Complete() {
+		t.Fatalf("result = %+v, want a complete backfill", result)
+	}
+	if result.Copied != len(lines) {
+		t.Fatalf("copied %d records, want all %d including the repeat", result.Copied, len(lines))
+	}
+
+	// Byte-for-byte identity, in order. The mirror must be a legal rollout so
+	// every existing reader works on it by substituting the path.
+	stored, err := os.ReadFile(mirrorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(stored), strings.Join(lines, "\n")+"\n"; got != want {
+		t.Fatalf("mirror is not a byte-identical copy:\n got %q\nwant %q", got, want)
+	}
+
+	// Re-running is the intended usage and must add nothing.
+	repeat, err := BackfillTranscriptMirror(rollout, TranscriptMirrorOptions{
+		Path: mirrorPath, SessionID: "sess-codex", Tool: "codex",
+		ProviderSessionID: "019fd343-5368-7d40-92ac-3ff75509ab9a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeat.Copied != 0 || repeat.AlreadyPresent != len(lines) {
+		t.Fatalf("repeat backfill = %+v, want everything already present", repeat)
+	}
+}
+
+// TestBackfillKeepsRepeatedClaudeStateRecords is the same loss on the Claude
+// side, where it is worse because these records drive resume state. Native
+// `claude --resume` reads permission mode back last-one-wins, so collapsing the
+// repeats does not shrink the transcript, it rewinds the restored mode.
+func TestBackfillKeepsRepeatedClaudeStateRecords(t *testing.T) {
+	dir := t.TempDir()
+	provider := filepath.Join(dir, "provider.jsonl")
+	lines := []string{
+		`{"type":"user","uuid":"u0","message":{"role":"user","content":"go"}}`,
+		`{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"s"}`,
+		`{"type":"permission-mode","permissionMode":"normal","sessionId":"s"}`,
+		`{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"s"}`,
+	}
+	if err := os.WriteFile(provider, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mirrorPath := TranscriptMirrorPath(dir, "sess-state")
+
+	result, err := BackfillTranscriptMirror(provider, TranscriptMirrorOptions{Path: mirrorPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Copied != len(lines) {
+		t.Fatalf("copied %d, want %d", result.Copied, len(lines))
+	}
+	records, err := TranscriptMirrorRecords(mirrorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := records[len(records)-1]["permissionMode"]; got != "bypassPermissions" {
+		t.Fatalf("restored permission mode = %v, want bypassPermissions", got)
+	}
+}

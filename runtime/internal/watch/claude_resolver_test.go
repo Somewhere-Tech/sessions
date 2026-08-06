@@ -149,15 +149,27 @@ func TestClaudeCWDResolutionUsesRealpathAndLegacyEncoding(t *testing.T) {
 	if err := os.Symlink(realCWD, aliasCWD); err != nil {
 		t.Fatal(err)
 	}
+	// The narrow resolved and unresolved encodings must stay first and stay in
+	// that order, so nothing that resolves today changes which file it picks.
+	// Claude's own strict encoding follows; it collapses into the narrow pair
+	// for a cwd made only of separators and alphanumerics, which is why the
+	// count is a lower bound rather than an equality.
 	dirs := ClaudeProjectDirsUnder(projects, aliasCWD)
-	if len(dirs) != 2 {
-		t.Fatalf("ClaudeProjectDirsUnder() = %v, want resolved and unresolved encodings", dirs)
+	if len(dirs) < 2 {
+		t.Fatalf("ClaudeProjectDirsUnder() = %v, want at least resolved and unresolved encodings", dirs)
 	}
 	if got, want := filepath.Base(dirs[0]), encodeClaudePath(normalizeCWD(realCWD)); got != want {
 		t.Fatalf("resolved encoding = %q, want %q", got, want)
 	}
 	if got, want := filepath.Base(dirs[1]), encodeClaudePath(aliasCWD); got != want {
 		t.Fatalf("legacy encoding = %q, want %q", got, want)
+	}
+	for index, dir := range dirs {
+		for other := index + 1; other < len(dirs); other++ {
+			if dir == dirs[other] {
+				t.Fatalf("ClaudeProjectDirsUnder() repeated %q: %v", dir, dirs)
+			}
+		}
 	}
 
 	const launchID = "aaaaaaaa-1111-2222-3333-444444444444"
