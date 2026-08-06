@@ -171,6 +171,7 @@ func (a *app) cmdHistory(args []string) error {
 		args = args[1:]
 	}
 	all := removeFirst(&args, "--all")
+	pick := removeFirst(&args, "--pick")
 	previewCount, wantPreview, err := pluckOptionalCount(&args, "--preview", historyDefaultPreview, historyMaxPreview)
 	if err != nil {
 		return err
@@ -190,6 +191,14 @@ func (a *app) cmdHistory(args []string) error {
 	}
 	if hasName && hasLane {
 		return fail(1, "--name and --lane are aliases; use only one")
+	}
+	// --pick is the only thing that makes this command interactive, and it is
+	// refused rather than ignored next to --json. A caller that asked for one
+	// JSON document must never be handed a prompt it will not answer and a
+	// stream that never ends; silently dropping the flag instead would leave
+	// them believing they had a picker.
+	if pick && a.wantJSON {
+		return fail(1, "--pick is interactive; it cannot be combined with --json")
 	}
 	if hasLane {
 		name, hasName = lane, true
@@ -320,11 +329,22 @@ func (a *app) cmdHistory(args []string) error {
 			}
 		}
 	}
-	if err := a.writeConversationRows(
-		rows, matched, collected.known, query, filters, withoutProvenance, answered); err != nil {
+	// The listing is drawn through a closure so the picker can redraw exactly
+	// the page it is picking from after a preview has scrolled it away.
+	render := func() error {
+		return a.writeConversationRows(
+			rows, matched, collected.known, query, filters, withoutProvenance, answered, pick)
+	}
+	if err := render(); err != nil {
 		return err
 	}
-	return a.writeSurfacesSeen(candidates, matched, filters)
+	if err := a.writeSurfacesSeen(candidates, matched, filters); err != nil {
+		return err
+	}
+	if !pick {
+		return nil
+	}
+	return a.pickConversation(rows, targets, render)
 }
 
 // writeSurfacesSeen answers a --surface that matched nothing with the surfaces
@@ -884,9 +904,15 @@ func readConversationTail(target fleetTarget, id string, count int) ([]conversat
 	return preview, nil
 }
 
+// numbered adds the row numbers the picker selects by. Every shown row is
+// numbered, including the ones nothing can reopen: the numbers have to agree
+// with what is on the screen, and a list whose numbering skipped rows would
+// make "row 4" mean two different things depending on how carefully you
+// counted. Selecting an unreopenable number is refused with that row's reason
+// instead.
 func (a *app) writeConversationRows(
 	rows []conversationRow, matched, known int, query string, filters historyFilters,
-	withoutProvenance []conversationRow, answered map[string]bool,
+	withoutProvenance []conversationRow, answered map[string]bool, numbered bool,
 ) error {
 	if len(rows) == 0 {
 		if _, err := io.WriteString(a.stdout, emptyConversationAdvice(known, query, filters)); err != nil {
@@ -894,12 +920,12 @@ func (a *app) writeConversationRows(
 		}
 		return a.writeProvenanceShortfall(answered, withoutProvenance, filters)
 	}
-	for _, row := range rows {
-		name := row.Name
-		if name == "" {
-			name = "(unnamed)"
+	for index, row := range rows {
+		label := ""
+		if numbered {
+			label = fmt.Sprintf("%d. ", index+1)
 		}
-		if _, err := fmt.Fprintf(a.stdout, "%s\n", name); err != nil {
+		if _, err := fmt.Fprintf(a.stdout, "%s%s\n", label, conversationName(row)); err != nil {
 			return err
 		}
 		if _, err := fmt.Fprintf(a.stdout, "  %s\n", a.conversationMetaLine(row)); err != nil {
@@ -929,7 +955,7 @@ func (a *app) writeConversationRows(
 			return err
 		}
 	}
-	if err := a.writeConversationFooter(len(rows), matched, known, query, filters); err != nil {
+	if err := a.writeConversationFooter(len(rows), matched, known, query, filters, numbered); err != nil {
 		return err
 	}
 	return a.writeProvenanceShortfall(answered, withoutProvenance, filters)
@@ -1071,7 +1097,7 @@ func (a *app) conversationMetaLine(row conversationRow) string {
 }
 
 func (a *app) writeConversationFooter(
-	shown, matched, known int, query string, filters historyFilters,
+	shown, matched, known int, query string, filters historyFilters, numbered bool,
 ) error {
 	headline := fmt.Sprintf("%d conversations match", matched)
 	if matched == 1 {
@@ -1095,8 +1121,19 @@ func (a *app) writeConversationFooter(
 	// it after they have is noise, and noise under a list is what stops people
 	// reading the honest counts above it.
 	if query == "" && !filters.narrowed() && shown < matched {
+		if _, err := fmt.Fprintln(a.stdout,
+			"Narrow with a word from the conversation, --since today, --tool codex, or --cwd ."); err != nil {
+			return err
+		}
+	}
+	// --pick has to be discoverable without being compulsory. It is advertised
+	// only to a person — both ends of this invocation are a terminal — and only
+	// when they are not already using it, so a pipeline, a --json caller, and
+	// every existing scripted reader of this output see byte-for-byte what they
+	// saw before.
+	if !numbered && a.attachedToTerminal() {
 		_, err := fmt.Fprintln(a.stdout,
-			"Narrow with a word from the conversation, --since today, --tool codex, or --cwd .")
+			"Reopen one without copying its command: add --pick.")
 		return err
 	}
 	return nil
@@ -1373,4 +1410,4 @@ func truncateRunes(value string, limit int) string {
 	return strings.TrimSpace(string(runes[:limit-1])) + "…"
 }
 
-const historyUsageText = "usage: sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [-n N] [--all] [--json]\nWHEN accepts today, yesterday, a span like 3d or 6h, YYYY-MM-DD, or RFC3339. SURFACE is codex-cli, codex-desktop, codex-exec, claude-cli, claude-desktop, claude-sdk, sessions, or the raw value a provider recorded. A QUERY, when given, comes FIRST, before any flags"
+const historyUsageText = "usage: sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [--pick] [-n N] [--all] [--json]\nWHEN accepts today, yesterday, a span like 3d or 6h, YYYY-MM-DD, or RFC3339. SURFACE is codex-cli, codex-desktop, codex-exec, claude-cli, claude-desktop, claude-sdk, sessions, or the raw value a provider recorded. A QUERY, when given, comes FIRST, before any flags"

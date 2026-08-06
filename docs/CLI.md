@@ -520,7 +520,7 @@ Examples:
 
 ```text
 Usage:
-  sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [-n N] [--all] [--json]
+  sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [--pick] [-n N] [--all] [--json]
 
 browse and preview every past conversation
 
@@ -534,6 +534,8 @@ Where it was started from is the other thing neither provider's picker will tell
 
 --preview prints the last few exchanges of each row so a candidate can be read before it is reopened. It reads the same stored conversation `sessions cat` prints, creates nothing, and marks nothing. It also narrows the page to five rows unless -n says otherwise, because previews are long.
 
+--pick numbers the rows and reopens the one you choose, so the command a row carries no longer has to be copied by hand. It is the only thing that makes this command interactive and it is never implied: without it the output is exactly what it has always been, so pipelines, scripts, and agents reading the plain listing are unaffected, and combining it with --json is refused rather than silently ignored. At the prompt, a row number reopens that conversation, `p N` prints the last ten exchanges of row N and returns to the prompt, `l` reprints the list after a preview has scrolled it away, and `q`, an empty line, or end of input leaves without doing anything. Selection runs that row's own printed command — resume for a saved conversation, attach for one that is still running — and a row that carries no command because nothing can bring it back is refused with its reason rather than reopened into a failure. The choice is confirmed with the name and the exact command before anything runs, because reopening starts a provider process and hands it the terminal.
+
 The default view is conversations you could plausibly return to: Claude and Codex, with messages in them, still readable. --all adds empty, shell, and unrecoverable records. The number that matched and the number recorded are always printed, so a narrowed view is never mistaken for an empty history. An approved machine that does not answer in time leaves a partial-result warning rather than silently dropping its conversations.
 
 Examples:
@@ -542,6 +544,8 @@ Examples:
   sessions history --surface codex-desktop
   sessions history --actor automation --since 1w
   sessions history --preview -n 3
+  sessions history --pick
+  sessions history --since today --pick
   sessions history 'sessions hardening' --tool codex
   sessions history --cwd . --since 1w
   sessions --json history --since yesterday
