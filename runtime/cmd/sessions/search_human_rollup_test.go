@@ -101,6 +101,34 @@ func TestSearchHumanRollupNeverPrintsAPartialCountAsComplete(t *testing.T) {
 	}
 }
 
+// The sentence must not claim the corpus contains something it does not. The
+// ladder leaves a rung that matched a handful as readily as one that matched
+// nothing -- on a sentence-length query a lone match is more likely to be a
+// coincidence than the answer -- so a reader whose search DID match one message
+// used to be told "No message had all of those words" about their own corpus.
+// Being caught in one falsehood is enough to make the rest of the answer
+// untrustworthy, which is the opposite of what this line is for.
+func TestTheWideningNoticeDoesNotDenyAMatchThatExists(t *testing.T) {
+	// A relaxed answer that nevertheless contains a message holding every term:
+	// exactly the case the old wording described as "no message".
+	output := humanSearch(t, historysearch.Response{
+		Matches: []historysearch.Match{
+			rollupMatch("aaaaaaaa-1111-4222-8333-444444444444", "auth rewrite", 0),
+		},
+		Total:          1,
+		EffectiveQuery: `"auth" OR "rewrite"`, MatchMode: "broad",
+		TotalHits: 1, TotalSessions: 1,
+	}, "auth rewrite")
+	for _, denial := range []string{"No message had", "no message had", "Nothing matched"} {
+		if strings.Contains(output, denial) {
+			t.Fatalf("the widening notice asserts an absence the ladder cannot know: %q", output)
+		}
+	}
+	if !strings.Contains(output, "all of those words") {
+		t.Fatalf("output = %q, want it still to say what was relaxed", output)
+	}
+}
+
 // Relaxation is why a search for a phrase returns rows sharing one word with
 // it. Receiving that silently reads as a broken search rather than a widened
 // one, and the reader's next move is to distrust the tool instead of
@@ -115,7 +143,7 @@ func TestSearchHumanOutputSaysWhenTheSearchWidened(t *testing.T) {
 		TotalHits: 1, TotalSessions: 1,
 	}
 	output := humanSearch(t, response, "auth rewrite")
-	if !strings.HasPrefix(output, "No message had all of those words, so it looked for any one of them") {
+	if !strings.HasPrefix(output, "Too few messages had all of those words, so it looked for any one of them") {
 		t.Fatalf("output = %q, want the widening said before the results it explains", output)
 	}
 	if !strings.Contains(output, `matched as: "auth" OR "rewrite"`) {
@@ -125,7 +153,7 @@ func TestSearchHumanOutputSaysWhenTheSearchWidened(t *testing.T) {
 	response.MatchMode = "quorum"
 	response.EffectiveQuery = `"auth" AND "rewrite"`
 	if quorum := humanSearch(t, response, "auth rewrite"); !strings.HasPrefix(
-		quorum, "No message had all of those words, so it looked for the most distinctive of them") {
+		quorum, "Too few messages had all of those words, so it looked for the most distinctive of them") {
 		t.Fatalf("output = %q, want a quorum relaxation reported too", quorum)
 	}
 
@@ -135,7 +163,7 @@ func TestSearchHumanOutputSaysWhenTheSearchWidened(t *testing.T) {
 		Matches: []historysearch.Match{}, Total: 0,
 		EffectiveQuery: `"auth" OR "rewrite"`, MatchMode: "broad",
 	}, "auth rewrite")
-	if !strings.Contains(empty, "No message had all of those words") ||
+	if !strings.Contains(empty, "Too few messages had all of those words") ||
 		!strings.Contains(empty, "(no matches)") {
 		t.Fatalf("output = %q, want the widening reported above the empty answer", empty)
 	}

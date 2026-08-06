@@ -32,10 +32,15 @@ func TestHistoryShowsWhenAConversationStarted(t *testing.T) {
 			conversationAt("provider:codex:old", "long running rollout", "codex", "/w/testing", 900,
 				now.Add(-24*time.Hour)),
 			now.AddDate(0, 0, -18))},
+		// Started at the same instant it was last active. A relative offset --
+		// "three hours before two hours ago" -- lands on the previous calendar
+		// day whenever the suite runs shortly after midnight, so the fixture
+		// silently became a different-day conversation and the test failed on
+		// time of day rather than on behaviour. It did exactly that at 02:54.
 		{session: startedAt(
 			conversationAt("provider:claude:today", "quick fix", "claude", "/w/app", 12,
 				now.Add(-2*time.Hour)),
-			now.Add(-3*time.Hour))},
+			now.Add(-2*time.Hour))},
 	})
 
 	stdout, stderr, code := runHistoryCLI(t, daemon, "history", "-n", "10")
