@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/ansi"
 )
 
 type session struct {
@@ -277,10 +279,7 @@ func (a *app) cmdLS(args []string) error {
 
 func jsLength(value string) int { return len(utf16.Encode([]rune(value))) }
 
-var (
-	ansiPattern          = regexp.MustCompile("\\x1b\\[[0-?]*[ -/]*[@-~]|\\x1b\\][^\\x07]*\\x07")
-	cursorForwardPattern = regexp.MustCompile("\\x1b\\[(\\d+)C")
-)
+var cursorForwardPattern = regexp.MustCompile("\\x1b\\[(\\d+)C")
 
 func normalize(value string) string {
 	return cursorForwardPattern.ReplaceAllStringFunc(value, func(match string) string {
@@ -290,7 +289,7 @@ func normalize(value string) string {
 	})
 }
 
-func cleanANSI(value string) string { return ansiPattern.ReplaceAllString(normalize(value), "") }
+func cleanANSI(value string) string { return ansi.Strip(normalize(value)) }
 
 func (a *app) cmdSnap(args []string) error {
 	if len(args) == 0 || args[0] == "" {

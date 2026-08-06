@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/ansi"
 )
 
 type IdleOutcome string
@@ -23,10 +25,6 @@ type IdleClassification struct {
 }
 
 var (
-	oscControlRE      = regexp.MustCompile(`\x1b\][^\x07]*(?:\x07|\x1b\\)`)
-	stringControlRE   = regexp.MustCompile(`(?s)\x1b[P^_].*?\x1b\\`)
-	csiControlRE      = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-	escapeControlRE   = regexp.MustCompile(`\x1b[@-_]`)
 	horizontalSpaceRE = regexp.MustCompile(`[ \t]+`)
 
 	inputPromptRE            = regexp.MustCompile(`(?i)\b(?:y/n|yes/no|do you want)\b|\[[yn]/[yn]\]|\b(?:continue|proceed)\s*\?|\?\s*$`)
@@ -44,7 +42,6 @@ var (
 
 	workingSpinnerRE = regexp.MustCompile(`(?:…|\.\.\.)\s*\(\s*\d+\s*[hms]`)
 	workingFooterRE  = regexp.MustCompile(`(?i)[·•∙]\s*esc\s+to\s+interrupt`)
-	claudeANSI       = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[()][AB0]`)
 
 	codeFenceRE            = regexp.MustCompile("```[^\n]*\n?")
 	imageRE                = regexp.MustCompile(`!\[([^]]*)\]\([^)]*\)`)
@@ -63,7 +60,7 @@ func ClaudeWorkingFromSnapshot(snapshot string) bool {
 	if snapshot == "" {
 		return false
 	}
-	clean := claudeANSI.ReplaceAllString(snapshot, "")
+	clean := ansi.Strip(snapshot)
 	if workingSpinnerRE.MatchString(clean) {
 		return true
 	}
@@ -180,18 +177,7 @@ func snapshotLines(snapshot string) []string {
 	return lines
 }
 
-func stripTerminalControls(text string) string {
-	text = oscControlRE.ReplaceAllString(text, "")
-	text = stringControlRE.ReplaceAllString(text, "")
-	text = csiControlRE.ReplaceAllString(text, "")
-	text = escapeControlRE.ReplaceAllString(text, "")
-	return strings.Map(func(r rune) rune {
-		if r == '\t' || r == '\n' || r == '\r' || r >= 0x20 {
-			return r
-		}
-		return -1
-	}, text)
-}
+func stripTerminalControls(text string) string { return ansi.Strip(text) }
 
 func displayLine(line string) string {
 	runes := []rune(line)

@@ -21,6 +21,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
@@ -1841,12 +1842,17 @@ func (m *Manager) waitReady(ctx context.Context, runtime *runtimeSession) {
 	}
 }
 
+// extractClaudeSessionID reads the conversation a Claude spawn was launched
+// against. The spellings come from internal/providerargs; this copy used to
+// read only the two long flags in separated form, so `claude -r <uuid>` and
+// `claude --resume=<uuid>` both looked like sessions with no conversation.
+//
+// The id-shaped filter stays: this value is handed to the transcript resolver,
+// and a non-id argument that happened to follow the flag would send it looking
+// for a file that cannot exist. It is deliberately looser than the ledger's
+// canonical-UUID rule, which governs what may be durably recorded.
 func extractClaudeSessionID(args []string) string {
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] != "--session-id" && args[i] != "--resume" {
-			continue
-		}
-		value := args[i+1]
+	for _, value := range providerargs.Values(args, providerargs.ClaudeIdentityFlags()...) {
 		if len(value) < 8 {
 			continue
 		}

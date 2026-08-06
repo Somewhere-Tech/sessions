@@ -298,7 +298,8 @@ func readConversationIdentity(path string) (provider, cwd string, codex bool, sk
 						if value, ok := payload["cwd"].(string); ok && cwd == "" {
 							cwd = value
 						}
-						if value, ok := payload["id"].(string); ok {
+						// The id key has two spellings; watch owns the union.
+						if value := watch.CodexSessionMetaID(payload); value != "" {
 							provider = value
 						}
 					}

@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
 const (
@@ -151,19 +153,17 @@ func CodexWatchDirs(root string, now, createdAt time.Time) []string {
 }
 
 // ExtractCodexResumeID recognizes the same resume forms as the TypeScript
-// implementation: resume ID, --resume ID, and --resume=ID.
+// implementation: resume ID, --resume ID, and --resume=ID. The spellings come
+// from internal/providerargs so they cannot drift from the rest of the runtime.
+//
+// The permissive id shape is deliberate here and is not the ledger's
+// canonical-UUID rule. This value is matched as a substring against rollout
+// filenames, so an abbreviated id a user typed still resolves; nothing it
+// produces is durably recorded, which is where requiring a real UUID matters.
 func ExtractCodexResumeID(args []string) string {
-	for index, flag := range args {
-		if flag == "resume" || flag == "--resume" {
-			if index+1 < len(args) && codexResumeIDPattern.MatchString(args[index+1]) {
-				return args[index+1]
-			}
-		}
-		if strings.HasPrefix(flag, "--resume=") {
-			value := strings.TrimPrefix(flag, "--resume=")
-			if codexResumeIDPattern.MatchString(value) {
-				return value
-			}
+	for _, candidate := range providerargs.Values(args, providerargs.CodexResumeFlags()...) {
+		if codexResumeIDPattern.MatchString(candidate) {
+			return candidate
 		}
 	}
 	return ""
@@ -271,8 +271,7 @@ func readCodexSessionMeta(path string) *codexSessionMeta {
 	if err != nil {
 		return nil
 	}
-	id, _ := payload["id"].(string)
-	return &codexSessionMeta{id: strings.TrimSpace(id), cwd: cwd, timestamp: parsed}
+	return &codexSessionMeta{id: CodexSessionMetaID(payload), cwd: cwd, timestamp: parsed}
 }
 
 func normalizedCodexInput(value string) string {

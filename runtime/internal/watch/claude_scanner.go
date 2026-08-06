@@ -283,12 +283,12 @@ func resumableCodexConversation(path string, modified time.Time) (ResumableSessi
 			if json.Unmarshal(line, &decoded) == nil {
 				if decoded["type"] == "session_meta" && session.SessionID == "" {
 					if payload, ok := decoded["payload"].(map[string]any); ok {
-						session.SessionID, _ = payload["id"].(string)
+						session.SessionID = CodexSessionMetaID(payload)
 						session.Cwd, _ = payload["cwd"].(string)
 						if originator, ok := payload["originator"].(string); ok && strings.TrimSpace(originator) != "" {
 							session.Origin = originator
 						}
-						if codexSubagentSource(payload) {
+						if _, subagent := CodexSubagentParent(payload); subagent {
 							session.Origin = "Codex child agent"
 						}
 						// Same payload, no second read: provenance comes out of
@@ -373,15 +373,6 @@ func claudeConversationTitle(path string) string {
 		return customTitle
 	}
 	return aiTitle
-}
-
-func codexSubagentSource(payload map[string]any) bool {
-	source, ok := payload["source"].(map[string]any)
-	if !ok {
-		return false
-	}
-	_, ok = source["subagent"].(map[string]any)
-	return ok
 }
 
 func normalizedMessageText(message map[string]any) string {

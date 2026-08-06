@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -117,15 +118,12 @@ func (m *Manager) applyClaudeDefaults(request state.CreateSessionRequest) (state
 	return request, nil
 }
 
+// hasAnyArg answers "did the caller already decide this", so a default is not
+// layered on top of an explicit choice. The rule lives in providerargs, which
+// matches the joined form only for long flags — `-m=opus` is not a spelling any
+// provider accepts.
 func hasAnyArg(args []string, names ...string) bool {
-	for _, arg := range args {
-		for _, name := range names {
-			if arg == name || strings.HasPrefix(arg, name+"=") {
-				return true
-			}
-		}
-	}
-	return false
+	return providerargs.Has(args, names...)
 }
 
 func configuredSomewhereMCP(configDir, cwd string) (bool, error) {

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
 func TestDecideSendConfirmation(t *testing.T) {
@@ -1006,7 +1008,7 @@ func TestClaudeNewDefaultsInteractiveAndKeepsStructuredExplicit(t *testing.T) {
 			if request.Kind != test.kind {
 				t.Fatalf("create kind = %q, want %q", request.Kind, test.kind)
 			}
-			if !hasArgValue(request.Args, "--session-id") {
+			if !providerargs.HasValue(request.Args, providerargs.ClaudeSessionIDFlag) {
 				t.Fatalf("Claude create args do not contain a preallocated session id: %q", request.Args)
 			}
 			hasFullAccess := slices.Contains(request.Args, "--dangerously-skip-permissions")

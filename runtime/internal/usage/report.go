@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -275,31 +276,14 @@ func (s *Service) sessionBindings() map[string]sessionBinding {
 }
 
 // argvProviderSession reads the provider conversation a session was launched
-// against. The spellings tracked here are the ones the rest of the runtime
-// already accepts (see internal/state/registry.go and internal/ledger/recipe.go):
-// the two long flags in either separated or `=` form, plus the -r shorthand,
-// which is a Claude resume flag only and means something else to Codex.
+// against, using the one parse in internal/providerargs. This copy used to read
+// only the two long Claude flags for Codex too, so a session started as
+// `codex resume <uuid>` — Codex's own spelling — was never bound to its usage.
 func argvProviderSession(args []string, claude bool) string {
-	for index, argument := range args {
-		switch argument {
-		case "--session-id", "--resume":
-		case "-r":
-			if !claude {
-				continue
-			}
-		default:
-			for _, prefix := range []string{"--session-id=", "--resume="} {
-				if value, found := strings.CutPrefix(argument, prefix); found && value != "" {
-					return value
-				}
-			}
-			continue
-		}
-		if index+1 < len(args) {
-			return args[index+1]
-		}
+	if claude {
+		return providerargs.ClaudeSessionID(args)
 	}
-	return ""
+	return providerargs.CodexConversationID(args)
 }
 
 func addRow(total *ReportRow, row ReportRow) {

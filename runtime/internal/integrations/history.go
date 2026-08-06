@@ -12,13 +12,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/ansi"
 	"github.com/somewhere-tech/sessions/runtime/internal/backup"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
@@ -958,22 +959,16 @@ func providerSessionID(source backup.Session, tool string) string {
 	}
 }
 
+// These two used to be narrower than every other reader of the same argv: the
+// Claude one missed `-r <uuid>` and the joined `--session-id=<uuid>` form, and
+// the Codex one saw only the bare `resume` subcommand, so a conversation
+// reopened with `codex --resume <uuid>` had no identity in history.
 func extractHistoryClaudeSessionID(args []string) string {
-	for index, argument := range args {
-		if (argument == "--session-id" || argument == "--resume") && index+1 < len(args) {
-			return strings.TrimSpace(args[index+1])
-		}
-	}
-	return ""
+	return providerargs.ClaudeSessionID(args)
 }
 
 func extractCodexConversationID(args []string) string {
-	for index, argument := range args {
-		if argument == "resume" && index+1 < len(args) {
-			return strings.TrimSpace(args[index+1])
-		}
-	}
-	return ""
+	return providerargs.CodexConversationID(args)
 }
 
 func isProviderUUID(value string) bool {
@@ -1311,10 +1306,8 @@ func transcriptMessages(event map[string]any, relayCalls map[string]string) []Tr
 	return result
 }
 
-var transcriptANSI = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)`)
-
 func stripTranscriptANSI(text string) string {
-	return strings.TrimSpace(transcriptANSI.ReplaceAllString(text, ""))
+	return strings.TrimSpace(ansi.Strip(text))
 }
 
 func isHiddenProviderControlMessage(text string) bool {

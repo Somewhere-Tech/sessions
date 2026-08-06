@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -102,45 +103,14 @@ func applyToolDefault(body *createSessionRequest, fullAccess bool) error {
 		defaults = preset.fullArgs
 	}
 	body.Args = append(append([]string(nil), defaults...), body.Args...)
-	if base == "claude" && !hasAnyArg(body.Args, "--session-id", "--resume") {
+	if base == "claude" && !providerargs.HasClaudeIdentity(body.Args) {
 		id, err := randomUUID()
 		if err != nil {
 			return err
 		}
-		body.Args = append(body.Args, "--session-id", id)
+		body.Args = append(body.Args, providerargs.ClaudeSessionIDFlag, id)
 	}
 	return nil
-}
-
-func hasAnyArg(args []string, values ...string) bool {
-	for _, arg := range args {
-		for _, value := range values {
-			if arg == value {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func hasArgValue(args []string, values ...string) bool {
-	for index, arg := range args {
-		for _, value := range values {
-			if arg == value && index+1 < len(args) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func hasConfigValue(args []string, key string) bool {
-	for index, arg := range args {
-		if (arg == "-c" || arg == "--config") && index+1 < len(args) && strings.HasPrefix(args[index+1], key+"=") {
-			return true
-		}
-	}
-	return false
 }
 
 func applyAgentControls(body *createSessionRequest, controls agentControls) error {
@@ -157,17 +127,17 @@ func applyAgentControls(body *createSessionRequest, controls agentControls) erro
 	if base == "claude" && controls.fast {
 		return fail(1, "--fast is not supported for claude (claude has no service tier)")
 	}
-	if controls.model != nil && !hasArgValue(body.Args, "--model", "-m") {
+	if controls.model != nil && !providerargs.HasValue(body.Args, providerargs.ModelFlags()...) {
 		body.Args = append(body.Args, "--model", *controls.model)
 	}
 	if controls.effort != nil {
-		if base == "claude" && !hasArgValue(body.Args, "--effort") {
+		if base == "claude" && !providerargs.HasValue(body.Args, providerargs.ClaudeEffortFlags()...) {
 			body.Args = append(body.Args, "--effort", *controls.effort)
-		} else if base == "codex" && !hasConfigValue(body.Args, "model_reasoning_effort") {
+		} else if base == "codex" && !providerargs.HasConfigValue(body.Args, providerargs.CodexEffortKey) {
 			body.Args = append(body.Args, "-c", fmt.Sprintf("model_reasoning_effort=\"%s\"", *controls.effort))
 		}
 	}
-	if controls.fast && !hasConfigValue(body.Args, "service_tier") {
+	if controls.fast && !providerargs.HasConfigValue(body.Args, providerargs.CodexServiceTierKey) {
 		body.Args = append(body.Args, "-c", "service_tier=\"priority\"")
 	}
 	return nil
@@ -386,12 +356,12 @@ func (a *app) cmdNew(args []string) error {
 		} else if forceStructuredClaude || forcePTYClaude {
 			return fail(1, "--structured and --pty-claude are only valid with --tool claude")
 		}
-		if strings.EqualFold(tool, "claude") && !hasAnyArg(body.Args, "--session-id", "--resume", "-r") {
+		if strings.EqualFold(tool, "claude") && !providerargs.HasClaudeIdentity(body.Args) {
 			id, err := randomUUID()
 			if err != nil {
 				return err
 			}
-			body.Args = append(body.Args, "--session-id", id)
+			body.Args = append(body.Args, providerargs.ClaudeSessionIDFlag, id)
 		}
 	} else {
 		if forceAppServer || forcePTYCodex {

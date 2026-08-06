@@ -247,6 +247,11 @@ func TestSessionBindingsReadKnownProviderSessionSpellings(t *testing.T) {
 		{name: "claude resume shorthand", args: []string{"-r", "abc"}, claude: true, want: "abc"},
 		{name: "codex ignores the shorthand", args: []string{"-r", "abc"}},
 		{name: "codex resume", args: []string{"resume", "--resume", "abc"}, want: "abc"},
+		// Codex's own spelling. Reading only the two long Claude flags here left
+		// a `codex resume <uuid>` session unbound, so its turns were recorded
+		// against no Sessions lane.
+		{name: "codex resume subcommand", args: []string{"resume", "abc"}, want: "abc"},
+		{name: "codex resume joined", args: []string{"--resume=abc"}, want: "abc"},
 		{name: "trailing flag", args: []string{"--resume"}, claude: true},
 		{name: "no identity", args: []string{"--model", "sonnet"}, claude: true},
 	}

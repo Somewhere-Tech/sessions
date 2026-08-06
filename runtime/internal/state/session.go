@@ -12,6 +12,7 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/mirror"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
 type Session struct {
@@ -409,53 +410,11 @@ func (s *Session) ConfigureModel(ctx context.Context, model, effort string) erro
 }
 
 func withModelControls(tool SessionTool, args []string, model, effort string) []string {
-	result := withArgumentValue(args, model, "--model", "-m")
+	result := providerargs.WithValue(args, model, providerargs.ModelFlags()...)
 	if tool == ToolCodex {
-		return withConfigValue(result, "model_reasoning_effort", effort)
+		return providerargs.WithConfigValue(result, providerargs.CodexEffortKey, effort)
 	}
-	return withArgumentValue(result, effort, "--effort")
-}
-
-func withArgumentValue(args []string, value string, names ...string) []string {
-	result := make([]string, 0, len(args)+2)
-	for index := 0; index < len(args); index++ {
-		matched := false
-		for _, name := range names {
-			if args[index] == name {
-				matched = true
-				if index+1 < len(args) {
-					index++
-				}
-				break
-			}
-		}
-		if !matched {
-			result = append(result, args[index])
-		}
-	}
-	value = strings.TrimSpace(value)
-	if value != "" {
-		result = append(result, names[0], value)
-	}
-	return result
-}
-
-func withConfigValue(args []string, key, value string) []string {
-	result := make([]string, 0, len(args)+2)
-	for index := 0; index < len(args); index++ {
-		if (args[index] == "-c" || args[index] == "--config") && index+1 < len(args) {
-			if _, ok := strings.CutPrefix(args[index+1], key+"="); ok {
-				index++
-				continue
-			}
-		}
-		result = append(result, args[index])
-	}
-	value = strings.TrimSpace(value)
-	if value != "" {
-		result = append(result, "-c", key+"="+value)
-	}
-	return result
+	return providerargs.WithValue(result, effort, providerargs.ClaudeEffortFlags()...)
 }
 
 func (s *Session) Resize(ctx context.Context, cols, rows int) bool {

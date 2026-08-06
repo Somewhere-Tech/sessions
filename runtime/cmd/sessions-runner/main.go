@@ -26,6 +26,7 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -551,22 +552,27 @@ func respawnArgs(cfg config, eventsPath string) ([]string, bool) {
 	if err != nil || st.Size() <= 0 {
 		return cfg.args, false
 	}
-	idx := -1
-	for i, arg := range cfg.args {
-		if arg == "--session-id" {
-			idx = i
-			break
+	// Both spellings have to be handled: leaving `--session-id=<uuid>` in place
+	// respawns Claude against an id it already used, which it refuses, so the
+	// conversation would be lost rather than resumed.
+	args := append([]string(nil), cfg.args...)
+	for i, arg := range args {
+		if arg == providerargs.ClaudeSessionIDFlag {
+			args[i] = "--resume"
+			if i+1 >= len(args) || args[i+1] == "" {
+				return args, false
+			}
+			return args, !claudeJSONLExists(args[i+1])
+		}
+		if id, ok := strings.CutPrefix(arg, providerargs.ClaudeSessionIDFlag+"="); ok {
+			if id == "" {
+				return cfg.args, false
+			}
+			args[i] = "--resume=" + id
+			return args, !claudeJSONLExists(id)
 		}
 	}
-	if idx < 0 {
-		return cfg.args, false
-	}
-	args := append([]string(nil), cfg.args...)
-	args[idx] = "--resume"
-	if idx+1 >= len(args) || args[idx+1] == "" {
-		return args, false
-	}
-	return args, !claudeJSONLExists(args[idx+1])
+	return cfg.args, false
 }
 
 func claudeJSONLExists(id string) bool {

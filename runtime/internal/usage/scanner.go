@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
+	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
 
 type parserState struct {
@@ -344,10 +345,10 @@ func parseCodexLine(ctx context.Context, path string, offset int64, raw []byte, 
 	typeName := text(value, "type")
 	payloadType := text(payload, "type")
 	if typeName == "session_meta" {
-		candidate := text(payload, "id", "session_id")
+		candidate := watch.CodexSessionMetaID(payload)
 		if state.SessionID == "" {
 			state.SessionID = candidate
-			if parent := codexForkParent(payload); parent != "" {
+			if parent, _ := watch.CodexSubagentParent(payload); parent != "" {
 				state.ForkSessionID = candidate
 				state.ForkParentID = parent
 			}
@@ -419,25 +420,6 @@ func parseCodexLine(ctx context.Context, path string, offset int64, raw []byte, 
 	return &entry{key: key, source: path, provider: "codex",
 		sessionID: sessionID, model: state.Model, offset: offset, timestampMS: stamp.UnixMilli(),
 		tokens: tokens, calculated: calculated, pricingFound: found, replayKey: replayKey}, nil
-}
-
-func codexForkParent(payload map[string]any) string {
-	if parent := text(payload, "forked_from_id", "parent_thread_id", "session_id"); parent != "" && parent != text(payload, "id") {
-		return parent
-	}
-	source, ok := object(payload["source"])
-	if !ok {
-		return ""
-	}
-	subagent, ok := object(source["subagent"])
-	if !ok {
-		return ""
-	}
-	spawn, ok := object(subagent["thread_spawn"])
-	if !ok {
-		return ""
-	}
-	return text(spawn, "parent_thread_id")
 }
 
 func codexTokens(value map[string]any) Tokens {

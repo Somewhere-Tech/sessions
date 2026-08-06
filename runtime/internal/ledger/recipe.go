@@ -4,54 +4,17 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
-// canonicalUUID is the shape of both a Sessions lane UUID and a Claude/Codex
-// conversation id.
-const canonicalUUID = `(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
-
-var (
-	// Claude and Codex both identify a conversation with a canonical UUID, and
-	// recovery already requires that exact shape before it will adopt one
-	// (recovery/adopt.go strictProviderPattern). The former unbounded
-	// `[0-9a-f-]{8,}` accepted values that are not conversation ids at all —
-	// "--------" among them — and durably recorded them as resume recipes.
-	providerIDPattern  = regexp.MustCompile(canonicalUUID)
-	sessionIDPattern   = regexp.MustCompile(canonicalUUID)
-	userCreatorPattern = regexp.MustCompile(`^(?:uid:[0-9]+|sid:S-[0-9]+(?:-[0-9]+)+)$`)
-
-	// Claude's real spellings for reopening an existing conversation. The
-	// Sessions CLI already treats all three as resume flags
-	// (cmd/sessions/commands.go) and the runner reads the same set
-	// (cmd/sessions-runner/claude_p.go).
-	claudeResumeFlags  = []string{"--resume", "-r"}
-	claudeIdentityFlag = "--session-id"
-	codexResumeFlags   = []string{"resume", "--resume"}
-)
-
-// flagValues returns every value args associates with one of names, in
-// argument order. Long flags are matched in both `--flag value` and
-// `--flag=value` form; short flags and the Codex `resume` subcommand only take
-// a separated value, which is what those CLIs actually accept.
-func flagValues(args []string, names ...string) []string {
-	values := make([]string, 0, 2)
-	for index, argument := range args {
-		for _, name := range names {
-			if argument == name {
-				if index+1 < len(args) {
-					values = append(values, args[index+1])
-				}
-				continue
-			}
-			if strings.HasPrefix(name, "--") {
-				if value, ok := strings.CutPrefix(argument, name+"="); ok {
-					values = append(values, value)
-				}
-			}
-		}
-	}
-	return values
-}
+// Claude and Codex both identify a conversation with a canonical UUID, and
+// recovery already requires that exact shape before it will adopt one
+// (recovery/adopt.go strictProviderPattern). The former unbounded
+// `[0-9a-f-]{8,}` accepted values that are not conversation ids at all —
+// "--------" among them — and durably recorded them as resume recipes. Both the
+// shape and the argv spellings it validates now live in internal/providerargs.
+var userCreatorPattern = regexp.MustCompile(`^(?:uid:[0-9]+|sid:S-[0-9]+(?:-[0-9]+)+)$`)
 
 // SafeResumeRecipe follows the normative TypeScript argument forms while
 // intentionally discarding every unrelated argument. The result can contain
@@ -60,17 +23,16 @@ func flagValues(args []string, names ...string) []string {
 func SafeResumeRecipe(tool, cmd string, args []string) (providerUUID string, argv []string) {
 	base := strings.ToLower(filepath.Base(cmd))
 	if tool == "claude-code" || base == "claude" {
-		names := append(append([]string{}, claudeResumeFlags...), claudeIdentityFlag)
-		for _, candidate := range flagValues(args, names...) {
-			if providerIDPattern.MatchString(candidate) {
+		for _, candidate := range providerargs.Values(args, providerargs.ClaudeIdentityFlags()...) {
+			if providerargs.IsConversationUUID(candidate) {
 				return candidate, []string{cmd, "--resume", candidate}
 			}
 		}
 		return "", nil
 	}
 	if tool == "codex" || base == "codex" {
-		for _, candidate := range flagValues(args, codexResumeFlags...) {
-			if providerIDPattern.MatchString(candidate) {
+		for _, candidate := range providerargs.Values(args, providerargs.CodexResumeFlags()...) {
+			if providerargs.IsConversationUUID(candidate) {
 				return candidate, []string{cmd, "resume", candidate}
 			}
 		}
@@ -84,16 +46,16 @@ func SafeResumeRecipe(tool, cmd string, args []string) (providerUUID string, arg
 func ExistingProviderResume(cmd string, args []string) (providerUUID string, argv []string) {
 	base := strings.ToLower(filepath.Base(cmd))
 	if base == "claude" {
-		for _, candidate := range flagValues(args, claudeResumeFlags...) {
-			if providerIDPattern.MatchString(candidate) {
+		for _, candidate := range providerargs.Values(args, providerargs.ClaudeResumeFlags()...) {
+			if providerargs.IsConversationUUID(candidate) {
 				return candidate, []string{cmd, "--resume", candidate}
 			}
 		}
 		return "", nil
 	}
 	if base == "codex" {
-		for _, candidate := range flagValues(args, codexResumeFlags...) {
-			if providerIDPattern.MatchString(candidate) {
+		for _, candidate := range providerargs.Values(args, providerargs.CodexResumeFlags()...) {
+			if providerargs.IsConversationUUID(candidate) {
 				return candidate, []string{cmd, "resume", candidate}
 			}
 		}
@@ -104,7 +66,7 @@ func ExistingProviderResume(cmd string, args []string) (providerUUID string, arg
 // ResumeRecipeForProvider builds the minimal recipe used after a provider is
 // bound asynchronously (notably a fresh Codex rollout).
 func ResumeRecipeForProvider(tool, cmd, providerUUID string) []string {
-	if !providerIDPattern.MatchString(providerUUID) {
+	if !providerargs.IsConversationUUID(providerUUID) {
 		return nil
 	}
 	base := strings.ToLower(filepath.Base(cmd))

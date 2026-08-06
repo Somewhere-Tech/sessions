@@ -145,20 +145,20 @@ func codexConversationTime(encoded []byte, uuid string) (time.Time, error) {
 		line = encoded[:index]
 	}
 	var record struct {
-		Type      string `json:"type"`
-		Timestamp string `json:"timestamp"`
-		Payload   struct {
-			ID        string `json:"id"`
-			Timestamp string `json:"timestamp"`
-		} `json:"payload"`
+		Type      string         `json:"type"`
+		Timestamp string         `json:"timestamp"`
+		Payload   map[string]any `json:"payload"`
 	}
 	if err := json.Unmarshal(line, &record); err != nil {
 		return time.Time{}, fmt.Errorf("decode Codex session_meta: %w", err)
 	}
-	if record.Type != "session_meta" || record.Payload.ID != uuid {
+	// The id key has two spellings and this reader only knew one, so a rollout
+	// that spells it session_id was rejected as "does not match uuid" — a
+	// received conversation refused on the strength of a key name.
+	if record.Type != "session_meta" || watch.CodexSessionMetaID(record.Payload) != uuid {
 		return time.Time{}, errors.New("Codex conversation session_meta does not match uuid")
 	}
-	raw := record.Payload.Timestamp
+	raw, _ := record.Payload["timestamp"].(string)
 	if raw == "" {
 		raw = record.Timestamp
 	}

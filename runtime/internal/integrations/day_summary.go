@@ -62,7 +62,7 @@ func SummarizeConversationDay(path, tool string, start, end time.Time, observedT
 							if result.Origin == "" {
 								result.Origin, _ = payload["originator"].(string)
 							}
-							if codexForkSource(payload) {
+							if _, subagent := watch.CodexSubagentParent(payload); subagent {
 								fork = true
 								result.Origin = "Codex child agent"
 							}
@@ -153,19 +153,6 @@ func compactExcerpt(value string, limit int) string {
 		return strings.TrimSpace(string(runes[:limit])) + "…"
 	}
 	return value
-}
-
-func codexForkSource(payload map[string]any) bool {
-	source, ok := payload["source"].(map[string]any)
-	if !ok {
-		return false
-	}
-	subagent, ok := source["subagent"].(map[string]any)
-	if !ok {
-		return false
-	}
-	_, ok = subagent["thread_spawn"].(map[string]any)
-	return ok
 }
 
 func codexLineTurn(decoded map[string]any) string {

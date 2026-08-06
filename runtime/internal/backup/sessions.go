@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
@@ -212,16 +213,8 @@ func normalizedTool(tool state.SessionTool, command string) string {
 	}
 }
 
+// extractClaudeSessionID used to read only the two long flags, so a session
+// started with `claude -r <uuid>` was backed up with no conversation identity.
 func extractClaudeSessionID(args []string) string {
-	for index, argument := range args {
-		for _, flag := range []string{"--session-id", "--resume"} {
-			if argument == flag && index+1 < len(args) {
-				return args[index+1]
-			}
-			if strings.HasPrefix(argument, flag+"=") {
-				return strings.TrimPrefix(argument, flag+"=")
-			}
-		}
-	}
-	return ""
+	return providerargs.ClaudeSessionID(args)
 }

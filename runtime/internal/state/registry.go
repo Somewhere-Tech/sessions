@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
 const (
@@ -1038,49 +1039,22 @@ func appendClaudeSessionID(cmd string, args []string, id string) []string {
 	if classifyTool(cmd) != ToolClaude {
 		return result
 	}
-	for i, arg := range result {
-		switch arg {
-		case "--session-id", "--resume", "-r":
-			if i+1 < len(result) {
-				return result
-			}
-		}
-		if strings.HasPrefix(arg, "--session-id=") || strings.HasPrefix(arg, "--resume=") {
-			return result
-		}
+	if providerargs.HasClaudeIdentity(result) {
+		return result
 	}
-	return append(result, "--session-id", id)
+	return append(result, providerargs.ClaudeSessionIDFlag, id)
 }
 
+// spawnControls reads the model and effort a spawn argv carries. It used to
+// have its own inline copy of both parses, which missed the `--model=opus`
+// joined form the CLI accepts.
 func spawnControls(tool SessionTool, args []string) (model, effort string, fast bool) {
-	argValue := func(names ...string) string {
-		for i := 0; i+1 < len(args); i++ {
-			for _, name := range names {
-				if args[i] == name {
-					return args[i+1]
-				}
-			}
-		}
-		return ""
-	}
-	configValue := func(key string) string {
-		for i := 0; i+1 < len(args); i++ {
-			if args[i] != "-c" && args[i] != "--config" {
-				continue
-			}
-			prefix := key + "="
-			if strings.HasPrefix(args[i+1], prefix) {
-				return strings.Trim(strings.TrimPrefix(args[i+1], prefix), `"'`)
-			}
-		}
-		return ""
-	}
-	model = argValue("--model", "-m")
+	model = providerargs.Value(args, providerargs.ModelFlags()...)
 	if tool == ToolCodex {
-		effort = configValue("model_reasoning_effort")
-		fast = configValue("service_tier") == "priority"
+		effort = providerargs.ConfigValue(args, providerargs.CodexEffortKey)
+		fast = providerargs.ConfigValue(args, providerargs.CodexServiceTierKey) == "priority"
 	} else {
-		effort = argValue("--effort")
+		effort = providerargs.Value(args, providerargs.ClaudeEffortFlags()...)
 	}
 	return
 }

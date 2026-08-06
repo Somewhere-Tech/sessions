@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -460,7 +461,7 @@ func TestProviderUUIDMustBeACanonicalConversationUUID(t *testing.T) {
 		"00000000-0000-0000-0000-000000000000",
 	}
 	for _, candidate := range valid {
-		if !providerIDPattern.MatchString(candidate) {
+		if !providerargs.IsConversationUUID(candidate) {
 			t.Fatalf("canonical conversation UUID %q rejected", candidate)
 		}
 		if argv := ResumeRecipeForProvider("claude-code", "claude", candidate); len(argv) != 3 {
@@ -477,7 +478,7 @@ func TestProviderUUIDMustBeACanonicalConversationUUID(t *testing.T) {
 		"",
 	}
 	for _, candidate := range invalid {
-		if providerIDPattern.MatchString(candidate) {
+		if providerargs.IsConversationUUID(candidate) {
 			t.Fatalf("non-conversation value %q accepted as a provider UUID", candidate)
 		}
 		if argv := ResumeRecipeForProvider("claude-code", "claude", candidate); argv != nil {

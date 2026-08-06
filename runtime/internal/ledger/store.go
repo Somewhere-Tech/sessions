@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -315,7 +316,7 @@ func (w boundaryWriter) RecordCreated(ctx context.Context, value Created) error 
 }
 
 func (w boundaryWriter) RecordProviderRebound(ctx context.Context, value ProviderRebound) error {
-	if value.ProviderUUID == "" || !providerIDPattern.MatchString(value.ProviderUUID) {
+	if value.ProviderUUID == "" || !providerargs.IsConversationUUID(value.ProviderUUID) {
 		return fmt.Errorf("record provider rebound: invalid provider UUID %q", value.ProviderUUID)
 	}
 	if value.NewLaneID == "" {
@@ -821,7 +822,7 @@ func ValidateCreator(kind CreatorKind, id string) error {
 	}
 	switch kind {
 	case CreatorSession:
-		if !sessionIDPattern.MatchString(id) {
+		if !providerargs.IsConversationUUID(id) {
 			return fmt.Errorf("invalid creator session UUID %q", id)
 		}
 	case CreatorUser:
@@ -845,7 +846,7 @@ func validateResumeIdentity(tool, providerUUID string, argv []string) error {
 		}
 		return nil
 	}
-	if !providerIDPattern.MatchString(providerUUID) {
+	if !providerargs.IsConversationUUID(providerUUID) {
 		return fmt.Errorf("invalid provider UUID %q", providerUUID)
 	}
 	if len(argv) == 0 {
