@@ -7,6 +7,8 @@ mod lifecycle;
 #[cfg(any(target_os = "windows", test))]
 mod windows_cli_path;
 mod windows_credentials;
+#[cfg(any(target_os = "windows", test))]
+mod windows_runner;
 #[cfg(target_os = "windows")]
 mod windows_runtime;
 #[cfg(any(target_os = "windows", test))]
@@ -2411,8 +2413,37 @@ fn start_tray_poll(app: AppHandle) {
     });
 }
 
+// The uninstall entry point, invoked by the NSIS uninstaller before it deletes
+// the package and available by hand on macOS, which ships as a bundle with no
+// uninstaller of its own. It runs before any Tauri app is built, so it opens no
+// window, starts no tray, and touches no daemon: it removes the per-user
+// integration Sessions installed and reports what it deliberately left. See
+// lifecycle::IntegrationRemoval for that boundary.
+#[cfg(desktop)]
+const REMOVE_INTEGRATION_ARGUMENT: &str = "--remove-integration";
+
+#[cfg(desktop)]
+fn requested_integration_removal() -> bool {
+    env::args_os().skip(1).any(|argument| {
+        argument
+            .to_str()
+            .is_some_and(|argument| argument == REMOVE_INTEGRATION_ARGUMENT)
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(desktop)]
+    if requested_integration_removal() {
+        let removal = lifecycle::remove_integration();
+        println!("{}", removal.report());
+        // A non-zero exit is the only way this can tell an uninstaller that
+        // something is now the user's to clean up by hand; the uninstaller
+        // continues either way, because a package that refuses to uninstall is
+        // worse than one that leaves a registry value behind.
+        std::process::exit(if removal.is_complete() { 0 } else { 1 });
+    }
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())

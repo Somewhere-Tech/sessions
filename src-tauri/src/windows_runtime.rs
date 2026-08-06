@@ -1,18 +1,23 @@
 use crate::{
-    lifecycle::RuntimeStatus,
-    windows_cli_path::merge_user_path,
+    lifecycle::{IntegrationRemoval, RuntimeStatus},
+    windows_cli_path::{describe_cli_path, merge_user_path, remove_user_path},
     windows_credentials::apply_owner_acl,
-    windows_supervisor::{require_idle, SupervisorDefinition},
+    windows_runner::{
+        activate_stable_runner, file_sha256, stable_runner_is_present, stable_runner_path,
+        sweep_retired_runners,
+    },
+    windows_supervisor::{
+        port_release_timeout, readiness_timeout, require_settled_runtime,
+        validate_supervisor_definition, SupervisorDefinition,
+    },
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
-    fs,
-    io::{self, Read},
+    collections::{BTreeMap, BTreeSet},
+    fs, io,
     net::TcpListener,
     os::windows::process::CommandExt,
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     thread,
     time::{Duration, Instant},
@@ -29,6 +34,10 @@ use winreg::{
 };
 
 const SERVICE_LABEL: &str = "tech.somewhere.sessions.daemon";
+// tauri.conf.json's identifier, which is what app_local_data_dir() appends to
+// %LOCALAPPDATA%. Only uninstall needs it spelled out; every other caller has
+// an AppHandle and asks Tauri.
+const APP_IDENTIFIER: &str = "tech.somewhere.sessions";
 const LOGON_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const LOGON_VALUE_NAME: &str = "Somewhere Sessions";
 const REQUIRED_BINARIES: [&str; 3] = ["sessions.exe", "sessionsd.exe", "sessions-runner.exe"];
@@ -78,6 +87,10 @@ pub fn install(app: &AppHandle, port: u16) -> Result<RuntimeStatus, String> {
         .map_err(|error| format!("resolve Windows Sessions data directory: {error}"))?
         .join("runtime");
     prepare_runtime_root(&root)?;
+    // Collect the copies a previous update had to leave behind because a runner
+    // was still executing them. Doing it here, before anything new is staged,
+    // keeps the sweep away from the runner this run is about to pin.
+    sweep_retired_runners(&root);
     let destination = root.join(&manifest.runtime_version);
     let installed = destination.exists();
     if installed {
@@ -90,7 +103,20 @@ pub fn install(app: &AppHandle, port: u16) -> Result<RuntimeStatus, String> {
         stage_runtime(&source, &destination, &manifest)?;
     }
 
-    let definition = supervisor_definition(&destination, port);
+    // The supervisor definition names the pinned runner, so something has to be
+    // at that path before the definition is written. If nothing is there yet
+    // this is a first install and there is no live runner to protect; the
+    // version swap itself is deferred until the new daemon is known healthy.
+    let runner_digest = required_runner_digest(&manifest)?;
+    if !stable_runner_is_present(&root) {
+        activate_stable_runner(
+            &root,
+            &destination.join("sessions-runner.exe"),
+            &runner_digest,
+        )?;
+    }
+
+    let definition = supervisor_definition(&root, &destination, port);
     validate_supervisor_definition(&definition, &root)?;
     let previous = read_logon_supervisor()?;
     if let Some(previous) = previous.as_deref() {
@@ -99,9 +125,9 @@ pub fn install(app: &AppHandle, port: u16) -> Result<RuntimeStatus, String> {
     }
     let handed_off = match health(port)? {
         Some(existing) if runtime_versions_match(&existing.version, &manifest.runtime_version) => {
-            wait_for_health(port, &manifest.runtime_version)?;
+            wait_for_listening(port, &manifest.runtime_version)?;
             write_logon_supervisor(Some(&definition.command_line()))?;
-            false
+            None
         }
         Some(existing) => {
             let previous = previous.as_deref().ok_or_else(|| {
@@ -110,7 +136,7 @@ pub fn install(app: &AppHandle, port: u16) -> Result<RuntimeStatus, String> {
                     existing.version, manifest.runtime_version
                 )
             })?;
-            handoff_idle(
+            Some(handoff(
                 &root,
                 previous,
                 &definition,
@@ -119,8 +145,7 @@ pub fn install(app: &AppHandle, port: u16) -> Result<RuntimeStatus, String> {
                 &existing,
                 &manifest.runtime_version,
                 "switching Windows runtimes",
-            )?;
-            true
+            )?)
         }
         None => {
             if let Some(previous) = previous.as_deref() {
@@ -134,7 +159,7 @@ pub fn install(app: &AppHandle, port: u16) -> Result<RuntimeStatus, String> {
             }
             write_logon_supervisor(Some(&definition.command_line()))?;
             if let Err(start_error) = start_supervisor(&definition)
-                .and_then(|_| wait_for_health(port, &manifest.runtime_version).map(drop))
+                .and_then(|_| wait_for_listening(port, &manifest.runtime_version).map(drop))
             {
                 let _ = stop_supervisor_if_present(&definition.daemon, port);
                 let restore = write_logon_supervisor(previous.as_deref());
@@ -147,29 +172,28 @@ pub fn install(app: &AppHandle, port: u16) -> Result<RuntimeStatus, String> {
                     )),
                 };
             }
-            false
+            None
         }
     };
 
-    let cli_path = install_cli_path(&root, &destination);
-    let mut detail = if handed_off {
-        "Windows host runtime changed safely while no sessions were live".to_string()
-    } else if installed {
-        "Windows host runtime is installed and healthy".to_string()
-    } else {
-        "Windows host runtime installed; ConPTY runner and per-user supervisor are healthy"
-            .to_string()
+    // Only now, with the daemon that will use it proven healthy, does the
+    // pinned path change version. A failed update therefore leaves the restored
+    // daemon paired with the runner it was already using.
+    activate_stable_runner(
+        &root,
+        &destination.join("sessions-runner.exe"),
+        &runner_digest,
+    )?;
+
+    let mut detail = match handed_off {
+        Some(preserved) => {
+            format!("Windows host runtime updated safely; {preserved} live sessions re-adopted")
+        }
+        None if installed => "Windows host runtime is installed and healthy".to_string(),
+        None => "Windows host runtime installed; ConPTY runner and per-user supervisor are healthy"
+            .to_string(),
     };
-    match cli_path {
-        Ok(()) => {
-            detail.push_str(". Open a new terminal to use the versioned sessions CLI from PATH");
-        }
-        Err(error) => {
-            detail.push_str(&format!(
-                ". The host remains healthy, but CLI PATH setup needs attention: {error}. Restart Sessions to retry"
-            ));
-        }
-    }
+    describe_cli_path(&mut detail, install_cli_path(&root, &destination));
 
     Ok(RuntimeStatus {
         state: "ready".to_string(),
@@ -183,6 +207,39 @@ pub fn reconfigure_port(
     app: &AppHandle,
     current_port: u16,
     requested_port: u16,
+) -> Result<RuntimeStatus, String> {
+    move_port(app, current_port, requested_port, PortMove::Requested)
+}
+
+// The rollback half of a port change, for when the move succeeded but saving
+// the new port did not.
+//
+// It deliberately does not re-run the gate reconfigure_port applies. That gate
+// answers "may Sessions start changing this host?", and the answer was already
+// yes moments ago; asking it again about a daemon that is mid-adoption can
+// refuse, and a refusal here would strand the user with a saved port that does
+// not match the daemon they are talking to — the wedged management plane the
+// rest of this file exists to prevent. macOS rolls back from the baseline it
+// already captured for the same reason.
+pub fn restore_port(
+    app: &AppHandle,
+    current_port: u16,
+    requested_port: u16,
+) -> Result<RuntimeStatus, String> {
+    move_port(app, current_port, requested_port, PortMove::Rollback)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PortMove {
+    Requested,
+    Rollback,
+}
+
+fn move_port(
+    app: &AppHandle,
+    current_port: u16,
+    requested_port: u16,
+    intent: PortMove,
 ) -> Result<RuntimeStatus, String> {
     if current_port == requested_port {
         return install(app, current_port);
@@ -208,6 +265,18 @@ pub fn reconfigure_port(
         apply_owner_acl(&destination, true)?;
     }
 
+    // Same ordering as install(): the definition about to be written names the
+    // pinned runner, so it has to exist before the definition is validated, and
+    // its version only changes once the daemon that will use it is healthy.
+    let runner_digest = required_runner_digest(&manifest)?;
+    if !stable_runner_is_present(&root) {
+        activate_stable_runner(
+            &root,
+            &destination.join("sessions-runner.exe"),
+            &runner_digest,
+        )?;
+    }
+
     ensure_port_available(requested_port)?;
     let existing = health(current_port)?.ok_or_else(|| {
         format!(
@@ -218,26 +287,46 @@ pub fn reconfigure_port(
         "The current Windows supervisor logon definition is missing; refusing a port change without a rollback definition."
             .to_string()
     })?;
-    let definition = supervisor_definition(&destination, requested_port);
+    let definition = supervisor_definition(&root, &destination, requested_port);
     validate_supervisor_definition(&definition, &root)?;
-    handoff_idle(
+    let preserved = match intent {
+        PortMove::Requested => handoff(
+            &root,
+            &previous,
+            &definition,
+            current_port,
+            requested_port,
+            &existing,
+            &manifest.runtime_version,
+            "changing the Windows host port",
+        )?,
+        PortMove::Rollback => handoff_settled(
+            &root,
+            &previous,
+            &definition,
+            current_port,
+            requested_port,
+            &existing,
+            &manifest.runtime_version,
+        )?,
+    };
+
+    activate_stable_runner(
         &root,
-        &previous,
-        &definition,
-        current_port,
-        requested_port,
-        &existing,
-        &manifest.runtime_version,
-        "changing the Windows host port",
+        &destination.join("sessions-runner.exe"),
+        &runner_digest,
     )?;
-    if let Err(error) = install_cli_path(&root, &destination) {
-        eprintln!("Sessions CLI PATH integration after port handoff: {error}");
-    }
+
+    // Same failure, same disposition as install(): a CLI PATH problem is
+    // something the user can act on and belongs in the status they read, not
+    // only in a stderr line no packaged build has anywhere to print.
+    let mut detail = format!(
+        "Windows background service moved safely to localhost:{requested_port}; {preserved} live sessions re-adopted"
+    );
+    describe_cli_path(&mut detail, install_cli_path(&root, &destination));
     Ok(RuntimeStatus {
         state: "ready".to_string(),
-        detail: format!(
-            "Windows background service moved safely to localhost:{requested_port} while no sessions were live"
-        ),
+        detail,
         service_label: SERVICE_LABEL.to_string(),
         runtime_version: Some(manifest.runtime_version),
     })
@@ -324,15 +413,19 @@ fn stage_runtime(
     let parent = destination
         .parent()
         .ok_or_else(|| format!("invalid Windows runtime path {}", destination.display()))?;
+    // Version plus PID plus a monotonic suffix, exactly as lifecycle.rs names
+    // its staging directory. A bare PID is not a unique name — Windows recycles
+    // PIDs, and two Sessions processes can stage the same version at once — and
+    // the old "clear whatever is already there" step made that collision
+    // destructive: it deleted a directory another process was mid-copy into and
+    // was about to rename onto the live runtime path. A name that cannot
+    // collide removes the need to clear anything.
     let staging = parent.join(format!(
-        ".staging-{}-{}",
+        ".staging-{}-{}-{}",
         manifest.runtime_version,
-        std::process::id()
+        std::process::id(),
+        crate::lifecycle::unique_suffix()
     ));
-    if staging.exists() {
-        fs::remove_dir_all(&staging)
-            .map_err(|error| format!("clear stale Windows runtime staging: {error}"))?;
-    }
     fs::create_dir(&staging).map_err(|error| {
         format!(
             "create Windows runtime staging {}: {error}",
@@ -439,35 +532,25 @@ fn broadcast_environment_change() -> Result<(), String> {
     Ok(())
 }
 
-fn supervisor_definition(runtime: &Path, port: u16) -> SupervisorDefinition {
+// The daemon is versioned; the runner is not. SESSIONS_RUNNER is the path the
+// daemon hands to every session it starts, and a live runner holds its own
+// executable open for as long as it runs, so naming the versioned copy here
+// would tie every future session to a directory that the next update replaces.
+// Point at the pinned path instead and let windows_runner swap the bytes.
+fn supervisor_definition(managed_root: &Path, runtime: &Path, port: u16) -> SupervisorDefinition {
     SupervisorDefinition::new(
         &runtime.join("sessionsd.exe"),
         port,
-        &runtime.join("sessions-runner.exe"),
+        &stable_runner_path(managed_root),
     )
 }
 
-fn validate_supervisor_definition(
-    definition: &SupervisorDefinition,
-    managed_root: &Path,
-) -> Result<(), String> {
-    for (label, path) in [
-        ("daemon", definition.daemon.as_path()),
-        ("runner", definition.runner.as_path()),
-    ] {
-        if !path.starts_with(managed_root) || !path.is_file() {
-            return Err(format!(
-                "the Windows supervisor {label} is not an immutable Sessions-managed file: {}",
-                path.display()
-            ));
-        }
-    }
-    if definition.daemon.parent() != definition.runner.parent() {
-        return Err(
-            "the Windows supervisor daemon and runner must use one immutable runtime".to_string(),
-        );
-    }
-    Ok(())
+fn required_runner_digest(manifest: &RuntimeManifest) -> Result<String, String> {
+    manifest
+        .binaries
+        .get("sessions-runner.exe")
+        .cloned()
+        .ok_or_else(|| "the Windows runtime manifest is missing sessions-runner.exe".to_string())
 }
 
 fn read_logon_supervisor() -> Result<Option<String>, String> {
@@ -508,15 +591,35 @@ fn write_logon_supervisor(value: Option<&str>) -> Result<(), String> {
         None => match key.delete_value(LOGON_VALUE_NAME) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            // Reached both by a failed-start rollback and by uninstall, so the
+            // wording has to be true of "there should be no value here" rather
+            // than of either caller's story.
             Err(error) => Err(format!(
-                "restore the Windows Sessions logon definition: {error}"
+                "remove the Windows Sessions logon definition: {error}"
             )),
         },
     }
 }
 
+// Replace the registered supervisor, preserving every live session across the
+// change.
+//
+// This used to refuse outright whenever anything was live, which meant a
+// Windows host running the workload the product exists for could never take an
+// update or move its port. The refusal bought nothing: stopping the supervisor
+// does not stop a runner — runtime/cmd/sessionsd/supervisor_windows.go owns only
+// the daemon process, and runners are started detached — so the sessions it
+// claimed to protect were never at risk from the operation it blocked. They are
+// at risk from a daemon that comes back and fails to re-adopt them, and the
+// answer to that is the one macOS already uses: capture the exact live baseline
+// first, require every one of those IDs back before calling the change good,
+// and otherwise restore the previous runtime and say so.
+//
+// The discovery half of the old gate stays. A baseline captured while the
+// daemon is still finding runners is not a baseline, and rolling forward on a
+// partial one would license exactly the loss this is here to prevent.
 #[allow(clippy::too_many_arguments)]
-fn handoff_idle(
+fn handoff(
     managed_root: &Path,
     previous_entry: &str,
     next: &SupervisorDefinition,
@@ -525,7 +628,29 @@ fn handoff_idle(
     current_health: &Health,
     requested_version: &str,
     operation: &str,
-) -> Result<(), String> {
+) -> Result<usize, String> {
+    require_settled_runtime(current_health.discovering, operation)?;
+    handoff_settled(
+        managed_root,
+        previous_entry,
+        next,
+        current_port,
+        requested_port,
+        current_health,
+        requested_version,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handoff_settled(
+    managed_root: &Path,
+    previous_entry: &str,
+    next: &SupervisorDefinition,
+    current_port: u16,
+    requested_port: u16,
+    current_health: &Health,
+    requested_version: &str,
+) -> Result<usize, String> {
     let previous = SupervisorDefinition::parse(previous_entry)?;
     validate_supervisor_definition(&previous, managed_root)?;
     if previous.port != current_port {
@@ -537,26 +662,25 @@ fn handoff_idle(
     if requested_port != current_port {
         ensure_port_available(requested_port)?;
     }
-    let live_sessions = fetch_live_sessions(current_port)?;
-    require_idle(current_health.discovering, live_sessions.len(), operation)?;
+    let baseline = fetch_live_sessions(current_port)?;
 
     stop_supervisor(&next.daemon)?;
-    wait_for_port_release(current_port)?;
+    wait_for_port_release(current_port, baseline.len())?;
     let next_entry = next.command_line();
     let update_result = write_logon_supervisor(Some(&next_entry))
         .and_then(|_| start_supervisor(next))
-        .and_then(|_| wait_for_health(requested_port, requested_version).map(drop));
+        .and_then(|_| wait_for_ready(requested_port, requested_version, &baseline).map(drop));
     if update_result.is_ok() {
-        return Ok(());
+        return Ok(baseline.len());
     }
 
     let update_error = update_result.unwrap_err();
     let rollback_result = (|| -> Result<(), String> {
         stop_supervisor_if_present(&next.daemon, requested_port)?;
-        wait_for_port_release(requested_port)?;
+        wait_for_port_release(requested_port, baseline.len())?;
         write_logon_supervisor(Some(previous_entry))?;
         start_supervisor(&previous)?;
-        wait_for_health(current_port, &current_health.version)?;
+        wait_for_ready(current_port, &current_health.version, &baseline)?;
         Ok(())
     })();
     match rollback_result {
@@ -565,7 +689,7 @@ fn handoff_idle(
             current_health.version
         )),
         Err(rollback_error) => Err(format!(
-            "Windows supervisor handoff failed: {update_error}; restoring runtime {} on localhost:{current_port} also failed: {rollback_error}",
+            "Windows supervisor handoff failed: {update_error}; restoring runtime {} on localhost:{current_port} also failed: {rollback_error}. Your runners are still running; reopen Sessions to reconnect them.",
             current_health.version
         )),
     }
@@ -623,32 +747,83 @@ fn stop_supervisor_if_present(control_daemon: &Path, port: u16) -> Result<(), St
     }
 }
 
-fn wait_for_health(port: u16, runtime_version: &str) -> Result<Health, String> {
+// A cold start, or a daemon that is already the right version: the service is
+// ready as soon as it answers. Runner discovery may still be running and on a
+// machine with a large retained fleet it will be, for minutes. Waiting for it
+// here used to time out at a flat thirty seconds and then *stop the daemon that
+// was mid-recovery* — reporting a healthy service as failed and making the
+// report come true. macOS makes the same distinction for the same reason: see
+// wait_until_listening in lifecycle.rs.
+fn wait_for_listening(port: u16, runtime_version: &str) -> Result<Health, String> {
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut last_error = "no response".to_string();
     loop {
         match health(port) {
-            Ok(Some(response))
-                if runtime_versions_match(&response.version, runtime_version)
-                    && !response.discovering =>
-            {
+            Ok(Some(response)) if runtime_versions_match(&response.version, runtime_version) => {
                 return Ok(response)
             }
-            Ok(Some(response)) if !runtime_versions_match(&response.version, runtime_version) => {
+            Ok(Some(response)) => {
                 return Err(format!(
                     "Windows Sessions daemon version is {}, expected {}",
                     response.version, runtime_version
                 ));
-            }
-            Ok(Some(_)) => {
-                last_error = "daemon is healthy but runner discovery is still active".to_string()
             }
             Ok(None) => last_error = "no response".to_string(),
             Err(error) => last_error = error,
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "Windows Sessions background service did not become ready on 127.0.0.1:{port}: {last_error}"
+                "Windows Sessions background service did not start listening on 127.0.0.1:{port} within 30s: {last_error}"
+            ));
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+// A handoff, where the question is not "is it listening" but "did every session
+// that was live before the change come back". The budget scales with the
+// baseline because runners are re-adopted serially; a flat deadline calls a
+// fleet-sized recovery a failure and triggers a rollback of something that was
+// working.
+fn wait_for_ready(
+    port: u16,
+    runtime_version: &str,
+    baseline: &BTreeSet<String>,
+) -> Result<Health, String> {
+    let timeout = readiness_timeout(baseline.len());
+    let deadline = Instant::now() + timeout;
+    let mut last_error = "no response".to_string();
+    loop {
+        match health(port) {
+            Ok(Some(response)) if runtime_versions_match(&response.version, runtime_version) => {
+                match fetch_live_sessions(port) {
+                    Ok(current) => {
+                        let missing = baseline.difference(&current).cloned().collect::<Vec<_>>();
+                        if missing.is_empty() {
+                            return Ok(response);
+                        }
+                        last_error = format!(
+                            "{} live sessions were not re-adopted: {}",
+                            missing.len(),
+                            missing.join(", ")
+                        );
+                    }
+                    Err(error) => last_error = error,
+                }
+            }
+            Ok(Some(response)) => {
+                return Err(format!(
+                    "Windows Sessions daemon version is {}, expected {}",
+                    response.version, runtime_version
+                ));
+            }
+            Ok(None) => last_error = "no response".to_string(),
+            Err(error) => last_error = error,
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "Windows Sessions background service did not become ready on 127.0.0.1:{port} within {}s: {last_error}",
+                timeout.as_secs()
             ));
         }
         thread::sleep(Duration::from_millis(200));
@@ -692,7 +867,7 @@ fn health(port: u16) -> Result<Option<Health>, String> {
     Ok(Some(health))
 }
 
-fn fetch_live_sessions(port: u16) -> Result<Vec<String>, String> {
+fn fetch_live_sessions(port: u16) -> Result<BTreeSet<String>, String> {
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
         .connect_timeout(Duration::from_secs(1))
@@ -725,8 +900,9 @@ fn port_is_available(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-fn wait_for_port_release(port: u16) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+fn wait_for_port_release(port: u16, live_sessions: usize) -> Result<(), String> {
+    let timeout = port_release_timeout(live_sessions);
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if port_is_available(port) {
             return Ok(());
@@ -734,25 +910,102 @@ fn wait_for_port_release(port: u16) -> Result<(), String> {
         thread::sleep(Duration::from_millis(50));
     }
     Err(format!(
-        "localhost:{port} remained occupied after the idle Windows supervisor stopped"
+        "localhost:{port} remained occupied {}s after the Windows supervisor was asked to stand down",
+        timeout.as_secs()
     ))
 }
 
-fn file_sha256(path: &Path) -> Result<String, String> {
-    let mut file =
-        fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .map_err(|error| format!("read {}: {error}", path.display()))?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
+// Uninstall. See lifecycle::IntegrationRemoval for what this may and may not
+// touch and why; this is only the Windows half of that decision.
+pub fn remove_integration() -> IntegrationRemoval {
+    let mut removal = IntegrationRemoval::default();
+    match read_logon_supervisor() {
+        Ok(None) => removal.absent(&format!(
+            "per-user logon supervisor ({LOGON_RUN_KEY}\\{LOGON_VALUE_NAME})"
+        )),
+        Ok(Some(_)) => match write_logon_supervisor(None) {
+            Ok(()) => removal.removed(&format!(
+                "per-user logon supervisor ({LOGON_RUN_KEY}\\{LOGON_VALUE_NAME})"
+            )),
+            Err(error) => removal.problem(&error),
+        },
+        Err(error) => removal.problem(&error),
     }
-    Ok(format!("{:x}", hasher.finalize()))
+
+    match managed_runtime_root() {
+        Ok(root) => match remove_cli_path(&root) {
+            Ok(true) => removal.removed("Sessions entry in the per-user PATH"),
+            Ok(false) => removal.absent("Sessions entry in the per-user PATH"),
+            Err(error) => removal.problem(&error),
+        },
+        Err(error) => removal.problem(&error),
+    }
+
+    removal.kept(
+        "the staged Sessions runtime, saved port, paired-machine credentials, and every session record",
+    );
+    removal
+}
+
+// Uninstall runs from the NSIS uninstaller, without a Tauri AppHandle to
+// resolve paths with. %LOCALAPPDATA%\<identifier> is exactly what
+// app_local_data_dir() returns on Windows, so derive it rather than guess at a
+// PATH entry's shape — an uninstaller that matched entries loosely would be
+// editing components it does not own.
+fn managed_runtime_root() -> Result<PathBuf, String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "LOCALAPPDATA is unset, so Sessions could not identify its own PATH entry to remove. Remove the Sessions runtime directory from the user PATH by hand.".to_string()
+        })?;
+    Ok(PathBuf::from(local).join(APP_IDENTIFIER).join("runtime"))
+}
+
+fn remove_cli_path(managed_root: &Path) -> Result<bool, String> {
+    let environment = match RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags("Environment", KEY_QUERY_VALUE | KEY_SET_VALUE)
+    {
+        Ok(key) => key,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("open the signed-in user's environment: {error}")),
+    };
+    let (current, value_type) = match environment.get_raw_value("Path") {
+        Ok(value) if matches!(value.vtype, REG_SZ | REG_EXPAND_SZ) => (
+            String::from_reg_value(&value)
+                .map_err(|error| format!("read the signed-in user's PATH: {error}"))?,
+            value.vtype,
+        ),
+        Ok(value) => {
+            return Err(format!(
+                "the signed-in user's PATH has unsupported registry type {:?}; Sessions left it untouched",
+                value.vtype
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("read the signed-in user's PATH: {error}")),
+    };
+    let updated = remove_user_path(&current, managed_root);
+    if updated == current {
+        return Ok(false);
+    }
+    // Writing an empty string back would leave a per-user PATH that exists only
+    // to say nothing. If Sessions' entry was the whole value, take the value
+    // with it; the machine PATH is untouched either way.
+    if updated.is_empty() {
+        match environment.delete_value("Path") {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("clear the signed-in user's PATH: {error}")),
+        }
+    } else {
+        let mut value = updated.to_reg_value();
+        value.vtype = value_type;
+        environment
+            .set_raw_value("Path", &value)
+            .map_err(|error| format!("write the signed-in user's PATH: {error}"))?;
+    }
+    broadcast_environment_change()?;
+    Ok(true)
 }
 
 #[cfg(test)]

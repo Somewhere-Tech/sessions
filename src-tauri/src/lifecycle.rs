@@ -361,7 +361,12 @@ pub fn reconfigure_port(app: &AppHandle, port: u16) -> LifecycleResult<RuntimeSt
             return Ok(status);
         }
         if let Err(save_error) = save_configured_port(app, port) {
-            let rollback = crate::windows_runtime::reconfigure_port(app, port, current);
+            // restore_port, not reconfigure_port: the rollback must not be
+            // refused by a gate that already said yes to this exact move a
+            // moment ago, or the saved port and the running daemon end up
+            // disagreeing with no way back. macOS rolls back from its captured
+            // baseline for the same reason.
+            let rollback = crate::windows_runtime::restore_port(app, port, current);
             return match rollback {
                 Ok(_) => Err(format!(
                     "could not save the new Windows Sessions port and restored localhost:{current}: {save_error}"
@@ -378,6 +383,209 @@ pub fn reconfigure_port(app: &AppHandle, port: u16) -> LifecycleResult<RuntimeSt
         let _ = app;
         Err("this platform is a client and does not own a local Sessions daemon".to_string())
     }
+}
+
+// Uninstall.
+//
+// Sessions' own integration points are the things the package wrote *outside*
+// itself: the per-user service definition that brings the daemon back at every
+// login, and the `sessions` command it published on a shared command path.
+// Those come out. Everything else stays, and the two boundaries are worth
+// stating because both are easy to get wrong in the direction that costs work:
+//
+// Nothing is stopped. A runner is not owned by the viewer, and the daemon is
+// the only process that can still record what a live runner produces; ending
+// either during an uninstall would turn live sessions into orphans, which is
+// the one outcome this product refuses. Removing the definition is enough — the
+// daemon simply does not come back after the next sign-out, by which time the
+// user's own session has ended anyway. This is the same boundary as "quitting
+// the viewer never ends work", applied to the last thing the viewer does.
+//
+// Nothing of the user's is deleted. Session records, the ledger, the saved
+// port, window geometry, paired-machine credentials, and the staged runtime
+// bytes a live daemon and its runners are executing right now all survive, and
+// an uninstall reports that it left them rather than pretending it was
+// thorough. Provider credentials — Claude, Codex, Git, Somewhere — were never
+// Sessions' to begin with and are not touched or read.
+#[derive(Debug, Default)]
+pub struct IntegrationRemoval {
+    removed: Vec<String>,
+    absent: Vec<String>,
+    kept: Vec<String>,
+    problems: Vec<String>,
+}
+
+impl IntegrationRemoval {
+    pub(crate) fn removed(&mut self, what: &str) {
+        self.removed.push(what.to_string());
+    }
+
+    pub(crate) fn absent(&mut self, what: &str) {
+        self.absent.push(what.to_string());
+    }
+
+    pub(crate) fn kept(&mut self, what: &str) {
+        self.kept.push(what.to_string());
+    }
+
+    pub(crate) fn problem(&mut self, what: &str) {
+        self.problems.push(what.to_string());
+    }
+
+    // An uninstaller that cannot finish must say which piece it left behind and
+    // where, because that piece is now the user's to remove by hand.
+    pub fn is_complete(&self) -> bool {
+        self.problems.is_empty()
+    }
+
+    pub fn report(&self) -> String {
+        let mut lines = vec!["Sessions integration removal".to_string()];
+        for (label, entries) in [
+            ("removed", &self.removed),
+            ("already absent", &self.absent),
+            ("kept on purpose", &self.kept),
+            ("needs attention", &self.problems),
+        ] {
+            for entry in entries {
+                lines.push(format!("  {label}: {entry}"));
+            }
+        }
+        lines.join("\n")
+    }
+}
+
+pub fn remove_integration() -> IntegrationRemoval {
+    #[cfg(target_os = "macos")]
+    {
+        let mut removal = IntegrationRemoval::default();
+        let Some(home) = env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+        else {
+            removal.problem(
+                "HOME is unset, so Sessions could not locate the login service definition or CLI links it installed",
+            );
+            return removal;
+        };
+        remove_macos_integration(&macos_integration(&home))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows_runtime::remove_integration()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let mut removal = IntegrationRemoval::default();
+        removal.absent("this platform is a client and installs no local Sessions integration");
+        removal
+    }
+}
+
+// The paths install and uninstall must agree on, in one place so they cannot
+// drift into an uninstaller that misses what the installer wrote.
+#[cfg(target_os = "macos")]
+struct MacosIntegration {
+    managed_root: PathBuf,
+    plist_path: PathBuf,
+    cli_link_paths: Vec<PathBuf>,
+}
+
+#[cfg(target_os = "macos")]
+fn macos_integration(home: &Path) -> MacosIntegration {
+    MacosIntegration {
+        managed_root: home
+            .join("Library")
+            .join("Application Support")
+            .join("Sessions")
+            .join("runtime"),
+        plist_path: home
+            .join("Library")
+            .join("LaunchAgents")
+            .join(format!("{SERVICE_LABEL}.plist")),
+        cli_link_paths: vec![
+            PathBuf::from("/opt/homebrew/bin/sessions"),
+            PathBuf::from("/usr/local/bin/sessions"),
+            home.join(".local").join("bin").join("sessions"),
+        ],
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn remove_macos_integration(integration: &MacosIntegration) -> IntegrationRemoval {
+    let mut removal = IntegrationRemoval::default();
+    let plist = integration.plist_path.display().to_string();
+    // Deliberately no launchctl bootout: see the note above. Deleting the
+    // definition stops the daemon from returning at the next login without
+    // taking the current one, and its runners, down with it.
+    match fs::remove_file(&integration.plist_path) {
+        Ok(()) => removal.removed(&format!("login service definition {plist}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            removal.absent(&format!("login service definition {plist}"))
+        }
+        Err(error) => removal.problem(&format!("remove {plist}: {error}")),
+    }
+
+    for candidate in &integration.cli_link_paths {
+        let shown = candidate.display().to_string();
+        match managed_cli_link(candidate, &integration.managed_root) {
+            Ok(true) => match fs::remove_file(candidate) {
+                Ok(()) => removal.removed(&format!("`sessions` command link {shown}")),
+                Err(error) => removal.problem(&format!("remove {shown}: {error}")),
+            },
+            // A real file, or a link into something that is not Sessions'
+            // managed runtime, belongs to whoever put it there.
+            Ok(false) => {}
+            Err(error) => removal.problem(&error),
+        }
+    }
+
+    removal.kept(&format!(
+        "the staged runtime, sessions, ledger, saved port, and paired-machine credentials under {}",
+        integration
+            .managed_root
+            .parent()
+            .unwrap_or(&integration.managed_root)
+            .display()
+    ));
+    removal.kept("every running daemon, runner, and provider process");
+    removal
+}
+
+// The same ownership test install_cli_link applies before it replaces a link:
+// a symlink, named `sessions`, resolving into Sessions' managed runtime.
+// Anything else is someone else's tool and is left exactly as found.
+#[cfg(target_os = "macos")]
+fn managed_cli_link(candidate: &Path, managed_root: &Path) -> LifecycleResult<bool> {
+    let metadata = match fs::symlink_metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "inspect {}: {error}; remove it by hand if Sessions installed it",
+                candidate.display()
+            ))
+        }
+    };
+    if !metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| format!("{} has no parent", candidate.display()))?;
+    let target = match fs::read_link(candidate) {
+        Ok(target) if target.is_absolute() => target,
+        Ok(target) => parent.join(target),
+        Err(error) => {
+            return Err(format!(
+                "read {}: {error}; remove it by hand if Sessions installed it",
+                candidate.display()
+            ))
+        }
+    };
+    Ok(
+        target.file_name().and_then(|name| name.to_str()) == Some("sessions")
+            && target.starts_with(managed_root),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -422,22 +630,14 @@ impl RuntimeConfig {
             .path()
             .resource_dir()
             .map_err(|error| format!("resolve Sessions resources: {error}"))?;
+        // Shared with remove_integration, so an uninstall cannot look in a
+        // different place than the install wrote to.
+        let integration = macos_integration(&home);
         Ok(Self {
             source_dir: resources.join("runtime"),
-            managed_root: home
-                .join("Library")
-                .join("Application Support")
-                .join("Sessions")
-                .join("runtime"),
-            cli_link_paths: vec![
-                PathBuf::from("/opt/homebrew/bin/sessions"),
-                PathBuf::from("/usr/local/bin/sessions"),
-                home.join(".local").join("bin").join("sessions"),
-            ],
-            plist_path: home
-                .join("Library")
-                .join("LaunchAgents")
-                .join(format!("{SERVICE_LABEL}.plist")),
+            managed_root: integration.managed_root,
+            cli_link_paths: integration.cli_link_paths,
+            plist_path: integration.plist_path,
             log_path: home
                 .join("Library")
                 .join("Logs")
@@ -1519,7 +1719,7 @@ fn set_directory_mode(path: &Path, mode: u32) -> LifecycleResult<()> {
     set_file_mode(path, mode)
 }
 
-fn unique_suffix() -> u128 {
+pub(crate) fn unique_suffix() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -1745,6 +1945,77 @@ mod tests {
         assert!(error.contains(REQUIRED_BINARIES[0]), "{error}");
         assert!(error.contains("reinstall Sessions"), "{error}");
         assert!(error.contains(&root.display().to_string()), "{error}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn uninstall_removes_only_what_sessions_installed_outside_itself() {
+        use std::os::unix::fs::symlink;
+
+        let root = env::temp_dir().join(format!(
+            "sessions-uninstall-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let integration = macos_integration(&root);
+        let managed = integration.managed_root.join("v1");
+        fs::create_dir_all(&managed).unwrap();
+        fs::write(managed.join("sessions"), b"cli").unwrap();
+        fs::create_dir_all(integration.plist_path.parent().unwrap()).unwrap();
+        fs::write(&integration.plist_path, b"<plist/>").unwrap();
+
+        let managed_link = root.join("bin").join("sessions");
+        let foreign_link = root.join("foreign").join("sessions");
+        let real_file = root.join("real").join("sessions");
+        let elsewhere = root.join("someone-elses-sessions");
+        for path in [&managed_link, &foreign_link, &real_file, &elsewhere] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::write(&elsewhere, b"another tool").unwrap();
+        fs::write(&real_file, b"a real binary someone installed").unwrap();
+        symlink(managed.join("sessions"), &managed_link).unwrap();
+        symlink(&elsewhere, &foreign_link).unwrap();
+
+        let integration = MacosIntegration {
+            cli_link_paths: vec![
+                managed_link.clone(),
+                foreign_link.clone(),
+                real_file.clone(),
+                root.join("never").join("existed"),
+            ],
+            ..integration
+        };
+        let removal = remove_macos_integration(&integration);
+        assert!(removal.is_complete(), "{}", removal.report());
+
+        // Gone: the definition that would restart the daemon at every login,
+        // and the link Sessions published on a shared command path.
+        assert!(!integration.plist_path.exists());
+        assert!(fs::symlink_metadata(&managed_link).is_err());
+        // Untouched: a real file at a candidate path, a link pointing outside
+        // Sessions' managed runtime, and everything the user owns.
+        assert_eq!(
+            fs::read(&real_file).unwrap(),
+            b"a real binary someone installed"
+        );
+        assert_eq!(fs::read_link(&foreign_link).unwrap(), elsewhere);
+        assert!(managed.join("sessions").is_file());
+        let report = removal.report();
+        assert!(report.contains("login service definition"), "{report}");
+        assert!(
+            report.contains(&managed_link.display().to_string()),
+            "{report}"
+        );
+        assert!(report.contains("kept on purpose"), "{report}");
+        assert!(report.contains("running daemon, runner"), "{report}");
+
+        // Running it twice must be a clean no-op, not a second round of errors:
+        // an uninstaller is retried far more often than it is designed for.
+        let again = remove_macos_integration(&integration);
+        assert!(again.is_complete(), "{}", again.report());
+        assert!(again.report().contains("already absent"));
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
