@@ -135,7 +135,12 @@ func TestResumeRestoresCodexTranscriptWhenNativeHandleWasNeverRecorded(t *testin
 	}
 	awaitSessionExited(t, daemon.registry, created.ID)
 
-	createdAt := time.UnixMilli(created.CreatedAt).UTC()
+	// Codex partitions rollouts by the LOCAL date (verified against real
+	// rollout files: one written 19:51 PDT lands in that day's directory, not
+	// the next UTC day), and codexSessionDates resolves the search window in
+	// time.Now().Location(). Deriving this path in UTC made the test fail
+	// every evening west of Greenwich while staying green on UTC CI runners.
+	createdAt := time.UnixMilli(created.CreatedAt)
 	rolloutPath := filepath.Join(
 		profileRoot, "sessions", createdAt.Format("2006"), createdAt.Format("01"),
 		createdAt.Format("02"), "rollout-missing-provider-id.jsonl",
@@ -198,7 +203,12 @@ func TestResumeUsesCodexSessionMetaWhenOnlySessionsRowMissesNativeHandle(t *test
 	awaitSessionExited(t, daemon.registry, created.ID)
 
 	providerID := "01234567-89ab-4cde-8fab-0123456789ab"
-	createdAt := time.UnixMilli(created.CreatedAt).UTC()
+	// Codex partitions rollouts by the LOCAL date (verified against real
+	// rollout files: one written 19:51 PDT lands in that day's directory, not
+	// the next UTC day), and codexSessionDates resolves the search window in
+	// time.Now().Location(). Deriving this path in UTC made the test fail
+	// every evening west of Greenwich while staying green on UTC CI runners.
+	createdAt := time.UnixMilli(created.CreatedAt)
 	rolloutPath := filepath.Join(
 		profileRoot, "sessions", createdAt.Format("2006"), createdAt.Format("01"),
 		createdAt.Format("02"), "rollout-"+providerID+".jsonl",

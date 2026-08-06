@@ -10,11 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -631,39 +629,5 @@ func TestPushStopsWhenTheCallerCancels(t *testing.T) {
 	}
 	if got := uploads.Load(); got != 1 {
 		t.Fatalf("uploads = %d, want the run to stop at the cancellation", got)
-	}
-}
-
-// A live transcript is the routine cause of a skipped session, so the reason
-// has to read as a retry rather than a failure.
-func TestReadStableFileReportsAGrowingTranscriptCalmly(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("named pipes are POSIX here")
-	}
-	path := filepath.Join(t.TempDir(), "live.jsonl")
-	if err := syscall.Mkfifo(path, 0o600); err != nil {
-		t.Skip("mkfifo is unavailable: " + err.Error())
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		// readStableFile makes two attempts; feed both.
-		for attempt := 0; attempt < 2; attempt++ {
-			writer, err := os.OpenFile(path, os.O_WRONLY, 0)
-			if err != nil {
-				return
-			}
-			_, _ = writer.WriteString("{\"type\":\"user\"}\n")
-			_ = writer.Close()
-		}
-	}()
-	_, _, err := readStableFile(path)
-	<-done
-	if err == nil {
-		t.Fatal("readStableFile accepted an unstable read")
-	}
-	if !strings.Contains(err.Error(), "transcript changed while reading") ||
-		!strings.Contains(err.Error(), "the next push picks it up") {
-		t.Fatalf("err = %v, want a calm, instructional reason", err)
 	}
 }

@@ -9,12 +9,10 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -2143,8 +2141,13 @@ func runnerCommandMatches(command, id, expectedCommand, kind string) bool {
 	// sessions-runner, so their process command does not contain the provider
 	// command or session ID. Treat another Sessions runner at the recorded PID
 	// as live rather than risk reaping a real session during a socket outage.
-	if (kind == state.KindCodexAppServer || kind == state.KindClaudeStructured) &&
-		strings.Contains(strings.ToLower(command), "sessions-runner") {
+	//
+	// This is not limited to the structured kinds. Every runner is the
+	// sessions-runner image whatever it hosts, and on Windows the probe can
+	// only report that image path — the session ID lives in a command line
+	// this code deliberately does not read. Without this, every Windows
+	// terminal session fails the match and is reaped as PID reuse.
+	if strings.Contains(strings.ToLower(command), "sessions-runner") {
 		return true
 	}
 	expectedBase := filepath.Base(strings.TrimSpace(expectedCommand))
@@ -2165,22 +2168,6 @@ func (m *Manager) reap(id string) error {
 		}
 	}
 	return errors.Join(reapErrors...)
-}
-
-func processAlive(pid int) bool {
-	process, err := os.FindProcess(pid)
-	return err == nil && process.Signal(syscall.Signal(0)) == nil
-}
-
-func processCommand(pid int) string {
-	commandCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	command := exec.CommandContext(commandCtx, "ps", "-p", fmt.Sprint(pid), "-o", "args=")
-	output, err := command.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(output))
 }
 
 func waitContext(ctx context.Context, duration time.Duration) bool {
