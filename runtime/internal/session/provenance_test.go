@@ -29,6 +29,13 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 	manager := NewManager(config, launcher, ManagerOptions{
 		DisableWatchers: true, ActivityInterval: time.Hour,
 		Boundaries: store.Boundaries(), Observations: store.Observations(), LedgerReader: store,
+		// Delegated-task cleanup requires sustained quiet
+		// (taskCompletionSustainedWindow). This test only asserts the
+		// attribution and cancellation behaviour, so it compresses the window
+		// rather than waiting two real minutes. The window itself is pinned in
+		// task_completion_test.go.
+		TaskCompletionWindow: 100 * time.Millisecond,
+		TaskCompletionPoll:   10 * time.Millisecond,
 	})
 	t.Cleanup(manager.Close)
 

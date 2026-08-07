@@ -103,6 +103,13 @@ type ManagerOptions struct {
 	NotifyWaitingDelay time.Duration
 	NotifyCooldown     time.Duration
 	ListCodexModels    func(context.Context, string) ([]codexapp.Model, error)
+	// TaskCompletionWindow overrides how long a delegated task session must
+	// stay finished and silent before it is ended. Zero uses
+	// taskCompletionSustainedWindow.
+	TaskCompletionWindow time.Duration
+	// TaskCompletionPoll overrides how often a pending completion re-reads the
+	// session. Zero uses taskCompletionPollInterval.
+	TaskCompletionPoll time.Duration
 }
 
 type UsageRecorder interface {
@@ -161,6 +168,11 @@ type Manager struct {
 	notificationsClosed bool
 	discoveryMu         sync.Mutex
 	bindMu              sync.Mutex
+	// completionGeneration records the newest delegated-task completion
+	// attempt per session so a fresh idle classification supersedes an
+	// in-flight one instead of racing it.
+	completionMu         sync.Mutex
+	completionGeneration map[string]uint64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -250,6 +262,7 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 		usage:        selected.UsageRecorder,
 		runtimes:     make(map[string]*runtimeSession), hooks: loadGlobalHooks(config.GlobalHooksPath),
 		laneDeaths: make(map[string]laneDeathBurst), notifications: make(map[string]*sessionNotificationState),
+		completionGeneration: make(map[string]uint64),
 	}
 	manager.listModels = selected.ListCodexModels
 	if manager.listModels == nil {
