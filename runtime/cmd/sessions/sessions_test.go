@@ -541,7 +541,7 @@ func TestKillUnknownSessionReportsFailureInBothModes(t *testing.T) {
 	defer server.Close()
 
 	stdout, stderr, code := runOwnershipCLI(t, server.URL, "kill", target)
-	if code != 1 || stdout != "" || !strings.Contains(stderr, "no session matching") {
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "no live session matches") {
 		t.Fatalf("unknown kill exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	stdout, stderr, code = runOwnershipCLI(t, server.URL, "--json", "kill", target)

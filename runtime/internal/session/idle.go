@@ -192,9 +192,6 @@ func (m *Manager) publishIdle(session *state.Session, duration time.Duration, cl
 	m.writeIdleSentinel(info)
 	m.runHook(info.OnIdle, info, hookContext, false)
 	m.runHook(m.hooks.OnIdle, info, hookContext, true)
-	if classification.Outcome == IdleDone && info.Lifecycle == state.LifecycleTask && summary != "" {
-		m.scheduleTaskCompletion(info.ID)
-	}
 	return classification
 }
 

@@ -578,8 +578,8 @@ func (a *app) reportKill(result killResult) error {
 		}
 	}
 	if len(failed) == 1 && len(unconfirmed) == 0 {
-		return fail(1, "kill did not end %s: %s — run `sessions ls`, then retry `sessions kill %s`",
-			failed[0].ID, failed[0].Reason, failed[0].ID)
+		return fail(1, "kill did not end %s: %s",
+			failed[0].ID, failed[0].Reason)
 	}
 	if len(unconfirmed) == 1 && len(failed) == 0 {
 		return fail(2, "kill could not confirm %s: %s — run `sessions ls` to see whether it ended before retrying",
