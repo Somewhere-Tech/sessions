@@ -27,12 +27,20 @@ import (
 )
 
 const (
-	workingBytesThreshold     = 80
-	workingDecay              = 800 * time.Millisecond
-	discoveryAttempts         = 3
-	discoveryRetryDelay       = 800 * time.Millisecond
-	orphanStartingGrace       = 30 * time.Second
-	readySettle               = 800 * time.Millisecond
+	workingBytesThreshold = 80
+	workingDecay          = 800 * time.Millisecond
+	discoveryAttempts     = 3
+	discoveryRetryDelay   = 800 * time.Millisecond
+	orphanStartingGrace   = 30 * time.Second
+	readySettle           = 800 * time.Millisecond
+	// readyQuiet is how long a PTY provider has to stay silent before its
+	// composer is believed to be up. Progress UI keeps a session un-ready on
+	// its own: a spinner is output, and output resets the window.
+	readyQuiet = 700 * time.Millisecond
+	// readyCap bounds waitReady. CONTRACT/http-api.md has promised this cap
+	// all along; nothing enforced it, because the wait used to be a flat
+	// readySettle that could not run long.
+	readyCap                  = 30 * time.Second
 	defaultNotifyWaitingDelay = 30 * time.Second
 	defaultNotifyCooldown     = 60 * time.Second
 	DefaultMassKillLimit      = 3
@@ -1819,7 +1827,25 @@ func supportsTurnLifecycle(info state.SessionInfo) bool {
 	return info.Tool == state.ToolClaude || info.Tool == state.ToolCodex
 }
 
+// waitReady holds a create until the session can plausibly accept input.
+//
+// For a provider PTY this used to be a flat readySettle — a timing bet, not a
+// signal. It wins on a warm machine and reliably loses on a cold one: Claude
+// launched with --remote-control performs a network handshake and only then
+// draws its composer, and a first request pasted at the 800ms mark landed
+// inside TUI initialization and was eaten by the alt-screen redraw. Every
+// layer then reported success. The user typed a message into a new session
+// and nothing at all happened, which is the worst first-run Sessions can have.
+//
+// Readiness is now observed rather than assumed: the program has produced
+// output and then stayed quiet for readyQuiet. That definition needs no
+// provider version knowledge, and progress UI defends itself — a connecting
+// spinner is output, so a session that is still starting keeps itself
+// un-ready. A structured runtime's first event remains an earlier, stronger
+// answer, and a session that exits stops being waited for.
 func (m *Manager) waitReady(ctx context.Context, runtime *runtimeSession) {
+	ctx, cancel := context.WithTimeout(ctx, readyCap)
+	defer cancel()
 	if runtime.session.ClaudeEventCount() > 0 {
 		select {
 		case <-ctx.Done():
@@ -1835,10 +1861,44 @@ func (m *Manager) waitReady(ctx context.Context, runtime *runtimeSession) {
 		}
 		return
 	}
-	select {
-	case <-ctx.Done():
-	case <-runtime.structuredEventArrived:
-	case <-time.After(readySettle):
+	awaitProviderQuiet(ctx, runtime.structuredEventArrived, func() (int64, bool) {
+		current := runtime.session.Info()
+		return current.LastDataAt, current.Exited
+	}, readySettle, readyQuiet)
+}
+
+// awaitProviderQuiet returns once the observed program has been silent for
+// quiet, but never before floor has elapsed — a program that was already idle
+// when the wait began answers at the floor, which is the old behaviour for the
+// fast case. It returns early for a structured event, an exited session, or a
+// spent context; it polls rather than subscribing because LastDataAt is a
+// timestamp, not an edge, and a tenth of a second of extra latency is nothing
+// against the seconds-long initializations this exists to survive.
+func awaitProviderQuiet(
+	ctx context.Context, structured <-chan struct{},
+	snapshot func() (lastDataMS int64, exited bool), floor, quiet time.Duration,
+) {
+	started := time.Now()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-structured:
+			return
+		case <-ticker.C:
+		}
+		if time.Since(started) < floor {
+			continue
+		}
+		lastData, exited := snapshot()
+		if exited {
+			return
+		}
+		if time.Since(time.UnixMilli(lastData)) >= quiet {
+			return
+		}
 	}
 }
 
