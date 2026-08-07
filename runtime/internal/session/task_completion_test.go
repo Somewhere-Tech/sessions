@@ -50,6 +50,21 @@ func TestTaskCompletionDue(t *testing.T) {
 			expected: completionKill,
 		},
 		{
+			// The pin is the user's exemption from every automatic
+			// terminator. Sustained quiet and an idle parent are the
+			// strongest kill case there is, and the pin still wins --
+			// cancelled outright, not merely waited, because a pinned task
+			// needs no pending attempt watching it.
+			name: "a pinned session is never ended by a guess",
+			current: func(sample completionSample) completionSample {
+				sample.Pinned = true
+				return sample
+			},
+			now:      past,
+			parent:   idleParent,
+			expected: completionCancel,
+		},
+		{
 			name:     "working parent may be about to reuse the child",
 			now:      past,
 			parent:   parentCompletionState{Present: true, Working: true},
@@ -109,9 +124,9 @@ func TestTaskCompletionDue(t *testing.T) {
 			expected: completionCancel,
 		},
 		{
-			name:     "an idle reason other than completed is not a completion",
-			now:      past,
-			parent:   idleParent,
+			name:   "an idle reason other than completed is not a completion",
+			now:    past,
+			parent: idleParent,
 			current: func(s completionSample) completionSample {
 				s.IdleReason = state.IdleReasonNeedsInput
 				return s
