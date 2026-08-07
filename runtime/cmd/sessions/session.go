@@ -130,7 +130,13 @@ func shortToolName(tool string) string {
 func isConfirmableTool(tool string) bool { return tool == "claude-code" || tool == "codex" }
 
 func unknownSessionMessage(id string) string {
-	return fmt.Sprintf("no session matching '%s' — it may be a stale id after a daemon restart; run `sessions ls`", id)
+	// No invented causes and no errands. The old text blamed "a stale id
+	// after a daemon restart" -- a guess, usually wrong -- and told the caller
+	// to go run `sessions ls`, which is the servant handing the master a
+	// chore. Per docs/PHILOSOPHY.md, an id that ever existed must resolve
+	// forever; until wake-on-message makes that true for writes, this message
+	// at least tells the truth and points at the durable record.
+	return fmt.Sprintf("no live session matches '%s'; if it ever existed its conversation is preserved — `sessions history %s` finds it and `sessions resume` reopens it", id, id)
 }
 
 func (a *app) sessionLabel(value session) string {

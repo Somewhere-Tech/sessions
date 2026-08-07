@@ -29,13 +29,6 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 	manager := NewManager(config, launcher, ManagerOptions{
 		DisableWatchers: true, ActivityInterval: time.Hour,
 		Boundaries: store.Boundaries(), Observations: store.Observations(), LedgerReader: store,
-		// Delegated-task cleanup requires sustained quiet
-		// (taskCompletionSustainedWindow). This test only asserts the
-		// attribution and cancellation behaviour, so it compresses the window
-		// rather than waiting two real minutes. The window itself is pinned in
-		// task_completion_test.go.
-		TaskCompletionWindow: 100 * time.Millisecond,
-		TaskCompletionPoll:   10 * time.Millisecond,
 	})
 	t.Cleanup(manager.Close)
 
@@ -118,43 +111,30 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 	if !ok {
 		t.Fatal("delegated task was not registered")
 	}
+	// The owner's rule, after two attempts at a "narrow enough" automatic
+	// reaper both proved the concept wrong: Sessions manages sessions, it does
+	// not guess about them. A completed-looking delegate stays exactly as it
+	// is, because "done" is a fact only the requester can know, and the
+	// requester proves a lane matters by asking for it. Nothing here may end
+	// this session; reclamation, when it exists, will be snooze -- invisible
+	// to any requester -- never death.
 	taskSession.SetIdleResult(state.IdleReasonCompleted, "", "Focused work finished.", time.Now().UnixMilli())
-	manager.scheduleTaskCompletion(task.ID)
-	awaitCondition(t, func() bool {
-		current, present := manager.registry.Get(task.ID)
-		return present && current.Info().Exited
-	})
+	time.Sleep(1200 * time.Millisecond)
+	current, present := manager.registry.Get(task.ID)
+	if !present {
+		t.Fatal("a completed delegated task vanished; nothing is allowed to end it")
+	}
+	if info := current.Info(); info.Exited {
+		t.Fatalf("a completed delegated task was ended automatically: %#v", info)
+	}
 	taskEvents, err := store.Events(context.Background(), task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	taskState := ledger.Fold(taskEvents)[0]
-	if taskState.EndInitiatorID != parent.ID || taskState.EndClient != "sessionsd-task-lifecycle" || taskState.EndReason != "Delegated task completed" {
-		t.Fatalf("automatic task end = %#v", taskState)
+	if folded := ledger.Fold(taskEvents); len(folded) > 0 && folded[0].EndClient != "" {
+		t.Fatalf("an automatic end was ledgered for a completed task: %#v", folded[0])
 	}
-	followup, err := manager.Create(context.Background(), state.CreateSessionRequest{
-		Cmd: "/bin/sh", Cwd: root, CreatorSessionID: parent.ID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	followupSession, ok := manager.registry.Get(followup.ID)
-	if !ok {
-		t.Fatal("follow-up task was not registered")
-	}
-	followupSession.SetIdleResult(state.IdleReasonCompleted, "", "First result.", time.Now().UnixMilli())
-	manager.scheduleTaskCompletion(followup.ID)
-	if !manager.Input(context.Background(), followup.ID, "please continue\r") {
-		t.Fatal("follow-up input was not accepted")
-	}
-	time.Sleep(1200 * time.Millisecond)
-	current, present := manager.registry.Get(followup.ID)
-	if !present {
-		t.Fatal("new input did not cancel task cleanup: session disappeared")
-	}
-	if info := current.Info(); info.Exited || info.IdleReason != "" {
-		t.Fatalf("new input did not cancel task cleanup: %#v", info)
-	}
+
 	if grandchild.ParentSessionID != child.ID ||
 		!reflect.DeepEqual(grandchild.CreatorAncestry, []string{child.ID, parent.ID}) ||
 		grandchild.RootCreatorKind != string(ledger.CreatorUser) || grandchild.RootCreatorID != wantUser {

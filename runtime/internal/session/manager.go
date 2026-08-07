@@ -103,13 +103,6 @@ type ManagerOptions struct {
 	NotifyWaitingDelay time.Duration
 	NotifyCooldown     time.Duration
 	ListCodexModels    func(context.Context, string) ([]codexapp.Model, error)
-	// TaskCompletionWindow overrides how long a delegated task session must
-	// stay finished and silent before it is ended. Zero uses
-	// taskCompletionSustainedWindow.
-	TaskCompletionWindow time.Duration
-	// TaskCompletionPoll overrides how often a pending completion re-reads the
-	// session. Zero uses taskCompletionPollInterval.
-	TaskCompletionPoll time.Duration
 }
 
 type UsageRecorder interface {
@@ -330,6 +323,7 @@ func (m *Manager) UpdateName(ctx context.Context, id, name string) (string, erro
 	}
 	return updated, nil
 }
+
 // ReleaseName undoes an explicit rename's claim on the card, so the session
 // goes back to following the provider's conversation title. No ledger fact is
 // written: the rename that is being released is already recorded, and this

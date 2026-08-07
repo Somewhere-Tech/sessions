@@ -19,15 +19,7 @@ func ExemptFromAutomaticEnd(info state.SessionInfo) bool {
 	return info.Pinned
 }
 
-// TODO(review): wire this into scheduleTaskCompletion in idle.go. That sweep is
-// the one automatic terminator that exists today, and it currently ends a
-// completed task session regardless of its pin. The guard belongs immediately
-// after the session is re-read there, beside the other conditions that abandon
-// the completion:
-//
-//	if ExemptFromAutomaticEnd(info) {
-//		return
-//	}
-//
-// It is not applied from this file because idle.go is being edited on another
-// branch and a second writer would collide with it.
+// No automatic terminator exists today -- the task-completion reaper was
+// removed on the owner's rule: lanes are never killed automatically. This
+// helper is the standing exemption any FUTURE automatic machinery (snooze,
+// retention) must consult before acting on a session.

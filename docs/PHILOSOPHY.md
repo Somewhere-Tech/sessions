@@ -28,11 +28,38 @@ There is no other state. "Finished", "exited", "failed at startup", and the
 rest are diagnostics, not lifecycles, and must not appear as top-level session
 states in any listing.
 
+## The manager is a servant
+
+Sessions is a session MANAGER, and managing means two things at once: total
+freedom inside, total service at the interface. Internally it may reclaim a
+process whenever it likes -- immediately on idle, under memory pressure, on no
+schedule at all. There are no grace windows and no timing constants in
+lifecycle policy, because a window is a knob for tuning how often a guess is
+wrong, and the manager does not guess. Externally, the requester outranks the
+machinery absolutely. A request is never wrong, never early, never late, and
+never answered with an errand: "no such session, run ls", "you can resume it
+if you want" -- any reply that hands work back to the requester is the servant
+telling the master to go fetch, and is a defect wherever it appears, whatever
+the internal state was.
+
+Two kinds of request, two obligations. A READ -- what did it say, what is its
+status, show me the work -- is served from the durable history and never needs
+a process at all. A WRITE -- a new message -- wakes whatever needs waking and
+delivers. Every id that ever existed resolves forever; the asking is itself
+the proof that the session should exist. Even a request for a completely dead
+lane is served, because the manager fetches -- always.
+
+A requester ever discovering that a session it wanted was killed is not an
+error condition. It is the product failing its founding promise, budgeted at
+one in a hundred thousand, and worth telling the user to uninstall over.
+
 ## Sleep policy
 
-- **Delegated task sessions**: aggressive. Work delivered and idle means
-  sleep. A subagent is a function call with memory; a function that returned
-  does not hold a process.
+- **Delegated task sessions**: aggressive, and only ever sleep. Work
+  delivered and idle may mean the process goes away; the session does not.
+  Nothing automatic ends a session -- the task-completion reaper that once
+  did was removed, twice narrowed and still wrong, because "done" is a fact
+  only the requester can know.
 - **User sessions**: gentle. Roughly a day of inactivity before sleeping.
 - **Pinned**: never sleeps automatically and never auto-ends. Pinning is the
   user marking a workbench, and the machinery keeps its hands off it.
