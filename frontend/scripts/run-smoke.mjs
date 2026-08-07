@@ -50,6 +50,7 @@ const GATE = [
   'resume-partial',
   'shared-contracts',
   'working-set',
+  'pin',
   'typography',
   'window-scope',
   'same-origin-bootstrap',

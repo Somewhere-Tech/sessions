@@ -5,6 +5,7 @@ import { getTabLabel, sessionLabel } from '../lib/tabLabels';
 import { canContinueSession, classifySession, endedAtLabel, endedSummary, type SessionStatusState } from '../lib/sessionStatus';
 import { sessionModeName } from '../lib/sessionMode';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
+import { useSessions } from '../store/sessions';
 
 // Long-form expansions of the classifier's one-word state. Same ordering,
 // same meaning — this view has room for a sentence, not a different answer.
@@ -33,6 +34,12 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
   // claiming nothing had happened; an unresolved end must stay visible.
   const [ending, setEnding] = useState(false);
   const [endError, setEndError] = useState<string | null>(null);
+  // The pin is daemon state, so the panel reports what the daemon stored and
+  // says so when the call fails. Flipping the checkbox optimistically would
+  // show a protection the session does not actually have.
+  const updatePinned = useSessions((state) => state.updatePinned);
+  const [pinning, setPinning] = useState(false);
+  const [pinError, setPinError] = useState<string | null>(null);
   const displayParentID = session.displayParentSessionId !== undefined
     ? session.displayParentSessionId
     : session.parentSessionId;
@@ -49,6 +56,18 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
   const status = classifySession(session);
   const degraded = status.degraded;
   const currentStatus = end ? end.label : status.label;
+  const togglePin = async (pinned: boolean): Promise<void> => {
+    if (pinning) return;
+    setPinning(true);
+    setPinError(null);
+    try {
+      await updatePinned(session.id, pinned);
+    } catch (reason) {
+      setPinError(reason instanceof Error ? reason.message : 'Sessions could not change the pin.');
+    } finally {
+      setPinning(false);
+    }
+  };
   const endNow = async (): Promise<void> => {
     if (ending) return;
     setEnding(true);
@@ -74,6 +93,22 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
           <Row label="Account" value={session.profile || 'Default account'} />
           <Row label="Model" value={session.model || 'Provider default'} />
           <Row label="Effort" value={session.effort || 'Provider default'} />
+          {session.exited ? null : (
+            <label className="settings-toggle details-pin-toggle">
+              <span>
+                <strong>Pinned</strong>
+                <small>Keeps this session at the top of every list and out of reach of automatic cleanup. It never stops you ending it yourself.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={session.pinned === true}
+                disabled={pinning}
+                aria-label="Pin this session"
+                onChange={(event) => void togglePin(event.currentTarget.checked)}
+              />
+            </label>
+          )}
+          {pinError ? <p className="session-control-error" role="alert">{pinError}</p> : null}
         </DetailsCard>
         <DetailsCard title="Workspace">
           <Row label="Folder" value={session.cwd}/>

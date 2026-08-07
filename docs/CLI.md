@@ -48,6 +48,8 @@ Daily workflows:
   gc                       archive old closed records safely
   archive                  hide selected closed sessions
   aside                    set live sessions aside or bring them back
+  pin                      keep a session at the top and out of automatic reach
+  unpin                    remove the workbench mark from a session
   ls                       list interactive sessions
   list                     list agent sessions and headless lanes
   lanes                    list headless lanes
@@ -355,6 +357,45 @@ Examples:
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
+## `sessions pin`
+
+```text
+Usage:
+  sessions pin <session>
+
+keep a session at the top and out of automatic reach
+
+Mark a live session as a workbench. A pinned session sorts first in `sessions ls`, `sessions list`, and the app's session list, is marked PINNED in `sessions history`, and is exempt from automatic termination — the task-lifecycle sweep that retires a finished delegate, and the sleep and retention policies that follow it. A pin never stops, starts, or otherwise touches the running process, and it never protects a session from you: `sessions kill`, ending it in the app, and archiving it all still work.
+
+The mark is daemon-owned and persisted in runner metadata, so it survives daemon restarts and runner re-adoption exactly as a name or a tag does. Ended records are refused, because a pin exempts a live session from automatic termination and cannot protect one that has already ended; use archive to hide those.
+
+Under --json the answer is {ok, code, id, name, pinned}, where pinned is the state the daemon actually stored rather than the one that was requested.
+
+Examples:
+  sessions pin 0123abcd
+  sessions pin bolo
+  sessions --json pin 0123abcd
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions unpin`
+
+```text
+Usage:
+  sessions unpin <session>
+
+remove the workbench mark from a session
+
+Clear a pin. The session keeps running and keeps everything else about it; it returns to its ordinary place in the listings and becomes eligible again for the automatic policies a pin exempted it from. The answer shape matches pin.
+
+Examples:
+  sessions unpin 0123abcd
+  sessions --json unpin 0123abcd
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
 ## `sessions ls`
 
 ```text
@@ -364,6 +405,8 @@ Usage:
 list interactive sessions
 
 List agent sessions known to the daemon. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Set-aside sessions remain listed and marked; --aside selects only them, while --not-aside reproduces the native default working set.
+
+Sessions you pinned with `sessions pin` come first, in both the table and --json, and a PIN column appears when any listed session carries the mark. Everything below the pinned ones keeps the order it already had.
 
 Two independent axes decide what comes back, and they are easy to confuse. State: ended sessions are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's sessions and changes nothing about which states are shown. The same two spellings mean the same two things on ls, list, and lanes.
 
@@ -393,7 +436,7 @@ Usage:
 
 list agent sessions and headless lanes
 
-List agent sessions and headless lanes together. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped.
+List agent sessions and headless lanes together. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Pinned sessions come first here too, with a PIN column when any row carries the mark.
 
 State: ended sessions and exited lanes are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's records and changes nothing about which states are shown.
 

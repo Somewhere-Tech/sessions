@@ -167,6 +167,22 @@ export async function updateSetAside(
   return body.setAsideAt;
 }
 
+// The daemon answers with the state it actually stored rather than the one that
+// was requested, so a daemon that accepted the call and did something else is
+// visible instead of silently assumed.
+export async function updatePinned(
+  sessionId: string,
+  pinned: boolean
+): Promise<boolean> {
+  const r = await apiFetch(`${httpBase()}/api/sessions/${encodeURIComponent(sessionId)}/pin`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pinned })
+  });
+  const body = await featureJSON<{ pinned: boolean }>(r, 'Session pinning');
+  return body.pinned;
+}
+
 export interface MachineAccessRequest {
   request_id: string;
   client_id: string;

@@ -54,6 +54,10 @@ type completionSample struct {
 	Working    bool
 	IdleReason string
 	Lifecycle  string
+	// Pinned is the user's exemption from every automatic terminator this
+	// file will ever contain. It is sampled fresh each poll rather than once
+	// at scheduling, so pinning a task mid-countdown takes effect.
+	Pinned bool
 	// OutputSeq is the monotonic sequence of the last terminal output applied.
 	// It is the primary "did anything come out of it" signal; LastDataAt
 	// carries millisecond granularity and so can miss same-millisecond writes.
@@ -94,6 +98,12 @@ func taskCompletionDue(
 	switch {
 	case current.Exited:
 		// Already over; there is nothing left to end.
+		return completionCancel
+	case current.Pinned:
+		// A pin is the user saying this session is a workbench. The guess
+		// machinery does not get a vote, however long the quiet lasts; only
+		// the user ends a pinned session. Cancel rather than wait: a pinned
+		// task needs no pending attempt watching it.
 		return completionCancel
 	case current.Working:
 		// The classifier's "done" did not survive contact with the session.

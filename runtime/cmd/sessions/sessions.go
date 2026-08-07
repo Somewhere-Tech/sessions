@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -167,6 +168,9 @@ func (a *app) cmdSessions(args []string) error {
 			return matchesOwnership(value, scope, false)
 		})
 	}
+	// Pinned first in both formats. The JSON caller is the one that most needs
+	// it: an agent reading a long listing takes the head of the array.
+	records = pinnedFirst(records)
 	if a.wantJSON {
 		return writeRawSessionRecords(a.stdout, records)
 	}
@@ -178,9 +182,13 @@ func (a *app) cmdSessions(args []string) error {
 		return err
 	}
 	showProfile := recordsHaveProfiles(records)
+	showPin := recordsHavePins(records)
 	header := []string{"ID", "TYPE", "NAME", "DESC", "TOOL"}
 	if showProfile {
 		header = append(header, "PROFILE")
+	}
+	if showPin {
+		header = append(header, "PIN")
 	}
 	header = append(header, "CWD", "STATE", "SUMMARY", "AGE", "OWNER")
 	rows := [][]string{header}
@@ -191,6 +199,9 @@ func (a *app) cmdSessions(args []string) error {
 		}
 		if showProfile {
 			row = append(row, compactProfile(value.Profile))
+		}
+		if showPin {
+			row = append(row, pinMark(value))
 		}
 		row = append(
 			row,
@@ -294,6 +305,42 @@ func matchesOwnership(value session, scope ownershipScope, direct bool) bool {
 		rootKind, rootID = value.CreatorKind, value.CreatorID
 	}
 	return rootKind == scope.kind && rootID == scope.id
+}
+
+// pinnedFirst floats the sessions the user marked as workbenches to the top of
+// a listing without disturbing anything else about the order.
+//
+// This is the reason the mark exists. A list that is a hundred and eighty
+// records deep is not searchable by eye, and the handful of sessions a person
+// actually works in are scattered through it by whatever order the daemon
+// happened to return. The sort is stable so the existing order — which every
+// other flag and both list surfaces already agree on — is exactly preserved
+// within each of the two groups.
+func pinnedFirst(records []sessionRecord) []sessionRecord {
+	sorted := append([]sessionRecord(nil), records...)
+	sort.SliceStable(sorted, func(left, right int) bool {
+		return sorted[left].value.Pinned && !sorted[right].value.Pinned
+	})
+	return sorted
+}
+
+// recordsHavePins reports whether the PIN column would say anything. It follows
+// the PROFILE column's rule: a column that is a dash on every row is noise on
+// every row.
+func recordsHavePins(records []sessionRecord) bool {
+	for _, record := range records {
+		if record.value.Pinned {
+			return true
+		}
+	}
+	return false
+}
+
+func pinMark(value session) string {
+	if value.Pinned {
+		return "pin"
+	}
+	return "-"
 }
 
 func filterSessionRecords(records []sessionRecord, keep func(session) bool) []sessionRecord {

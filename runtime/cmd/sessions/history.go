@@ -136,6 +136,12 @@ type conversationRow struct {
 	Status      string   `json:"status"`
 	Reason      string   `json:"reason,omitempty"`
 	Resume      []string `json:"resume,omitempty"`
+	// Pinned marks a conversation whose live Sessions record the user pinned.
+	// It is the answer to "which of these is one of mine" in a browse that is
+	// deliberately fleet-wide and mostly other people's and other days' work.
+	// A conversation with no live session cannot be pinned, so this is absent
+	// rather than false on every historical row.
+	Pinned bool `json:"pinned,omitempty"`
 	// Hits and Snippets are only present when a query narrowed the browse, and
 	// say why this conversation is in the answer.
 	Hits     int      `json:"hits,omitempty"`
@@ -488,8 +494,11 @@ type historyTargetOutcome struct {
 	index   int
 	listing integrations.HistoryResponse
 	live    map[string]bool
-	took    time.Duration
-	err     error
+	// pinned is read from the same listing as live, because a pin is a fact
+	// about a running session and only a running session can carry one.
+	pinned map[string]bool
+	took   time.Duration
+	err    error
 }
 
 // peerCannotAnswerInTime reports a peer that has already shown it needs longer
@@ -660,7 +669,7 @@ func (a *app) collectConversations(targets []fleetTarget, waitForPeers bool) (co
 		collected.known += len(outcome.listing.Sessions)
 		for _, session := range outcome.listing.Sessions {
 			collected.rows = append(collected.rows, conversationRow{
-				target: index,
+				target: index, Pinned: outcome.pinned[session.ID],
 			}.fill(target.Alias, qualify, session, outcome.live[session.ID]))
 		}
 	}
@@ -702,7 +711,7 @@ func withheldFromLastListing(
 func readTargetConversations(
 	target fleetTarget, index int, timeout time.Duration,
 ) (outcome historyTargetOutcome) {
-	outcome = historyTargetOutcome{index: index, live: map[string]bool{}}
+	outcome = historyTargetOutcome{index: index, live: map[string]bool{}, pinned: map[string]bool{}}
 	started := time.Now()
 	defer func() { outcome.took = time.Since(started) }()
 	// The running set is read first because it is the cheap call: if this
@@ -715,6 +724,7 @@ func readTargetConversations(
 	for _, value := range running.Sessions {
 		if !value.Exited {
 			outcome.live[value.ID] = true
+			outcome.pinned[value.ID] = value.Pinned
 		}
 	}
 	outcome.err = getJSONFromClient(target.Client, "/api/history", &outcome.listing, timeout)
@@ -1351,6 +1361,11 @@ func (a *app) conversationMetaLine(row conversationRow) string {
 	}
 	if row.Status == historyStatusLive {
 		parts = append(parts, "LIVE NOW")
+	}
+	// After LIVE NOW, because pinned is a fact about the live session and reads
+	// as a qualifier on it rather than as a separate claim about the history.
+	if row.Pinned {
+		parts = append(parts, "PINNED")
 	}
 	if row.Hits > 0 {
 		parts = append(parts, fmt.Sprintf("%d matching messages", row.Hits))

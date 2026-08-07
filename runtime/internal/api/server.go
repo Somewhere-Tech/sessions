@@ -553,6 +553,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		if s.handleWaitRoute(response, request, id, suffix, corsOrigin) {
 			return
 		}
+		if s.handlePinRoute(response, request, id, suffix, corsOrigin) {
+			return
+		}
 		s.handleSessionRoute(response, request, id, suffix, corsOrigin)
 		return
 	}
