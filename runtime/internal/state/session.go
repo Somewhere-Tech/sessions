@@ -340,6 +340,19 @@ func (s *Session) Snapshot(_ context.Context, cols int) (string, uint32, error) 
 	return s.snapshot(cols, false)
 }
 
+// OutputSeq is the sequence number of the most recent output event applied to
+// this session. It is the cheapest monotonic answer to "has anything come out
+// of this session since I last looked", and unlike LastDataAt it does not lose
+// same-millisecond writes.
+func (s *Session) OutputSeq() uint32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.nextSeq == 0 {
+		return 0
+	}
+	return s.nextSeq - 1
+}
+
 // TerminalSnapshot primes an interactive terminal with the bounded history
 // retained by the server-side mirror. Other snapshot consumers deliberately
 // remain viewport-only so status parsing and responsive reflow are unchanged.
