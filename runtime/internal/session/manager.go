@@ -1667,6 +1667,12 @@ func (r *runtimeSession) observe() {
 				r.setWorking(working)
 			}
 			r.manager.recordStructuredUsage(r.session.Info(), event.CodexEvent)
+			// A structured runner's frames arrive as EventCodex whichever
+			// provider it is (proto/client.go decodes every Structured frame
+			// that way), and recordCodexLocked runs them through the same
+			// title parsing. A Codex conversation has no title, so for Codex
+			// this costs one comparison and stops.
+			r.followProviderTitle()
 			select {
 			case r.structuredEventArrived <- struct{}{}:
 			default:

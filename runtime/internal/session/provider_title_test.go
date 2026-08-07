@@ -81,6 +81,31 @@ func TestALiveClaudeConversationTakesTheTitleClaudeGivesIt(t *testing.T) {
 	}
 }
 
+// A structured Claude session has no transcript watcher; its records arrive
+// from the runner as Structured frames, which the runner client decodes as
+// EventCodex whichever provider produced them. The title has to be followed on
+// that path too or Rich Claude sessions are the one kind that never gets one.
+func TestAStructuredClaudeSessionAlsoTakesItsProviderTitle(t *testing.T) {
+	root := t.TempDir()
+	config := state.Config{
+		DefaultShell: "/bin/bash", DefaultCwd: root, DefaultCols: 300, DefaultRows: 50,
+		StateRoot: filepath.Join(root, "state"), RunnerStateDir: filepath.Join(root, "state", "runners"),
+		LaunchAgentsDir: filepath.Join(root, "agents"),
+	}
+	launcher := prototest.NewLauncher()
+	manager := NewManager(config, launcher, ManagerOptions{DisableWatchers: true})
+	defer manager.Close()
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "claude", Cwd: root, Kind: state.KindClaudeStructured, Name: "Claude - Projects",
+		Args: []string{"--session-id", "aaaaaaaa-1111-2222-3333-444444444444"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher.Runner(created.ID).AddCodexEvent(map[string]any{"type": "ai-title", "aiTitle": "TexasT"})
+	waitForName(t, manager, created.ID, "TexasT")
+}
+
 func appendRecord(t *testing.T, path, record string) {
 	t.Helper()
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
