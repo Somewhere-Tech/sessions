@@ -51,8 +51,17 @@ func MergeRunnerMetadata(existing, next Metadata) Metadata {
 	// always the more recent intent. An empty one means this is the first write
 	// and there is nothing to preserve. Description and its source move
 	// together or the pair can disagree about where the text came from.
+	//
+	// The name's source travels with it. A runner carries no source at all, so
+	// letting its write through would leave the name in place but silently
+	// un-pinned, and the next title the provider generates would replace a
+	// name the user chose. An empty source on disk is the adoptable default
+	// and there is nothing to preserve.
 	if existing.Name != "" {
 		merged.Name = existing.Name
+	}
+	if existing.NameSource != "" {
+		merged.NameSource = existing.NameSource
 	}
 	if existing.Description != "" || existing.DescriptionSource != "" {
 		merged.Description = existing.Description

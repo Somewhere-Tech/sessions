@@ -330,6 +330,13 @@ func (m *Manager) UpdateName(ctx context.Context, id, name string) (string, erro
 	}
 	return updated, nil
 }
+// ReleaseName undoes an explicit rename's claim on the card, so the session
+// goes back to following the provider's conversation title. No ledger fact is
+// written: the rename that is being released is already recorded, and this
+// does not assert a new name of its own.
+func (m *Manager) ReleaseName(ctx context.Context, id string) (string, error) {
+	return m.registry.ReleaseName(id)
+}
 func (m *Manager) Tags(id string) (map[string]string, error) {
 	return m.registry.Tags(id)
 }
@@ -1635,6 +1642,7 @@ func (r *runtimeSession) observe() {
 				})
 			}
 			r.manager.recordStructuredUsage(r.session.Info(), event.ClaudeEvent)
+			r.followProviderTitle()
 			select {
 			case r.structuredEventArrived <- struct{}{}:
 			default:
@@ -1659,6 +1667,12 @@ func (r *runtimeSession) observe() {
 				r.setWorking(working)
 			}
 			r.manager.recordStructuredUsage(r.session.Info(), event.CodexEvent)
+			// A structured runner's frames arrive as EventCodex whichever
+			// provider it is (proto/client.go decodes every Structured frame
+			// that way), and recordCodexLocked runs them through the same
+			// title parsing. A Codex conversation has no title, so for Codex
+			// this costs one comparison and stops.
+			r.followProviderTitle()
 			select {
 			case r.structuredEventArrived <- struct{}{}:
 			default:
@@ -1864,6 +1878,33 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 		}
 	}) {
 		watcher.Close()
+	}
+}
+
+// followProviderTitle keeps the session's stored name on whatever the provider
+// currently calls the conversation.
+//
+// Every Claude event reaches here, from the structured runner and from the
+// transcript watcher alike, and the title records among them have already been
+// applied to SessionInfo by the time the event is published. So the common
+// case is three in-memory comparisons and no work: the name is the user's, the
+// conversation has no title yet, or the title is already the name. Only an
+// actual change reaches the registry and touches the metadata file.
+//
+// The rename is not recorded in the ledger. RecordRenamed attributes its fact
+// to ActorUser, and this is the daemon following the provider, not a person
+// renaming anything.
+func (r *runtimeSession) followProviderTitle() {
+	info := r.session.Info()
+	if info.NameSource == state.NameSourceExplicit {
+		return
+	}
+	title := state.ProviderConversationTitle(info.ClaudeCustomTitle, info.ClaudeAITitle)
+	if title == "" || title == info.Name {
+		return
+	}
+	if _, err := r.manager.registry.AdoptProviderTitle(info.ID, title); err != nil {
+		log.Printf("[name] follow provider title for %s: %v", info.ID, err)
 	}
 }
 

@@ -250,14 +250,21 @@ Examples:
 
 ```text
 Usage:
-  sessions rename <session> <name>
+  sessions rename <session> <name> | rename <session> --auto
 
 rename a session everywhere in Sessions
 
-Set the durable Sessions title used by the app, CLI, Fleet, search, and later continuations. Claude /rename titles are imported when no Sessions title has been chosen. Sessions does not rewrite Claude or Codex private history files, so unsupported provider-native renames remain unchanged.
+Set the durable Sessions title used by the app, CLI, Fleet, search, and later continuations.
+
+A session you have not renamed follows the provider's own conversation title automatically. Claude titles its conversations, so a Claude session is named whatever Claude calls it and keeps following later title changes; searching Sessions for the name you can see in Claude finds the session. Codex writes no title to its rollout files, so a Codex session keeps the name it was created with.
+
+Renaming makes the title yours, and Sessions stops following the provider for that session. --auto reverses that and hands the name back: it takes no name of its own, adopts the provider's current title immediately when there is one, and otherwise keeps the present name until the next title arrives.
+
+Sessions does not rewrite Claude or Codex private history files, so unsupported provider-native renames remain unchanged.
 
 Examples:
   sessions rename 0123abcd DB
+  sessions rename 0123abcd --auto
   sessions --json rename 0123abcd 'Database migration'
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.

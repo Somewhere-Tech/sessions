@@ -926,13 +926,27 @@ func (h *HistoryStore) archivedTranscriptWindow(source watch.ArchivedClaudeConve
 	return response, nil
 }
 
+// historyDisplayName names a conversation in history. A Sessions name that is
+// not a launch-time auto-name outranks a title Claude generated, but never a
+// title set inside Claude itself.
+//
+// The provider's own title and its shaping come from
+// state.ProviderConversationTitle, which is the same derivation the daemon
+// adopts into the live session's name, so a conversation cannot be called one
+// thing on the session card and another in history.
 func historyDisplayName(source backup.Session) string {
-	candidates := []string{source.ClaudeCustomTitle}
 	if !genericHistoryName(source.Name) {
-		candidates = append(candidates, source.Name)
+		if custom := compactHistoryTitle(source.ClaudeCustomTitle); custom != "" {
+			return custom
+		}
+		if name := compactHistoryTitle(source.Name); name != "" {
+			return name
+		}
 	}
-	candidates = append(candidates, source.ClaudeAITitle, source.Description, source.Name)
-	for _, candidate := range candidates {
+	if title := state.ProviderConversationTitle(source.ClaudeCustomTitle, source.ClaudeAITitle); title != "" {
+		return title
+	}
+	for _, candidate := range []string{source.Description, source.Name} {
 		if value := compactHistoryTitle(candidate); value != "" {
 			return value
 		}
@@ -950,14 +964,11 @@ func genericHistoryName(value string) bool {
 	return false
 }
 
+// compactHistoryTitle is the shared conversation-title shaping. It lives in
+// state because the daemon applies the same shaping when it adopts a provider
+// title as a session name.
 func compactHistoryTitle(value string) string {
-	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
-	const maxRunes = 96
-	runes := []rune(value)
-	if len(runes) <= maxRunes {
-		return value
-	}
-	return strings.TrimSpace(string(runes[:maxRunes-1])) + "…"
+	return state.CompactConversationTitle(value)
 }
 
 func providerSessionID(source backup.Session, tool string) string {

@@ -68,7 +68,7 @@ func newSession(ctx context.Context, info proto.RunnerInfo, runner proto.Runner,
 		runner: runner,
 		mirror: terminal,
 		info: SessionInfo{
-			ID: info.ID, Name: metadata.Name, Description: metadata.Description,
+			ID: info.ID, Name: metadata.Name, NameSource: metadata.NameSource, Description: metadata.Description,
 			DescriptionSource: metadata.DescriptionSource, Tags: CloneTags(metadata.Tags), Kind: metadata.Kind, SpecPath: metadata.SpecPath,
 			Cmd: info.Cmd, Args: append([]string{}, info.Args...),
 			Cwd: info.Cwd, Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
@@ -248,9 +248,20 @@ func (s *Session) setTags(tags map[string]string) {
 	s.mu.Unlock()
 }
 
-func (s *Session) setName(name string) {
+// setName records a name and, inseparably, who it came from. The two move
+// together or the in-memory view can claim a provider title is a user's choice
+// and stop following the conversation.
+func (s *Session) setName(name, source string) {
 	s.mu.Lock()
 	s.info.Name = name
+	s.info.NameSource = source
+	s.mu.Unlock()
+}
+
+// setNameSource releases or pins the current name without changing it.
+func (s *Session) setNameSource(source string) {
+	s.mu.Lock()
+	s.info.NameSource = source
 	s.mu.Unlock()
 }
 
