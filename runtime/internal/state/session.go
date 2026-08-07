@@ -220,7 +220,59 @@ func (s *Session) Info() SessionInfo {
 	info.Tags = CloneTags(s.info.Tags)
 	info.DisplayParentSessionID = cloneStringPointer(s.info.DisplayParentSessionID)
 	info.SetAsideAt = cloneInt64Pointer(s.info.SetAsideAt)
+	info.MemoryBytes = cloneUint64Pointer(s.info.MemoryBytes)
+	info.CPUPercent = cloneFloat64Pointer(s.info.CPUPercent)
+	info.ResourceProcesses = cloneIntPointer(s.info.ResourceProcesses)
+	info.ResourceSampledAt = cloneInt64Pointer(s.info.ResourceSampledAt)
 	return info
+}
+
+// ResourceSample is one measurement of what this session costs the machine.
+// It is the state package's own shape rather than internal/resource's so that
+// state keeps no dependency on the sampler; the manager translates.
+type ResourceSample struct {
+	// Known is false when the session has no process the sampler could see.
+	Known      bool
+	MemoryByte uint64
+	Processes  int
+	CPUPercent float64
+	CPUKnown   bool
+	At         time.Time
+}
+
+// SetResources records a sample, or clears the fields back to unknown.
+//
+// Clearing is as important as recording. A session whose process has gone --
+// killed, crashed, put to sleep -- must stop reporting the memory it held when
+// it was last seen, because a stale figure is indistinguishable from a live one
+// once it is in a listing. An unknown sample wipes all four fields rather than
+// leaving the last good numbers behind with a fresh timestamp.
+func (s *Session) SetResources(sample ResourceSample) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !sample.Known {
+		s.info.MemoryBytes = nil
+		s.info.CPUPercent = nil
+		s.info.ResourceProcesses = nil
+		s.info.ResourceSampledAt = nil
+		return
+	}
+	memory := sample.MemoryByte
+	processes := sample.Processes
+	sampledAt := sample.At.UnixMilli()
+	s.info.MemoryBytes = &memory
+	s.info.ResourceProcesses = &processes
+	s.info.ResourceSampledAt = &sampledAt
+	if sample.CPUKnown {
+		percent := sample.CPUPercent
+		s.info.CPUPercent = &percent
+		return
+	}
+	// Memory is known and the rate is not: the first sample of a tree has
+	// nothing to subtract from. Report the half that is real and leave the
+	// other half absent rather than filling it with a zero that would read as
+	// "this session is idle".
+	s.info.CPUPercent = nil
 }
 
 func (s *Session) setDisplayParentSessionID(parentID string) {

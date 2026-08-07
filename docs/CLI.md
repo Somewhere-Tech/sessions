@@ -61,6 +61,7 @@ Daily workflows:
   grep                     search every approved machine
   search                   search inside recorded conversations
   usage                    report local Claude and Codex token usage
+  resources                report what live sessions cost this machine
   status                   show a compact session status card
   kill                     terminate sessions or lanes
   recover                  inspect or reopen recoverable sessions
@@ -663,6 +664,32 @@ Examples:
   sessions usage tag --dimension product
   sessions usage model
   sessions --json usage monthly
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions resources`
+
+```text
+Usage:
+  sessions resources [-n N] [--json]
+
+report what live sessions cost this machine
+
+Report the memory and CPU that live sessions are holding on this machine right now: total resident memory, how many sessions and processes it covers, total CPU as a percentage of one core, and the biggest consumers by memory.
+
+Each session's figure is its whole process tree, not one process. A PTY session's runner, the provider it put on the terminal, and everything that provider spawned are all counted together, because that is what the session actually costs. A process that has been reparented away — one whose intermediate parent exited, leaving it adopted by init — leaves the tree and stops being charged to the session that created it.
+
+CPU is a rate measured between two samples seconds apart, not an average over the life of a process. The distinction is the difference between the two numbers a machine will give you for the same PID: cumulative CPU time divided by process age (what `ps %cpu` reports on Linux, and what anyone dividing `ps -o time` by uptime computes) says an agent that worked hard an hour ago is busy now, while `top` says it is idle. This command agrees with `top`. 100% is one core saturated; a session spanning several cores reads above 100.
+
+Unknown is reported as unknown. A session with no live process, and a process this daemon may not inspect, print "-" and are excluded from the totals with their count stated, never counted as zero — a fleet reported as costing nothing is exactly the failure this command exists to prevent. Every figure carries the age of the sample it came from, because the daemon measures on a fixed interval and a reader is entitled to know how stale the answer is.
+
+This is a measurement of the present with no history, which is why it is not a mode of `sessions usage`: that command reports tokens and cost accumulated over a period, and there is no such thing as the resident memory of last Tuesday.
+
+Examples:
+  sessions resources
+  sessions resources -n 25
+  sessions --json resources
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
