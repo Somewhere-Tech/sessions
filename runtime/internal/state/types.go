@@ -32,9 +32,31 @@ const (
 	DescriptionFirstMessage             = "first-message"
 )
 
+// Where a session's stored name came from, and therefore who may change it.
+//
+// A session card used to keep whatever name it was launched with while Claude
+// titled the same conversation something else everywhere the provider itself
+// showed it, so searching Sessions for the name the user could see in Claude
+// found nothing. The name now follows the provider's own conversation title
+// unless a person has said otherwise.
+//
+// NameSourceLaunch is also the value an older session with no recorded source
+// takes, which makes the change migration-free: an untouched session simply
+// becomes adoptable. That default cannot distinguish a session whose name was
+// set by an earlier `sessions rename` from one that still carries its launch
+// name, so such a session can be adopted once by the provider title. Renaming
+// it again pins it permanently, and that is the whole cost of not writing a
+// migration for a field that did not exist.
+const (
+	NameSourceLaunch   = "launch"
+	NameSourceProvider = "provider"
+	NameSourceExplicit = "explicit"
+)
+
 type SessionInfo struct {
 	ID                     string            `json:"id"`
 	Name                   string            `json:"name,omitempty"`
+	NameSource             string            `json:"name_source,omitempty"`
 	Description            string            `json:"description"`
 	DescriptionSource      string            `json:"description_source,omitempty"`
 	Tags                   map[string]string `json:"tags,omitempty"`

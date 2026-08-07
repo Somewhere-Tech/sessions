@@ -767,9 +767,39 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 	if suffix == "/name" && request.Method == http.MethodPut {
 		var body struct {
 			Name string `json:"name"`
+			Auto bool   `json:"auto"`
 		}
 		if err := readJSON(request, &body); err != nil {
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+			return
+		}
+		// "auto" gives the name back to the provider's conversation title
+		// rather than setting one, so it carries no name of its own.
+		if body.Auto {
+			releaser, releasable := s.registry.(interface {
+				ReleaseName(context.Context, string) (string, error)
+			})
+			var name string
+			var err error
+			if releasable {
+				name, err = releaser.ReleaseName(request.Context(), id)
+			} else if registryReleaser, registryReleasable := s.registry.(interface {
+				ReleaseName(string) (string, error)
+			}); registryReleasable {
+				name, err = registryReleaser.ReleaseName(id)
+			} else {
+				s.sendJSON(response, http.StatusNotImplemented, map[string]any{"error": "automatic session naming is not available on this runtime"}, corsOrigin)
+				return
+			}
+			if err != nil {
+				status := http.StatusBadRequest
+				if errors.Is(err, state.ErrSessionNotFound) || errors.Is(err, os.ErrNotExist) {
+					status = http.StatusNotFound
+				}
+				s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
+				return
+			}
+			s.sendJSON(response, http.StatusOK, map[string]any{"name": name}, corsOrigin)
 			return
 		}
 		renamer, supported := s.registry.(interface {

@@ -102,6 +102,7 @@ func EnsureDir(dir string) error {
 type Metadata struct {
 	ID                     string            `json:"id"`
 	Name                   string            `json:"name,omitempty"`
+	NameSource             string            `json:"name_source,omitempty"`
 	Description            string            `json:"description,omitempty"`
 	DescriptionSource      string            `json:"description_source,omitempty"`
 	Tags                   map[string]string `json:"tags,omitempty"`

@@ -184,6 +184,29 @@ survive daemon reattachment. See `fixtures/runner.json`.
 The file is overwritten on every runner respawn, resetting `createdAt` and
 `pid`. It is removed on both normal-ended cleanup and SIGTERM cleanup.
 
+The Go runtime writes additional daemon-owned fields into the same document
+and preserves them across a runner write, which rebuilds the document from
+launch configuration and carries none of them
+(`runtime/internal/state/metadata_merge.go` `MergeRunnerMetadata`). Among them:
+
+| Field | JSON type | Meaning |
+| --- | --- | --- |
+| `name` | string, optional | the canonical Sessions title |
+| `name_source` | `"launch" \| "provider" \| "explicit"`, optional | who the name came from, and therefore who may change it |
+
+`name_source` decides whether the daemon keeps the session's name on the
+provider's own conversation title. `launch` and `provider` are adoptable: the
+daemon rewrites `name` whenever Claude's `custom-title`/`ai-title` records give
+the conversation a different title, so the session card agrees with every
+Claude surface and stays searchable under the name the user can see there.
+`explicit` is set by `PUT /api/sessions/:id/name` and pins the name to the
+user's choice until `PUT` with `{"auto":true}` (`sessions rename --auto`)
+releases it. Absent means adoptable, so no migration is needed for sessions
+created before the field existed; the daemon cannot tell such a session's name
+from a launch auto-name, so one provider title may replace an old rename, and
+renaming again pins it for good. Codex writes no conversation title into its
+rollout files, so a Codex session's name is never adopted.
+
 ### `runners/<id>.sock`
 
 Unix stream socket implementing `runner-protocol.md`, chmod 0600 after bind. It

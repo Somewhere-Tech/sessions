@@ -62,6 +62,7 @@ type PreparedSession struct {
 
 type SessionMetadata struct {
 	Name                   string
+	NameSource             string
 	Description            string
 	DescriptionSource      string
 	Tags                   map[string]string
@@ -445,7 +446,8 @@ func (r *Registry) Register(ctx context.Context, runner proto.Runner, name, onId
 
 func (r *Registry) RegisterMetadata(ctx context.Context, runner proto.Runner, metadata RunnerMetadata, onIdle string) (*Session, error) {
 	return r.register(ctx, runner, SessionMetadata{
-		Name: metadata.Name, Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
+		Name: metadata.Name, NameSource: metadata.NameSource,
+		Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), Pinned: metadata.Pinned,
 		DelegationKind: metadata.DelegationKind,
@@ -493,13 +495,10 @@ func (r *Registry) UpdateTags(id string, requested map[string]string) (map[strin
 	return CloneTags(tags), nil
 }
 
-// UpdateName persists the canonical Sessions title. Provider-native titles
-// remain visible when this value is empty, but Sessions never rewrites a
-// provider's private conversation files to imitate an unsupported rename API.
-func (r *Registry) UpdateName(id, requested string) (string, error) {
-	if !validMetadataID(id) {
-		return "", fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
-	}
+// validateSessionName is the single rule for what may become a session's
+// stored name, whether a person typed it or the daemon adopted it from the
+// provider's own conversation title.
+func validateSessionName(requested string) (string, error) {
 	name := strings.TrimSpace(requested)
 	if name == "" {
 		return "", errors.New("session name is required")
@@ -511,6 +510,22 @@ func (r *Registry) UpdateName(id, requested string) (string, error) {
 		return value < ' ' || value == '\u007f'
 	}) >= 0 {
 		return "", errors.New("session name cannot contain control characters")
+	}
+	return name, nil
+}
+
+// UpdateName persists the canonical Sessions title as the user's own choice.
+// Recording NameSourceExplicit is what stops the daemon from following the
+// provider's conversation title afterwards; from here the card is the user's
+// until `sessions rename --auto` releases it. Sessions never rewrites a
+// provider's private conversation files to imitate an unsupported rename API.
+func (r *Registry) UpdateName(id, requested string) (string, error) {
+	if !validMetadataID(id) {
+		return "", fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	name, err := validateSessionName(requested)
+	if err != nil {
+		return "", err
 	}
 	session, live := r.Get(id)
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
@@ -526,13 +541,112 @@ func (r *Registry) UpdateName(id, requested string) (string, error) {
 		return "", fmt.Errorf("decode session name: %w", err)
 	}
 	metadata.Name = name
+	metadata.NameSource = NameSourceExplicit
 	if err := WriteMetadata(path, metadata); err != nil {
 		return "", fmt.Errorf("persist session name: %w", err)
 	}
 	if live {
-		session.setName(name)
+		session.setName(name, NameSourceExplicit)
 	}
 	return name, nil
+}
+
+// AdoptProviderTitle follows the provider's own conversation title.
+//
+// Claude titles conversations, and that title is what every Claude surface
+// shows. A Sessions card that keeps its launch-time auto-name disagrees with
+// the provider about the same conversation forever: the user searches Sessions
+// for the name they can see in Claude and finds nothing. The daemon therefore
+// adopts the provider's title, and keeps adopting later changes to it, which
+// is the only way the two stay in agreement.
+//
+// This is the daemon speaking, not the user, so it never overrides a name a
+// person chose. NameSourceExplicit is checked in memory and again on disk: the
+// on-disk document is the one that survives a restart, and a session being
+// adopted may not be live at all. A title that is not a legal session name --
+// empty, whitespace-only, control characters -- is not adopted and is not an
+// error, because there is nothing a caller could do about a provider record.
+func (r *Registry) AdoptProviderTitle(id, title string) (bool, error) {
+	if !validMetadataID(id) {
+		return false, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	name, err := validateSessionName(CompactConversationTitle(title))
+	if err != nil {
+		return false, nil
+	}
+	session, live := r.Get(id)
+	if live && session.Info().NameSource == NameSourceExplicit {
+		return false, nil
+	}
+	path := filepath.Join(r.config.RunnerStateDir, id+".json")
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+		}
+		return false, fmt.Errorf("read session name: %w", err)
+	}
+	var metadata Metadata
+	if err := json.Unmarshal(encoded, &metadata); err != nil {
+		return false, fmt.Errorf("decode session name: %w", err)
+	}
+	if metadata.NameSource == NameSourceExplicit {
+		if live {
+			session.setNameSource(NameSourceExplicit)
+		}
+		return false, nil
+	}
+	if metadata.Name == name && metadata.NameSource == NameSourceProvider {
+		return false, nil
+	}
+	metadata.Name = name
+	metadata.NameSource = NameSourceProvider
+	if err := WriteMetadata(path, metadata); err != nil {
+		return false, fmt.Errorf("persist session name: %w", err)
+	}
+	if live {
+		session.setName(name, NameSourceProvider)
+	}
+	return true, nil
+}
+
+// ReleaseName hands the card back to the provider after an explicit rename.
+// The stored name changes only if the provider has already titled the
+// conversation; otherwise the current name stays and the next title adopts.
+func (r *Registry) ReleaseName(id string) (string, error) {
+	if !validMetadataID(id) {
+		return "", fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	session, live := r.Get(id)
+	path := filepath.Join(r.config.RunnerStateDir, id+".json")
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+		}
+		return "", fmt.Errorf("read session name: %w", err)
+	}
+	var metadata Metadata
+	if err := json.Unmarshal(encoded, &metadata); err != nil {
+		return "", fmt.Errorf("decode session name: %w", err)
+	}
+	metadata.NameSource = NameSourceLaunch
+	if err := WriteMetadata(path, metadata); err != nil {
+		return "", fmt.Errorf("persist session name: %w", err)
+	}
+	if !live {
+		return metadata.Name, nil
+	}
+	session.setNameSource(NameSourceLaunch)
+	info := session.Info()
+	title := ProviderConversationTitle(info.ClaudeCustomTitle, info.ClaudeAITitle)
+	if title == "" {
+		return info.Name, nil
+	}
+	if _, err := r.AdoptProviderTitle(id, title); err != nil {
+		return "", err
+	}
+	return session.Info().Name, nil
 }
 
 // UpdateDisplayParent persists only the user's visual organization. Trusted
@@ -926,7 +1040,8 @@ func launchdPath(value string) string {
 
 func writeMetadata(dir string, info proto.RunnerInfo, sessionMetadata SessionMetadata) error {
 	metadata := Metadata{
-		ID: info.ID, Name: sessionMetadata.Name, Description: sessionMetadata.Description,
+		ID: info.ID, Name: sessionMetadata.Name, NameSource: sessionMetadata.NameSource,
+		Description: sessionMetadata.Description,
 		DescriptionSource: sessionMetadata.DescriptionSource, Kind: sessionMetadata.Kind, SpecPath: sessionMetadata.SpecPath,
 		Tags: CloneTags(sessionMetadata.Tags), DisplayParentSessionID: cloneStringPointer(sessionMetadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(sessionMetadata.SetAsideAt), Pinned: sessionMetadata.Pinned,
@@ -953,6 +1068,7 @@ func writeMetadata(dir string, info proto.RunnerInfo, sessionMetadata SessionMet
 type RunnerMetadata struct {
 	Info                   proto.RunnerInfo
 	Name                   string
+	NameSource             string
 	Description            string
 	DescriptionSource      string
 	Tags                   map[string]string
@@ -996,7 +1112,8 @@ func parseRunnerMetadata(encoded []byte) (RunnerMetadata, error) {
 			ConversationID: metadata.ConversationID, RemoteEndpoint: metadata.RemoteEndpoint,
 			ClaudeSessionID: metadata.ClaudeSessionID,
 		},
-		Name: metadata.Name, Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
+		Name: metadata.Name, NameSource: metadata.NameSource,
+		Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), Pinned: metadata.Pinned,
 		DelegationKind: metadata.DelegationKind,

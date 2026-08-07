@@ -66,10 +66,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions tags 0123abcd", "sessions tags 0123abcd product=Sessions client=Acme", "sessions tags 0123abcd --remove client", "sessions --json tags 0123abcd"}, run: (*app).cmdTags,
 	},
 	{
-		name: "rename", usage: "rename <session> <name>",
+		name: "rename", usage: "rename <session> <name> | rename <session> --auto",
 		summary: "rename a session everywhere in Sessions", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Set the durable Sessions title used by the app, CLI, Fleet, search, and later continuations. Claude /rename titles are imported when no Sessions title has been chosen. Sessions does not rewrite Claude or Codex private history files, so unsupported provider-native renames remain unchanged.",
-		examples: []string{"sessions rename 0123abcd DB", "sessions --json rename 0123abcd 'Database migration'"}, run: (*app).cmdRename,
+		longHelp: "Set the durable Sessions title used by the app, CLI, Fleet, search, and later continuations.\n\nA session you have not renamed follows the provider's own conversation title automatically. Claude titles its conversations, so a Claude session is named whatever Claude calls it and keeps following later title changes; searching Sessions for the name you can see in Claude finds the session. Codex writes no title to its rollout files, so a Codex session keeps the name it was created with.\n\nRenaming makes the title yours, and Sessions stops following the provider for that session. --auto reverses that and hands the name back: it takes no name of its own, adopts the provider's current title immediately when there is one, and otherwise keeps the present name until the next title arrives.\n\nSessions does not rewrite Claude or Codex private history files, so unsupported provider-native renames remain unchanged.",
+		examples: []string{"sessions rename 0123abcd DB", "sessions rename 0123abcd --auto", "sessions --json rename 0123abcd 'Database migration'"}, run: (*app).cmdRename,
 	},
 	{
 		name: "worktrees", usage: "worktrees [clean [--dry-run]]",

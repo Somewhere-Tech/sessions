@@ -90,6 +90,7 @@ fields. Optional fields are omitted when their value is `undefined`.
 | --- | --- | --- |
 | `id` | string | daemon-generated UUID |
 | `name` | string, optional | trimmed caller label |
+| `name_source` | `"launch" \| "provider" \| "explicit"`, optional | where the current `name` came from; anything but `explicit` keeps following the provider's conversation title, and absent means the same as `launch` |
 | `cmd` | string | launched command |
 | `args` | string[] | effective arguments, including daemon-injected tool defaults |
 | `cwd` | string | working directory |
@@ -476,12 +477,25 @@ display graph return 400.
 Auth required. Body is `{"name":"<title>"}`. The title is trimmed, must be
 non-empty, contain no control characters, and be at most 120 Unicode
 characters. Success returns `{"name":"<title>"}` and updates both runner
-metadata and the append-only `renamed` fact used by retained history.
+metadata and the append-only `renamed` fact used by retained history. It also
+records `name_source: "explicit"`, which stops the daemon from following the
+provider's conversation title for that session.
+
+Body `{"auto":true}` reverses that and takes no name of its own: it records
+`name_source: "launch"`, adopts the provider's current conversation title
+immediately when there is one, and otherwise keeps the present name until the
+next title arrives. Success returns the resulting `{"name":"<title>"}`. A
+runtime without it answers
+`501 {"error":"automatic session naming is not available on this runtime"}`.
 
 This is the canonical title across the Sessions app, CLI, Fleet, search, and
-later continuations. A Claude `custom-title` event remains an imported fallback
-when no Sessions title exists. Sessions never rewrites Claude or Codex private
-conversation files to imitate an unsupported provider rename API.
+later continuations. Until a session is renamed it follows the provider's own
+title automatically, so a Claude conversation is named whatever Claude calls it
+and keeps following later title changes; that is what makes a session findable
+in Sessions under the name every Claude surface shows. Codex writes no title
+into its rollout files, so a Codex session keeps the name it was created with.
+Sessions never rewrites Claude or Codex private conversation files to imitate
+an unsupported provider rename API.
 
 ### `PUT /api/sessions/:id/model`
 
