@@ -85,6 +85,7 @@ func newSession(ctx context.Context, info proto.RunnerInfo, runner proto.Runner,
 			ImportedMessageCount:   metadata.ImportedMessageCount,
 			DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 			SetAsideAt:             cloneInt64Pointer(metadata.SetAsideAt),
+			Pinned:                 metadata.Pinned,
 			DelegationKind:         metadata.DelegationKind,
 			Permissions:            metadata.Permissions,
 			Lifecycle:              metadata.Lifecycle,
@@ -233,6 +234,12 @@ func (s *Session) setSetAsideAt(setAsideAt *int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.info.SetAsideAt = cloneInt64Pointer(setAsideAt)
+}
+
+func (s *Session) setPinned(pinned bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.info.Pinned = pinned
 }
 
 func (s *Session) setTags(tags map[string]string) {

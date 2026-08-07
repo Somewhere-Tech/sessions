@@ -12,6 +12,27 @@ export function isSetAside(session: SessionInfo): boolean {
   return !session.exited && session.setAsideAt != null;
 }
 
+// The pin is daemon-owned: the user marked this session as a workbench, and
+// the mark survives daemon restarts. It is read here rather than from local
+// client state so the app, the CLI, and any other client agree about which
+// sessions are pinned.
+export function isPinned(session: SessionInfo): boolean {
+  return session.pinned === true;
+}
+
+export function pinnedSessionIds(sessions: SessionInfo[]): string[] {
+  return sessions.filter(isPinned).map((session) => session.id);
+}
+
+// pinnedFirst floats the pinned sessions to the top of a group without
+// disturbing anything else about its order. It is a stable partition rather
+// than a comparator over a "pinned" key so that the ordering the list already
+// had — engagement, activity, whatever a caller sorted by — is exactly
+// preserved inside each of the two halves.
+export function pinnedFirst(sessions: SessionInfo[]): SessionInfo[] {
+  return [...sessions.filter(isPinned), ...sessions.filter((session) => !isPinned(session))];
+}
+
 export function effectiveParentId(session: SessionInfo): string | undefined {
   return session.displayParentSessionId !== undefined
     ? session.displayParentSessionId || undefined

@@ -16,7 +16,10 @@ import {
   effectiveParentId,
   groupWorkingSet,
   humanEngagementAt,
-  isAgentLedChild
+  isAgentLedChild,
+  isPinned,
+  pinnedFirst,
+  pinnedSessionIds
 } from '../lib/workingSet';
 import { useSessions } from '../store/sessions';
 import { MachineMark } from './MachineMark';
@@ -285,14 +288,21 @@ export function SessionNavigator({
     return values;
   }, [children, sessions]);
 
+  // The pins are the daemon's, not this client's: `sessions pin` and the
+  // toggle in the details panel are the same fact, so a session pinned from the
+  // CLI stays in focus here even when it has been set aside.
+  const pins = useMemo(() => pinnedSessionIds(sessions), [sessions]);
   const grouped = useMemo(
-    () => groupWorkingSet(sessions, openSessionIds, []),
-    [openSessionIds, sessions]
+    () => groupWorkingSet(sessions, openSessionIds, pins),
+    [openSessionIds, pins, sessions]
   );
-  const sortRoots = (items: SessionInfo[]): SessionInfo[] => [...items].sort((a, b) => {
+  // Pinned first, then the engagement order the list already had. A user with
+  // a hundred and eighty sessions cannot find their handful of real ones by
+  // eye, and this is the whole point of the mark.
+  const sortRoots = (items: SessionInfo[]): SessionInfo[] => pinnedFirst([...items].sort((a, b) => {
     return (subtreeHumanEngagement.get(b.id) ?? humanEngagementAt(b))
       - (subtreeHumanEngagement.get(a.id) ?? humanEngagementAt(a));
-  });
+  }));
   const liveIds = useMemo(
     () => new Set([...grouped.runningIds, ...grouped.setAsideIds]),
     [grouped.runningIds, grouped.setAsideIds]
@@ -600,6 +610,7 @@ export function SessionNavigator({
           ) : <span className="session-tree-toggle-placeholder" aria-hidden />}
           <span className="session-nav-branch" aria-hidden>{depth > 0 ? '└' : ''}</span>
           <span className={`session-nav-status ${status.className}`} aria-hidden title={status.label} />
+          {isPinned(session) ? <span className="manager-pin is-pinned" title="Pinned" aria-label="Pinned">📌</span> : null}
           <span className="session-nav-copy">
             <span className="session-nav-title">{label}</span>
             {end ? <span className={`session-nav-ended is-${end.tone}`}>{end.label}</span> : null}

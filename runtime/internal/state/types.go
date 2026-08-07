@@ -94,7 +94,13 @@ type SessionInfo struct {
 	DisplayParentSessionID *string `json:"display_parent_session_id,omitempty"`
 	// SetAsideAt removes a live session from the default working set without
 	// changing runner lifecycle, attention, search, or notification truth.
-	SetAsideAt         *int64   `json:"setAsideAt,omitempty"`
+	SetAsideAt *int64 `json:"setAsideAt,omitempty"`
+	// Pinned is the user marking a workbench: the session sorts first in every
+	// listing and automatic termination keeps its hands off it. It is never
+	// omitempty, matching working and exited rather than fast, because an agent
+	// choosing what to end has to tell "this session is not pinned" from "this
+	// daemon never told me", and an omitted field reads as both.
+	Pinned             bool     `json:"pinned"`
 	CreatorAncestry    []string `json:"creator_ancestry,omitempty"`
 	RootCreatorKind    string   `json:"root_creator_kind,omitempty"`
 	RootCreatorID      string   `json:"root_creator_id,omitempty"`

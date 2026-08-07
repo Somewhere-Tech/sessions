@@ -29,6 +29,13 @@ func MergeRunnerMetadata(existing, next Metadata) Metadata {
 	merged.Tags = CloneTags(existing.Tags)
 	merged.DisplayParentSessionID = cloneStringPointer(existing.DisplayParentSessionID)
 	merged.SetAsideAt = cloneInt64Pointer(existing.SetAsideAt)
+	// Pinned belongs here for the same reason as the rest: the runner has no
+	// way to express it and therefore no way to intend a change, so the
+	// on-disk value is always the more recent intent. Losing it would be
+	// invisible until a daemon restart re-read the file, and what came back
+	// would be a session the user had exempted from automatic termination
+	// silently returning to being eligible for it.
+	merged.Pinned = existing.Pinned
 	merged.DelegationKind = existing.DelegationKind
 	merged.Permissions = existing.Permissions
 	merged.Lifecycle = existing.Lifecycle

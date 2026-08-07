@@ -60,6 +60,7 @@ type session struct {
 	Permissions        string            `json:"permissions,omitempty"`
 	Lifecycle          string            `json:"lifecycle,omitempty"`
 	SetAsideAt         *int64            `json:"setAsideAt,omitempty"`
+	Pinned             bool              `json:"pinned"`
 	CreatorAncestry    []string          `json:"creator_ancestry,omitempty"`
 	RootCreatorKind    string            `json:"root_creator_kind,omitempty"`
 	RootCreatorID      string            `json:"root_creator_id,omitempty"`
@@ -239,6 +240,8 @@ func (a *app) cmdLS(args []string) error {
 			return matchesOwnership(value, scope, false)
 		})
 	}
+	// The sessions the user pinned are the ones this list exists to find again.
+	records = pinnedFirst(records)
 	if a.wantJSON {
 		return writeRawSessionRecords(a.stdout, records)
 	}
@@ -254,9 +257,13 @@ func (a *app) cmdLS(args []string) error {
 		return err
 	}
 	showProfile := recordsHaveProfiles(records)
+	showPin := recordsHavePins(records)
 	header := []string{"ID", "NAME", "DESC", "TOOL"}
 	if showProfile {
 		header = append(header, "PROFILE")
+	}
+	if showPin {
+		header = append(header, "PIN")
 	}
 	header = append(header, "CWD", "STATE", "SUMMARY", "AGE", "LAST-USER", "PID")
 	rows := [][]string{header}
@@ -269,6 +276,9 @@ func (a *app) cmdLS(args []string) error {
 		row := []string{prefixString(value.ID, 8), compactSessionName(value.Name), compactDescription(value.Description), toolOfSession(value)}
 		if showProfile {
 			row = append(row, compactProfile(value.Profile))
+		}
+		if showPin {
+			row = append(row, pinMark(value))
 		}
 		row = append(row, strings.Replace(value.Cwd, a.home, "~", 1), sessionState(value),
 			compactSummary(value.LastSummary), a.ageOf(value.CreatedAt), lastUser, strconv.Itoa(value.PID))

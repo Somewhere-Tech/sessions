@@ -126,9 +126,14 @@ type Metadata struct {
 	ImportedMessageCount   int               `json:"importedMessageCount,omitempty"`
 	DisplayParentSessionID *string           `json:"display_parent_session_id,omitempty"`
 	SetAsideAt             *int64            `json:"set_aside_at,omitempty"`
-	DelegationKind         string            `json:"delegation_kind,omitempty"`
-	Permissions            string            `json:"permissions,omitempty"`
-	Lifecycle              string            `json:"lifecycle,omitempty"`
+	// Pinned is the user marking a workbench. It is omitted when false so an
+	// older runtime that never learned the field decodes the document
+	// unchanged and absence keeps meaning "not pinned", which is the same
+	// compatibility shape set_aside_at uses for its cleared state.
+	Pinned         bool   `json:"pinned,omitempty"`
+	DelegationKind string `json:"delegation_kind,omitempty"`
+	Permissions    string `json:"permissions,omitempty"`
+	Lifecycle      string `json:"lifecycle,omitempty"`
 }
 
 // CompletionManifest is the durable terminal fact emitted by a headless lane.

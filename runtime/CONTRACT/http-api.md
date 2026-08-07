@@ -124,6 +124,7 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `effort` | string, optional | effort parsed from effective arguments |
 | `fast` | boolean, optional | present as `true` for Codex priority service tier; otherwise omitted |
 | `setAsideAt` | number, optional | Unix epoch milliseconds when the live session was removed from the native app's default working set; this is organization, not lifecycle |
+| `pinned` | boolean, always present | whether the user marked this session as a workbench: it sorts first in every listing and automatic termination leaves it alone. Always present, including as `false`, so a caller can tell "not pinned" from a daemon that predates the field |
 | `delegation_kind` | `"user" \| "agent"`, optional | presentation provenance for a child session: explicitly started by the user or created by its parent agent |
 | `permissions` | `"constrained" \| "full"`, optional | daemon-resolved access class for this runtime; provider-specific approval and sandbox arguments remain visible in `args` |
 | `lifecycle` | `"task" \| "session"`, optional | `task` workers retire after a successful final response; `session` conversations remain live until explicitly ended |
@@ -528,6 +529,27 @@ detach, or otherwise alter the runner. Unknown sessions return 404. Ended
 records return 409 with guidance to use archive instead. A successful
 `POST /api/sessions/:id/input` also clears the field so user input brings a live
 session back into the working set.
+
+### `PUT /api/sessions/:id/pin`
+
+Auth required. Body is `{"pinned":true|false}`. The value is persisted as
+`pinned` in runner metadata and reported back as the state actually stored:
+
+```json
+{"pinned":true}
+```
+
+A pinned session sorts first in every listing and is exempt from automatic
+termination — the task-lifecycle sweep that retires a finished delegate, and
+the sleep and retention policies that follow it. It is never exempt from an
+explicit end by the user. The operation starts, stops, and otherwise touches
+nothing about the runner.
+
+The pin is daemon-owned end to end: a runner has no way to express it, so a
+runner metadata write preserves whatever the daemon last stored. Unknown
+sessions return 404. Ended records return 409, because a pin exempts a live
+session from automatic termination and cannot protect one that already ended;
+archive is the verb for those. Any method other than `PUT` returns 405.
 
 ### `GET /api/sessions/:id/snapshot`
 

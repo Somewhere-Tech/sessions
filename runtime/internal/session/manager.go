@@ -384,6 +384,36 @@ func (m *Manager) UpdateSetAside(id string, setAside bool) (*int64, error) {
 	return m.registry.UpdateSetAside(id, setAside)
 }
 
+// UpdatePinned records the user marking a session as a workbench: it sorts
+// first in every listing and the automatic machinery keeps its hands off it.
+// It changes no runner state and starts or stops nothing.
+//
+// An ended record is refused the same way set-aside refuses one, and for a
+// sharper reason: the two things a pin does are exempt a session from being
+// ended automatically and keep it near the top of the working set. Neither is
+// available to a conversation that has already ended, so accepting the pin
+// would acknowledge a protection that does not exist. Archive is the verb for
+// an ended record.
+func (m *Manager) UpdatePinned(id string, pinned bool) (bool, error) {
+	var current *state.SessionInfo
+	for _, info := range m.List(true) {
+		if info.ID == id {
+			candidate := info
+			current = &candidate
+			break
+		}
+	}
+	if current == nil {
+		return false, fmt.Errorf("%w: session %s", state.ErrSessionNotFound, id)
+	}
+	if current.Exited {
+		return false, fmt.Errorf("%w; a pin exempts a live session from automatic "+
+			"termination and cannot protect one that already ended, so use archive to "+
+			"hide the record instead", state.ErrSessionEnded)
+	}
+	return m.registry.UpdatePinned(id, pinned)
+}
+
 func (m *Manager) recordCreated(ctx context.Context, prepared state.PreparedSession, creatorKind ledger.CreatorKind, creatorID string) error {
 	if m.boundaries == nil {
 		return nil
@@ -675,6 +705,7 @@ func (m *Manager) withDurableClosed(ctx context.Context, infos []state.SessionIn
 				setAsideAt := *metadata.SetAsideAt
 				info.SetAsideAt = &setAsideAt
 			}
+			info.Pinned = metadata.Pinned
 		}
 		infos = append(infos, info)
 		seen[lane.LaneID] = struct{}{}

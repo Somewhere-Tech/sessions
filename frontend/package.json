@@ -27,6 +27,7 @@
     "test:resume-partial": "node scripts/resume-partial-smoke.mjs",
     "test:shared-contracts": "node scripts/shared-contracts-smoke.mjs",
     "test:working-set": "node scripts/working-set-smoke.mjs",
+    "test:pin": "node scripts/pin-smoke.mjs",
     "test:typography": "node scripts/typography-smoke.mjs",
     "test:window-scope": "node scripts/window-scope-smoke.mjs",
     "test:same-origin-bootstrap": "node scripts/same-origin-bootstrap-smoke.mjs",

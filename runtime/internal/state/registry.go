@@ -67,6 +67,7 @@ type SessionMetadata struct {
 	Tags                   map[string]string
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
+	Pinned                 bool
 	DelegationKind         string
 	Permissions            string
 	Lifecycle              string
@@ -446,8 +447,9 @@ func (r *Registry) RegisterMetadata(ctx context.Context, runner proto.Runner, me
 	return r.register(ctx, runner, SessionMetadata{
 		Name: metadata.Name, Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
-		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), DelegationKind: metadata.DelegationKind,
-		Permissions: metadata.Permissions, Lifecycle: metadata.Lifecycle,
+		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), Pinned: metadata.Pinned,
+		DelegationKind: metadata.DelegationKind,
+		Permissions:    metadata.Permissions, Lifecycle: metadata.Lifecycle,
 		OnIdle: onIdle, Kind: metadata.Kind, SpecPath: metadata.SpecPath,
 		Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
@@ -597,6 +599,42 @@ func (r *Registry) UpdateSetAside(id string, setAside bool) (*int64, error) {
 		session.setSetAsideAt(setAsideAt)
 	}
 	return cloneInt64Pointer(setAsideAt), nil
+}
+
+// UpdatePinned persists the user's decision to keep a session as a workbench.
+// The metadata file is written before the in-memory view changes, exactly as
+// the neighbouring edits do, so an acknowledged pin survives daemon restart and
+// runner re-adoption; that durability is most of what a pin is for, because the
+// automatic machinery it exempts a session from runs after a restart too.
+//
+// This shares the known lost-update window every edit on this document has: a
+// concurrent runner write between the read and the write can drop the change.
+// The pattern is deliberately not diverged from here.
+func (r *Registry) UpdatePinned(id string, pinned bool) (bool, error) {
+	if !validMetadataID(id) {
+		return false, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	session, live := r.Get(id)
+	path := filepath.Join(r.config.RunnerStateDir, id+".json")
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+		}
+		return false, fmt.Errorf("read session pin state: %w", err)
+	}
+	var metadata Metadata
+	if err := json.Unmarshal(encoded, &metadata); err != nil {
+		return false, fmt.Errorf("decode session pin state: %w", err)
+	}
+	metadata.Pinned = pinned
+	if err := WriteMetadata(path, metadata); err != nil {
+		return false, fmt.Errorf("persist session pin state: %w", err)
+	}
+	if live {
+		session.setPinned(pinned)
+	}
+	return pinned, nil
 }
 
 func (r *Registry) Tags(id string) (map[string]string, error) {
@@ -891,8 +929,9 @@ func writeMetadata(dir string, info proto.RunnerInfo, sessionMetadata SessionMet
 		ID: info.ID, Name: sessionMetadata.Name, Description: sessionMetadata.Description,
 		DescriptionSource: sessionMetadata.DescriptionSource, Kind: sessionMetadata.Kind, SpecPath: sessionMetadata.SpecPath,
 		Tags: CloneTags(sessionMetadata.Tags), DisplayParentSessionID: cloneStringPointer(sessionMetadata.DisplayParentSessionID),
-		SetAsideAt: cloneInt64Pointer(sessionMetadata.SetAsideAt), DelegationKind: sessionMetadata.DelegationKind,
-		Permissions: sessionMetadata.Permissions, Lifecycle: sessionMetadata.Lifecycle,
+		SetAsideAt: cloneInt64Pointer(sessionMetadata.SetAsideAt), Pinned: sessionMetadata.Pinned,
+		DelegationKind: sessionMetadata.DelegationKind,
+		Permissions:    sessionMetadata.Permissions, Lifecycle: sessionMetadata.Lifecycle,
 		Profile: sessionMetadata.Profile, ConfigDir: sessionMetadata.ConfigDir,
 		ContinuedFromHistoryID: sessionMetadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  sessionMetadata.ContinuedFromProvider,
@@ -919,6 +958,7 @@ type RunnerMetadata struct {
 	Tags                   map[string]string
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
+	Pinned                 bool
 	DelegationKind         string
 	Permissions            string
 	Lifecycle              string
@@ -958,8 +998,9 @@ func parseRunnerMetadata(encoded []byte) (RunnerMetadata, error) {
 		},
 		Name: metadata.Name, Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
-		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), DelegationKind: metadata.DelegationKind,
-		Permissions: metadata.Permissions, Lifecycle: metadata.Lifecycle,
+		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), Pinned: metadata.Pinned,
+		DelegationKind: metadata.DelegationKind,
+		Permissions:    metadata.Permissions, Lifecycle: metadata.Lifecycle,
 		Kind: metadata.Kind, SpecPath: metadata.SpecPath, Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  metadata.ContinuedFromProvider,

@@ -53,6 +53,9 @@ function reconcileSessions(prev: SessionInfo[], fresh: SessionInfo[]): SessionIn
       old.delegationKind === f.delegationKind &&
       old.displayParentSessionId === f.displayParentSessionId &&
       old.setAsideAt === f.setAsideAt &&
+      // Without this the refresh diff treats a pin change as no change at all,
+      // and a toggle the user just made is silently reverted on the next poll.
+      old.pinned === f.pinned &&
       old.creatorKind === f.creatorKind &&
       old.creatorId === f.creatorId &&
       old.rootCreatorKind === f.rootCreatorKind &&
@@ -135,6 +138,7 @@ interface SessionsState {
   updateModel: (id: string, model: string, effort: string) => Promise<void>;
   updateDisplayParent: (id: string, parentId: string | null) => Promise<void>;
   updateSetAside: (id: string, setAside: boolean) => Promise<void>;
+  updatePinned: (id: string, pinned: boolean) => Promise<void>;
   setActive: (id: string | null) => void;
 }
 
@@ -176,6 +180,7 @@ interface CachedSession {
   delegationKind?: 'user' | 'agent';
   displayParentSessionId?: string;
   setAsideAt?: number | null;
+  pinned?: boolean;
   creatorKind?: string;
   creatorId?: string;
   creatorAncestry?: string[];
@@ -336,6 +341,7 @@ function writeCache(serverId: string | null, sessions: SessionInfo[], activeId: 
       delegationKind: s.delegationKind,
       displayParentSessionId: s.displayParentSessionId,
       setAsideAt: s.setAsideAt,
+      pinned: s.pinned,
       creatorKind: s.creatorKind,
       creatorId: s.creatorId,
       creatorAncestry: s.creatorAncestry,
@@ -512,6 +518,19 @@ export const useSessions = create<SessionsState>((set, get) => ({
     set((state) => {
       const sessions = state.sessions.map((session) => (
         session.id === id ? { ...session, setAsideAt } : session
+      ));
+      writeCache(state.serverId, sessions, state.activeId);
+      return { sessions };
+    });
+  },
+
+  // The daemon's answer is what lands in the store, not the requested value:
+  // a pin that was refused or changed on the way must not appear as applied.
+  updatePinned: async (id, pinned) => {
+    const stored = await api.updatePinned(id, pinned);
+    set((state) => {
+      const sessions = state.sessions.map((session) => (
+        session.id === id ? { ...session, pinned: stored } : session
       ));
       writeCache(state.serverId, sessions, state.activeId);
       return { sessions };

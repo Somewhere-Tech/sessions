@@ -83,6 +83,10 @@ export interface SessionInfo {
   // Daemon-owned working-set organization. A live session remains running,
   // searchable, countable, and CLI-visible while set aside.
   setAsideAt?: number | null;
+  // Daemon-owned workbench mark. A pinned session sorts first everywhere and
+  // is exempt from automatic termination. The daemon always sends it, so an
+  // undefined here means an older daemon that never learned the field.
+  pinned?: boolean;
   creatorAncestry?: string[];
   rootCreatorKind?: string;
   rootCreatorId?: string;
