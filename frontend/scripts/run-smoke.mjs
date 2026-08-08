@@ -31,18 +31,20 @@ const frontendDir = fileURLToPath(new URL('..', import.meta.url));
 // The gate, in order. Names are the `test:<name>` scripts in package.json; the
 // command each one runs is read from there, so this list cannot drift into
 // naming a script that does not exist.
+//
+// `capability` runs last on purpose. The gate stops at the first failure, and
+// the capability suite is currently red — it is the suite that says which
+// things a person cannot do. Putting it first would hide every other suite's
+// result behind a failure everyone already knows about.
 const GATE = [
   'markdown',
   'native-credentials',
   'structured-events',
   'structured-view',
-  'fleet-clarity',
   'fleet-usage',
   'search-conversations',
   'terminal-renderer',
   'external-links',
-  'lifecycle-clarity',
-  'workspace-ux',
   'session-status',
   'surface-truth',
   'search-rollup',
@@ -51,12 +53,11 @@ const GATE = [
   'shared-contracts',
   'working-set',
   'pin',
+  'session-mode',
   'typography',
   'window-scope',
   'same-origin-bootstrap',
-  'startup-recovery',
-  'fork-conversation',
-  'onboarding-consent'
+  'capability'
 ];
 
 // Scripts that are deliberately not part of the gate, each with the reason it

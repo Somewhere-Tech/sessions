@@ -39,6 +39,26 @@ export default tseslint.config(
     languageOptions: { globals: globals.node }
   },
   {
+    // The capability suite mounts the same components under the same rules.
+    // It is linted, not exempted: a test that silently stopped awaiting its
+    // assertions would be theatre of exactly the kind it replaced.
+    files: ['tests/**/*.{ts,tsx}'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.browser, ...globals.es2022, ...globals.node },
+      parserOptions: { ecmaFeatures: { jsx: true } }
+    },
+    rules: {
+      'no-unused-vars': 'off',
+      'no-undef': 'off',
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      // Bracketed paste and the ESC byte are the message the daemon is asked
+      // to carry; matching them is the intent, as it is in src/.
+      'no-control-regex': 'off'
+    }
+  },
+  {
     files: ['src/**/*.{ts,tsx}'],
     languageOptions: {
       ecmaVersion: 2022,
