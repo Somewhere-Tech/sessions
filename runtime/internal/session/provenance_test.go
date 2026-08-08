@@ -282,8 +282,16 @@ func TestListIncludeExitedSynthesizesDurableClosedRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if active := manager.List(false); len(active) != 0 {
-		t.Fatalf("active list = %+v, want no durable closed records", active)
+	// The default listing carries no ended record, and still carries the
+	// session the daemon only lost contact with: a lost socket is not an
+	// ending, and dropping the session from the list on that basis would hide
+	// work that may still be running.
+	active := manager.List(false)
+	if len(active) != 1 || active[0].ID != lostID {
+		t.Fatalf("active list = %+v, want only the unreachable record", active)
+	}
+	if active[0].Exited || !active[0].Unreachable {
+		t.Fatalf("unreachable record in the active list = %+v", active[0])
 	}
 	listed := manager.List(true)
 	if len(listed) != 3 {
@@ -302,8 +310,16 @@ func TestListIncludeExitedSynthesizesDurableClosedRecords(t *testing.T) {
 	if tombstoned.Kind != state.KindLane || !tombstoned.Exited || tombstoned.ExitCode != nil || tombstoned.RootCreatorID != userID {
 		t.Fatalf("durable tombstoned record = %+v", tombstoned)
 	}
+	// This assertion used to require Exited, ExitReason "runner-lost", and an
+	// ExitedAt -- an ending Sessions never observed. proto.SocketRunner raises
+	// runner-lost for any socket read error, so that shape declared sessions
+	// with healthy processes ended and failed. A lost runner is unreachable.
 	lost := byID[lostID]
-	if !lost.Exited || lost.ExitReason != "runner-lost" || lost.ExitedAt == nil || *lost.ExitedAt != 450 {
+	if lost.Exited || lost.ExitReason != "" || lost.ExitedAt != nil || lost.ExitCode != nil {
+		t.Fatalf("durable lost record was presented as ended = %+v", lost)
+	}
+	if !lost.Unreachable || lost.UnreachableReason != "runner-lost" ||
+		lost.UnreachableSince == nil || *lost.UnreachableSince != 450 {
 		t.Fatalf("durable lost record = %+v", lost)
 	}
 }

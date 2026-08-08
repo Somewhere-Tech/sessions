@@ -11,7 +11,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
-func TestGCClosedPreservesRetainedDescendantsAndArchivesAtomically(t *testing.T) {
+func TestGCClosedArchivesAnAncestorAndKeepsANewerDescendant(t *testing.T) {
 	ctx := context.Background()
 	store, err := ledger.Open(ctx, ledger.Options{Path: filepath.Join(t.TempDir(), "ledger.sqlite3")})
 	if err != nil {
@@ -65,8 +65,14 @@ func TestGCClosedPreservesRetainedDescendantsAndArchivesAtomically(t *testing.T)
 		t.Fatal(err)
 	}
 	statuses := retentionStatuses(preview.Items)
-	if statuses[parent] != "skipped:has a retained descendant" {
-		t.Fatalf("parent preview = %q", statuses[parent])
+	// The parent is archivable even though a younger descendant is not.
+	// Archiving appends EventArchived to an append-only ledger and deletes
+	// nothing, and the child's CreatorID keeps naming this parent either way,
+	// so refusing here protected a lineage that could not be lost -- while
+	// making any piece of work that delegated once permanently unclearable.
+	if statuses[parent] != "would_archive:" {
+		t.Fatalf("parent preview = %q, want it archivable: archiving hides a row "+
+			"and cannot break the lineage the old guard was protecting", statuses[parent])
 	}
 	if statuses[child] != "skipped:newer than retention cutoff" {
 		t.Fatalf("child preview = %q", statuses[child])
@@ -90,7 +96,7 @@ func TestGCClosedPreservesRetainedDescendantsAndArchivesAtomically(t *testing.T)
 	}
 	if listed := manager.withDurableClosed(ctx, []state.SessionInfo{{
 		ID: parent, Exited: true,
-	}}); len(listed) != 0 {
+	}}, true); len(listed) != 0 {
 		t.Fatalf("resident archived record remained listed: %#v", listed)
 	}
 	if _, _, err := manager.resolveCreator(ctx, state.CreateSessionRequest{
@@ -100,7 +106,16 @@ func TestGCClosedPreservesRetainedDescendantsAndArchivesAtomically(t *testing.T)
 	}
 }
 
-func TestGCClosedConservativelySkipsRunnerArtifacts(t *testing.T) {
+// Retention is conservative about live runners, and a live runner is a running
+// process. A socket file is not one: sockets outlive the process that bound
+// them, so a user-killed session with a leftover socket and no runner is
+// archivable, while the same session with a running runner is not.
+//
+// This replaces an assertion that a leftover socket alone meant "runner is
+// still live". That assertion described the defect: on the owner's machine
+// every session with any leftover artifact refused archiving, which is the
+// reported "archive from list doesn't work".
+func TestGCClosedSkipsRunningRunnersAndArchivesStaleArtifacts(t *testing.T) {
 	ctx := context.Background()
 	store, err := ledger.Open(ctx, ledger.Options{Path: filepath.Join(t.TempDir(), "ledger.sqlite3")})
 	if err != nil {
@@ -108,30 +123,49 @@ func TestGCClosedConservativelySkipsRunnerArtifacts(t *testing.T) {
 	}
 	defer store.Close()
 
-	id := "00000000-0000-4000-8000-000000000003"
-	if err := store.Boundaries().RecordCreated(ctx, ledger.Created{
-		Meta: ledger.Meta{LaneID: id, AtMS: 10}, LaneUUID: id,
-		Tool: string(state.ToolLane), Cwd: t.TempDir(),
-		CreatorKind: ledger.CreatorUser, CreatorID: "uid:501",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Boundaries().RecordUserKill(ctx, ledger.UserKill{
-		Meta: ledger.Meta{LaneID: id, AtMS: 100},
-	}); err != nil {
-		t.Fatal(err)
+	staleSocket := "00000000-0000-4000-8000-000000000003"
+	liveRunner := "00000000-0000-4000-8000-00000000000a"
+	for _, id := range []string{staleSocket, liveRunner} {
+		if err := store.Boundaries().RecordCreated(ctx, ledger.Created{
+			Meta: ledger.Meta{LaneID: id, AtMS: 10}, LaneUUID: id,
+			Tool: string(state.ToolLane), Cwd: t.TempDir(),
+			CreatorKind: ledger.CreatorUser, CreatorID: "uid:501",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Boundaries().RecordUserKill(ctx, ledger.UserKill{
+			Meta: ledger.Meta{LaneID: id, AtMS: 100},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	runnerDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(runnerDir, id+".sock"), []byte("stale-or-live"), 0o600); err != nil {
+	launchAgentsDir := t.TempDir()
+	// A socket and a launch agent with nothing behind them.
+	if err := os.WriteFile(filepath.Join(runnerDir, staleSocket+".sock"), []byte("stale"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(state.RunnerPlistPath(launchAgentsDir, staleSocket), []byte("<plist/>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A session whose runner really is running.
+	livePaths := state.For(runnerDir, liveRunner)
+	if err := state.WriteMetadata(livePaths.Meta, state.Metadata{
+		ID: liveRunner, Cmd: "/bin/sh", Cwd: runnerDir, Cols: 300, Rows: 50,
+		CreatedAt: 1, PID: 4242, SockPath: livePaths.Socket,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	manager := NewManager(state.Config{
 		StateRoot: runnerDir, UserStateRoot: t.TempDir(),
-		RunnerStateDir: runnerDir, LaunchAgentsDir: t.TempDir(),
+		RunnerStateDir: runnerDir, LaunchAgentsDir: launchAgentsDir,
 	}, nil, ManagerOptions{
 		Boundaries: store.Boundaries(), Observations: store.Observations(),
 		Retention: store.Retention(), LedgerReader: store,
 		ActivityInterval: time.Hour, Notify: func(PushPayload) {},
+		ProcessAlive:   func(pid int) bool { return pid == 4242 },
+		ProcessCommand: func(int) string { return "/opt/sessions/sessions-runner" },
 	})
 	defer manager.Close()
 
@@ -140,8 +174,146 @@ func TestGCClosedConservativelySkipsRunnerArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	statuses := retentionStatuses(result.Items)
-	if statuses[id] != "skipped:runner is still live" {
-		t.Fatalf("artifact-backed tombstone status = %q", statuses[id])
+	if statuses[staleSocket] != "archived:" {
+		t.Fatalf("closed session with only stale artifacts = %q, want archived", statuses[staleSocket])
+	}
+	if statuses[liveRunner] != "skipped:runner is still live" {
+		t.Fatalf("closed record whose runner is running = %q, want skipped", statuses[liveRunner])
+	}
+}
+
+// The reported bug, end to end: a session that is over, whose launch agent and
+// socket were never cleaned up, refused `POST /api/retention/archive` with
+// "runner is still live" -- a claim about a process nobody had asked about.
+// The recorded pid is dead, so there is no runner, so the archive proceeds.
+func TestArchiveClosedSucceedsWhenOnlyArtifactsRemain(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.RunnerStateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(config.LaunchAgentsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := ledger.Open(ctx, ledger.Options{Path: filepath.Join(root, "ledger.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	id := "00000000-0000-4000-8000-00000000000b"
+	if err := store.Boundaries().RecordCreated(ctx, ledger.Created{
+		Meta: ledger.Meta{LaneID: id, AtMS: 10}, LaneUUID: id,
+		Tool: string(state.ToolLane), Cwd: root,
+		CreatorKind: ledger.CreatorUser, CreatorID: "uid:501",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Observations().RecordRunnerExited(ctx, ledger.RunnerExit{
+		Meta: ledger.Meta{LaneID: id, AtMS: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	paths := state.For(config.RunnerStateDir, id)
+	if err := os.WriteFile(paths.Socket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteMetadata(paths.Meta, state.Metadata{
+		ID: id, Cmd: "/bin/sh", Cwd: root, Cols: 300, Rows: 50,
+		CreatedAt: 1, PID: 4243, SockPath: paths.Socket,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Both the current and the legacy launch agent, which is what the owner's
+	// machine actually looked like.
+	for _, plist := range []string{
+		state.RunnerPlistPath(config.LaunchAgentsDir, id),
+		state.LegacyRunnerPlistPath(config.LaunchAgentsDir, id),
+	} {
+		if err := os.WriteFile(plist, []byte("<plist/>"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manager := NewManager(config, nil, ManagerOptions{
+		Boundaries: store.Boundaries(), Observations: store.Observations(),
+		Retention: store.Retention(), LedgerReader: store,
+		ActivityInterval: time.Hour, Notify: func(PushPayload) {},
+		ProcessAlive:   func(int) bool { return false },
+		ProcessCommand: func(int) string { return "" },
+	})
+	defer manager.Close()
+
+	result, err := manager.ArchiveClosed(ctx, []string{id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := retentionStatuses(result.Items)[id]; status != "archived:" {
+		t.Fatalf("archive of a closed session with stale artifacts = %q, want archived", status)
+	}
+}
+
+// A session the daemon only lost contact with is still archivable when the
+// user picks it, because Sessions can check the one thing that would justify
+// refusing: whether the runner is running. It is not.
+func TestArchiveClosedAcceptsUnreachableSessionWithNoRunner(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.RunnerStateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := ledger.Open(ctx, ledger.Options{Path: filepath.Join(root, "ledger.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	unreachable := "00000000-0000-4000-8000-00000000000c"
+	alive := "00000000-0000-4000-8000-00000000000d"
+	for _, id := range []string{unreachable, alive} {
+		if err := store.Boundaries().RecordCreated(ctx, ledger.Created{
+			Meta: ledger.Meta{LaneID: id, AtMS: 10}, LaneUUID: id,
+			Tool: string(state.ToolLane), Cwd: root,
+			CreatorKind: ledger.CreatorUser, CreatorID: "uid:501",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Observations().RecordRunnerLost(ctx, ledger.Observation{
+			Meta: ledger.Meta{LaneID: id, AtMS: 100},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alivePaths := state.For(config.RunnerStateDir, alive)
+	if err := state.WriteMetadata(alivePaths.Meta, state.Metadata{
+		ID: alive, Cmd: "/bin/sh", Cwd: root, Cols: 300, Rows: 50,
+		CreatedAt: 1, PID: 4242, SockPath: alivePaths.Socket,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(config, nil, ManagerOptions{
+		Boundaries: store.Boundaries(), Observations: store.Observations(),
+		Retention: store.Retention(), LedgerReader: store,
+		ActivityInterval: time.Hour, Notify: func(PushPayload) {},
+		ProcessAlive:   func(pid int) bool { return pid == 4242 },
+		ProcessCommand: func(int) string { return "/opt/sessions/sessions-runner" },
+	})
+	defer manager.Close()
+
+	result, err := manager.ArchiveClosed(ctx, []string{unreachable, alive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statuses := retentionStatuses(result.Items)
+	if statuses[unreachable] != "archived:" {
+		t.Fatalf("unreachable session with no runner = %q, want archived", statuses[unreachable])
+	}
+	if statuses[alive] != "skipped:runner is still live" {
+		t.Fatalf("unreachable session whose runner is running = %q, want skipped", statuses[alive])
 	}
 }
 

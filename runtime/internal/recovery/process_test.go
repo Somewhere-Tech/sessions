@@ -8,40 +8,30 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 )
 
-func TestProcessAliveAnswersForThisProcess(t *testing.T) {
-	if !processAlive(os.Getpid()) {
+// Recovery's liveness answer now comes from internal/liveness, which owns the
+// probe and the PID-reuse rule and tests them directly. What is left to pin
+// here is that recovery still asks the shared question, and asks it about the
+// runner rather than about a bare PID: recovery's answer decides whether the
+// user is offered a second runtime for a conversation that already has one.
+func TestProbeProcessAnswersForThisProcess(t *testing.T) {
+	ctx := context.Background()
+	self := proto.RunnerInfo{ID: "lane", PID: os.Getpid(), Cmd: os.Args[0]}
+	if !probeProcess(ctx, self) {
 		t.Fatal("the running test process was reported dead")
 	}
 	for _, pid := range []int{0, -1} {
-		if processAlive(pid) {
-			t.Fatalf("processAlive(%d) = true, want false", pid)
+		if probeProcess(ctx, proto.RunnerInfo{ID: "lane", PID: pid, Cmd: os.Args[0]}) {
+			t.Fatalf("probeProcess(pid %d) = true, want false", pid)
 		}
 	}
-	if probeProcess(context.Background(), proto.RunnerInfo{ID: "lane", PID: 0}) {
-		t.Fatal("a runner with no recorded pid was reported running")
+	// A live pid recorded by a lane whose runner was something else entirely
+	// is PID reuse, not a live runner.
+	recycled := proto.RunnerInfo{
+		ID:  "44444444-4444-4444-8444-444444444444",
+		PID: os.Getpid(),
+		Cmd: "/Applications/Xcode.app/Contents/MacOS/Xcode",
 	}
-}
-
-func TestRunnerProcessMatchesRejectsPIDReuse(t *testing.T) {
-	id := "44444444-4444-4444-8444-444444444444"
-	for _, test := range []struct {
-		name    string
-		command string
-		want    bool
-	}{
-		{name: "lane id in the command line", command: "sessions-runner --id " + id, want: true},
-		{name: "runner image path only", command: `C:\Program Files\Sessions\sessions-runner.exe`, want: true},
-		{name: "hosted provider command", command: "/opt/homebrew/bin/claude --resume " + id, want: true},
-		{name: "unrelated process reused the pid", command: "/Applications/Xcode.app/Contents/MacOS/Xcode", want: false},
-		// An unreadable command line is not evidence of death. The session
-		// manager treats it as live, and recovery must not disagree with the
-		// component that owns the runner.
-		{name: "unknown command", command: "", want: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := runnerProcessMatches(test.command, id, "claude"); got != test.want {
-				t.Fatalf("runnerProcessMatches(%q) = %t, want %t", test.command, got, test.want)
-			}
-		})
+	if probeProcess(ctx, recycled) {
+		t.Fatal("a reused pid was reported as this lane's runner")
 	}
 }

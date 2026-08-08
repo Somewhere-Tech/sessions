@@ -338,14 +338,18 @@ func TestClaudeConversationsOpenByCWD(t *testing.T) {
 	}
 }
 
-// TestProcessAliveAgreesWithItself pins the probe against processes whose state
-// is known for certain: this test binary is alive, and pid 0 never names one.
+// TestProcessAliveAgreesWithItself pins the default probe against processes
+// whose state is known for certain: this test binary is alive, and pid 0 never
+// names one. It exercises the seam resolution rather than the primitive, which
+// internal/liveness owns, so it fails if this package is ever rewired to a
+// probe of its own again.
 func TestProcessAliveAgreesWithItself(t *testing.T) {
-	if !processAlive(os.Getpid()) {
-		t.Fatal("processAlive reported this running test as dead")
+	alive := ClaudeLiveQuery{}.alive()
+	if !alive(os.Getpid()) {
+		t.Fatal("the default probe reported this running test as dead")
 	}
-	if processAlive(0) || processAlive(-1) {
-		t.Fatal("processAlive accepted a non-pid")
+	if alive(0) || alive(-1) {
+		t.Fatal("the default probe accepted a non-pid")
 	}
 }
 
