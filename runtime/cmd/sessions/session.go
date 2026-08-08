@@ -40,6 +40,13 @@ type session struct {
 	Working            bool              `json:"working"`
 	LastDataAt         int64             `json:"lastDataAt"`
 	LastUserMessageAt  *int64            `json:"lastUserMessageAt"`
+	// LastHumanMessageAt and LastAgentMessageAt are the daemon's own record of
+	// who spoke, stamped at the input boundary. LastUserMessageAt is read back
+	// out of the provider transcript and counts the provider's internal
+	// injections as user turns, so it is not the answer to "did a person touch
+	// this".
+	LastHumanMessageAt *int64            `json:"lastHumanMessageAt"`
+	LastAgentMessageAt *int64            `json:"lastAgentMessageAt"`
 	IdleReason         string            `json:"idleReason,omitempty"`
 	IdleDetail         string            `json:"idleDetail,omitempty"`
 	IdleSince          *int64            `json:"idleSince,omitempty"`
@@ -264,6 +271,7 @@ func (a *app) cmdLS(args []string) error {
 	}
 	showProfile := recordsHaveProfiles(records)
 	showPin := recordsHavePins(records)
+	showLastHuman := recordsHaveHumanMessages(records)
 	header := []string{"ID", "NAME", "DESC", "TOOL"}
 	if showProfile {
 		header = append(header, "PROFILE")
@@ -271,7 +279,17 @@ func (a *app) cmdLS(args []string) error {
 	if showPin {
 		header = append(header, "PIN")
 	}
-	header = append(header, "CWD", "STATE", "SUMMARY", "AGE", "LAST-USER", "PID")
+	header = append(header, "CWD", "STATE", "SUMMARY", "AGE", "LAST-USER")
+	// LAST-HUMAN sits beside LAST-USER because the two are constantly mistaken
+	// for each other: LAST-USER is the provider transcript's idea of a user
+	// turn and moves for the provider's own scheduled injections, LAST-HUMAN
+	// moves only for input a person sent through Sessions. Read together, a row
+	// where they disagree is a session whose recent "user" activity was
+	// machinery.
+	if showLastHuman {
+		header = append(header, "LAST-HUMAN")
+	}
+	header = append(header, "PID")
 	rows := [][]string{header}
 	for _, record := range records {
 		value := record.value
@@ -287,7 +305,11 @@ func (a *app) cmdLS(args []string) error {
 			row = append(row, pinMark(value))
 		}
 		row = append(row, strings.Replace(value.Cwd, a.home, "~", 1), sessionState(value),
-			compactSummary(value.LastSummary), a.ageOf(value.CreatedAt), lastUser, strconv.Itoa(value.PID))
+			compactSummary(value.LastSummary), a.ageOf(value.CreatedAt), lastUser)
+		if showLastHuman {
+			row = append(row, a.lastHumanAge(value))
+		}
+		row = append(row, strconv.Itoa(value.PID))
 		rows = append(rows, row)
 	}
 	return writePaddedRows(a.stdout, rows)
