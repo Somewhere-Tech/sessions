@@ -29,8 +29,8 @@ type RetentionResult struct {
 }
 
 // ArchiveClosed records an explicit user-selected batch. Unlike GCClosed it
-// has no age policy: the selected IDs are the policy. Live sessions and
-// ancestors with retained descendants are still refused.
+// has no age policy: the selected IDs are the policy. A session whose runner
+// is still running is refused; nothing else is.
 //
 // A session the daemon merely lost contact with is archivable once the probe
 // says its runner is not running. The user picked it out of a list and asked
@@ -81,16 +81,6 @@ func (m *Manager) ArchiveClosed(ctx context.Context, ids []string) (RetentionRes
 			reasons[id] = "session is still running"
 		default:
 			targets[id] = struct{}{}
-		}
-	}
-	for changed := true; changed; {
-		changed = false
-		for id := range targets {
-			if hasRetainedDescendant(id, byID, targets) {
-				delete(targets, id)
-				reasons[id] = "has a retained descendant"
-				changed = true
-			}
 		}
 	}
 	toArchive := make([]ledger.Archived, 0, len(targets))
@@ -161,19 +151,19 @@ func (m *Manager) GCClosed(ctx context.Context, cutoffMS int64, dryRun bool) (Re
 		}
 	}
 
-	// Never archive an ancestor while a retained descendant still refers to it.
-	// Iterate because removing one blocked child from the target set can make
-	// its own ancestors ineligible in the next pass.
-	for changed := true; changed; {
-		changed = false
-		for id := range targets {
-			if hasRetainedDescendant(id, byID, targets) {
-				delete(targets, id)
-				reasons[id] = "has a retained descendant"
-				changed = true
-			}
-		}
-	}
+	// Archiving hides a row; it deletes nothing. EventArchived is appended to
+	// an append-only ledger, and a descendant's CreatorID keeps pointing at
+	// this ancestor whether or not the ancestor is archived -- the lineage the
+	// old guard protected survives archiving by construction, so it could not
+	// lose what it was refusing to risk. What it did cost was real: finish any
+	// piece of work that delegated once and neither row could ever be cleared,
+	// with the reason "has a retained descendant", which means nothing to the
+	// person reading it. AGENTS.md rule 10 -- a guard compensating for an
+	// inference the code does not need is scope that should not exist.
+	//
+	// A live descendant is still refused, by runtimeStillLive above: the
+	// question that matters is whether a process is running, not whether a
+	// record refers to another record.
 
 	toArchive := make([]ledger.Archived, 0, len(targets))
 	for _, lane := range states {
@@ -246,37 +236,4 @@ func (m *Manager) runtimeStillLive(id string) bool {
 	}
 	metadata.Info.ID = id
 	return m.runnerAlive(id, metadata.Info)
-}
-
-func hasRetainedDescendant(
-	ancestor string,
-	states map[string]ledger.LaneState,
-	targets map[string]struct{},
-) bool {
-	for id, candidate := range states {
-		if id == ancestor || candidate.Archived {
-			continue
-		}
-		if _, alsoArchived := targets[id]; alsoArchived {
-			continue
-		}
-		visited := make(map[string]struct{})
-		current := candidate
-		for current.CreatorKind == ledger.CreatorSession {
-			parent := current.CreatorID
-			if parent == ancestor {
-				return true
-			}
-			if _, cycle := visited[parent]; cycle {
-				break
-			}
-			visited[parent] = struct{}{}
-			next, ok := states[parent]
-			if !ok {
-				break
-			}
-			current = next
-		}
-	}
-	return false
 }

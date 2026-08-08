@@ -11,7 +11,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
-func TestGCClosedPreservesRetainedDescendantsAndArchivesAtomically(t *testing.T) {
+func TestGCClosedArchivesAnAncestorAndKeepsANewerDescendant(t *testing.T) {
 	ctx := context.Background()
 	store, err := ledger.Open(ctx, ledger.Options{Path: filepath.Join(t.TempDir(), "ledger.sqlite3")})
 	if err != nil {
@@ -65,8 +65,14 @@ func TestGCClosedPreservesRetainedDescendantsAndArchivesAtomically(t *testing.T)
 		t.Fatal(err)
 	}
 	statuses := retentionStatuses(preview.Items)
-	if statuses[parent] != "skipped:has a retained descendant" {
-		t.Fatalf("parent preview = %q", statuses[parent])
+	// The parent is archivable even though a younger descendant is not.
+	// Archiving appends EventArchived to an append-only ledger and deletes
+	// nothing, and the child's CreatorID keeps naming this parent either way,
+	// so refusing here protected a lineage that could not be lost -- while
+	// making any piece of work that delegated once permanently unclearable.
+	if statuses[parent] != "would_archive:" {
+		t.Fatalf("parent preview = %q, want it archivable: archiving hides a row "+
+			"and cannot break the lineage the old guard was protecting", statuses[parent])
 	}
 	if statuses[child] != "skipped:newer than retention cutoff" {
 		t.Fatalf("child preview = %q", statuses[child])
