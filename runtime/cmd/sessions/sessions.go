@@ -343,6 +343,29 @@ func pinMark(value session) string {
 	return "-"
 }
 
+// recordsHaveHumanMessages reports whether the LAST-HUMAN column would say
+// anything, by the same rule PROFILE and PIN follow: a column that is a dash on
+// every row is noise on every row.
+//
+// It stays hidden on a daemon too old to report the field at all, which is the
+// case the rule handles for free — an absent field and "nobody has spoken" are
+// both nothing to show, and neither is worth a column that claims otherwise.
+func recordsHaveHumanMessages(records []sessionRecord) bool {
+	for _, record := range records {
+		if record.value.LastHumanMessageAt != nil && *record.value.LastHumanMessageAt != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *app) lastHumanAge(value session) string {
+	if value.LastHumanMessageAt == nil || *value.LastHumanMessageAt == 0 {
+		return "-"
+	}
+	return a.ageOf(*value.LastHumanMessageAt)
+}
+
 func filterSessionRecords(records []sessionRecord, keep func(session) bool) []sessionRecord {
 	filtered := make([]sessionRecord, 0, len(records))
 	for _, record := range records {

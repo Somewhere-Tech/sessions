@@ -131,8 +131,15 @@ type Metadata struct {
 	// older runtime that never learned the field decodes the document
 	// unchanged and absence keeps meaning "not pinned", which is the same
 	// compatibility shape set_aside_at uses for its cleared state.
-	Pinned         bool   `json:"pinned,omitempty"`
-	DelegationKind string `json:"delegation_kind,omitempty"`
+	Pinned bool `json:"pinned,omitempty"`
+	// LastHumanMessageAt and LastAgentMessageAt carry the daemon's
+	// message-principal clocks across a restart. Both are omitted when absent,
+	// so an older runtime decodes the document unchanged and absence keeps
+	// meaning "nobody of that kind has spoken into this session yet" rather
+	// than the epoch.
+	LastHumanMessageAt *int64 `json:"last_human_message_at,omitempty"`
+	LastAgentMessageAt *int64 `json:"last_agent_message_at,omitempty"`
+	DelegationKind     string `json:"delegation_kind,omitempty"`
 	Permissions    string `json:"permissions,omitempty"`
 	Lifecycle      string `json:"lifecycle,omitempty"`
 }

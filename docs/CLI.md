@@ -416,6 +416,8 @@ List agent sessions known to the daemon. --mine follows SESSIONS_OWNER_ID, then 
 
 Sessions you pinned with `sessions pin` come first, in both the table and --json, and a PIN column appears when any listed session carries the mark. Everything below the pinned ones keeps the order it already had.
 
+Two columns report recency and they are not the same fact. LAST-USER is the provider transcript's idea of a user turn, and a provider writes its own scheduled prompts into that transcript as user turns, so a lane driven entirely by its own cron shows recent LAST-USER activity nobody caused. LAST-HUMAN is stamped by the daemon when a message actually arrives through Sessions carrying no source-session attribution — a person, rather than another session relaying. It appears when any listed session has one, following the same rule as PIN and PROFILE. A row where the two disagree is a session whose recent user activity was machinery. --json always carries both as lastUserMessageAt, lastHumanMessageAt and lastAgentMessageAt.
+
 Two independent axes decide what comes back, and they are easy to confuse. State: ended sessions are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's sessions and changes nothing about which states are shown. The same two spellings mean the same two things on ls, list, and lanes.
 
 --json selects a format, not a working set. It returns exactly the sessions the plain table would show, so `sessions --json ls` answers "what is running?" and needs -a to see ended records. This is a deliberate change: --json used to force every ended session into the answer and ignore -a entirely.
@@ -571,7 +573,7 @@ Examples:
 
 ```text
 Usage:
-  sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [--pick] [-n N] [--all] [--wait-for-peers] [--json]
+  sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--touched] [--preview [N]] [--pick] [-n N] [--all] [--wait-for-peers] [--json]
 
 browse and preview every past conversation
 
@@ -582,6 +584,8 @@ Browsing needs no search term. `sessions history --since today --tool codex` ans
 Every row carries what it takes to recognise a conversation a week later — when it was last active, where it was started from, the working directory, its name derived from the opening message, and how many messages are in it — followed by the exact command that brings it back, runnable from any directory. That command is the one that actually works for that row, following the same discipline as `sessions recover`: `sessions resume` for a conversation Sessions can reopen, including one whose provider deleted its own transcript and which comes back from Sessions' copy; `sessions attach` for a conversation that is still running, which resume would refuse; and no command at all, with the reason, for one that neither the provider nor Sessions still holds.
 
 Where it was started from is the other thing neither provider's picker will tell you. Both providers record it and neither shows it, so a row says "Codex Desktop", "Codex CLI" or "Claude Desktop" rather than just the provider name, and a conversation Sessions itself started says so. Select on it with --surface: codex-cli, codex-desktop, codex-exec, claude-cli, claude-desktop, claude-sdk, sessions, or the raw value a provider recorded — an unrecognised value is accepted, and an empty answer lists the surfaces this machine actually has. --actor separates work you did from work something else did: user, automation, or agent. A row is annotated only when it was not you, because a history reads as yours until it says otherwise. A provider that never recorded the answer leaves it blank rather than being guessed at, so --actor user selects only conversations that recorded a person, and a machine running a Sessions too old to report any of this is named rather than silently dropped from a filtered answer. A last-active time marked "(file time)" is dated by the transcript file rather than by the conversation's own last record, which is what a history copied without preserving timestamps looks like.
+
+--touched keeps only conversations a person actually spoke into, and orders them by when. This is a different question from --actor user, which reports what the provider recorded about who started a conversation; --touched is the daemon's own record of a message arriving through Sessions with no source-session attribution, which is what separates a person from one agent driving another. It also separates a person from the provider itself: a lane on a self-scheduled cadence writes its own prompts into its transcript as user turns, so it looks recently active and recently "used" while nobody has said a word to it. Only a conversation with a live session can answer, because the stamp lives with the session, so --touched narrows to the running fleet by construction.
 
 --preview prints the last few exchanges of each row so a candidate can be read before it is reopened. It reads the same stored conversation `sessions cat` prints, creates nothing, and marks nothing. It also narrows the page to five rows unless -n says otherwise, because previews are long.
 
@@ -598,6 +602,7 @@ Examples:
   sessions history --since today --tool codex
   sessions history --surface codex-desktop
   sessions history --actor automation --since 1w
+  sessions history --touched
   sessions history --preview -n 3
   sessions history --pick
   sessions history --since today --pick

@@ -104,7 +104,32 @@ type SessionInfo struct {
 	Tool                   SessionTool       `json:"tool"`
 	Working                bool              `json:"working"`
 	LastDataAt             int64             `json:"lastDataAt"`
-	LastUserMessageAt      *int64            `json:"lastUserMessageAt"`
+	// LastUserMessageAt is transcript-derived and says nothing about who wrote
+	// the message. It moves whenever a user-role record appears in the
+	// provider's own conversation file, and a provider writes those records for
+	// its own internal injections too: a scheduled prompt, a cron tick, a
+	// reminder it decided to inject. None of those cross Sessions' input path,
+	// and in the transcript they are indistinguishable from a person typing.
+	//
+	// So this answers "when did this conversation last take a user turn", which
+	// is not the question anything asking "when did the user last touch this"
+	// wants. For that read LastHumanMessageAt, and do not treat this field as a
+	// proxy for human contact.
+	LastUserMessageAt *int64 `json:"lastUserMessageAt"`
+	// LastHumanMessageAt and LastAgentMessageAt are daemon-owned, and stamped at
+	// Sessions' own input boundary rather than read back out of the provider's
+	// transcript. That boundary is what makes them trustworthy: a provider's
+	// internal injection is written straight into the transcript and never
+	// crosses it, so it can move LastUserMessageAt and neither of these.
+	//
+	// Everything a person sends does cross it -- the HTTP input and submit
+	// routes, the WebSocket mux, an attached terminal, `sessions send` -- and
+	// arrives with no source-session attribution. An agent relaying to another
+	// session arrives through the same routes carrying one. Unattributed is
+	// therefore a person, attributed is another session, and a transcript-only
+	// user record is neither.
+	LastHumanMessageAt *int64 `json:"lastHumanMessageAt"`
+	LastAgentMessageAt *int64 `json:"lastAgentMessageAt"`
 	IdleReason             string            `json:"idleReason,omitempty"`
 	IdleDetail             string            `json:"idleDetail,omitempty"`
 	IdleSince              *int64            `json:"idleSince,omitempty"`
