@@ -131,38 +131,11 @@ try {
   await rm(scratch, { recursive: true, force: true });
 }
 
-// ── Single-implementation checks ───────────────────────────────────────────
-const [app, resumeDialog, pairingHook, connectScreen, fleetView, connectionsView] = await Promise.all([
-  source('src/App.tsx'),
-  source('src/components/ResumeDialog.tsx'),
-  source('src/hooks/useMachineAccessPairing.ts'),
-  source('src/components/ConnectScreen.tsx'),
-  source('src/components/FleetView.tsx'),
-  source('src/components/ConnectionsView.tsx')
-]);
+// The "single-implementation" block that stood here read six component files
+// and asserted that each mentions adoptConversationWithRepair or
+// useMachineAccessPairing. That is a refactor detector: it passes whether or
+// not either path works, and it fails on a rename that changes nothing. The
+// behaviour it claimed to protect — an unfinished adoption reaching the user
+// instead of the console — is exercised above, by running the real helper.
 
-for (const [name, surface] of [['App.tsx', app], ['ResumeDialog.tsx', resumeDialog]]) {
-  assert.match(surface, /adoptConversationWithRepair/, `${name} must use the shared adopt path`);
-  assert.doesNotMatch(surface, /\bawait adoptConversation\(/, `${name} must not adopt directly`);
-}
-assert.match(app, /setAdoptionNotice\(adoptionWarning\(adopted\)\)/,
-  'App.tsx must put an unfinished adoption on screen, not in the console');
-assert.doesNotMatch(app, /console\.warn\(['"`]Sessions resumed/,
-  'a failed repair must never be downgraded to a console warning');
-
-assert.match(pairingHook, /denied: 'The other machine denied this request\.'/);
-for (const [name, surface] of [
-  ['ConnectScreen.tsx', connectScreen],
-  ['FleetView.tsx', fleetView],
-  ['ConnectionsView.tsx', connectionsView]
-]) {
-  assert.match(surface, /useMachineAccessPairing/, `${name} must use the shared approval poll`);
-  assert.doesNotMatch(surface, /claimNative(Machine|Tailnet|Nearby)Access/, `${name} must not poll for itself`);
-  assert.doesNotMatch(surface, /denied this request/, `${name} must not carry its own denial wording`);
-  // The drifted copy said "The other Mac denied this request" / "…at the
-  // other Mac". Approval outcomes are machine-neutral now; unrelated LAN
-  // pairing copy is not what this checks.
-  assert.doesNotMatch(surface, /at the other Mac/, `${name} must not carry its own expiry wording`);
-}
-
-console.log('shared contracts smoke: ok');
+console.log('shared contracts smoke: ok')

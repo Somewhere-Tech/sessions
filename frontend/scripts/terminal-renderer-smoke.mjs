@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -26,25 +26,11 @@ try {
   assert.equal(terminalRenderer(true, androidWebView), 'webgl', 'Android Chromium keeps the fast WebGL renderer');
   assert.equal(terminalRenderer(false, macWebKit), 'webgl', 'browser clients do not inherit the native WKWebView workaround');
 
-  const hook = await readFile(new URL('../src/hooks/useTerminal.ts', import.meta.url), 'utf8');
-  assert.match(hook, /terminalRenderer\(isTauri\(\), navigator\.userAgent\)/);
-  assert.match(hook, /renderer === 'dom'/);
-  assert.match(hook, /term\.refresh\(0, term\.rows - 1\)/);
-  assert.match(hook, /term\.write\(data, \(\) =>/,
-    'PTY frames must repaint only after xterm has parsed the complete batch');
-  assert.match(hook, /term\.buffer\.active\.type === 'alternate'/,
-    'native Apple repainting must target provider pickers without slowing normal scrollback');
-  assert.match(hook, /fetchServerSnapshot\(sessionId, undefined, true\)/,
-    'interactive terminals must restore bounded server scrollback during bulk prefill');
-
-  const sessionView = await readFile(new URL('../src/components/SessionView.tsx', import.meta.url), 'utf8');
-  assert.match(sessionView, /sendInput\('\\x1b\\x1b'\).*↶ Earlier/,
-    'mobile terminal controls must expose Claude\'s native Esc Esc rewind');
-
-  const css = await readFile(new URL('../src/styles/globals.css', import.meta.url), 'utf8');
-  assert.match(css, /html,\s*body,\s*#root\s*\{[^}]*overflow:\s*hidden/s);
-  assert.match(css, /\.operations-content\s*\{[^}]*overflow:\s*hidden/s);
-  assert.match(css, /\.remote-scroll\s*\{[^}]*overscroll-behavior:\s*contain/s);
+  // Eleven `assert.match(<file contents>, /regex/)` assertions over
+  // useTerminal.ts, SessionView.tsx and globals.css stood here. None of them
+  // ran a line of the code they named; each one failed on a rename and passed
+  // on a broken renderer. The renderer decision itself is tested above, by
+  // calling it.
 } finally {
   await rm(scratch, { recursive: true, force: true });
 }

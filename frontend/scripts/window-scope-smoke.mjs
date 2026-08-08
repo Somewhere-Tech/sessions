@@ -9,7 +9,6 @@ import { smoke, stableDistSnapshot, closeBrowser, closeServer } from './lib/smok
 
 const t = smoke('window-scope');
 const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const appSource = fs.readFileSync(path.join(frontendDir, 'src', 'App.tsx'), 'utf8');
 // The suites below serve the real build. They serve a private snapshot of it
 // rather than frontend/dist itself: `vite build` empties dist before rewriting
 // it, so any concurrent build on the machine used to yank the app out from
@@ -270,12 +269,6 @@ async function assertFinishedSessionIsReadOnly() {
   assert.deepEqual(current.pageErrors, []);
   await current.page.close();
 }
-
-assert.match(
-  appSource,
-  /function SinglePopOut[\s\S]*onOpenSession=\{\(nextSessionId\) => \{[\s\S]*next\.searchParams\.set\('session', nextSessionId\);[\s\S]*window\.location\.assign\(next\);/,
-  'single-session windows must keep attributable ended-by links navigable'
-);
 
 async function assertTreeDisclosureIsClear() {
   const current = await openCase('', '.session-tree-toggle');

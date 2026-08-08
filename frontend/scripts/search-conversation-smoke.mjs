@@ -1,41 +1,20 @@
+// How search results become conversations: title adoption, provider identity,
+// and grouping runs of the same chat into one card.
+//
+// This suite used to open with twenty-one `assert.match(<file contents>, /…/)`
+// assertions over SearchView/App and close with two hand-copied-HTML CSS
+// geometry scenarios. Both are gone: the first ran no product code, and the
+// second measured markup pasted into page.setContent rather than anything
+// SearchView renders. What is left bundles lib/searchConversations.ts and calls
+// it, which is the part that was always real. Search's user-visible behaviour
+// — type a query, get the conversation and the sentence back — is covered by
+// tests/capability/search.test.tsx against a mounted SearchView.
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import puppeteer from 'puppeteer';
-import { closeBrowser } from './lib/smoke.mjs';
-
-const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-const [searchView, searchAPI, app, styles] = await Promise.all([
-  source('src/components/SearchView.tsx'),
-  source('src/api/sessionsd.ts'),
-  source('src/App.tsx'),
-  source('src/styles/globals.css')
-]);
-
-assert.match(searchView, /groupSearchResults\(orderedResults\)/);
-assert.match(searchView, />What you said<\/FilterButton>/);
-assert.match(searchView, /'You said'/);
-assert.match(searchView, /via Sessions/);
-assert.doesNotMatch(searchView, /Your request/);
-assert.doesNotMatch(searchView, /\['ai', 'ranked', 'exact', 'regex'\]/);
-assert.doesNotMatch(searchView, /Enter a Go regular expression/);
-assert.match(searchView, /Resume conversation/);
-assert.match(searchView, /next === 'full'\) window = undefined/);
-assert.match(searchView, /Jump to latest ↓/);
-assert.match(searchView, /search-transcript-latest/);
-assert.match(searchAPI, /provider_session_id\?: string/);
-assert.match(app, /<SearchView[\s\S]*onResumeConversation=/);
-// Continuing from Search goes through the shared adopt-then-repair helper —
-// the same one ResumeDialog uses — so both entry points give the user the
-// same answer about whether the history annotations finished.
-assert.match(app, /adoptConversationWithRepair\(providerSessionId, sourceSessionId, historyId\)/);
-assert.match(app, /setAdoptionNotice\(adoptionWarning\(adopted\)\)/);
-assert.doesNotMatch(app, /console\.warn\('Sessions resumed the conversation/);
-assert.match(app, /result\.transcriptRecovery[\s\S]*\? 'remote'[\s\S]*: 'terminal'/);
-assert.doesNotMatch(app, /onResumeConversation=\{\(serverId,[\s\S]{0,240}setDialogOpen/);
 
 const scratch = await mkdtemp(join(tmpdir(), 'sessions-search-smoke-'));
 const output = join(scratch, 'search-conversations.mjs');
@@ -145,83 +124,6 @@ try {
     'prompt-only recovery cards should retain one stable first-request title instead of adopting the matching excerpt'
   );
 
-  const browser = await puppeteer.launch({ headless: true });
-  try {
-    const page = await browser.newPage();
-    for (const width of [960, 460]) {
-      await page.setViewport({ width, height: 720 });
-      await page.setContent(`
-        <style>${styles}</style>
-        <main class="search-view" style="width:${width}px;box-sizing:border-box">
-          <section class="search-results">
-            <article id="card" class="search-result-card is-claude">
-              <span class="search-result-provider">●</span>
-              <span class="search-result-body">
-                <button class="search-result-main">
-                  <span class="search-result-source"><strong>Lakebuild product direction with a useful human title</strong><span class="search-title-match">Title match</span></span>
-                  <span class="search-conversation-match-count">3 matches in this conversation · continued across 2 Sessions runs</span>
-                </button>
-                <span class="search-conversation-matches">
-                  <button class="search-conversation-match"><span>You said</span><span class="search-snippet">A long matching message that should remain inside the available conversation card width.</span></button>
-                </span>
-                <span class="search-result-footer"><span class="search-result-location">Mac mini · ~/somewhere/tech</span><span class="search-result-actions"><button>Open conversation →</button><button class="is-resume">Resume conversation</button></span></span>
-              </span>
-            </article>
-          </section>
-        </main>
-      `);
-      const geometry = await page.$eval('#card', (card) => ({
-        overflow: card.scrollWidth - card.clientWidth,
-        width: card.getBoundingClientRect().width
-      }));
-      assert.ok(geometry.overflow <= 0, `search card overflowed by ${geometry.overflow}px at ${width}px`);
-      assert.ok(geometry.width <= width, `search card exceeded viewport at ${width}px`);
-    }
-
-    await page.setViewport({ width: 760, height: 640 });
-    await page.setContent(`
-      <style>${styles}</style>
-      <main class="search-view search-conversation-view" style="width:760px;height:640px;box-sizing:border-box">
-        <section class="search-shell search-reader-shell">
-          <div class="search-reader-chrome">
-            <button class="search-back">← Back to results</button>
-            <header class="search-conversation-heading">
-              <div><h1>Lakebuild</h1><p>Mac mini</p></div>
-              <div class="search-conversation-actions"><button class="btn">Resume conversation</button></div>
-            </header>
-            <div class="search-reader-toolbar"><span>Full transcript</span><span class="search-reader-position"><span>1635 messages</span><button>Jump to latest ↓</button></span></div>
-          </div>
-          <div id="transcript" class="search-transcript">
-            <article id="message" class="search-transcript-message is-assistant">
-              <header><span>Claude #1635</span></header>
-              <p>${'unbroken-provider-output-'.repeat(90)}</p>
-            </article>
-          </div>
-        </section>
-      </main>
-    `);
-    const readerGeometry = await page.evaluate(() => {
-      const transcript = document.querySelector('#transcript');
-      const message = document.querySelector('#message');
-      const chrome = document.querySelector('.search-reader-chrome');
-      return {
-        transcriptOverflowX: transcript.scrollWidth - transcript.clientWidth,
-        messageOverflow: message.scrollWidth - message.clientWidth,
-        transcriptBottom: transcript.getBoundingClientRect().bottom,
-        chromeTop: chrome.getBoundingClientRect().top,
-        viewportHeight: window.innerHeight
-      };
-    });
-    assert.ok(readerGeometry.transcriptOverflowX <= 0, `transcript overflowed horizontally by ${readerGeometry.transcriptOverflowX}px`);
-    assert.ok(readerGeometry.messageOverflow <= 0, `message overflowed horizontally by ${readerGeometry.messageOverflow}px`);
-    assert.ok(readerGeometry.transcriptBottom <= readerGeometry.viewportHeight, 'reader should keep its transcript inside the window');
-    assert.ok(readerGeometry.chromeTop >= 0, 'reader controls should remain inside the visible window');
-  } finally {
-    // Bounded: `browser.close()` waits on the browser's own shutdown, and a
-    // wedged Chromium on a loaded machine turns a finished suite into a hang with
-    // no assertion to report. Fail, never wait.
-    await closeBrowser(browser);
-  }
 } finally {
   await rm(scratch, { recursive: true, force: true });
 }
