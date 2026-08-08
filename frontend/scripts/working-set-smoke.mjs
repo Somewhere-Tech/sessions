@@ -19,7 +19,7 @@ try {
     logLevel: 'silent'
   });
 
-  const { groupWorkingSet, humanEngagementAt, isAgentLedChild } = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
+  const { collapseConversationRuntimes, groupWorkingSet, humanEngagementAt, isAgentLedChild } = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
   const session = (id, values = {}) => ({
     id,
     exited: false,
@@ -67,6 +67,21 @@ try {
   assert.equal(humanEngagementAt(session('human', { createdAt: 10, lastDataAt: 999, lastUserMessageAt: 25 })), 25);
   assert.equal(isAgentLedChild(session('lane', { kind: 'lane' })), true);
   assert.equal(isAgentLedChild(session('explicit-user', { delegationKind: 'user' })), false);
+
+  const oneConversation = collapseConversationRuntimes([
+    session('old-runtime', {
+      tool: 'claude-code', claudeSessionId: 'provider-id', exited: true,
+      createdAt: 10, parentSessionId: 'manager'
+    }),
+    session('live-runtime', {
+      tool: 'claude-code', conversationId: 'provider-id', createdAt: 20,
+      parentSessionId: 'old-runtime'
+    }),
+    session('child', { parentSessionId: 'old-runtime' })
+  ]);
+  assert.deepEqual(oneConversation.map(({ id }) => id), ['live-runtime', 'child']);
+  assert.equal(oneConversation.find(({ id }) => id === 'live-runtime').parentSessionId, 'manager');
+  assert.equal(oneConversation.find(({ id }) => id === 'child').parentSessionId, 'live-runtime');
 
   const cycle = [
     session('cycle-a', { parentSessionId: 'cycle-b', setAsideAt: 1 }),

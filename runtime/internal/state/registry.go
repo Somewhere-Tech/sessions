@@ -219,6 +219,7 @@ func (r *Registry) CreateWithLifecycle(
 		SocketPath:     For(r.config.RunnerStateDir, id).Socket,
 		ConversationID: request.ConversationID,
 	}
+	bindProviderConversationIdentity(&runnerInfo, tool)
 	launchRequest := proto.LaunchRequest{
 		Info: runnerInfo,
 		Env:  r.runnerEnvironment(runnerInfo, request.Env),
@@ -359,13 +360,14 @@ func (r *Registry) CreateWithLifecycle(
 	if actual.SocketPath == "" {
 		actual.SocketPath = runnerInfo.SocketPath
 	}
+	actual = withProviderIdentityFallback(actual, runnerInfo)
 	if lifecycle.RunnerReady != nil {
 		lifecycle.RunnerReady(ctx, actual)
 	}
 	if err := writeMetadata(r.config.RunnerStateDir, actual, metadata); err != nil {
 		return SessionInfo{}, err
 	}
-	session, err := r.register(ctx, runner, metadata)
+	session, err := r.registerInfo(ctx, runner, metadata, actual)
 	if err != nil {
 		return SessionInfo{}, err
 	}
@@ -373,7 +375,10 @@ func (r *Registry) CreateWithLifecycle(
 }
 
 func (r *Registry) register(ctx context.Context, runner proto.Runner, metadata SessionMetadata) (*Session, error) {
-	info := runner.Info()
+	return r.registerInfo(ctx, runner, metadata, runner.Info())
+}
+
+func (r *Registry) registerInfo(ctx context.Context, runner proto.Runner, metadata SessionMetadata, info proto.RunnerInfo) (*Session, error) {
 	if info.ID == "" {
 		return nil, errors.New("runner returned an empty session id")
 	}
@@ -445,7 +450,8 @@ func (r *Registry) Register(ctx context.Context, runner proto.Runner, name, onId
 }
 
 func (r *Registry) RegisterMetadata(ctx context.Context, runner proto.Runner, metadata RunnerMetadata, onIdle string) (*Session, error) {
-	return r.register(ctx, runner, SessionMetadata{
+	actual := withProviderIdentityFallback(runner.Info(), metadata.Info)
+	return r.registerInfo(ctx, runner, SessionMetadata{
 		Name: metadata.Name, NameSource: metadata.NameSource,
 		Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
@@ -458,7 +464,7 @@ func (r *Registry) RegisterMetadata(ctx context.Context, runner proto.Runner, me
 		ContinuedFromProvider:  metadata.ContinuedFromProvider,
 		ContinuationMode:       metadata.ContinuationMode,
 		ImportedMessageCount:   metadata.ImportedMessageCount,
-	})
+	}, actual)
 }
 
 // UpdateTags replaces one session's complete tag set. The metadata file is
@@ -1041,7 +1047,7 @@ func launchdPath(value string) string {
 func writeMetadata(dir string, info proto.RunnerInfo, sessionMetadata SessionMetadata) error {
 	metadata := Metadata{
 		ID: info.ID, Name: sessionMetadata.Name, NameSource: sessionMetadata.NameSource,
-		Description: sessionMetadata.Description,
+		Description:       sessionMetadata.Description,
 		DescriptionSource: sessionMetadata.DescriptionSource, Kind: sessionMetadata.Kind, SpecPath: sessionMetadata.SpecPath,
 		Tags: CloneTags(sessionMetadata.Tags), DisplayParentSessionID: cloneStringPointer(sessionMetadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(sessionMetadata.SetAsideAt), Pinned: sessionMetadata.Pinned,
@@ -1201,6 +1207,50 @@ func appendClaudeSessionID(cmd string, args []string, id string) []string {
 		return result
 	}
 	return append(result, providerargs.ClaudeSessionIDFlag, id)
+}
+
+// bindProviderConversationIdentity promotes the provider's own durable
+// conversation id from the exact launch argv into RunnerInfo. Runner ids name
+// processes; these ids name conversations, so resumed processes with the same
+// provider id can be presented as one conversation without rewriting history.
+func bindProviderConversationIdentity(info *proto.RunnerInfo, tool SessionTool) {
+	if info == nil {
+		return
+	}
+	switch tool {
+	case ToolClaude:
+		providerID := providerargs.ClaudeSessionID(info.Args)
+		if !providerargs.IsConversationUUID(providerID) {
+			return
+		}
+		if info.ConversationID == "" {
+			info.ConversationID = providerID
+		}
+		if info.ClaudeSessionID == "" {
+			info.ClaudeSessionID = providerID
+		}
+	case ToolCodex:
+		providerID := providerargs.CodexConversationID(info.Args)
+		if info.ConversationID == "" && providerargs.IsConversationUUID(providerID) {
+			info.ConversationID = providerID
+		}
+	}
+}
+
+// withProviderIdentityFallback keeps a new runner authoritative when it knows
+// its provider identity (structured runners learn it after launch), while
+// retaining daemon metadata for PTY and older runners whose HELLO omits it.
+func withProviderIdentityFallback(actual, persisted proto.RunnerInfo) proto.RunnerInfo {
+	if actual.ConversationID == "" {
+		actual.ConversationID = persisted.ConversationID
+	}
+	if actual.ClaudeSessionID == "" {
+		actual.ClaudeSessionID = persisted.ClaudeSessionID
+	}
+	if actual.RemoteEndpoint == "" {
+		actual.RemoteEndpoint = persisted.RemoteEndpoint
+	}
+	return actual
 }
 
 // spawnControls reads the model and effort a spawn argv carries. It used to

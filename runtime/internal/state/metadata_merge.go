@@ -86,6 +86,21 @@ func MergeRunnerMetadata(existing, next Metadata) Metadata {
 	if existing.ImportedMessageCount != 0 {
 		merged.ImportedMessageCount = existing.ImportedMessageCount
 	}
+
+	// Plain PTY runners do not own provider conversation identity. They rebuild
+	// metadata from launch configuration, so an empty runner write must not
+	// sever the daemon's durable binding. Structured runners do learn the
+	// authoritative id and send a non-empty value, which remains allowed to
+	// replace an earlier provisional value.
+	if merged.ConversationID == "" {
+		merged.ConversationID = existing.ConversationID
+	}
+	if merged.ClaudeSessionID == "" {
+		merged.ClaudeSessionID = existing.ClaudeSessionID
+	}
+	if merged.RemoteEndpoint == "" {
+		merged.RemoteEndpoint = existing.RemoteEndpoint
+	}
 	return merged
 }
 

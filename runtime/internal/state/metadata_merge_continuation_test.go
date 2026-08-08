@@ -67,3 +67,43 @@ func TestFirstRunnerMetadataWriteKeepsItsOwnContinuationValues(t *testing.T) {
 		t.Fatalf("a first write discarded the runner's own continuation values: %+v", after)
 	}
 }
+
+// Provider identity is initially resolved by the daemon from the exact argv it
+// launches. A plain PTY runner does not own that identity, so rebuilding its
+// metadata without those fields must not sever the conversation binding.
+func TestRunnerMetadataWritePreservesProviderConversationIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	const providerID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if err := WriteMetadata(path, Metadata{
+		ID: "abc", Cmd: "claude", Cwd: "/tmp",
+		ConversationID: providerID, ClaudeSessionID: providerID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteRunnerMetadata(path, Metadata{ID: "abc", Cmd: "claude", Cwd: "/tmp"}); err != nil {
+		t.Fatal(err)
+	}
+
+	after := readMetadataForMerge(path)
+	if after.ConversationID != providerID || after.ClaudeSessionID != providerID {
+		t.Fatalf("runner metadata write severed provider identity: conversation %q, Claude %q", after.ConversationID, after.ClaudeSessionID)
+	}
+}
+
+func TestRunnerMetadataNonEmptyProviderIdentityRemainsAuthoritative(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	if err := WriteMetadata(path, Metadata{
+		ID: "abc", Cmd: "codex", Cwd: "/tmp", ConversationID: "provisional",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRunnerMetadata(path, Metadata{
+		ID: "abc", Cmd: "codex", Cwd: "/tmp", ConversationID: "provider-confirmed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readMetadataForMerge(path).ConversationID; got != "provider-confirmed" {
+		t.Fatalf("ConversationID = %q, want runner-confirmed value", got)
+	}
+}

@@ -27,6 +27,7 @@ try {
     endedSummary,
     isCrashedSession,
     isDegradedSession,
+    providerConversationId,
     sessionIsFinished,
     sessionNeedsYou,
     sessionWantsAttention
@@ -115,6 +116,16 @@ try {
   assert.equal(continuationSession(endedWithContinuation, [endedWithContinuation, liveSuccessor])?.id, 'live-successor');
   assert.equal(endedSummary(endedWithContinuation, [endedWithContinuation, liveSuccessor]).label, 'Live as PM');
   assert.equal(canContinueSession(endedWithContinuation), false);
+
+  for (const args of [
+    ['--resume', 'claude-id'],
+    ['-r', 'claude-id'],
+    ['--resume=claude-id'],
+    ['--session-id=claude-id']
+  ]) {
+    assert.equal(providerConversationId({ tool: 'claude-code', args }), 'claude-id');
+  }
+  assert.equal(providerConversationId({ tool: 'codex', args: ['resume', 'codex-id'] }), 'codex-id');
 
   const inferredSuccessor = {
     ...liveSuccessor,

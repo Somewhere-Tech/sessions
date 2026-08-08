@@ -366,8 +366,24 @@ export function canContinueSession(session: SessionInfo): boolean {
 export function providerConversationId(session: SessionInfo): string | null {
   const known = session.conversationId?.trim() || session.claudeSessionId?.trim();
   if (known) return known;
-  if (session.tool !== 'claude-code') return null;
   const args = session.args ?? [];
-  const flagIndex = args.findIndex((arg) => arg === '--resume' || arg === '--session-id');
-  return flagIndex >= 0 ? args[flagIndex + 1]?.trim() || null : null;
+  const flags = session.tool === 'claude-code'
+    ? ['--resume', '--session-id', '-r']
+    : session.tool === 'codex'
+      ? ['resume', '--resume']
+      : [];
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    for (const flag of flags) {
+      if (argument === flag) {
+        const value = args[index + 1]?.trim();
+        if (value && !value.startsWith('-')) return value;
+      }
+      if (flag.startsWith('--') && argument.startsWith(`${flag}=`)) {
+        const value = argument.slice(flag.length + 1).trim();
+        if (value) return value;
+      }
+    }
+  }
+  return null;
 }

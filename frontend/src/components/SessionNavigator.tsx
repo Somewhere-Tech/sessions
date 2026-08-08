@@ -14,6 +14,7 @@ import {
 } from '../lib/sessionStatus';
 import {
   effectiveParentId,
+  collapseConversationRuntimes,
   groupWorkingSet,
   humanEngagementAt,
   isAgentLedChild,
@@ -182,6 +183,7 @@ export function SessionNavigator({
   const [endError, setEndError] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const [pinningId, setPinningId] = useState<string | null>(null);
+  const navigatorSessions = useMemo(() => collapseConversationRuntimes(sessions), [sessions]);
 
   const selectMachineScope = (scope: MachineScope): void => {
     setMachineScopeState(scope);
@@ -240,8 +242,8 @@ export function SessionNavigator({
     }
   };
 
-  const sessionIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
-  const endedSessionIds = useMemo(() => new Set(sessions.filter((session) => session.exited).map((session) => session.id)), [sessions]);
+  const sessionIds = useMemo(() => new Set(navigatorSessions.map((session) => session.id)), [navigatorSessions]);
+  const endedSessionIds = useMemo(() => new Set(navigatorSessions.filter((session) => session.exited).map((session) => session.id)), [navigatorSessions]);
   useEffect(() => {
     setSelectedEnded((current) => {
       const next = new Set([...current].filter((id) => endedSessionIds.has(id)));
@@ -286,7 +288,7 @@ export function SessionNavigator({
   }, [actionMenuId]);
   const children = useMemo(() => {
     const byParent = new Map<string, SessionInfo[]>();
-    for (const session of sessions) {
+    for (const session of navigatorSessions) {
       const parentID = session.displayParentSessionId !== undefined
         ? session.displayParentSessionId
         : session.parentSessionId;
@@ -297,7 +299,7 @@ export function SessionNavigator({
     }
     for (const list of byParent.values()) list.sort((a, b) => humanEngagementAt(b) - humanEngagementAt(a));
     return byParent;
-  }, [sessions, sessionIds]);
+  }, [navigatorSessions, sessionIds]);
 
   const subtreeHumanEngagement = useMemo(() => {
     const values = new Map<string, number>();
@@ -315,17 +317,17 @@ export function SessionNavigator({
       values.set(session.id, value);
       return value;
     };
-    for (const session of sessions) visit(session);
+    for (const session of navigatorSessions) visit(session);
     return values;
-  }, [children, sessions]);
+  }, [children, navigatorSessions]);
 
   // The pins are the daemon's, not this client's: `sessions pin` and the
   // toggle in the details panel are the same fact, so a session pinned from the
   // CLI stays in focus here even when it has been set aside.
-  const pins = useMemo(() => pinnedSessionIds(sessions), [sessions]);
+  const pins = useMemo(() => pinnedSessionIds(navigatorSessions), [navigatorSessions]);
   const grouped = useMemo(
-    () => groupWorkingSet(sessions, openSessionIds, pins),
-    [openSessionIds, pins, sessions]
+    () => groupWorkingSet(navigatorSessions, openSessionIds, pins),
+    [navigatorSessions, openSessionIds, pins]
   );
   // Engagement order, then pinned first. The pins now have their own section,
   // so `pinnedFirst` is a no-op over the live roots and a cheap guard: if a pin
@@ -348,7 +350,7 @@ export function SessionNavigator({
     () => fleetSnapshots.flatMap((snapshot) => snapshot.sessions),
     [fleetSnapshots]
   );
-  const scopedSessions = showingAllMachines ? fleetSessions : sessions;
+  const scopedSessions = showingAllMachines ? fleetSessions : navigatorSessions;
   const projects = useMemo(() => [...new Set(scopedSessions.map(projectName).filter(Boolean))].sort(), [scopedSessions]);
   const counts = useMemo(() => ({
     needs: scopedSessions.filter(sessionNeedsYou).length,
@@ -358,11 +360,11 @@ export function SessionNavigator({
     // session must not make the app behave as though that session ended.
     live: showingAllMachines
       ? scopedSessions.filter((session) => !session.exited).length
-      : sessions.filter((session) => liveIds.has(session.id) || pinnedIds.has(session.id)).length,
+      : navigatorSessions.filter((session) => liveIds.has(session.id) || pinnedIds.has(session.id)).length,
     // The Live group's own rows. The pinned ones are counted under Pinned.
-    liveGroup: sessions.filter((session) => liveIds.has(session.id)).length,
+    liveGroup: navigatorSessions.filter((session) => liveIds.has(session.id)).length,
     working: scopedSessions.filter((session) => session.working && !session.exited).length
-  }), [liveIds, pinnedIds, scopedSessions, sessions, showingAllMachines]);
+  }), [liveIds, navigatorSessions, pinnedIds, scopedSessions, showingAllMachines]);
 
   const matches = (session: SessionInfo): boolean => {
     if (primary === 'needs' && !sessionNeedsYou(session)) return false;

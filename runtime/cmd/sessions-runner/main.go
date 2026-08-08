@@ -355,6 +355,7 @@ func run() int {
 		Cols: cfg.cols, Rows: cfg.rows, CreatedAt: r.createdAt,
 		PID: process.PID(), SockPath: paths.Socket,
 	}
+	meta.ConversationID, meta.ClaudeSessionID = providerConversationIdentity(cfg)
 	// A PTY runner rebuilds metadata from its launch config too, so a launchd
 	// restart of a tagged or set-aside session must not drop those fields.
 	if err := state.WriteRunnerMetadata(paths.Meta, meta); err != nil {
@@ -651,12 +652,30 @@ func (r *runner) serveClient(conn net.Conn) {
 }
 
 func (r *runner) helloLocked() hello {
+	conversationID, claudeSessionID := providerConversationIdentity(r.cfg)
 	return hello{
 		ID: r.cfg.id, Cmd: r.cfg.cmd, Args: r.cfg.args, Cwd: r.cfg.cwd,
 		Cols: r.cols, Rows: r.rows, CreatedAt: r.createdAt,
 		PID: r.process.PID(), CurrentSeq: r.log.CurrentSeq(),
 		ProtocolVersion: proto.ProtocolVersion, RuntimeVersion: version,
+		ConversationID: conversationID, ClaudeSessionID: claudeSessionID,
 	}
+}
+
+func providerConversationIdentity(cfg config) (conversationID, claudeSessionID string) {
+	switch state.CommandTool(cfg.cmd) {
+	case state.ToolClaude:
+		providerID := providerargs.ClaudeSessionID(cfg.args)
+		if providerargs.IsConversationUUID(providerID) {
+			return providerID, providerID
+		}
+	case state.ToolCodex:
+		providerID := providerargs.CodexConversationID(cfg.args)
+		if providerargs.IsConversationUUID(providerID) {
+			return providerID, ""
+		}
+	}
+	return "", ""
 }
 
 func (r *runner) handleFrame(c *client, frame proto.Frame) error {
