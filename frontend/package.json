@@ -13,13 +13,10 @@
     "test:native-credentials": "node scripts/native-credentials-smoke.mjs",
     "test:structured-events": "node scripts/structured-events-smoke.mjs",
     "test:structured-view": "node scripts/structured-view-smoke.mjs",
-    "test:fleet-clarity": "node scripts/fleet-clarity-smoke.mjs",
     "test:fleet-usage": "node scripts/fleet-usage-smoke.mjs",
     "test:search-conversations": "node scripts/search-conversation-smoke.mjs",
     "test:terminal-renderer": "node scripts/terminal-renderer-smoke.mjs",
     "test:external-links": "node scripts/external-links-smoke.mjs",
-    "test:lifecycle-clarity": "node scripts/lifecycle-clarity-smoke.mjs",
-    "test:workspace-ux": "node scripts/workspace-ux-smoke.mjs",
     "test:session-status": "node scripts/session-status-smoke.mjs",
     "test:surface-truth": "node scripts/surface-truth-smoke.mjs",
     "test:search-rollup": "node scripts/search-rollup-smoke.mjs",
@@ -28,13 +25,12 @@
     "test:shared-contracts": "node scripts/shared-contracts-smoke.mjs",
     "test:working-set": "node scripts/working-set-smoke.mjs",
     "test:pin": "node scripts/pin-smoke.mjs",
+    "test:session-mode": "node scripts/session-mode-smoke.mjs",
     "test:typography": "node scripts/typography-smoke.mjs",
     "test:window-scope": "node scripts/window-scope-smoke.mjs",
     "test:same-origin-bootstrap": "node scripts/same-origin-bootstrap-smoke.mjs",
-    "test:startup-recovery": "node scripts/startup-recovery-smoke.mjs",
-    "test:fork-conversation": "node scripts/fork-conversation-smoke.mjs",
-    "test:onboarding-consent": "node scripts/onboarding-consent-smoke.mjs",
     "test:webapp": "node scripts/webapp-smoke.mjs",
+    "test:capability": "node scripts/run-capability.mjs",
     "test:smoke": "node scripts/run-smoke.mjs"
   },
   "dependencies": {
@@ -57,6 +53,9 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.3",
     "@types/dompurify": "^3.0.5",
     "@types/node": "^25.6.0",
     "@types/react": "^18.3.12",
@@ -67,9 +66,11 @@
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^5.2.0",
     "globals": "^15.15.0",
+    "jsdom": "^25.0.1",
     "puppeteer": "^24.42.0",
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.66.0",
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "vitest": "^2.1.9"
   }
 }
