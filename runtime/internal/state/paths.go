@@ -140,8 +140,8 @@ type Metadata struct {
 	LastHumanMessageAt *int64 `json:"last_human_message_at,omitempty"`
 	LastAgentMessageAt *int64 `json:"last_agent_message_at,omitempty"`
 	DelegationKind     string `json:"delegation_kind,omitempty"`
-	Permissions    string `json:"permissions,omitempty"`
-	Lifecycle      string `json:"lifecycle,omitempty"`
+	Permissions        string `json:"permissions,omitempty"`
+	Lifecycle          string `json:"lifecycle,omitempty"`
 }
 
 // CompletionManifest is the durable terminal fact emitted by a headless lane.

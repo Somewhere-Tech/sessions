@@ -157,3 +157,34 @@ func TestWhitespaceOnlyInputCarriesNoMessage(t *testing.T) {
 		}
 	}
 }
+
+// The provider's own scheduled injection is written into the transcript as a
+// user record. Taken at face value it becomes "the user last spoke just now",
+// which is exactly how the owner's question was buried: his message at
+// 22:33:36, the tick at 22:36:20, and every surface then reported the tick as
+// his contact. The real record carries isMeta -- confirmed against the live
+// orchestrator transcript, where 7 ticks are marked and 206 ordinary user
+// records are not -- so the transcript can be read honestly rather than
+// trusted blindly.
+func TestATranscriptTickIsNotCountedAsTheUserSpeaking(t *testing.T) {
+	owner := map[string]any{
+		"type":      "user",
+		"message":   map[string]any{"role": "user", "content": "okay we cleaned up"},
+		"timestamp": "2026-08-07T22:33:36Z",
+	}
+	tick := map[string]any{
+		"type":      "user",
+		"isMeta":    true,
+		"userType":  "external",
+		"message":   map[string]any{"role": "user", "content": "INTEGRATOR TICK (founder-ordered 30-min cadence)"},
+		"timestamp": "2026-08-07T22:36:20Z",
+	}
+	if !realUserMessage(owner) {
+		t.Fatal("the owner's own message was not counted as the user speaking")
+	}
+	if realUserMessage(tick) {
+		t.Error("a provider's scheduled injection counted as the user speaking; " +
+			"it is marked isMeta precisely so it need not be guessed at, and counting " +
+			"it is what overwrote the owner's last contact three seconds after he typed")
+	}
+}
