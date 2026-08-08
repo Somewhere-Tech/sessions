@@ -33,6 +33,13 @@ one merely because its latest turn looks complete. Cleanup reduces clutter by
 grouping or archiving durable records; it must not hide unresolved decisions or
 silently terminate work.
 
+Agent-created work should use the provider's structured boundary when that
+boundary preserves the user's subscription, authority, and required controls.
+Claude children therefore default to structured provider events, with an
+explicit terminal escape hatch. Sessions does not force Codex children onto its
+app-server while doing so would hide constrained approval prompts or require a
+silent permission escalation.
+
 ## History is an agent-native memory layer
 
 Sessions is not only a window manager. It is the durable index over Claude and

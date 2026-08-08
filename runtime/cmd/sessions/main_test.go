@@ -970,10 +970,11 @@ func TestCodexAppServerRequiresExplicitFullAccess(t *testing.T) {
 	}
 }
 
-func TestClaudeNewDefaultsInteractiveAndKeepsStructuredExplicit(t *testing.T) {
+func TestClaudeNewUsesStructuredRuntimeForInheritedAgentChildren(t *testing.T) {
 	tests := []struct {
 		name       string
 		args       []string
+		creator    string
 		kind       string
 		fullAccess bool
 	}{
@@ -981,6 +982,9 @@ func TestClaudeNewDefaultsInteractiveAndKeepsStructuredExplicit(t *testing.T) {
 		{name: "structured-explicit", args: []string{"--structured"}, kind: "claude-structured"},
 		{name: "terminal-explicit", args: []string{"--pty-claude"}},
 		{name: "interactive-full-access-explicit", args: []string{"--full-access"}, fullAccess: true},
+		{name: "agent-child-default-structured", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", kind: "claude-structured"},
+		{name: "agent-child-terminal-explicit", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", args: []string{"--pty-claude"}},
+		{name: "detached-external-root-stays-interactive", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", args: []string{"--owner", "external", "--detach"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -999,6 +1003,8 @@ func TestClaudeNewDefaultsInteractiveAndKeepsStructuredExplicit(t *testing.T) {
 			}))
 			defer server.Close()
 			t.Setenv("HOME", t.TempDir())
+			t.Setenv("SESSIONS_SESSION_ID", test.creator)
+			t.Setenv("SESSIONS_OWNER_ID", "")
 			arguments := []string{"--host", server.URL, "new", "--tool", "claude"}
 			arguments = append(arguments, test.args...)
 			var stdout, stderr bytes.Buffer
@@ -1016,6 +1022,77 @@ func TestClaudeNewDefaultsInteractiveAndKeepsStructuredExplicit(t *testing.T) {
 				t.Fatalf("full access = %v in args %q, want %v", hasFullAccess, request.Args, test.fullAccess)
 			}
 		})
+	}
+}
+
+func TestInheritedClaudeChildSendsItsPositionalRequestThroughStructuredInput(t *testing.T) {
+	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	const parent = "11111111-2222-4333-8444-555555555555"
+	const prompt = "Review the authentication boundary"
+	var request createSessionRequest
+	var inputs []string
+	submitted := false
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, httpRequest *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case httpRequest.Method == http.MethodPost && httpRequest.URL.Path == "/api/sessions":
+			if got := httpRequest.Header.Get("X-Sessions-Creator-Session"); got != parent {
+				t.Errorf("creator header = %q, want %q", got, parent)
+			}
+			if err := json.NewDecoder(httpRequest.Body).Decode(&request); err != nil {
+				t.Errorf("decode create request: %v", err)
+			}
+			response.WriteHeader(http.StatusCreated)
+			_, _ = response.Write([]byte(`{"id":"` + id + `"}`))
+		case httpRequest.Method == http.MethodGet && httpRequest.URL.Path == "/api/sessions":
+			lastUser := any(nil)
+			if submitted {
+				lastUser = int64(2)
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
+				"id": id, "cmd": "claude", "tool": "claude-code", "lastUserMessageAt": lastUser,
+			}}})
+		case httpRequest.Method == http.MethodGet && httpRequest.URL.Path == "/api/sessions/"+id+"/events":
+			events := []any{}
+			if submitted {
+				events = append(events, map[string]any{
+					"type": "user", "message": map[string]any{"role": "user", "content": prompt},
+				})
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": events, "nextIndex": len(events)})
+		case httpRequest.Method == http.MethodPost && httpRequest.URL.Path == "/api/sessions/"+id+"/submit":
+			var body map[string]string
+			if err := json.NewDecoder(httpRequest.Body).Decode(&body); err != nil {
+				t.Errorf("decode input request: %v", err)
+			}
+			inputs = append(inputs, body["data"], "\r")
+			submitted = true
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
+		default:
+			http.NotFound(response, httpRequest)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SESSIONS_SESSION_ID", parent)
+	t.Setenv("SESSIONS_OWNER_ID", "")
+
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"--host", server.URL, "new", "--tool", "claude", prompt},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if request.Kind != "claude-structured" {
+		t.Fatalf("create kind = %q, want %q", request.Kind, "claude-structured")
+	}
+	if slices.Contains(request.Args, prompt) {
+		t.Fatalf("positional prompt leaked into structured Claude args: %q", request.Args)
+	}
+	if want := []string{prompt, "\r"}; !reflect.DeepEqual(inputs, want) {
+		t.Fatalf("input sequence = %q, want %q", inputs, want)
 	}
 }
 

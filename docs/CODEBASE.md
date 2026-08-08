@@ -310,9 +310,12 @@ inside the session manager before the runner boundary
 (`runtime/internal/api/claude_settings_handlers.go`,
 `runtime/internal/session/claude_defaults.go`). Remote Control, permission
 mode, model, effort, Chrome, Remote Control naming, and the Somewhere MCP are
-typed rather than free-form startup commands. New Claude sessions default to
-the native interactive CLI, but Remote Control stays explicitly off until the
-user chooses it in first-run onboarding or Settings. A legacy `on` value and a
+typed rather than free-form startup commands. Top-level Claude sessions default
+to the native interactive CLI, but Remote Control stays explicitly off until
+the user chooses it in first-run onboarding or Settings. A Claude child created
+by the authenticated CLI inside another Sessions session defaults to the
+provider-native structured runtime; `--pty-claude` explicitly chooses the
+interactive terminal when a child needs it. A legacy `on` value and a
 per-session override cannot count as consent. Once enabled, Sessions renders
 the provider's canonical JSONL in Conversation while Terminal, claude.ai, and
 mobile remain views of that same process. The explicit Rich `--print` runtime
@@ -333,6 +336,10 @@ already-running sessions. Every new conversation, including an agent-created
 child, defaults to `session` lifecycle. A caller can explicitly mark a bounded
 `task`, but Sessions does not treat a provider's final response as permission to
 end it; lifecycle metadata stays visible to the manager that owns the decision.
+Claude children use the structured provider boundary by default so their
+manager receives exact events and submission confirmation without parsing a
+terminal. Codex children retain the constrained terminal default until
+app-server approval prompts can be represented without weakening the sandbox.
 
 ### `agentcall`
 
