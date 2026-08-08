@@ -770,6 +770,149 @@ func TestStartupRestartThenDiscoveryReconcilesAbsentLedgerLane(t *testing.T) {
 	}
 }
 
+// Reconciliation used to read "not in the in-memory map" as "the runner is
+// gone" and write a permanent runner_lost fact. The map holds the runners this
+// daemon process currently has sockets to; a runner that outlived a daemon
+// restart is missing from it while working perfectly well. On the owner's
+// machine two runners probed alive at pids 43014 and 22440 carried runner_lost
+// facts and were listed as ended. Absence from a map is not death: probe.
+func TestReconcileLedgerRecordsNoLossWhileTheRunnerPIDIsAlive(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.RunnerStateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := ledger.Open(ctx, ledger.Options{Path: filepath.Join(root, "ledger", "lanes.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	const alive = "00000000-0000-4000-8000-000000000201"
+	const dead = "00000000-0000-4000-8000-000000000202"
+	const recycled = "00000000-0000-4000-8000-000000000203"
+	for _, id := range []string{alive, dead, recycled} {
+		if err := store.Boundaries().RecordCreated(ctx, ledger.Created{
+			Meta: ledger.Meta{LaneID: id}, LaneUUID: id,
+			Tool: string(state.ToolTerminal), Cwd: root,
+			CreatorKind: ledger.CreatorExternal, CreatorID: "manager-test",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Observations().RecordRunnerReady(ctx, ledger.Observation{
+			Meta: ledger.Meta{LaneID: id},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pids := map[string]int{alive: 4242, dead: 4243, recycled: 4244}
+	for id, pid := range pids {
+		paths := state.For(config.RunnerStateDir, id)
+		if err := state.WriteMetadata(paths.Meta, state.Metadata{
+			ID: id, Cmd: "/bin/sh", Cwd: root, Cols: 300, Rows: 50,
+			CreatedAt: 1, PID: pid, SockPath: paths.Socket,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour,
+		Boundaries: store.Boundaries(), Observations: store.Observations(), LedgerReader: store,
+		Notify:       func(PushPayload) {},
+		ProcessAlive: func(pid int) bool { return pid != pids[dead] },
+		ProcessCommand: func(pid int) string {
+			if pid == pids[recycled] {
+				// A live pid running something that is not this session.
+				return "/Applications/Xcode.app/Contents/MacOS/Xcode"
+			}
+			return "/opt/sessions/sessions-runner"
+		},
+	})
+	defer manager.Close()
+
+	manager.reconcileLedger(ctx)
+
+	folded := make(map[string]ledger.LaneState)
+	for _, lane := range ledger.Fold(mustLedgerEvents(t, store)) {
+		folded[lane.LaneID] = lane
+	}
+	if folded[alive].RunnerLost {
+		t.Fatal("reconciliation recorded a loss for a lane whose runner pid is alive")
+	}
+	if !folded[dead].RunnerLost {
+		t.Fatal("reconciliation recorded no loss for a lane whose runner pid is dead")
+	}
+	if !folded[recycled].RunnerLost {
+		t.Fatal("reconciliation treated a recycled pid running an unrelated program as a live runner")
+	}
+}
+
+// A lane the daemon merely lost contact with stays in the listing, and stays
+// out of the ended state. Synthesising Exited:true with a nil exit code for a
+// lost socket is how live sessions appeared in the list as ended-and-failed.
+func TestUnreachableLaneIsListedButNotEnded(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	config := testConfig(root)
+	store, err := ledger.Open(ctx, ledger.Options{Path: filepath.Join(root, "ledger", "lanes.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	const lost = "00000000-0000-4000-8000-000000000301"
+	const ended = "00000000-0000-4000-8000-000000000302"
+	for _, id := range []string{lost, ended} {
+		if err := store.Boundaries().RecordCreated(ctx, ledger.Created{
+			Meta: ledger.Meta{LaneID: id, AtMS: 10}, LaneUUID: id,
+			Tool: string(state.ToolTerminal), Cwd: root,
+			CreatorKind: ledger.CreatorExternal, CreatorID: "manager-test",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Observations().RecordRunnerLost(ctx, ledger.Observation{
+		Meta: ledger.Meta{LaneID: lost, AtMS: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Observations().RecordRunnerExited(ctx, ledger.RunnerExit{
+		Meta: ledger.Meta{LaneID: ended, AtMS: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour,
+		Boundaries: store.Boundaries(), Observations: store.Observations(), LedgerReader: store,
+		Notify: func(PushPayload) {},
+	})
+	defer manager.Close()
+
+	byID := make(map[string]state.SessionInfo)
+	for _, info := range manager.withDurableClosed(ctx, nil, true) {
+		byID[info.ID] = info
+	}
+	unreachable, listed := byID[lost]
+	if !listed {
+		t.Fatal("an unreachable session disappeared from the listing")
+	}
+	if unreachable.Exited {
+		t.Fatalf("an unreachable session was presented as ended: %#v", unreachable)
+	}
+	if !unreachable.Unreachable || unreachable.UnreachableSince == nil {
+		t.Fatalf("an unreachable session was not marked unreachable: %#v", unreachable)
+	}
+	if unreachable.ExitCode != nil || unreachable.ExitedAt != nil || unreachable.ExitReason != "" {
+		t.Fatalf("an unreachable session carried invented exit details: %#v", unreachable)
+	}
+	if closed := byID[ended]; !closed.Exited || closed.Unreachable {
+		t.Fatalf("a session with a reaped status = %#v, want exited and not unreachable", closed)
+	}
+}
+
 func TestProviderActivityTimestampFlowsFromRecordClaudeLocked(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)

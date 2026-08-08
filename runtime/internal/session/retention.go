@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"sort"
 
@@ -32,6 +31,11 @@ type RetentionResult struct {
 // ArchiveClosed records an explicit user-selected batch. Unlike GCClosed it
 // has no age policy: the selected IDs are the policy. Live sessions and
 // ancestors with retained descendants are still refused.
+//
+// A session the daemon merely lost contact with is archivable once the probe
+// says its runner is not running. The user picked it out of a list and asked
+// for it; refusing because Sessions never saw an exit status would hand the
+// request back to the requester over a fact Sessions can check directly.
 func (m *Manager) ArchiveClosed(ctx context.Context, ids []string) (RetentionResult, error) {
 	result := RetentionResult{DryRun: false, Items: []RetentionItem{}}
 	if len(ids) == 0 {
@@ -69,10 +73,12 @@ func (m *Manager) ArchiveClosed(ctx context.Context, ids []string) (RetentionRes
 			reasons[id] = "record not found"
 		case lane.Archived:
 			reasons[id] = "already archived"
-		case !durablyClosed(lane):
-			reasons[id] = "session is still running"
-		case runtimeStillLive(m.registry, m.config, id):
+		case m.runtimeStillLive(id):
+			// The authoritative refusal, asked first: this session's runner
+			// process is running right now.
 			reasons[id] = "runner is still live"
+		case !durablyClosed(lane) && !lane.RunnerLost:
+			reasons[id] = "session is still running"
 		default:
 			targets[id] = struct{}{}
 		}
@@ -148,7 +154,7 @@ func (m *Manager) GCClosed(ctx context.Context, cutoffMS int64, dryRun bool) (Re
 		switch {
 		case closedAt > cutoffMS:
 			reasons[lane.LaneID] = "newer than retention cutoff"
-		case runtimeStillLive(m.registry, m.config, lane.LaneID):
+		case m.runtimeStillLive(lane.LaneID):
 			reasons[lane.LaneID] = "runner is still live"
 		default:
 			targets[lane.LaneID] = struct{}{}
@@ -211,26 +217,35 @@ func (m *Manager) GCClosed(ctx context.Context, cutoffMS int64, dryRun bool) (Re
 	return result, nil
 }
 
-func runtimeStillLive(registry *state.Registry, config state.Config, id string) bool {
-	session, ok := registry.Get(id)
-	if ok && !session.Info().Exited {
-		return true
-	}
-	for _, path := range []string{
-		state.For(config.RunnerStateDir, id).Socket,
-		state.RunnerPlistPath(config.LaunchAgentsDir, id),
-		state.LegacyRunnerPlistPath(config.LaunchAgentsDir, id),
-	} {
-		if _, err := os.Stat(path); err == nil {
+// runtimeStillLive answers whether a session's runner is running right now.
+//
+// It asks the process, not the filesystem. A socket file or a launch agent
+// plist is a leftover as often as it is a runner: launchd plists outlive the
+// process they started, sockets survive a crash, and a session that ends
+// without a clean teardown leaves both behind. Statting them and returning
+// true on any hit is how "archive from list doesn't work" happened -- an
+// already-closed session refused archiving with "runner is still live" because
+// a plist from days ago existed. Files may corroborate, they may not decide:
+// if the recorded PID is not this session's runner, the session is not live
+// however many artifacts remain on disk.
+func (m *Manager) runtimeStillLive(id string) bool {
+	if session, ok := m.registry.Get(id); ok {
+		info := session.Info()
+		// A registered, unreached session is not evidence of a live process:
+		// unreachable is exactly the state where the socket died and the
+		// process may or may not have. Fall through to the PID probe.
+		if !info.Exited && !info.Unreachable {
 			return true
 		}
 	}
-	metadata, err := state.ReadRunnerMetadata(filepath.Join(config.RunnerStateDir, id+".json"))
-	if err != nil || metadata.Info.PID <= 0 {
+	metadata, err := state.ReadRunnerMetadata(filepath.Join(m.config.RunnerStateDir, id+".json"))
+	if err != nil {
+		// No readable metadata means no PID to probe and no process this
+		// daemon is holding. There is nothing here to protect.
 		return false
 	}
-	return processAlive(metadata.Info.PID) &&
-		runnerCommandMatches(processCommand(metadata.Info.PID), id, metadata.Info.Cmd, metadata.Kind)
+	metadata.Info.ID = id
+	return m.runnerAlive(id, metadata.Info)
 }
 
 func hasRetainedDescendant(

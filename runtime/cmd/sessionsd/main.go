@@ -114,6 +114,11 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	// Sweep before discovery so the first pass sees a runner directory and a
+	// LaunchAgents directory that describe only sessions that might still be
+	// running. The sweep removes nothing for a session that is live, unknown,
+	// or starting; see Manager.SweepStaleRunnerArtifacts.
+	manager.SweepStaleRunnerArtifacts(context.Background())
 	go manager.RunDiscoveryLoop()
 	serveErrors := make(chan error, 1)
 	go func() {
