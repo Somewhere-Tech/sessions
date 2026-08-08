@@ -19,7 +19,8 @@ import {
   isAgentLedChild,
   isPinned,
   pinnedFirst,
-  pinnedSessionIds
+  pinnedSessionIds,
+  PIN_UNAVAILABLE_WHEN_ENDED
 } from '../lib/workingSet';
 import { useSessions } from '../store/sessions';
 import { MachineMark } from './MachineMark';
@@ -140,6 +141,9 @@ export function SessionNavigator({
 }: Props): JSX.Element {
   const archiveSessions = useSessions((state) => state.archive);
   const endSession = useSessions((state) => state.kill);
+  // The same store action the details panel's toggle calls. One write path, so
+  // pinning from the row and pinning from the panel cannot drift.
+  const updatePinned = useSessions((state) => state.updatePinned);
   const configuredMachines = useServers((state) => state.servers);
   const activeMachineId = useServers((state) => state.activeId);
   const selectMachine = useServers((state) => state.setActive);
@@ -157,6 +161,7 @@ export function SessionNavigator({
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
+  const [pinnedOpen, setPinnedOpen] = useState(true);
   const [runningOpen, setRunningOpen] = useState(true);
   const [endedOpen, setEndedOpen] = useState(false);
   const [showAllEnded, setShowAllEnded] = useState(false);
@@ -176,6 +181,7 @@ export function SessionNavigator({
   // dialog stayed open, and the only explanation was invisible.
   const [endError, setEndError] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
+  const [pinningId, setPinningId] = useState<string | null>(null);
 
   const selectMachineScope = (scope: MachineScope): void => {
     setMachineScopeState(scope);
@@ -210,6 +216,30 @@ export function SessionNavigator({
     }
   };
 
+  // Same shape as copyConversation and moveSession above: name the row that is
+  // in flight, clear the last error, close the menu, and put a failure where the
+  // tree already reports failures. It is deliberately NOT an optimistic write.
+  // A pin is a promise that the machinery will keep its hands off this session;
+  // painting it before the daemon stored it shows a protection the session does
+  // not have, which is the reason `store/sessions.ts` commits the daemon's
+  // answer rather than the requested value and the reason the details panel
+  // says the same thing. The user-visible outcome of a refusal is identical to
+  // an optimistic write that rolled back — nothing moved, and the reason is on
+  // screen — without the window in which the app lies about a safety property.
+  const togglePin = async (session: SessionInfo): Promise<void> => {
+    if (pinningId) return;
+    setPinningId(session.id);
+    setMoveError(null);
+    setActionMenuId(null);
+    try {
+      await updatePinned(session.id, !isPinned(session));
+    } catch (error) {
+      setMoveError(error instanceof Error ? error.message : 'Could not change the pin.');
+    } finally {
+      setPinningId(null);
+    }
+  };
+
   const sessionIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
   const endedSessionIds = useMemo(() => new Set(sessions.filter((session) => session.exited).map((session) => session.id)), [sessions]);
   useEffect(() => {
@@ -222,6 +252,7 @@ export function SessionNavigator({
     const searching = query.trim() !== '';
     if (searching || primary === 'needs' || primary === 'working') {
       setRunningOpen(true);
+      setPinnedOpen(true);
     }
     if (searching || primary === 'ended') setEndedOpen(true);
   }, [primary, query]);
@@ -296,9 +327,10 @@ export function SessionNavigator({
     () => groupWorkingSet(sessions, openSessionIds, pins),
     [openSessionIds, pins, sessions]
   );
-  // Pinned first, then the engagement order the list already had. A user with
-  // a hundred and eighty sessions cannot find their handful of real ones by
-  // eye, and this is the whole point of the mark.
+  // Engagement order, then pinned first. The pins now have their own section,
+  // so `pinnedFirst` is a no-op over the live roots and a cheap guard: if a pin
+  // ever failed to be lifted out, it still surfaces at the top rather than
+  // hiding among a hundred and eighty rows.
   const sortRoots = (items: SessionInfo[]): SessionInfo[] => pinnedFirst([...items].sort((a, b) => {
     return (subtreeHumanEngagement.get(b.id) ?? humanEngagementAt(b))
       - (subtreeHumanEngagement.get(a.id) ?? humanEngagementAt(a));
@@ -309,6 +341,8 @@ export function SessionNavigator({
   );
   const liveRoots = sortRoots([...grouped.runningRoots, ...grouped.setAsideRoots]
     .filter((session, index, items) => items.findIndex((item) => item.id === session.id) === index));
+  const pinnedIds = grouped.pinnedIds;
+  const pinnedRoots = sortRoots(grouped.pinnedRoots);
 
   const fleetSessions = useMemo(
     () => fleetSnapshots.flatMap((snapshot) => snapshot.sessions),
@@ -318,11 +352,17 @@ export function SessionNavigator({
   const projects = useMemo(() => [...new Set(scopedSessions.map(projectName).filter(Boolean))].sort(), [scopedSessions]);
   const counts = useMemo(() => ({
     needs: scopedSessions.filter(sessionNeedsYou).length,
+    // Everything the working set is holding, pinned or not. This is the number
+    // that answers "does this person have anything going on?", so it must not
+    // drop when a session moves into the Pinned group: pinning your only live
+    // session must not make the app behave as though that session ended.
     live: showingAllMachines
       ? scopedSessions.filter((session) => !session.exited).length
-      : sessions.filter((session) => liveIds.has(session.id)).length,
+      : sessions.filter((session) => liveIds.has(session.id) || pinnedIds.has(session.id)).length,
+    // The Live group's own rows. The pinned ones are counted under Pinned.
+    liveGroup: sessions.filter((session) => liveIds.has(session.id)).length,
     working: scopedSessions.filter((session) => session.working && !session.exited).length
-  }), [liveIds, scopedSessions, sessions, showingAllMachines]);
+  }), [liveIds, pinnedIds, scopedSessions, sessions, showingAllMachines]);
 
   const matches = (session: SessionInfo): boolean => {
     if (primary === 'needs' && !sessionNeedsYou(session)) return false;
@@ -348,6 +388,7 @@ export function SessionNavigator({
     .filter((child) => groupIds.has(child.id))
     .some((child) => !child.exited || hasLiveDescendant(child, groupIds));
   const filteredLiveRoots = liveRoots.filter((root) => treeMatches(root, liveIds));
+  const filteredPinnedRoots = pinnedRoots.filter((root) => treeMatches(root, pinnedIds));
   const filteredEnded = grouped.ended
     .filter(matches)
     .sort((left, right) => lastActivity(right) - lastActivity(left));
@@ -656,7 +697,9 @@ export function SessionNavigator({
                   }
                   const rect = event.currentTarget.getBoundingClientRect();
                   const width = 224;
-                  const estimatedHeight = 290;
+                  // Grew by one row when Pin/Unpin joined the menu; this only
+                  // decides whether the popover is flipped above the trigger.
+                  const estimatedHeight = 326;
                   setActionMenuPosition({
                     top: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - estimatedHeight - 8)),
                     left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))
@@ -677,6 +720,35 @@ export function SessionNavigator({
               >
                 <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.id); }}>{session.exited ? 'View history' : 'Open in tab'}</button>
                 {openSessionIds.includes(session.id) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onCloseView(session.id); }}>Close tab <small>keeps running</small></button> : null}
+                {/*
+                  * Pin / Unpin — named for the state it moves to, like every
+                  * other verb in this menu. It sits high because this is where
+                  * a person reaches to organize a row, and being absent here is
+                  * what made a shipped feature unreachable.
+                  *
+                  * On an ended session the item is shown DISABLED rather than
+                  * hidden. The daemon refuses it with 409 in both directions
+                  * (`UpdatePinned` checks `Exited` before reading the value),
+                  * so hiding it would be honest about the API and dishonest
+                  * about the product: an absent item reads as "this app cannot
+                  * pin", which is exactly the report that started this. Disabled
+                  * with the daemon's own reason names the verb that does work,
+                  * and Archive is two items below. AGENTS.md #4: explain the
+                  * failed operation and the safe next action.
+                  */}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="session-action-pin"
+                  disabled={session.exited || pinningId !== null}
+                  title={session.exited ? PIN_UNAVAILABLE_WHEN_ENDED : undefined}
+                  onClick={() => void togglePin(session)}
+                >
+                  {pinningId === session.id
+                    ? 'Saving…'
+                    : isPinned(session) ? 'Unpin' : 'Pin'}
+                  {session.exited ? <small>ended · archive instead</small> : null}
+                </button>
                 {end && canContinueSession(session) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onResumeSession(session); }}>Resume…</button> : null}
                 {providerName ? (
                   <details className="session-action-submenu">
@@ -889,9 +961,25 @@ export function SessionNavigator({
             </>
           ) : null}
         </div> : null}
+        {/*
+          * The user's own section, above everything a classifier decided. It
+          * appears only when there are pins: an empty "Pinned" header would be
+          * a permanent piece of furniture teaching nothing, and the row menu is
+          * where the feature is discovered.
+          *
+          * The count is the number of pins, not the number of rows — a pinned
+          * manager brings its children into the section, and "Pinned 6" for one
+          * marked session would be counting something the user did not mark.
+          */}
+        {!showingAllMachines && filteredPinnedRoots.length > 0 ? <div className="session-tree-group is-pinned">
+          <button type="button" className="session-tree-group-head" onClick={() => setPinnedOpen((current) => !current)}>
+            <span className="session-group-disclosure"><DisclosureChevron open={pinnedOpen} /> Pinned</span><strong>{pins.length}</strong>
+          </button>
+          {pinnedOpen ? filteredPinnedRoots.map((root) => renderNode(root, 0, false, pinnedIds)) : null}
+        </div> : null}
         {!showingAllMachines && primary !== 'ended' ? <div className="session-tree-group">
           <button type="button" className="session-tree-group-head" onClick={() => setRunningOpen((current) => !current)}>
-            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Live</span><strong>{counts.live}</strong>
+            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Live</span><strong>{counts.liveGroup}</strong>
           </button>
           {runningOpen ? (
             <>

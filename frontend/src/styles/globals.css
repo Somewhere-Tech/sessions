@@ -3782,6 +3782,11 @@ button.session-tree-group-head { width: 100%; }
 .session-tree-group-head .session-select-ended { flex: 0 0 auto; margin-left: 10px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px; font-weight: 600; }
 .session-tree-group-head .session-select-ended:hover { border-color: var(--accent-border-soft); color: var(--accent); }
 .session-tree-group.is-set-aside .session-tree-group-head { color: var(--fg-faint); }
+/* The section the user composed by hand reads as theirs, not as another
+   machine-made bucket. Same weight and metrics as every other group head —
+   only the colour says whose it is. */
+.session-tree-group.is-pinned .session-tree-group-head { color: var(--accent); }
+.session-tree-group.is-pinned .session-tree-group-head strong { color: var(--accent); }
 .session-group-attention { color: var(--warning); font-size: 12px; font-weight: 700; }
 .session-tree-label { display: flex; justify-content: space-between; padding: 6px 9px; }
 .session-nav-row {

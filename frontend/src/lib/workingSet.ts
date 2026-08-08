@@ -1,9 +1,14 @@
 import type { SessionInfo } from '../types';
 
 export interface WorkingSetGroups {
+  // The user's own group. A pinned session is here and nowhere else: it is
+  // removed from Live, from Quiet, and from Ended, so the navigator can render
+  // one labelled "Pinned" section and every session still appears exactly once.
+  pinnedRoots: SessionInfo[];
   runningRoots: SessionInfo[];
   setAsideRoots: SessionInfo[];
   ended: SessionInfo[];
+  pinnedIds: Set<string>;
   runningIds: Set<string>;
   setAsideIds: Set<string>;
 }
@@ -19,6 +24,14 @@ export function isSetAside(session: SessionInfo): boolean {
 export function isPinned(session: SessionInfo): boolean {
   return session.pinned === true;
 }
+
+// The daemon's own reason for refusing a pin on an ended conversation, in the
+// words it answers 409 with (`runtime/internal/session/manager.go`
+// `UpdatePinned`). Every surface that offers the pin says this one sentence, so
+// the row menu and the details panel cannot grow two different excuses.
+export const PIN_UNAVAILABLE_WHEN_ENDED = 'A pin exempts a live session from '
+  + 'automatic cleanup and cannot protect one that already ended. Archive it '
+  + 'instead.';
 
 export function pinnedSessionIds(sessions: SessionInfo[]): string[] {
   return sessions.filter(isPinned).map((session) => session.id);
@@ -57,6 +70,13 @@ export function isAgentLedChild(session: SessionInfo): boolean {
 // live non-aside descendants reachable by promoting them across a set-aside
 // ancestor, while retaining ended ancestors only when they are the path to
 // live work.
+//
+// Pinning outranks all of it. `docs/PHILOSOPHY.md`: a pin is the user marking a
+// workbench, and the machinery keeps its hands off it. The pinned sessions
+// therefore do not merely sort first inside whichever group the machinery chose
+// for them — they LEAVE that group and form their own, because a group the user
+// composed by hand is a different kind of thing from a group a classifier
+// composed, and burying one inside the other is what made the mark invisible.
 export function groupWorkingSet(
   sessions: SessionInfo[],
   openSessionIds: string[],
@@ -126,6 +146,35 @@ export function groupWorkingSet(
       open.has(child.id) || pinned.has(child.id) || runningIds.has(child.id)
     ));
   }
+
+  // ── The Pinned group ──────────────────────────────────────────────────────
+  // Built last, out of the groups above, so nothing about how the machinery
+  // classifies a session had to change: a pin only decides which section the
+  // session is finally filed under.
+  //
+  // A pinned session brings its children with it. The alternative — pin the
+  // parent, leave the children under Live — would show the same manager in two
+  // places at once and strand its delegates in a group their manager left, and
+  // "sessions with the same manager appear together" is the nesting rule the
+  // rest of this file already enforces (see the finished-descendant rollup
+  // above). The one exception is the one that already exists: a child the user
+  // explicitly moved to Later stays in Quiet, because that is also a mark the
+  // user made by hand and a pin on the parent does not overrule it.
+  const pinnedIds = new Set(sessions
+    .filter((session) => pinned.has(session.id))
+    .map((session) => session.id));
+  for (const session of sessions.filter((candidate) => pinnedIds.has(candidate.id))) {
+    includeDescendants(session, pinnedIds, (child) => (
+      isSetAside(child) && !open.has(child.id) && !pinned.has(child.id)
+    ));
+  }
+  // Exactly once in the tree: whatever the Pinned group holds, no other group
+  // may also hold.
+  for (const id of pinnedIds) {
+    runningIds.delete(id);
+    setAsideIds.delete(id);
+  }
+
   const rootsFor = (ids: Set<string>): SessionInfo[] => sessions.filter((session) => {
     if (!ids.has(session.id)) return false;
     const parentId = effectiveParentId(session);
@@ -133,9 +182,16 @@ export function groupWorkingSet(
   });
 
   return {
+    pinnedRoots: rootsFor(pinnedIds),
     runningRoots: rootsFor(runningIds),
     setAsideRoots: rootsFor(setAsideIds),
-    ended: sessions.filter((session) => session.exited && !runningIds.has(session.id)),
+    // An ended conversation the user pinned is still the user's; it belongs in
+    // Pinned rather than in the ended pile, which is the behaviour the pin
+    // already had when it kept such a record in focus.
+    ended: sessions.filter((session) => (
+      session.exited && !runningIds.has(session.id) && !pinnedIds.has(session.id)
+    )),
+    pinnedIds,
     runningIds,
     setAsideIds
   };
