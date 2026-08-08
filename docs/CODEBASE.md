@@ -329,10 +329,10 @@ caller. A user-created session is constrained unless full access is explicit.
 An agent-created child inherits the parent's exact Claude permission mode or
 Codex sandbox and approval flags; it cannot ask the daemon to promote itself.
 Explicit autonomous consent permits full-access agent children without changing
-already-running sessions. Agent children default to `task` lifecycle, while
-user-created conversations default to `session` lifecycle. A successful idle
-task is durably ended by `runtime/internal/session/idle.go`; failed or
-needs-input tasks remain visible and resumable.
+already-running sessions. Every new conversation, including an agent-created
+child, defaults to `session` lifecycle. A caller can explicitly mark a bounded
+`task`, but Sessions does not treat a provider's final response as permission to
+end it; lifecycle metadata stays visible to the manager that owns the decision.
 
 ### `agentcall`
 

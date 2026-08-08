@@ -6,11 +6,10 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
-// The session shape below is exactly the one scheduleTaskCompletion acts on: a
-// delegated task worker that finished cleanly and is idle. That sweep is the
-// only automatic terminator in the runtime today, and a pinned session must
-// survive it. This test holds the rule; wiring it into idle.go is the TODO in
-// pin.go, and this is what will fail loudly if the rule is ever inverted.
+// No automatic terminator exists today. This pins the standing rule for any
+// future cleanup policy: a user-marked live workbench is exempt, while an
+// unpinned session is merely eligible for a separately specified policy. This
+// helper does not itself decide that an eligible session should end.
 func TestAPinnedCompletedTaskIsExemptFromAutomaticEnd(t *testing.T) {
 	completedTask := state.SessionInfo{
 		ID:         "77777777-8888-4999-8aaa-bbbbbbbbbbbb",
@@ -18,12 +17,10 @@ func TestAPinnedCompletedTaskIsExemptFromAutomaticEnd(t *testing.T) {
 		IdleReason: state.IdleReasonCompleted,
 	}
 	if ExemptFromAutomaticEnd(completedTask) {
-		t.Fatal("an unpinned completed task claimed exemption; the aggressive sleep and " +
-			"retire policy for delegates is deliberate and must still apply")
+		t.Fatal("an unpinned task claimed the user-owned workbench exemption")
 	}
 	completedTask.Pinned = true
 	if !ExemptFromAutomaticEnd(completedTask) {
-		t.Fatal("a pinned session was not exempt from automatic termination — pinning is " +
-			"the user marking a workbench, and the machinery is supposed to keep its hands off it")
+		t.Fatal("a pinned session lost its standing exemption from future automatic cleanup")
 	}
 }

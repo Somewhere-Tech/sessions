@@ -63,7 +63,7 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 	if parent.Permissions != state.PermissionsConstrained || parent.Lifecycle != state.LifecycleSession {
 		t.Fatalf("root execution policy = permissions %q lifecycle %q", parent.Permissions, parent.Lifecycle)
 	}
-	if child.Permissions != state.PermissionsConstrained || child.Lifecycle != state.LifecycleTask {
+	if child.Permissions != state.PermissionsConstrained || child.Lifecycle != state.LifecycleSession {
 		t.Fatalf("delegated execution policy = permissions %q lifecycle %q", child.Permissions, child.Lifecycle)
 	}
 	userChild, err := manager.Create(context.Background(), state.CreateSessionRequest{
@@ -102,7 +102,7 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 		t.Fatalf("autonomous delegated execution = %#v", autonomous)
 	}
 	task, err := manager.Create(context.Background(), state.CreateSessionRequest{
-		Cmd: "/bin/sh", Cwd: root, CreatorSessionID: parent.ID,
+		Cmd: "/bin/sh", Cwd: root, CreatorSessionID: parent.ID, Lifecycle: state.LifecycleTask,
 	})
 	if err != nil {
 		t.Fatal(err)

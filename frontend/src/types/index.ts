@@ -84,8 +84,8 @@ export interface SessionInfo {
   // searchable, countable, and CLI-visible while set aside.
   setAsideAt?: number | null;
   // Daemon-owned workbench mark. A pinned session sorts first everywhere and
-  // is exempt from automatic termination. The daemon always sends it, so an
-  // undefined here means an older daemon that never learned the field.
+  // any future automatic cleanup policy must leave it alone. The daemon always
+  // sends it, so undefined means an older daemon that never learned the field.
   pinned?: boolean;
   creatorAncestry?: string[];
   rootCreatorKind?: string;

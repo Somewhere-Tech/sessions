@@ -25,12 +25,13 @@ choice visible in Settings and applied only to newly created children. Provider
 approval prompts are durable `needs-input` state for users and agents; Sessions
 does not clear them by blindly typing into a terminal.
 
-Short-lived agent workers should finish without becoming clutter. An
-agent-created task runtime may close after a successful final response, while
-its transcript, lineage, workspace, and usage remain durable. User-led sessions
-and explicitly long-lived manager sessions remain open until somebody ends
-them. A failed or blocked task stays visible because cleanup must never hide an
-unresolved decision.
+Agent-created children are durable sessions by default. A final response is not
+proof that the caller is done with the runtime: the child may own a server,
+watcher, follow-up context, or work the manager intends to revisit. A caller may
+explicitly declare a bounded `task`, but Sessions never infers permission to end
+one merely because its latest turn looks complete. Cleanup reduces clutter by
+grouping or archiving durable records; it must not hide unresolved decisions or
+silently terminate work.
 
 ## History is an agent-native memory layer
 
