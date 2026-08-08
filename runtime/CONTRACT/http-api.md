@@ -109,7 +109,9 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `tool` | `"claude-code" \| "codex" \| "terminal"` | classification derived from `cmd` |
 | `working` | boolean | current activity classification |
 | `lastDataAt` | number | Unix epoch milliseconds of latest PTY output |
-| `lastUserMessageAt` | number or null | latest real structured user-message time |
+| `lastUserMessageAt` | number or null | latest user-role record in the provider transcript. Transcript-derived, so it includes the provider's own internal injections — a scheduled prompt or cron tick is written straight into the transcript and is indistinguishable there from a person. Do not read it as human contact; use `lastHumanMessageAt` for that |
+| `lastHumanMessageAt` | number or null | Unix epoch milliseconds of the latest input that reached Sessions **without** source-session attribution: a person at a keyboard, a composer, an attached terminal, `sessions send` run by hand. Stamped at the input boundary, which a provider's internal injection never crosses. Null means no person has spoken into this session |
+| `lastAgentMessageAt` | number or null | Unix epoch milliseconds of the latest input that reached Sessions **with** source-session attribution (`X-Sessions-Creator-Session`), meaning one session relayed it to another. Null means no session has |
 | `idleReason` | `"never-started" \| "completed" \| "needs-input" \| "failed"`, optional | operator-facing reason the live session is not working |
 | `idleDetail` | string, optional | useful prompt or error line from idle classification |
 | `idleSince` | number, optional | Unix epoch milliseconds when the current idle outcome began |

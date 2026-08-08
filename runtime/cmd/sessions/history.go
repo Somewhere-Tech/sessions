@@ -142,6 +142,14 @@ type conversationRow struct {
 	// A conversation with no live session cannot be pinned, so this is absent
 	// rather than false on every historical row.
 	Pinned bool `json:"pinned,omitempty"`
+	// LastHumanMessageAtMS is when a person last spoke into this conversation
+	// through Sessions, which is a different fact from LastActiveAtMS: a lane
+	// driven entirely by its own scheduled prompts is active every half hour and
+	// has never been spoken to. It is present only for a conversation with a
+	// live session, because the daemon stamps it at its input boundary and has
+	// nowhere to keep it once the session is gone. Absent therefore means "not
+	// known here", not "never".
+	LastHumanMessageAtMS int64 `json:"last_human_message_at_ms,omitempty"`
 	// Hits and Snippets are only present when a query narrowed the browse, and
 	// say why this conversation is in the answer.
 	Hits     int      `json:"hits,omitempty"`
@@ -200,7 +208,9 @@ type historyFilters struct {
 	surfaceText string
 	actor       string
 	all         bool
-	explicit    bool // a tool was named, so the conversation-only default is off
+	// touched keeps only conversations a person actually spoke into.
+	touched  bool
+	explicit bool // a tool was named, so the conversation-only default is off
 }
 
 // wantsProvenance reports whether the caller narrowed on something only a
@@ -216,6 +226,7 @@ func (a *app) cmdHistory(args []string) error {
 		args = args[1:]
 	}
 	all := removeFirst(&args, "--all")
+	touched := removeFirst(&args, "--touched")
 	pick := removeFirst(&args, "--pick")
 	waitForPeers := removeFirst(&args, "--wait-for-peers")
 	previewCount, wantPreview, err := pluckOptionalCount(&args, "--preview", historyDefaultPreview, historyMaxPreview)
@@ -250,7 +261,7 @@ func (a *app) cmdHistory(args []string) error {
 		name, hasName = lane, true
 	}
 
-	filters := historyFilters{all: all}
+	filters := historyFilters{all: all, touched: touched}
 	if hasTool {
 		filters.tool = strings.ToLower(strings.TrimSpace(tool))
 		if filters.tool != "claude" && filters.tool != "codex" && filters.tool != "shell" {
@@ -347,6 +358,17 @@ func (a *app) cmdHistory(args []string) error {
 	answered := machinesReportingProvenance(candidates)
 	rows, withoutProvenance := filterConversations(rows, filters)
 	sort.SliceStable(rows, func(i, j int) bool {
+		// Under --touched the question is "what did I last speak to", so the
+		// order is human recency. Ordering those rows by transcript activity
+		// would put the lane whose own cron fired a minute ago above the one the
+		// user was actually talking to an hour ago, which is the confusion the
+		// filter exists to end.
+		if filters.touched {
+			if rows[i].LastHumanMessageAtMS != rows[j].LastHumanMessageAtMS {
+				return rows[i].LastHumanMessageAtMS > rows[j].LastHumanMessageAtMS
+			}
+			return rows[i].Reference < rows[j].Reference
+		}
 		if rows[i].LastActiveAtMS != rows[j].LastActiveAtMS {
 			return rows[i].LastActiveAtMS > rows[j].LastActiveAtMS
 		}
@@ -497,7 +519,11 @@ type historyTargetOutcome struct {
 	// pinned is read from the same listing as live, because a pin is a fact
 	// about a running session and only a running session can carry one.
 	pinned map[string]bool
-	took   time.Duration
+	// humanAt is when a person last spoke into the live session, read from the
+	// same listing for the same reason: the daemon stamps it at its own input
+	// boundary, so only a session it still holds can answer.
+	humanAt map[string]int64
+	took    time.Duration
 	err    error
 }
 
@@ -670,6 +696,7 @@ func (a *app) collectConversations(targets []fleetTarget, waitForPeers bool) (co
 		for _, session := range outcome.listing.Sessions {
 			collected.rows = append(collected.rows, conversationRow{
 				target: index, Pinned: outcome.pinned[session.ID],
+				LastHumanMessageAtMS: outcome.humanAt[session.ID],
 			}.fill(target.Alias, qualify, session, outcome.live[session.ID]))
 		}
 	}
@@ -711,7 +738,9 @@ func withheldFromLastListing(
 func readTargetConversations(
 	target fleetTarget, index int, timeout time.Duration,
 ) (outcome historyTargetOutcome) {
-	outcome = historyTargetOutcome{index: index, live: map[string]bool{}, pinned: map[string]bool{}}
+	outcome = historyTargetOutcome{
+		index: index, live: map[string]bool{}, pinned: map[string]bool{}, humanAt: map[string]int64{},
+	}
 	started := time.Now()
 	defer func() { outcome.took = time.Since(started) }()
 	// The running set is read first because it is the cheap call: if this
@@ -725,6 +754,9 @@ func readTargetConversations(
 		if !value.Exited {
 			outcome.live[value.ID] = true
 			outcome.pinned[value.ID] = value.Pinned
+			if value.LastHumanMessageAt != nil {
+				outcome.humanAt[value.ID] = *value.LastHumanMessageAt
+			}
 		}
 	}
 	outcome.err = getJSONFromClient(target.Client, "/api/history", &outcome.listing, timeout)
@@ -963,6 +995,12 @@ func filterConversations(
 			}
 		}
 		if len(filters.sessions) > 0 && !matchesAnyConversationID(row, filters.sessions) {
+			continue
+		}
+		// A conversation nobody has spoken into cannot be one somebody has, and
+		// a conversation with no live session cannot say either way, so both are
+		// excluded rather than guessed at.
+		if filters.touched && row.LastHumanMessageAtMS <= 0 {
 			continue
 		}
 		// A conversation with no recorded activity time cannot be placed on a
@@ -1718,4 +1756,4 @@ func truncateRunes(value string, limit int) string {
 	return strings.TrimSpace(string(runes[:limit-1])) + "…"
 }
 
-const historyUsageText = "usage: sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [--pick] [-n N] [--all] [--wait-for-peers] [--json]\nWHEN accepts today, yesterday, a span like 3d or 6h, YYYY-MM-DD, or RFC3339. SURFACE is codex-cli, codex-desktop, codex-exec, claude-cli, claude-desktop, claude-sdk, sessions, or the raw value a provider recorded. A QUERY, when given, comes FIRST, before any flags"
+const historyUsageText = "usage: sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--touched] [--preview [N]] [--pick] [-n N] [--all] [--wait-for-peers] [--json]\nWHEN accepts today, yesterday, a span like 3d or 6h, YYYY-MM-DD, or RFC3339. SURFACE is codex-cli, codex-desktop, codex-exec, claude-cli, claude-desktop, claude-sdk, sessions, or the raw value a provider recorded. A QUERY, when given, comes FIRST, before any flags"

@@ -1189,6 +1189,14 @@ func (m *Manager) Input(ctx context.Context, id, data string) bool {
 	if !m.registry.Input(ctx, id, data) {
 		return false
 	}
+	// This is the unattributed door, and everything a person sends comes
+	// through it: the HTTP input and submit routes, the WebSocket mux, an
+	// attached terminal, `sessions send` typed by hand. Stamping here rather
+	// than in each of those surfaces is what makes the answer complete by
+	// construction, and it is deliberately not the transcript, because a
+	// provider's own scheduled injections are written straight into the
+	// transcript and never arrive here at all.
+	m.registry.RecordInputPrincipal(id, state.PrincipalHuman, data)
 	m.afterInput(ctx, id, data, ledger.ActivityHumanInput)
 	return true
 }
@@ -1270,6 +1278,11 @@ func (m *Manager) InputAttributed(ctx context.Context, id, data string, attribut
 	if !m.registry.Input(ctx, id, data) {
 		return &MessageInputUnavailableError{SessionID: id}
 	}
+	// Attribution is what makes this an agent's message rather than a person's,
+	// and the stamp is taken here rather than after the ledger commit below: the
+	// provider already has the bytes, so the message happened whether or not the
+	// authorship record does.
+	m.registry.RecordInputPrincipal(id, state.PrincipalAgent, data)
 	m.clearIdleAfterInput(id)
 	exact := sha256.Sum256([]byte(data))
 	normalizedText := strings.TrimSpace(data)

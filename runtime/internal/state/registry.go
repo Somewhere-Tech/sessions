@@ -69,6 +69,8 @@ type SessionMetadata struct {
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
 	Pinned                 bool
+	LastHumanMessageAt     *int64
+	LastAgentMessageAt     *int64
 	DelegationKind         string
 	Permissions            string
 	Lifecycle              string
@@ -450,8 +452,10 @@ func (r *Registry) RegisterMetadata(ctx context.Context, runner proto.Runner, me
 		Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), Pinned: metadata.Pinned,
-		DelegationKind: metadata.DelegationKind,
-		Permissions:    metadata.Permissions, Lifecycle: metadata.Lifecycle,
+		LastHumanMessageAt: cloneInt64Pointer(metadata.LastHumanMessageAt),
+		LastAgentMessageAt: cloneInt64Pointer(metadata.LastAgentMessageAt),
+		DelegationKind:     metadata.DelegationKind,
+		Permissions:        metadata.Permissions, Lifecycle: metadata.Lifecycle,
 		OnIdle: onIdle, Kind: metadata.Kind, SpecPath: metadata.SpecPath,
 		Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
@@ -1041,12 +1045,14 @@ func launchdPath(value string) string {
 func writeMetadata(dir string, info proto.RunnerInfo, sessionMetadata SessionMetadata) error {
 	metadata := Metadata{
 		ID: info.ID, Name: sessionMetadata.Name, NameSource: sessionMetadata.NameSource,
-		Description: sessionMetadata.Description,
+		Description:       sessionMetadata.Description,
 		DescriptionSource: sessionMetadata.DescriptionSource, Kind: sessionMetadata.Kind, SpecPath: sessionMetadata.SpecPath,
 		Tags: CloneTags(sessionMetadata.Tags), DisplayParentSessionID: cloneStringPointer(sessionMetadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(sessionMetadata.SetAsideAt), Pinned: sessionMetadata.Pinned,
-		DelegationKind: sessionMetadata.DelegationKind,
-		Permissions:    sessionMetadata.Permissions, Lifecycle: sessionMetadata.Lifecycle,
+		LastHumanMessageAt: cloneInt64Pointer(sessionMetadata.LastHumanMessageAt),
+		LastAgentMessageAt: cloneInt64Pointer(sessionMetadata.LastAgentMessageAt),
+		DelegationKind:     sessionMetadata.DelegationKind,
+		Permissions:        sessionMetadata.Permissions, Lifecycle: sessionMetadata.Lifecycle,
 		Profile: sessionMetadata.Profile, ConfigDir: sessionMetadata.ConfigDir,
 		ContinuedFromHistoryID: sessionMetadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  sessionMetadata.ContinuedFromProvider,
@@ -1075,6 +1081,8 @@ type RunnerMetadata struct {
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
 	Pinned                 bool
+	LastHumanMessageAt     *int64
+	LastAgentMessageAt     *int64
 	DelegationKind         string
 	Permissions            string
 	Lifecycle              string
@@ -1116,8 +1124,10 @@ func parseRunnerMetadata(encoded []byte) (RunnerMetadata, error) {
 		Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), Pinned: metadata.Pinned,
-		DelegationKind: metadata.DelegationKind,
-		Permissions:    metadata.Permissions, Lifecycle: metadata.Lifecycle,
+		LastHumanMessageAt: cloneInt64Pointer(metadata.LastHumanMessageAt),
+		LastAgentMessageAt: cloneInt64Pointer(metadata.LastAgentMessageAt),
+		DelegationKind:     metadata.DelegationKind,
+		Permissions:        metadata.Permissions, Lifecycle: metadata.Lifecycle,
 		Kind: metadata.Kind, SpecPath: metadata.SpecPath, Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  metadata.ContinuedFromProvider,
