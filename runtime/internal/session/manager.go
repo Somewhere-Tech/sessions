@@ -22,6 +22,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
+	"github.com/somewhere-tech/sessions/runtime/internal/resource"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
@@ -103,6 +104,18 @@ type ManagerOptions struct {
 	NotifyWaitingDelay time.Duration
 	NotifyCooldown     time.Duration
 	ListCodexModels    func(context.Context, string) ([]codexapp.Model, error)
+	// ResourceEnumerator is the process-table source used to measure what each
+	// session costs the machine. nil means this platform's real one; tests
+	// inject a fabricated table through it.
+	ResourceEnumerator resource.Enumerator
+	// ResourceInterval is the floor between whole-machine samples. It is a
+	// floor, not a schedule: sampling rides the activity tick, so the real
+	// spacing is the next tick at or after this interval.
+	ResourceInterval time.Duration
+	// ResourceClock is the clock the CPU rate is measured against. nil means
+	// time.Now. Tests set it so elapsed time is exact instead of wall-clock
+	// dependent.
+	ResourceClock func() time.Time
 }
 
 type UsageRecorder interface {
@@ -178,6 +191,18 @@ type Manager struct {
 	mu       sync.Mutex
 	runtimes map[string]*runtimeSession
 	hooks    globalHooks
+
+	// resources is the per-session memory and CPU sampler. It rides the
+	// activity loop rather than owning a goroutine, and it is guarded by
+	// resourceMu because Close and the loop can both touch the schedule.
+	resources        *resource.Tracker
+	resourceInterval time.Duration
+	resourceClock    func() time.Time
+	resourceMu       sync.Mutex
+	resourceSampled  time.Time
+	// resourceFailed suppresses repeated logging of the same enumeration
+	// failure. A platform that cannot sample says so once, not every tick.
+	resourceFailed bool
 }
 
 type laneDeathBurst struct {
@@ -240,6 +265,15 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 	if selected.ProcessCommand == nil {
 		selected.ProcessCommand = processCommand
 	}
+	if selected.ResourceEnumerator == nil {
+		selected.ResourceEnumerator = resource.SystemEnumerator()
+	}
+	if selected.ResourceInterval <= 0 {
+		selected.ResourceInterval = resource.DefaultInterval
+	}
+	if selected.ResourceClock == nil {
+		selected.ResourceClock = time.Now
+	}
 	root := config.UserStateRoot
 	if root == "" {
 		root = config.StateRoot
@@ -257,6 +291,9 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 		laneDeaths: make(map[string]laneDeathBurst), notifications: make(map[string]*sessionNotificationState),
 		completionGeneration: make(map[string]uint64),
 	}
+	manager.resources = resource.NewTracker(selected.ResourceEnumerator, selected.ResourceClock)
+	manager.resourceInterval = selected.ResourceInterval
+	manager.resourceClock = selected.ResourceClock
 	manager.listModels = selected.ListCodexModels
 	if manager.listModels == nil {
 		manager.listModels = listLiveCodexModels
@@ -1624,7 +1661,86 @@ func (m *Manager) activityLoop() {
 			for _, runtime := range runtimes {
 				runtime.tick()
 			}
+			m.sampleResources()
 		}
+	}
+}
+
+// sampleResources measures what every live session costs the machine.
+//
+// It rides the activity tick rather than owning a goroutine of its own, and it
+// rides it for both the reasons that matter. A goroutine per session would put
+// two hundred timers on a machine that is already the thing being measured,
+// which is self-defeating; and one pass costs one walk of the process table
+// whatever the session count, so the work here is flat in sessions, not linear.
+// The activity tick is sub-second, so the interval gate is what actually sets
+// the sampling rate.
+//
+// Every live session is passed to the tracker, including ones with no process.
+// The tracker answers "unknown" for those and SetResources clears their fields,
+// which is the whole point: a session that lost its process must stop reporting
+// the memory it held when it was last seen.
+// SampleResources takes one sample immediately, outside the interval gate.
+// The activity loop is the normal caller through sampleResources; this is the
+// entry point for a caller that needs a measurement now rather than at the
+// next tick, and it is how tests drive sampling deterministically.
+func (m *Manager) SampleResources() {
+	m.resourceMu.Lock()
+	m.resourceSampled = time.Time{}
+	m.resourceMu.Unlock()
+	m.sampleResources()
+}
+
+func (m *Manager) sampleResources() {
+	now := m.resourceClock()
+	m.resourceMu.Lock()
+	if !m.resourceSampled.IsZero() && now.Sub(m.resourceSampled) < m.resourceInterval {
+		m.resourceMu.Unlock()
+		return
+	}
+	m.resourceSampled = now
+	m.resourceMu.Unlock()
+
+	infos := m.registry.List(false)
+	roots := make(map[string]int, len(infos))
+	for _, info := range infos {
+		roots[info.ID] = info.PID
+	}
+	samples, err := m.resources.Sample(roots)
+	if err != nil {
+		m.resourceMu.Lock()
+		alreadyReported := m.resourceFailed
+		m.resourceFailed = true
+		m.resourceMu.Unlock()
+		if !alreadyReported {
+			log.Printf("[resource] cannot read the process table, so session memory and CPU stay unknown: %v", err)
+		}
+		// Leaving the previous numbers in place would present the last
+		// successful sample as current. Clear every session to unknown; the
+		// sampledAt timestamp goes with them.
+		for _, info := range infos {
+			if session, ok := m.registry.Get(info.ID); ok {
+				session.SetResources(state.ResourceSample{})
+			}
+		}
+		return
+	}
+	m.resourceMu.Lock()
+	m.resourceFailed = false
+	m.resourceMu.Unlock()
+	for id, sample := range samples {
+		session, ok := m.registry.Get(id)
+		if !ok {
+			continue
+		}
+		session.SetResources(state.ResourceSample{
+			Known:      sample.Known,
+			MemoryByte: sample.RSSBytes,
+			Processes:  sample.Processes,
+			CPUPercent: sample.CPUPercent,
+			CPUKnown:   sample.CPUKnown,
+			At:         sample.At,
+		})
 	}
 }
 

@@ -6,6 +6,7 @@ import { canContinueSession, classifySession, endedAtLabel, endedSummary, type S
 import { sessionModeName } from '../lib/sessionMode';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import { useSessions } from '../store/sessions';
+import { PIN_UNAVAILABLE_WHEN_ENDED } from '../lib/workingSet';
 
 // Long-form expansions of the classifier's one-word state. Same ordering,
 // same meaning — this view has room for a sentence, not a different answer.
@@ -93,21 +94,31 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
           <Row label="Account" value={session.profile || 'Default account'} />
           <Row label="Model" value={session.model || 'Provider default'} />
           <Row label="Effort" value={session.effort || 'Provider default'} />
-          {session.exited ? null : (
-            <label className="settings-toggle details-pin-toggle">
-              <span>
-                <strong>Pinned</strong>
-                <small>Keeps this session at the top of every list and out of reach of automatic cleanup. It never stops you ending it yourself.</small>
-              </span>
-              <input
-                type="checkbox"
-                checked={session.pinned === true}
-                disabled={pinning}
-                aria-label="Pin this session"
-                onChange={(event) => void togglePin(event.currentTarget.checked)}
-              />
-            </label>
-          )}
+          {/*
+            * The pin is offered here and in the navigator's row menu, through
+            * the same store action, and on an ended session both surfaces say
+            * the same thing rather than one hiding the control and the other
+            * disabling it. Hiding it here used to make the mark look absent on
+            * exactly the records where a user most wants to know what happened
+            * to it — including a session that was pinned before it ended.
+            */}
+          <label className="settings-toggle details-pin-toggle">
+            <span>
+              <strong>Pinned</strong>
+              <small>
+                {session.exited
+                  ? PIN_UNAVAILABLE_WHEN_ENDED
+                  : 'Keeps this session in its own group at the top of every list and out of reach of automatic cleanup. It never stops you ending it yourself.'}
+              </small>
+            </span>
+            <input
+              type="checkbox"
+              checked={session.pinned === true}
+              disabled={pinning || session.exited}
+              aria-label="Pin this session"
+              onChange={(event) => void togglePin(event.currentTarget.checked)}
+            />
+          </label>
           {pinError ? <p className="session-control-error" role="alert">{pinError}</p> : null}
         </DetailsCard>
         <DetailsCard title="Workspace">

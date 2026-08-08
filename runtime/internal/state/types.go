@@ -18,6 +18,30 @@ func cloneInt64Pointer(value *int64) *int64 {
 	return &cloned
 }
 
+func cloneUint64Pointer(value *uint64) *uint64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneFloat64Pointer(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneIntPointer(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 type SessionTool string
 
 const (
@@ -147,7 +171,31 @@ type SessionInfo struct {
 	// omitempty, matching working and exited rather than fast, because an agent
 	// choosing what to end has to tell "this session is not pinned" from "this
 	// daemon never told me", and an omitted field reads as both.
-	Pinned             bool     `json:"pinned"`
+	Pinned bool `json:"pinned"`
+	// MemoryBytes, CPUPercent and ResourceProcesses are what this session costs
+	// the machine: resident memory across its whole process tree, percent of
+	// one core burned since the previous sample, and how many processes those
+	// two numbers cover.
+	//
+	// All three are pointers, and that is the point of them. A session with no
+	// live process, a process the OS refused to describe, and a first sample
+	// with nothing to subtract from are all genuinely unknown, and a reader
+	// that cannot tell unknown from zero will conclude a machine is idle when
+	// it is paging. nil is the only honest encoding of "Sessions does not
+	// know"; omitempty keeps it off the wire entirely rather than sending a
+	// null that a lenient client would coerce to 0.
+	//
+	// CPUPercent is a rate measured between two samples, never a lifetime
+	// average. 100 is one core saturated; a tree spanning cores reads above
+	// 100. See internal/resource.
+	MemoryBytes       *uint64  `json:"memoryBytes,omitempty"`
+	CPUPercent        *float64 `json:"cpuPercent,omitempty"`
+	ResourceProcesses *int     `json:"resourceProcesses,omitempty"`
+	// ResourceSampledAt is when the three fields above were measured, in unix
+	// milliseconds. It travels with them because a sample is only ever as
+	// current as the last tick, and a listing that presents a stale number as
+	// live is the same category of lie as presenting unknown as zero.
+	ResourceSampledAt  *int64   `json:"resourceSampledAt,omitempty"`
 	CreatorAncestry    []string `json:"creator_ancestry,omitempty"`
 	RootCreatorKind    string   `json:"root_creator_kind,omitempty"`
 	RootCreatorID      string   `json:"root_creator_id,omitempty"`

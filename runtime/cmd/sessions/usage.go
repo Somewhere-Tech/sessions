@@ -21,6 +21,15 @@ func (a *app) cmdUsage(args []string) error {
 	until, hasUntil := pluck(&args, "--until")
 	provider, hasProvider := pluck(&args, "--provider")
 	dimension, hasDimension := pluck(&args, "--dimension")
+	// The obvious thing to try, given that this is the command that reports
+	// what a session spent. Point at the command that answers it instead of
+	// refusing with "unknown option", which leaves the caller to guess whether
+	// the capability exists at all.
+	for _, argument := range args {
+		if argument == "--resources" || argument == "--resource" {
+			return fail(1, "usage reports tokens and cost over a period; machine memory and CPU are a live measurement with no history. Run `sessions resources`.")
+		}
+	}
 	if len(args) != 0 {
 		return fail(1, "unknown usage option: %s\n%s", args[0], usageUsageText)
 	}

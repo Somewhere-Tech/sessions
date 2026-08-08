@@ -15,76 +15,80 @@ import (
 )
 
 type session struct {
-	ID                 string            `json:"id"`
-	Name               string            `json:"name,omitempty"`
-	Description        string            `json:"description"`
-	DescriptionSource  string            `json:"description_source,omitempty"`
-	Tags               map[string]string `json:"tags,omitempty"`
-	Kind               string            `json:"kind,omitempty"`
-	Cmd                string            `json:"cmd"`
-	Args               []string          `json:"args"`
-	Cwd                string            `json:"cwd"`
-	Profile            string            `json:"profile,omitempty"`
-	ConfigDir          string            `json:"config_dir,omitempty"`
-	WorktreePath       string            `json:"worktree_path,omitempty"`
-	Branch             string            `json:"branch,omitempty"`
-	Base               string            `json:"base,omitempty"`
-	SourceRepo         string            `json:"source_repo,omitempty"`
-	Cols               int               `json:"cols"`
-	Rows               int               `json:"rows"`
-	CreatedAt          int64             `json:"createdAt"`
-	PID                int               `json:"pid"`
-	RunnerProtocol     int               `json:"runnerProtocol"`
-	RunnerVersion      string            `json:"runnerVersion,omitempty"`
-	Tool               string            `json:"tool"`
-	Working            bool              `json:"working"`
-	LastDataAt         int64             `json:"lastDataAt"`
-	LastUserMessageAt  *int64            `json:"lastUserMessageAt"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name,omitempty"`
+	Description       string            `json:"description"`
+	DescriptionSource string            `json:"description_source,omitempty"`
+	Tags              map[string]string `json:"tags,omitempty"`
+	Kind              string            `json:"kind,omitempty"`
+	Cmd               string            `json:"cmd"`
+	Args              []string          `json:"args"`
+	Cwd               string            `json:"cwd"`
+	Profile           string            `json:"profile,omitempty"`
+	ConfigDir         string            `json:"config_dir,omitempty"`
+	WorktreePath      string            `json:"worktree_path,omitempty"`
+	Branch            string            `json:"branch,omitempty"`
+	Base              string            `json:"base,omitempty"`
+	SourceRepo        string            `json:"source_repo,omitempty"`
+	Cols              int               `json:"cols"`
+	Rows              int               `json:"rows"`
+	CreatedAt         int64             `json:"createdAt"`
+	PID               int               `json:"pid"`
+	RunnerProtocol    int               `json:"runnerProtocol"`
+	RunnerVersion     string            `json:"runnerVersion,omitempty"`
+	Tool              string            `json:"tool"`
+	Working           bool              `json:"working"`
+	LastDataAt        int64             `json:"lastDataAt"`
+	LastUserMessageAt *int64            `json:"lastUserMessageAt"`
 	// LastHumanMessageAt and LastAgentMessageAt are the daemon's own record of
 	// who spoke, stamped at the input boundary. LastUserMessageAt is read back
 	// out of the provider transcript and counts the provider's internal
 	// injections as user turns, so it is not the answer to "did a person touch
 	// this".
-	LastHumanMessageAt *int64            `json:"lastHumanMessageAt"`
-	LastAgentMessageAt *int64            `json:"lastAgentMessageAt"`
-	IdleReason         string            `json:"idleReason,omitempty"`
-	IdleDetail         string            `json:"idleDetail,omitempty"`
-	IdleSince          *int64            `json:"idleSince,omitempty"`
-	LastSummary        string            `json:"lastSummary,omitempty"`
-	Model              string            `json:"model,omitempty"`
-	Effort             string            `json:"effort,omitempty"`
-	Exited             bool              `json:"exited"`
-	ExitCode           *int              `json:"exitCode"`
-	ExitSignal         *string           `json:"exitSignal"`
-	ExitedAt           *int64            `json:"exitedAt"`
-	ConversationID     string            `json:"conversationId,omitempty"`
-	RemoteEndpoint     string            `json:"remoteEndpoint,omitempty"`
-	ClaudeSessionID    string            `json:"claudeSessionId,omitempty"`
-	CreatorKind        string            `json:"creator_kind,omitempty"`
-	CreatorID          string            `json:"creator_id,omitempty"`
-	ParentSessionID    string            `json:"parent_session_id,omitempty"`
-	DelegationKind     string            `json:"delegation_kind,omitempty"`
-	Permissions        string            `json:"permissions,omitempty"`
-	Lifecycle          string            `json:"lifecycle,omitempty"`
-	SetAsideAt         *int64            `json:"setAsideAt,omitempty"`
-	Pinned             bool              `json:"pinned"`
-	CreatorAncestry    []string          `json:"creator_ancestry,omitempty"`
-	RootCreatorKind    string            `json:"root_creator_kind,omitempty"`
-	RootCreatorID      string            `json:"root_creator_id,omitempty"`
-	ProvenanceStatus   string            `json:"provenance_status,omitempty"`
-	ReopenedAs         string            `json:"reopened_as,omitempty"`
-	ResumedFrom        string            `json:"resumed_from,omitempty"`
-	MovedToEndpoint    string            `json:"moved_to_endpoint,omitempty"`
-	MovedToSessionID   string            `json:"moved_to_session_id,omitempty"`
-	MovedFromEndpoint  string            `json:"moved_from_endpoint,omitempty"`
-	MovedFromSessionID string            `json:"moved_from_session_id,omitempty"`
-	EndedByKind        string            `json:"ended_by_kind,omitempty"`
-	EndedByID          string            `json:"ended_by_id,omitempty"`
-	EndedByName        string            `json:"ended_by_name,omitempty"`
-	EndedByClient      string            `json:"ended_by_client,omitempty"`
-	EndReason          string            `json:"end_reason,omitempty"`
-	EndOperationID     string            `json:"end_operation_id,omitempty"`
-	Extra              json.RawMessage   `json:"-"`
+	LastHumanMessageAt *int64          `json:"lastHumanMessageAt"`
+	LastAgentMessageAt *int64          `json:"lastAgentMessageAt"`
+	MemoryBytes        *uint64         `json:"memoryBytes,omitempty"`
+	CPUPercent         *float64        `json:"cpuPercent,omitempty"`
+	ResourceProcesses  *int            `json:"resourceProcesses,omitempty"`
+	ResourceSampledAt  *int64          `json:"resourceSampledAt,omitempty"`
+	IdleReason         string          `json:"idleReason,omitempty"`
+	IdleDetail         string          `json:"idleDetail,omitempty"`
+	IdleSince          *int64          `json:"idleSince,omitempty"`
+	LastSummary        string          `json:"lastSummary,omitempty"`
+	Model              string          `json:"model,omitempty"`
+	Effort             string          `json:"effort,omitempty"`
+	Exited             bool            `json:"exited"`
+	ExitCode           *int            `json:"exitCode"`
+	ExitSignal         *string         `json:"exitSignal"`
+	ExitedAt           *int64          `json:"exitedAt"`
+	ConversationID     string          `json:"conversationId,omitempty"`
+	RemoteEndpoint     string          `json:"remoteEndpoint,omitempty"`
+	ClaudeSessionID    string          `json:"claudeSessionId,omitempty"`
+	CreatorKind        string          `json:"creator_kind,omitempty"`
+	CreatorID          string          `json:"creator_id,omitempty"`
+	ParentSessionID    string          `json:"parent_session_id,omitempty"`
+	DelegationKind     string          `json:"delegation_kind,omitempty"`
+	Permissions        string          `json:"permissions,omitempty"`
+	Lifecycle          string          `json:"lifecycle,omitempty"`
+	SetAsideAt         *int64          `json:"setAsideAt,omitempty"`
+	Pinned             bool            `json:"pinned"`
+	CreatorAncestry    []string        `json:"creator_ancestry,omitempty"`
+	RootCreatorKind    string          `json:"root_creator_kind,omitempty"`
+	RootCreatorID      string          `json:"root_creator_id,omitempty"`
+	ProvenanceStatus   string          `json:"provenance_status,omitempty"`
+	ReopenedAs         string          `json:"reopened_as,omitempty"`
+	ResumedFrom        string          `json:"resumed_from,omitempty"`
+	MovedToEndpoint    string          `json:"moved_to_endpoint,omitempty"`
+	MovedToSessionID   string          `json:"moved_to_session_id,omitempty"`
+	MovedFromEndpoint  string          `json:"moved_from_endpoint,omitempty"`
+	MovedFromSessionID string          `json:"moved_from_session_id,omitempty"`
+	EndedByKind        string          `json:"ended_by_kind,omitempty"`
+	EndedByID          string          `json:"ended_by_id,omitempty"`
+	EndedByName        string          `json:"ended_by_name,omitempty"`
+	EndedByClient      string          `json:"ended_by_client,omitempty"`
+	EndReason          string          `json:"end_reason,omitempty"`
+	EndOperationID     string          `json:"end_operation_id,omitempty"`
+	Extra              json.RawMessage `json:"-"`
 }
 
 type sessionsResponse struct {
@@ -272,6 +276,7 @@ func (a *app) cmdLS(args []string) error {
 	showProfile := recordsHaveProfiles(records)
 	showPin := recordsHavePins(records)
 	showLastHuman := recordsHaveHumanMessages(records)
+	showResources := recordsHaveResources(records)
 	header := []string{"ID", "NAME", "DESC", "TOOL"}
 	if showProfile {
 		header = append(header, "PROFILE")
@@ -290,6 +295,9 @@ func (a *app) cmdLS(args []string) error {
 		header = append(header, "LAST-HUMAN")
 	}
 	header = append(header, "PID")
+	if showResources {
+		header = append(header, "MEM", "CPU")
+	}
 	rows := [][]string{header}
 	for _, record := range records {
 		value := record.value
@@ -310,6 +318,9 @@ func (a *app) cmdLS(args []string) error {
 			row = append(row, a.lastHumanAge(value))
 		}
 		row = append(row, strconv.Itoa(value.PID))
+		if showResources {
+			row = append(row, formatMemory(value.MemoryBytes), formatCPUPercent(value.CPUPercent))
+		}
 		rows = append(rows, row)
 	}
 	return writePaddedRows(a.stdout, rows)

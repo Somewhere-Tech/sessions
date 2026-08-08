@@ -41,6 +41,7 @@ try {
   assert.deepEqual(grouped.runningRoots.map(({ id }) => id), ['live-child', 'ended-manager']);
   assert.deepEqual(grouped.setAsideRoots.map(({ id }) => id), ['aside-manager']);
   assert.deepEqual(grouped.ended.map(({ id }) => id), ['ended-alone']);
+  assert.deepEqual(grouped.pinnedRoots.map(({ id }) => id), [], 'no pins, no Pinned group');
   assert.equal(grouped.runningIds.has('live-grandchild'), true);
   assert.equal(grouped.runningIds.has('finished-child'), true, 'finished children stay grouped under an in-focus manager');
   assert.equal(grouped.setAsideIds.has('aside-child'), true);
@@ -49,9 +50,15 @@ try {
   assert.equal(opened.runningIds.has('aside-manager'), true);
   assert.equal(opened.setAsideIds.has('aside-manager'), false);
 
+  // A pin lifts a session out of whichever group the machinery filed it under —
+  // including the Later pile it had been swept into — and into the user's own.
+  // The details of that move belong to scripts/pin-smoke.mjs; what matters here
+  // is that this reducer no longer leaves it in two places or in the wrong one.
   const pinned = groupWorkingSet(sessions, [], ['aside-child']);
-  assert.equal(pinned.runningIds.has('aside-child'), true);
+  assert.equal(pinned.pinnedIds.has('aside-child'), true);
+  assert.equal(pinned.runningIds.has('aside-child'), false);
   assert.equal(pinned.setAsideIds.has('aside-child'), false);
+  assert.deepEqual(pinned.pinnedRoots.map(({ id }) => id), ['aside-child']);
 
   const openedHistory = groupWorkingSet(sessions, ['ended-alone'], []);
   assert.equal(openedHistory.runningIds.has('ended-alone'), true, 'open history stays in focus while it is being read');
