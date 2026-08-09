@@ -1510,7 +1510,7 @@ fn readiness_timeout(config: &RuntimeConfig, baseline_count: usize) -> Duration 
 }
 
 fn health_once(config: &RuntimeConfig) -> LifecycleResult<HealthResponse> {
-    http_client(config)?
+    http_client(health_probe_timeout(config))?
         .get(config.health_url())
         .send()
         .and_then(|response| response.error_for_status())
@@ -1519,7 +1519,7 @@ fn health_once(config: &RuntimeConfig) -> LifecycleResult<HealthResponse> {
 }
 
 fn fetch_sessions(config: &RuntimeConfig) -> LifecycleResult<BTreeSet<String>> {
-    let response = http_client(config)?
+    let response = http_client(session_probe_timeout(config))?
         .get(config.sessions_url())
         .send()
         .and_then(|response| response.error_for_status())
@@ -1533,11 +1533,24 @@ fn fetch_sessions(config: &RuntimeConfig) -> LifecycleResult<BTreeSet<String>> {
         .collect())
 }
 
-fn http_client(config: &RuntimeConfig) -> LifecycleResult<reqwest::blocking::Client> {
+fn health_probe_timeout(config: &RuntimeConfig) -> Duration {
+    config.poll_interval.max(Duration::from_secs(1))
+}
+
+// Enumerating retained sessions is intentionally slower than a health probe.
+// A heavily dogfooded host can have hundreds of records, and asking the daemon
+// to normalize them may take several seconds even on loopback. Giving this
+// request the health probe's one-second budget made a safe app update stage its
+// new runtime and then silently leave the old daemon in place forever.
+fn session_probe_timeout(config: &RuntimeConfig) -> Duration {
+    config.health_timeout.max(Duration::from_secs(5))
+}
+
+fn http_client(request_timeout: Duration) -> LifecycleResult<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .no_proxy()
         .connect_timeout(Duration::from_secs(1))
-        .timeout(config.poll_interval.max(Duration::from_secs(1)))
+        .timeout(request_timeout)
         .build()
         .map_err(|error| format!("build loopback health client: {error}"))
 }
@@ -1828,6 +1841,20 @@ mod tests {
         assert_eq!(readiness_timeout(&config, 19), Duration::from_secs(315));
         assert_eq!(readiness_timeout(&config, 58), Duration::from_secs(900));
         assert_eq!(readiness_timeout(&config, 10_000), Duration::from_secs(900));
+    }
+
+    #[test]
+    fn retained_session_inventory_gets_a_real_request_budget() {
+        let root = env::temp_dir().join("sessions-probe-timeout-test");
+        let mut config = fixture_config(&root, "tech.somewhere.sessions.probe-timeout", 47_870);
+        config.health_timeout = Duration::from_secs(30);
+        config.poll_interval = Duration::from_millis(200);
+
+        assert_eq!(health_probe_timeout(&config), Duration::from_secs(1));
+        assert_eq!(session_probe_timeout(&config), Duration::from_secs(30));
+
+        config.health_timeout = Duration::from_secs(1);
+        assert_eq!(session_probe_timeout(&config), Duration::from_secs(5));
     }
 
     #[test]
