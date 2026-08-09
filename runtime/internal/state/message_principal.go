@@ -1,7 +1,6 @@
 package state
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -120,26 +119,20 @@ func (r *Registry) RecordInputPrincipal(id string, principal MessagePrincipal, d
 }
 
 // persistMessagePrincipals writes the two clocks into the runner metadata
-// document with the same read-modify-write every other daemon-owned edit on
-// that file uses, and shares its known lost-update window with them.
+// document under the cross-process metadata lock shared with runner writes.
 func (r *Registry) persistMessagePrincipals(id string, session *Session) error {
 	if !validMetadataID(id) || r.config.RunnerStateDir == "" {
 		return nil
 	}
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
-	encoded, err := os.ReadFile(path)
+	_, err := updateMetadata(path, func(metadata *Metadata) error {
+		metadata.LastHumanMessageAt, metadata.LastAgentMessageAt = session.messagePrincipals()
+		return nil
+	})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("read session message principals: %w", err)
-	}
-	var metadata Metadata
-	if err := json.Unmarshal(encoded, &metadata); err != nil {
-		return fmt.Errorf("decode session message principals: %w", err)
-	}
-	metadata.LastHumanMessageAt, metadata.LastAgentMessageAt = session.messagePrincipals()
-	if err := WriteMetadata(path, metadata); err != nil {
 		return fmt.Errorf("persist session message principals: %w", err)
 	}
 	return nil

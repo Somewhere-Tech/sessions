@@ -19,7 +19,9 @@ import (
 // The daemon owns those fields end to end, so the on-disk values always win.
 // A runner has no way to express them and therefore no way to intend a change.
 func WriteRunnerMetadata(path string, meta Metadata) error {
-	return WriteMetadata(path, MergeRunnerMetadata(readMetadataForMerge(path), meta))
+	return withMetadataLock(path, func() error {
+		return writeMetadataUnlocked(path, MergeRunnerMetadata(readMetadataForMerge(path), meta))
+	})
 }
 
 // MergeRunnerMetadata layers a runner-owned document over the daemon-owned

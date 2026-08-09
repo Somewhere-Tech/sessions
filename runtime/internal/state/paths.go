@@ -3,12 +3,15 @@
 package state
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/filelock"
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 )
 
@@ -156,7 +159,55 @@ type CompletionManifest struct {
 	FilesChanged   *int    `json:"files_changed,omitempty"`
 }
 
+const metadataLockTimeout = 30 * time.Second
+
+// WriteMetadata atomically replaces one metadata document while holding the
+// same cross-process sidecar lock used by metadata read-modify-writes. Atomic
+// rename prevents torn JSON; the lock prevents a daemon write and a separately
+// launched runner write from silently replacing one another.
 func WriteMetadata(path string, meta Metadata) error {
+	return withMetadataLock(path, func() error {
+		return writeMetadataUnlocked(path, meta)
+	})
+}
+
+// updateMetadata holds the metadata lock across the read, mutation, and
+// atomic replacement. Every daemon-owned field edit must use this helper; a
+// lock acquired only for the final write is too late because another process
+// may already have changed the document after the caller read it.
+func updateMetadata(path string, mutate func(*Metadata) error) (Metadata, error) {
+	var metadata Metadata
+	err := withMetadataLock(path, func() error {
+		encoded, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(encoded, &metadata); err != nil {
+			return err
+		}
+		if err := mutate(&metadata); err != nil {
+			return err
+		}
+		return writeMetadataUnlocked(path, metadata)
+	})
+	return metadata, err
+}
+
+func withMetadataLock(path string, operation func() error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), metadataLockTimeout)
+	defer cancel()
+	lock, err := filelock.Acquire(ctx, path+".lock")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Release() }()
+	if err := operation(); err != nil {
+		return err
+	}
+	return lock.Release()
+}
+
+func writeMetadataUnlocked(path string, meta Metadata) error {
 	b, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return err
