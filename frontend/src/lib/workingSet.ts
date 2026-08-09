@@ -1,4 +1,5 @@
 import type { SessionInfo } from '../types';
+import { providerConversationId } from './sessionStatus';
 
 export interface WorkingSetGroups {
   // The user's own group. A pinned session is here and nowhere else: it is
@@ -23,6 +24,74 @@ export function isSetAside(session: SessionInfo): boolean {
 // sessions are pinned.
 export function isPinned(session: SessionInfo): boolean {
   return session.pinned === true;
+}
+
+function providerConversationKey(session: SessionInfo): string | null {
+  const id = providerConversationId(session);
+  if (!id) return null;
+  const provider = session.tool === 'claude-code' || session.tool === 'codex'
+    ? session.tool
+    : null;
+  return provider ? `${provider}:${id}` : null;
+}
+
+// Runtime records remain intact in the daemon and Details, but the navigator
+// represents one provider conversation once. A live runtime wins over an
+// ended predecessor; otherwise the newest runtime wins. Children attached to
+// an older runtime are rewired only in this presentation copy so its manager
+// tree remains whole without changing trusted creator provenance.
+export function collapseConversationRuntimes(sessions: SessionInfo[]): SessionInfo[] {
+  const groups = new Map<string, SessionInfo[]>();
+  for (const session of sessions) {
+    const key = providerConversationKey(session);
+    if (!key) continue;
+    const group = groups.get(key) ?? [];
+    group.push(session);
+    groups.set(key, group);
+  }
+
+  const replacement = new Map<string, string>();
+  const hidden = new Set<string>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const representative = [...group].sort((left, right) => {
+      if (left.exited !== right.exited) return left.exited ? 1 : -1;
+      return right.createdAt - left.createdAt;
+    })[0];
+    for (const session of group) {
+      if (session.id === representative.id) continue;
+      replacement.set(session.id, representative.id);
+      hidden.add(session.id);
+    }
+  }
+  if (hidden.size === 0) return sessions;
+
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  const parentOf = (session: SessionInfo): string | undefined => (
+    session.displayParentSessionId !== undefined
+      ? session.displayParentSessionId || undefined
+      : session.parentSessionId
+  );
+  const resolvedParent = (session: SessionInfo): string | undefined => {
+    let parent = parentOf(session);
+    const visited = new Set<string>();
+    while (parent && replacement.has(parent) && !visited.has(parent)) {
+      visited.add(parent);
+      const next = replacement.get(parent);
+      if (next && next !== session.id) return next;
+      parent = byId.has(parent) ? parentOf(byId.get(parent)!) : undefined;
+    }
+    return parent === session.id ? undefined : parent;
+  };
+
+  return sessions.filter((session) => !hidden.has(session.id)).map((session) => {
+    const before = parentOf(session);
+    const after = resolvedParent(session);
+    if (before === after) return session;
+    return session.displayParentSessionId !== undefined
+      ? { ...session, displayParentSessionId: after ?? '' }
+      : { ...session, parentSessionId: after };
+  });
 }
 
 // The daemon's own reason for refusing a pin on an ended conversation, in the

@@ -532,3 +532,75 @@ func TestClaudeSessionIDIsInjectedOnlyWhenNoConversationIsNamed(t *testing.T) {
 		t.Fatalf("non-Claude command args = %q", got)
 	}
 }
+
+// A resumed provider conversation is one durable conversation even when it has
+// had several runner processes. The live SessionInfo and its metadata must
+// therefore carry the provider id from the launch argv; otherwise the UI can
+// only see unrelated runtime ids and renders the ended predecessor beside the
+// live successor as two conversations.
+func TestCreateBindsProviderConversationIdentityFromArgs(t *testing.T) {
+	root := t.TempDir()
+	config := Config{
+		DefaultShell: "/bin/bash", DefaultCwd: root, DefaultCols: 300, DefaultRows: 50,
+		RunnerStateDir: filepath.Join(root, "runners"), LaunchAgentsDir: filepath.Join(root, "agents"),
+	}
+	const providerID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	tests := []struct {
+		name             string
+		cmd              string
+		args             []string
+		wantClaudeID     string
+		wantConversation string
+	}{
+		{name: "Claude resume", cmd: "claude", args: []string{"--resume", providerID}, wantClaudeID: providerID, wantConversation: providerID},
+		{name: "Claude short resume", cmd: "claude", args: []string{"-r", providerID}, wantClaudeID: providerID, wantConversation: providerID},
+		{name: "Claude joined resume", cmd: "claude", args: []string{"--resume=" + providerID}, wantClaudeID: providerID, wantConversation: providerID},
+		{name: "Codex resume", cmd: "codex", args: []string{"resume", providerID}, wantConversation: providerID},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			registry := NewRegistry(config, prototest.NewLauncher())
+			created, err := registry.Create(context.Background(), CreateSessionRequest{
+				Cmd: test.cmd, Args: test.args, Cwd: root,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if created.ConversationID != test.wantConversation || created.ClaudeSessionID != test.wantClaudeID {
+				t.Fatalf("live provider identity = conversation %q, Claude %q; want %q, %q", created.ConversationID, created.ClaudeSessionID, test.wantConversation, test.wantClaudeID)
+			}
+			metadata, err := ReadRunnerMetadata(filepath.Join(config.RunnerStateDir, created.ID+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if metadata.Info.ConversationID != test.wantConversation || metadata.Info.ClaudeSessionID != test.wantClaudeID {
+				t.Fatalf("persisted provider identity = conversation %q, Claude %q; want %q, %q", metadata.Info.ConversationID, metadata.Info.ClaudeSessionID, test.wantConversation, test.wantClaudeID)
+			}
+		})
+	}
+}
+
+func TestRegisterMetadataRestoresIdentityOmittedByOlderRunnerHello(t *testing.T) {
+	root := t.TempDir()
+	registry := NewRegistry(Config{
+		DefaultShell: "/bin/bash", DefaultCwd: root, DefaultCols: 300, DefaultRows: 50,
+		RunnerStateDir: filepath.Join(root, "runners"), LaunchAgentsDir: filepath.Join(root, "agents"),
+	}, nil)
+	const providerID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	runner := prototest.NewRunner(proto.RunnerInfo{
+		ID: "runtime-id", Cmd: "claude", Args: []string{"--resume", providerID}, Cwd: root,
+		Cols: 300, Rows: 50, CreatedAt: 1, ProtocolVersion: proto.ProtocolVersion,
+	})
+	session, err := registry.RegisterMetadata(context.Background(), runner, RunnerMetadata{
+		Info: proto.RunnerInfo{
+			ID: "runtime-id", ConversationID: providerID, ClaudeSessionID: providerID,
+		},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := session.Info()
+	if info.ConversationID != providerID || info.ClaudeSessionID != providerID {
+		t.Fatalf("discovered provider identity = conversation %q, Claude %q", info.ConversationID, info.ClaudeSessionID)
+	}
+}

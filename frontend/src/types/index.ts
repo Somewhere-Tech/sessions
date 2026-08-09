@@ -45,6 +45,11 @@ export interface SessionInfo {
   exitSignal: string | null;
   exitReason?: string;
   exitedAt: number | null;
+  // The daemon lost its connection to the runner but did not observe the
+  // process exit. This is recoverable connectivity state, never an ending.
+  unreachable?: boolean;
+  unreachableReason?: string;
+  unreachableSince?: number | null;
   // Claude-side session titles, surfaced from the JSONL by sessionsd.
   // claudeCustomTitle: set by Claude's /rename slash command.
   // claudeAiTitle: Claude's own auto-generated summary.
@@ -84,8 +89,8 @@ export interface SessionInfo {
   // searchable, countable, and CLI-visible while set aside.
   setAsideAt?: number | null;
   // Daemon-owned workbench mark. A pinned session sorts first everywhere and
-  // is exempt from automatic termination. The daemon always sends it, so an
-  // undefined here means an older daemon that never learned the field.
+  // any future automatic cleanup policy must leave it alone. The daemon always
+  // sends it, so undefined means an older daemon that never learned the field.
   pinned?: boolean;
   creatorAncestry?: string[];
   rootCreatorKind?: string;
@@ -182,6 +187,7 @@ export type ServerMsg =
   | { type: 'output'; seq: number; data: string; sessionId?: string }
   | { type: 'gap'; oldestAvailableSeq: number; currentSeq: number; sessionId?: string }
   | { type: 'exit'; code: number | null; signal: string | null; seq: number; sessionId?: string }
+  | { type: 'unreachable'; reason: string; seq: number; sessionId?: string }
   | { type: 'error'; message: string; sessionId?: string }
   | { type: 'rpcError'; requestId: string; message: string; code?: string; sessionId?: string }
   | { type: 'snapshot'; requestId: string; text: string; seq: number; sessionId: string }

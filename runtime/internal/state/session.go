@@ -140,24 +140,52 @@ func (s *Session) applyEvent(event proto.Event) bool {
 		if event.ClaudeActivityAt > s.info.LastDataAt {
 			s.info.LastDataAt = event.ClaudeActivityAt
 		}
-	case proto.EventExit, proto.EventRunnerLost:
+	case proto.EventRunnerLost:
+		// A lost socket is not an exit. proto.SocketRunner raises this for any
+		// read error at all -- EOF, the 10s deadline, a daemon restart -- and
+		// none of those observed the process. Recording it as an exit made
+		// Sessions state, with no evidence, that a session with a healthy
+		// runner had ended and failed: exited with a nil code, idle reason
+		// "failed", and everything downstream torn down behind it. The runner
+		// is unreachable; that is the whole of what happened.
+		now := time.Now().UnixMilli()
+		lost := event.Exit
+		if lost.Reason == "" {
+			lost.Reason = "runner-lost"
+		}
+		if lost.Seq == 0 && s.nextSeq > 0 {
+			lost.Seq = s.nextSeq - 1
+		}
+		event.Exit = lost
+		s.info.Unreachable = true
+		s.info.UnreachableReason = lost.Reason
+		s.info.UnreachableSince = &now
+		// Nothing is producing output through a dead socket, so the session is
+		// not working. That is an honest consequence of losing the connection;
+		// "exited", "failed", and an exit code are not.
+		s.info.Working = false
+		// This runner object is finished either way: its socket is gone and no
+		// further frame will arrive on it. The pump stops and subscribers are
+		// released, and reconnect or discovery may reattach a fresh runner.
+		terminal = true
+	case proto.EventExit:
 		now := time.Now().UnixMilli()
 		exit := event.Exit
-		if event.Kind == proto.EventRunnerLost && exit.Reason == "" {
-			exit.Reason = "runner-lost"
-		}
 		if exit.Seq == 0 && s.nextSeq > 0 {
 			exit.Seq = s.nextSeq - 1
 		}
 		event.Exit = exit
 		s.info.Exited = true
 		s.info.Working = false
+		s.info.Unreachable = false
+		s.info.UnreachableReason = ""
+		s.info.UnreachableSince = nil
 		s.info.ExitCode = exit.Code
 		s.info.ExitSignal = exit.Signal
 		s.info.ExitReason = exit.Reason
 		s.info.ExitedAt = &now
 		s.info.IdleSince = &now
-		if (exit.Code != nil && *exit.Code != 0) || event.Kind == proto.EventRunnerLost {
+		if exit.Code != nil && *exit.Code != 0 {
 			s.info.IdleReason = IdleReasonFailed
 		} else {
 			s.info.IdleReason = IdleReasonCompleted

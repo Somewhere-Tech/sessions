@@ -518,10 +518,10 @@ function AgentSettings(props: AgentSettingsProps): JSX.Element {
         {props.claudeMessage ? <div className="settings-message" role="status">{props.claudeMessage}</div> : null}
       </div>
       <div className="settings-card">
-        <h2>Delegated task access</h2>
+        <h2>Delegated agent access</h2>
         <p>Applies only when one Sessions agent starts another. It never changes an existing session or lets a child escalate itself.</p>
         <label className="settings-select-row"><span><strong>Child-agent permissions</strong><small>Inherited keeps each worker inside its manager’s access. Autonomous is an explicit opt-in for unattended delegated work.</small></span><select value={props.delegatedAccess} disabled={props.delegationBusy || !props.delegationAvailable} onChange={(event) => void props.onDelegatedAccess(event.currentTarget.value as 'inherit' | 'autonomous')}><option value="inherit">Inherit manager permissions</option><option value="autonomous">Autonomous delegated work</option></select></label>
-        <div className="settings-message">Agent-created workers close after a successful final response. Approval questions stay open as Needs you and are never accepted automatically.</div>
+        <div className="settings-message">Agent-created children stay open by default. A caller can explicitly create a bounded task, but Sessions never treats a final response as permission to end a runtime. Approval questions stay open as Needs you.</div>
         {props.delegationMessage ? <div className="settings-message" role="status">{props.delegationMessage}</div> : null}
       </div>
       <div className="settings-card">

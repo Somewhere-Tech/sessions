@@ -29,8 +29,8 @@ assert.doesNotMatch(onboarding, /onClick=\{onClose\}|launcher-close|dialog-head-
 
 assert.match(settings, /updateOnboardingPreference/);
 assert.match(settings, /Keep sessions local/);
-assert.match(settings, /Delegated task access/);
-assert.match(settings, /Approval questions stay open as Needs you and are never accepted automatically/);
+assert.match(settings, /Delegated agent access/);
+assert.match(settings, /Approval questions stay open as Needs you/);
 assert.doesNotMatch(settings, /<option value="inherit">Use Claude’s setting<\/option>/);
 assert.doesNotMatch(newSession, /<span>Remote Control<\/span><select/);
 assert.match(newSession, /A session cannot turn it on by itself/);

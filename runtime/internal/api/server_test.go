@@ -1269,6 +1269,56 @@ func TestWebSocketSingleMuxAndHandshakePolicy(t *testing.T) {
 	xffAuthorized.CloseNow()
 }
 
+func TestMuxRunnerLossReportsUnreachableWithoutEndingSession(t *testing.T) {
+	daemon := newTestDaemon(t)
+	info, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/sh", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(daemon.handler)
+	defer httpServer.Close()
+	wsBase := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mux, _, err := websocket.Dial(ctx, wsBase+"/ws?mux=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.CloseNow()
+
+	writeWS(t, ctx, mux, map[string]any{"type": "attach", "sessionId": info.ID})
+	if hello := awaitWSType(t, ctx, mux, "hello"); hello["sessionId"] != info.ID {
+		t.Fatalf("initial mux hello = %#v", hello)
+	}
+	daemon.launcher.Runner(info.ID).Emit(proto.Event{
+		Kind: proto.EventRunnerLost,
+		Exit: proto.ExitEvent{Seq: 7, Reason: "runner-lost"},
+	})
+	lost := awaitWSType(t, ctx, mux, "unreachable")
+	if lost["sessionId"] != info.ID || lost["reason"] != "runner-lost" || lost["seq"] != float64(7) {
+		t.Fatalf("unreachable frame = %#v", lost)
+	}
+	registered, ok := daemon.registry.Get(info.ID)
+	if !ok {
+		t.Fatal("runner loss removed the session")
+	}
+	if current := registered.Info(); current.Exited || !current.Unreachable {
+		t.Fatalf("runner loss ended session instead of marking it unreachable: %#v", current)
+	}
+
+	// The mux attachment is released, not the session. A client may attach
+	// again while recovery is in progress and receives literal state instead
+	// of an unknown-session error or a fabricated exit.
+	writeWS(t, ctx, mux, map[string]any{"type": "attach", "sessionId": info.ID})
+	hello := awaitWSType(t, ctx, mux, "hello")
+	session, ok := hello["session"].(map[string]any)
+	if !ok || session["unreachable"] != true || session["exited"] != false {
+		t.Fatalf("reattach hello session = %#v", hello["session"])
+	}
+}
+
 // TestWebSocketWriteAuthorityMatchesHTTPAmbientWritePolicy is the WebSocket
 // mirror of TestAuthAndOriginMatrix/"arbitrary localhost port has no ambient
 // write authority". A `/ws` upgrade is a GET, so the state-changing-method

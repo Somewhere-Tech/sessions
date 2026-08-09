@@ -19,6 +19,7 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/liveness"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
@@ -159,7 +160,12 @@ func (e *Engine) Report(ctx context.Context) (Report, error) {
 	}
 	managed := make(map[string]state.SessionInfo, len(e.options.ManagedSessions))
 	for _, info := range e.options.ManagedSessions {
-		if info.ID == "" || info.Exited {
+		// ManagerVisible load-bears "the daemon is holding this session right
+		// now", which is what makes a lane live-managed rather than
+		// unexpectedly lost. A session the daemon has listed but cannot reach
+		// is exactly the case recovery exists to report, so unreachable
+		// counts against visibility as firmly as ended does.
+		if info.ID == "" || info.Exited || info.Unreachable {
 			continue
 		}
 		managed[info.ID] = info
@@ -430,33 +436,15 @@ func probeHello(ctx context.Context, socketPath string) (proto.RunnerInfo, error
 	return info, nil
 }
 
-// probeProcess is the platform-neutral liveness signal. It is deliberately
-// conservative in the same direction as the session manager's discovery pass:
-// an unreadable command line counts as live. Recovery and the manager must not
-// disagree about whether a runner still exists, because recovery's answer
-// decides whether the user is offered a second runtime for a conversation that
-// already has one.
+// probeProcess is the platform-neutral liveness signal. Recovery and the
+// session manager must not disagree about whether a runner still exists,
+// because recovery's answer decides whether the user is offered a second
+// runtime for a conversation that already has one. They no longer merely
+// promise to agree: both call internal/liveness.
 func probeProcess(ctx context.Context, info proto.RunnerInfo) bool {
-	if info.PID <= 0 || !processAlive(info.PID) {
-		return false
-	}
-	return runnerProcessMatches(processCommand(ctx, info.PID), info.ID, info.Cmd)
-}
-
-// runnerProcessMatches rejects a PID that has been reused by an unrelated
-// process. It mirrors the session manager's rule, including its treatment of
-// an unknown command as a match.
-func runnerProcessMatches(command, id, expectedCommand string) bool {
-	if command == "" || strings.Contains(command, id) {
-		return true
-	}
-	// Every runner is the sessions-runner image whatever it hosts, and on
-	// Windows only that image path is observable.
-	if strings.Contains(strings.ToLower(command), "sessions-runner") {
-		return true
-	}
-	expectedBase := filepath.Base(strings.TrimSpace(expectedCommand))
-	return expectedBase != "" && expectedBase != "." && strings.Contains(command, expectedBase)
+	return liveness.RunnerAlive(ctx, liveness.Runner{
+		SessionID: info.ID, PID: info.PID, Command: info.Cmd,
+	})
 }
 
 // probeLaunchd answers only on darwin; see ProcessProbe for the signal that

@@ -78,9 +78,12 @@ func (m *Manager) resolveDelegatedExecution(
 
 	if requestedLifecycle != "" {
 		request.Lifecycle = requestedLifecycle
-	} else if isChild && request.DelegationKind == "agent" {
-		request.Lifecycle = state.LifecycleTask
 	} else {
+		// A child is a durable session unless its creator explicitly declares a
+		// bounded task. Provider completion is not proof that the caller is done
+		// with the runtime (it may own a server, watcher, or follow-up context),
+		// so defaulting agent-created children to task made their lifetime
+		// surprising and left future cleanup policy free to retire live work.
 		request.Lifecycle = state.LifecycleSession
 	}
 	return request, nil

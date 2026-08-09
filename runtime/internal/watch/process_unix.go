@@ -4,29 +4,11 @@ package watch
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
-
-// processAlive reports whether a PID still names a running process. Signal 0 is
-// the POSIX existence probe: it runs the permission and liveness checks without
-// delivering anything.
-//
-// This deliberately matches the probe internal/recovery and internal/session
-// use. The three must agree: if the registry check called a Claude process dead
-// that recovery still considers live, Sessions would offer to reopen a
-// conversation that a live process is appending to.
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	process, err := os.FindProcess(pid)
-	return err == nil && process.Signal(syscall.Signal(0)) == nil
-}
 
 // processParents returns a pid -> ppid snapshot of the process table.
 //

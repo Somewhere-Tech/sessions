@@ -114,10 +114,13 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `idleDetail` | string, optional | useful prompt or error line from idle classification |
 | `idleSince` | number, optional | Unix epoch milliseconds when the current idle outcome began |
 | `lastSummary` | string, optional | last useful structured assistant or terminal-tail summary |
-| `exited` | boolean | whether an EXIT frame was received |
+| `exited` | boolean | whether Sessions reaped a real status for the session's process: an EXIT frame, a signal, or a completed user-requested end. It is never set because the daemon lost contact with a runner |
 | `exitCode` | number or null | PTY exit code |
 | `exitSignal` | string or null | PTY exit signal as a string |
 | `exitedAt` | number or null | Unix epoch milliseconds when EXIT was received |
+| `unreachable` | boolean, optional | present as `true` when the daemon cannot currently talk to the session's runner (socket read error, read deadline, daemon restart). This is a statement about the connection, not the work: the session is still listed, readable, and attachable, and reconnect or the next discovery pass may reattach it. It is never presented as ended, and `exited` stays `false` |
+| `unreachableReason` | string, optional | why contact was lost; `"runner-lost"` for a socket read failure |
+| `unreachableSince` | number, optional | Unix epoch milliseconds when contact was lost |
 | `claudeCustomTitle` | string, optional | latest Claude `custom-title` value |
 | `claudeAiTitle` | string, optional | latest Claude `ai-title` value |
 | `onIdle` | string, optional | trimmed per-session idle hook command |
@@ -125,18 +128,21 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `effort` | string, optional | effort parsed from effective arguments |
 | `fast` | boolean, optional | present as `true` for Codex priority service tier; otherwise omitted |
 | `setAsideAt` | number, optional | Unix epoch milliseconds when the live session was removed from the native app's default working set; this is organization, not lifecycle |
-| `pinned` | boolean, always present | whether the user marked this session as a workbench: it sorts first in every listing and automatic termination leaves it alone. Always present, including as `false`, so a caller can tell "not pinned" from a daemon that predates the field |
+| `pinned` | boolean, always present | whether the user marked this live session as a workbench: it sorts first in every listing and any future automatic cleanup policy must leave it alone. Always present, including as `false`, so a caller can tell "not pinned" from a daemon that predates the field |
 | `memoryBytes` | number, optional | resident memory of the session's whole process tree at `resourceSampledAt`. **Omitted, never zero, when unknown** — no live process, a process the daemon may not inspect, or a platform without sampling. A client that treats a missing value as `0` will report a saturated machine as idle |
 | `cpuPercent` | number, optional | percent of one core the process tree used between the two most recent samples. It is a rate, not an average over the life of the process; a tree spanning cores exceeds 100. Omitted when unknown, which includes the first sample of a tree, because a rate needs two readings. Omitted is not zero; a measured zero is sent as `0` |
 | `resourceProcesses` | number, optional | how many processes `memoryBytes` and `cpuPercent` cover. Present exactly when `memoryBytes` is |
 | `resourceSampledAt` | number, optional | Unix epoch milliseconds when the three fields above were measured. Sampling is periodic, so a reader must treat the figures as of this time rather than as of the response |
 | `delegation_kind` | `"user" \| "agent"`, optional | presentation provenance for a child session: explicitly started by the user or created by its parent agent |
 | `permissions` | `"constrained" \| "full"`, optional | daemon-resolved access class for this runtime; provider-specific approval and sandbox arguments remain visible in `args` |
-| `lifecycle` | `"task" \| "session"`, optional | `task` workers retire after a successful final response; `session` conversations remain live until explicitly ended |
+| `lifecycle` | `"task" \| "session"`, optional | caller-declared runtime intent; it never authorizes Sessions to infer that a final response means the runtime should end |
 
 Exited sessions remain in the daemon map for 30 seconds. They are omitted from
 the default list but can be requested with `include_exited=1` during that grace
-period.
+period. Unreachable sessions are not exited and are **not** filtered out of the
+default list: losing a socket is not an ending, and hiding the session on that
+basis would make work the daemon cannot currently reach look like work that
+never existed.
 
 ### Standard error bodies
 
@@ -298,7 +304,7 @@ Auth required. Every request field is optional:
 | `waitReady` | boolean | only literal `true` waits for readiness, capped at 30 seconds |
 | `delegationKind` | `"user" \| "agent"` | optional child presentation provenance; requires a validated `X-Sessions-Creator-Session` parent |
 | `permissions` | `"inherit" \| "constrained" \| "full"` | optional requested access; `inherit` requires a parent, and a child cannot exceed its parent unless the user explicitly enabled autonomous delegated work |
-| `lifecycle` | `"task" \| "session"` | optional runtime lifetime; agent-created children default to `task`, while user-created sessions default to `session` |
+| `lifecycle` | `"task" \| "session"` | optional runtime intent; all sessions, including agent-created children, default to `session`; callers must explicitly request a bounded `task` |
 
 `RUNNER_*`, `NODE_OPTIONS`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, and
 `LD_PRELOAD` caller keys are stripped. User-created Claude/Codex sessions are
@@ -557,17 +563,16 @@ Auth required. Body is `{"pinned":true|false}`. The value is persisted as
 {"pinned":true}
 ```
 
-A pinned session sorts first in every listing and is exempt from automatic
-termination — the task-lifecycle sweep that retires a finished delegate, and
-the sleep and retention policies that follow it. It is never exempt from an
-explicit end by the user. The operation starts, stops, and otherwise touches
-nothing about the runner.
+A pinned session sorts first in every listing and marks a live workbench that
+future automatic cleanup policy must leave alone. Sessions has no automatic
+terminator today, and a pin is never exempt from an explicit end by the user.
+The operation starts, stops, and otherwise touches nothing about the runner.
 
 The pin is daemon-owned end to end: a runner has no way to express it, so a
 runner metadata write preserves whatever the daemon last stored. Unknown
-sessions return 404. Ended records return 409, because a pin exempts a live
-session from automatic termination and cannot protect one that already ended;
-archive is the verb for those. Any method other than `PUT` returns 405.
+sessions return 404. Ended records return 409 because a pin marks a live
+workbench; archive is the organizational verb for ended records. Any method
+other than `PUT` returns 405.
 
 ### `GET /api/sessions/:id/snapshot`
 

@@ -377,11 +377,11 @@ func runGitTest(t *testing.T, cwd string, args ...string) string {
 	return string(encoded)
 }
 
-// A lost runner is an observed loss, exactly like an exit or a reap, and every
-// other lifecycle predicate in this package treats it that way. Omitting it
-// here left a --worktree session reporting "live" forever, so
-// `sessions worktrees clean` refused it permanently.
-func TestWorktreesTreatALostRunnerAsClosedWorkNotALiveSession(t *testing.T) {
+// A lost socket is not evidence that the provider or its worktree stopped.
+// Cleanup must stay conservative while the durable session remains
+// unreachable: reconnect may restore it under the same ID, and removing its
+// worktree before a real exit would destroy active work.
+func TestWorktreesNeverCleanAnUnreachableSessionWithoutARealExit(t *testing.T) {
 	root := t.TempDir()
 	repo := initWorktreeTestRepo(t, root, "lostrunner")
 	manager, launcher, store := newWorktreeTestManager(t, root)
@@ -389,7 +389,8 @@ func TestWorktreesTreatALostRunnerAsClosedWorkNotALiveSession(t *testing.T) {
 	lost := createWorktreeSession(t, manager, repo, "Lost Runner")
 	launcher.Runner(lost.ID).Emit(proto.Event{Kind: proto.EventRunnerLost})
 	awaitCondition(t, func() bool {
-		if _, present := manager.Get(lost.ID); present {
+		unreachable, present := manager.Get(lost.ID)
+		if !present || !unreachable.Info().Unreachable {
 			return false
 		}
 		events, err := store.Events(context.Background(), lost.ID)
@@ -414,8 +415,8 @@ func TestWorktreesTreatALostRunnerAsClosedWorkNotALiveSession(t *testing.T) {
 			continue
 		}
 		found = true
-		if worktree.SessionState != "exited" {
-			t.Fatalf("lost-runner worktree state = %#v, want exited", worktree)
+		if worktree.SessionState != "live" {
+			t.Fatalf("unreachable worktree state = %#v, want live until a real exit", worktree)
 		}
 	}
 	if !found {
@@ -426,8 +427,8 @@ func TestWorktreesTreatALostRunnerAsClosedWorkNotALiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cleanResultsBySession(results)[lost.ID]; got.Action != "would-remove" {
-		t.Fatalf("clean result for a lost runner = %#v, want would-remove instead of a permanent \"session is live\" refusal", got)
+	if got := cleanResultsBySession(results)[lost.ID]; got.Action != "skipped" || got.Reason != "session is live" {
+		t.Fatalf("clean result for an unreachable runner = %#v, want conservative live-session refusal", got)
 	}
 	if _, err := os.Stat(lost.Cwd); err != nil {
 		t.Fatalf("dry-run clean mutated %s: %v", lost.Cwd, err)

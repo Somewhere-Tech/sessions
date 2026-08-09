@@ -6,7 +6,10 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::{Mutex, MutexGuard, TryLockError},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, MutexGuard, TryLockError,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -29,6 +32,7 @@ pub(crate) type LifecycleResult<T> = Result<T, String>;
 // grants this surface to "main" *and* every "win-*" window, so the only place
 // that can actually serialize the three callers is here.
 static SERVICE_MUTATION_LOCK: Mutex<()> = Mutex::new(());
+static UNIQUE_SUFFIX_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 // Refuse rather than queue. A second Recover click that silently waited would
 // look like a hang, and the honest answer — the first attempt is still running
@@ -1720,10 +1724,15 @@ fn set_directory_mode(path: &Path, mode: u32) -> LifecycleResult<()> {
 }
 
 pub(crate) fn unique_suffix() -> u128 {
-    SystemTime::now()
+    let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos()
+        .as_nanos();
+    // Some filesystems and clocks expose coarser resolution than nanoseconds,
+    // so two consecutive calls can observe the same timestamp. Keep the time
+    // component for cross-process uniqueness and append a process-local
+    // sequence so staging paths are guaranteed to differ within this process.
+    (timestamp << 64) | u128::from(UNIQUE_SUFFIX_SEQUENCE.fetch_add(1, Ordering::Relaxed))
 }
 
 fn xml_escape(value: &str) -> String {

@@ -675,12 +675,13 @@ function FleetSessionRow({
 const FLEET_SORT_PRIORITY: Record<SessionStatusState, number> = {
   failed: 0,
   'needs-you': 1,
-  limited: 2,
-  working: 3,
-  ready: 4,
-  'not-started': 5,
-  finished: 6,
-  ended: 7
+  reconnecting: 2,
+  limited: 3,
+  working: 4,
+  ready: 5,
+  'not-started': 6,
+  finished: 7,
+  ended: 8
 };
 
 function sortFleetSessions(sessions: SessionInfo[]): SessionInfo[] {

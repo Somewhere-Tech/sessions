@@ -21,7 +21,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/usage"
 )
 
-var version = "0.2.16"
+var version = "0.2.17"
 
 // isWildcardHost reports whether a bind host would expose the daemon on every
 // interface. A literal denylist is not enough, and neither is netip.ParseAddr
@@ -114,6 +114,11 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	// Sweep before discovery so the first pass sees a runner directory and a
+	// LaunchAgents directory that describe only sessions that might still be
+	// running. The sweep removes nothing for a session that is live, unknown,
+	// or starting; see Manager.SweepStaleRunnerArtifacts.
+	manager.SweepStaleRunnerArtifacts(context.Background())
 	go manager.RunDiscoveryLoop()
 	serveErrors := make(chan error, 1)
 	go func() {

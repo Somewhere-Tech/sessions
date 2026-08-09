@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/liveness"
 )
 
 // Claude Code keeps an undocumented per-process registry at
@@ -152,11 +154,16 @@ func (q ClaudeLiveQuery) dir() (string, error) {
 	return ClaudeLiveRegistryDir()
 }
 
+// alive resolves the liveness probe. The default is the shared
+// internal/liveness probe rather than a copy kept in step by comment: if this
+// check called a Claude process dead that internal/session and
+// internal/recovery still consider live, Sessions would offer to reopen a
+// conversation a live process is appending to.
 func (q ClaudeLiveQuery) alive() func(int) bool {
 	if q.Alive != nil {
 		return q.Alive
 	}
-	return processAlive
+	return liveness.ProcessAlive
 }
 
 func (q ClaudeLiveQuery) parents() func() map[int]int {

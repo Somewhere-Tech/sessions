@@ -109,11 +109,24 @@ type SessionInfo struct {
 	IdleDetail             string            `json:"idleDetail,omitempty"`
 	IdleSince              *int64            `json:"idleSince,omitempty"`
 	LastSummary            string            `json:"lastSummary,omitempty"`
-	Exited                 bool              `json:"exited"`
-	ExitCode               *int              `json:"exitCode"`
-	ExitSignal             *string           `json:"exitSignal"`
-	ExitReason             string            `json:"exitReason,omitempty"`
-	ExitedAt               *int64            `json:"exitedAt"`
+	// Exited means Sessions reaped a real status for this session's process:
+	// an exit code, a signal, or a user-requested end that completed. It is
+	// never set because the daemon lost contact. Losing a socket says nothing
+	// about whether the process on the other end is still working.
+	Exited     bool    `json:"exited"`
+	ExitCode   *int    `json:"exitCode"`
+	ExitSignal *string `json:"exitSignal"`
+	ExitReason string  `json:"exitReason,omitempty"`
+	ExitedAt   *int64  `json:"exitedAt"`
+	// Unreachable means the daemon cannot currently talk to this session's
+	// runner: the socket read failed, the read deadline elapsed, or the daemon
+	// restarted out from under a healthy runner. It is a statement about the
+	// connection, not about the work. An unreachable session is still a
+	// session: it is listed, readable, and attachable, and reconnect or the
+	// next discovery pass may reattach it. It is never presented as ended.
+	Unreachable       bool   `json:"unreachable,omitempty"`
+	UnreachableReason string `json:"unreachableReason,omitempty"`
+	UnreachableSince  *int64 `json:"unreachableSince,omitempty"`
 	ClaudeCustomTitle      string            `json:"claudeCustomTitle,omitempty"`
 	ClaudeAITitle          string            `json:"claudeAiTitle,omitempty"`
 	OnIdle                 string            `json:"onIdle,omitempty"`

@@ -39,7 +39,8 @@ func TestMigrateCreateStartsOneInteractiveClaudeTargetAndRecordsSourceLineage(t 
 	var result migrate.CreateResult
 	decodeBody(t, response, &result)
 	if result.Session.ID == "" || result.Session.Kind != "" ||
-		result.Session.ConversationID != "" || !result.LineageRecorded {
+		result.Session.ConversationID != provider || result.Session.ClaudeSessionID != provider ||
+		!result.LineageRecorded {
 		t.Fatalf("create result = %#v", result)
 	}
 	t.Cleanup(func() {

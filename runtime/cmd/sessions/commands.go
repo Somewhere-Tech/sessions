@@ -350,8 +350,17 @@ func (a *app) cmdNew(args []string) error {
 			return fail(1, "--codex-appserver and --pty-codex are only valid with --tool codex")
 		}
 		if strings.EqualFold(tool, "claude") {
-			if forceStructuredClaude {
+			structuredChild := !forcePTYClaude && a.api.creatorSession != "" && a.api.ownerID == ""
+			if forceStructuredClaude || structuredChild {
 				body.Kind = "claude-structured"
+				// Structured Claude owns prompt delivery through the audited submit
+				// route; positional text is not a provider process argument. This is
+				// especially important for agent-created children, which default to
+				// the provider-native structured runtime instead of a parsed PTY.
+				if len(args) > 0 {
+					initialInput = strings.Join(args, " ")
+					body.Args = append([]string(nil), chosen...)
+				}
 			}
 		} else if forceStructuredClaude || forcePTYClaude {
 			return fail(1, "--structured and --pty-claude are only valid with --tool claude")

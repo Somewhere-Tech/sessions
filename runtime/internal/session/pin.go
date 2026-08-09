@@ -4,10 +4,9 @@ import "github.com/somewhere-tech/sessions/runtime/internal/state"
 
 // ExemptFromAutomaticEnd reports whether the automatic machinery must leave a
 // session alone. A pin is the user marking a workbench, and the promise it
-// makes is that nothing Sessions decides on its own ends it: not the
-// task-lifecycle sweep that retires a delegate after a successful final
-// response, and not the retention policies that will later end a session for
-// sleeping too long.
+// makes is that nothing Sessions may later decide on its own ends it, including
+// a future retention policy for sessions sleeping too long. No automatic
+// terminator exists today.
 //
 // The judgement lives here rather than at each call site because it is one
 // rule, and a rule copied into three places is a rule that will disagree with
@@ -19,7 +18,6 @@ func ExemptFromAutomaticEnd(info state.SessionInfo) bool {
 	return info.Pinned
 }
 
-// No automatic terminator exists today -- the task-completion reaper was
-// removed on the owner's rule: lanes are never killed automatically. This
-// helper is the standing exemption any FUTURE automatic machinery (snooze,
-// retention) must consult before acting on a session.
+// The former task-completion reaper was removed on the owner's rule: lanes are
+// never killed automatically. This helper is the standing exemption any future
+// automatic machinery (snooze, retention) must consult before acting.

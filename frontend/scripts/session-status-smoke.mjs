@@ -27,6 +27,7 @@ try {
     endedSummary,
     isCrashedSession,
     isDegradedSession,
+    providerConversationId,
     sessionIsFinished,
     sessionNeedsYou,
     sessionWantsAttention
@@ -116,6 +117,16 @@ try {
   assert.equal(endedSummary(endedWithContinuation, [endedWithContinuation, liveSuccessor]).label, 'Live as PM');
   assert.equal(canContinueSession(endedWithContinuation), false);
 
+  for (const args of [
+    ['--resume', 'claude-id'],
+    ['-r', 'claude-id'],
+    ['--resume=claude-id'],
+    ['--session-id=claude-id']
+  ]) {
+    assert.equal(providerConversationId({ tool: 'claude-code', args }), 'claude-id');
+  }
+  assert.equal(providerConversationId({ tool: 'codex', args: ['resume', 'codex-id'] }), 'codex-id');
+
   const inferredSuccessor = {
     ...liveSuccessor,
     id: 'inferred-successor',
@@ -183,6 +194,23 @@ try {
   assert.equal(sessionIsFinished(crashed), false);
   assert.equal(classifySession(runnerLost).state, 'failed');
 
+  // A lost daemon-to-runner connection is not an exit. Even when an older
+  // durable provenance record also says "lost", the current literal state is
+  // recoverable and every surface must say so without offering Resume.
+  const reconnecting = {
+    ...askingWhileBusy,
+    id: 'runner-reconnecting',
+    working: false,
+    idleReason: undefined,
+    unreachable: true,
+    unreachableReason: 'runner-lost',
+    provenanceStatus: 'lost'
+  };
+  assert.equal(classifySession(reconnecting).state, 'reconnecting');
+  assert.equal(classifySession(reconnecting).label, 'Reconnecting');
+  assert.equal(sessionIsFinished(reconnecting), false);
+  assert.equal(sessionNeedsYou(reconnecting), false);
+
   // Ordinary live states.
   const working = { ...askingWhileBusy, id: 'working', idleReason: undefined };
   assert.equal(classifySession(working).state, 'working');
@@ -198,13 +226,13 @@ try {
 
   // Every state carries exactly one label and one `is-<state>` class token.
   const states = new Set();
-  for (const sample of [crashed, endedButAsking, askingWhileBusy, working, liveMcpWarning, ready]) {
+  for (const sample of [reconnecting, crashed, endedButAsking, askingWhileBusy, working, liveMcpWarning, ready]) {
     const status = classifySession(sample);
     assert.equal(status.className, `is-${status.state}`);
     assert.ok(status.label.length > 0);
     states.add(status.state);
   }
-  assert.equal(states.size, 6, 'each sample must land in a distinct state');
+  assert.equal(states.size, 7, 'each sample must land in a distinct state');
 
   console.log('session status smoke: ok');
 } finally {

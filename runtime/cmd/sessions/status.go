@@ -98,25 +98,7 @@ func (a *app) cmdStatus(args []string) error {
 			lastActivityAt = emittedAt.UnixMilli()
 		}
 	}
-	state := "idle"
-	if current.Exited {
-		state = "exited"
-	} else if current.SetAsideAt != nil {
-		state = "set-aside"
-	} else if current.Working {
-		state = "working"
-	} else {
-		switch current.IdleReason {
-		case "completed":
-			state = "finished"
-		case "needs-input":
-			state = "needs-you"
-		case "failed":
-			state = "failed"
-		case "never-started":
-			state = "not-started"
-		}
-	}
+	state := liveStatusState(*current)
 	output := statusOutput{
 		ID: id, Name: current.Name, Description: current.Description,
 		DescriptionSource: current.DescriptionSource, Kind: "session", Tool: toolOfSession(*current),
@@ -142,6 +124,25 @@ func (a *app) cmdStatus(args []string) error {
 		return writeJSON(a.stdout, output, true)
 	}
 	return a.writeStatusCard(output, lastActivityAt)
+}
+
+// liveStatusState describes the runtime that exists now. IdleReason describes
+// the last turn. Keeping those axes separate prevents a completed turn from
+// making a reusable, live session look terminal to a person or a watcher.
+func liveStatusState(current session) string {
+	if current.Exited {
+		return "exited"
+	}
+	if current.SetAsideAt != nil {
+		return "set-aside"
+	}
+	if current.Working {
+		return "working"
+	}
+	if current.IdleReason == "needs-input" {
+		return "needs-you"
+	}
+	return "idle"
 }
 
 func (a *app) resolveStatusSession(idOrPrefix string) (*session, error) {
