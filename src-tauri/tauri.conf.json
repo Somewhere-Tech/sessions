@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Sessions",
-  "version": "0.2.18",
+  "version": "0.2.19",
   "identifier": "tech.somewhere.sessions",
   "build": {
     "frontendDist": "../frontend/dist",
