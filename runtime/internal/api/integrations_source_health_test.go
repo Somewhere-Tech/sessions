@@ -47,7 +47,7 @@ func TestHistorySourceReportsWhenSessionsOwnCopyStoppedRecording(t *testing.T) {
 		phrase  string
 	}{
 		{id: intactID, damaged: false},
-		{id: damagedID, damaged: true, phrase: "512 MB"},
+		{id: damagedID, damaged: true, phrase: "4096 MB"},
 		// Unknown health is not damage. A mirror written before the sidecar
 		// existed, or one whose sidecar was lost, is not thereby incomplete.
 		{id: unknownID, damaged: false},

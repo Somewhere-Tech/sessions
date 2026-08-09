@@ -83,7 +83,7 @@ func TestDoctorFindsStoredConversationsThatStoppedRecording(t *testing.T) {
 		t.Fatal("a conversation whose health is unknown was reported as damaged")
 	}
 
-	if !strings.Contains(found[ids["capped"]], "512 MB") {
+	if !strings.Contains(found[ids["capped"]], "4096 MB") {
 		t.Fatalf("capped detail = %q, want the size limit named", found[ids["capped"]])
 	}
 	if !strings.Contains(found[ids["failing"]], "5 writes") ||
