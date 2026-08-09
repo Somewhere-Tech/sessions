@@ -141,6 +141,8 @@ Agent controls: --model chooses the provider model for the new session and --eff
 
 Runtime and lifecycle options: --structured creates a Rich structured Claude session instead of the interactive terminal, --pty-claude keeps the terminal explicitly, and --codex-appserver or --pty-codex select the Codex runtime; app-server currently requires full access. --wait-ready holds the create call until the new agent runtime has produced its first structured event or a short settle timeout expires, so an immediately following send is not lost. --on-idle registers a shell command the daemon runs in the session's working directory every time the session becomes idle. --force overrides the live or moved conversation guard. --no-skip-perms is an accepted no-op kept for scripts written before constrained execution became the default, and it cannot be combined with full access. --cmd runs an explicit executable instead of a tool preset.
 
+Long-running child processes: a server started inside Claude or Codex belongs to that provider terminal and may end when the provider exits. If the server must remain inspectable, start it as its own Sessions command, for example `sessions new --name preview --cwd ~/work --cmd npm run dev`. That gives the server a first-class session; explicit End then terminates its complete runner-owned process tree on every supported desktop platform. A process that deliberately detaches itself into a different process group is outside Sessions' lifecycle.
+
 Ownership: --owner records an external principal as the creator instead of the inherited Sessions ancestry, and --detach is required with it when this process already belongs to a session, creating an external root rather than a child.
 
 Examples:
@@ -148,6 +150,7 @@ Examples:
   sessions new --tool codex --permissions inherit --name focused-worker
   sessions new --tool codex --permissions full --lifecycle task 'Review this repository'
   sessions new --tool claude --keep-alive --name manager
+  sessions new --name preview --cwd ~/work --cmd npm run dev
   sessions new --cmd /bin/zsh
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -316,7 +319,7 @@ Usage:
 
 archive old closed records safely
 
-Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. --dry-run only states that default explicitly and changes nothing; it cannot be combined with --apply. Live runners and ancestors with retained descendants are never archived. Recovery history, transcripts, and worktrees are preserved.
+Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. --dry-run only states that default explicitly and changes nothing; it cannot be combined with --apply. Live runners are never archived. Finished parents and children may be archived independently because lineage remains in the append-only ledger. Recovery history, transcripts, and worktrees are preserved.
 
 Examples:
   sessions gc
@@ -336,7 +339,7 @@ Usage:
 
 hide selected closed sessions
 
-Archive one or more explicitly selected closed Sessions records. Archive hides them from normal lists but preserves provider history, transcripts, recovery facts, and worktrees. Live sessions and ancestors with retained descendants are refused.
+Archive one or more explicitly selected closed Sessions records. Archive hides them from normal lists but preserves provider history, transcripts, recovery facts, lineage, and worktrees. Live sessions are refused; finished parents and children may be archived independently.
 
 Examples:
   sessions archive 0123abcd

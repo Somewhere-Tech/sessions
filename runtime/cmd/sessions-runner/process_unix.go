@@ -22,6 +22,14 @@ type unixChildProcess struct {
 func startPlatformChildProcess(command *exec.Cmd, cols, rows int, headless bool) (childProcess, error) {
 	child := &unixChildProcess{command: command, headless: headless}
 	if headless {
+		// A headless runner owns one complete command tree. Put the command in
+		// its own process group so explicit End can terminate that tree just as
+		// the Windows runner terminates its Job Object. Without this, the shell
+		// exits but grandchildren such as dev servers survive unpredictably.
+		if command.SysProcAttr == nil {
+			command.SysProcAttr = &syscall.SysProcAttr{}
+		}
+		command.SysProcAttr.Setpgid = true
 		output, writePipe, err := os.Pipe()
 		if err != nil {
 			return nil, err
@@ -79,14 +87,26 @@ func (p *unixChildProcess) RequestStop() error {
 	if p.command.Process == nil {
 		return os.ErrProcessDone
 	}
-	return p.command.Process.Signal(syscall.SIGHUP)
+	return p.signalOwnedTree(syscall.SIGHUP)
 }
 
 func (p *unixChildProcess) ForceKill() error {
 	if p.command.Process == nil {
 		return os.ErrProcessDone
 	}
-	return p.command.Process.Kill()
+	return p.signalOwnedTree(syscall.SIGKILL)
+}
+
+func (p *unixChildProcess) signalOwnedTree(signal syscall.Signal) error {
+	// PTY children are session leaders (creack/pty sets Setsid); headless
+	// children are process-group leaders above. A negative pid therefore
+	// targets the complete runner-owned tree. A process that deliberately
+	// starts a new session has explicitly detached and is outside this tree.
+	err := syscall.Kill(-p.command.Process.Pid, signal)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
 }
 
 func (p *unixChildProcess) CloseOutput() error {

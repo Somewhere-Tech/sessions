@@ -270,8 +270,8 @@ type CreateSessionRequest struct {
 	// child and can never give that child more access than its parent unless the
 	// user explicitly enabled autonomous delegated work.
 	Permissions string `json:"permissions,omitempty"`
-	// Lifecycle is "task" for a worker that should close after a successful
-	// final response, or "session" for a long-lived conversation.
+	// Lifecycle records caller intent. Provider completion is never permission
+	// to end a runtime; only an explicit End closes it.
 	Lifecycle string `json:"lifecycle,omitempty"`
 	// DisplayParentSessionID is copied only by trusted recovery code. It is
 	// never accepted from the public create-session JSON body.

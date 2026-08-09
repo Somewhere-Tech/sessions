@@ -416,8 +416,8 @@ Auth required. Body is
 one hour and ten years. This is list-retention, not transcript deletion: it
 considers only durably closed ledger records and appends an `archived` fact
 instead of deleting lifecycle events or runner artifacts. A live runner is
-always skipped. An ancestor is also skipped while any descendant remains
-retained, so archiving cannot break the visible lineage graph.
+always skipped. Finished parents and descendants may be archived independently:
+the append-only ledger retains their hierarchy provenance.
 
 The default CLI flow is a dry run (`sessions gc`); mutation requires
 `sessions gc --apply`. Each result item reports `archived`, `would_archive`, or
