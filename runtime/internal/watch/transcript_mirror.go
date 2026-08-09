@@ -46,11 +46,13 @@ const (
 	// transcriptMirrorVersion guards the sidecar shape.
 	transcriptMirrorVersion = 1
 
-	// DefaultTranscriptMirrorCapBytes bounds one session's mirror. Reaching it
-	// stops appends and is recorded in the sidecar; the mirror is never
-	// truncated or rotated, because discarding recorded conversation is the
-	// exact failure this file exists to prevent.
-	DefaultTranscriptMirrorCapBytes = 512 << 20
+	// DefaultTranscriptMirrorCapBytes bounds one session's mirror. The earlier
+	// 512 MiB default was smaller than a 1.15 GiB rollout observed in ordinary
+	// dogfooding, so a healthy backfill could stop before it had preserved the
+	// conversation. Four GiB keeps a deliberate per-session disk guard while
+	// leaving substantial headroom above the largest real provider history we
+	// have measured. Reaching it remains explicit and visible in mirror health.
+	DefaultTranscriptMirrorCapBytes int64 = 4 << 30
 
 	transcriptScanLineCap = 64 << 20
 )
