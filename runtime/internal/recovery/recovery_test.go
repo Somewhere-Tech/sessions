@@ -69,8 +69,8 @@ func TestScratchRecoveryScenarioClassifiesAndReopensExactlyTheOrphan(t *testing.
 	}
 	launcher.Runner(orphanID).Emit(proto.Event{Kind: proto.EventRunnerLost})
 	waitFor(t, func() bool {
-		_, present := manager.Get(orphanID)
-		return !present && hasEvent(t, store, orphanID, ledger.EventRunnerLost)
+		unreachable, present := manager.Get(orphanID)
+		return present && unreachable.Info().Unreachable && hasEvent(t, store, orphanID, ledger.EventRunnerLost)
 	})
 
 	report := scratchReport(t, store, manager, config, claudeRoot, filepath.Join(root, ".codex", "sessions"))

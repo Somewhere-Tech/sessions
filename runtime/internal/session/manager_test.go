@@ -701,11 +701,12 @@ func TestReconnectRepeatsFinalBackoffUntilLiveRunnerReappears(t *testing.T) {
 	launcher.firstConnection().blip()
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for {
-		if _, present := manager.Get(created.ID); !present {
+		unreachable, present := manager.Get(created.ID)
+		if present && unreachable.Info().Unreachable {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("lost scratch connection remained registered")
+			t.Fatal("lost scratch connection did not remain registered as unreachable")
 		}
 		runtime.Gosched()
 	}

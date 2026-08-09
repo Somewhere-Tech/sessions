@@ -395,26 +395,34 @@ func (r *Registry) registerInfo(ctx context.Context, runner proto.Runner, metada
 	if err != nil {
 		return nil, err
 	}
+	var replaced *Session
 	r.mu.Lock()
-	if _, exists := r.sessions[info.ID]; exists {
-		r.mu.Unlock()
-		_ = session.Close()
-		return nil, fmt.Errorf("session %s is already registered", info.ID)
-	}
-	r.sessions[info.ID] = session
-	r.order = append(r.order, info.ID)
-	r.mu.Unlock()
-	session.start(func(event proto.Event) {
-		if event.Kind == proto.EventRunnerLost {
-			// Match sessions.ts: a lost runner disappears immediately, but its
-			// plist and state stay intact so launchd/restart discovery can recover it.
-			r.mu.Lock()
-			if r.sessions[info.ID] == session {
-				delete(r.sessions, info.ID)
-				r.removeOrderLocked(info.ID)
-			}
+	if existing, exists := r.sessions[info.ID]; exists {
+		// A socket loss is not a lifecycle end. Keep that durable session in
+		// the registry so reads and controls do not turn into a transient 404,
+		// then atomically replace only that unreachable connection when the
+		// same runner comes back. A reachable duplicate remains an ownership
+		// error: two live connections must never race to control one runner.
+		if !existing.Info().Unreachable {
 			r.mu.Unlock()
 			_ = session.Close()
+			return nil, fmt.Errorf("session %s is already registered", info.ID)
+		}
+		replaced = existing
+		r.sessions[info.ID] = session
+	} else {
+		r.sessions[info.ID] = session
+		r.order = append(r.order, info.ID)
+	}
+	r.mu.Unlock()
+	if replaced != nil {
+		_ = replaced.Close()
+	}
+	session.start(func(event proto.Event) {
+		if event.Kind == proto.EventRunnerLost {
+			// The Session already recorded Unreachable before this callback.
+			// Retain it as the readable/control-plane placeholder until a
+			// successful reconnect replaces this exact object above.
 			return
 		}
 		if r.onRunnerExit != nil {
@@ -845,9 +853,9 @@ func (r *Registry) Discover(ctx context.Context) error {
 			continue
 		}
 		r.mu.RLock()
-		_, exists := r.sessions[id]
+		existing, exists := r.sessions[id]
 		r.mu.RUnlock()
-		if exists {
+		if exists && !existing.Info().Unreachable {
 			continue
 		}
 		runner, err := r.launcher.Attach(ctx, metadata.Info)

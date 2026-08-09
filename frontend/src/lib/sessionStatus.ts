@@ -21,7 +21,12 @@ import type { SessionInfo } from '../types';
 //
 // ── Precedence, and why it is in this order ────────────────────────────────
 //
-// 1. failed — isCrashedSession(). Highest because it is the only state where
+// 1. reconnecting — session.unreachable. The daemon lost its runner socket
+//    but did not observe an exit. This outranks stale provenance and activity
+//    hints so a recoverable connection problem is never presented as an end.
+//
+// 2. failed — isCrashedSession(). Highest among known lifecycle outcomes
+//    because it is the only state where
 //    the user may have lost a runtime they did not choose to lose, and it is
 //    true of live sessions too (provenanceStatus 'lost'/'invalid' without an
 //    exit frame). Nothing below it may hide it.
@@ -71,6 +76,7 @@ import type { SessionInfo } from '../types';
 // ───────────────────────────────────────────────────────────────────────────
 
 export type SessionStatusState =
+  | 'reconnecting'
   | 'failed'
   | 'ended'
   | 'needs-you'
@@ -107,6 +113,7 @@ export interface SessionStatus {
 }
 
 const STATE_LABELS: Record<SessionStatusState, string> = {
+  reconnecting: 'Reconnecting',
   failed: 'Failed',
   ended: 'Ended',
   'needs-you': 'Needs you',
@@ -118,6 +125,7 @@ const STATE_LABELS: Record<SessionStatusState, string> = {
 };
 
 const STATE_TONES: Record<SessionStatusState, SessionStatusTone> = {
+  reconnecting: 'ready',
   failed: 'attention',
   ended: 'ended',
   'needs-you': 'needs',
@@ -139,6 +147,7 @@ export interface ClassifyOptions {
 }
 
 function statusState(session: SessionInfo, options: ClassifyOptions): SessionStatusState {
+  if (session.unreachable) return 'reconnecting';
   if (isCrashedSession(session)) return 'failed';
   if (session.exited) return 'ended';
   if (session.idleReason === 'needs-input') return 'needs-you';

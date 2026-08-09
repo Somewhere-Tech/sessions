@@ -11,6 +11,7 @@ import { PIN_UNAVAILABLE_WHEN_ENDED } from '../lib/workingSet';
 // Long-form expansions of the classifier's one-word state. Same ordering,
 // same meaning — this view has room for a sentence, not a different answer.
 const STATE_DETAIL: Record<SessionStatusState, string> = {
+  reconnecting: 'Sessions lost the runner connection and is recovering this session',
   failed: 'The runtime stopped unexpectedly; saved history is still available',
   ended: 'The runtime is no longer running',
   'needs-you': 'Waiting for your response',

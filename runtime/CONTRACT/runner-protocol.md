@@ -236,8 +236,11 @@ For both a newly created runner and startup discovery, sessionsd:
 
 Replay OUTPUT frames retain the runner's exact sequence via `pushAt`. A clean
 EXIT updates session state and disconnects. A socket close without EXIT emits a
-daemon `runner-lost` event, removes the session, and schedules conservative
-reattach attempts after 1, 3, and 10 seconds.
+daemon `runner-lost` event and marks the registered session unreachable without
+ending or removing it. Conservative reattach attempts start after 1, 3, and 10
+seconds and repeat the final delay; periodic discovery may reconnect sooner.
+The recovered connection atomically replaces the unreachable one under the
+same Sessions ID.
 
 ## `.events` on-disk records
 

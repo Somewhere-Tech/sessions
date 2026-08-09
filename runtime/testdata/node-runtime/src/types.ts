@@ -138,10 +138,10 @@ export type ServerMsg =
     }
   | { type: 'output'; seq: number; data: string; sessionId?: string }
   | { type: 'gap'; oldestAvailableSeq: number; currentSeq: number; sessionId?: string }
-  // reason='runner-lost' marks a synthetic exit the daemon emits when a
-  // runner disconnects without a clean EXIT frame (crash), so clients
-  // unfreeze instead of hanging on a dead session.
-  | { type: 'exit'; code: number | null; signal: string | null; seq: number; sessionId?: string; reason?: string }
+  | { type: 'exit'; code: number | null; signal: string | null; seq: number; sessionId?: string }
+  // Losing a runner connection proves no process exit. Current clients keep
+  // the session visible and retry attachment instead of offering Resume.
+  | { type: 'unreachable'; reason: string; seq: number; sessionId?: string }
   | { type: 'error'; message: string; sessionId?: string }
   | { type: 'rpcError'; requestId: string; message: string; code?: string; sessionId?: string }
   | { type: 'snapshot'; requestId: string; text: string; seq: number; sessionId: string }

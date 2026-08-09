@@ -149,17 +149,13 @@ async function attachSessionStream(
   const onClaudeEvent = (ev: ClaudeSessionEvent): void => {
     send(ws, { type: 'claudeEvent', event: ev, ...tag });
   };
-  // Contract #4: when the runner process disconnects while the session is
-  // still alive (e.g. launchd killed the runner), emit a synthetic exit
-  // frame so the browser's session view unfreezes rather than spinning
-  // forever. code=null + reason='runner-lost' distinguishes this from a
-  // real PTY exit; the client's existing exit handling path fires for both.
+  // A socket disconnect proves only that this daemon cannot currently reach
+  // the runner. Keep it distinct from EXIT so clients recover the same
+  // session instead of offering a duplicate Resume.
   const onRunnerLost = (): void => {
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({
-        type: 'exit',
-        code: null,
-        signal: null,
+        type: 'unreachable',
         seq: replay.current,
         reason: 'runner-lost',
         ...tag

@@ -88,18 +88,18 @@ func (g MassKillGuard) Check(count int, force bool) error {
 }
 
 type ManagerOptions struct {
-	MassKillLimit      int
-	ActivityInterval   time.Duration
-	DiscoveryRetries   int
-	DiscoveryDelay     time.Duration
-	DisableWatchers    bool
+	MassKillLimit    int
+	ActivityInterval time.Duration
+	DiscoveryRetries int
+	DiscoveryDelay   time.Duration
+	DisableWatchers  bool
 	// ProcessAlive and ProcessCommand are test seams over the shared
 	// internal/liveness probes. The identity rule they feed
 	// (liveness.CommandMatches) is never overridden, so a test can simulate a
 	// process table without also redefining what counts as this session's
 	// runner. Use Manager.runnerAlive rather than either seam directly.
-	ProcessAlive   func(int) bool
-	ProcessCommand func(int) string
+	ProcessAlive       func(int) bool
+	ProcessCommand     func(int) string
 	Boundaries         ledger.BoundaryWriter
 	Observations       ledger.ObservationWriter
 	Retention          ledger.RetentionWriter
@@ -2214,12 +2214,12 @@ func (m *Manager) scheduleReconnect(id string, delays []time.Duration) {
 		}
 		if existing, exists := m.registry.Get(id); exists {
 			info := existing.Info()
-			// Keep trying while the daemon holds a session it cannot reach.
-			// Only a reaped status ends the attempt.
-			if info.Exited || info.Unreachable {
-				m.scheduleReconnect(id, next)
+			if info.Exited || !info.Unreachable {
+				return
 			}
-			return
+			// An unreachable registry entry is the durable placeholder, not a
+			// live connection. Continue below; RegisterMetadata atomically swaps
+			// it for the reattached connection without making the ID disappear.
 		}
 		path := state.For(m.config.RunnerStateDir, id).Socket
 		if !ipc.MayExist(path) {
@@ -2313,7 +2313,7 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 	}
 	if err == nil {
 		for _, id := range artifactIDs {
-			if _, exists := m.registry.Get(id); exists {
+			if existing, exists := m.registry.Get(id); exists && !existing.Info().Unreachable {
 				continue
 			}
 			metadataPath := filepath.Join(m.config.RunnerStateDir, id+".json")

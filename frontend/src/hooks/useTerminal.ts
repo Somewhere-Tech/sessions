@@ -264,6 +264,13 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       setLoadingEarlierClaudeEvents(false);
 
       let ptyExited = false;
+      // A runner socket can disappear without the provider process ending.
+      // Keep that distinction local as well as in daemon state: the composer
+      // refuses sends while the runner is unreachable, and this hook retries
+      // attachment until the daemon has reconnected the same durable session.
+      let runnerUnavailable = false;
+      let runnerReconnectTimer: number | null = null;
+      let runnerReconnectAttempt = 0;
       // Microtask-batched buffer for incoming claudeEvent messages.
       // On a fresh attach the server replays history (potentially
       // thousands of events); coalescing into a single setState avoids
@@ -462,9 +469,45 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       };
       fitTerminalRef.current = applyFit;
 
+      const clearRunnerReconnect = (): void => {
+        if (runnerReconnectTimer !== null) {
+          window.clearTimeout(runnerReconnectTimer);
+          runnerReconnectTimer = null;
+        }
+        runnerReconnectAttempt = 0;
+      };
+
+      const scheduleRunnerReconnect = (): void => {
+        if (disposed || ptyExited || !runnerUnavailable || runnerReconnectTimer !== null) return;
+        const delays = [1200, 3000, 8000, 10_000] as const;
+        const delay = delays[Math.min(runnerReconnectAttempt, delays.length - 1)]!;
+        runnerReconnectAttempt += 1;
+        runnerReconnectTimer = window.setTimeout(() => {
+          runnerReconnectTimer = null;
+          if (disposed || ptyExited || !runnerUnavailable) return;
+          void attachNow(isActiveRef.current).finally(() => {
+            if (runnerUnavailable) scheduleRunnerReconnect();
+          });
+        }, delay);
+      };
+
       const onMessage = (msg: ServerMsg): void => {
         if (disposed) return;
         if (msg.type === 'hello') {
+          if (msg.session.unreachable) {
+            runnerUnavailable = true;
+            setStatus('reconnecting');
+            scheduleRunnerReconnect();
+          } else {
+            runnerUnavailable = false;
+            clearRunnerReconnect();
+            sendInputRef.current = (data: string): void => { channel?.sendInput(data); };
+            sendConfirmedInputRef.current = (data: string): Promise<void> =>
+              sendSessionInput(muxUrl, sessionId, data);
+            submitMessageRef.current = (data: string): Promise<void> =>
+              submitSessionMessage(muxUrl, sessionId, data);
+            setStatus('open');
+          }
           setResumedFromSeq(msg.resumedFromSeq);
           // Initialize our local claudeEvents counter to the server's
           // starting index — the server caps initial replay to the
@@ -525,6 +568,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           flushOutput();
           if (outputRaf !== null) { cancelAnimationFrame(outputRaf); outputRaf = null; }
           ptyExited = true;
+          clearRunnerReconnect();
           setExitInfo({ code: msg.code, signal: msg.signal });
           setStatus('closed');
           term?.writeln(
@@ -534,6 +578,21 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           // socket; detach locally too so the manager forgets us (and
           // can close the socket when nothing else is attached).
           channel?.detach();
+          return;
+        }
+        if (msg.type === 'unreachable') {
+          const firstNotice = !runnerUnavailable;
+          runnerUnavailable = true;
+          setStatus('reconnecting');
+          sendInputRef.current = (): void => {};
+          sendConfirmedInputRef.current = (): Promise<void> =>
+            Promise.reject(new Error('Sessions is reconnecting to this runner. Your message was not sent.'));
+          submitMessageRef.current = (): Promise<void> =>
+            Promise.reject(new Error('Sessions is reconnecting to this runner. Your message was not sent.'));
+          if (firstNotice) {
+            term?.writeln('\r\n\x1b[2m[runner connection lost; Sessions is reconnecting]\x1b[0m');
+          }
+          scheduleRunnerReconnect();
           return;
         }
         if (msg.type === 'error') {
@@ -587,7 +646,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         // Once this session has terminally ended (exit / unknown
         // session) the shared socket's state no longer describes us.
         if (disposed || ptyExited) return;
-        setStatus(s);
+        setStatus(s === 'open' && runnerUnavailable ? 'reconnecting' : s);
         if (s === 'open') term?.focus();
       };
 
@@ -718,6 +777,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         window.removeEventListener('resize', onResize);
         ro?.disconnect();
         if (resizeSendTimer !== null) window.clearTimeout(resizeSendTimer);
+        clearRunnerReconnect();
         if (outputRaf !== null) { cancelAnimationFrame(outputRaf); outputRaf = null; }
         dataDisp?.dispose();
         scrollDisp?.dispose();

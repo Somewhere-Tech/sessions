@@ -66,8 +66,8 @@ func TestRecoverCLIEndToEndAgainstScratchManager(t *testing.T) {
 	}
 	launcher.Runner(orphanID).Emit(proto.Event{Kind: proto.EventRunnerLost})
 	cliWaitFor(t, func() bool {
-		_, present := manager.Get(orphanID)
-		return !present && cliHasLedgerEvent(t, store, orphanID, ledger.EventRunnerLost)
+		unreachable, present := manager.Get(orphanID)
+		return present && unreachable.Info().Unreachable && cliHasLedgerEvent(t, store, orphanID, ledger.EventRunnerLost)
 	})
 
 	server := httptest.NewServer(daemonapi.New(config, manager, manager.Push()))

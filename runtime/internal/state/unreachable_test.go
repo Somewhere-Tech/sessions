@@ -19,7 +19,7 @@ import (
 //
 // A lost socket makes a session unreachable. Nothing more.
 func TestRunnerLostMarksUnreachableAndNotExited(t *testing.T) {
-	session, launcher, id := newLostRunnerSession(t)
+	session, registry, launcher, id := newLostRunnerSession(t)
 
 	launcher.Runner(id).AddOutput("work that really happened\n")
 	launcher.Runner(id).Emit(proto.Event{Kind: proto.EventRunnerLost})
@@ -44,6 +44,10 @@ func TestRunnerLostMarksUnreachableAndNotExited(t *testing.T) {
 	if info.Working {
 		t.Fatal("a session with no socket cannot be observed working")
 	}
+	registered, ok := registry.Get(id)
+	if !ok || registered != session {
+		t.Fatal("an unreachable session disappeared from the live registry")
+	}
 
 	// A read is served from durable history and needs no process at all. An
 	// unreachable session stays attachable, and the websocket path must not
@@ -62,9 +66,40 @@ func TestRunnerLostMarksUnreachableAndNotExited(t *testing.T) {
 	}
 }
 
+func TestReconnectAtomicallyReplacesUnreachableSession(t *testing.T) {
+	oldSession, registry, launcher, id := newLostRunnerSession(t)
+	launcher.Runner(id).Emit(proto.Event{Kind: proto.EventRunnerLost})
+	awaitInfo(t, oldSession, "unreachable", func(info SessionInfo) bool { return info.Unreachable })
+
+	info := oldSession.Info()
+	info.Unreachable = false
+	info.UnreachableReason = ""
+	info.UnreachableSince = nil
+	reconnectedRunner := prototest.NewRunner(proto.RunnerInfo{
+		ID: info.ID, Cmd: info.Cmd, Args: info.Args, Cwd: info.Cwd,
+		Cols: info.Cols, Rows: info.Rows, CreatedAt: info.CreatedAt, PID: info.PID,
+		ProtocolVersion: proto.ProtocolVersion,
+	})
+	reconnected, err := registry.RegisterMetadata(context.Background(), reconnectedRunner, RunnerMetadata{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, ok := registry.Get(id)
+	if !ok || registered != reconnected {
+		t.Fatal("reattached runner did not replace the unreachable registry entry")
+	}
+	if registered == oldSession || registered.Info().Unreachable {
+		t.Fatalf("registry retained stale unreachable connection: %#v", registered.Info())
+	}
+	listed := registry.List(false)
+	if len(listed) != 1 || listed[0].ID != id {
+		t.Fatalf("atomic reconnect duplicated or lost the session: %#v", listed)
+	}
+}
+
 // A real exit still is one, with every exit detail intact.
 func TestRunnerExitIsStillAnExit(t *testing.T) {
-	session, launcher, id := newLostRunnerSession(t)
+	session, _, launcher, id := newLostRunnerSession(t)
 
 	code := 3
 	launcher.Runner(id).Emit(proto.Event{
@@ -84,7 +119,7 @@ func TestRunnerExitIsStillAnExit(t *testing.T) {
 	}
 }
 
-func newLostRunnerSession(t *testing.T) (*Session, *prototest.Launcher, string) {
+func newLostRunnerSession(t *testing.T) (*Session, *Registry, *prototest.Launcher, string) {
 	t.Helper()
 	root := t.TempDir()
 	config := Config{
@@ -101,7 +136,7 @@ func newLostRunnerSession(t *testing.T) (*Session, *prototest.Launcher, string) 
 	if !ok {
 		t.Fatal("created session was not registered")
 	}
-	return session, launcher, created.ID
+	return session, registry, launcher, created.ID
 }
 
 // awaitInfo polls the session's own view rather than a runner-side signal: the

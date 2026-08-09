@@ -103,7 +103,7 @@ records; it does not itself suppress attach replay.
 
 Raw output replay and gap delivery are both suppressed by
 `outputReplay=false`, and no live output listener is installed. Hello,
-structured events, exit, and runner-lost still flow.
+structured events, exit, and unreachable state still flow.
 
 ## Client to server messages
 
@@ -250,17 +250,20 @@ resync banner, and sets its local last sequence to
 {"type":"exit","code":0,"signal":null,"seq":30,"sessionId":"<mux only>"}
 ```
 
-`code` and `signal` are nullable. A runner socket disconnect without an EXIT
-frame produces the synthetic form:
+`code` and `signal` are nullable. This message is emitted only for a real
+runner EXIT frame. A socket disconnect without an EXIT is not an exit and uses
+the separate recoverable form:
 
 ```json
-{"type":"exit","code":null,"signal":null,"seq":30,"reason":"runner-lost","sessionId":"<mux only>"}
+{"type":"unreachable","reason":"runner-lost","seq":30,"sessionId":"<mux only>"}
 ```
 
-For runner loss, the emitted `seq` is the `replay.current` value captured when
-the attachment was established, even if later output arrived. The frontend's
-declared `ServerMsg` currently omits `reason` and its exit handler treats both
-forms identically.
+`unreachable` means only that sessionsd lost its runner connection. The session
+remains listed, readable, and attachable; it is not marked ended. Mux mode
+releases that one attachment so the client can retry while other streams stay
+open. Single-session mode sends the message, then closes with WebSocket status
+1012 so the client reconnects. A successful runner reattach replaces the
+unreachable connection under the same Sessions ID.
 
 ### `error`
 

@@ -115,6 +115,10 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 			_ = peer.connection.Close(websocket.StatusNormalClosure, "pty exited")
 			cancel()
 		},
+		onUnavailable: func() {
+			_ = peer.connection.Close(websocket.StatusServiceRestart, "runner reconnecting")
+			cancel()
+		},
 	})
 	for {
 		messageType, payload, err := peer.connection.Read(ctx)
@@ -248,7 +252,7 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 			id := message.SessionID
 			go streamAttachment(ctx, peer, attachment, streamOptions{
 				sessionID: id, includeOutput: includeOutput, includeClaudeLive: includeClaudeLive,
-				onExit: func() { detach(id) },
+				onExit: func() { detach(id) }, onUnavailable: func() { detach(id) },
 			})
 		case "detach":
 			if message.SessionID != "" {
@@ -385,6 +389,7 @@ type streamOptions struct {
 	includeOutput     bool
 	includeClaudeLive bool
 	onExit            func()
+	onUnavailable     func()
 }
 
 func streamAttachment(ctx context.Context, peer *wsPeer, attachment state.Attachment, options streamOptions) {
@@ -406,10 +411,16 @@ func streamAttachment(ctx context.Context, peer *wsPeer, attachment state.Attach
 				continue
 			}
 			message = map[string]any{"type": "claudeEvent", "event": json.RawMessage(event.CodexEvent)}
-		case proto.EventExit, proto.EventRunnerLost:
+		case proto.EventExit:
 			message = exitMessage(event.Exit, options.sessionID)
 			if err := peer.send(ctx, message); err == nil && options.onExit != nil {
 				options.onExit()
+			}
+			return
+		case proto.EventRunnerLost:
+			message = unreachableMessage(event.Exit, options.sessionID)
+			if err := peer.send(ctx, message); err == nil && options.onUnavailable != nil {
+				options.onUnavailable()
 			}
 			return
 		default:
@@ -479,6 +490,18 @@ func exitMessage(exit proto.ExitEvent, sessionID string) map[string]any {
 	}
 	if exit.Reason != "" {
 		message["reason"] = exit.Reason
+	}
+	addSessionID(message, sessionID)
+	return message
+}
+
+func unreachableMessage(lost proto.ExitEvent, sessionID string) map[string]any {
+	reason := lost.Reason
+	if reason == "" {
+		reason = "runner-lost"
+	}
+	message := map[string]any{
+		"type": "unreachable", "reason": reason, "seq": lost.Seq,
 	}
 	addSessionID(message, sessionID)
 	return message
