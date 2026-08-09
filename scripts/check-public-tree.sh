@@ -49,6 +49,7 @@ bad=
 stale=
 unexpected=
 external_design_refs=
+legacy_branding=
 
 allowed_roots="$(cat scripts/public-paths.txt)"
 while IFS= read -r tracked_path; do
@@ -124,6 +125,27 @@ scan git grep -n -i -E \
   ':!scripts/check-public-tree.sh'
 external_design_refs="$scan_output"
 
+# Historical identifiers remain inside the isolated runtime compatibility
+# fixture and the Go migration adapters so Sessions can recover work created
+# before the rename. They are not product branding and must never leak back
+# into user-facing documentation, clients, installers, or release metadata.
+scan git grep -n -i -E \
+  '(pretty[- _]?pty|prettygo|prettyd)' -- \
+  AGENTS.md \
+  ARCHITECTURE.md \
+  README.md \
+  ROADMAP.md \
+  .github \
+  Formula \
+  docs \
+  frontend \
+  release \
+  site \
+  src-tauri \
+  package.json \
+  ':!scripts/check-public-tree.sh'
+legacy_branding="$scan_output"
+
 if [ -n "$bad" ]; then
   printf '%s\n' "private product artifacts are tracked in the public tree:" >&2
   printf '%s' "$bad" | sort -u >&2
@@ -145,6 +167,12 @@ fi
 if [ -n "$external_design_refs" ]; then
   printf '%s\n' "public files still refer to external product-design sources:" >&2
   printf '%s\n' "$external_design_refs" >&2
+  exit 1
+fi
+
+if [ -n "$legacy_branding" ]; then
+  printf '%s\n' "user-facing files still contain retired product branding:" >&2
+  printf '%s\n' "$legacy_branding" >&2
   exit 1
 fi
 

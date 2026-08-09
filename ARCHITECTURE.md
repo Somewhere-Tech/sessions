@@ -48,19 +48,20 @@ commitment from the presence of the embedded assets.
 
 ## Compatibility boundary
 
-The shipped Go implementation owns current product behavior. The retired
-TypeScript implementation in `runtime/testdata/node-runtime/` is retained only
-as protocol and mini-cutover evidence until that later migration is complete. The stable
-external contracts are documented in [`runtime/CONTRACT/`](runtime/CONTRACT/):
+The shipped Go implementation owns all current product behavior. The retired
+TypeScript implementation in `runtime/testdata/node-runtime/` is an inert test
+fixture retained only to prove compatibility with sessions created before the
+native-runtime cutover. It is not bundled, installed, or run in production. The
+stable external contracts are documented in [`runtime/CONTRACT/`](runtime/CONTRACT/):
 
 - [`http-api.md`](runtime/CONTRACT/http-api.md)
 - [`ws.md`](runtime/CONTRACT/ws.md)
 - [`runner-protocol.md`](runtime/CONTRACT/runner-protocol.md)
 - [`state-dir.md`](runtime/CONTRACT/state-dir.md)
 
-The frontend continues to work against either daemon while the production mini
-remains on Node. New product work belongs in the Go runtime, React frontend, or
-Tauri client—not in the TypeScript daemon.
+The frontend targets the stable contract exposed by the Go daemon. New product
+work belongs in the Go runtime, React frontend, or Tauri client—not in the
+retired TypeScript fixture.
 
 ## Session lifecycle
 
