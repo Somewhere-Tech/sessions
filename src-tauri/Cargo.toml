@@ -1,6 +1,6 @@
 [package]
 name = "sessions-app"
-version = "0.2.17"
+version = "0.2.18"
 description = "Sessions native client and release package for the local Sessions runtime"
 authors = ["Uzair Haq"]
 license = "MIT"

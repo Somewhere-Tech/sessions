@@ -131,7 +131,7 @@ that do not have `gh` can use the direct HTTPS form:
 ```sh
 # Substitute the version you intend to install. The releases page always shows
 # the current one: https://github.com/somewhere-tech/sessions/releases/latest
-VERSION=0.2.17
+VERSION=0.2.18
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}.sha256"
