@@ -69,6 +69,8 @@ type SessionMetadata struct {
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
 	Pinned                 bool
+	LastHumanMessageAt     *int64
+	LastAgentMessageAt     *int64
 	DelegationKind         string
 	Permissions            string
 	Lifecycle              string
@@ -464,8 +466,10 @@ func (r *Registry) RegisterMetadata(ctx context.Context, runner proto.Runner, me
 		Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), Pinned: metadata.Pinned,
-		DelegationKind: metadata.DelegationKind,
-		Permissions:    metadata.Permissions, Lifecycle: metadata.Lifecycle,
+		LastHumanMessageAt: cloneInt64Pointer(metadata.LastHumanMessageAt),
+		LastAgentMessageAt: cloneInt64Pointer(metadata.LastAgentMessageAt),
+		DelegationKind:     metadata.DelegationKind,
+		Permissions:        metadata.Permissions, Lifecycle: metadata.Lifecycle,
 		OnIdle: onIdle, Kind: metadata.Kind, SpecPath: metadata.SpecPath,
 		Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
@@ -488,19 +492,14 @@ func (r *Registry) UpdateTags(id string, requested map[string]string) (map[strin
 	}
 	session, live := r.Get(id)
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
-	encoded, err := os.ReadFile(path)
+	_, err = updateMetadata(path, func(metadata *Metadata) error {
+		metadata.Tags = CloneTags(tags)
+		return nil
+	})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 		}
-		return nil, fmt.Errorf("read session tags: %w", err)
-	}
-	var metadata Metadata
-	if err := json.Unmarshal(encoded, &metadata); err != nil {
-		return nil, fmt.Errorf("decode session tags: %w", err)
-	}
-	metadata.Tags = CloneTags(tags)
-	if err := WriteMetadata(path, metadata); err != nil {
 		return nil, fmt.Errorf("persist session tags: %w", err)
 	}
 	if live {
@@ -543,20 +542,15 @@ func (r *Registry) UpdateName(id, requested string) (string, error) {
 	}
 	session, live := r.Get(id)
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
-	encoded, err := os.ReadFile(path)
+	_, err = updateMetadata(path, func(metadata *Metadata) error {
+		metadata.Name = name
+		metadata.NameSource = NameSourceExplicit
+		return nil
+	})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 		}
-		return "", fmt.Errorf("read session name: %w", err)
-	}
-	var metadata Metadata
-	if err := json.Unmarshal(encoded, &metadata); err != nil {
-		return "", fmt.Errorf("decode session name: %w", err)
-	}
-	metadata.Name = name
-	metadata.NameSource = NameSourceExplicit
-	if err := WriteMetadata(path, metadata); err != nil {
 		return "", fmt.Errorf("persist session name: %w", err)
 	}
 	if live {
@@ -593,30 +587,35 @@ func (r *Registry) AdoptProviderTitle(id, title string) (bool, error) {
 		return false, nil
 	}
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
-	encoded, err := os.ReadFile(path)
+	changed := false
+	explicit := false
+	_, err = updateMetadata(path, func(metadata *Metadata) error {
+		if metadata.NameSource == NameSourceExplicit {
+			explicit = true
+			return nil
+		}
+		if metadata.Name == name && metadata.NameSource == NameSourceProvider {
+			return nil
+		}
+		metadata.Name = name
+		metadata.NameSource = NameSourceProvider
+		changed = true
+		return nil
+	})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 		}
-		return false, fmt.Errorf("read session name: %w", err)
+		return false, fmt.Errorf("persist session name: %w", err)
 	}
-	var metadata Metadata
-	if err := json.Unmarshal(encoded, &metadata); err != nil {
-		return false, fmt.Errorf("decode session name: %w", err)
-	}
-	if metadata.NameSource == NameSourceExplicit {
+	if explicit {
 		if live {
 			session.setNameSource(NameSourceExplicit)
 		}
 		return false, nil
 	}
-	if metadata.Name == name && metadata.NameSource == NameSourceProvider {
+	if !changed {
 		return false, nil
-	}
-	metadata.Name = name
-	metadata.NameSource = NameSourceProvider
-	if err := WriteMetadata(path, metadata); err != nil {
-		return false, fmt.Errorf("persist session name: %w", err)
 	}
 	if live {
 		session.setName(name, NameSourceProvider)
@@ -633,19 +632,14 @@ func (r *Registry) ReleaseName(id string) (string, error) {
 	}
 	session, live := r.Get(id)
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
-	encoded, err := os.ReadFile(path)
+	metadata, err := updateMetadata(path, func(metadata *Metadata) error {
+		metadata.NameSource = NameSourceLaunch
+		return nil
+	})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 		}
-		return "", fmt.Errorf("read session name: %w", err)
-	}
-	var metadata Metadata
-	if err := json.Unmarshal(encoded, &metadata); err != nil {
-		return "", fmt.Errorf("decode session name: %w", err)
-	}
-	metadata.NameSource = NameSourceLaunch
-	if err := WriteMetadata(path, metadata); err != nil {
 		return "", fmt.Errorf("persist session name: %w", err)
 	}
 	if !live {
@@ -672,26 +666,21 @@ func (r *Registry) UpdateDisplayParent(id, parentID string) (string, error) {
 	}
 	session, live := r.Get(id)
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
-	encoded, err := os.ReadFile(path)
+	_, err := updateMetadata(path, func(metadata *Metadata) error {
+		parent := parentID
+		metadata.DisplayParentSessionID = &parent
+		return nil
+	})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 		}
-		return "", fmt.Errorf("read session display parent: %w", err)
-	}
-	var metadata Metadata
-	if err := json.Unmarshal(encoded, &metadata); err != nil {
-		return "", fmt.Errorf("decode session display parent: %w", err)
-	}
-	parent := parentID
-	metadata.DisplayParentSessionID = &parent
-	if err := WriteMetadata(path, metadata); err != nil {
 		return "", fmt.Errorf("persist session display parent: %w", err)
 	}
 	if live {
-		session.setDisplayParentSessionID(parent)
+		session.setDisplayParentSessionID(parentID)
 	}
-	return parent, nil
+	return parentID, nil
 }
 
 // UpdateSetAside persists working-set organization without changing runner
@@ -703,24 +692,19 @@ func (r *Registry) UpdateSetAside(id string, setAside bool) (*int64, error) {
 	}
 	session, live := r.Get(id)
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
-	encoded, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
-		}
-		return nil, fmt.Errorf("read session working-set state: %w", err)
-	}
-	var metadata Metadata
-	if err := json.Unmarshal(encoded, &metadata); err != nil {
-		return nil, fmt.Errorf("decode session working-set state: %w", err)
-	}
 	var setAsideAt *int64
 	if setAside {
 		now := time.Now().UnixMilli()
 		setAsideAt = &now
 	}
-	metadata.SetAsideAt = cloneInt64Pointer(setAsideAt)
-	if err := WriteMetadata(path, metadata); err != nil {
+	_, err := updateMetadata(path, func(metadata *Metadata) error {
+		metadata.SetAsideAt = cloneInt64Pointer(setAsideAt)
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+		}
 		return nil, fmt.Errorf("persist session working-set state: %w", err)
 	}
 	if live {
@@ -734,29 +718,20 @@ func (r *Registry) UpdateSetAside(id string, setAside bool) (*int64, error) {
 // the neighbouring edits do, so an acknowledged pin survives daemon restart and
 // runner re-adoption; that durability is most of what a pin is for, because the
 // automatic machinery it exempts a session from runs after a restart too.
-//
-// This shares the known lost-update window every edit on this document has: a
-// concurrent runner write between the read and the write can drop the change.
-// The pattern is deliberately not diverged from here.
 func (r *Registry) UpdatePinned(id string, pinned bool) (bool, error) {
 	if !validMetadataID(id) {
 		return false, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 	}
 	session, live := r.Get(id)
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
-	encoded, err := os.ReadFile(path)
+	_, err := updateMetadata(path, func(metadata *Metadata) error {
+		metadata.Pinned = pinned
+		return nil
+	})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
 		}
-		return false, fmt.Errorf("read session pin state: %w", err)
-	}
-	var metadata Metadata
-	if err := json.Unmarshal(encoded, &metadata); err != nil {
-		return false, fmt.Errorf("decode session pin state: %w", err)
-	}
-	metadata.Pinned = pinned
-	if err := WriteMetadata(path, metadata); err != nil {
 		return false, fmt.Errorf("persist session pin state: %w", err)
 	}
 	if live {
@@ -794,24 +769,24 @@ func (r *Registry) SetFirstMessageDescription(id, description string) (bool, err
 		return false, nil
 	}
 	path := filepath.Join(r.config.RunnerStateDir, id+".json")
-	encoded, err := os.ReadFile(path)
+	blocked := false
+	_, err := updateMetadata(path, func(metadata *Metadata) error {
+		if metadata.DescriptionSource == DescriptionExplicit {
+			blocked = true
+			return nil
+		}
+		metadata.Description = description
+		metadata.DescriptionSource = DescriptionFirstMessage
+		return nil
+	})
 	if err != nil {
 		return true, err
 	}
-	var metadata Metadata
-	if err := json.Unmarshal(encoded, &metadata); err != nil {
-		return true, err
-	}
-	if metadata.DescriptionSource == DescriptionExplicit {
+	if blocked {
 		return false, nil
 	}
 	if !session.setFirstMessageDescription(description) {
 		return false, nil
-	}
-	metadata.Description = description
-	metadata.DescriptionSource = DescriptionFirstMessage
-	if err := WriteMetadata(path, metadata); err != nil {
-		return true, err
 	}
 	return true, nil
 }
@@ -1059,8 +1034,10 @@ func writeMetadata(dir string, info proto.RunnerInfo, sessionMetadata SessionMet
 		DescriptionSource: sessionMetadata.DescriptionSource, Kind: sessionMetadata.Kind, SpecPath: sessionMetadata.SpecPath,
 		Tags: CloneTags(sessionMetadata.Tags), DisplayParentSessionID: cloneStringPointer(sessionMetadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(sessionMetadata.SetAsideAt), Pinned: sessionMetadata.Pinned,
-		DelegationKind: sessionMetadata.DelegationKind,
-		Permissions:    sessionMetadata.Permissions, Lifecycle: sessionMetadata.Lifecycle,
+		LastHumanMessageAt: cloneInt64Pointer(sessionMetadata.LastHumanMessageAt),
+		LastAgentMessageAt: cloneInt64Pointer(sessionMetadata.LastAgentMessageAt),
+		DelegationKind:     sessionMetadata.DelegationKind,
+		Permissions:        sessionMetadata.Permissions, Lifecycle: sessionMetadata.Lifecycle,
 		Profile: sessionMetadata.Profile, ConfigDir: sessionMetadata.ConfigDir,
 		ContinuedFromHistoryID: sessionMetadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  sessionMetadata.ContinuedFromProvider,
@@ -1089,6 +1066,8 @@ type RunnerMetadata struct {
 	DisplayParentSessionID *string
 	SetAsideAt             *int64
 	Pinned                 bool
+	LastHumanMessageAt     *int64
+	LastAgentMessageAt     *int64
 	DelegationKind         string
 	Permissions            string
 	Lifecycle              string
@@ -1130,8 +1109,10 @@ func parseRunnerMetadata(encoded []byte) (RunnerMetadata, error) {
 		Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
 		Tags: CloneTags(metadata.Tags), DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 		SetAsideAt: cloneInt64Pointer(metadata.SetAsideAt), Pinned: metadata.Pinned,
-		DelegationKind: metadata.DelegationKind,
-		Permissions:    metadata.Permissions, Lifecycle: metadata.Lifecycle,
+		LastHumanMessageAt: cloneInt64Pointer(metadata.LastHumanMessageAt),
+		LastAgentMessageAt: cloneInt64Pointer(metadata.LastAgentMessageAt),
+		DelegationKind:     metadata.DelegationKind,
+		Permissions:        metadata.Permissions, Lifecycle: metadata.Lifecycle,
 		Kind: metadata.Kind, SpecPath: metadata.SpecPath, Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
 		ContinuedFromProvider:  metadata.ContinuedFromProvider,

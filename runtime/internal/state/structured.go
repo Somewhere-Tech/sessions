@@ -71,6 +71,21 @@ func realUserMessage(event map[string]any) bool {
 	if event["type"] != "user" {
 		return false
 	}
+	// A provider writes its own scheduled injections into the transcript as
+	// user records and marks them isMeta. Verified on the owner's orchestrator
+	// transcript: its 30-minute "INTEGRATOR TICK" carries isMeta true, against
+	// 206 ordinary user records in the same window that do not. Counting one as
+	// a person is what let a tick land three seconds after he spoke and become
+	// the only record of "last user contact" the product had.
+	//
+	// LastHumanMessageAt is the authoritative answer for a live session because
+	// it is stamped where Sessions itself sees the input. This check is what
+	// makes the transcript-derived field honest too, which is the only signal
+	// available for a conversation with no live session -- an ended one, or one
+	// read on another machine.
+	if meta, ok := event["isMeta"].(bool); ok && meta {
+		return false
+	}
 	message, ok := event["message"].(map[string]any)
 	if !ok || message["role"] != "user" {
 		return false

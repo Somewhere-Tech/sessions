@@ -19,7 +19,9 @@ import (
 // The daemon owns those fields end to end, so the on-disk values always win.
 // A runner has no way to express them and therefore no way to intend a change.
 func WriteRunnerMetadata(path string, meta Metadata) error {
-	return WriteMetadata(path, MergeRunnerMetadata(readMetadataForMerge(path), meta))
+	return withMetadataLock(path, func() error {
+		return writeMetadataUnlocked(path, MergeRunnerMetadata(readMetadataForMerge(path), meta))
+	})
 }
 
 // MergeRunnerMetadata layers a runner-owned document over the daemon-owned
@@ -36,6 +38,13 @@ func MergeRunnerMetadata(existing, next Metadata) Metadata {
 	// would be a session the user had exempted from automatic termination
 	// silently returning to being eligible for it.
 	merged.Pinned = existing.Pinned
+	// The message-principal clocks are stamped by the daemon at its own input
+	// boundary, so the runner has no way to express them either. Dropping them
+	// would be invisible until a restart and would then read as a session no
+	// human had ever spoken into -- which is the answer this pair exists to
+	// stop anything from getting wrong.
+	merged.LastHumanMessageAt = cloneInt64Pointer(existing.LastHumanMessageAt)
+	merged.LastAgentMessageAt = cloneInt64Pointer(existing.LastAgentMessageAt)
 	merged.DelegationKind = existing.DelegationKind
 	merged.Permissions = existing.Permissions
 	merged.Lifecycle = existing.Lifecycle

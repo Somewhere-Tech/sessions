@@ -78,37 +78,62 @@ const (
 )
 
 type SessionInfo struct {
-	ID                     string            `json:"id"`
-	Name                   string            `json:"name,omitempty"`
-	NameSource             string            `json:"name_source,omitempty"`
-	Description            string            `json:"description"`
-	DescriptionSource      string            `json:"description_source,omitempty"`
-	Tags                   map[string]string `json:"tags,omitempty"`
-	Kind                   string            `json:"kind,omitempty"`
-	SpecPath               string            `json:"specPath,omitempty"`
-	Cmd                    string            `json:"cmd"`
-	Args                   []string          `json:"args"`
-	Cwd                    string            `json:"cwd"`
-	Profile                string            `json:"profile,omitempty"`
-	ConfigDir              string            `json:"config_dir,omitempty"`
-	WorktreePath           string            `json:"worktree_path,omitempty"`
-	Branch                 string            `json:"branch,omitempty"`
-	Base                   string            `json:"base,omitempty"`
-	SourceRepo             string            `json:"source_repo,omitempty"`
-	Cols                   int               `json:"cols"`
-	Rows                   int               `json:"rows"`
-	CreatedAt              int64             `json:"createdAt"`
-	PID                    int               `json:"pid"`
-	RunnerProtocol         int               `json:"runnerProtocol"`
-	RunnerVersion          string            `json:"runnerVersion,omitempty"`
-	Tool                   SessionTool       `json:"tool"`
-	Working                bool              `json:"working"`
-	LastDataAt             int64             `json:"lastDataAt"`
-	LastUserMessageAt      *int64            `json:"lastUserMessageAt"`
-	IdleReason             string            `json:"idleReason,omitempty"`
-	IdleDetail             string            `json:"idleDetail,omitempty"`
-	IdleSince              *int64            `json:"idleSince,omitempty"`
-	LastSummary            string            `json:"lastSummary,omitempty"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name,omitempty"`
+	NameSource        string            `json:"name_source,omitempty"`
+	Description       string            `json:"description"`
+	DescriptionSource string            `json:"description_source,omitempty"`
+	Tags              map[string]string `json:"tags,omitempty"`
+	Kind              string            `json:"kind,omitempty"`
+	SpecPath          string            `json:"specPath,omitempty"`
+	Cmd               string            `json:"cmd"`
+	Args              []string          `json:"args"`
+	Cwd               string            `json:"cwd"`
+	Profile           string            `json:"profile,omitempty"`
+	ConfigDir         string            `json:"config_dir,omitempty"`
+	WorktreePath      string            `json:"worktree_path,omitempty"`
+	Branch            string            `json:"branch,omitempty"`
+	Base              string            `json:"base,omitempty"`
+	SourceRepo        string            `json:"source_repo,omitempty"`
+	Cols              int               `json:"cols"`
+	Rows              int               `json:"rows"`
+	CreatedAt         int64             `json:"createdAt"`
+	PID               int               `json:"pid"`
+	RunnerProtocol    int               `json:"runnerProtocol"`
+	RunnerVersion     string            `json:"runnerVersion,omitempty"`
+	Tool              SessionTool       `json:"tool"`
+	Working           bool              `json:"working"`
+	LastDataAt        int64             `json:"lastDataAt"`
+	// LastUserMessageAt is transcript-derived and says nothing about who wrote
+	// the message. It moves whenever a user-role record appears in the
+	// provider's own conversation file, and a provider writes those records for
+	// its own internal injections too: a scheduled prompt, a cron tick, a
+	// reminder it decided to inject. None of those cross Sessions' input path,
+	// and in the transcript they are indistinguishable from a person typing.
+	//
+	// So this answers "when did this conversation last take a user turn", which
+	// is not the question anything asking "when did the user last touch this"
+	// wants. For that read LastHumanMessageAt, and do not treat this field as a
+	// proxy for human contact.
+	LastUserMessageAt *int64 `json:"lastUserMessageAt"`
+	// LastHumanMessageAt and LastAgentMessageAt are daemon-owned, and stamped at
+	// Sessions' own input boundary rather than read back out of the provider's
+	// transcript. That boundary is what makes them trustworthy: a provider's
+	// internal injection is written straight into the transcript and never
+	// crosses it, so it can move LastUserMessageAt and neither of these.
+	//
+	// Everything a person sends does cross it -- the HTTP input and submit
+	// routes, the WebSocket mux, an attached terminal, `sessions send` -- and
+	// arrives with no source-session attribution. An agent relaying to another
+	// session arrives through the same routes carrying one. Unattributed is
+	// therefore a person, attributed is another session, and a transcript-only
+	// user record is neither.
+	LastHumanMessageAt *int64 `json:"lastHumanMessageAt"`
+	LastAgentMessageAt *int64 `json:"lastAgentMessageAt"`
+	IdleReason         string `json:"idleReason,omitempty"`
+	IdleDetail         string `json:"idleDetail,omitempty"`
+	IdleSince          *int64 `json:"idleSince,omitempty"`
+	LastSummary        string `json:"lastSummary,omitempty"`
 	// Exited means Sessions reaped a real status for this session's process:
 	// an exit code, a signal, or a user-requested end that completed. It is
 	// never set because the daemon lost contact. Losing a socket says nothing
@@ -124,28 +149,28 @@ type SessionInfo struct {
 	// connection, not about the work. An unreachable session is still a
 	// session: it is listed, readable, and attachable, and reconnect or the
 	// next discovery pass may reattach it. It is never presented as ended.
-	Unreachable       bool   `json:"unreachable,omitempty"`
-	UnreachableReason string `json:"unreachableReason,omitempty"`
-	UnreachableSince  *int64 `json:"unreachableSince,omitempty"`
-	ClaudeCustomTitle      string            `json:"claudeCustomTitle,omitempty"`
-	ClaudeAITitle          string            `json:"claudeAiTitle,omitempty"`
-	OnIdle                 string            `json:"onIdle,omitempty"`
-	Model                  string            `json:"model,omitempty"`
-	Effort                 string            `json:"effort,omitempty"`
-	Fast                   bool              `json:"fast,omitempty"`
-	ConversationID         string            `json:"conversationId,omitempty"`
-	RemoteEndpoint         string            `json:"remoteEndpoint,omitempty"`
-	ClaudeSessionID        string            `json:"claudeSessionId,omitempty"`
-	ContinuedFromHistoryID string            `json:"continuedFromHistoryId,omitempty"`
-	ContinuedFromProvider  string            `json:"continuedFromProvider,omitempty"`
-	ContinuationMode       string            `json:"continuationMode,omitempty"`
-	ImportedMessageCount   int               `json:"importedMessageCount,omitempty"`
-	CreatorKind            string            `json:"creator_kind,omitempty"`
-	CreatorID              string            `json:"creator_id,omitempty"`
-	ParentSessionID        string            `json:"parent_session_id,omitempty"`
-	DelegationKind         string            `json:"delegation_kind,omitempty"`
-	Permissions            string            `json:"permissions,omitempty"`
-	Lifecycle              string            `json:"lifecycle,omitempty"`
+	Unreachable            bool   `json:"unreachable,omitempty"`
+	UnreachableReason      string `json:"unreachableReason,omitempty"`
+	UnreachableSince       *int64 `json:"unreachableSince,omitempty"`
+	ClaudeCustomTitle      string `json:"claudeCustomTitle,omitempty"`
+	ClaudeAITitle          string `json:"claudeAiTitle,omitempty"`
+	OnIdle                 string `json:"onIdle,omitempty"`
+	Model                  string `json:"model,omitempty"`
+	Effort                 string `json:"effort,omitempty"`
+	Fast                   bool   `json:"fast,omitempty"`
+	ConversationID         string `json:"conversationId,omitempty"`
+	RemoteEndpoint         string `json:"remoteEndpoint,omitempty"`
+	ClaudeSessionID        string `json:"claudeSessionId,omitempty"`
+	ContinuedFromHistoryID string `json:"continuedFromHistoryId,omitempty"`
+	ContinuedFromProvider  string `json:"continuedFromProvider,omitempty"`
+	ContinuationMode       string `json:"continuationMode,omitempty"`
+	ImportedMessageCount   int    `json:"importedMessageCount,omitempty"`
+	CreatorKind            string `json:"creator_kind,omitempty"`
+	CreatorID              string `json:"creator_id,omitempty"`
+	ParentSessionID        string `json:"parent_session_id,omitempty"`
+	DelegationKind         string `json:"delegation_kind,omitempty"`
+	Permissions            string `json:"permissions,omitempty"`
+	Lifecycle              string `json:"lifecycle,omitempty"`
 	// DisplayParentSessionID is a user-controlled organizational override.
 	// nil preserves the creator-ledger hierarchy, a pointer to "" makes the
 	// session a visual root, and any other value groups it under that session.
@@ -245,8 +270,8 @@ type CreateSessionRequest struct {
 	// child and can never give that child more access than its parent unless the
 	// user explicitly enabled autonomous delegated work.
 	Permissions string `json:"permissions,omitempty"`
-	// Lifecycle is "task" for a worker that should close after a successful
-	// final response, or "session" for a long-lived conversation.
+	// Lifecycle records caller intent. Provider completion is never permission
+	// to end a runtime; only an explicit End closes it.
 	Lifecycle string `json:"lifecycle,omitempty"`
 	// DisplayParentSessionID is copied only by trusted recovery code. It is
 	// never accepted from the public create-session JSON body.

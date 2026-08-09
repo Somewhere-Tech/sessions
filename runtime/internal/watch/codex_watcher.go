@@ -56,11 +56,9 @@ import (
 // TestBackfillMirrorsCodexRolloutLosslessly. What is missing is only the caller:
 // `sessions transcripts` has a Claude arm and no Codex arm.
 //
-// The one thing to watch: DefaultTranscriptMirrorCapBytes is 512 MB and the
-// largest rollout here is 1.15 GB, so backfilling that one conversation would
-// stop at the cap. BackfillResult reports Skipped and Capped rather than
-// claiming success, so it fails loudly, but the cap would need raising before
-// Codex backfill is offered as complete.
+// The mirror cap remains finite, and BackfillResult reports Skipped and Capped
+// rather than claiming success if a future rollout exceeds it. The default is
+// deliberately above the largest rollout measured in the real corpus.
 const (
 	codexBackfillLineLimit = 2_000
 	codexReadByteLimit     = 16 * 1024 * 1024

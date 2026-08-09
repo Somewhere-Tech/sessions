@@ -1,26 +1,26 @@
 class Sessions < Formula
   desc "Durable local Claude Code, Codex, and terminal sessions"
   homepage "https://sessions.somewhere.tech"
-  version "0.1.0"
+  version "0.2.18"
   license "MIT"
 
   on_macos do
     depends_on arch: :arm64
     on_arm do
-      url "https://github.com/somewhere-tech/sessions/releases/download/v0.1.0/sessions_0.1.0_darwin_arm64.tar.gz"
-      sha256 "a3f2327cd0f4e27d72849334df785acbe923e74771a911c110528a208d4ee041"
+      url "https://github.com/somewhere-tech/sessions/releases/download/v0.2.18/sessions_0.2.18_darwin_arm64.tar.gz"
+      sha256 "a10b5a9d4fd4fd0e627a8859987fabec652ea25e15fd37f10f9d82e84dc6688f"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/somewhere-tech/sessions/releases/download/v0.1.0/sessions_0.1.0_linux_arm64.tar.gz"
-      sha256 "275c2fae5c6c84562b1f8fe40912d3e5f5c5888085cfc11fcdf20da1a41c714d"
+      url "https://github.com/somewhere-tech/sessions/releases/download/v0.2.18/sessions_0.2.18_linux_arm64.tar.gz"
+      sha256 "fa4f1127e35ba3ca3f21e87582ab0e1cd3900771e4027818efa2d77113f52e9a"
     end
 
     on_intel do
-      url "https://github.com/somewhere-tech/sessions/releases/download/v0.1.0/sessions_0.1.0_linux_amd64.tar.gz"
-      sha256 "7e41d380a607dbb8884c561b283bfd98aac4c12a0629d92a6ea73438bfe28c09"
+      url "https://github.com/somewhere-tech/sessions/releases/download/v0.2.18/sessions_0.2.18_linux_amd64.tar.gz"
+      sha256 "14ab0e180668e131c560191b0834d95fd284ebb6b40beb6fb9748859754fc5ae"
     end
   end
 
@@ -34,7 +34,8 @@ class Sessions < Formula
         Register and start the per-user daemon with:
           sessions install
 
-        Then open http://localhost:8787.
+        Verify the local service with:
+          sessions status
       EOS
     end
   end

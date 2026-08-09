@@ -31,6 +31,11 @@ type Session struct {
 	nextSubID    uint64
 	runnerEvents <-chan proto.Event
 	cancelRunner func()
+	// persistedHumanAt and persistedAgentAt are the message-principal stamps
+	// already on disk, kept here so a burst of keystrokes costs one metadata
+	// write rather than one per key. See messagePrincipalPersistInterval.
+	persistedHumanAt int64
+	persistedAgentAt int64
 }
 
 type Attachment struct {
@@ -86,12 +91,18 @@ func newSession(ctx context.Context, info proto.RunnerInfo, runner proto.Runner,
 			DisplayParentSessionID: cloneStringPointer(metadata.DisplayParentSessionID),
 			SetAsideAt:             cloneInt64Pointer(metadata.SetAsideAt),
 			Pinned:                 metadata.Pinned,
+			LastHumanMessageAt:     cloneInt64Pointer(metadata.LastHumanMessageAt),
+			LastAgentMessageAt:     cloneInt64Pointer(metadata.LastAgentMessageAt),
 			DelegationKind:         metadata.DelegationKind,
 			Permissions:            metadata.Permissions,
 			Lifecycle:              metadata.Lifecycle,
 		},
 		nextSeq: 1,
 		subs:    make(map[uint64]chan proto.Event),
+		// What came back from disk is already on disk, so the first message
+		// after a restart is measured against it rather than rewriting it.
+		persistedHumanAt: pointerMillis(metadata.LastHumanMessageAt),
+		persistedAgentAt: pointerMillis(metadata.LastAgentMessageAt),
 	}
 	session.runnerEvents, session.cancelRunner = runner.Subscribe()
 	replay := runner.Replay(ctx, 0)

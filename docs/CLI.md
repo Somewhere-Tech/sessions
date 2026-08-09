@@ -141,6 +141,8 @@ Agent controls: --model chooses the provider model for the new session and --eff
 
 Runtime and lifecycle options: --structured creates a Rich structured Claude session instead of the interactive terminal, --pty-claude keeps the terminal explicitly, and --codex-appserver or --pty-codex select the Codex runtime; app-server currently requires full access. --wait-ready holds the create call until the new agent runtime has produced its first structured event or a short settle timeout expires, so an immediately following send is not lost. --on-idle registers a shell command the daemon runs in the session's working directory every time the session becomes idle. --force overrides the live or moved conversation guard. --no-skip-perms is an accepted no-op kept for scripts written before constrained execution became the default, and it cannot be combined with full access. --cmd runs an explicit executable instead of a tool preset.
 
+Long-running child processes: a server started inside Claude or Codex belongs to that provider terminal and may end when the provider exits. If the server must remain inspectable, start it as its own Sessions command, for example `sessions new --name preview --cwd ~/work --cmd npm run dev`. That gives the server a first-class session; explicit End then terminates its complete runner-owned process tree on every supported desktop platform. A process that deliberately detaches itself into a different process group is outside Sessions' lifecycle.
+
 Ownership: --owner records an external principal as the creator instead of the inherited Sessions ancestry, and --detach is required with it when this process already belongs to a session, creating an external root rather than a child.
 
 Examples:
@@ -148,6 +150,7 @@ Examples:
   sessions new --tool codex --permissions inherit --name focused-worker
   sessions new --tool codex --permissions full --lifecycle task 'Review this repository'
   sessions new --tool claude --keep-alive --name manager
+  sessions new --name preview --cwd ~/work --cmd npm run dev
   sessions new --cmd /bin/zsh
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
@@ -316,7 +319,7 @@ Usage:
 
 archive old closed records safely
 
-Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. --dry-run only states that default explicitly and changes nothing; it cannot be combined with --apply. Live runners and ancestors with retained descendants are never archived. Recovery history, transcripts, and worktrees are preserved.
+Preview or archive sessions and lanes that have been closed longer than the retention age (30d by default). The default is a dry run; --apply records an append-only archive fact. --dry-run only states that default explicitly and changes nothing; it cannot be combined with --apply. Live runners are never archived. Finished parents and children may be archived independently because lineage remains in the append-only ledger. Recovery history, transcripts, and worktrees are preserved.
 
 Examples:
   sessions gc
@@ -336,7 +339,7 @@ Usage:
 
 hide selected closed sessions
 
-Archive one or more explicitly selected closed Sessions records. Archive hides them from normal lists but preserves provider history, transcripts, recovery facts, and worktrees. Live sessions and ancestors with retained descendants are refused.
+Archive one or more explicitly selected closed Sessions records. Archive hides them from normal lists but preserves provider history, transcripts, recovery facts, lineage, and worktrees. Live sessions are refused; finished parents and children may be archived independently.
 
 Examples:
   sessions archive 0123abcd
@@ -415,6 +418,8 @@ list interactive sessions
 List agent sessions known to the daemon. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Set-aside sessions remain listed and marked; --aside selects only them, while --not-aside reproduces the native default working set.
 
 Sessions you pinned with `sessions pin` come first, in both the table and --json, and a PIN column appears when any listed session carries the mark. Everything below the pinned ones keeps the order it already had.
+
+Two columns report recency and they are not the same fact. LAST-USER is the provider transcript's idea of a user turn, and a provider writes its own scheduled prompts into that transcript as user turns, so a lane driven entirely by its own cron shows recent LAST-USER activity nobody caused. LAST-HUMAN is stamped by the daemon when a message actually arrives through Sessions carrying no source-session attribution — a person, rather than another session relaying. It appears when any listed session has one, following the same rule as PIN and PROFILE. A row where the two disagree is a session whose recent user activity was machinery. --json always carries both as lastUserMessageAt, lastHumanMessageAt and lastAgentMessageAt.
 
 Two independent axes decide what comes back, and they are easy to confuse. State: ended sessions are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's sessions and changes nothing about which states are shown. The same two spellings mean the same two things on ls, list, and lanes.
 
@@ -571,7 +576,7 @@ Examples:
 
 ```text
 Usage:
-  sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--preview [N]] [--pick] [-n N] [--all] [--wait-for-peers] [--json]
+  sessions history [QUERY] [--since WHEN] [--until WHEN] [--tool claude|codex|shell] [--surface SURFACE] [--actor user|automation|agent] [--cwd PATH] [--name GLOB] [--session ID[,ID...]] [--touched] [--preview [N]] [--pick] [-n N] [--all] [--wait-for-peers] [--json]
 
 browse and preview every past conversation
 
@@ -582,6 +587,8 @@ Browsing needs no search term. `sessions history --since today --tool codex` ans
 Every row carries what it takes to recognise a conversation a week later — when it was last active, where it was started from, the working directory, its name derived from the opening message, and how many messages are in it — followed by the exact command that brings it back, runnable from any directory. That command is the one that actually works for that row, following the same discipline as `sessions recover`: `sessions resume` for a conversation Sessions can reopen, including one whose provider deleted its own transcript and which comes back from Sessions' copy; `sessions attach` for a conversation that is still running, which resume would refuse; and no command at all, with the reason, for one that neither the provider nor Sessions still holds.
 
 Where it was started from is the other thing neither provider's picker will tell you. Both providers record it and neither shows it, so a row says "Codex Desktop", "Codex CLI" or "Claude Desktop" rather than just the provider name, and a conversation Sessions itself started says so. Select on it with --surface: codex-cli, codex-desktop, codex-exec, claude-cli, claude-desktop, claude-sdk, sessions, or the raw value a provider recorded — an unrecognised value is accepted, and an empty answer lists the surfaces this machine actually has. --actor separates work you did from work something else did: user, automation, or agent. A row is annotated only when it was not you, because a history reads as yours until it says otherwise. A provider that never recorded the answer leaves it blank rather than being guessed at, so --actor user selects only conversations that recorded a person, and a machine running a Sessions too old to report any of this is named rather than silently dropped from a filtered answer. A last-active time marked "(file time)" is dated by the transcript file rather than by the conversation's own last record, which is what a history copied without preserving timestamps looks like.
+
+--touched keeps only conversations a person actually spoke into, and orders them by when. This is a different question from --actor user, which reports what the provider recorded about who started a conversation; --touched is the daemon's own record of a message arriving through Sessions with no source-session attribution, which is what separates a person from one agent driving another. It also separates a person from the provider itself: a lane on a self-scheduled cadence writes its own prompts into its transcript as user turns, so it looks recently active and recently "used" while nobody has said a word to it. Only a conversation with a live session can answer, because the stamp lives with the session, so --touched narrows to the running fleet by construction.
 
 --preview prints the last few exchanges of each row so a candidate can be read before it is reopened. It reads the same stored conversation `sessions cat` prints, creates nothing, and marks nothing. It also narrows the page to five rows unless -n says otherwise, because previews are long.
 
@@ -598,6 +605,7 @@ Examples:
   sessions history --since today --tool codex
   sessions history --surface codex-desktop
   sessions history --actor automation --since 1w
+  sessions history --touched
   sessions history --preview -n 3
   sessions history --pick
   sessions history --since today --pick

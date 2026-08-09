@@ -51,12 +51,17 @@ const GATE = [
   'shared-contracts',
   'working-set',
   'pin',
+  'session-mode',
   'typography',
   'window-scope',
   'same-origin-bootstrap',
   'startup-recovery',
   'fork-conversation',
-  'onboarding-consent'
+  'onboarding-consent',
+  // Capability tests mount real product components against an in-process
+  // contract-faithful daemon. Keep them last so a capability regression does
+  // not hide the focused smoke-suite results above it.
+  'capability'
 ];
 
 // Scripts that are deliberately not part of the gate, each with the reason it

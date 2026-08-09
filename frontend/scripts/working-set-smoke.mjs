@@ -64,7 +64,21 @@ try {
   assert.equal(openedHistory.runningIds.has('ended-alone'), true, 'open history stays in focus while it is being read');
   assert.equal(openedHistory.ended.some(({ id }) => id === 'ended-alone'), false);
 
-  assert.equal(humanEngagementAt(session('human', { createdAt: 10, lastDataAt: 999, lastUserMessageAt: 25 })), 25);
+  assert.equal(humanEngagementAt(session('human', {
+    createdAt: 10,
+    lastDataAt: 999,
+    lastUserMessageAt: 25,
+    lastHumanMessageAt: 20
+  })), 20);
+  assert.equal(humanEngagementAt(session('provider-only', {
+    createdAt: 10,
+    lastUserMessageAt: 25,
+    lastHumanMessageAt: null
+  })), 10);
+  assert.equal(humanEngagementAt(session('legacy', {
+    createdAt: 10,
+    lastUserMessageAt: 25
+  })), 25);
   assert.equal(isAgentLedChild(session('lane', { kind: 'lane' })), true);
   assert.equal(isAgentLedChild(session('explicit-user', { delegationKind: 'user' })), false);
 

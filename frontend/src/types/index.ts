@@ -33,9 +33,13 @@ export interface SessionInfo {
   tool: SessionTool;
   working: boolean;
   lastDataAt: number;
-  // When the user last sent a real structured message (ms epoch) — null
-  // for shell sessions or before the first provider message.
+  // Latest provider-transcript user-role record. Provider-internal injections
+  // may move this value, so it is not proof that a person returned.
   lastUserMessageAt: number | null;
+  // Input-boundary timestamps recorded by Sessions. These distinguish a
+  // person using Sessions from another session relaying work.
+  lastHumanMessageAt?: number | null;
+  lastAgentMessageAt?: number | null;
   idleReason?: 'never-started' | 'completed' | 'needs-input' | 'failed';
   idleDetail?: string;
   idleSince?: number | null;

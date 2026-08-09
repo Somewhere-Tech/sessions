@@ -437,8 +437,9 @@ with database triggers. Explicit retention uses a separate atomic writer to
 append `archived` facts for old closed records; it never deletes the evidence.
 `runtime/internal/session/retention.go` refuses live registry entries and any
 still-present socket, metadata process, or current/legacy LaunchAgent; apply is
-also refused while discovery is running. It preserves an ancestor while any
-descendant remains visible. The authenticated API and dry-run-first CLI surfaces
+also refused while discovery is running. Finished parents and descendants can
+be archived independently because the append-only ledger preserves lineage.
+The authenticated API and dry-run-first CLI surfaces
 are `runtime/internal/api/retention_handlers.go` and
 `runtime/cmd/sessions/gc.go`.
 
@@ -850,10 +851,15 @@ Idle classification treats a provider approval or confirmation footer as
 `needs-input` and preserves its actual `Reason:` line. That state flows through
 status, list, Fleet, notifications, JSON, and `sessions wait`, whose envelope
 reports `reason: needs-input` with or without `--summary`; no
-watcher sends Enter on the user's behalf. A task-lifecycle child with a
-successful final summary is the one exception to indefinite runtime lifetime:
-the manager records an attributed end boundary and closes the process while
-retaining transcript, lineage, and workspace.
+watcher sends Enter on the user's behalf. Lifecycle metadata records whether a
+caller intended a bounded task or a durable conversation, but provider output
+never authorizes Sessions to end either one. Only an explicit End records the
+boundary and closes the runner-owned process tree.
+
+A server or watcher that must outlive an agent turn should be launched as its
+own Sessions command session. A process backgrounded inside a provider terminal
+belongs to that terminal and may end when the provider exits; a deliberately
+detached process is outside Sessions' lifecycle and cannot be managed honestly.
 
 The binding check in `runtime/internal/session/manager.go` prevents two live
 sessions from resuming the same provider conversation. The runner keeps exited

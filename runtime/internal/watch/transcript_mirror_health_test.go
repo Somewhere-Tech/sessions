@@ -88,7 +88,7 @@ func TestMirrorHealthReportsBothFaultsTogether(t *testing.T) {
 	})
 
 	detail := ReadTranscriptMirrorHealth(mirrorPath).Detail()
-	if !strings.Contains(detail, "512 MB") || !strings.Contains(detail, "1 write") {
+	if !strings.Contains(detail, transcriptMirrorCapText(DefaultTranscriptMirrorCapBytes)) || !strings.Contains(detail, "1 write") {
 		t.Fatalf("detail = %q, want both the cap and the failed write named", detail)
 	}
 }
