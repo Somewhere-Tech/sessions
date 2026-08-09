@@ -21,7 +21,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/usage"
 )
 
-var version = "0.2.18"
+var version = "0.2.19"
 
 // isWildcardHost reports whether a bind host would expose the daemon on every
 // interface. A literal denylist is not enough, and neither is netip.ParseAddr
