@@ -106,6 +106,78 @@ func TestClaudeSubmitSequenceMatchesNodeCLI(t *testing.T) {
 	}
 }
 
+func TestClaudeNoWaitStillConfirmsProviderDelivery(t *testing.T) {
+	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	const message = "Review the integration findings."
+	delivered := false
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			var lastUser any
+			if delivered {
+				lastUser = int64(2)
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
+				"id": id, "cmd": "claude", "tool": "claude-code", "lastUserMessageAt": lastUser,
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions/"+id+"/events":
+			events := []any{}
+			if delivered {
+				events = append(events, map[string]any{
+					"type": "user", "message": map[string]any{"role": "user", "content": message},
+				})
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": events, "nextIndex": len(events)})
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/submit":
+			delivered = true
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	application, err := newApp([]string{"--host", server.URL}, strings.NewReader(""), io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.close()
+	application.sleep = func(time.Duration) {}
+	result, err := application.sendAndConfirm(id, message, time.Second, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Confirmed == nil || !*result.Confirmed || result.Text != message {
+		t.Fatalf("--no-wait result = %+v, want confirmed provider event", result)
+	}
+}
+
+func TestLiveStatusNeverLooksTerminalBecauseOfLastTurn(t *testing.T) {
+	setAsideAt := int64(1)
+	tests := []struct {
+		name    string
+		session session
+		want    string
+	}{
+		{name: "completed turn remains live", session: session{IdleReason: "completed"}, want: "idle"},
+		{name: "failed turn remains live", session: session{IdleReason: "failed"}, want: "idle"},
+		{name: "never started remains live", session: session{IdleReason: "never-started"}, want: "idle"},
+		{name: "approval is actionable", session: session{IdleReason: "needs-input"}, want: "needs-you"},
+		{name: "working wins over last turn", session: session{Working: true, IdleReason: "completed"}, want: "working"},
+		{name: "set aside is organizational", session: session{SetAsideAt: &setAsideAt}, want: "set-aside"},
+		{name: "only exited is terminal", session: session{Exited: true, IdleReason: "completed"}, want: "exited"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := liveStatusState(test.session); got != test.want {
+				t.Fatalf("liveStatusState() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestClaudeEnterRetriesRequireTextStillInComposer(t *testing.T) {
 	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 	const text = "Reply with exactly PONG."

@@ -488,9 +488,9 @@ Usage:
 
 send text and Enter to a session
 
-Send a message and Enter. Claude and Codex sessions wait for receipt confirmation by default; --no-wait uses fire-and-forget behavior and --file reads the message body from a UTF-8 file. --from records a durable, content-free source-lane attribution, so a delegate can see which session asked and reply to it by id; agents running inside Sessions inherit their source lane automatically, and the target may be running the other provider. An unrecognized option in front of the message is refused rather than typed into the session; put -- before a message that must begin with dashes.
+Send a message and Enter. Claude and Codex sessions return success only after Sessions observes the provider's user event; --no-wait is retained for script compatibility but never disables that delivery check. --file reads the complete message body from a UTF-8 file before delivery begins. --from records a durable, content-free source-lane attribution, so a delegate can see which session asked and reply to it by id; agents running inside Sessions inherit their source lane automatically, and the target may be running the other provider. An unrecognized option in front of the message is refused rather than typed into the session; put -- before a message that must begin with dashes.
 
-send delivers and returns; it does not wait for the reply. Follow it with `sessions wait <id>` for one delegate or `sessions wait <id>... --all` for a fan-out, or use `sessions ask` for a single request and answer.
+send confirms delivery and returns; it does not wait for the reply. Follow it with `sessions wait <id>` for one delegate or `sessions wait <id>... --all` for a fan-out, or use `sessions ask` for a single request and answer. A terminal-only tool that cannot expose provider events is explicitly reported as unconfirmed rather than silently treated as delivered.
 
 Examples:
   sessions send 0123abcd 'Run the focused tests.'

@@ -337,7 +337,7 @@ func (a *app) sendAndConfirm(id, text string, timeout time.Duration, noWait bool
 	return a.sendAndConfirmFrom(id, text, timeout, noWait, "")
 }
 
-func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, noWait bool, sourceSessionID string) (sendResult, error) {
+func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, _ bool, sourceSessionID string) (sendResult, error) {
 	if timeout == 0 {
 		timeout = 10 * time.Second
 	}
@@ -362,7 +362,7 @@ func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, noWait 
 		baseTimestamp = *baseline.LastUserMessageAt
 	}
 	baseNextIndex := int64(0)
-	if confirmable && !noWait {
+	if confirmable {
 		var events eventsResponse
 		if err := a.getJSON("/api/sessions/"+escapeID(id)+"/events?tail=1", &events); err == nil {
 			baseNextIndex = events.NextIndex
@@ -372,7 +372,7 @@ func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, noWait 
 	if err := a.submitComposer(inputPath, text, sourceSessionID); err != nil {
 		return sendResult{}, err
 	}
-	if !confirmable || noWait {
+	if !confirmable {
 		return sendResult{Confirmed: nil, Tool: tool}, nil
 	}
 	snippetSource := text
@@ -571,7 +571,7 @@ func (a *app) cmdSend(args []string) error {
 			_, err := io.WriteString(a.stdout, "accepted (working); JSONL confirmation pending\n")
 			return err
 		}
-		_, err := io.WriteString(a.stdout, "submitted\n")
+		_, err := io.WriteString(a.stdout, "delivered\n")
 		return err
 	}
 	if a.wantJSON {
