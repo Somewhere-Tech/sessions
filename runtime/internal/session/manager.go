@@ -20,6 +20,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/liveness"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/resource"
@@ -92,8 +93,13 @@ type ManagerOptions struct {
 	DiscoveryRetries   int
 	DiscoveryDelay     time.Duration
 	DisableWatchers    bool
-	ProcessAlive       func(int) bool
-	ProcessCommand     func(int) string
+	// ProcessAlive and ProcessCommand are test seams over the shared
+	// internal/liveness probes. The identity rule they feed
+	// (liveness.CommandMatches) is never overridden, so a test can simulate a
+	// process table without also redefining what counts as this session's
+	// runner. Use Manager.runnerAlive rather than either seam directly.
+	ProcessAlive   func(int) bool
+	ProcessCommand func(int) string
 	Boundaries         ledger.BoundaryWriter
 	Observations       ledger.ObservationWriter
 	Retention          ledger.RetentionWriter
@@ -260,10 +266,12 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 		selected.DiscoveryDelay = discoveryRetryDelay
 	}
 	if selected.ProcessAlive == nil {
-		selected.ProcessAlive = processAlive
+		selected.ProcessAlive = liveness.ProcessAlive
 	}
 	if selected.ProcessCommand == nil {
-		selected.ProcessCommand = processCommand
+		selected.ProcessCommand = func(pid int) string {
+			return liveness.ProcessCommand(context.Background(), pid)
+		}
 	}
 	if selected.ResourceEnumerator == nil {
 		selected.ResourceEnumerator = resource.SystemEnumerator()
@@ -335,9 +343,12 @@ func (m *Manager) IsDiscovering() bool       { return m.registry.IsDiscovering()
 func (m *Manager) List(includeExited bool) []state.SessionInfo {
 	ctx := context.Background()
 	infos := m.registry.List(includeExited)
-	if includeExited {
-		infos = m.withDurableClosed(ctx, infos)
-	}
+	// Restored unconditionally, not only for the include-ended listing: a
+	// session the daemon cannot currently reach has not ended, and dropping it
+	// from the default list because a socket died is a kill wearing sleep's
+	// clothes. withDurableClosed adds ended records only when they were asked
+	// for.
+	infos = m.withDurableClosed(ctx, infos, includeExited)
 	return m.withProvenance(ctx, infos)
 }
 func (m *Manager) Get(id string) (*state.Session, bool) { return m.registry.Get(id) }
@@ -689,7 +700,9 @@ func (m *Manager) ledgerStates(ctx context.Context) ([]ledger.LaneState, error) 
 // withDurableClosed restores closed records after Registry's short exited
 // grace has elapsed. The ledger is authoritative for lifecycle and ownership;
 // live runtime details continue to come from Registry while they are present.
-func (m *Manager) withDurableClosed(ctx context.Context, infos []state.SessionInfo) []state.SessionInfo {
+func (m *Manager) withDurableClosed(
+	ctx context.Context, infos []state.SessionInfo, includeEnded bool,
+) []state.SessionInfo {
 	states, err := m.ledgerStates(ctx)
 	if err != nil {
 		log.Printf("[ledger] read durable closed sessions: %v", err)
@@ -713,7 +726,14 @@ func (m *Manager) withDurableClosed(ctx context.Context, infos []state.SessionIn
 		seen[info.ID] = struct{}{}
 	}
 	for _, lane := range states {
-		if !lane.Created || !durablyClosed(lane) || lane.Archived {
+		// A merely unreachable lane is still restored to the listing -- sleep
+		// and a lost socket must never make work disappear -- but it is
+		// restored as unreachable, not as ended. Only a reaped status makes a
+		// session ended.
+		if !lane.Created || lane.Archived || !(durablyClosed(lane) || lane.RunnerLost) {
+			continue
+		}
+		if durablyClosed(lane) && !includeEnded {
 			continue
 		}
 		if _, exists := seen[lane.LaneID]; exists {
@@ -729,11 +749,26 @@ func (m *Manager) withDurableClosed(ctx context.Context, infos []state.SessionIn
 			Profile: lane.Profile, ConfigDir: lane.ConfigDir,
 			WorktreePath: lane.WorktreePath, Branch: lane.Branch, Base: lane.Base, SourceRepo: lane.SourceRepo,
 			CreatedAt: lane.CreatedAtMS, LastDataAt: lane.LastEventAtMS,
-			Kind: lane.Kind, Tool: state.SessionTool(lane.Tool), Exited: true, ExitedAt: &exitedAt,
-			ExitCode: lane.ExitCode, ExitSignal: lane.ExitSignal, ExitReason: durableExitReason(lane),
+			Kind: lane.Kind, Tool: state.SessionTool(lane.Tool),
 			EndedByKind: string(lane.EndInitiatorKind), EndedByID: lane.EndInitiatorID,
 			EndedByName: lane.EndInitiatorName, EndedByClient: lane.EndClient,
 			EndReason: lane.EndReason, EndOperationID: lane.EndOperationID,
+		}
+		if durablyClosed(lane) {
+			info.Exited = true
+			info.ExitedAt = &exitedAt
+			info.ExitCode = lane.ExitCode
+			info.ExitSignal = lane.ExitSignal
+			info.ExitReason = durableExitReason(lane)
+		} else {
+			// lane.RunnerLost with no reaped status: the daemon lost contact
+			// and never observed an ending. Synthesising Exited:true with a
+			// nil ExitCode here is what put live sessions in the list as
+			// ended-and-failed.
+			lostAt := exitedAt
+			info.Unreachable = true
+			info.UnreachableReason = "runner-lost"
+			info.UnreachableSince = &lostAt
 		}
 		if len(lane.ResumeArgv) > 0 {
 			info.Cmd = lane.ResumeArgv[0]
@@ -764,8 +799,18 @@ func (m *Manager) withDurableClosed(ctx context.Context, infos []state.SessionIn
 	return infos
 }
 
+// durablyClosed reports that a lane reached an end Sessions actually observed:
+// the user asked for it, the runner reported a status, the artifacts were
+// reaped, or the conversation was continued elsewhere.
+//
+// RunnerLost is deliberately absent. It records that the daemon could not
+// reach a runner, which happens to healthy runners whenever a socket read
+// fails or the daemon restarts. ORing it in here meant one lost connection
+// permanently closed a session that never stopped working -- and on the
+// owner's machine two live runners, probed alive at pids 43014 and 22440,
+// carried runner_lost facts and were listed as ended.
 func durablyClosed(lane ledger.LaneState) bool {
-	return lane.UserKillRequested || lane.RunnerExited || lane.RunnerLost || lane.Reaped || lane.ReopenedAs != ""
+	return lane.UserKillRequested || lane.RunnerExited || lane.Reaped || lane.ReopenedAs != ""
 }
 
 func durableExitReason(lane ledger.LaneState) string {
@@ -898,8 +943,12 @@ func (m *Manager) withProvenance(ctx context.Context, infos []state.SessionInfo)
 	return infos
 }
 
+// provenanceParentDead answers whether a child's parent actually ended. Like
+// durablyClosed it excludes RunnerLost: a parent the daemon briefly could not
+// reach is not a dead parent, and labelling a child "parent-dead" on that
+// basis is the same inference wearing a different name.
 func provenanceParentDead(parent ledger.LaneState) bool {
-	return parent.UserKillRequested || parent.RunnerExited || parent.RunnerLost || parent.Reaped
+	return parent.UserKillRequested || parent.RunnerExited || parent.Reaped
 }
 
 func (m *Manager) recordDaemonRestart(ctx context.Context) {
@@ -928,6 +977,29 @@ func (m *Manager) reconcileLedger(ctx context.Context) {
 			continue
 		}
 		if _, present := m.registry.Get(lane.LaneID); present {
+			continue
+		}
+		// Absence from the in-memory map is not death. The map holds the
+		// runners this daemon process currently has sockets to; a runner that
+		// outlived a daemon restart, or whose socket blipped before discovery
+		// reattached it, is missing from it while its process runs perfectly
+		// well. Recording a loss on that basis wrote a permanent ledger fact
+		// about a live session. Ask the process.
+		metadata, metadataErr := state.ReadRunnerMetadata(
+			filepath.Join(m.config.RunnerStateDir, lane.LaneID+".json"))
+		switch {
+		case metadataErr == nil:
+			metadata.Info.ID = lane.LaneID
+			if m.runnerAlive(lane.LaneID, metadata.Info) {
+				log.Printf(
+					"[ledger] lane %s is absent from the runtime map but pid %d is alive — recording no loss",
+					lane.LaneID, metadata.Info.PID)
+				continue
+			}
+		case !errors.Is(metadataErr, os.ErrNotExist):
+			// A torn, unreadable, or forward-version metadata document is
+			// absence of evidence. Say nothing and retry on the next pass.
+			log.Printf("[ledger] lane %s metadata unreadable — recording no loss: %v", lane.LaneID, metadataErr)
 			continue
 		}
 		laneID := lane.LaneID
@@ -2141,7 +2213,10 @@ func (m *Manager) scheduleReconnect(id string, delays []time.Duration) {
 		default:
 		}
 		if existing, exists := m.registry.Get(id); exists {
-			if existing.Info().Exited {
+			info := existing.Info()
+			// Keep trying while the daemon holds a session it cannot reach.
+			// Only a reaped status ends the attempt.
+			if info.Exited || info.Unreachable {
 				m.scheduleReconnect(id, next)
 			}
 			return
@@ -2277,15 +2352,15 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 				delete(candidates, id)
 				continue
 			}
+			if m.runnerAlive(id, metadata.Info) {
+				log.Printf("[discover] runner %s unreachable but pid %d alive — leaving it alone", id, metadata.Info.PID)
+				delete(candidates, id)
+				delete(deadArtifacts, id)
+				continue
+			}
 			if m.options.ProcessAlive(metadata.Info.PID) {
-				command := m.options.ProcessCommand(metadata.Info.PID)
-				if runnerCommandMatches(command, id, metadata.Info.Cmd, metadata.Kind) {
-					log.Printf("[discover] runner %s unreachable but pid %d alive — leaving it alone", id, metadata.Info.PID)
-					delete(candidates, id)
-					delete(deadArtifacts, id)
-					continue
-				}
-				log.Printf("[discover] runner %s pid %d is PID reuse (%s) — treating as dead", id, metadata.Info.PID, truncate(command, 60))
+				log.Printf("[discover] runner %s pid %d is PID reuse (%s) — treating as dead",
+					id, metadata.Info.PID, truncate(m.options.ProcessCommand(metadata.Info.PID), 60))
 			}
 			deadArtifacts[id] = struct{}{}
 			candidates[id] = struct{}{}
@@ -2387,12 +2462,12 @@ func (m *Manager) orphanPlistCandidates() (map[string]struct{}, map[string]struc
 		if metadataErr != nil || metadata.Info.ID != id || metadata.Info.PID <= 0 {
 			continue
 		}
+		if m.runnerAlive(id, metadata.Info) {
+			continue
+		}
 		if m.options.ProcessAlive(metadata.Info.PID) {
-			command := m.options.ProcessCommand(metadata.Info.PID)
-			if runnerCommandMatches(command, id, metadata.Info.Cmd, metadata.Kind) {
-				continue
-			}
-			log.Printf("[discover] orphan runner %s pid %d is PID reuse (%s) — treating as dead", id, metadata.Info.PID, truncate(command, 60))
+			log.Printf("[discover] orphan runner %s pid %d is PID reuse (%s) — treating as dead",
+				id, metadata.Info.PID, truncate(m.options.ProcessCommand(metadata.Info.PID), 60))
 		}
 		candidates[id] = struct{}{}
 		deadArtifacts[id] = struct{}{}
@@ -2400,25 +2475,16 @@ func (m *Manager) orphanPlistCandidates() (map[string]struct{}, map[string]struc
 	return candidates, deadArtifacts
 }
 
-func runnerCommandMatches(command, id, expectedCommand, kind string) bool {
-	if command == "" || strings.Contains(command, "runner.js") || strings.Contains(command, "runner.ts") || strings.Contains(command, id) {
-		return true
+// runnerAlive is the manager's only liveness answer: is THIS session's runner
+// process running right now? It routes the shared rule in internal/liveness
+// through the injectable probes so discovery tests can simulate a process
+// table, and it answers about the session rather than about a bare PID, so a
+// recycled PID cannot masquerade as a live runner.
+func (m *Manager) runnerAlive(id string, info proto.RunnerInfo) bool {
+	if info.PID <= 0 || !m.options.ProcessAlive(info.PID) {
+		return false
 	}
-	// Structured Codex and Claude sessions are hosted directly by
-	// sessions-runner, so their process command does not contain the provider
-	// command or session ID. Treat another Sessions runner at the recorded PID
-	// as live rather than risk reaping a real session during a socket outage.
-	//
-	// This is not limited to the structured kinds. Every runner is the
-	// sessions-runner image whatever it hosts, and on Windows the probe can
-	// only report that image path — the session ID lives in a command line
-	// this code deliberately does not read. Without this, every Windows
-	// terminal session fails the match and is reaped as PID reuse.
-	if strings.Contains(strings.ToLower(command), "sessions-runner") {
-		return true
-	}
-	expectedBase := filepath.Base(strings.TrimSpace(expectedCommand))
-	return expectedBase != "" && expectedBase != "." && strings.Contains(command, expectedBase)
+	return liveness.CommandMatches(m.options.ProcessCommand(info.PID), id, info.Cmd)
 }
 
 func (m *Manager) reap(id string) error {

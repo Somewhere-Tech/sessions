@@ -114,10 +114,13 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `idleDetail` | string, optional | useful prompt or error line from idle classification |
 | `idleSince` | number, optional | Unix epoch milliseconds when the current idle outcome began |
 | `lastSummary` | string, optional | last useful structured assistant or terminal-tail summary |
-| `exited` | boolean | whether an EXIT frame was received |
+| `exited` | boolean | whether Sessions reaped a real status for the session's process: an EXIT frame, a signal, or a completed user-requested end. It is never set because the daemon lost contact with a runner |
 | `exitCode` | number or null | PTY exit code |
 | `exitSignal` | string or null | PTY exit signal as a string |
 | `exitedAt` | number or null | Unix epoch milliseconds when EXIT was received |
+| `unreachable` | boolean, optional | present as `true` when the daemon cannot currently talk to the session's runner (socket read error, read deadline, daemon restart). This is a statement about the connection, not the work: the session is still listed, readable, and attachable, and reconnect or the next discovery pass may reattach it. It is never presented as ended, and `exited` stays `false` |
+| `unreachableReason` | string, optional | why contact was lost; `"runner-lost"` for a socket read failure |
+| `unreachableSince` | number, optional | Unix epoch milliseconds when contact was lost |
 | `claudeCustomTitle` | string, optional | latest Claude `custom-title` value |
 | `claudeAiTitle` | string, optional | latest Claude `ai-title` value |
 | `onIdle` | string, optional | trimmed per-session idle hook command |
@@ -136,7 +139,10 @@ fields. Optional fields are omitted when their value is `undefined`.
 
 Exited sessions remain in the daemon map for 30 seconds. They are omitted from
 the default list but can be requested with `include_exited=1` during that grace
-period.
+period. Unreachable sessions are not exited and are **not** filtered out of the
+default list: losing a socket is not an ending, and hiding the session on that
+basis would make work the daemon cannot currently reach look like work that
+never existed.
 
 ### Standard error bodies
 

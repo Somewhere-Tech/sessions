@@ -195,14 +195,22 @@ func TestWindowsRunnerUnexpectedLossClassification(t *testing.T) {
 	waitForWindowsRunnerProtocolHandleExit(t, "scratch provider Job child", providerHandle)
 
 	lost := waitForWindowsRunnerProtocolLostRecord(t, daemon, baseURL, created.ID)
-	if !lost.Exited ||
-		lost.ExitReason != "runner-lost" ||
+	// The contract this pins changed deliberately: a runner killed under the
+	// daemon leaves the session UNREACHABLE, never ended. Requiring Exited
+	// here is what let a socket death present as a finished session, take its
+	// spawned processes down with it, and hide it from the default listing.
+	// Exited must stay false and carry no invented exit details, because no
+	// status was ever reaped.
+	if !lost.Unreachable ||
+		lost.UnreachableReason != "runner-lost" ||
+		lost.Exited ||
 		lost.ExitCode != nil ||
 		lost.EndedByKind != "" {
 		t.Fatalf(
-			"unexpected runner loss record = exited=%v reason=%q code=%v endedBy=%q",
+			"unexpected runner loss record = unreachable=%v reason=%q exited=%v code=%v endedBy=%q",
+			lost.Unreachable,
+			lost.UnreachableReason,
 			lost.Exited,
-			lost.ExitReason,
 			lost.ExitCode,
 			lost.EndedByKind,
 		)
@@ -228,14 +236,26 @@ func TestWindowsRunnerUnexpectedLossClassification(t *testing.T) {
 	// Let the first reconnect attempt run. It may attach only to the same live
 	// runner; it must never launch a replacement for an unexpectedly lost one.
 	time.Sleep(1500 * time.Millisecond)
+	// The session stays in the DEFAULT listing, marked unreachable. It used to
+	// vanish from it, which is the same mistake as reporting it exited: losing
+	// the socket is Sessions losing contact, not the session ending, and a
+	// record that disappears because a connection died is a kill wearing
+	// sleep's clothes. What must not happen is a replacement runner being
+	// launched, or the record claiming an exit nobody reaped.
 	active := readWindowsRunnerProtocolSessions(t, daemon, baseURL, false)
-	if len(active) != 0 {
-		t.Fatalf("unexpected runner loss silently produced live sessions: %#v", active)
+	if len(active) != 1 ||
+		active[0].ID != created.ID ||
+		!active[0].Unreachable ||
+		active[0].UnreachableReason != "runner-lost" ||
+		active[0].Exited {
+		t.Fatalf("an unreachably-lost session must stay listed and unended: %#v", active)
 	}
 	closed := readWindowsRunnerProtocolSessions(t, daemon, baseURL, true)
 	if len(closed) != 1 ||
 		closed[0].ID != created.ID ||
-		closed[0].ExitReason != "runner-lost" {
+		!closed[0].Unreachable ||
+		closed[0].UnreachableReason != "runner-lost" ||
+		closed[0].Exited {
 		t.Fatalf("durable lost-session list = %#v", closed)
 	}
 
@@ -471,9 +491,13 @@ func waitForWindowsRunnerProtocolLostRecord(
 	for time.Now().Before(deadline) {
 		last = readWindowsRunnerProtocolSessions(t, daemon, baseURL, true)
 		for _, session := range last {
+			// Unreachable, not exited. Killing the runner destroys the way the
+			// daemon talks to a session; it says nothing about whether the
+			// session ended, and this contract used to require the daemon to
+			// claim it had. See internal/liveness and the Unreachable split.
 			if session.ID == sessionID &&
-				session.Exited &&
-				session.ExitReason == "runner-lost" {
+				session.Unreachable &&
+				session.UnreachableReason == "runner-lost" {
 				return session
 			}
 		}
