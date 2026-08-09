@@ -67,8 +67,11 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          xterm: ['@xterm/xterm', '@xterm/addon-fit']
+        manualChunks(id) {
+          if (id.includes('/node_modules/@xterm/xterm/') || id.includes('/node_modules/@xterm/addon-fit/')) {
+            return 'xterm';
+          }
+          return undefined;
         }
       }
     }
