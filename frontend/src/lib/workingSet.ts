@@ -125,7 +125,14 @@ export function effectiveParentId(session: SessionInfo): string | undefined {
 // a manager stable while its agents stream tools and output, but lets a thread
 // the user actually returns to rise naturally without requiring a pin.
 export function humanEngagementAt(session: SessionInfo): number {
-  return Math.max(session.lastUserMessageAt ?? 0, session.createdAt || 0);
+  // New daemons provide an authoritative human timestamp. Fall back to the
+  // legacy transcript-derived field only when the daemon omitted the new
+  // field entirely; an explicit null means no person has spoken through
+  // Sessions yet and provider-internal chatter must not promote the row.
+  const human = session.lastHumanMessageAt === undefined
+    ? session.lastUserMessageAt
+    : session.lastHumanMessageAt;
+  return Math.max(human ?? 0, session.createdAt || 0);
 }
 
 // New clients record how a child was requested. Older provider lanes already

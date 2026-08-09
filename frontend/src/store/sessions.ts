@@ -33,6 +33,8 @@ function reconcileSessions(prev: SessionInfo[], fresh: SessionInfo[]): SessionIn
       old.exitedAt === f.exitedAt &&
       old.lastDataAt === f.lastDataAt &&
       old.lastUserMessageAt === f.lastUserMessageAt &&
+      old.lastHumanMessageAt === f.lastHumanMessageAt &&
+      old.lastAgentMessageAt === f.lastAgentMessageAt &&
       old.idleReason === f.idleReason &&
       old.idleDetail === f.idleDetail &&
       old.idleSince === f.idleSince &&
@@ -202,6 +204,8 @@ interface CachedSession {
   working?: boolean;
   lastDataAt?: number;
   lastUserMessageAt?: number | null;
+  lastHumanMessageAt?: number | null;
+  lastAgentMessageAt?: number | null;
   idleReason?: SessionInfo['idleReason'];
   idleDetail?: string;
   idleSince?: number | null;
@@ -285,6 +289,8 @@ function hydrateCachedMachine(
           working: c.working ?? false,
           lastDataAt: c.lastDataAt ?? c.createdAt,
           lastUserMessageAt: c.lastUserMessageAt ?? null,
+          lastHumanMessageAt: c.lastHumanMessageAt ?? null,
+          lastAgentMessageAt: c.lastAgentMessageAt ?? null,
           exited: c.exited ?? false,
           exitCode: c.exitCode ?? null,
           exitSignal: c.exitSignal ?? null,
@@ -363,6 +369,8 @@ function writeCache(serverId: string | null, sessions: SessionInfo[], activeId: 
       working: s.working,
       lastDataAt: s.lastDataAt,
       lastUserMessageAt: s.lastUserMessageAt,
+      lastHumanMessageAt: s.lastHumanMessageAt,
+      lastAgentMessageAt: s.lastAgentMessageAt,
       idleReason: s.idleReason,
       idleDetail: s.idleDetail,
       idleSince: s.idleSince,
