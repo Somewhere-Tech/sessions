@@ -12,7 +12,18 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
-const somewhereMCPURL = "https://mcp.somewhere.tech/mcp"
+const (
+	somewhereMCPURL = "https://mcp.somewhere.tech/mcp"
+
+	// Current Claude Code builds present an interactive "resume from summary"
+	// picker for old, large conversations unless this process-local threshold
+	// is higher than the resumed transcript. Sessions' Resume contract is
+	// literal: it reopens the provider conversation as-is. Keep the provider's
+	// picker out of Sessions-owned resumes without changing ~/.claude.json or
+	// affecting Claude sessions launched outside Sessions.
+	claudeResumeTokenThresholdEnv  = "CLAUDE_CODE_RESUME_TOKEN_THRESHOLD"
+	claudeFullResumeTokenThreshold = "9007199254740991"
+)
 
 func (m *Manager) applyClaudeDefaults(request state.CreateSessionRequest) (state.CreateSessionRequest, error) {
 	if state.CommandTool(request.Cmd) != state.ToolClaude {
@@ -37,6 +48,14 @@ func (m *Manager) applyClaudeDefaults(request state.CreateSessionRequest) (state
 		return request, err
 	}
 	args := append([]string(nil), request.Args...)
+	if providerargs.ClaudeResumeID(args) != "" {
+		if request.Env == nil {
+			request.Env = make(map[string]string)
+		}
+		if _, explicitlySet := request.Env[claudeResumeTokenThresholdEnv]; !explicitlySet {
+			request.Env[claudeResumeTokenThresholdEnv] = claudeFullResumeTokenThreshold
+		}
+	}
 	if request.Kind == state.KindClaudeStructured {
 		if hasAnyArg(args, "--remote-control") {
 			return request, errors.New("Claude Remote Control requires a Terminal session; Rich sessions do not have an interactive Claude terminal")
