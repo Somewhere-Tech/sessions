@@ -698,6 +698,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               setSubagentsOpen(false);
             }}
             onMakeMain={(childId) => onReparent(childId, null)}
+            onEnd={endSession}
           />
         </div>
       ) : null}

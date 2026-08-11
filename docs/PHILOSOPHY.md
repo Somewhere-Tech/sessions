@@ -20,9 +20,10 @@ Sessions holds the message and makes the sender's assumption true rather than
 bouncing them for asking.
 
 **ENDED** — a deliberate archive state, and the only state the word "resume"
-applies to. A session ends exactly two ways: the user ends it, or it stays
-asleep past the retention window without being pinned. Ended conversations
-remain searchable and readable forever; reopening one is an explicit act.
+applies to. A session ends only after an explicit user or agent request; age,
+inactivity, and a provider saying it is done are never sufficient. Ended
+conversations remain searchable and readable forever; reopening one is an
+explicit act.
 
 There is no other state. "Finished", "exited", "failed at startup", and the
 rest are diagnostics, not lifecycles, and must not appear as top-level session
@@ -63,6 +64,11 @@ one in a hundred thousand, and worth telling the user to uninstall over.
 - **User sessions**: gentle. Roughly a day of inactivity before sleeping.
 - **Pinned**: never sleeps automatically and never auto-ends. Pinning is the
   user marking a workbench, and the machinery keeps its hands off it.
+
+The interface may calmly suggest unpinned delegated sessions that have been
+quiet for a day. Suggestions are review queues, not lifecycle authority:
+Sessions never acts on them until a person or the manager agent explicitly
+chooses what to end.
 
 "Idle" and "done" are inferred from the outside and the inference is
 sometimes wrong. That is acceptable for sleep and unacceptable for kill: the

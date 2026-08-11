@@ -4156,6 +4156,11 @@ button.session-tree-group-head { width: 100%; }
 .subagents-manager-note { padding: 12px 18px; border-bottom: 1px solid var(--border); color: var(--fg-faint); font-size: 12px; }
 .subagents-manager-note strong { color: var(--fg-dim); }
 .subagents-error { margin: 10px 12px 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--danger); font-size: 12px; }
+.subagents-review-note { margin: 10px 10px 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-base); }
+.subagents-review-note strong { font-size: 12px; }
+.subagents-review-note p { margin: 4px 0 9px; color: var(--fg-faint); font-size: 12px; line-height: 1.4; }
+.subagents-review-note > div:last-child { display: flex; flex-wrap: wrap; gap: 7px; }
+.subagents-review-note .btn { min-height: 29px; padding: 4px 8px; font-size: 12px; }
 .subagents-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 10px 16px; }
 .subagent-card { margin-bottom: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-base); }
 .subagent-card.is-needs-you { border-color: color-mix(in srgb, var(--warn) 44%, var(--border)); }
@@ -4173,6 +4178,7 @@ button.session-tree-group-head { width: 100%; }
 .subagent-card-actions { display: flex; align-items: center; gap: 7px; margin-left: 17px; }
 .subagent-card-actions .btn { min-height: 30px; padding: 4px 9px; font-size: 12px; }
 .subagent-card-actions .btn-secondary { border-color: var(--accent-border-soft); color: var(--accent); }
+.subagent-end-confirm { display: inline-flex; gap: 5px; }
 .subagents-panel > footer { padding: 11px 16px; border-top: 1px solid var(--border); color: var(--fg-faint); font-size: 12px; line-height: 1.4; }
 .conversation-fork-toggle {
   display: inline-flex;

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { classifySession } from '../lib/sessionStatus';
+import { subagentNeedsReview } from '../lib/workingSet';
 import { sessionLabel } from '../lib/tabLabels';
 import type { SessionInfo } from '../types';
 import { normalizeProvider, ProviderMark } from './ProviderBadge';
@@ -10,6 +11,7 @@ interface Props {
   onClose: () => void;
   onOpen: (sessionId: string) => void;
   onMakeMain: (sessionId: string) => Promise<void>;
+  onEnd: (sessionId: string) => Promise<void>;
 }
 
 function relativeTime(value: number): string {
@@ -36,8 +38,12 @@ function activityAt(session: SessionInfo): number {
   return Math.max(session.lastDataAt || 0, session.idleSince || 0, session.createdAt || 0);
 }
 
-export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain }: Props): JSX.Element {
+export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain, onEnd }: Props): JSX.Element {
   const [movingId, setMovingId] = useState<string | null>(null);
+  const [endingId, setEndingId] = useState<string | null>(null);
+  const [confirmEndId, setConfirmEndId] = useState<string | null>(null);
+  const [reviewInactive, setReviewInactive] = useState(false);
+  const [copiedCleanupRequest, setCopiedCleanupRequest] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ordered = [...subagents].sort((left, right) => {
     const leftStatus = classifySession(left);
@@ -49,6 +55,8 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
   });
   const working = ordered.filter((session) => !session.exited && session.working).length;
   const needsYou = ordered.filter((session) => classifySession(session).needsYou).length;
+  const inactive = ordered.filter((session) => subagentNeedsReview(session));
+  const visible = reviewInactive ? inactive : ordered;
 
   const makeMain = async (session: SessionInfo): Promise<void> => {
     setMovingId(session.id);
@@ -59,6 +67,30 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
       setError(reason instanceof Error ? reason.message : 'Could not make this a main session.');
     } finally {
       setMovingId(null);
+    }
+  };
+
+  const endSubagent = async (session: SessionInfo): Promise<void> => {
+    setEndingId(session.id);
+    setError(null);
+    try {
+      await onEnd(session.id);
+      setConfirmEndId(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not end this subagent.');
+    } finally {
+      setEndingId(null);
+    }
+  };
+
+  const copyCleanupRequest = async (): Promise<void> => {
+    const request = 'Clean up your subagents. End only delegated sessions whose work is complete; leave anything active or uncertain running.';
+    try {
+      await navigator.clipboard.writeText(request);
+      setCopiedCleanupRequest(true);
+      window.setTimeout(() => setCopiedCleanupRequest(false), 1800);
+    } catch {
+      setError(`Copy this request to ${sessionLabel(manager)}: ${request}`);
     }
   };
 
@@ -74,8 +106,24 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
       </header>
       <div className="subagents-manager-note">Work delegated by <strong>{sessionLabel(manager)}</strong></div>
       {error ? <div className="subagents-error" role="alert">{error}</div> : null}
+      {inactive.length > 0 ? (
+        <section className="subagents-review-note">
+          <div>
+            <strong>{inactive.length} quiet for 24h+</strong>
+            <p>Nothing is ended automatically. Review these suggestions or ask the manager to clean up its own subagents.</p>
+          </div>
+          <div>
+            <button type="button" className="btn btn-secondary" onClick={() => setReviewInactive((current) => !current)}>
+              {reviewInactive ? 'Show all' : 'Review'}
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={() => void copyCleanupRequest()}>
+              {copiedCleanupRequest ? 'Copied' : 'Copy cleanup request'}
+            </button>
+          </div>
+        </section>
+      ) : null}
       <div className="subagents-list">
-        {ordered.map((session, index) => {
+        {visible.map((session, index) => {
           const status = classifySession(session);
           const provider = normalizeProvider(session.tool);
           return (
@@ -94,12 +142,24 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
                 <button type="button" className="btn btn-ghost" disabled={movingId !== null} onClick={() => void makeMain(session)}>
                   {movingId === session.id ? 'Moving…' : 'Make main session'}
                 </button>
+                {reviewInactive && subagentNeedsReview(session) ? (
+                  confirmEndId === session.id ? (
+                    <span className="subagent-end-confirm">
+                      <button type="button" className="btn btn-secondary" disabled={endingId !== null} onClick={() => void endSubagent(session)}>
+                        {endingId === session.id ? 'Ending…' : 'End now'}
+                      </button>
+                      <button type="button" className="btn btn-ghost" onClick={() => setConfirmEndId(null)}>Cancel</button>
+                    </span>
+                  ) : (
+                    <button type="button" className="btn btn-ghost" onClick={() => setConfirmEndId(session.id)}>End…</button>
+                  )
+                ) : null}
               </div>
             </article>
           );
         })}
       </div>
-      <footer>Subagents stay searchable and keep their creator history even when hidden here.</footer>
+      <footer>User-driven sessions are permanent. Subagents stay searchable and resumable after you end them.</footer>
     </aside>
   );
 }

@@ -83,6 +83,11 @@ one a main session without rewriting its trusted creator history or restarting
 its runtime. Needs-input counts remain visible even while the child rows are
 collapsed, so quieter navigation never hides a decision.
 
+User-driven sessions are permanent until explicitly ended. Inactive delegated
+work may appear in a calm review list after 24 hours, but Sessions never turns
+age or inferred completion into an automatic end. Cleanup remains an explicit
+user or manager-agent decision.
+
 ## Local by default
 
 The daemon listens on loopback by default. LAN, tailnet, backup, notification,

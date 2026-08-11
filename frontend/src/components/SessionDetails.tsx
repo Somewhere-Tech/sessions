@@ -109,7 +109,7 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
               <small>
                 {session.exited
                   ? PIN_UNAVAILABLE_WHEN_ENDED
-                  : 'Keeps this session in its own group at the top of every list and out of reach of automatic cleanup. It never stops you ending it yourself.'}
+                  : 'Marks this as a user-driven workbench, keeps it at the top of every list, and excludes it from delegated-work cleanup suggestions.'}
               </small>
             </span>
             <input

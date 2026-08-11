@@ -99,8 +99,8 @@ export function collapseConversationRuntimes(sessions: SessionInfo[]): SessionIn
 // `UpdatePinned`). Every surface that offers the pin says this one sentence, so
 // the row menu and the details panel cannot grow two different excuses.
 export const PIN_UNAVAILABLE_WHEN_ENDED = 'A pin exempts a live session from '
-  + 'automatic cleanup and cannot protect one that already ended. Archive it '
-  + 'instead.';
+  + 'delegated-work review suggestions and cannot organize one that already '
+  + 'ended. Archive it instead.';
 
 export function pinnedSessionIds(sessions: SessionInfo[]): string[] {
   return sessions.filter(isPinned).map((session) => session.id);
@@ -135,11 +135,29 @@ export function humanEngagementAt(session: SessionInfo): number {
   return Math.max(human ?? 0, session.createdAt || 0);
 }
 
-// New clients record how a child was requested. Older provider lanes already
-// carry KindLane, so they can receive the same compact helper treatment while
-// legacy child sessions of unknown provenance remain fully visible.
+// New clients record how a child was requested. For older records, trusted
+// creator provenance is the migration boundary: an unpinned session created
+// by another session is delegated work unless a person explicitly marked it
+// as user-led. Pinning or promoting a child is a durable adoption signal and
+// keeps it in the main working set.
 export function isAgentLedChild(session: SessionInfo): boolean {
-  return session.delegationKind === 'agent' || session.kind === 'lane';
+  if (session.pinned || session.displayParentSessionId === '' || session.delegationKind === 'user') {
+    return false;
+  }
+  return session.delegationKind === 'agent'
+    || session.kind === 'lane'
+    || (session.delegationKind === undefined && session.creatorKind === 'session');
+}
+
+export const SUBAGENT_REVIEW_AGE_MS = 24 * 60 * 60 * 1000;
+
+export function subagentNeedsReview(
+  session: SessionInfo,
+  now = Date.now(),
+  age = SUBAGENT_REVIEW_AGE_MS
+): boolean {
+  const activity = Math.max(session.lastDataAt || 0, session.idleSince || 0, session.createdAt || 0);
+  return !session.exited && !session.working && activity > 0 && now - activity >= age;
 }
 
 // Return only the agent-created branch below one visible manager. A

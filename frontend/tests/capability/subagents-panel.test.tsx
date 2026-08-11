@@ -12,6 +12,7 @@ describe('capability: manage delegated work from its manager', () => {
     const user = userEvent.setup();
     const onOpen = vi.fn();
     const onMakeMain = vi.fn().mockResolvedValue(undefined);
+    const onEnd = vi.fn().mockResolvedValue(undefined);
 
     render(
       <SubagentsPanel
@@ -29,6 +30,7 @@ describe('capability: manage delegated work from its manager', () => {
         onClose={() => {}}
         onOpen={onOpen}
         onMakeMain={onMakeMain}
+        onEnd={onEnd}
       />
     );
 
@@ -40,5 +42,34 @@ describe('capability: manage delegated work from its manager', () => {
 
     await user.click(screen.getByRole('button', { name: 'Make main session' }));
     expect(onMakeMain).toHaveBeenCalledWith('helper');
+    expect(onEnd).not.toHaveBeenCalled();
+  });
+
+  it('only ends an inactive subagent after an explicit review and confirmation', async () => {
+    const user = userEvent.setup();
+    const onEnd = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SubagentsPanel
+        manager={makeSession({ id: 'manager', name: 'Platform review' })}
+        subagents={[makeSession({
+          id: 'quiet',
+          name: 'Old audit',
+          createdAt: Date.now() - 26 * 60 * 60 * 1000,
+          lastDataAt: Date.now() - 25 * 60 * 60 * 1000
+        })]}
+        onClose={() => {}}
+        onOpen={() => {}}
+        onMakeMain={async () => {}}
+        onEnd={onEnd}
+      />
+    );
+
+    expect(screen.getByText('Nothing is ended automatically. Review these suggestions or ask the manager to clean up its own subagents.')).toBeInTheDocument();
+    expect(onEnd).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Review' }));
+    await user.click(screen.getByRole('button', { name: 'End…' }));
+    expect(onEnd).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'End now' }));
+    expect(onEnd).toHaveBeenCalledWith('quiet');
   });
 });
