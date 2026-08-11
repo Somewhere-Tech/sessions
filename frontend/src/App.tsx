@@ -904,6 +904,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
                   onFork={forkSession}
                   onCloseView={closeTab}
                   onOpenSession={openSession}
+                  onReparent={updateDisplayParent}
                   onBack={isMobile ? () => setMobileSessionDetail(false) : undefined}
                 />
               </div>

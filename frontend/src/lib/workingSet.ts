@@ -142,6 +142,35 @@ export function isAgentLedChild(session: SessionInfo): boolean {
   return session.delegationKind === 'agent' || session.kind === 'lane';
 }
 
+// Return only the agent-created branch below one visible manager. A
+// person-created linked session starts a new branch of intent, so helpers below
+// that session belong to it rather than leaking into the original manager's
+// rollup. Display grouping is authoritative for presentation: "Make main
+// session" sets an empty display parent and removes the promoted helper from
+// this list without rewriting its trusted creator history.
+export function agentLedDescendants(rootId: string, sessions: SessionInfo[]): SessionInfo[] {
+  const children = new Map<string, SessionInfo[]>();
+  for (const session of sessions) {
+    const parentId = effectiveParentId(session);
+    if (!parentId) continue;
+    const nested = children.get(parentId) ?? [];
+    nested.push(session);
+    children.set(parentId, nested);
+  }
+  const result: SessionInfo[] = [];
+  const visited = new Set<string>([rootId]);
+  const collect = (parentId: string): void => {
+    for (const child of children.get(parentId) ?? []) {
+      if (visited.has(child.id) || !isAgentLedChild(child)) continue;
+      visited.add(child.id);
+      result.push(child);
+      collect(child.id);
+    }
+  };
+  collect(rootId);
+  return result;
+}
+
 // Set-aside is working-set organization, not lifecycle. This reducer keeps
 // live non-aside descendants reachable by promoting them across a set-aside
 // ancestor, while retaining ended ancestors only when they are the path to

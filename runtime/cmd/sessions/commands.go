@@ -60,21 +60,23 @@ var toolPresets = map[string]toolPreset{
 var toolPresetOrder = []string{"claude", "codex", "shell"}
 
 type createSessionRequest struct {
-	Cmd         string            `json:"cmd,omitempty"`
-	Args        []string          `json:"args,omitempty"`
-	Cwd         string            `json:"cwd,omitempty"`
-	Name        string            `json:"name,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Tags        map[string]string `json:"tags,omitempty"`
-	Profile     string            `json:"profile,omitempty"`
-	Worktree    bool              `json:"worktree,omitempty"`
-	Base        string            `json:"base,omitempty"`
-	OnIdle      string            `json:"onIdle,omitempty"`
-	WaitReady   bool              `json:"waitReady,omitempty"`
-	Kind        string            `json:"kind,omitempty"`
-	Force       bool              `json:"force,omitempty"`
-	Permissions string            `json:"permissions,omitempty"`
-	Lifecycle   string            `json:"lifecycle,omitempty"`
+	Cmd              string            `json:"cmd,omitempty"`
+	Args             []string          `json:"args,omitempty"`
+	Cwd              string            `json:"cwd,omitempty"`
+	Name             string            `json:"name,omitempty"`
+	Description      string            `json:"description,omitempty"`
+	Tags             map[string]string `json:"tags,omitempty"`
+	Profile          string            `json:"profile,omitempty"`
+	Worktree         bool              `json:"worktree,omitempty"`
+	Base             string            `json:"base,omitempty"`
+	OnIdle           string            `json:"onIdle,omitempty"`
+	WaitReady        bool              `json:"waitReady,omitempty"`
+	Kind             string            `json:"kind,omitempty"`
+	Force            bool              `json:"force,omitempty"`
+	ProviderTerminal bool              `json:"providerTerminal,omitempty"`
+	DelegationKind   string            `json:"delegationKind,omitempty"`
+	Permissions      string            `json:"permissions,omitempty"`
+	Lifecycle        string            `json:"lifecycle,omitempty"`
 }
 
 type agentControls struct {
@@ -245,6 +247,7 @@ func (a *app) cmdNew(args []string) error {
 	body.Force = removeFirst(&args, "--force")
 	forceStructuredClaude := removeFirst(&args, "--structured")
 	forcePTYClaude := removeFirst(&args, "--pty-claude")
+	body.ProviderTerminal = forcePTYClaude
 	forceAppServer := removeFirst(&args, "--codex-appserver")
 	forcePTYCodex := removeFirst(&args, "--pty-codex")
 	if forceStructuredClaude && forcePTYClaude {
@@ -351,6 +354,9 @@ func (a *app) cmdNew(args []string) error {
 		}
 		if strings.EqualFold(tool, "claude") {
 			structuredChild := !forcePTYClaude && a.api.creatorSession != "" && a.api.ownerID == ""
+			if a.api.creatorSession != "" && a.api.ownerID == "" {
+				body.DelegationKind = "agent"
+			}
 			if forceStructuredClaude || structuredChild {
 				body.Kind = "claude-structured"
 				// Structured Claude owns prompt delivery through the audited submit

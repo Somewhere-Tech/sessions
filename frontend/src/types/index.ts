@@ -130,6 +130,7 @@ export interface CreateSessionRequest {
   kind?: string;
   onIdle?: string;
   waitReady?: boolean;
+  providerTerminal?: boolean;
   claude?: ClaudeSessionOptions;
   // Frontend-only transport hint. api/sessionsd.ts removes this from the
   // JSON body and sends it through the daemon's trusted creator header.

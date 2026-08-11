@@ -240,24 +240,29 @@ const (
 )
 
 type CreateSessionRequest struct {
-	Cmd         string                `json:"cmd,omitempty"`
-	Args        []string              `json:"args,omitempty"`
-	Cwd         string                `json:"cwd,omitempty"`
-	Cols        int                   `json:"cols,omitempty"`
-	Rows        int                   `json:"rows,omitempty"`
-	Env         map[string]string     `json:"env,omitempty"`
-	Name        string                `json:"name,omitempty"`
-	Description string                `json:"description,omitempty"`
-	Tags        map[string]string     `json:"tags,omitempty"`
-	Profile     string                `json:"profile,omitempty"`
-	Worktree    bool                  `json:"worktree,omitempty"`
-	Base        string                `json:"base,omitempty"`
-	Kind        string                `json:"kind,omitempty"`
-	SpecPath    string                `json:"specPath,omitempty"`
-	OnIdle      string                `json:"onIdle,omitempty"`
-	WaitReady   bool                  `json:"waitReady,omitempty"`
-	Force       bool                  `json:"force,omitempty"`
-	Claude      *ClaudeSessionOptions `json:"claude,omitempty"`
+	Cmd         string            `json:"cmd,omitempty"`
+	Args        []string          `json:"args,omitempty"`
+	Cwd         string            `json:"cwd,omitempty"`
+	Cols        int               `json:"cols,omitempty"`
+	Rows        int               `json:"rows,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	Name        string            `json:"name,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Tags        map[string]string `json:"tags,omitempty"`
+	Profile     string            `json:"profile,omitempty"`
+	Worktree    bool              `json:"worktree,omitempty"`
+	Base        string            `json:"base,omitempty"`
+	Kind        string            `json:"kind,omitempty"`
+	SpecPath    string            `json:"specPath,omitempty"`
+	OnIdle      string            `json:"onIdle,omitempty"`
+	WaitReady   bool              `json:"waitReady,omitempty"`
+	Force       bool              `json:"force,omitempty"`
+	// ProviderTerminal is a request-only escape hatch for an agent-created
+	// Claude child that genuinely needs the provider's interactive terminal.
+	// It is never persisted as a session kind: the normal PTY kind remains
+	// empty for compatibility with existing runners and clients.
+	ProviderTerminal bool                  `json:"providerTerminal,omitempty"`
+	Claude           *ClaudeSessionOptions `json:"claude,omitempty"`
 	// CreatorSessionID and CreatorOwnerID are populated from trusted HTTP
 	// headers at the daemon boundary. They are deliberately not JSON fields.
 	CreatorSessionID string `json:"-"`

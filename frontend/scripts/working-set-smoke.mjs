@@ -19,7 +19,7 @@ try {
     logLevel: 'silent'
   });
 
-  const { collapseConversationRuntimes, groupWorkingSet, humanEngagementAt, isAgentLedChild } = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
+  const { agentLedDescendants, collapseConversationRuntimes, groupWorkingSet, humanEngagementAt, isAgentLedChild } = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
   const session = (id, values = {}) => ({
     id,
     exited: false,
@@ -81,6 +81,20 @@ try {
   })), 25);
   assert.equal(isAgentLedChild(session('lane', { kind: 'lane' })), true);
   assert.equal(isAgentLedChild(session('explicit-user', { delegationKind: 'user' })), false);
+
+  const delegated = [
+    session('manager'),
+    session('agent-one', { parentSessionId: 'manager', delegationKind: 'agent' }),
+    session('nested-agent', { parentSessionId: 'agent-one', delegationKind: 'agent' }),
+    session('person-linked', { parentSessionId: 'manager', delegationKind: 'user' }),
+    session('other-manager-agent', { parentSessionId: 'person-linked', delegationKind: 'agent' }),
+    session('promoted-agent', { parentSessionId: 'manager', delegationKind: 'agent', displayParentSessionId: '' })
+  ];
+  assert.deepEqual(
+    agentLedDescendants('manager', delegated).map(({ id }) => id),
+    ['agent-one', 'nested-agent'],
+    'the drawer follows only the manager agent branch and excludes promoted sessions'
+  );
 
   const oneConversation = collapseConversationRuntimes([
     session('old-runtime', {

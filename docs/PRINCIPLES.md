@@ -76,6 +76,13 @@ the provider's durable conversation. Search must keep their authorship distinct
 from the person's messages so callers can filter or interpret them without
 pretending every provider-side event came directly from the user.
 
+Agent-created child sessions recede beneath the manager that delegated them.
+The manager shows a compact status rollup; a dedicated Subagents panel reveals
+their purpose, state, and conversation only when requested. A person can make
+one a main session without rewriting its trusted creator history or restarting
+its runtime. Needs-input counts remain visible even while the child rows are
+collapsed, so quieter navigation never hides a decision.
+
 ## Local by default
 
 The daemon listens on loopback by default. LAN, tailnet, backup, notification,
