@@ -9,7 +9,7 @@ update story.
 The checked-in Tauri application builds as `Sessions.app`. It bundles signed Go
 binaries and implements idempotent first install, health/discovery checks,
 live-session baseline verification, rollback for daemon upgrades, and a signed
-Tauri updater. Sessions 0.2.5 is public at the immutable GitHub tag `v0.2.5`;
+Tauri updater. Sessions 0.2.19 is public at the immutable GitHub tag `v0.2.19`;
 its signed updater manifest is live at
 `https://sessions.somewhere.tech/releases/latest.json`. The archive is
 Developer ID signed, notarized, stapled, and Gatekeeper accepted. Future
