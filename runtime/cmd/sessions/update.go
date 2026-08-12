@@ -179,7 +179,7 @@ func (a *app) waitForUpdateConvergence(
 			lastDetail = err.Error()
 		} else if !health.OK || health.Name != "sessionsd" {
 			lastDetail = "localhost is not answering as sessionsd"
-		} else if health.Version != targetVersion {
+		} else if !updateVersionsMatch(health.Version, targetVersion) {
 			lastDetail = fmt.Sprintf("sessionsd still reports %s", health.Version)
 		} else if health.Discovering {
 			lastDetail = "sessionsd is still reconnecting to existing runners"
@@ -216,6 +216,13 @@ func (a *app) waitForUpdateConvergence(
 		}
 	}
 	return 0, fmt.Errorf("%s after %s", lastDetail, timeout.Round(time.Second))
+}
+
+func updateVersionsMatch(left, right string) bool {
+	normalize := func(version string) string {
+		return strings.TrimPrefix(strings.TrimSpace(version), "v")
+	}
+	return normalize(left) == normalize(right)
 }
 
 func (a *app) getUpdateJSON(ctx context.Context, path string, target any) error {

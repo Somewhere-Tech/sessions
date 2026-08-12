@@ -1,7 +1,7 @@
 {
   "name": "sessions",
   "private": true,
-  "version": "0.2.20",
+  "version": "0.2.21",
   "description": "Sessions native app and its local Go runtime for durable agent sessions.",
   "scripts": {
     "dev": "tauri dev",
