@@ -254,21 +254,18 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
     ), id);
   };
 
-  t.scenario('the Pinned group exists, holds the pinned session, and nests its children');
+  t.scenario('the Pinned group exists and holds only the pinned main session');
   const initial = await readGroups();
   assert.ok('Pinned' in initial, `the navigator must render a "Pinned" section; saw ${Object.keys(initial).join(', ')}`);
-  assert.deepEqual(initial.Pinned, ['pinned-manager', 'pinned-child'],
-    'the Pinned group holds the pinned session and its child, and nothing else');
+  assert.deepEqual(initial.Pinned, ['pinned-manager'],
+    'the Pinned group holds the pinned main session and does not leak its subagents');
   assert.ok(initial.Live.includes('plain-manager'));
+  assert.ok(!initial.Live.includes('pinned-child'),
+    'an agent-created helper must not leak into another main-session group');
   assert.ok(!initial.Live.includes('pinned-manager'),
     'a pinned session must not also be listed under Live');
-  // (c) at the level a person sees it: the child is a nested row inside the
-  // Pinned group, not a flattened sibling.
-  const childDepth = await page.$eval(
-    '#surface-navigator .session-tree-group.is-pinned [data-session-id="pinned-child"]',
-    (row) => row.style.getPropertyValue('--tree-depth')
-  );
-  assert.equal(childDepth, '1', 'a pinned manager still renders its children nested beneath it');
+  assert.equal(await page.$('[data-session-id="pinned-child"]'), null,
+    'the helper is available from the manager Subagents panel, not the left navigator');
 
   t.scenario('the row menu offers Pin, and using it moves the row into the Pinned group');
   // (a) The whole report: this item did not exist.
@@ -315,8 +312,8 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
   const afterUnpin = await readGroups();
   assert.ok(afterUnpin.Live.includes('plain-manager'),
     'unpinning returns the row to the group it came from');
-  assert.deepEqual(afterUnpin.Pinned, ['pinned-manager', 'pinned-child'],
-    'the Pinned group is back to exactly the sessions that are still pinned');
+  assert.deepEqual(afterUnpin.Pinned, ['pinned-manager'],
+    'the Pinned group is back to exactly the main sessions that are still pinned');
 
   t.scenario('an ended session shows the pin refused, with the reason and the verb that works');
   // Ended is the one group that starts collapsed, and it opens itself when the

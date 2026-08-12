@@ -48,6 +48,12 @@ const sessions = [
     id: 'live-grandchild', parentSessionId: 'finished-child', cmd: 'zsh', args: [], cwd: '/tmp/grandchild', cols: 120, rows: 40,
     createdAt: 6, pid: 106, tool: 'terminal', working: true, lastDataAt: 6,
     lastUserMessageAt: null, exited: false, exitCode: null, exitSignal: null, exitedAt: null
+  },
+  {
+    id: 'agent-helper', parentSessionId: 'codex-1', cmd: 'codex', args: [], cwd: '/tmp/helper', cols: 120, rows: 40,
+    createdAt: 7, pid: 107, tool: 'codex', working: true, lastDataAt: 7,
+    lastUserMessageAt: null, exited: false, exitCode: null, exitSignal: null, exitedAt: null,
+    creatorKind: 'session', delegationKind: 'agent', kind: 'lane'
   }
 ];
 
@@ -188,7 +194,14 @@ async function activeView(query) {
 }
 
 async function managerTabIds() {
-  const current = await openCase('', '.session-nav-row[data-session-id="finished-child"]');
+  const current = await openCase('', '.session-nav-row[data-session-id="codex-1"]');
+  await current.page.evaluate(() => {
+    const button = [...document.querySelectorAll('[aria-label="Session status filters"] button')]
+      .find((node) => node.textContent?.trim() === 'Ended');
+    if (!(button instanceof HTMLElement)) throw new Error('Ended group is missing');
+    button.click();
+  });
+  await t.waitForSelector(current.page, '.session-nav-row[data-session-id="finished-child"]', 'the ended sessions to expand');
   await current.page.evaluate(() => {
     const child = document.querySelector('.session-nav-row[data-session-id="finished-child"]');
     if (!(child instanceof HTMLElement)) throw new Error('finished child row is missing');
@@ -230,7 +243,14 @@ async function navigatorIds(query) {
 }
 
 async function assertFinishedSessionIsReadOnly() {
-  const current = await openCase('', '.session-nav-row[data-session-id="finished-parent"]');
+  const current = await openCase('', '.session-nav-row[data-session-id="codex-1"]');
+  await current.page.evaluate(() => {
+    const button = [...document.querySelectorAll('[aria-label="Session status filters"] button')]
+      .find((node) => node.textContent?.trim() === 'Ended');
+    if (!(button instanceof HTMLElement)) throw new Error('Ended group is missing');
+    button.click();
+  });
+  await t.waitForSelector(current.page, '.session-nav-row[data-session-id="finished-parent"]', 'the ended sessions to expand');
   await current.page.evaluate(() => {
     const row = document.querySelector('.session-nav-row[data-session-id="finished-parent"]');
     if (!(row instanceof HTMLElement)) throw new Error('finished parent row is missing');
@@ -277,29 +297,25 @@ assert.match(
   'single-session windows must keep attributable ended-by links navigable'
 );
 
-async function assertTreeDisclosureIsClear() {
-  const current = await openCase('', '.session-tree-toggle');
-  const disclosure = await current.page.$eval('.session-tree-toggle', (button) => {
-    const rect = button.getBoundingClientRect();
-    return {
-      width: rect.width,
-      height: rect.height,
-      hasChevron: Boolean(button.querySelector('.session-disclosure-chevron'))
-    };
-  });
-  assert.ok(disclosure.width >= 30);
-  assert.ok(disclosure.height >= 30);
-  assert.equal(disclosure.hasChevron, true);
+async function assertNavigatorKeepsSubagentsOut() {
+  const current = await openCase('', '.session-nav-row[data-session-id="codex-1"]');
+  const state = await current.page.evaluate(() => ({
+    helperVisible: Boolean(document.querySelector('.session-nav-row[data-session-id="agent-helper"]')),
+    perSessionChevrons: document.querySelectorAll('.session-tree-toggle').length
+  }));
+  assert.equal(state.helperVisible, false);
+  assert.equal(state.perSessionChevrons, 0);
   assert.deepEqual(current.pageErrors, []);
   await current.page.close();
 }
 
 try {
-  // The operations-inbox contract keeps every scoped session in the
-  // navigator but only the explicitly opened/active one in the tab strip.
-  assert.deepEqual(await navigatorIds(''), ['finished-parent', 'finished-child', 'live-grandchild', 'shell-1', 'claude-1', 'codex-1']);
+  // The default working set is calm: live main sessions are visible, ended
+  // sessions are one group disclosure away, and agent-created helpers stay in
+  // their manager's Subagents panel.
+  assert.deepEqual(await navigatorIds(''), ['live-grandchild', 'shell-1', 'claude-1', 'codex-1']);
   await assertFinishedSessionIsReadOnly();
-  await assertTreeDisclosureIsClear();
+  await assertNavigatorKeepsSubagentsOut();
   t.scenario('an unscoped window opens the first session, and tool/server scopes narrow it');
   assert.deepEqual(await activeView(''), { sessionID: 'codex-1', tabIDs: [] });
   assert.deepEqual(await activeView('?tool=codex'), { sessionID: 'codex-1', tabIDs: [] });

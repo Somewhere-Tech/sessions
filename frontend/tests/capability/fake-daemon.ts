@@ -523,7 +523,10 @@ export function useFakeMachines(machines: FakeMachine[], activeId?: string): voi
   const activeMachine = machines.find((m) => m.id === active) ?? machines[0];
   useSessions.setState({
     serverId: active,
-    sessions: activeMachine?.sessions ?? [],
+    // A real daemon response is deserialized into a client-owned array. Keep
+    // the same ownership boundary here: lifecycle routes mutate the daemon's
+    // records, while refresh/create must be what makes them visible to React.
+    sessions: activeMachine?.sessions.map((session) => ({ ...session })) ?? [],
     activeId: null,
     hydrated: true,
     loading: false,

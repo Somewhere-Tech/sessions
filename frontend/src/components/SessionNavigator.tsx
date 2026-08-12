@@ -8,13 +8,11 @@ import {
   classifySession,
   endedAtLabel,
   endedSummary,
-  sessionIsFinished,
   sessionNeedsYou
 } from '../lib/sessionStatus';
 import {
   effectiveParentId,
   collapseConversationRuntimes,
-  groupWorkingSet,
   humanEngagementAt,
   isAgentLedChild,
   isPinned,
@@ -155,8 +153,6 @@ export function SessionNavigator({
   const [project, setProject] = useState('all');
   const [date, setDate] = useState<DateFilter>('all');
   const [query, setQuery] = useState('');
-  const [expandedCompleted, setExpandedCompleted] = useState<Set<string>>(new Set());
-  const [expandedHelpers, setExpandedHelpers] = useState<Set<string>>(new Set());
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
@@ -169,7 +165,6 @@ export function SessionNavigator({
   const [selectedEnded, setSelectedEnded] = useState<Set<string>>(new Set());
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
-  const [collapsedTrees, setCollapsedTrees] = useState<Set<string>>(new Set());
   const [movePickerId, setMovePickerId] = useState<string | null>(null);
   const [actionMenuId, setActionMenuId] = useState<string | null>(null);
   const [actionMenuPosition, setActionMenuPosition] = useState<{ top: number; left: number } | null>(null);
@@ -182,7 +177,19 @@ export function SessionNavigator({
   const [endError, setEndError] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const [pinningId, setPinningId] = useState<string | null>(null);
-  const navigatorSessions = useMemo(() => collapseConversationRuntimes(sessions), [sessions]);
+  // The left navigator is the person's working set, not an execution tree.
+  // Agent-created work belongs in the selected manager's Subagents panel. A
+  // helper promoted with "Make main session" stops satisfying
+  // isAgentLedChild and appears here immediately without rewriting its trusted
+  // creator provenance.
+  const navigatorSessions = useMemo(() => {
+    const seen = new Set<string>();
+    return collapseConversationRuntimes(sessions).filter((session) => {
+      if (seen.has(session.id) || isAgentLedChild(session)) return false;
+      seen.add(session.id);
+      return true;
+    });
+  }, [sessions]);
 
   const selectMachineScope = (scope: MachineScope): void => {
     setMachineScopeState(scope);
@@ -241,7 +248,6 @@ export function SessionNavigator({
     }
   };
 
-  const sessionIds = useMemo(() => new Set(navigatorSessions.map((session) => session.id)), [navigatorSessions]);
   const endedSessionIds = useMemo(() => new Set(navigatorSessions.filter((session) => session.exited).map((session) => session.id)), [navigatorSessions]);
   useEffect(() => {
     setSelectedEnded((current) => {
@@ -285,68 +291,26 @@ export function SessionNavigator({
       document.removeEventListener('keydown', dismissOnEscape);
     };
   }, [actionMenuId]);
-  const children = useMemo(() => {
-    const byParent = new Map<string, SessionInfo[]>();
-    for (const session of navigatorSessions) {
-      const parentID = session.displayParentSessionId !== undefined
-        ? session.displayParentSessionId
-        : session.parentSessionId;
-      if (!parentID || !sessionIds.has(parentID)) continue;
-      const list = byParent.get(parentID) ?? [];
-      list.push(session);
-      byParent.set(parentID, list);
-    }
-    for (const list of byParent.values()) list.sort((a, b) => humanEngagementAt(b) - humanEngagementAt(a));
-    return byParent;
-  }, [navigatorSessions, sessionIds]);
-
-  const subtreeHumanEngagement = useMemo(() => {
-    const values = new Map<string, number>();
-    const visiting = new Set<string>();
-    const visit = (session: SessionInfo): number => {
-      const cached = values.get(session.id);
-      if (cached !== undefined) return cached;
-      if (visiting.has(session.id)) return humanEngagementAt(session);
-      visiting.add(session.id);
-      const value = Math.max(
-        humanEngagementAt(session),
-        ...(children.get(session.id) ?? []).map(visit)
-      );
-      visiting.delete(session.id);
-      values.set(session.id, value);
-      return value;
-    };
-    for (const session of navigatorSessions) visit(session);
-    return values;
-  }, [children, navigatorSessions]);
-
   // The pins are the daemon's, not this client's: `sessions pin` and the
   // toggle in the details panel are the same fact, so a session pinned from the
   // CLI stays in focus here even when it has been set aside.
   const pins = useMemo(() => pinnedSessionIds(navigatorSessions), [navigatorSessions]);
-  const grouped = useMemo(
-    () => groupWorkingSet(navigatorSessions, openSessionIds, pins),
-    [navigatorSessions, openSessionIds, pins]
-  );
-  // Engagement order, then pinned first. The pins now have their own section,
-  // so `pinnedFirst` is a no-op over the live roots and a cheap guard: if a pin
-  // ever failed to be lifted out, it still surfaces at the top rather than
-  // hiding among a hundred and eighty rows.
+  // Engagement order, then pinned first. Helpers cannot affect this order:
+  // their output belongs to the right-side Subagents panel, not the person's
+  // main-session list.
   const sortRoots = (items: SessionInfo[]): SessionInfo[] => pinnedFirst([...items].sort((a, b) => {
-    return (subtreeHumanEngagement.get(b.id) ?? humanEngagementAt(b))
-      - (subtreeHumanEngagement.get(a.id) ?? humanEngagementAt(a));
+    return humanEngagementAt(b) - humanEngagementAt(a);
   }));
+  const pinnedIds = useMemo(() => new Set(pins), [pins]);
+  const liveSessions = sortRoots(navigatorSessions.filter((session) => !session.exited && !pinnedIds.has(session.id)));
   const liveIds = useMemo(
-    () => new Set([...grouped.runningIds, ...grouped.setAsideIds]),
-    [grouped.runningIds, grouped.setAsideIds]
+    () => new Set(liveSessions.map((session) => session.id)),
+    [liveSessions]
   );
-  const liveRoots = sortRoots([...grouped.runningRoots, ...grouped.setAsideRoots]
-    .filter((session, index, items) => items.findIndex((item) => item.id === session.id) === index));
-  const pinnedIds = grouped.pinnedIds;
-  const pinnedRoots = sortRoots(grouped.pinnedRoots);
+  const pinnedSessions = sortRoots(navigatorSessions.filter((session) => pinnedIds.has(session.id)));
 
   const fleetSessions = useMemo(
-    () => fleetSnapshots.flatMap((snapshot) => snapshot.sessions),
+    () => fleetSnapshots.flatMap((snapshot) => snapshot.sessions).filter((session) => !isAgentLedChild(session)),
     [fleetSnapshots]
   );
   const scopedSessions = showingAllMachines ? fleetSessions : navigatorSessions;
@@ -383,14 +347,10 @@ export function SessionNavigator({
     return true;
   };
 
-  const treeMatches = (session: SessionInfo, groupIds: Set<string>): boolean => matches(session)
-    || (children.get(session.id) ?? []).filter((child) => groupIds.has(child.id)).some((child) => treeMatches(child, groupIds));
-  const hasLiveDescendant = (session: SessionInfo, groupIds: Set<string>): boolean => (children.get(session.id) ?? [])
-    .filter((child) => groupIds.has(child.id))
-    .some((child) => !child.exited || hasLiveDescendant(child, groupIds));
-  const filteredLiveRoots = liveRoots.filter((root) => treeMatches(root, liveIds));
-  const filteredPinnedRoots = pinnedRoots.filter((root) => treeMatches(root, pinnedIds));
-  const filteredEnded = grouped.ended
+  const filteredLiveSessions = liveSessions.filter(matches);
+  const filteredPinnedSessions = pinnedSessions.filter(matches);
+  const filteredEnded = navigatorSessions
+    .filter((session) => session.exited)
     .filter(matches)
     .sort((left, right) => lastActivity(right) - lastActivity(left));
   const recentCutoff = Date.now() - RECENTLY_ENDED_DAYS * 86_400_000;
@@ -466,21 +426,6 @@ export function SessionNavigator({
       setEndingId(null);
     }
   };
-  const toggleCompleted = (id: string): void => setExpandedCompleted((current) => {
-    const next = new Set(current);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
-  const toggleHelpers = (id: string): void => setExpandedHelpers((current) => {
-    const next = new Set(current);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
-  const toggleTree = (id: string): void => setCollapsedTrees((current) => {
-    const next = new Set(current);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
   const wouldCreateCycle = (id: string, parentID: string): boolean => {
     const seen = new Set<string>();
     let current = parentID;
@@ -538,87 +483,26 @@ export function SessionNavigator({
     if (canMove(id, parentID)) void moveSession(id, parentID);
   };
 
-  const descendantRollup = (session: SessionInfo, groupIds: Set<string>): {
-    working: number;
-    needs: number;
-    finished: number;
-  } => {
-    const seen = new Set<string>();
-    const descendants: SessionInfo[] = [];
-    const collect = (parent: SessionInfo): void => {
-      for (const child of children.get(parent.id) ?? []) {
-        if (!groupIds.has(child.id) || seen.has(child.id)) continue;
-        seen.add(child.id);
-        descendants.push(child);
-        collect(child);
-      }
-    };
-    collect(session);
-    return {
-      working: descendants.filter((child) => !child.exited && child.working).length,
-      needs: descendants.filter(sessionNeedsYou).length,
-      finished: descendants.filter(sessionIsFinished).length
-    };
-  };
-
   const renderNode = (
     session: SessionInfo,
-    depth: number,
-    endedFlat = false,
-    groupIds: Set<string> = liveIds
+    endedFlat = false
   ): JSX.Element | null => {
-    if (endedFlat ? !matches(session) : !treeMatches(session, groupIds)) return null;
-    const nested = endedFlat ? [] : (children.get(session.id) ?? []).filter((child) => groupIds.has(child.id));
-    // Never collapse the only path to live work. A finished intermediary can
-    // still own a running grandchild, so it remains visible until its entire
-    // subtree is finished.
-    const agentChildren = nested.filter(isAgentLedChild);
-    const userChildren = nested.filter((child) => !isAgentLedChild(child));
-    const helpersExpanded = expandedHelpers.has(session.id);
-    const visibleAgentIDs = new Set((helpersExpanded ? agentChildren : []).map((child) => child.id));
-    const completed = userChildren.filter((child) => sessionIsFinished(child) && !hasLiveDescendant(child, groupIds));
-    const completedIds = new Set(completed.map((child) => child.id));
-    const visible = nested.filter((child) => (
-      isAgentLedChild(child)
-        ? visibleAgentIDs.has(child.id)
-        : !completedIds.has(child.id) || expandedCompleted.has(session.id)
-    ));
-    const helperRollup = {
-      working: agentChildren.filter((child) => !child.exited && child.working).length,
-      needs: agentChildren.filter(sessionNeedsYou).length,
-      finished: agentChildren.filter(sessionIsFinished).length
-    };
+    if (!matches(session)) return null;
     const providerName = normalizeProvider(session.tool);
     const status = classifySession(session);
     const end = session.exited ? endedSummary(session, sessions) : null;
     const currentParentID = effectiveParentId(session);
     const parent = currentParentID ? sessions.find((candidate) => candidate.id === currentParentID) : null;
     const resumedFrom = session.resumedFrom ? sessions.find((candidate) => candidate.id === session.resumedFrom) : null;
-    const hasChildren = visible.length > 0 || completed.length > 0 || agentChildren.length > 0;
-    const collapsed = collapsedTrees.has(session.id);
     const label = getTabLabel(session.id) ?? sessionLabel(session);
-    const rollup = depth === 0 && !endedFlat ? descendantRollup(session, groupIds) : null;
-    const rollupParts = rollup
-      ? [
-        rollup.working ? `${rollup.working} working` : '',
-        rollup.needs ? `${rollup.needs} need you` : '',
-        rollup.finished ? `${rollup.finished} finished` : ''
-      ].filter(Boolean)
-      : [];
-    const helperParts = [
-      helperRollup.working ? `${helperRollup.working} working` : '',
-      helperRollup.needs ? `${helperRollup.needs} need you` : '',
-      helperRollup.finished ? `${helperRollup.finished} finished` : ''
-    ].filter(Boolean);
     return (
       <div className="session-tree-node" key={session.id}>
         <div
           role="treeitem"
           tabIndex={0}
-          aria-expanded={hasChildren ? !collapsed : undefined}
           className={`session-nav-row ${status.className}${session.id === activeId ? ' is-active' : ''}${draggingId === session.id ? ' is-dragging' : ''}${dropTargetId === session.id ? ' is-drop-target' : ''}`}
           data-session-id={session.id}
-          style={{ '--tree-depth': depth } as React.CSSProperties}
+          style={{ '--tree-depth': 0 } as React.CSSProperties}
           onClick={() => selectingEnded && session.exited ? toggleEndedSelection(session.id) : onOpen(session.id)}
           onKeyDown={(event) => {
             if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
@@ -641,12 +525,6 @@ export function SessionNavigator({
             onDragStart={(event) => startDragging(event, session.id)}
             onDragEnd={() => { setDraggingId(null); setDropTargetId(null); }}
           >⠿</button>
-          {hasChildren ? (
-            <button type="button" className="session-tree-toggle" aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${label}`} onClick={(event) => { event.stopPropagation(); toggleTree(session.id); }}>
-              <DisclosureChevron open={!collapsed} />
-            </button>
-          ) : <span className="session-tree-toggle-placeholder" aria-hidden />}
-          <span className="session-nav-branch" aria-hidden>{depth > 0 ? '└' : ''}</span>
           <span className={`session-nav-status ${status.className}`} aria-hidden title={status.label} />
           {isPinned(session) ? <span className="manager-pin is-pinned" title="Pinned" aria-label="Pinned">📌</span> : null}
           <span className="session-nav-copy">
@@ -654,7 +532,6 @@ export function SessionNavigator({
             {end ? <span className={`session-nav-ended is-${end.tone}`}>{end.label}</span> : null}
             {resumedFrom ? <span className="session-nav-parent">Resumed from {getTabLabel(resumedFrom.id) ?? sessionLabel(resumedFrom)}</span> : null}
             {endedFlat && parent ? <span className="session-nav-parent">Under {getTabLabel(parent.id) ?? sessionLabel(parent)}</span> : null}
-            {rollupParts.length > 0 ? <span className="session-nav-rollup">{rollupParts.join(' · ')}</span> : null}
             <span className="session-nav-meta">
               {providerName
                 ? <span className="session-nav-provider" title={providerName === 'claude' ? 'Claude' : 'Codex'}><ProviderMark provider={providerName} size={20} /></span>
@@ -784,23 +661,6 @@ export function SessionNavigator({
             </div>
           ) : null}
         </div>
-        {!collapsed ? visible.map((child) => renderNode(child, depth + 1, false, groupIds)) : null}
-        {!collapsed && agentChildren.length > 0 ? (
-          <button
-            type="button"
-            className="session-helper-summary"
-            style={{ '--tree-depth': depth + 1 } as React.CSSProperties}
-            onClick={() => toggleHelpers(session.id)}
-          >
-            <span>{helpersExpanded ? 'Hide subagents' : 'Subagents'}</span>
-            <small>{helperParts.length > 0 ? helperParts.join(' · ') : `${agentChildren.length} quiet`}</small>
-          </button>
-        ) : null}
-        {!collapsed && completed.length > 0 ? (
-          <button type="button" className="completed-children" style={{ '--tree-depth': depth + 1 } as React.CSSProperties} onClick={() => toggleCompleted(session.id)}>
-            {expandedCompleted.has(session.id) ? 'Hide completed' : `${completed.length} completed`}
-          </button>
-        ) : null}
       </div>
     );
   };
@@ -810,6 +670,8 @@ export function SessionNavigator({
     ended: boolean
   ): JSX.Element | null => {
     const eligible = snapshot.sessions.filter((session) => (
+      !isAgentLedChild(session)
+      &&
       session.exited === ended
       && matches(session)
       && (!ended || visibleFleetEndedRows.has(session))
@@ -968,11 +830,11 @@ export function SessionNavigator({
           * manager brings its children into the section, and "Pinned 6" for one
           * marked session would be counting something the user did not mark.
           */}
-        {!showingAllMachines && filteredPinnedRoots.length > 0 ? <div className="session-tree-group is-pinned">
+        {!showingAllMachines && filteredPinnedSessions.length > 0 ? <div className="session-tree-group is-pinned">
           <button type="button" className="session-tree-group-head" onClick={() => setPinnedOpen((current) => !current)}>
             <span className="session-group-disclosure"><DisclosureChevron open={pinnedOpen} /> Pinned</span><strong>{pins.length}</strong>
           </button>
-          {pinnedOpen ? filteredPinnedRoots.map((root) => renderNode(root, 0, false, pinnedIds)) : null}
+          {pinnedOpen ? filteredPinnedSessions.map((session) => renderNode(session)) : null}
         </div> : null}
         {!showingAllMachines && primary !== 'ended' ? <div className="session-tree-group">
           <button type="button" className="session-tree-group-head" onClick={() => setRunningOpen((current) => !current)}>
@@ -980,8 +842,8 @@ export function SessionNavigator({
           </button>
           {runningOpen ? (
             <>
-              {filteredLiveRoots.map((root) => renderNode(root, 0, false, liveIds))}
-              {filteredLiveRoots.length === 0 ? <div className="session-tree-empty is-compact">No matching live sessions.</div> : null}
+              {filteredLiveSessions.map((session) => renderNode(session))}
+              {filteredLiveSessions.length === 0 ? <div className="session-tree-empty is-compact">No matching live sessions.</div> : null}
             </>
           ) : null}
         </div> : null}
@@ -992,7 +854,7 @@ export function SessionNavigator({
           </div>
           {endedOpen ? (
             <>
-              {visibleEnded.map((session) => renderNode(session, 0, true))}
+              {visibleEnded.map((session) => renderNode(session, true))}
               {!browsingAllEnded && hasOlderEnded ? <button type="button" className="session-all-ended" onClick={() => setShowAllEnded(true)}>All ended sessions →</button> : null}
               {showAllEnded && primary !== 'ended' && query.trim() === '' ? <button type="button" className="session-all-ended" onClick={() => setShowAllEnded(false)}>Show recent only</button> : null}
               {visibleEnded.length === 0 ? <div className="session-tree-empty is-compact">No ended sessions yet.</div> : null}
