@@ -1,11 +1,11 @@
 {
-  "version": "0.2.14",
-  "notes": "# Sessions 0.2.14\n\n- Prevents Rich Claude sessions from showing an impossible Terminal prompt or\n  offering a Terminal view that does not exist.\n- Keeps Claude slash commands out of the conversation transcript instead of\n  sending them as ordinary user messages.\n- Makes `/rename` update the durable Sessions conversation name directly from\n  a Rich session.\n- Gives `/rc` an explicit path to end an idle Rich runtime and continue the\n  same Claude conversation in Terminal with Remote Control enabled.\n- Keeps drafts local while Claude is working; Sessions still does not create a\n  hidden prompt queue.\n- Adds matching CLI and API support for continuing a Claude conversation in\n  Terminal with Remote Control.",
-  "pub_date": "2026-07-30T20:30:23.645Z",
+  "version": "0.2.19",
+  "notes": "# Sessions 0.2.19\n\n- Distinguishes human messages from agent and provider activity so working,\n  attention, and engagement states reflect what actually happened.\n- Makes End terminate the complete process tree owned by a session while\n  preserving deliberately detached work and independently managed services.\n- Serializes concurrent metadata updates so names, tags, relationships, pins,\n  and runner state do not overwrite one another.\n- Preserves and mirrors substantially larger Claude and Codex histories for\n  reliable search, recovery, and continuation.\n- Resumes the complete Claude conversation by default instead of silently\n  choosing the provider's compact-summary path.\n- Keeps agent-created child work organized behind its manager, with a focused\n  Subagents panel and an explicit “Make main session” action.\n- Never ends user-driven sessions because they are old or quiet. Delegated\n  sessions inactive for 24 hours become review suggestions only; cleanup stays\n  an explicit user or manager decision.\n- Updates the desktop dependency baseline and ships with no known npm audit\n  vulnerabilities.",
+  "pub_date": "2026-08-12T15:20:13.069Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeThmbWFlSVRBOGsvRkF2THhoYi9xSmJKYXRTS3VGellDQnpNVlZpNjU1YWFiU0t1RkFPWkhwTzhpVkFOQ2M2MU4xeUlwRS9pY3cybExIQitRMFRXTklTQXAxc0ZPY3dvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NDQzNDIyCWZpbGU6U2Vzc2lvbnMuYXBwLnRhci5negpRN2YzdHAwWjYvbTVocHJSc2dTbTl2Q0tGOU9ZNnRldHZOK2d4SnJoNW9rS1UzK1FkS1pXOWI2N0hmV3pmK2g0VkpraDFsWjl5VDVpb25FOHdoeVhEUT09Cg==",
-      "url": "https://github.com/somewhere-tech/sessions/releases/download/v0.2.14/Sessions.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeThmbWFlSVRBOHUwQVg2eitqQ09qTWU2QWFPVFdQYmxNMlBUWEF1MkJKdUxYSWxwRG9QYVMyNDZCbEIwbHhBS0pHMndZMng3VjNLSTdxZW85UmNZWGQrZnFvUWxTbXdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTQ4MDEyCWZpbGU6U2Vzc2lvbnMuYXBwLnRhci5negpuckd4NWJabGpIVm5JMHhkSXhmYWVjV3ZDUWdFQ2dyVWp1RUErWUpyZ2M4Wml2YkMxTzBnWXB3OUdVU2ErSHNpeUNGMEZGckQ0Vk5VcmJwUnRoTkZEdz09Cg==",
+      "url": "https://github.com/somewhere-tech/sessions/releases/download/v0.2.19/Sessions.app.tar.gz"
     }
   }
 }
