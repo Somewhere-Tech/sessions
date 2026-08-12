@@ -88,6 +88,11 @@ export function InputBar({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [composerNotice, setComposerNotice] = useState<ComposerNotice | null>(null);
   const [continuingInTerminal, setContinuingInTerminal] = useState(false);
+  // React state does not update synchronously. Two Enter/click events in the
+  // same browser turn both saw submitting=false and sent the same message;
+  // the daemon accepted the first and the duplicate failed. This ref is the
+  // synchronous, per-composer exactly-once gate while state remains the UI.
+  const submitInFlightRef = useRef(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handledRecoveryKeysRef = useRef<Set<string>>(new Set());
@@ -122,7 +127,7 @@ export function InputBar({
   }, [recoverDraft, text]);
 
   const submit = async (): Promise<void> => {
-    if (!connected || submitting) return;
+    if (!connected || submitInFlightRef.current) return;
     setUploadError(null); // clear any lingering upload error on submit
     setComposerNotice(null);
     const trimmed = text.trim();
@@ -186,6 +191,10 @@ export function InputBar({
       return;
     }
 
+    // Take the synchronous gate only when this invocation is actually about
+    // to send. Validation-only slash-command paths above must leave the
+    // composer usable.
+    submitInFlightRef.current = true;
     setSubmitting(true);
     try {
       if (text) {
@@ -212,6 +221,7 @@ export function InputBar({
       });
     } finally {
       setSubmitting(false);
+      submitInFlightRef.current = false;
     }
   };
 

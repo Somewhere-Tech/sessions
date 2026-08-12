@@ -6,7 +6,7 @@
 // typed, because the daemon really has it.
 import { useState } from 'react';
 import { describe, expect, it } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { NewSessionDialog } from '../../src/components/NewSessionDialog';
 import { Workbench } from './harness';
@@ -61,5 +61,23 @@ describe('capability: create a session', () => {
 
     // …and the person can see it in their list.
     expect(await screen.findByText('Ship the release notes')).toBeInTheDocument();
+  });
+
+  it('creates and submits an initial request only once across duplicate gestures', async () => {
+    const machine = { ...localMachine(), createDelayMS: 50 };
+    const daemon = installFakeDaemon([machine]);
+    useFakeMachines([machine]);
+
+    render(<Launcher />);
+    const start = await screen.findByRole('button', { name: 'Start session' });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.change(screen.getByPlaceholderText(/Ask an agent to work/), {
+      target: { value: 'Inspect this repository' }
+    });
+    fireEvent.click(start);
+    fireEvent.click(start);
+
+    await waitFor(() => expect(daemon.created).toHaveLength(1));
+    await waitFor(() => expect(daemon.delivered[daemon.created[0]!.id]).toEqual(['Inspect this repository']));
   });
 });

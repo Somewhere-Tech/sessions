@@ -181,6 +181,16 @@ func (tail *claudeTail) tick() {
 }
 
 func (tail *claudeTail) resolve() ClaudeResolution {
+	// A live runner always knows the provider conversation it launched. Until
+	// that exact JSONL exists, there is no conversation to follow. Falling back
+	// to the only older file in the cwd bucket here briefly attached a fresh
+	// session to unrelated history; when Claude later created the exact file the
+	// watcher switched over, but the old records were already in Sessions' event
+	// ring and durable mirror. Sole-file and cwd-based recovery remain valid for
+	// offline discovery, where an exact provider id genuinely may be absent.
+	if tail.sessionID != "" {
+		return resolveClaudeJSONLDirsExact(tail.projectDirs, tail.sessionID)
+	}
 	// The cwd is passed so a bucket shared by two working directories can be
 	// split by what each candidate transcript recorded for itself, rather than
 	// leaving the live session with no structured events at all.

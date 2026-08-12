@@ -104,6 +104,67 @@ func TestClaudeWatcherFindsRealpathProjectForAliasCWD(t *testing.T) {
 	}
 }
 
+func TestLiveClaudeWatcherWaitsForItsExactConversation(t *testing.T) {
+	projectDir := t.TempDir()
+	stateDir := t.TempDir()
+	const liveID = "aaaaaaaa-1111-2222-3333-444444444444"
+	const staleID = "bbbbbbbb-5555-6666-7777-888888888888"
+	stale := SessionEvent{
+		"type": "user", "uuid": "stale-event", "sessionId": staleID,
+		"message": map[string]any{"role": "user", "content": "old folder history"},
+	}
+	writeSessionEvents(t, filepath.Join(projectDir, staleID+".jsonl"), []SessionEvent{stale}, false)
+	mirrorPath := TranscriptMirrorPath(stateDir, liveID)
+
+	watcher, err := WatchClaudeSession(ClaudeWatcherOptions{
+		ClaudeSessionID: liveID,
+		SessionID:       liveID,
+		ProjectDir:      projectDir,
+		MirrorPath:      mirrorPath,
+		InitialDelay:    time.Millisecond,
+		PollInterval:    10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+
+	// The old transcript is the only file in the cwd bucket, but it belongs to
+	// another provider conversation. A live runner must remain empty while it
+	// waits for the exact file Claude was launched to create.
+	assertNoEvent(t, watcher.Events, 80*time.Millisecond)
+	if path := watcher.Path(); path != "" {
+		t.Fatalf("watcher borrowed stale transcript %q", path)
+	}
+
+	livePath := filepath.Join(projectDir, liveID+".jsonl")
+	live := SessionEvent{
+		"type": "user", "uuid": "live-event", "sessionId": liveID,
+		"message": map[string]any{"role": "user", "content": "new request"},
+	}
+	writeSessionEvents(t, livePath, []SessionEvent{live}, false)
+	assertEventsJSONEqual(t, collectEvents(t, watcher.Events, 1, 2*time.Second), []SessionEvent{live})
+	if watcher.Path() != livePath {
+		t.Fatalf("watcher path = %q, want exact path %q", watcher.Path(), livePath)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		records, readErr := TranscriptMirrorRecords(mirrorPath)
+		if readErr == nil && len(records) == 1 {
+			mirrored := records[0]
+			if mirrored["uuid"] != "live-event" {
+				t.Fatalf("mirror contains %#v, want only live-event", mirrored)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("mirror did not settle to one exact event: records=%d err=%v", len(records), readErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // sessionEventBytes renders events as the JSONL a provider would write, so a
 // test can put them into a file by a route other than writeSessionEvents --
 // notably an in-place WriteAt that preserves the inode.

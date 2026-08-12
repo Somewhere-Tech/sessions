@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSessions } from '../store/sessions';
 import { DirectoryBrowser } from './DirectoryBrowser';
 import {
@@ -183,6 +183,9 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const [profileChoice, setProfileChoice] = useState(() => inheritedProfile(parentSession, tool));
   const [newProfile, setNewProfile] = useState('');
   const [busy, setBusy] = useState(false);
+  // State disables the button on the next render; this ref closes the smaller
+  // same-tick window in which Enter plus a click could create two runtimes.
+  const startInFlightRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [createdWithDeliveryError, setCreatedWithDeliveryError] = useState<string | null>(null);
   useEffect(() => {
@@ -352,12 +355,16 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   };
 
   const startSession = async (): Promise<void> => {
+    if (startInFlightRef.current) return;
+    startInFlightRef.current = true;
     if (!profileValid) {
       setError('Profile names use 1–32 lowercase letters, numbers, or hyphens.');
+      startInFlightRef.current = false;
       return;
     }
     if (!machineId) {
       setError('Choose a computer before starting the session.');
+      startInFlightRef.current = false;
       return;
     }
     setBusy(true);
@@ -418,6 +425,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       setError((err as Error).message);
     } finally {
       setBusy(false);
+      startInFlightRef.current = false;
     }
   };
 

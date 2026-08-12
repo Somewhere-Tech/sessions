@@ -272,6 +272,31 @@ func resolveClaudeJSONLDirs(dirs []string, launchUUID string) ClaudeResolution {
 	return resolveClaudeJSONLDirsForCWD(dirs, launchUUID, "")
 }
 
+// resolveClaudeJSONLDirsExact is the live-session resolver. A runner launched
+// a specific provider conversation, so only that provider id is authoritative;
+// another transcript being the sole file in the same lossy cwd bucket is not
+// evidence that it belongs to this runner. The broader resolver below retains
+// sole-file and recorded-cwd recovery for offline history discovery.
+func resolveClaudeJSONLDirsExact(dirs []string, launchUUID string) ClaudeResolution {
+	sawDir := false
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		sawDir = true
+		for _, entry := range entries {
+			if entry.Name() == launchUUID+".jsonl" {
+				return ClaudeResolution{Path: filepath.Join(dir, entry.Name()), Reason: ClaudeExact}
+			}
+		}
+	}
+	if !sawDir {
+		return ClaudeResolution{Reason: ClaudeNoDir}
+	}
+	return ClaudeResolution{Reason: ClaudeEmptyDir}
+}
+
 func resolveClaudeJSONLDirsForCWD(dirs []string, launchUUID, cwd string) ClaudeResolution {
 	sawDir := false
 	files := make([]string, 0)
