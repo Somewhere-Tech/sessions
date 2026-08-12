@@ -397,6 +397,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       let pendingOutput: string[] = [];
       let outputRaf: number | null = null;
       let outputWriteInFlight = false;
+      let alternateScreenRefreshTimer: number | null = null;
       const flushOutput = (): void => {
         outputRaf = null;
         if (!term || outputWriteInFlight || pendingOutput.length === 0) return;
@@ -416,7 +417,20 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
             && term.buffer.active.type === 'alternate'
             && term.rows > 0
           ) {
-            term.refresh(0, term.rows - 1);
+            // A full DOM-row refresh on every Claude echo frame made typing
+            // visibly lag behind the keyboard. The refresh exists only as an
+            // Apple-WebView artifact scrub, so debounce it to the end of the
+            // current repaint burst; xterm's ordinary write still paints each
+            // frame immediately.
+            if (alternateScreenRefreshTimer !== null) {
+              window.clearTimeout(alternateScreenRefreshTimer);
+            }
+            alternateScreenRefreshTimer = window.setTimeout(() => {
+              alternateScreenRefreshTimer = null;
+              if (!disposed && term && term.rows > 0 && term.buffer.active.type === 'alternate') {
+                term.refresh(0, term.rows - 1);
+              }
+            }, 80);
           }
           if (pendingOutput.length > 0 && outputRaf === null) {
             outputRaf = requestAnimationFrame(flushOutput);
@@ -777,6 +791,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         window.removeEventListener('resize', onResize);
         ro?.disconnect();
         if (resizeSendTimer !== null) window.clearTimeout(resizeSendTimer);
+        if (alternateScreenRefreshTimer !== null) window.clearTimeout(alternateScreenRefreshTimer);
         clearRunnerReconnect();
         if (outputRaf !== null) { cancelAnimationFrame(outputRaf); outputRaf = null; }
         dataDisp?.dispose();

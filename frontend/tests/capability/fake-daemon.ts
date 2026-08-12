@@ -54,6 +54,9 @@ export interface FakeMachine {
   }>;
   profiles?: unknown[];
   directories?: DirectoryCandidate[];
+  /** Optional latency used to expose same-tick duplicate-action races. */
+  createDelayMS?: number;
+  submitDelayMS?: number;
 }
 
 export interface RecordedRequest {
@@ -266,6 +269,9 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       });
     }
     if (path === '/api/sessions' && method === 'POST') {
+      if (machine.createDelayMS) {
+        await new Promise((resolve) => window.setTimeout(resolve, machine.createDelayMS));
+      }
       const request = (body ?? {}) as Record<string, unknown>;
       const created = makeSession({
         id: `created-${machine.sessions.length + 1}`,
@@ -322,6 +328,9 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     }
     if (sessionRoute && (sessionTail === '/submit' || sessionTail === '/input') && method === 'POST') {
       if (!target) return jsonResponse({ ok: false }, 404);
+      if (machine.submitDelayMS) {
+        await new Promise((resolve) => window.setTimeout(resolve, machine.submitDelayMS));
+      }
       const data = String((body as { data?: unknown })?.data ?? '');
       // The daemon owns text + Enter as one operation; InputBar wraps a
       // message in bracketed paste. Record what a person actually typed.

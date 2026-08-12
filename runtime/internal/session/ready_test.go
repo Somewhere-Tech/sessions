@@ -35,7 +35,7 @@ func TestReadinessWaitsOutAProgramStillInitializing(t *testing.T) {
 	started := time.Now()
 	awaitProviderQuiet(context.Background(), nil, func() (int64, bool) {
 		return lastData.Load(), false
-	}, 100*time.Millisecond, 250*time.Millisecond)
+	}, started.Add(-time.Second).UnixMilli(), 100*time.Millisecond, 250*time.Millisecond)
 	elapsed := time.Since(started)
 	<-done
 
@@ -50,20 +50,41 @@ func TestReadinessWaitsOutAProgramStillInitializing(t *testing.T) {
 	}
 }
 
-// A program that was already idle when the wait began answers at the floor —
-// the fast warm-machine case keeps exactly its old latency.
+// A program that already produced its ready screen and is idle when the wait
+// begins answers at the floor — the fast warm-machine case keeps its latency.
 func TestReadinessAnswersAtTheFloorForAnAlreadyQuietProgram(t *testing.T) {
 	idleSince := time.Now().Add(-2 * time.Second).UnixMilli()
 	started := time.Now()
 	awaitProviderQuiet(context.Background(), nil, func() (int64, bool) {
 		return idleSince, false
-	}, 120*time.Millisecond, 200*time.Millisecond)
+	}, idleSince-1, 120*time.Millisecond, 200*time.Millisecond)
 	elapsed := time.Since(started)
 	if elapsed < 120*time.Millisecond {
 		t.Fatalf("returned before the floor: %v", elapsed)
 	}
 	if elapsed > 1500*time.Millisecond {
 		t.Fatalf("an already-quiet program took %v to be called ready", elapsed)
+	}
+}
+
+// A freshly-created runtime whose LastDataAt is still its CreatedAt has not
+// spoken yet. Silence alone must not be called ready; wait for its first output
+// and then for that output to settle.
+func TestReadinessDoesNotTreatANeverStartedProgramAsQuiet(t *testing.T) {
+	createdAt := time.Now().UnixMilli()
+	var lastData atomic.Int64
+	lastData.Store(createdAt)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		lastData.Store(time.Now().UnixMilli())
+	}()
+
+	started := time.Now()
+	awaitProviderQuiet(context.Background(), nil, func() (int64, bool) {
+		return lastData.Load(), false
+	}, createdAt, 50*time.Millisecond, 200*time.Millisecond)
+	if elapsed := time.Since(started); elapsed < 450*time.Millisecond {
+		t.Fatalf("never-started program was declared ready after %v", elapsed)
 	}
 }
 
@@ -77,7 +98,7 @@ func TestReadinessGivesUpAtTheContextDeadline(t *testing.T) {
 	awaitProviderQuiet(ctx, nil, func() (int64, bool) {
 		// Never quiet: output is always "just now".
 		return time.Now().UnixMilli(), false
-	}, 50*time.Millisecond, 200*time.Millisecond)
+	}, time.Now().Add(-time.Second).UnixMilli(), 50*time.Millisecond, 200*time.Millisecond)
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("the wait outlived its context by %v", elapsed)
 	}
@@ -91,7 +112,7 @@ func TestReadinessReturnsEarlyForStructuredEventsAndExits(t *testing.T) {
 	started := time.Now()
 	awaitProviderQuiet(context.Background(), structured, func() (int64, bool) {
 		return time.Now().UnixMilli(), false
-	}, time.Hour, time.Hour)
+	}, time.Now().Add(-time.Second).UnixMilli(), time.Hour, time.Hour)
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("a structured event took %v to end the wait", elapsed)
 	}
@@ -99,7 +120,7 @@ func TestReadinessReturnsEarlyForStructuredEventsAndExits(t *testing.T) {
 	started = time.Now()
 	awaitProviderQuiet(context.Background(), nil, func() (int64, bool) {
 		return time.Now().UnixMilli(), true
-	}, 50*time.Millisecond, time.Hour)
+	}, time.Now().Add(-time.Second).UnixMilli(), 50*time.Millisecond, time.Hour)
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("an exited session held the wait for %v", elapsed)
 	}

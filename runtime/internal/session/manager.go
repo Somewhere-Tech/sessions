@@ -2149,21 +2149,23 @@ func (m *Manager) waitReady(ctx context.Context, runtime *runtimeSession) {
 	awaitProviderQuiet(ctx, runtime.structuredEventArrived, func() (int64, bool) {
 		current := runtime.session.Info()
 		return current.LastDataAt, current.Exited
-	}, readySettle, readyQuiet)
+	}, info.CreatedAt, readySettle, readyQuiet)
 }
 
-// awaitProviderQuiet returns once the observed program has been silent for
-// quiet, but never before floor has elapsed — a program that was already idle
-// when the wait began answers at the floor, which is the old behaviour for the
-// fast case. It returns early for a structured event, an exited session, or a
-// spent context; it polls rather than subscribing because LastDataAt is a
-// timestamp, not an edge, and a tenth of a second of extra latency is nothing
-// against the seconds-long initializations this exists to survive.
+// awaitProviderQuiet returns once the observed program has produced output and
+// then been silent for quiet, but never before floor has elapsed. A program
+// that already produced its ready screen answers at the floor, preserving the
+// fast case without confusing a never-started child with a quiet one. It
+// returns early for a structured event, an exited session, or a spent context;
+// it polls rather than subscribing because LastDataAt is a timestamp, not an
+// edge, and a tenth of a second of extra latency is nothing against the
+// seconds-long initializations this exists to survive.
 func awaitProviderQuiet(
 	ctx context.Context, structured <-chan struct{},
-	snapshot func() (lastDataMS int64, exited bool), floor, quiet time.Duration,
+	snapshot func() (lastDataMS int64, exited bool), createdAtMS int64, floor, quiet time.Duration,
 ) {
 	started := time.Now()
+	observedOutput := false
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -2181,7 +2183,15 @@ func awaitProviderQuiet(
 		if exited {
 			return
 		}
-		if time.Since(time.UnixMilli(lastData)) >= quiet {
+		// SessionInfo initializes LastDataAt to CreatedAt before the child has
+		// written a byte. Treating that initial silence as readiness is how the
+		// first prompt was pasted into Claude's later alt-screen initialization
+		// and disappeared. Once any real output advances the timestamp, silence
+		// after that output is meaningful.
+		if lastData != createdAtMS {
+			observedOutput = true
+		}
+		if observedOutput && time.Since(time.UnixMilli(lastData)) >= quiet {
 			return
 		}
 	}
