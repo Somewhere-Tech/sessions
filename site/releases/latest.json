@@ -1,11 +1,11 @@
 {
-  "version": "0.2.19",
-  "notes": "# Sessions 0.2.19\n\n- Distinguishes human messages from agent and provider activity so working,\n  attention, and engagement states reflect what actually happened.\n- Makes End terminate the complete process tree owned by a session while\n  preserving deliberately detached work and independently managed services.\n- Serializes concurrent metadata updates so names, tags, relationships, pins,\n  and runner state do not overwrite one another.\n- Preserves and mirrors substantially larger Claude and Codex histories for\n  reliable search, recovery, and continuation.\n- Resumes the complete Claude conversation by default instead of silently\n  choosing the provider's compact-summary path.\n- Keeps agent-created child work organized behind its manager, with a focused\n  Subagents panel and an explicit “Make main session” action.\n- Never ends user-driven sessions because they are old or quiet. Delegated\n  sessions inactive for 24 hours become review suggestions only; cleanup stays\n  an explicit user or manager decision.\n- Updates the desktop dependency baseline and ships with no known npm audit\n  vulnerabilities.",
-  "pub_date": "2026-08-12T15:20:13.069Z",
+  "version": "0.2.20",
+  "notes": "# Sessions 0.2.20\n\n- Lets the safe macOS background-service updater wait through a long retained-session discovery sweep before capturing its preservation baseline.\n- Prevents heavily used hosts from staging a new release and then silently leaving the previous daemon active because the local session inventory needed more than 30 seconds to respond.\n- Keeps the existing bounded 15-minute ceiling and never replaces the daemon unless the pre-update live-session baseline can be read successfully.",
+  "pub_date": "2026-08-12T16:21:08.960Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeThmbWFlSVRBOHUwQVg2eitqQ09qTWU2QWFPVFdQYmxNMlBUWEF1MkJKdUxYSWxwRG9QYVMyNDZCbEIwbHhBS0pHMndZMng3VjNLSTdxZW85UmNZWGQrZnFvUWxTbXdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTQ4MDEyCWZpbGU6U2Vzc2lvbnMuYXBwLnRhci5negpuckd4NWJabGpIVm5JMHhkSXhmYWVjV3ZDUWdFQ2dyVWp1RUErWUpyZ2M4Wml2YkMxTzBnWXB3OUdVU2ErSHNpeUNGMEZGckQ0Vk5VcmJwUnRoTkZEdz09Cg==",
-      "url": "https://github.com/somewhere-tech/sessions/releases/download/v0.2.19/Sessions.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeThmbWFlSVRBOGdpTmtVL1VrYXRqMUNiZFV3TFVIb1ZCUHdjdjdweUtyMnZVRy9RL1ZoNEFRWThlRCszZFV1QXRhMitCQmRETWxiVVVQK2R4QWtWNmVGbkxRTFdVMXdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTUxNjY4CWZpbGU6U2Vzc2lvbnMuYXBwLnRhci5negpLanlqdDV2NXVPdm9EUGZmRHdoWWRsbWd1YU5ZelNkbzdxdG5ZQkg0RzIyQmlQR05ZMXMrVmdYVkk2L1hkajZKbmEyMVpGNjdsSXJlZnlSaHYzZ1lBUT09Cg==",
+      "url": "https://github.com/somewhere-tech/sessions/releases/download/v0.2.20/Sessions.app.tar.gz"
     }
   }
 }
