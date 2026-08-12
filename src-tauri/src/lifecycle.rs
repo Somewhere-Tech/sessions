@@ -1538,12 +1538,13 @@ fn health_probe_timeout(config: &RuntimeConfig) -> Duration {
 }
 
 // Enumerating retained sessions is intentionally slower than a health probe.
-// A heavily dogfooded host can have hundreds of records, and asking the daemon
-// to normalize them may take several seconds even on loopback. Giving this
-// request the health probe's one-second budget made a safe app update stage its
-// new runtime and then silently leave the old daemon in place forever.
+// A heavily dogfooded host can have hundreds of records, and an in-progress
+// discovery sweep may hold the inventory behind its reconciliation lock for
+// minutes. This read happens before launchd is touched, so waiting for the same
+// bounded budget used by fleet-sized re-adoption is safer than abandoning an
+// otherwise healthy update after the short listening timeout.
 fn session_probe_timeout(config: &RuntimeConfig) -> Duration {
-    config.health_timeout.max(Duration::from_secs(5))
+    config.health_timeout_cap.max(Duration::from_secs(5))
 }
 
 fn http_client(request_timeout: Duration) -> LifecycleResult<reqwest::blocking::Client> {
@@ -1851,9 +1852,11 @@ mod tests {
         config.poll_interval = Duration::from_millis(200);
 
         assert_eq!(health_probe_timeout(&config), Duration::from_secs(1));
-        assert_eq!(session_probe_timeout(&config), Duration::from_secs(30));
+        config.health_timeout_cap = Duration::from_secs(15 * 60);
+        assert_eq!(session_probe_timeout(&config), Duration::from_secs(15 * 60));
 
         config.health_timeout = Duration::from_secs(1);
+        config.health_timeout_cap = Duration::from_secs(3);
         assert_eq!(session_probe_timeout(&config), Duration::from_secs(5));
     }
 
