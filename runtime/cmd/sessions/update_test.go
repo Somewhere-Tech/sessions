@@ -198,9 +198,11 @@ func TestUpdateCommandWaitsForDaemonCLIAndLiveSessionConvergence(t *testing.T) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/api/health":
-			version := "0.2.15"
+			// sessionsd reports its compiled version with a leading v while the
+			// signed updater manifest uses plain semver.
+			version := "v0.2.15"
 			if updated {
-				version = "0.2.16"
+				version = "v0.2.16"
 			}
 			_ = json.NewEncoder(response).Encode(map[string]any{
 				"ok": true, "name": "sessionsd", "version": version, "discovering": false,
