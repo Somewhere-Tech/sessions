@@ -48,7 +48,7 @@ Daily workflows:
   gc                       archive old closed records safely
   archive                  hide selected closed sessions
   aside                    set live sessions aside or bring them back
-  pin                      keep a session at the top and out of automatic reach
+  pin                      keep a user-driven session at the top
   unpin                    remove the workbench mark from a session
   ls                       list interactive sessions
   list                     list agent sessions and headless lanes
@@ -374,11 +374,11 @@ Examples:
 Usage:
   sessions pin <session>
 
-keep a session at the top and out of automatic reach
+keep a user-driven session at the top
 
-Mark a live session as a workbench. A pinned session sorts first in `sessions ls`, `sessions list`, and the app's session list, and is marked PINNED in `sessions history`. Sessions has no automatic terminator today; any future cleanup policy must leave pinned workbenches alone. A pin never stops, starts, or otherwise touches the running process, and it never protects a session from you: `sessions kill`, ending it in the app, and archiving it all still work.
+Mark a live session as a user-driven workbench. A pinned session sorts first in `sessions ls`, `sessions list`, and the app's session list, is marked PINNED in `sessions history`, and is excluded from delegated-work review suggestions. Sessions never ends a session because it is old or inactive. A pin never stops, starts, or otherwise touches the running process, and it never protects a session from an explicit choice: `sessions kill`, ending it in the app, and archiving it all still work.
 
-The mark is daemon-owned and persisted in runner metadata, so it survives daemon restarts and runner re-adoption exactly as a name or a tag does. Ended records are refused because a pin marks a live workbench; use archive to organize ended records.
+The mark is daemon-owned and persisted in runner metadata, so it survives daemon restarts and runner re-adoption exactly as a name or a tag does. Ended records are refused because a pin organizes a live workbench; use archive to organize ended records.
 
 Under --json the answer is {ok, code, id, name, pinned}, where pinned is the state the daemon actually stored rather than the one that was requested.
 

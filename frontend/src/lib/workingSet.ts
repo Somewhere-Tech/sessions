@@ -99,8 +99,8 @@ export function collapseConversationRuntimes(sessions: SessionInfo[]): SessionIn
 // `UpdatePinned`). Every surface that offers the pin says this one sentence, so
 // the row menu and the details panel cannot grow two different excuses.
 export const PIN_UNAVAILABLE_WHEN_ENDED = 'A pin exempts a live session from '
-  + 'automatic cleanup and cannot protect one that already ended. Archive it '
-  + 'instead.';
+  + 'delegated-work review suggestions and cannot organize one that already '
+  + 'ended. Archive it instead.';
 
 export function pinnedSessionIds(sessions: SessionInfo[]): string[] {
   return sessions.filter(isPinned).map((session) => session.id);
@@ -135,11 +135,58 @@ export function humanEngagementAt(session: SessionInfo): number {
   return Math.max(human ?? 0, session.createdAt || 0);
 }
 
-// New clients record how a child was requested. Older provider lanes already
-// carry KindLane, so they can receive the same compact helper treatment while
-// legacy child sessions of unknown provenance remain fully visible.
+// New clients record how a child was requested. For older records, trusted
+// creator provenance is the migration boundary: an unpinned session created
+// by another session is delegated work unless a person explicitly marked it
+// as user-led. Pinning or promoting a child is a durable adoption signal and
+// keeps it in the main working set.
 export function isAgentLedChild(session: SessionInfo): boolean {
-  return session.delegationKind === 'agent' || session.kind === 'lane';
+  if (session.pinned || session.displayParentSessionId === '' || session.delegationKind === 'user') {
+    return false;
+  }
+  return session.delegationKind === 'agent'
+    || session.kind === 'lane'
+    || (session.delegationKind === undefined && session.creatorKind === 'session');
+}
+
+export const SUBAGENT_REVIEW_AGE_MS = 24 * 60 * 60 * 1000;
+
+export function subagentNeedsReview(
+  session: SessionInfo,
+  now = Date.now(),
+  age = SUBAGENT_REVIEW_AGE_MS
+): boolean {
+  const activity = Math.max(session.lastDataAt || 0, session.idleSince || 0, session.createdAt || 0);
+  return !session.exited && !session.working && activity > 0 && now - activity >= age;
+}
+
+// Return only the agent-created branch below one visible manager. A
+// person-created linked session starts a new branch of intent, so helpers below
+// that session belong to it rather than leaking into the original manager's
+// rollup. Display grouping is authoritative for presentation: "Make main
+// session" sets an empty display parent and removes the promoted helper from
+// this list without rewriting its trusted creator history.
+export function agentLedDescendants(rootId: string, sessions: SessionInfo[]): SessionInfo[] {
+  const children = new Map<string, SessionInfo[]>();
+  for (const session of sessions) {
+    const parentId = effectiveParentId(session);
+    if (!parentId) continue;
+    const nested = children.get(parentId) ?? [];
+    nested.push(session);
+    children.set(parentId, nested);
+  }
+  const result: SessionInfo[] = [];
+  const visited = new Set<string>([rootId]);
+  const collect = (parentId: string): void => {
+    for (const child of children.get(parentId) ?? []) {
+      if (visited.has(child.id) || !isAgentLedChild(child)) continue;
+      visited.add(child.id);
+      result.push(child);
+      collect(child.id);
+    }
+  };
+  collect(rootId);
+  return result;
 }
 
 // Set-aside is working-set organization, not lifecycle. This reducer keeps

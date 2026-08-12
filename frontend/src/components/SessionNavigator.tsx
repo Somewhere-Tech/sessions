@@ -9,8 +9,7 @@ import {
   endedAtLabel,
   endedSummary,
   sessionIsFinished,
-  sessionNeedsYou,
-  sessionWantsAttention
+  sessionNeedsYou
 } from '../lib/sessionStatus';
 import {
   effectiveParentId,
@@ -576,11 +575,7 @@ export function SessionNavigator({
     const agentChildren = nested.filter(isAgentLedChild);
     const userChildren = nested.filter((child) => !isAgentLedChild(child));
     const helpersExpanded = expandedHelpers.has(session.id);
-    const urgentAgentChildren = agentChildren.filter((child) => (
-      child.id === activeId
-      || sessionWantsAttention(child)
-    ));
-    const visibleAgentIDs = new Set((helpersExpanded ? agentChildren : urgentAgentChildren).map((child) => child.id));
+    const visibleAgentIDs = new Set((helpersExpanded ? agentChildren : []).map((child) => child.id));
     const completed = userChildren.filter((child) => sessionIsFinished(child) && !hasLiveDescendant(child, groupIds));
     const completedIds = new Set(completed.map((child) => child.id));
     const visible = nested.filter((child) => (
@@ -797,7 +792,7 @@ export function SessionNavigator({
             style={{ '--tree-depth': depth + 1 } as React.CSSProperties}
             onClick={() => toggleHelpers(session.id)}
           >
-            <span>{helpersExpanded ? 'Hide helpers' : 'Helpers'}</span>
+            <span>{helpersExpanded ? 'Hide subagents' : 'Subagents'}</span>
             <small>{helperParts.length > 0 ? helperParts.join(' · ') : `${agentChildren.length} quiet`}</small>
           </button>
         ) : null}

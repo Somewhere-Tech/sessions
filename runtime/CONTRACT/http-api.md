@@ -305,6 +305,7 @@ Auth required. Every request field is optional:
 | `onIdle` | string | trimmed; empty becomes absent |
 | `waitReady` | boolean | only literal `true` waits for readiness, capped at 30 seconds |
 | `delegationKind` | `"user" \| "agent"` | optional child presentation provenance; requires a validated `X-Sessions-Creator-Session` parent |
+| `providerTerminal` | boolean | explicit escape hatch for an agent-created Claude child that needs the interactive provider terminal; otherwise newly attributed agent children use the structured Claude runtime |
 | `permissions` | `"inherit" \| "constrained" \| "full"` | optional requested access; `inherit` requires a parent, and a child cannot exceed its parent unless the user explicitly enabled autonomous delegated work |
 | `lifecycle` | `"task" \| "session"` | optional runtime intent; all sessions, including agent-created children, default to `session`; callers must explicitly request a bounded `task` |
 
@@ -312,7 +313,10 @@ Auth required. Every request field is optional:
 `LD_PRELOAD` caller keys are stripped. User-created Claude/Codex sessions are
 constrained unless full access is explicitly requested. An agent-created child
 inherits the parent's exact Claude permission mode or Codex sandbox and
-approval flags. The daemon rejects self-escalation. A machine-level autonomous
+approval flags. Newly attributed Claude agent children default to the
+provider's structured runtime; `providerTerminal: true` deliberately keeps a
+child on the interactive terminal and never enables Remote Control by itself.
+The daemon rejects self-escalation. A machine-level autonomous
 delegation choice can make new agent-created children full-access; only the
 explicit user-facing onboarding/Settings route can grant that choice. Success
 is 201 with a bare `SessionInfo` object, not an envelope. Any caught failure is

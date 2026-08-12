@@ -82,7 +82,8 @@ export interface SessionInfo {
   creatorId?: string;
   parentSessionId?: string;
   // Whether a child was explicitly delegated by a person or created by an
-  // agent session. Legacy children omit this and stay fully visible.
+  // agent session. Legacy session-created children omit this; the UI treats
+  // them as delegated unless a person pins or promotes them.
   delegationKind?: 'user' | 'agent';
   permissions?: 'constrained' | 'full';
   lifecycle?: 'task' | 'session';
@@ -93,8 +94,8 @@ export interface SessionInfo {
   // searchable, countable, and CLI-visible while set aside.
   setAsideAt?: number | null;
   // Daemon-owned workbench mark. A pinned session sorts first everywhere and
-  // any future automatic cleanup policy must leave it alone. The daemon always
-  // sends it, so undefined means an older daemon that never learned the field.
+  // is excluded from delegated-work review suggestions. The daemon always sends
+  // it, so undefined means an older daemon that never learned the field.
   pinned?: boolean;
   creatorAncestry?: string[];
   rootCreatorKind?: string;
@@ -130,6 +131,7 @@ export interface CreateSessionRequest {
   kind?: string;
   onIdle?: string;
   waitReady?: boolean;
+  providerTerminal?: boolean;
   claude?: ClaudeSessionOptions;
   // Frontend-only transport hint. api/sessionsd.ts removes this from the
   // JSON body and sends it through the daemon's trusted creator header.

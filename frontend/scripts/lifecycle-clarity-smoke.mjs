@@ -58,6 +58,8 @@ const [
   source('src/styles/globals.css')
 ]);
 
+const subagents = await source('src/components/SubagentsPanel.tsx');
+
 assert.doesNotMatch(app, /fromTerminalStatus/);
 assert.match(app, /machine=\{machine\} hydrated=\{sessionsHydrated\} error=\{sessionsError\}/);
 assert.doesNotMatch(connection, /terminalStatus|last known state/i);
@@ -79,6 +81,7 @@ assert.match(navigator, /text\/x-sessions-session-id/);
 assert.match(navigator, /Start linked session…/);
 assert.match(navigator, /Close tab <small>keeps running<\/small>/);
 assert.match(navigator, /className="session-helper-summary"/);
+assert.match(navigator, /'Hide subagents' : 'Subagents'/);
 assert.match(navigator, /session-nav-rollup/);
 assert.match(navigator, /<summary>Fork <small>original stays here<\/small><\/summary>/);
 assert.match(navigator, /'In Claude'/);
@@ -100,12 +103,18 @@ assert.doesNotMatch(navigator, /<span>\{machine\}<\/span>/);
 assert.match(navigator, /<ProviderMark provider=\{providerName\} size=\{20\} \/>/);
 assert.match(navigator, /className="session-continue-action" onClick=\{onContinue\}>Resume<\/button>/);
 assert.match(app, /onContinue=\{\(\) => setDialogOpen\('resume'\)\}/);
+assert.match(app, /onReparent=\{updateDisplayParent\}/);
 assert.doesNotMatch(navigator, /session-mode-glyph/);
 assert.match(tabLabels, /export function reconcileDurableTabLabels/);
 assert.match(tabLabels, /const durable = session\.name\?\.trim\(\)/);
 assert.match(sessionsStore, /reconcileDurableTabLabels\(fresh\)/);
 assert.match(tabs, /setTabLabel\(id, name\)/);
 assert.doesNotMatch(tabs, /setTabLabel\(id, name, session\?\.cwd\)/);
+assert.match(view, /className=\{`subagents-panel-trigger/);
+assert.match(view, /<SubagentsPanel/);
+assert.match(subagents, />Open<\/button>/);
+assert.match(subagents, /Make main session/);
+assert.doesNotMatch(subagents, /Peek/);
 
 assert.match(details, />Session control</);
 assert.match(details, /The conversation is kept and you can resume it later/);

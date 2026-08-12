@@ -1044,18 +1044,20 @@ func TestCodexAppServerRequiresExplicitFullAccess(t *testing.T) {
 
 func TestClaudeNewUsesStructuredRuntimeForInheritedAgentChildren(t *testing.T) {
 	tests := []struct {
-		name       string
-		args       []string
-		creator    string
-		kind       string
-		fullAccess bool
+		name             string
+		args             []string
+		creator          string
+		kind             string
+		fullAccess       bool
+		providerTerminal bool
+		delegationKind   string
 	}{
 		{name: "interactive-default"},
 		{name: "structured-explicit", args: []string{"--structured"}, kind: "claude-structured"},
-		{name: "terminal-explicit", args: []string{"--pty-claude"}},
+		{name: "terminal-explicit", args: []string{"--pty-claude"}, providerTerminal: true},
 		{name: "interactive-full-access-explicit", args: []string{"--full-access"}, fullAccess: true},
-		{name: "agent-child-default-structured", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", kind: "claude-structured"},
-		{name: "agent-child-terminal-explicit", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", args: []string{"--pty-claude"}},
+		{name: "agent-child-default-structured", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", kind: "claude-structured", delegationKind: "agent"},
+		{name: "agent-child-terminal-explicit", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", args: []string{"--pty-claude"}, providerTerminal: true, delegationKind: "agent"},
 		{name: "detached-external-root-stays-interactive", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", args: []string{"--owner", "external", "--detach"}},
 	}
 	for _, test := range tests {
@@ -1085,6 +1087,12 @@ func TestClaudeNewUsesStructuredRuntimeForInheritedAgentChildren(t *testing.T) {
 			}
 			if request.Kind != test.kind {
 				t.Fatalf("create kind = %q, want %q", request.Kind, test.kind)
+			}
+			if request.ProviderTerminal != test.providerTerminal {
+				t.Fatalf("providerTerminal = %v, want %v", request.ProviderTerminal, test.providerTerminal)
+			}
+			if request.DelegationKind != test.delegationKind {
+				t.Fatalf("delegationKind = %q, want %q", request.DelegationKind, test.delegationKind)
 			}
 			if !providerargs.HasValue(request.Args, providerargs.ClaudeSessionIDFlag) {
 				t.Fatalf("Claude create args do not contain a preallocated session id: %q", request.Args)

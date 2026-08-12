@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTerminal } from '../hooks/useTerminal';
 import { useSessionSidebar } from '../hooks/useSessionSidebar';
 import { RemoteView } from './RemoteView';
@@ -19,6 +19,8 @@ import { MachineMark } from './MachineMark';
 import { readInitialSessionView, writeSessionView, type SessionViewMode } from '../lib/sessionViewPreference';
 import { LoadingShell } from './LoadingShell';
 import { ConversationForkButton } from './ConversationForkButton';
+import { agentLedDescendants } from '../lib/workingSet';
+import { SubagentsPanel } from './SubagentsPanel';
 
 import type { ActiveStatus } from '../App';
 
@@ -41,6 +43,7 @@ interface Props {
   ) => Promise<void>;
   onCloseView?: (sessionId: string) => void;
   onOpenSession?: (sessionId: string) => void;
+  onReparent?: (sessionId: string, parentId: string | null) => Promise<void>;
   onBack?: () => void;
   preferFullTerminal?: boolean;
 }
@@ -74,11 +77,12 @@ let terminalNoticeShownThisLaunch = false;
 // unchanged session's view skips the poll entirely. Props are all stable
 // per session (sessionId; onStatusChange is setActiveStatus for the active
 // tab and undefined otherwise; isActive flips only on switch).
-function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onFork, onCloseView, onBack, preferFullTerminal = false }: Props): JSX.Element {
+function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onFork, onCloseView, onOpenSession, onReparent, onBack, preferFullTerminal = false }: Props): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>(() => readInitialSessionView(sessionId));
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [forkMode, setForkMode] = useState(false);
   const [terminalExpanded, setTerminalExpanded] = useState(false);
+  const [subagentsOpen, setSubagentsOpen] = useState(false);
   const sessionViewRef = useRef<HTMLDivElement>(null);
   const terminalModePillRef = useRef<HTMLSpanElement>(null);
   const session = useSessions((s) => s.sessions.find((x) => x.id === sessionId)) ?? null;
@@ -87,6 +91,11 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   const updateName = useSessions((s) => s.updateName);
   const updateModel = useSessions((s) => s.updateModel);
   const customLabel = useTabLabel(sessionId, session?.cwd);
+  const subagents = useMemo(
+    () => session ? agentLedDescendants(session.id, allSessions) : [],
+    [allSessions, session]
+  );
+  const workingSubagents = subagents.filter((candidate) => !candidate.exited && candidate.working).length;
 
   // Claude and Codex both expose structured conversation history. Codex TUI
   // rollouts use the normalized event adapter; codex-app-server sessions add
@@ -180,6 +189,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
 
   useEffect(() => {
     setForkMode(false);
+    setSubagentsOpen(false);
   }, [sessionId]);
 
   useEffect(() => {
@@ -444,7 +454,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   ]);
 
   return (
-    <div ref={sessionViewRef} className={`session-view view-${effectiveView}${terminalDrawerOpen ? ' has-terminal-drawer' : ''}${terminalDrawerOpen && terminalExpanded ? ' terminal-drawer-expanded' : ''}${detailsOpen ? ' view-details' : ''}${session?.continuedFromHistoryId ? ' has-continuation' : ''}`}>
+    <div ref={sessionViewRef} className={`session-view view-${effectiveView}${terminalDrawerOpen ? ' has-terminal-drawer' : ''}${terminalDrawerOpen && terminalExpanded ? ' terminal-drawer-expanded' : ''}${detailsOpen ? ' view-details' : ''}${subagentsOpen ? ' has-subagents-panel' : ''}${session?.continuedFromHistoryId ? ' has-continuation' : ''}`}>
       <header className="session-active-header">
         {onBack ? <button type="button" className="mobile-session-back" onClick={onBack} aria-label="Back to sessions">‹</button> : null}
         <div className="session-active-copy">
@@ -495,6 +505,29 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           </div>
         </div>
         <div className="session-active-actions">
+          {subagents.length > 0 && onOpenSession && onReparent ? (
+            <button
+              type="button"
+              className={`subagents-panel-trigger${subagentsOpen ? ' is-active' : ''}`}
+              aria-expanded={subagentsOpen}
+              aria-controls={`subagents-panel-${sessionId}`}
+              onClick={() => setSubagentsOpen((current) => {
+                const next = !current;
+                if (next) {
+                  setDetailsOpen(false);
+                  setForkMode(false);
+                  setTerminalExpanded(false);
+                  if (supportsConversation) setViewMode('remote');
+                }
+                return next;
+              })}
+            >
+              <span>Subagents</span>
+              <strong>{subagents.length}</strong>
+              {workingSubagents ? <small>· {workingSubagents} working</small> : null}
+              <span aria-hidden>›</span>
+            </button>
+          ) : null}
           {session ? <SessionPopOutButton sessionId={session.id} label={customLabel ?? sessionLabel(session)} /> : null}
           {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(sessionId)} title="Close this tab. The agent keeps running and remains in Live.">Close tab</button> : null}
         </div>
@@ -654,6 +687,21 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           {session ? <SessionDetails session={session} allSessions={allSessions} onEnd={endSession} onResume={onResume} /> : null}
         </div>
       </div>
+      {subagentsOpen && session && onOpenSession && onReparent ? (
+        <div id={`subagents-panel-${sessionId}`} className="subagents-panel-slot">
+          <SubagentsPanel
+            manager={session}
+            subagents={subagents}
+            onClose={() => setSubagentsOpen(false)}
+            onOpen={(childId) => {
+              onOpenSession(childId);
+              setSubagentsOpen(false);
+            }}
+            onMakeMain={(childId) => onReparent(childId, null)}
+            onEnd={endSession}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

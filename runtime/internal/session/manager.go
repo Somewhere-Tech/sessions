@@ -1025,6 +1025,11 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 		}
 		request.ConfigDir = configDir
 	}
+	resolvedRuntimeRequest, err := resolveDelegatedRuntimeDefault(request)
+	if err != nil {
+		return state.SessionInfo{}, err
+	}
+	request = resolvedRuntimeRequest
 	resolvedClaudeRequest, err := m.applyClaudeDefaults(request)
 	if err != nil {
 		return state.SessionInfo{}, err

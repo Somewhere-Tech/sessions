@@ -47,6 +47,56 @@ func TestClaudeDefaultsBecomeLaunchArguments(t *testing.T) {
 	}
 }
 
+func TestClaudeResumeDefaultsToTheFullProviderConversation(t *testing.T) {
+	providerID := "11111111-1111-4111-8111-111111111111"
+	for _, args := range [][]string{
+		{"--resume", providerID},
+		{"--resume=" + providerID},
+		{"-r", providerID},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			manager := &Manager{}
+			request, err := manager.applyClaudeDefaults(state.CreateSessionRequest{
+				Cmd: "claude", Args: args,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := request.Env[claudeResumeTokenThresholdEnv]; got != claudeFullResumeTokenThreshold {
+				t.Fatalf("resume threshold = %q, want %q", got, claudeFullResumeTokenThreshold)
+			}
+		})
+	}
+}
+
+func TestClaudeFullResumeDefaultDoesNotOverrideAnExplicitProviderThreshold(t *testing.T) {
+	manager := &Manager{}
+	request, err := manager.applyClaudeDefaults(state.CreateSessionRequest{
+		Cmd:  "claude",
+		Args: []string{"--resume", "11111111-1111-4111-8111-111111111111"},
+		Env:  map[string]string{claudeResumeTokenThresholdEnv: "100000"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := request.Env[claudeResumeTokenThresholdEnv]; got != "100000" {
+		t.Fatalf("explicit resume threshold was replaced with %q", got)
+	}
+}
+
+func TestFreshClaudeSessionDoesNotReceiveAResumeThreshold(t *testing.T) {
+	manager := &Manager{}
+	request, err := manager.applyClaudeDefaults(state.CreateSessionRequest{
+		Cmd: "claude", Args: []string{"--session-id", "11111111-1111-4111-8111-111111111111"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := request.Env[claudeResumeTokenThresholdEnv]; ok {
+		t.Fatal("fresh Claude session received a resume-only threshold")
+	}
+}
+
 func TestClaudeInteractiveDefaultsRemoteControlOffUntilConsent(t *testing.T) {
 	manager := &Manager{}
 	request, err := manager.applyClaudeDefaults(state.CreateSessionRequest{
