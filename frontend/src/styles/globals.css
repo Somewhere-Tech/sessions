@@ -3839,24 +3839,6 @@ button.session-tree-group-head { width: 100%; }
 .session-nav-row:hover .session-drag-handle,
 .session-nav-row.is-dragging .session-drag-handle { opacity: .8; }
 .session-nav-row:active .session-drag-handle { cursor: grabbing; }
-.session-tree-toggle-placeholder { flex: 0 0 30px; width: 30px; }
-.session-tree-toggle {
-  display: grid;
-  flex: 0 0 30px;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  place-items: center;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--fg-dim);
-  cursor: pointer;
-}
-.session-tree-toggle .session-disclosure-chevron { width: 20px; height: 20px; }
-.session-tree-toggle:hover { border-color: var(--border); background: var(--bg-elev-3); color: var(--fg); }
-.session-tree-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.session-nav-branch { width: 9px; color: var(--border-strong); font-family: var(--font-mono); font-size: 12px; }
 .session-nav-status { flex: 0 0 7px; width: 7px; height: 7px; border: 1px solid var(--fg-faint); border-radius: 50%; }
 .session-nav-status.is-working { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .session-nav-status.is-reconnecting { border-color: var(--accent); background: transparent; box-shadow: 0 0 0 3px var(--accent-glow); animation: pulse 1.2s ease-in-out infinite; }
@@ -3872,7 +3854,6 @@ button.session-tree-group-head { width: 100%; }
 .session-nav-ended.is-attention { color: var(--warn); }
 .session-nav-ended.is-completed { color: var(--ok); }
 .session-nav-parent { overflow: hidden; color: var(--fg-faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.session-nav-rollup { overflow: hidden; color: var(--fg-dim); font-size: 12px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .session-nav-aside-chip {
   width: fit-content;
   padding: 1px 5px;
@@ -3994,33 +3975,6 @@ button.session-tree-group-head { width: 100%; }
 .session-bulk-actions button { min-height: 27px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-base); color: var(--fg-dim); font-size: 12px; cursor: pointer; }
 .session-bulk-actions button:first-of-type { border-color: var(--accent-border-soft); color: var(--accent); }
 .session-bulk-actions button:disabled { opacity: .45; cursor: default; }
-.completed-children {
-  margin: 2px 8px 5px calc(36px + var(--tree-depth) * 18px);
-  padding: 4px 8px;
-  border: 0;
-  border-left: 1px solid var(--border-strong);
-  background: transparent;
-  color: var(--fg-faint);
-  font-size: 12px;
-  cursor: pointer;
-}
-.completed-children:hover { color: var(--accent); }
-.session-helper-summary {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 2px 8px 5px calc(36px + var(--tree-depth) * 18px);
-  padding: 5px 8px;
-  border: 0;
-  border-left: 1px solid var(--border-strong);
-  background: transparent;
-  color: var(--fg-dim);
-  font-size: 12px;
-  cursor: pointer;
-}
-.session-helper-summary span { color: var(--accent); font-weight: 650; }
-.session-helper-summary small { overflow: hidden; color: var(--fg-faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.session-helper-summary:hover small { color: var(--fg-dim); }
 .session-root-drop {
   margin: 1px 1px 8px;
   padding: 9px;

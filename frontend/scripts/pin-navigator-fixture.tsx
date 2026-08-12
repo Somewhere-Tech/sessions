@@ -39,9 +39,9 @@ const base = {
 };
 
 // Four records, one per question the suite asks:
-//   pinned-manager  — already pinned, and has a child, so the Pinned group has
-//                     to prove it still nests;
-//   pinned-child    — the child that must travel with its pinned manager;
+//   pinned-manager  — already pinned, with delegated work that must stay out
+//                     of the main navigator;
+//   pinned-child    — the agent-created helper shown only in Subagents;
 //   plain-manager   — starts in Live; the suite pins it, then unpins it;
 //   ended-record    — the daemon refuses a pin on this one (409), so the menu
 //                     item must be present, disabled, and say why.
@@ -59,6 +59,9 @@ export const sessions: SessionInfo[] = [
     id: 'pinned-child',
     name: 'Child of the pin',
     parentSessionId: 'pinned-manager',
+    creatorKind: 'session',
+    delegationKind: 'agent',
+    kind: 'lane',
     createdAt: now - 3_000_000,
     lastDataAt: now - 60_000
   },
