@@ -17,23 +17,27 @@ try {
     target: 'node20',
     logLevel: 'silent'
   });
-  const { terminalRenderer } = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
+  const { terminalNeedsGpuRepair, terminalRenderer } = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
   const macWebKit = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15';
   const windowsWebView = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0';
   const androidWebView = 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36';
-  assert.equal(terminalRenderer(true, macWebKit), 'dom', 'native Apple WebViews must avoid retained-layer ghosting');
+  assert.equal(terminalRenderer(true, macWebKit), 'webgl', 'native Apple WebViews must keep accelerated typing');
   assert.equal(terminalRenderer(true, windowsWebView), 'webgl', 'WebView2 keeps the fast WebGL renderer');
   assert.equal(terminalRenderer(true, androidWebView), 'webgl', 'Android Chromium keeps the fast WebGL renderer');
   assert.equal(terminalRenderer(false, macWebKit), 'webgl', 'browser clients do not inherit the native WKWebView workaround');
+  assert.equal(terminalNeedsGpuRepair('\x1b[?1049h'), true, 'alternate-screen entry repairs the GPU atlas');
+  assert.equal(terminalNeedsGpuRepair('\x1b[2J'), true, 'full-screen erase repairs the GPU atlas');
+  assert.equal(terminalNeedsGpuRepair('ordinary terminal echo'), false, 'ordinary typing never triggers a full repaint');
 
   const hook = await readFile(new URL('../src/hooks/useTerminal.ts', import.meta.url), 'utf8');
   assert.match(hook, /terminalRenderer\(isTauri\(\), navigator\.userAgent\)/);
-  assert.match(hook, /renderer === 'dom'/);
-  assert.match(hook, /term\.refresh\(0, term\.rows - 1\)/);
+  assert.match(hook, /webgl\.clearTextureAtlas\(\)/);
+  assert.match(hook, /gpuRepairScanTail \+ data/);
+  assert.match(hook, /terminalNeedsGpuRepair\(gpuRepairProbe\)/);
   assert.match(hook, /term\.write\(data, \(\) =>/,
     'PTY frames must repaint only after xterm has parsed the complete batch');
-  assert.match(hook, /term\.buffer\.active\.type === 'alternate'/,
-    'native Apple repainting must target provider pickers without slowing normal scrollback');
+  assert.doesNotMatch(hook, /repaintAlternateScreenAfterWrite/,
+    'native Apple must not restore the per-frame DOM repaint regression');
   assert.match(hook, /fetchServerSnapshot\(sessionId, undefined, true\)/,
     'interactive terminals must restore bounded server scrollback during bulk prefill');
 

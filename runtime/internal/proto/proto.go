@@ -15,6 +15,12 @@ const (
 	// length prefix.
 	MaxFrameLen = 4 * 1024 * 1024
 
+	// MaxStructuredReplayEvents bounds the hot structured-event window held
+	// by both runners and the daemon. Provider history remains durable on disk;
+	// this only prevents an old or long-running runner replay from making a
+	// newly updated daemon retain an unbounded duplicate in memory.
+	MaxStructuredReplayEvents = 1200
+
 	// ProtocolVersion is the current daemon/runner wire revision. Version zero
 	// means the legacy HELLO omitted protocolVersion; it remains supported while
 	// immutable pre-1 runners are still alive.

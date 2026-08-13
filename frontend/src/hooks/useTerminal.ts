@@ -9,7 +9,7 @@ import { muxEndpointKey, snapshot as fetchServerSnapshot, fetchClaudeEvents } fr
 import { attachSession, sendSessionInput, submitSessionMessage, type SessionChannel, type MuxStatus } from '../lib/wsMux';
 import { useServers } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
-import { terminalRenderer } from '../lib/terminalRenderer';
+import { terminalNeedsGpuRepair, terminalRenderer } from '../lib/terminalRenderer';
 import type { ServerMsg, ClaudeSessionEvent } from '../types';
 
 type Status = 'connecting' | 'open' | 'reconnecting' | 'closed' | 'error';
@@ -146,7 +146,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       let scrollDisp: { dispose: () => void } | null = null;
       let dataDisp: { dispose: () => void } | null = null;
       let ro: ResizeObserver | null = null;
-      let repaintAlternateScreenAfterWrite = false;
+      let repairGpuAfterWrite: (() => void) | null = null;
 
       if (mountTerminal) {
         const [xtermMod, serializeMod, fitMod, webglMod, canvasMod] = await Promise.all([
@@ -197,18 +197,13 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           // behavior instead of blanking the terminal. With the live-session
           // cap (≤3 mounted), the WebGL per-page context limit isn't a risk;
           // term.dispose() (runCleanup) frees the context on unmount.
-          // WKWebView has a separate failure mode: Claude's full-screen
-          // settings/MCP pickers rapidly erase and repaint rows, and both GPU
-          // and retained-canvas layers can leave old glyphs composited over a
-          // new frame. Native Apple WebViews stay on xterm's DOM renderer for
-          // correctness. Chromium/WebView2 keeps WebGL and falls back to
-          // Canvas on context loss.
+          // Full-screen provider pickers must remain responsive on macOS too.
+          // A narrow texture-atlas repair below handles explicit screen clears
+          // and alternate-buffer switches without forcing a DOM repaint for
+          // every terminal frame.
           const renderer = terminalRenderer(isTauri(), navigator.userAgent);
-          repaintAlternateScreenAfterWrite = renderer === 'dom';
           if (renderer === 'dom') {
-            // No addon: xterm's built-in DOM renderer is the reliable Apple
-            // WebView path. Output batching and active-session mounting keep
-            // its main-thread cost bounded.
+            // Retained for explicit future compatibility overrides only.
           } else if (renderer === 'canvas') {
             try { term.loadAddon(new canvasMod.CanvasAddon()); } catch { /* stay on DOM */ }
           } else {
@@ -219,6 +214,12 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
                 try { term?.loadAddon(new canvasMod.CanvasAddon()); } catch { /* stay on DOM */ }
               });
               term.loadAddon(webgl);
+              repairGpuAfterWrite = () => {
+                try { webgl.clearTextureAtlas(); } catch { /* ordinary rendering continues */ }
+                try {
+                  if (term && term.rows > 0) term.refresh(0, term.rows - 1);
+                } catch { /* ordinary rendering continues */ }
+              };
             } catch {
               try { term.loadAddon(new canvasMod.CanvasAddon()); } catch { /* stay on DOM */ }
             }
@@ -397,40 +398,23 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       let pendingOutput: string[] = [];
       let outputRaf: number | null = null;
       let outputWriteInFlight = false;
-      let alternateScreenRefreshTimer: number | null = null;
+      // PTY frame boundaries need not align to ANSI sequences. Retain enough
+      // prior bytes for the targeted GPU repair detector to see a buffer swap
+      // or erase sequence split across two WebSocket batches.
+      let gpuRepairScanTail = '';
       const flushOutput = (): void => {
         outputRaf = null;
         if (!term || outputWriteInFlight || pendingOutput.length === 0) return;
         const data = pendingOutput.length === 1 ? pendingOutput[0]! : pendingOutput.join('');
         pendingOutput = [];
         outputWriteInFlight = true;
+        const gpuRepairProbe = gpuRepairScanTail + data;
+        gpuRepairScanTail = gpuRepairProbe.slice(-16);
         term.write(data, () => {
           outputWriteInFlight = false;
           if (disposed || !term) return;
-          // WKWebView's correctness-first DOM renderer needs the repaint only
-          // after xterm has parsed the full frame. Calling refresh before the
-          // write callback leaves stale row spans visible during Claude's
-          // slash-command/settings alternate screen. Normal scrollback does
-          // not pay this full-viewport repaint cost.
-          if (
-            repaintAlternateScreenAfterWrite
-            && term.buffer.active.type === 'alternate'
-            && term.rows > 0
-          ) {
-            // A full DOM-row refresh on every Claude echo frame made typing
-            // visibly lag behind the keyboard. The refresh exists only as an
-            // Apple-WebView artifact scrub, so debounce it to the end of the
-            // current repaint burst; xterm's ordinary write still paints each
-            // frame immediately.
-            if (alternateScreenRefreshTimer !== null) {
-              window.clearTimeout(alternateScreenRefreshTimer);
-            }
-            alternateScreenRefreshTimer = window.setTimeout(() => {
-              alternateScreenRefreshTimer = null;
-              if (!disposed && term && term.rows > 0 && term.buffer.active.type === 'alternate') {
-                term.refresh(0, term.rows - 1);
-              }
-            }, 80);
+          if (repairGpuAfterWrite && terminalNeedsGpuRepair(gpuRepairProbe)) {
+            repairGpuAfterWrite();
           }
           if (pendingOutput.length > 0 && outputRaf === null) {
             outputRaf = requestAnimationFrame(flushOutput);
@@ -791,7 +775,6 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         window.removeEventListener('resize', onResize);
         ro?.disconnect();
         if (resizeSendTimer !== null) window.clearTimeout(resizeSendTimer);
-        if (alternateScreenRefreshTimer !== null) window.clearTimeout(alternateScreenRefreshTimer);
         clearRunnerReconnect();
         if (outputRaf !== null) { cancelAnimationFrame(outputRaf); outputRaf = null; }
         dataDisp?.dispose();

@@ -36,9 +36,10 @@ type SocketRunner struct {
 }
 
 type replayRequest struct {
-	done       chan struct{}
-	events     []OutputEvent
-	structured []json.RawMessage
+	done            chan struct{}
+	events          []OutputEvent
+	structured      []json.RawMessage
+	structuredStart int
 }
 
 type modelRequest struct {
@@ -132,10 +133,7 @@ func (r *SocketRunner) Replay(ctx context.Context, after uint32) ReplayWindow {
 
 	r.mu.Lock()
 	events := append([]OutputEvent(nil), request.events...)
-	structured := make([]json.RawMessage, len(request.structured))
-	for index := range request.structured {
-		structured[index] = append(json.RawMessage(nil), request.structured[index]...)
-	}
+	structured := request.cloneStructured()
 	current := r.info.CurrentSeq
 	if r.replay == request {
 		r.replay = nil
@@ -309,7 +307,7 @@ func (r *SocketRunner) readLoop() {
 			raw := append(json.RawMessage(nil), frame.Payload...)
 			r.mu.Lock()
 			if r.replay != nil {
-				r.replay.structured = append(r.replay.structured, raw)
+				r.replay.appendStructured(raw)
 			} else {
 				r.broadcastLocked(Event{Kind: EventCodex, CodexEvent: raw}, false)
 			}
@@ -332,6 +330,24 @@ func (r *SocketRunner) readLoop() {
 		default:
 		}
 	}
+}
+
+func (r *replayRequest) appendStructured(raw json.RawMessage) {
+	if len(r.structured) < MaxStructuredReplayEvents {
+		r.structured = append(r.structured, raw)
+		return
+	}
+	r.structured[r.structuredStart] = raw
+	r.structuredStart = (r.structuredStart + 1) % len(r.structured)
+}
+
+func (r *replayRequest) cloneStructured() []json.RawMessage {
+	structured := make([]json.RawMessage, len(r.structured))
+	for index := range structured {
+		source := (r.structuredStart + index) % len(r.structured)
+		structured[index] = append(json.RawMessage(nil), r.structured[source]...)
+	}
+	return structured
 }
 
 func (r *SocketRunner) finishModel(request *modelRequest, err error) {

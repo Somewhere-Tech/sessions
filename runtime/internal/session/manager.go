@@ -1651,9 +1651,13 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 		m.mu.Unlock()
 		return existing
 	}
-	attachment := session.Attach(state.AttachOptions{IncludeClaudeReplay: true, InitialReplayCap: 5000})
+	attachment := session.Attach(state.AttachOptions{IncludeClaudeReplay: true, InitialReplayCap: 300})
 	runtime := &runtimeSession{
-		manager: m, session: session, attachment: attachment,
+		manager: m, session: session,
+		// Initial replay is consumed below. Retain only the subscription and
+		// cancellation handles so the manager does not keep a second deep copy
+		// of every replayed output and structured event for the session lifetime.
+		attachment:             state.Attachment{Events: attachment.Events, Cancel: attachment.Cancel},
 		outputObserved:         make(chan struct{}, 1),
 		structuredEventArrived: make(chan struct{}, 1),
 	}
@@ -2298,9 +2302,16 @@ func (m *Manager) RunDiscoveryLoop() {
 			interval = parsed
 		}
 	}
+	lastReportedError := ""
 	run := func() {
 		if err := m.Discover(m.ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("runner discovery: %v", err)
+			message := err.Error()
+			if message != lastReportedError {
+				log.Printf("runner discovery: %v", err)
+				lastReportedError = message
+			}
+		} else {
+			lastReportedError = ""
 		}
 	}
 	run()
@@ -2357,6 +2368,16 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 			probe := metadata.Info
 			probe.ID = id
 			probe.SocketPath = state.For(m.config.RunnerStateDir, id).Socket
+			// After a reboot, old coordination artifacts can outnumber the live
+			// sessions by dozens. A PID which no longer exists is definitive: no
+			// runner can answer that socket. Classify it without paying three
+			// attach attempts and two retry delays. Ambiguous live/PID-reuse cases
+			// still take the conservative attach-first path below.
+			if metadata.Info.PID > 0 && !m.options.ProcessAlive(metadata.Info.PID) {
+				deadArtifacts[id] = struct{}{}
+				candidates[id] = struct{}{}
+				continue
+			}
 			connected := false
 			for attempt := 0; attempt < m.options.DiscoveryRetries; attempt++ {
 				runner, attachErr := m.launcher.Attach(ctx, probe)

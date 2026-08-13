@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -255,27 +252,12 @@ func (r *codexAppRunner) openHistory() error {
 		_ = file.Close()
 		return err
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	history, err := readStructuredHistoryTail(file)
+	if err != nil {
 		_ = file.Close()
 		return err
 	}
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), structuredScannerBuffer)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 || !json.Valid(line) {
-			continue
-		}
-		r.history = append(r.history, append(json.RawMessage(nil), line...))
-	}
-	if err := scanner.Err(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if _, err := file.Seek(0, io.SeekEnd); err != nil {
-		_ = file.Close()
-		return err
-	}
+	r.history = history
 	r.historyFile = file
 	return nil
 }
@@ -518,7 +500,7 @@ func (r *codexAppRunner) appendStructured(raw json.RawMessage) {
 		r.logger.Printf("append structured history failed: %v", err)
 	}
 	r.mu.Lock()
-	r.history = append(r.history, append(json.RawMessage(nil), raw...))
+	r.history = retainStructuredEvent(r.history, raw)
 	clients := make([]*client, 0, len(r.clients))
 	for c := range r.clients {
 		clients = append(clients, c)

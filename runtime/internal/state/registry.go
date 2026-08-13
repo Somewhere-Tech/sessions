@@ -21,7 +21,7 @@ import (
 
 const (
 	defaultEventLogBytes = 4 * 1024 * 1024
-	maxClaudeEvents      = 5000
+	maxClaudeEvents      = proto.MaxStructuredReplayEvents
 	exitedGrace          = 30 * time.Second
 )
 
