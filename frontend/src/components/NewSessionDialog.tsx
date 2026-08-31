@@ -13,7 +13,7 @@ import { readNewSessionDefaults, type NewSessionTool } from '../lib/newSessionDe
 import { TagEditor } from './TagEditor';
 import type { ClaudeSessionOptions, DirectoryCandidate, SessionInfo } from '../types';
 import { getActiveServer, isLocalServer, serverDisplayName, useServers } from '../lib/servers';
-import { sessionLabel } from '../lib/tabLabels';
+import { sessionLabel, sessionTitleFromPrompt } from '../lib/tabLabels';
 import { ProviderMark } from './ProviderBadge';
 import { MachineMark } from './MachineMark';
 import { CLAUDE_MODEL_OPTIONS, ModelPicker, type ModelPickerOption } from './ModelPicker';
@@ -386,7 +386,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         cwd: cwd.trim() || undefined,
         cols: initialDefaults.cols,
         rows: initialDefaults.rows,
-        name: task.trim() ? task.trim().split('\n')[0]?.slice(0, 80) : undefined,
+        name: task.trim() ? sessionTitleFromPrompt(task) : undefined,
         description: task.trim() || undefined,
         tags,
         profile: selectedProfile || undefined,

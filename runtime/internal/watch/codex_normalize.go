@@ -71,6 +71,9 @@ func codexContentText(content any, wantedType string) string {
 func isCodexUserPreamble(text string) bool {
 	trimmed := strings.TrimLeftFunc(text, unicode.IsSpace)
 	return strings.HasPrefix(trimmed, "<environment_context>") ||
+		strings.HasPrefix(trimmed, "<recommended_plugins>") ||
+		strings.HasPrefix(trimmed, "# AGENTS.md instructions") ||
+		strings.HasPrefix(trimmed, "# CLAUDE.md instructions") ||
 		(strings.Contains(trimmed, "<approval_policy>") && strings.Contains(trimmed, "<sandbox")) ||
 		(strings.Contains(trimmed, "<sandbox_mode>") && strings.Contains(trimmed, "<cwd>"))
 }

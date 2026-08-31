@@ -43,15 +43,33 @@ export interface ServerConfig {
   scheme?: 'http' | 'https';
 }
 
+function friendlyReportedMachineName(value: string): string {
+  const normalized = value
+    .replace(/\.local$/i, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (/^mac\s*mini(?:\s+\d+)?$/i.test(normalized)) return 'Mac mini';
+  if (/^macbook\s*pro(?:\s+\d+)?$/i.test(normalized)) return 'MacBook Pro';
+  if (/^macbook\s*air(?:\s+\d+)?$/i.test(normalized)) return 'MacBook Air';
+  if (/^macbook(?:\s+\d+)?$/i.test(normalized)) return 'MacBook';
+  if (/^imac(?:\s+\d+)?$/i.test(normalized)) return 'iMac';
+  return normalized || 'Computer';
+}
+
 export function serverDisplayName(server: ServerConfig, annotateLocal = false): string {
-  const reported = server.systemName?.trim();
   const custom = server.customName?.trim();
+  const reported = server.systemName?.trim();
   const legacy = server.name?.trim();
-  const base = custom || reported || (legacy && legacy !== 'This machine' ? legacy : '') || 'This machine';
-  if (annotateLocal && server.isDefault && isLocalServer(server) && base !== 'This machine' && !/\(this machine\)$/i.test(base)) {
-    return `${base} (this machine)`;
+  if (custom) return custom;
+  if (annotateLocal && server.isDefault && isLocalServer(server)) {
+    const source = reported || legacy || '';
+    if (/mac/i.test(source)) return 'This Mac';
+    if (/windows|desktop|surface|pc\b/i.test(source)) return 'This PC';
+    return 'This computer';
   }
-  return base;
+  const source = reported || (legacy && legacy !== 'This machine' ? legacy : '') || 'This computer';
+  return friendlyReportedMachineName(source);
 }
 
 const STORAGE_KEY = 'sessions:servers';

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SessionInfo } from '../types';
-import { sessionLabel } from '../lib/tabLabels';
+import { resolvedSessionLabel } from '../lib/tabLabels';
 import { classifySession } from '../lib/sessionStatus';
 import { normalizeProvider, ProviderMark } from './ProviderBadge';
 import type { ProductView } from './ProductSidebar';
@@ -38,7 +38,7 @@ const VIEW_ACTIONS: Array<{ view: ProductView; label: string; detail: string; ke
 
 function sessionSearchText(session: SessionInfo): string {
   return [
-    sessionLabel(session),
+    resolvedSessionLabel(session),
     session.name,
     session.description,
     session.claudeCustomTitle,
@@ -100,7 +100,7 @@ export function CommandPalette({
         const status = classifySession(session).label;
         return {
           id: `session:${session.id}`,
-          label: sessionLabel(session),
+          label: resolvedSessionLabel(session),
           detail: `${status} · ${session.cwd || session.id.slice(0, 8)}`,
           group: 'Sessions',
           keywords: sessionSearchText(session),

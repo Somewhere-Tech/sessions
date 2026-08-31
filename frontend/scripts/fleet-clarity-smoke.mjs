@@ -31,10 +31,10 @@ assert.match(fleet, /Sessions \$\{version\}/);
 assert.match(fleet, /Name this machine/);
 assert.match(fleet, /updateServer\(server\.id, \{ name, customName: name \}\)/);
 assert.match(fleet, /serverDisplayName\(server, true\)/);
-assert.match(servers, /custom \|\| reported \|\|/,
+assert.match(servers, /if \(custom\) return custom;/,
   'a custom Fleet label must override a renamed system hostname');
-assert.match(servers, /`\$\{base\} \(this machine\)`/,
-  'the local annotation must follow the actual machine name');
+assert.match(servers, /return 'This Mac';/,
+  'the local machine needs a short human label instead of its system hostname');
 assert.match(api, /\/api\/machine/,
   'clients must refresh the authenticated stable machine identity');
 assert.match(styles, /grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(420px,\s*100%\),\s*1fr\)\)/);

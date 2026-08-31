@@ -22,6 +22,7 @@
     "test:lifecycle-clarity": "node scripts/lifecycle-clarity-smoke.mjs",
     "test:workspace-ux": "node scripts/workspace-ux-smoke.mjs",
     "test:session-status": "node scripts/session-status-smoke.mjs",
+    "test:title-clarity": "node scripts/title-clarity-smoke.mjs",
     "test:surface-truth": "node scripts/surface-truth-smoke.mjs",
     "test:search-rollup": "node scripts/search-rollup-smoke.mjs",
     "test:conversation-browser": "node scripts/conversation-browser-smoke.mjs",

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchServerHistoryTranscript, type HistoryTranscript } from '../api/sessionsd';
 import { getActiveServer, serverDisplayName, useServers } from '../lib/servers';
-import { sessionLabel, useTabLabel } from '../lib/tabLabels';
+import { resolvedSessionLabel } from '../lib/tabLabels';
 import { useSessions } from '../store/sessions';
 import type { SessionInfo } from '../types';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
@@ -29,7 +29,7 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
   const activeServerId = useServers((state) => state.activeId);
   const allSessions = useSessions((state) => state.sessions);
   const archiveSessions = useSessions((state) => state.archive);
-  const label = useTabLabel(session.id, session.cwd) ?? sessionLabel(session);
+  const label = resolvedSessionLabel(session);
   const supportsConversation = session.tool !== 'terminal';
   const [detailsOpen, setDetailsOpen] = useState(!supportsConversation);
   const [transcript, setTranscript] = useState<HistoryTranscript | null>(null);
@@ -133,7 +133,7 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
       <header className="session-active-header">
         {onBack ? <button type="button" className="mobile-session-back" onClick={onBack} aria-label="Back to sessions">‹</button> : null}
         <div className="session-active-copy">
-          <span className="session-parent-breadcrumb">{parent ? `${sessionLabel(parent)} / ${session.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}` : 'Manager session'} · saved history</span>
+          <span className="session-parent-breadcrumb">{parent ? `${resolvedSessionLabel(parent)} / ${session.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}` : 'Manager session'} · saved history</span>
           <div className="session-active-title-row"><h1>{label}</h1><span className={`session-live-pill ${continuationIsLive ? 'is-completed' : 'is-finished'}`}>{lifecycleLabel}</span><span className={`session-runtime-badge${sessionMode(session) === 'terminal' && session.tool !== 'claude-code' ? ' is-terminal' : ''}`} title={sessionModeName(session)}>{sessionModeShort(session)}</span></div>
           <div className="session-active-meta">
             {provider ? <ProviderBadge provider={provider} compact /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}

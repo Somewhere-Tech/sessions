@@ -24,7 +24,7 @@ assert.match(app, /<CommandPalette/);
 assert.match(app, /<SessionsWorkspaceSkeleton/);
 assert.match(palette, /role="dialog"/);
 assert.match(palette, /aria-modal="true"/);
-assert.match(palette, /sessionLabel\(session\)/);
+assert.match(palette, /resolvedSessionLabel\(session\)/);
 assert.match(picker, /Search \$\{providerName\} models/);
 assert.match(picker, /claude-fable-5/);
 assert.match(picker, /Use exact model ID/);

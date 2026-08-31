@@ -124,6 +124,33 @@ export function useTabLabel(sessionId: string, cwd?: string): string | null {
   );
 }
 
+function boundedTitle(value: string, maxRunes = 56): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  const runes = Array.from(compact);
+  if (runes.length <= maxRunes) return compact;
+  const clipped = runes.slice(0, maxRunes - 1).join('');
+  const wordBoundary = clipped.lastIndexOf(' ');
+  const safe = wordBoundary >= Math.floor(maxRunes * .62) ? clipped.slice(0, wordBoundary) : clipped;
+  return `${safe.replace(/[,:;\-–—]+$/g, '').trim()}…`;
+}
+
+/** Turn an initial request into a calm list label without changing its meaning. */
+export function sessionTitleFromPrompt(value: string): string {
+  let title = value.split('\n')[0]?.replace(/\s+/g, ' ').trim() ?? '';
+  title = title
+    .replace(/^(?:hey|hello|hi|okay|ok|so)\b[\s,.:;!-]*/i, '')
+    .replace(/^(?:please\s+)?(?:can|could|would|will)\s+you\s+/i, '')
+    .replace(/^i\s+(?:really\s+)?(?:want|need|would\s+like)(?:\s+you)?\s+to\s+/i, '')
+    .replace(/^this\s+(?:chat|conversation|session)\s+is\s+about\s+/i, '')
+    .replace(/^i\s+(?:have|had)\s+(?:(?:some|a\s+few)\s+)?questions?\s+(?:about|on)\s+/i, 'Questions about ')
+    .replace(/^look\s+at\s+this\s+repo\s+and\s+tell\s+me\s+whether\s+it\s+is\s+/i, 'Check whether this repo is ')
+    .replace(/^please\s+/i, '')
+    .trim();
+  if (!title) title = value.replace(/\s+/g, ' ').trim();
+  if (title) title = `${title.charAt(0).toUpperCase()}${title.slice(1)}`;
+  return boundedTitle(title);
+}
+
 // Canonical label for a session from its metadata (no user overrides).
 // Resolution order mirrors the tab strip's derivedLabel so every consumer
 // (SessionTabs, GridView, MobileNav, pop-out title, …) shows the same
@@ -138,14 +165,35 @@ export function useTabLabel(sessionId: string, cwd?: string): string | null {
 // Browser-local aliases are retained only for pre-durable-name compatibility;
 // refresh reconciliation makes a durable name win in every consumer.
 export function sessionLabel(session: SessionInfo): string {
-  if (session.name && session.name.length > 0) return session.name;
-  if (session.claudeCustomTitle && session.claudeCustomTitle.length > 0) return session.claudeCustomTitle;
-  if (session.claudeAiTitle && session.claudeAiTitle.length > 0) return session.claudeAiTitle;
-  if (session.description && session.description.length > 0) return session.description;
+  const name = session.name?.trim() ?? '';
+  const description = session.description?.trim() ?? '';
+  if (session.name_source === 'explicit' && name) return boundedTitle(name);
+  if (session.claudeCustomTitle?.trim()) return boundedTitle(session.claudeCustomTitle);
+  if (session.claudeAiTitle?.trim()) return boundedTitle(session.claudeAiTitle);
+  if (session.name_source === 'provider' && name) return boundedTitle(name);
+  if (session.name_source === 'launch') {
+    if (description) return sessionTitleFromPrompt(description);
+    if (name) return sessionTitleFromPrompt(name);
+  }
+  // Sessions created before name provenance was recorded often already have a
+  // useful human/provider title. Preserve it instead of replacing it with an
+  // implementation-oriented description or first command.
+  if (name && !/^(?:claude|codex|shell)\s+[-—]/i.test(name)) {
+    const conversational = /^(?:hey\b|hello\b|hi\b|okay\b|ok\b|so\b|i\s+(?:want|need|would\s+like|have|had)\b|this\s+(?:chat|conversation|session)\b|(?:can|could|would|will)\s+you\b|please\b)/i;
+    return conversational.test(name) ? sessionTitleFromPrompt(name) : boundedTitle(name);
+  }
+  if (description) return sessionTitleFromPrompt(description);
   if (session.cwd && session.cwd.length > 0) {
     const parts = session.cwd.split('/').filter(Boolean);
     const last = parts[parts.length - 1];
     if (last) return last;
   }
   return session.cmd || session.id.slice(0, 6);
+}
+
+/** Resolve old browser labels while still shaping daemon-owned launch names. */
+export function resolvedSessionLabel(session: SessionInfo): string {
+  const stored = getTabLabel(session.id);
+  if (stored && stored !== session.name) return boundedTitle(stored);
+  return sessionLabel(session);
 }

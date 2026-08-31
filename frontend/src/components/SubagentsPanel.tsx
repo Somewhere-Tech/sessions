@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { classifySession } from '../lib/sessionStatus';
 import { subagentNeedsReview } from '../lib/workingSet';
-import { sessionLabel } from '../lib/tabLabels';
+import { resolvedSessionLabel } from '../lib/tabLabels';
 import type { SessionInfo } from '../types';
 import { normalizeProvider, ProviderMark } from './ProviderBadge';
 
@@ -90,7 +90,7 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
       setCopiedCleanupRequest(true);
       window.setTimeout(() => setCopiedCleanupRequest(false), 1800);
     } catch {
-      setError(`Copy this request to ${sessionLabel(manager)}: ${request}`);
+      setError(`Copy this request to ${resolvedSessionLabel(manager)}: ${request}`);
     }
   };
 
@@ -104,7 +104,7 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
         </div>
         <button type="button" aria-label="Close subagents" onClick={onClose}>×</button>
       </header>
-      <div className="subagents-manager-note">Work delegated by <strong>{sessionLabel(manager)}</strong></div>
+      <div className="subagents-manager-note">Work delegated by <strong>{resolvedSessionLabel(manager)}</strong></div>
       {error ? <div className="subagents-error" role="alert">{error}</div> : null}
       {inactive.length > 0 ? (
         <section className="subagents-review-note">
@@ -131,7 +131,7 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
               <div className="subagent-card-head">
                 <span className={`subagent-status ${status.className}`} aria-hidden />
                 <div>
-                  <strong>{index + 1}. {sessionLabel(session)}</strong>
+                  <strong>{index + 1}. {resolvedSessionLabel(session)}</strong>
                   <small>{status.label}{relativeTime(activityAt(session)) ? ` · ${relativeTime(activityAt(session))}` : ''}</small>
                 </div>
                 {provider ? <ProviderMark provider={provider} size={24} /> : <span className="subagent-shell" title="Shell">⌘</span>}

@@ -364,6 +364,8 @@ func TestTranscriptPreviewReturnsBoundedTail(t *testing.T) {
 func TestTranscriptIndexesMessagesAndExpandsOnlySearchableRelayPayloads(t *testing.T) {
 	records := []map[string]any{
 		{"timestamp": "2026-07-23T20:00:00Z", "message": map[string]any{"role": "user", "content": "Find my drafts direction"}},
+		{"timestamp": "2026-07-23T20:00:10Z", "message": map[string]any{"role": "user", "content": "# AGENTS.md instructions\n\n<INSTRUCTIONS>internal repository context</INSTRUCTIONS>"}},
+		{"timestamp": "2026-07-23T20:00:20Z", "message": map[string]any{"role": "user", "content": "# CLAUDE.md instructions\n\ninternal provider context"}},
 		{"timestamp": "2026-07-23T20:00:30Z", "message": map[string]any{"role": "user", "content": "<local-command-caveat>internal provider control text</local-command-caveat>"}},
 		{"timestamp": "2026-07-23T20:00:45Z", "message": map[string]any{"role": "user", "content": "<command-name>/model</command-name>"}},
 		{"timestamp": "2026-07-23T20:00:50Z", "message": map[string]any{"role": "assistant", "content": "<local-command-stdout>provider control output</local-command-stdout>"}},
@@ -431,7 +433,8 @@ func TestTranscriptIndexesMessagesAndExpandsOnlySearchableRelayPayloads(t *testi
 	if strings.Contains(joined, "SECRET") || strings.Contains(joined, "printenv") {
 		t.Fatalf("arbitrary tool payload was indexed: %q", joined)
 	}
-	if strings.Contains(joined, "provider control") || strings.Contains(joined, "command-name") {
+	if strings.Contains(joined, "provider control") || strings.Contains(joined, "command-name") ||
+		strings.Contains(joined, "AGENTS.md") || strings.Contains(joined, "CLAUDE.md") {
 		t.Fatalf("provider control records leaked into transcript: %q", joined)
 	}
 }

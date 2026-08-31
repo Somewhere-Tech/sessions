@@ -769,7 +769,7 @@ export interface HistoryTranscript {
   next_index?: number;
 }
 
-const HISTORY_CONTROL_MESSAGE = /^\s*<(?:local-command|command-(?:name|message|args)|system-reminder)\b/i;
+const HISTORY_CONTROL_MESSAGE = /^\s*(?:<(?:local-command|command-(?:name|message|args)|system-reminder|recommended_plugins|environment_context)\b|#\s*(?:AGENTS|CLAUDE)\.md instructions\b)/i;
 const HISTORY_ANSI = /(?:\u001b|\\x1b)\[[0-?]*[ -/]*[@-~]/g;
 const HISTORY_OSC = new RegExp('(?:\\u001b|\\\\x1b)\\][\\s\\S]*?(?:\\u0007|(?:\\u001b|\\\\x1b)\\\\)', 'g');
 

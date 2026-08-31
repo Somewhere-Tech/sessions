@@ -9,7 +9,7 @@ import { keyToBytes } from '../lib/keyToBytes';
 import { ParserIcon } from './ParserIcon';
 import { renderContent } from '../lib/contentRender';
 import { eventsToMessages } from '../lib/claudeEvents';
-import { getTabLabel, useTabLabel, sessionLabel } from '../lib/tabLabels';
+import { resolvedSessionLabel } from '../lib/tabLabels';
 import type { DispatchMessage } from '../hooks/useDispatch';
 import { CopyButton } from './CopyButton';
 import { classifySession } from '../lib/sessionStatus';
@@ -55,7 +55,7 @@ export function GridView({ sessions, statusBySession, iconBySession, onEnd, onEx
   return (
     <div className="grid-view">
       {sessions.map((s) => {
-        const label = getTabLabel(s.id) ?? sessionLabel(s);
+        const label = resolvedSessionLabel(s);
         return (
           <GridCell
             key={s.id}
@@ -190,8 +190,7 @@ function GridCell({ session, status, icon, onPopOut, onExpand, onEnd }: CellProp
   };
 
   const cwd = useMemo(() => session.cwd ?? '', [session.cwd]);
-  const customLabel = useTabLabel(session.id);
-  const label = customLabel ?? sessionLabel(session);
+  const label = resolvedSessionLabel(session);
 
   // Local typing buffer — shown as a floating popup over the cell while
   // focused so the user can see what they're typing without resizing

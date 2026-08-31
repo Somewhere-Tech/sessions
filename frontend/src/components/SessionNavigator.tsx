@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { SessionInfo } from '../types';
-import { getTabLabel, sessionLabel } from '../lib/tabLabels';
+import { resolvedSessionLabel } from '../lib/tabLabels';
 import { ProviderMark, normalizeProvider } from './ProviderBadge';
 import {
   canContinueSession,
@@ -341,7 +341,7 @@ export function SessionNavigator({
     if (date === 'week' && age > 7 * 86_400_000) return false;
     const needle = query.trim().toLowerCase();
     if (needle) {
-      const haystack = `${getTabLabel(session.id) ?? sessionLabel(session)} ${session.cwd} ${session.lastSummary ?? ''} ${Object.values(session.tags ?? {}).join(' ')}`.toLowerCase();
+      const haystack = `${resolvedSessionLabel(session)} ${session.name ?? ''} ${session.description ?? ''} ${session.cwd} ${session.lastSummary ?? ''} ${Object.values(session.tags ?? {}).join(' ')}`.toLowerCase();
       if (!haystack.includes(needle)) return false;
     }
     return true;
@@ -494,7 +494,7 @@ export function SessionNavigator({
     const currentParentID = effectiveParentId(session);
     const parent = currentParentID ? sessions.find((candidate) => candidate.id === currentParentID) : null;
     const resumedFrom = session.resumedFrom ? sessions.find((candidate) => candidate.id === session.resumedFrom) : null;
-    const label = getTabLabel(session.id) ?? sessionLabel(session);
+    const label = resolvedSessionLabel(session);
     return (
       <div className="session-tree-node" key={session.id}>
         <div
@@ -530,8 +530,8 @@ export function SessionNavigator({
           <span className="session-nav-copy">
             <span className="session-nav-title">{label}</span>
             {end ? <span className={`session-nav-ended is-${end.tone}`}>{end.label}</span> : null}
-            {resumedFrom ? <span className="session-nav-parent">Resumed from {getTabLabel(resumedFrom.id) ?? sessionLabel(resumedFrom)}</span> : null}
-            {endedFlat && parent ? <span className="session-nav-parent">Under {getTabLabel(parent.id) ?? sessionLabel(parent)}</span> : null}
+            {resumedFrom ? <span className="session-nav-parent">Resumed from {resolvedSessionLabel(resumedFrom)}</span> : null}
+            {endedFlat && parent ? <span className="session-nav-parent">Under {resolvedSessionLabel(parent)}</span> : null}
             <span className="session-nav-meta">
               {providerName
                 ? <span className="session-nav-provider" title={providerName === 'claude' ? 'Claude' : 'Codex'}><ProviderMark provider={providerName} size={20} /></span>
@@ -700,7 +700,7 @@ export function SessionNavigator({
                 {providerName ? <ProviderMark provider={providerName} size={18} /> : <span aria-label="Shell">⌘</span>}
               </span>
               <span className="session-fleet-copy">
-                <strong>{getTabLabel(session.id) ?? sessionLabel(session)}</strong>
+                <strong>{resolvedSessionLabel(session)}</strong>
                 <small>{projectName(session)}</small>
               </span>
               <span className={`session-fleet-state ${status.className}`}><i aria-hidden />{status.label}</span>
@@ -794,7 +794,7 @@ export function SessionNavigator({
         ) : null}
         {showingAllMachines && primary !== 'ended' ? <div className="session-tree-group session-fleet-scope-group">
           <button type="button" className="session-tree-group-head" onClick={() => setRunningOpen((current) => !current)}>
-            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Live across your fleet</span><strong>{counts.live}</strong>
+            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Your sessions</span><strong>{counts.live}</strong>
           </button>
           {runningOpen ? (
             <>
@@ -867,13 +867,13 @@ export function SessionNavigator({
       {movePickerSession ? (
         <div className="session-move-sheet" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setMovePickerId(null); }}>
           <section role="dialog" aria-modal="true" aria-labelledby="move-session-title">
-            <header><div><span>Organize session</span><h2 id="move-session-title">Move “{getTabLabel(movePickerSession.id) ?? sessionLabel(movePickerSession)}”</h2></div><button type="button" aria-label="Close move dialog" onClick={() => setMovePickerId(null)}>×</button></header>
+            <header><div><span>Organize session</span><h2 id="move-session-title">Move “{resolvedSessionLabel(movePickerSession)}”</h2></div><button type="button" aria-label="Close move dialog" onClick={() => setMovePickerId(null)}>×</button></header>
             <p>Choose a manager. This changes visual grouping only; trusted creator history stays unchanged.</p>
             <div className="session-move-options">
               {movePickerParentID ? <button type="button" className="is-root" disabled={!canMove(movePickerSession.id, null)} onClick={() => void moveSession(movePickerSession.id, null)}><strong>Make top-level</strong><small>Show as its own manager session</small></button> : null}
               {moveCandidates.map((candidate) => (
                 <button type="button" key={candidate.id} onClick={() => void moveSession(movePickerSession.id, candidate.id)}>
-                  <strong>{getTabLabel(candidate.id) ?? sessionLabel(candidate)}</strong>
+                  <strong>{resolvedSessionLabel(candidate)}</strong>
                   <small>{candidate.exited ? 'Ended session' : candidate.working ? 'Working' : 'Live · idle'} · {projectName(candidate)}</small>
                 </button>
               ))}
@@ -886,7 +886,7 @@ export function SessionNavigator({
         <div className="session-move-sheet session-end-sheet" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) dismissEndConfirm(); }}>
           <section role="dialog" aria-modal="true" aria-labelledby="end-session-title">
             <header>
-              <div><span>End session</span><h2 id="end-session-title">Stop “{getTabLabel(endConfirmSession.id) ?? sessionLabel(endConfirmSession)}”?</h2></div>
+              <div><span>End session</span><h2 id="end-session-title">Stop “{resolvedSessionLabel(endConfirmSession)}”?</h2></div>
               <button type="button" aria-label="Cancel ending session" disabled={endingId !== null} onClick={dismissEndConfirm}>×</button>
             </header>
             <p>This stops the agent on {machine}. Its conversation stays in Ended, where you can resume it later.</p>

@@ -10,6 +10,7 @@ export type SessionTool = 'claude-code' | 'codex' | 'terminal';
 export interface SessionInfo {
   id: string;
   name?: string;
+  name_source?: 'launch' | 'provider' | 'explicit';
   description?: string;
   tags?: Record<string, string>;
   kind?: string;
