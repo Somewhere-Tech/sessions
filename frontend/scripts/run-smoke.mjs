@@ -40,6 +40,7 @@ const GATE = [
   'fleet-usage',
   'search-conversations',
   'terminal-renderer',
+  'terminal-viewport',
   'external-links',
   'lifecycle-clarity',
   'workspace-ux',

@@ -10,6 +10,11 @@ import { attachSession, sendSessionInput, submitSessionMessage, type SessionChan
 import { useServers } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
 import { terminalNeedsGpuRepair, terminalRenderer } from '../lib/terminalRenderer';
+import {
+  isTerminalScrollKey,
+  TerminalViewportCoordinator,
+  type TerminalViewportPosition
+} from '../lib/terminalViewport';
 import type { ServerMsg, ClaudeSessionEvent } from '../types';
 
 type Status = 'connecting' | 'open' | 'reconnecting' | 'closed' | 'error';
@@ -29,8 +34,8 @@ interface UseTerminalResult {
   sendConfirmedInputRef: { current: (data: string) => Promise<void> };
   submitMessageRef: { current: (data: string) => Promise<void> };
   // Scroll position state for the floating "scroll to latest" button.
-  // True when xterm's viewport is parked at the live tail; flips false
-  // as soon as the user scrolls up. Driven by xterm's onScroll event.
+  // True when the user has explicitly chosen to follow the live tail. Output,
+  // replay, fit, and buffer changes never change this intent by themselves.
   terminalAtBottom: boolean;
   // Imperative jump-to-bottom on xterm. Wired to the floating button.
   scrollTerminalToBottomRef: { current: () => void };
@@ -147,6 +152,39 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       let dataDisp: { dispose: () => void } | null = null;
       let ro: ResizeObserver | null = null;
       let repairGpuAfterWrite: (() => void) | null = null;
+      let clearScrollGestureListeners: (() => void) | null = null;
+      let internalViewportScrollDepth = 0;
+      let viewportCoordinator: TerminalViewportCoordinator | null = null;
+      const readViewport = (): TerminalViewportPosition | null => {
+        if (!term) return null;
+        const active = term.buffer.active;
+        return { type: active.type, viewportY: active.viewportY, baseY: active.baseY };
+      };
+      const publishFollowIntent = (): void => {
+        const position = readViewport();
+        if (!position || !viewportCoordinator) return;
+        const following = viewportCoordinator.isFollowing(position);
+        setTerminalAtBottom((previous) => previous === following ? previous : following);
+      };
+      const beforeTerminalMutation = (): void => {
+        const position = readViewport();
+        if (position && viewportCoordinator) viewportCoordinator.beforeMutation(position);
+      };
+      const afterTerminalMutation = (): void => {
+        const position = readViewport();
+        if (!position || !term || !viewportCoordinator) return;
+        internalViewportScrollDepth += 1;
+        try {
+          viewportCoordinator.restoreAfterMutation(
+            position,
+            (amount) => term!.scrollLines(amount),
+            () => term!.scrollToBottom()
+          );
+        } finally {
+          internalViewportScrollDepth -= 1;
+        }
+        publishFollowIntent();
+      };
 
       if (mountTerminal) {
         const [xtermMod, serializeMod, fitMod, webglMod, canvasMod] = await Promise.all([
@@ -186,6 +224,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           term.loadAddon(serialize);
           term.loadAddon(fit);
           term.open(container);
+          viewportCoordinator = new TerminalViewportCoordinator();
           // GPU renderer — THE fix for slow typing. The default DOM renderer
           // rebuilds one <span>-run-per-style for every dirty row each frame
           // and reflows them; at 254×127 with Claude's full-pane repaint that
@@ -224,14 +263,64 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
               try { term.loadAddon(new canvasMod.CanvasAddon()); } catch { /* stay on DOM */ }
             }
           }
+          // onScroll is emitted for provider output, FitAddon, replay, and
+          // programmatic restoration as well as for people. Arm it only from
+          // actual wheel/touch/scrollbar/keyboard gestures, and suppress only
+          // the scroll event caused by Sessions restoring an owned anchor.
+          let userScrollGesture = false;
+          let gestureTimer: number | null = null;
+          const armUserScrollGesture = (): void => {
+            userScrollGesture = true;
+            if (gestureTimer !== null) window.clearTimeout(gestureTimer);
+            gestureTimer = window.setTimeout(() => {
+              userScrollGesture = false;
+              gestureTimer = null;
+            }, 180);
+          };
+          const viewportElement = container.querySelector('.xterm-viewport');
+          const onWheel = (): void => armUserScrollGesture();
+          const onTouch = (): void => armUserScrollGesture();
+          const onPointerDown = (event: Event): void => {
+            if (viewportElement?.contains(event.target as Node)) armUserScrollGesture();
+          };
+          const onPointerMove = (): void => {
+            if (userScrollGesture) armUserScrollGesture();
+          };
+          const onKeyDown = (event: KeyboardEvent): void => {
+            if (isTerminalScrollKey(event)) armUserScrollGesture();
+          };
+          container.addEventListener('wheel', onWheel, { capture: true, passive: true });
+          container.addEventListener('touchstart', onTouch, { capture: true, passive: true });
+          container.addEventListener('touchmove', onTouch, { capture: true, passive: true });
+          container.addEventListener('pointerdown', onPointerDown, true);
+          window.addEventListener('pointermove', onPointerMove, true);
+          container.addEventListener('keydown', onKeyDown, true);
+          clearScrollGestureListeners = () => {
+            if (gestureTimer !== null) window.clearTimeout(gestureTimer);
+            container.removeEventListener('wheel', onWheel, true);
+            container.removeEventListener('touchstart', onTouch, true);
+            container.removeEventListener('touchmove', onTouch, true);
+            container.removeEventListener('pointerdown', onPointerDown, true);
+            window.removeEventListener('pointermove', onPointerMove, true);
+            container.removeEventListener('keydown', onKeyDown, true);
+          };
           scrollDisp = term.onScroll(() => {
-            const buf = term!.buffer.active;
-            const atBottom = buf.viewportY >= buf.baseY - 2;
-            setTerminalAtBottom((prev) => (prev === atBottom ? prev : atBottom));
+            if (!userScrollGesture || internalViewportScrollDepth > 0) return;
+            const position = readViewport();
+            if (!position || !viewportCoordinator) return;
+            viewportCoordinator.userScrolled(position);
+            publishFollowIntent();
           });
           setTerminalAtBottom(true);
           scrollTerminalToBottomRef.current = (): void => {
-            try { term?.scrollToBottom(); } catch { /* ignore */ }
+            try {
+              if (!term) return;
+              const position = readViewport();
+              if (!position || !viewportCoordinator) return;
+              viewportCoordinator.followLatest(position);
+              term.scrollToBottom();
+              publishFollowIntent();
+            } catch { /* ignore */ }
           };
           focusTerminalRef.current = (): void => {
             try { term?.focus(); } catch { /* ignore */ }
@@ -410,12 +499,14 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         outputWriteInFlight = true;
         const gpuRepairProbe = gpuRepairScanTail + data;
         gpuRepairScanTail = gpuRepairProbe.slice(-16);
+        beforeTerminalMutation();
         term.write(data, () => {
           outputWriteInFlight = false;
           if (disposed || !term) return;
           if (repairGpuAfterWrite && terminalNeedsGpuRepair(gpuRepairProbe)) {
             repairGpuAfterWrite();
           }
+          afterTerminalMutation();
           if (pendingOutput.length > 0 && outputRaf === null) {
             outputRaf = requestAnimationFrame(flushOutput);
           }
@@ -433,7 +524,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       const sendResize = (cols: number, rows: number): void => {
         channel?.sendResize(cols, rows);
       };
-      const applyFit = (): void => {
+      const applyFit = (fallbackSize?: { cols: number; rows: number }): void => {
         if (!term || !fit) return;
         // Only the viewed session fits/resizes. A window-resize fires the
         // listener on EVERY mounted session; without this gate, all ~36
@@ -443,18 +534,26 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         // measurement attempt is the cost. Fit-on-activate (the isActive
         // effect) sizes a session the moment it becomes visible.
         if (!isActiveRef.current) return;
+        beforeTerminalMutation();
         try {
           fit.fit();
         } catch {
           // Fit can throw if the container has zero dims (eg the pane is
           // display:none on an inactive tab). Ignore — when the pane is
           // visible again, the ResizeObserver fires and we try again.
+          if (fallbackSize && (
+            fallbackSize.cols !== term.cols || fallbackSize.rows !== term.rows
+          )) {
+            try { term.resize(fallbackSize.cols, fallbackSize.rows); } catch { /* ignore */ }
+          }
+          afterTerminalMutation();
           return;
         }
         // A renderer that was hidden, resized, or moved between native panes
         // may still have a valid buffer but stale pixels. Force one bounded
         // repaint after the new cell geometry is committed.
         if (term.rows > 0) term.refresh(0, term.rows - 1);
+        afterTerminalMutation();
         if (resizeSendTimer !== null) window.clearTimeout(resizeSendTimer);
         resizeSendTimer = window.setTimeout(() => {
           resizeSendTimer = null;
@@ -463,7 +562,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       };
 
       const onResize = (): void => {
-        requestAnimationFrame(applyFit);
+        requestAnimationFrame(() => applyFit());
       };
       fitTerminalRef.current = applyFit;
 
@@ -524,15 +623,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
             // First chance to fit the terminal to the visible container.
             requestAnimationFrame(() => {
               if (!term || !fit) return;
-              try {
-                fit.fit();
-              } catch {
-                if (msg.session.cols !== term.cols || msg.session.rows !== term.rows) {
-                  try { term.resize(msg.session.cols, msg.session.rows); } catch { /* ignore */ }
-                }
-                return;
-              }
-              sendResize(term.cols, term.rows);
+              applyFit({ cols: msg.session.cols, rows: msg.session.rows });
             });
           }
           return;
@@ -551,10 +642,12 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           pendingOutput = [];
           if (outputRaf !== null) { cancelAnimationFrame(outputRaf); outputRaf = null; }
           if (term) {
+            beforeTerminalMutation();
             term.reset();
-            term.writeln(
+            term.write(
               `\x1b[2m[reconnect: missed ${msg.oldestAvailableSeq - 1 - lastSeq} chunks; ` +
-              `resyncing from seq ${msg.oldestAvailableSeq}]\x1b[0m`
+              `resyncing from seq ${msg.oldestAvailableSeq}]\x1b[0m\r\n`,
+              afterTerminalMutation
             );
           }
           lastSeq = msg.oldestAvailableSeq - 1;
@@ -718,9 +811,10 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           const snap = await fetchServerSnapshot(sessionId, undefined, true);
           if (disposed || !isActiveRef.current) return;
           if (snap && snap.seq > 0) {
+            beforeTerminalMutation();
             term.reset();
             term.write(snap.text, () => {
-              try { term?.scrollToBottom(); } catch { /* ignore */ }
+              afterTerminalMutation();
             });
             lastSeq = snap.seq;
           }
@@ -779,6 +873,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         if (outputRaf !== null) { cancelAnimationFrame(outputRaf); outputRaf = null; }
         dataDisp?.dispose();
         scrollDisp?.dispose();
+        clearScrollGestureListeners?.();
         channel?.detach();
         loadEarlierClaudeEventsRef.current = (): void => {};
         term?.dispose();

@@ -4,6 +4,31 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import headless from '@xterm/headless';
+import serializePackage from '@xterm/addon-serialize';
+
+const { Terminal } = headless;
+const { SerializeAddon } = serializePackage;
+
+async function write(terminal, data) {
+  await new Promise((resolve) => terminal.write(data, resolve));
+}
+
+function serializedTerminal(cols = 40, rows = 8) {
+  const terminal = new Terminal({ cols, rows, scrollback: 50, allowProposedApi: true });
+  const serialize = new SerializeAddon();
+  terminal.loadAddon(serialize);
+  return { terminal, serialize };
+}
+
+function bufferText(terminal) {
+  const buffer = terminal.buffer.active;
+  const lines = [];
+  for (let index = 0; index < buffer.baseY + terminal.rows; index += 1) {
+    lines.push(buffer.getLine(index)?.translateToString(true) ?? '');
+  }
+  return lines.join('');
+}
 
 const scratch = await mkdtemp(join(tmpdir(), 'sessions-terminal-renderer-'));
 const output = join(scratch, 'terminal-renderer.mjs');
@@ -49,6 +74,46 @@ try {
   assert.match(css, /html,\s*body,\s*#root\s*\{[^}]*overflow:\s*hidden/s);
   assert.match(css, /\.operations-content\s*\{[^}]*overflow:\s*hidden/s);
   assert.match(css, /\.remote-scroll\s*\{[^}]*overscroll-behavior:\s*contain/s);
+
+  // Deterministic VT fixtures exercise the sequences provider TUIs actually
+  // use. These pin xterm semantics independently of the native GPU renderer:
+  // Sessions forwards bytes unchanged, and the renderer must display exactly
+  // the resulting active buffer rather than provider-specific text guesses.
+  {
+    const { terminal, serialize } = serializedTerminal();
+    await write(terminal, 'stale screen\x1b[2J\x1b[Hcurrent screen');
+    assert.equal(serialize.serialize(), 'current screen', 'erase-display must remove the preceding frame');
+    await write(terminal, '\r\x1b[2Kready');
+    assert.equal(serialize.serialize(), 'ready', 'erase-line must remove stale prompt cells');
+    terminal.dispose();
+  }
+  {
+    const { terminal, serialize } = serializedTerminal();
+    await write(terminal, 'normal history');
+    await write(terminal, '\x1b[?1049h\x1b[Hprovider picker');
+    assert.match(serialize.serialize(), /provider picker/, 'alternate screen must become the visible buffer');
+    await write(terminal, '\x1b[?1049l');
+    assert.match(serialize.serialize(), /normal history/, 'leaving alternate screen must restore normal history');
+    terminal.dispose();
+  }
+  {
+    const { terminal, serialize } = serializedTerminal(12, 5);
+    await write(terminal, 'Claude 🦀 漢字 preserves wide glyphs across a resize');
+    terminal.resize(24, 5);
+    const rendered = bufferText(terminal);
+    assert.match(rendered, /Claude 🦀 漢字/, 'wide Unicode glyphs must survive reflow');
+    assert.equal((rendered.match(/preserves/g) ?? []).length, 1, 'resize must not duplicate terminal text');
+    terminal.dispose();
+  }
+  {
+    const { terminal, serialize } = serializedTerminal(42, 6);
+    await write(terminal, '\x1b[2J\x1b[H✻ Working\r\nold command\r\nold prompt');
+    await write(terminal, '\x1b[2J\x1b[H● Ready\r\nnew prompt\x1b[K');
+    const rendered = serialize.serialize();
+    assert.match(rendered, /● Ready[\s\S]*new prompt/, 'a full-screen Claude redraw must show the current frame');
+    assert.doesNotMatch(rendered, /old command|old prompt|✻ Working/, 'a full-screen redraw must not retain ghost rows');
+    terminal.dispose();
+  }
 } finally {
   await rm(scratch, { recursive: true, force: true });
 }
