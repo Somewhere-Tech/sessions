@@ -72,10 +72,11 @@ type Server struct {
 }
 
 type authPrincipal struct {
-	Local bool
-	Kind  ledger.CreatorKind
-	ID    string
-	Name  string
+	Local     bool
+	HostAdmin bool
+	Kind      ledger.CreatorKind
+	ID        string
+	Name      string
 }
 
 type authPrincipalContextKey struct{}
@@ -595,10 +596,11 @@ func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) 
 		return authPrincipal{}, false, err
 	}
 	localUser := authPrincipal{
-		Local: true,
-		Kind:  ledger.CreatorUser,
-		ID:    localUserID,
-		Name:  "Local user",
+		Local:     true,
+		HostAdmin: true,
+		Kind:      ledger.CreatorUser,
+		ID:        localUserID,
+		Name:      "Local user",
 	}
 	if isLoopbackPeer(request) {
 		return localUser, true, nil
@@ -614,7 +616,7 @@ func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) 
 	}
 	authorization := request.Header.Get("Authorization")
 	if strings.HasPrefix(authorization, "Bearer ") && tokenEqual(strings.TrimPrefix(authorization, "Bearer "), expected) {
-		return authPrincipal{Kind: ledger.CreatorExternal, ID: "remote:master-token", Name: "Remote administrator"}, true, nil
+		return authPrincipal{HostAdmin: true, Kind: ledger.CreatorExternal, ID: "remote:master-token", Name: "Remote administrator"}, true, nil
 	}
 	if strings.HasPrefix(authorization, "Bearer ") {
 		if device, authorized, err := s.pair.devices.authenticate(strings.TrimPrefix(authorization, "Bearer ")); authorized || err != nil {
@@ -622,7 +624,7 @@ func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) 
 				return authPrincipal{}, false, err
 			}
 			return authPrincipal{
-				Kind: ledger.CreatorExternal, ID: "device:" + device.DeviceID, Name: device.Name,
+				HostAdmin: true, Kind: ledger.CreatorExternal, ID: "device:" + device.DeviceID, Name: device.Name,
 			}, true, nil
 		}
 	}
@@ -631,14 +633,14 @@ func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) 
 		return authPrincipal{}, false, nil
 	}
 	if tokenEqual(provided, expected) {
-		return authPrincipal{Kind: ledger.CreatorExternal, ID: "remote:master-token", Name: "Remote administrator"}, true, nil
+		return authPrincipal{HostAdmin: true, Kind: ledger.CreatorExternal, ID: "remote:master-token", Name: "Remote administrator"}, true, nil
 	}
 	device, authorized, err := s.pair.devices.authenticate(provided)
 	if err != nil || !authorized {
 		return authPrincipal{}, authorized, err
 	}
 	return authPrincipal{
-		Kind: ledger.CreatorExternal, ID: "device:" + device.DeviceID, Name: device.Name,
+		HostAdmin: true, Kind: ledger.CreatorExternal, ID: "device:" + device.DeviceID, Name: device.Name,
 	}, true, nil
 }
 

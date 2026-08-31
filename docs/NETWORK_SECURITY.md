@@ -175,11 +175,12 @@ Installing a provider update is a separate explicit action in Settings or
 `sessions providers update claude|codex`. That action invokes only the
 resolved provider executable with its own fixed `update` subcommand, so the
 provider updater may access the internet and replace that provider's local
-binary. The mutating endpoint accepts only a loopback/local Sessions client;
-paired devices and other authenticated remote clients may inspect provider
-status but cannot trigger installation. Sessions accepts no provider path, URL,
-package, or shell fragment from the caller. Already-running provider processes
-continue unchanged; sessions created later resolve the updated executable
+binary. The mutating endpoint accepts a loopback client, the master token, or
+an explicitly paired device; anonymous open-access clients may inspect status
+but cannot trigger installation. Remote clients name the destination machine
+before invoking the action. Sessions accepts no provider path, URL, package,
+or shell fragment from the caller. Already-running provider processes continue
+unchanged; sessions created later resolve the updated executable
 (`runtime/internal/api/providers_handlers.go`,
 `runtime/cmd/sessions/providers.go`).
 

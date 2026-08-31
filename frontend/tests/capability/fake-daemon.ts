@@ -23,6 +23,7 @@ import type { DirectoryCandidate, SessionInfo } from '../../src/types';
 import type {
   HistoryMessage,
   HistorySession,
+  ProviderStatus,
   ResumableSession,
   SearchMatch,
   SearchResponse
@@ -54,6 +55,7 @@ export interface FakeMachine {
   }>;
   profiles?: unknown[];
   directories?: DirectoryCandidate[];
+  providers?: ProviderStatus[];
   /** Optional latency used to expose same-tick duplicate-action races. */
   createDelayMS?: number;
   submitDelayMS?: number;
@@ -432,7 +434,17 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       return jsonResponse({ path: '/Users/example', parent: '/Users', entries: [] });
     }
     if (path === '/api/models/codex') return jsonResponse({ models: [] });
-    if (path === '/api/providers') return jsonResponse({ providers: [] });
+    if (path === '/api/providers' && method === 'GET') {
+      return jsonResponse({ providers: machine.providers ?? [] });
+    }
+    const providerUpdateRoute = /^\/api\/providers\/(claude|codex)\/update$/.exec(path);
+    if (providerUpdateRoute && method === 'POST') {
+      const provider = (machine.providers ?? []).find((item) => item.id === providerUpdateRoute[1]);
+      if (!provider) return jsonResponse({ error: 'provider is not installed' }, 400);
+      provider.version = provider.latestVersion ?? provider.version;
+      provider.updateAvailable = false;
+      return jsonResponse({ provider, output: 'updated' });
+    }
     if (path === '/api/onboarding') {
       return jsonResponse({ version: 1, complete: true, remoteControl: 'enabled', delegatedAccess: 'inherit' });
     }

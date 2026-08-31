@@ -377,13 +377,14 @@ authenticated local and paired clients.
 
 ### `POST /api/providers/:id/update`
 
-Auth required and restricted to a loopback client on the daemon machine.
-Authenticated paired devices, the master token, and open remote access receive
-403 before executable lookup or mutation. The provider ID must be `claude` or
-`codex`; the daemon then runs that installed provider's own `update` command
-with a five-minute deadline. Success returns the refreshed provider object and
-bounded installer output. Unknown, absent, failed, or timed-out providers return
-4xx/5xx without changing Sessions itself.
+Auth required. A loopback client, the master token, or an explicitly paired
+device may request the update; anonymous open remote access receives 403 before
+executable lookup or mutation. The client must identify the destination machine
+in its confirmation UI. The provider ID must be `claude` or `codex`; the daemon
+then runs that installed provider's own `update` command with a five-minute
+deadline. Success returns the refreshed provider object and bounded installer
+output. Unknown, absent, failed, or timed-out providers return 4xx/5xx without
+changing Sessions itself.
 
 ### `GET /api/worktrees`
 

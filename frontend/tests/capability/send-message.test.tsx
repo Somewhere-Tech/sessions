@@ -109,4 +109,39 @@ describe('capability: send the first message', () => {
 
     await waitFor(() => expect(daemon.delivered[SESSION_ID]).toEqual(['Send this once']));
   });
+
+  it('keeps a live session sendable while its display stream reconnects', async () => {
+    const machine = localMachine();
+    const daemon = installFakeDaemon([machine]);
+    useFakeMachines([machine]);
+    const user = userEvent.setup();
+
+    render(
+      <RemoteView
+        sessionId={SESSION_ID}
+        events={[]}
+        historyPending={false}
+        sendConfirmed={(data) => sendInput(SESSION_ID, data)}
+        submitMessage={(data) => submitMessage(SESSION_ID, data)}
+        connected={false}
+        sendAvailable
+        hasEarlierClaudeEvents={false}
+        loadingEarlierClaudeEvents={false}
+        onLoadEarlierClaudeEvents={() => {}}
+        sidebar={idleSidebar}
+        cwd="/Users/example/project"
+        onOpenTerminal={() => {}}
+        provider="codex"
+      />
+    );
+
+    const composer = await screen.findByPlaceholderText(/Message Codex/);
+    expect(composer).toBeEnabled();
+    await user.type(composer, 'List the connected external drives');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(daemon.delivered[SESSION_ID]).toEqual([
+      'List the connected external drives'
+    ]));
+  });
 });

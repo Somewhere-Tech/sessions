@@ -168,6 +168,11 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   }, [effectiveView, hasMountedTerminal]);
 
   const term = useTerminal(sessionId, hasMountedTerminal && !richSession, isActive);
+  // The mux stream is a live projection, not the lifecycle authority. A
+  // display reconnect must not turn a daemon-confirmed live session into a
+  // disabled composer: the acknowledged send path reports a real failure and
+  // keeps the draft if delivery cannot be confirmed.
+  const sendAvailable = Boolean(session && !session.exited && !session.unreachable);
   const sidebar = useSessionSidebar({
     session,
     events: term.claudeEvents,
@@ -558,7 +563,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             {richSession ? 'No terminal' : effectiveView === 'terminal' && supportsConversation ? 'Hide terminal' : 'Terminal'}
           </button>
         </div>
-        {term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Reconnecting…' : 'Conversation stream unavailable'}</span> : null}
+        {term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Live updates reconnecting…' : 'Live updates unavailable'}</span> : null}
         {supportsConversation && onFork ? (
           <ConversationForkButton
             active={forkMode}
@@ -662,6 +667,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             sendConfirmed={sendConfirmedInput}
             submitMessage={submitMessage}
             connected={term.status === 'open'}
+            sendAvailable={sendAvailable}
             hasEarlierClaudeEvents={term.hasEarlierClaudeEvents}
             loadingEarlierClaudeEvents={term.loadingEarlierClaudeEvents}
             onLoadEarlierClaudeEvents={loadEarlierClaudeEvents}

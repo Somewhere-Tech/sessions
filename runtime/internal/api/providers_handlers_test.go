@@ -50,13 +50,13 @@ func TestVersionLess(t *testing.T) {
 	}
 }
 
-func TestProviderUpdateRejectsAuthenticatedRemoteClientBeforeMutation(t *testing.T) {
+func TestProviderUpdateRejectsOpenAccessClientBeforeMutation(t *testing.T) {
 	server := &Server{}
 	request := httptest.NewRequest(http.MethodPost, "/api/providers/codex/update", strings.NewReader(`{}`))
 	request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, authPrincipal{
 		Kind: ledger.CreatorExternal,
-		ID:   "device:paired-client",
-		Name: "Paired client",
+		ID:   "remote:open-access",
+		Name: "Remote open access",
 	}))
 	response := httptest.NewRecorder()
 
@@ -64,7 +64,26 @@ func TestProviderUpdateRejectsAuthenticatedRemoteClientBeforeMutation(t *testing
 		t.Fatal("provider update route was not handled")
 	}
 	if response.Code != http.StatusForbidden ||
-		!strings.Contains(response.Body.String(), "require a local Sessions client") {
+		!strings.Contains(response.Body.String(), "require a local or paired Sessions client") {
 		t.Fatalf("remote provider update status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestProviderUpdateAuthority(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		principal authPrincipal
+		want      bool
+	}{
+		{name: "local client", principal: authPrincipal{Local: true}, want: true},
+		{name: "paired device", principal: authPrincipal{HostAdmin: true, ID: "device:paired"}, want: true},
+		{name: "master token", principal: authPrincipal{HostAdmin: true, ID: "remote:master-token"}, want: true},
+		{name: "open access", principal: authPrincipal{ID: "remote:open-access"}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := principalMayUpdateProvider(test.principal); got != test.want {
+				t.Fatalf("principalMayUpdateProvider(%#v) = %v, want %v", test.principal, got, test.want)
+			}
+		})
 	}
 }

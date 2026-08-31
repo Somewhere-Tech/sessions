@@ -56,9 +56,9 @@ func (s *Server) handleProvidersRoute(response http.ResponseWriter, request *htt
 		return true
 	}
 	principal, ok := request.Context().Value(authPrincipalContextKey{}).(authPrincipal)
-	if !ok || !principal.Local {
+	if !ok || !principalMayUpdateProvider(principal) {
 		s.sendJSON(response, http.StatusForbidden, map[string]any{
-			"error": "provider updates require a local Sessions client",
+			"error": "provider updates require a local or paired Sessions client",
 		}, corsOrigin)
 		return true
 	}
@@ -100,6 +100,14 @@ func (s *Server) handleProvidersRoute(response http.ResponseWriter, request *htt
 		"output":   strings.TrimSpace(string(output)),
 	}, corsOrigin)
 	return true
+}
+
+// Provider updates run a fixed subcommand on an already-resolved executable,
+// but they still mutate the destination host. Local clients, the master token,
+// and explicitly paired devices already hold host-control authority. Anonymous
+// open-access clients may inspect status but never cross this mutation boundary.
+func principalMayUpdateProvider(principal authPrincipal) bool {
+	return principal.Local || principal.HostAdmin
 }
 
 func localProviderStatus(parent context.Context, id string) providerStatus {

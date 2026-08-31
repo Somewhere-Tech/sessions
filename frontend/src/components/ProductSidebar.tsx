@@ -8,6 +8,7 @@ import {
   type NativeUpdateInfo
 } from '../lib/tauriBridge';
 import { fetchProviderStatuses, updateProvider, type ProviderStatus } from '../api/sessionsd';
+import { serverDisplayName, useServers } from '../lib/servers';
 
 export type ProductView = 'home' | 'tabs' | 'today' | 'search' | 'fleet' | 'usage' | 'settings' | 'feedback';
 export type ThemeMode = 'dark' | 'light';
@@ -39,6 +40,11 @@ const PROVIDER_UPDATE_NOTIFIED_KEY = 'sessions:provider-update-notified:';
 const UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000;
 
 export function ProductSidebar({ active, theme, onNavigate, onNewSession, onOpenCommandPalette, onToggleTheme }: Props): JSX.Element {
+  const activeServer = useServers((state) => state.servers.find((server) => server.id === state.activeId));
+  const activeServerKey = activeServer
+    ? `${activeServer.id}|${activeServer.scheme ?? 'http'}|${activeServer.host}|${activeServer.port}|${activeServer.token ?? ''}`
+    : '';
+  const providerTarget = activeServer ? serverDisplayName(activeServer, true) : 'this computer';
   const [updateInfo, setUpdateInfo] = useState<NativeUpdateInfo | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
@@ -77,13 +83,15 @@ export function ProductSidebar({ active, theme, onNavigate, onNewSession, onOpen
 
   useEffect(() => {
     const controller = new AbortController();
+    setProviders([]);
+    setProviderUpdateError(null);
     const timer = window.setTimeout(() => {
       void fetchProviderStatuses(controller.signal).then((statuses) => {
         setProviders(statuses);
         if (!isTauri()) return;
         for (const provider of statuses) {
           if (!provider.updateAvailable || !provider.latestVersion) continue;
-          const key = `${PROVIDER_UPDATE_NOTIFIED_KEY}${provider.id}`;
+          const key = `${PROVIDER_UPDATE_NOTIFIED_KEY}${activeServer?.id ?? 'unknown'}:${provider.id}`;
           let notified = '';
           try { notified = window.localStorage.getItem(key) ?? ''; } catch { /* ignore */ }
           if (notified === provider.latestVersion) continue;
@@ -94,7 +102,7 @@ export function ProductSidebar({ active, theme, onNavigate, onNewSession, onOpen
       }).catch(() => { /* older runtime */ });
     }, 1_000);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, []);
+  }, [activeServerKey, activeServer?.id]);
 
   const installUpdate = async (): Promise<void> => {
     if (!updateInfo || updateBusy) return;
@@ -175,11 +183,11 @@ export function ProductSidebar({ active, theme, onNavigate, onNewSession, onOpen
         ) : null}
         {providerUpdate ? (
           <div className="product-update-card is-provider">
-            <div><span>{providerUpdate.name} {providerUpdate.latestVersion}</span><strong>Agent update available</strong></div>
+            <div><span>{providerUpdate.name} {providerUpdate.latestVersion}</span><strong>Agent update available on {providerTarget}</strong></div>
             <button type="button" disabled={providerBusy !== null} onClick={() => void installProviderUpdate(providerUpdate)}>
-              {providerBusy === providerUpdate.id ? 'Updating…' : `Update ${providerUpdate.name}`}
+              {providerBusy === providerUpdate.id ? `Updating on ${providerTarget}…` : `Update ${providerUpdate.name} on ${providerTarget}`}
             </button>
-            <small>Running agents continue; new sessions use the update.</small>
+            <small>This runs on {providerTarget}. Running agents continue; new sessions there use the update.</small>
           </div>
         ) : null}
         {providerUpdateError ? <small className="product-update-error" role="alert">{providerUpdateError}</small> : null}

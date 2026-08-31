@@ -35,6 +35,7 @@ interface Props {
   sendConfirmed: (data: string) => Promise<void>;
   submitMessage: (data: string) => Promise<void>;
   connected: boolean;
+  sendAvailable?: boolean;
   hasEarlierClaudeEvents: boolean;
   loadingEarlierClaudeEvents: boolean;
   onLoadEarlierClaudeEvents: () => void;
@@ -81,6 +82,7 @@ export function RemoteView({
   sendConfirmed,
   submitMessage,
   connected,
+  sendAvailable = connected,
   hasEarlierClaudeEvents,
   loadingEarlierClaudeEvents,
   onLoadEarlierClaudeEvents,
@@ -539,6 +541,7 @@ export function RemoteView({
           send={sendConfirmed}
           submitMessage={submitMessage}
           connected={connected}
+          sendAvailable={sendAvailable}
           sessionId={sessionId}
           onSubmitted={recordSent}
           recoverDraft={recoverDraft}

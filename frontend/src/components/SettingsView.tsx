@@ -17,7 +17,7 @@ import {
   type ProviderStatus
 } from '../api/sessionsd';
 import type { ClaudeSettings } from '../types';
-import { useServers } from '../lib/servers';
+import { serverDisplayName, useServers } from '../lib/servers';
 import {
   checkForNativeUpdate,
   getNativeSupportPreview,
@@ -48,6 +48,9 @@ interface Props {
 
 export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange, initialSection = 'general' }: Props): JSX.Element {
   const activeServerId = useServers((state) => state.activeId);
+  const activeServer = useServers((state) =>
+    state.servers.find((server) => server.id === state.activeId)
+  );
   const activeServerIsLocal = useServers((state) =>
     state.servers.find((server) => server.id === state.activeId)?.isDefault === true
   );
@@ -59,6 +62,7 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange,
     ? sessions.filter((session) => !session.exited).length
     : null;
   const native = isTauri();
+  const providerUpdateTarget = activeServer ? serverDisplayName(activeServer, true) : 'this computer';
   const [section, setSection] = useState<Section>(initialSection);
   const [aiProvider, setAIProvider] = useState<AIProvider>('codex');
   const [aiBusy, setAIBusy] = useState(false);
@@ -323,11 +327,11 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange,
   const installProvider = async (provider: ProviderStatus): Promise<void> => {
     if (providerBusy) return;
     setProviderBusy(provider.id);
-    setProviderMessage(`Updating ${provider.name} with its official updater…`);
+    setProviderMessage(`Updating ${provider.name} on ${providerUpdateTarget} with its official updater…`);
     try {
       const result = await updateProvider(provider.id);
       setProviderStatuses((current) => current.map((item) => item.id === provider.id ? result.provider : item));
-      setProviderMessage(`${provider.name} ${result.provider.version || ''} is ready. Running agents were not restarted.`);
+      setProviderMessage(`${provider.name} ${result.provider.version || ''} is ready on ${providerUpdateTarget}. Running agents were not restarted.`);
     } catch (error) {
       setProviderMessage(error instanceof Error ? error.message : `Could not update ${provider.name}.`);
     } finally {
@@ -408,7 +412,7 @@ export function SettingsView({ theme, onThemeChange, textSize, onTextSizeChange,
             providers={providerStatuses}
             providerBusy={providerBusy}
             providerMessage={providerMessage}
-            providerUpdatesLocal={activeServerIsLocal}
+            providerUpdateTarget={providerUpdateTarget}
             onCheck={checkForUpdate}
             onInstall={installUpdate}
             onProviderUpdate={installProvider}
@@ -585,7 +589,7 @@ interface NotificationSettingsProps {
   providers: ProviderStatus[];
   providerBusy: ProviderStatus['id'] | null;
   providerMessage: string | null;
-  providerUpdatesLocal: boolean;
+  providerUpdateTarget: string;
   onCheck: () => Promise<void>;
   onInstall: () => Promise<void>;
   onProviderUpdate: (provider: ProviderStatus) => Promise<void>;
@@ -642,14 +646,17 @@ function NotificationSettings(props: NotificationSettingsProps): JSX.Element {
                   : `${provider.version || 'Installed'} · no locally reported update`}
               </small>
             </span>
-            <button type="button" className={provider.updateAvailable ? 'btn btn-primary' : 'btn btn-ghost'} disabled={!props.providerUpdatesLocal || !provider.installed || props.providerBusy !== null} onClick={() => void props.onProviderUpdate(provider)}>
-              {props.providerBusy === provider.id ? 'Updating…' : provider.updateAvailable ? `Update ${provider.name}` : 'Check & update'}
+            <button type="button" className={provider.updateAvailable ? 'btn btn-primary' : 'btn btn-ghost'} disabled={!provider.installed || props.providerBusy !== null} onClick={() => void props.onProviderUpdate(provider)}>
+              {props.providerBusy === provider.id
+                ? `Updating on ${props.providerUpdateTarget}…`
+                : provider.updateAvailable
+                ? `Update ${provider.name} on ${props.providerUpdateTarget}`
+                : `Check & update on ${props.providerUpdateTarget}`}
             </button>
           </div>
         ))}
-        {!props.providerUpdatesLocal ? <div className="settings-message">Provider installation must be approved from a Sessions client on that machine.</div> : null}
         {props.providerMessage ? <div className="settings-message" role="status">{props.providerMessage}</div> : null}
-        <div className="settings-message">Provider updates replace only the CLI executable. Existing Claude and Codex processes continue unchanged; new sessions use the updated version.</div>
+        <div className="settings-message">The action runs on {props.providerUpdateTarget} and replaces only that machine's CLI executable. Existing Claude and Codex processes continue unchanged; new sessions there use the updated version.</div>
       </div>
       <div className="settings-coming-card"><span>Native session alerts · Coming soon</span><h2>Needs-you and completion alerts</h2><p>The notification center will add per-session approval, question, completion, and lost-session rules without relying on the retired browser control surface.</p></div>
     </section>

@@ -8,8 +8,13 @@ interface Props {
   // connection is down; a failed send leaves the draft visible for retry.
   send: (data: string) => Promise<void>;
   submitMessage: (data: string) => Promise<void>;
-  // Status from useTerminal — disable when not open.
+  // Display-stream status. This may reconnect independently of the durable
+  // session and must not, by itself, disable an acknowledged message send.
   connected: boolean;
+  // Authoritative daemon lifecycle state. A live, reachable session remains
+  // sendable even while its display stream reconnects; the acknowledged send
+  // either succeeds now or leaves the draft in place with the exact error.
+  sendAvailable?: boolean;
   // Session id — needed for file uploads so the server knows which
   // session's uploads dir to use (so user types in the path of their
   // dropped file as a result of drag-drop).
@@ -61,6 +66,7 @@ export function InputBar({
   send,
   submitMessage,
   connected,
+  sendAvailable = connected,
   sessionId,
   onSubmitted,
   recoverDraft,
@@ -127,7 +133,7 @@ export function InputBar({
   }, [recoverDraft, text]);
 
   const submit = async (): Promise<void> => {
-    if (!connected || submitInFlightRef.current) return;
+    if (!sendAvailable || submitInFlightRef.current) return;
     setUploadError(null); // clear any lingering upload error on submit
     setComposerNotice(null);
     const trimmed = text.trim();
@@ -424,10 +430,10 @@ export function InputBar({
           }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          placeholder={connected
+          placeholder={sendAvailable
             ? `Message ${provider === 'codex' ? 'Codex' : 'Claude'} — Enter sends, Shift+Enter for newline`
-            : 'Disconnected'}
-          disabled={!connected || submitting}
+            : 'This session is not available'}
+          disabled={!sendAvailable || submitting}
           rows={Math.min(6, Math.max(1, text.split('\n').length))}
           autoCapitalize="sentences"
           autoCorrect="on"
@@ -437,7 +443,7 @@ export function InputBar({
           <button
             type="button"
             className="input-attach"
-            disabled={!connected || uploading}
+            disabled={!sendAvailable || uploading}
             onClick={() => fileInputRef.current?.click()}
             title="Attach files"
           >
@@ -459,7 +465,7 @@ export function InputBar({
             type="button"
             className={`btn btn-primary input-send${feedback === 'sent' ? ' is-sent' : ''}`}
             onClick={() => void submit()}
-            disabled={!connected || submitting}
+            disabled={!sendAvailable || submitting}
             aria-label="Send"
             title={submitting ? 'Sending…' : 'Send (Enter)'}
           >
