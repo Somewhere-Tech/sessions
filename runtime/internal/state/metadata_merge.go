@@ -117,7 +117,7 @@ func MergeRunnerMetadata(existing, next Metadata) Metadata {
 // as "no daemon-owned fields to preserve" rather than as a write failure. The
 // runner's metadata file is how the daemon finds its socket at all, and a
 // runner that refused to start would be restarted by launchd's
-// KeepAlive{SuccessfulExit:false} policy into a loop. Rewriting the file is
+// runner restart policy into a loop. Rewriting the file is
 // what already lets a damaged one heal.
 func readMetadataForMerge(path string) Metadata {
 	encoded, err := os.ReadFile(path)

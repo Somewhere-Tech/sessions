@@ -136,6 +136,10 @@ func TestResumeRestoresCodexTranscriptWhenNativeHandleWasNeverRecorded(t *testin
 		t.Fatal(err)
 	}
 	awaitSessionExited(t, daemon.registry, created.ID)
+	pausedMarker := state.For(daemon.config.RunnerStateDir, created.ID).RestorePending
+	if err := state.WriteRestorePending(pausedMarker, created.ID, "paused after reboot"); err != nil {
+		t.Fatal(err)
+	}
 
 	// Codex partitions rollouts by the LOCAL date (verified against real
 	// rollout files: one written 19:51 PDT lands in that day's directory, not
@@ -183,6 +187,9 @@ func TestResumeRestoresCodexTranscriptWhenNativeHandleWasNeverRecorded(t *testin
 	}
 	if len(daemon.launcher.Launches) != 2 {
 		t.Fatalf("launch count = %d, want ended source + one successor", len(daemon.launcher.Launches))
+	}
+	if _, err := os.Stat(pausedMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful explicit resume left paused marker: %v", err)
 	}
 }
 
@@ -300,7 +307,7 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 	var body map[string]any
 	decodeBody(t, health, &body)
-	for _, key := range []string{"ok", "name", "version", "listen", "lan", "access", "system", "compatibility", "discovering", "sessionsLoaded"} {
+	for _, key := range []string{"ok", "name", "version", "listen", "lan", "access", "system", "compatibility", "discovering", "sessionsLoaded", "restore"} {
 		if _, exists := body[key]; !exists {
 			t.Errorf("health missing key %q: %#v", key, body)
 		}
@@ -329,6 +336,10 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 	if runnerCompatibility["minimum"] != float64(0) || runnerCompatibility["maximum"] != float64(2) {
 		t.Fatalf("unexpected runner compatibility: %#v", runnerCompatibility)
+	}
+	restore := body["restore"].(map[string]any)
+	if restore["pending"] != float64(0) || restore["automaticPinnedLimit"] != float64(state.DefaultPinnedBootRestoreLimit) {
+		t.Fatalf("unexpected reboot restore health: %#v", restore)
 	}
 
 	// Deep health carries live session IDs and host PIDs, so unlike plain
@@ -456,6 +467,92 @@ func TestConcurrentSubmitKeepsEachMessageWithItsTarget(t *testing.T) {
 	}
 	if tracked := daemon.handler.submits.tracked(); tracked != 0 {
 		t.Fatalf("per-session submit locks retained after every submit finished: %d", tracked)
+	}
+}
+
+func TestSubmitOperationIsIdempotentAcrossDaemonRestart(t *testing.T) {
+	daemon := newTestDaemon(t)
+	recorder := &recordingSessionInput{sessionService: daemon.registry}
+	daemon.handler.registry = recorder
+	created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/bash", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const operationID = "11111111-2222-4333-8444-555555555555"
+	body := `{"data":"ship exactly once","operation_id":"` + operationID + `"}`
+
+	first := serve(t, daemon.handler, http.MethodPost, "/api/sessions/"+created.ID+"/submit", strings.NewReader(body), "127.0.0.1:4567", nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first submit = %d %s", first.Code, first.Body.String())
+	}
+	var firstReceipt map[string]any
+	decodeBody(t, first, &firstReceipt)
+	if firstReceipt["operation_id"] != operationID || firstReceipt["status"] != "accepted" || firstReceipt["duplicate"] != false {
+		t.Fatalf("first receipt = %#v", firstReceipt)
+	}
+
+	// New Server means a new in-memory submit lock and delivery service. The
+	// receipt on disk, not process memory, must be what prevents the resend.
+	restarted := New(daemon.config, recorder)
+	second := serve(t, restarted, http.MethodPost, "/api/sessions/"+created.ID+"/submit", strings.NewReader(body), "127.0.0.1:4567", nil)
+	if second.Code != http.StatusOK {
+		t.Fatalf("duplicate submit = %d %s", second.Code, second.Body.String())
+	}
+	var secondReceipt map[string]any
+	decodeBody(t, second, &secondReceipt)
+	if secondReceipt["status"] != "accepted" || secondReceipt["duplicate"] != true {
+		t.Fatalf("duplicate receipt = %#v", secondReceipt)
+	}
+
+	recorder.mu.Lock()
+	calls := append([]recordedSessionInput(nil), recorder.calls...)
+	recorder.mu.Unlock()
+	if len(calls) != 2 || calls[0].data != "ship exactly once" || calls[1].data != "\r" {
+		t.Fatalf("runner inputs = %#v, want one text + Enter pair", calls)
+	}
+
+	status := serve(t, restarted, http.MethodGet, "/api/message-deliveries/"+operationID, nil, "127.0.0.1:4567", nil)
+	if status.Code != http.StatusOK {
+		t.Fatalf("delivery status = %d %s", status.Code, status.Body.String())
+	}
+	var statusReceipt map[string]any
+	decodeBody(t, status, &statusReceipt)
+	if statusReceipt["status"] != "accepted" || statusReceipt["session_id"] != created.ID {
+		t.Fatalf("status receipt = %#v", statusReceipt)
+	}
+}
+
+func TestPendingSubmitOperationIsReportedUnknownAndNeverRetried(t *testing.T) {
+	daemon := newTestDaemon(t)
+	recorder := &recordingSessionInput{sessionService: daemon.registry}
+	daemon.handler.registry = recorder
+	created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/bash", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const operationID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	const message = "outcome was lost"
+	if _, createdRecord, err := daemon.handler.deliveries.Begin(operationID, created.ID, message); err != nil || !createdRecord {
+		t.Fatalf("seed pending operation: created=%t err=%v", createdRecord, err)
+	}
+	body := `{"data":"` + message + `","operation_id":"` + operationID + `"}`
+	result := serve(t, daemon.handler, http.MethodPost, "/api/sessions/"+created.ID+"/submit", strings.NewReader(body), "127.0.0.1:4567", nil)
+	if result.Code != http.StatusOK {
+		t.Fatalf("pending duplicate = %d %s", result.Code, result.Body.String())
+	}
+	var receipt map[string]any
+	decodeBody(t, result, &receipt)
+	if receipt["status"] != "unknown" || receipt["retry"] != false || receipt["duplicate"] != true {
+		t.Fatalf("pending receipt = %#v", receipt)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if len(recorder.calls) != 0 {
+		t.Fatalf("pending operation was resent: %#v", recorder.calls)
 	}
 }
 

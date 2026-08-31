@@ -23,6 +23,7 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/backup"
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
+	"github.com/somewhere-tech/sessions/runtime/internal/delivery"
 	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
@@ -64,6 +65,7 @@ type Server struct {
 	usage                *usage.Service
 	recaps               *recap.Service
 	smartSearch          *smartsearch.Service
+	deliveries           *delivery.Store
 	identity             machineIdentity
 	identityError        error
 	submits              *sessionMutexes
@@ -89,6 +91,10 @@ type sessionService interface {
 	RequestKill(context.Context, string, bool) error
 	Input(context.Context, string, string) bool
 	DeepDiagnostics() []map[string]any
+}
+
+type rebootRestoreHealthService interface {
+	RestorePendingCount() int
 }
 
 type attributedKillService interface {
@@ -141,12 +147,17 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 		notifications = sessionruntime.NewPushService(root)
 	}
 	identity, identityErr := loadOrCreateMachineIdentity(config)
+	deliveryRoot := config.StateRoot
+	if deliveryRoot == "" {
+		deliveryRoot = config.UserStateRoot
+	}
 	server := &Server{
 		config: config, registry: registry, push: notifications, tokens: tokenStore{path: config.TokenPath},
 		pair:          newPairService(config),
 		tailnetAccess: newTailnetAccessService(),
 		submits:       newSessionMutexes(),
 		identity:      identity, identityError: identityErr,
+		deliveries: delivery.New(deliveryRoot),
 		integrationEndpoints: integrations.NewService(integrations.ServiceOptions{
 			StateDir: config.StateRoot, RunnerStateDir: config.RunnerStateDir,
 			DiscoverProviderHistory: true,
@@ -239,6 +250,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			},
 			"discovering":    s.registry.IsDiscovering(),
 			"sessionsLoaded": len(s.registry.List(true)),
+			"restore":        s.rebootRestoreHealth(),
 		}, corsOrigin)
 		return
 	}
@@ -293,6 +305,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			},
 			"discovering":    s.registry.IsDiscovering(),
 			"sessionsLoaded": len(s.registry.List(true)),
+			"restore":        s.rebootRestoreHealth(),
 			"uptimeSec":      int64(math.Round(s.registry.Uptime().Seconds())),
 			"sessions":       s.registry.DeepDiagnostics(),
 		}, corsOrigin)
@@ -544,6 +557,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		s.sendJSON(response, http.StatusOK, s.resumableConversations(), corsOrigin)
 		return
 	}
+	if s.handleDeliveryRoute(response, request, corsOrigin) {
+		return
+	}
 
 	id, suffix, matched := sessionRoute(path)
 	if matched {
@@ -560,6 +576,17 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": path}, corsOrigin)
+}
+
+func (s *Server) rebootRestoreHealth() map[string]any {
+	pending := 0
+	if reporter, ok := s.registry.(rebootRestoreHealthService); ok {
+		pending = reporter.RestorePendingCount()
+	}
+	return map[string]any{
+		"pending":              pending,
+		"automaticPinnedLimit": state.DefaultPinnedBootRestoreLimit,
+	}
 }
 
 func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) {
@@ -938,7 +965,8 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 	}
 	if (suffix == "/input" || suffix == "/submit") && request.Method == http.MethodPost {
 		var body struct {
-			Data string `json:"data"`
+			Data        string `json:"data"`
+			OperationID string `json:"operation_id,omitempty"`
 		}
 		if err := readJSON(request, &body); err != nil {
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
@@ -953,12 +981,42 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			// Keyed by session: the text and its Enter stay adjacent for THIS
 			// session while submits to other sessions run at the same time.
 			defer s.submits.lock(id)()
+			if body.OperationID == "" {
+				body.OperationID, err = delivery.NewOperationID()
+				if err != nil {
+					s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": "create delivery operation: " + err.Error()}, corsOrigin)
+					return
+				}
+			}
+			record, created, beginErr := s.deliveries.Begin(body.OperationID, id, body.Data)
+			if beginErr != nil {
+				s.sendJSON(response, http.StatusConflict, map[string]any{"error": beginErr.Error(), "operation_id": body.OperationID}, corsOrigin)
+				return
+			}
+			if !created {
+				s.sendDeliveryRecord(response, record, true, corsOrigin)
+				return
+			}
 		}
 		if !ok {
+			if suffix == "/submit" {
+				record, completeErr := s.deliveries.Complete(body.OperationID, delivery.StatusNotDelivered, false, true, "unknown session")
+				if completeErr == nil {
+					s.sendDeliveryRecord(response, record, false, corsOrigin)
+					return
+				}
+			}
 			s.sendJSON(response, http.StatusNotFound, map[string]any{"ok": false}, corsOrigin)
 			return
 		}
 		if err := s.writeSessionInput(request.Context(), id, body.Data, attribution, attributed); err != nil {
+			if suffix == "/submit" {
+				record, completeErr := s.deliveries.Complete(body.OperationID, delivery.StatusUnknown, false, false, err.Error())
+				if completeErr == nil {
+					s.sendDeliveryRecord(response, record, false, corsOrigin)
+					return
+				}
+			}
 			var unavailable *sessionruntime.MessageInputUnavailableError
 			if !attributed && errors.As(err, &unavailable) {
 				s.sendJSON(response, http.StatusNotFound, map[string]any{"ok": false}, corsOrigin)
@@ -972,18 +1030,34 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			select {
 			case <-request.Context().Done():
 				timer.Stop()
-				s.sendJSON(response, http.StatusRequestTimeout, map[string]any{
-					"error": request.Context().Err().Error(), "delivered": true, "retry": false,
-				}, corsOrigin)
+				record, completeErr := s.deliveries.Complete(body.OperationID, delivery.StatusTextOnly, true, false, request.Context().Err().Error())
+				if completeErr != nil {
+					s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": completeErr.Error(), "operation_id": body.OperationID, "delivered": true, "retry": false}, corsOrigin)
+					return
+				}
+				s.sendDeliveryRecord(response, record, false, corsOrigin)
 				return
 			case <-timer.C:
 			}
 			if !s.registry.Input(request.Context(), id, "\r") {
-				s.sendJSON(response, http.StatusConflict, map[string]any{
-					"error": "message text was delivered but Enter could not be sent", "delivered": true, "retry": false,
+				record, completeErr := s.deliveries.Complete(body.OperationID, delivery.StatusTextOnly, true, false, "message text was delivered but Enter could not be sent")
+				if completeErr != nil {
+					s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": completeErr.Error(), "operation_id": body.OperationID, "delivered": true, "retry": false}, corsOrigin)
+					return
+				}
+				s.sendDeliveryRecord(response, record, false, corsOrigin)
+				return
+			}
+			record, completeErr := s.deliveries.Complete(body.OperationID, delivery.StatusAccepted, true, false, "")
+			if completeErr != nil {
+				s.sendJSON(response, http.StatusInternalServerError, map[string]any{
+					"error":        "message was accepted but its durable receipt failed: " + completeErr.Error(),
+					"operation_id": body.OperationID, "delivered": true, "retry": false,
 				}, corsOrigin)
 				return
 			}
+			s.sendDeliveryRecord(response, record, false, corsOrigin)
+			return
 		}
 		s.sendJSON(response, http.StatusOK, map[string]any{"ok": true, "attributed": attributed}, corsOrigin)
 		return

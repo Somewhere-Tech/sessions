@@ -89,6 +89,11 @@ func (a *app) cmdDoctor() error {
 	if deepMap, ok := deep.(map[string]any); ok {
 		fmt.Fprintf(a.stdout, "daemon: %s sessions, discovering=%s, uptime=%ss\n\n",
 			jsonScalar(deepMap["sessionsLoaded"]), jsonScalar(deepMap["discovering"]), jsonScalar(deepMap["uptimeSec"]))
+		if restore, ok := deepMap["restore"].(map[string]any); ok {
+			if pending, ok := restore["pending"].(float64); ok && pending > 0 {
+				fmt.Fprintf(a.stdout, "restore: %.0f session(s) stayed paused after reboot; their history is preserved for explicit recovery\n\n", pending)
+			}
+		}
 	}
 	fmt.Fprintf(a.stdout, "%s%s%s%s%sSTATUS\n",
 		fixedWidth("ID", 10), fixedWidth("TOOL", 8), fixedWidth("SIZE", 10), fixedWidth("QoS", 13), fixedWidth("SPAWN", 10))

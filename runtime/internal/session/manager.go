@@ -179,6 +179,9 @@ type Manager struct {
 	notifications       map[string]*sessionNotificationState
 	notificationsClosed bool
 	discoveryMu         sync.Mutex
+	restoreHealthMu     sync.Mutex
+	restoreHealthAt     time.Time
+	restoreHealthCount  int
 	bindMu              sync.Mutex
 	// completionGeneration records the newest delegated-task completion
 	// attempt per session so a fresh idle classification supersedes an
@@ -246,6 +249,11 @@ type runtimeSession struct {
 }
 
 func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...ManagerOptions) *Manager {
+	if migrated, err := state.MigrateRunnerPlistRestartPolicies(config.LaunchAgentsDir, config.RunnerStateDir); err != nil {
+		log.Printf("runner restart policy migration: %v", err)
+	} else if migrated > 0 {
+		log.Printf("runner restart policy: bounded login restore enabled for %d existing session(s)", migrated)
+	}
 	selected := ManagerOptions{}
 	if len(options) > 0 {
 		selected = options[0]
@@ -1651,9 +1659,13 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 		m.mu.Unlock()
 		return existing
 	}
-	attachment := session.Attach(state.AttachOptions{IncludeClaudeReplay: true, InitialReplayCap: 5000})
+	attachment := session.Attach(state.AttachOptions{IncludeClaudeReplay: true, InitialReplayCap: 300})
 	runtime := &runtimeSession{
-		manager: m, session: session, attachment: attachment,
+		manager: m, session: session,
+		// Initial replay is consumed below. Retain only the subscription and
+		// cancellation handles so the manager does not keep a second deep copy
+		// of every replayed output and structured event for the session lifetime.
+		attachment:             state.Attachment{Events: attachment.Events, Cancel: attachment.Cancel},
 		outputObserved:         make(chan struct{}, 1),
 		structuredEventArrived: make(chan struct{}, 1),
 	}
@@ -2298,9 +2310,16 @@ func (m *Manager) RunDiscoveryLoop() {
 			interval = parsed
 		}
 	}
+	lastReportedError := ""
 	run := func() {
 		if err := m.Discover(m.ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("runner discovery: %v", err)
+			message := err.Error()
+			if message != lastReportedError {
+				log.Printf("runner discovery: %v", err)
+				lastReportedError = message
+			}
+		} else {
+			lastReportedError = ""
 		}
 	}
 	run()
@@ -2318,6 +2337,24 @@ func (m *Manager) RunDiscoveryLoop() {
 
 func (m *Manager) Discover(ctx context.Context) error {
 	return m.DiscoverWithOptions(ctx, DiscoverOptions{})
+}
+
+// RestorePendingCount is the calm, queryable safe-mode signal exposed through
+// daemon health. It never starts or adopts a runner.
+func (m *Manager) RestorePendingCount() int {
+	m.restoreHealthMu.Lock()
+	defer m.restoreHealthMu.Unlock()
+	if !m.restoreHealthAt.IsZero() && time.Since(m.restoreHealthAt) < 5*time.Second {
+		return m.restoreHealthCount
+	}
+	count, err := state.CountRestorePending(m.config.RunnerStateDir)
+	if err != nil {
+		log.Printf("count paused reboot restores: %v", err)
+		return m.restoreHealthCount
+	}
+	m.restoreHealthAt = time.Now()
+	m.restoreHealthCount = count
+	return count
 }
 
 func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptions) error {
@@ -2354,9 +2391,28 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 				delete(candidates, id)
 				continue
 			}
+			if _, pendingErr := os.Stat(state.For(m.config.RunnerStateDir, id).RestorePending); pendingErr == nil {
+				// The runner deliberately declined to respawn this provider after a
+				// reboot. Keep its metadata, transcripts, and launch record intact so
+				// recovery can show the user what was paused; a stale-artifact sweep
+				// must not erase the evidence that safe mode exists to preserve.
+				delete(candidates, id)
+				delete(deadArtifacts, id)
+				continue
+			}
 			probe := metadata.Info
 			probe.ID = id
 			probe.SocketPath = state.For(m.config.RunnerStateDir, id).Socket
+			// After a reboot, old coordination artifacts can outnumber the live
+			// sessions by dozens. A PID which no longer exists is definitive: no
+			// runner can answer that socket. Classify it without paying three
+			// attach attempts and two retry delays. Ambiguous live/PID-reuse cases
+			// still take the conservative attach-first path below.
+			if metadata.Info.PID > 0 && !m.options.ProcessAlive(metadata.Info.PID) {
+				deadArtifacts[id] = struct{}{}
+				candidates[id] = struct{}{}
+				continue
+			}
 			connected := false
 			for attempt := 0; attempt < m.options.DiscoveryRetries; attempt++ {
 				runner, attachErr := m.launcher.Attach(ctx, probe)

@@ -54,6 +54,7 @@ Daily workflows:
   list                     list agent sessions and headless lanes
   lanes                    list headless lanes
   send                     send text and Enter to a session
+  send-status              inspect a durable message-delivery receipt
   ask                      send, wait, and print the reply
   wait                     wait for session idle, lane exit, or a fan-out join
   last                     print recent conversation or lane output
@@ -489,19 +490,38 @@ Examples:
 
 ```text
 Usage:
-  sessions send <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] [--] <text...>
+  sessions send <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] [--operation-id UUID] [--] <text...>
 
 send text and Enter to a session
 
-Send a message and Enter. Claude and Codex sessions return success only after Sessions observes the provider's user event; --no-wait is retained for script compatibility but never disables that delivery check. --file reads the complete message body from a UTF-8 file before delivery begins. --from records a durable, content-free source-lane attribution, so a delegate can see which session asked and reply to it by id; agents running inside Sessions inherit their source lane automatically, and the target may be running the other provider. An unrecognized option in front of the message is refused rather than typed into the session; put -- before a message that must begin with dashes.
+Send a message and Enter. Every send records a durable operation before runner input and returns its operation_id. If the caller disconnects after Sessions may have delivered the message, the result is unknown with retry:false; inspect it with `sessions send-status <operation-id>` instead of creating a duplicate writer. --operation-id lets an automated caller supply a UUID so retrying the same request is idempotent, including across a daemon restart. Reusing it for different content or a different target is refused.
 
-send confirms delivery and returns; it does not wait for the reply. Follow it with `sessions wait <id>` for one delegate or `sessions wait <id>... --all` for a fan-out, or use `sessions ask` for a single request and answer. A terminal-only tool that cannot expose provider events is explicitly reported as unconfirmed rather than silently treated as delivered.
+Claude and Codex sessions return success only after Sessions observes the provider's user event; --no-wait is retained for script compatibility but never disables that delivery check. --file reads the complete message body from a UTF-8 file before delivery begins. --from records a durable, content-free source-lane attribution, so a delegate can see which session asked and reply to it by id; agents running inside Sessions inherit their source lane automatically, and the target may be running the other provider. An unrecognized option in front of the message is refused rather than typed into the session; put -- before a message that must begin with dashes.
+
+Send confirms delivery and returns; it does not wait for the reply. Follow it with `sessions wait <id>` for one delegate or `sessions wait <id>... --all` for a fan-out, or use `sessions ask` for a single request and answer. A terminal-only tool that cannot expose provider events is explicitly reported as unconfirmed rather than silently treated as delivered.
 
 Examples:
   sessions send 0123abcd 'Run the focused tests.'
   sessions send 0123abcd --from 89abcdef 'Please review this result.'
   sessions send 0123abcd --file prompt.md
   sessions send 0123abcd -- --json is a flag, not output
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions send-status`
+
+```text
+Usage:
+  sessions send-status <operation-id>
+
+inspect a durable message-delivery receipt
+
+Read the durable receipt for a send operation. accepted means Sessions delivered the message and Enter to the runner. not-delivered with retry:true is the only result that authorizes an automatic retry. unknown or text-delivered means the message may already be visible to the provider and must not be resent automatically. Receipts survive daemon restarts and contain no message text.
+
+Examples:
+  sessions send-status 11111111-2222-4333-8444-555555555555
+  sessions --json send-status 11111111-2222-4333-8444-555555555555
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

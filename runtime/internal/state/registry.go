@@ -21,7 +21,7 @@ import (
 
 const (
 	defaultEventLogBytes = 4 * 1024 * 1024
-	maxClaudeEvents      = 5000
+	maxClaudeEvents      = proto.MaxStructuredReplayEvents
 	exitedGrace          = 30 * time.Second
 )
 
@@ -328,13 +328,24 @@ func (r *Registry) CreateWithLifecycle(
 	} else if runtime.GOOS != "windows" {
 		// Keep custom Unix launchers and tests compatible with the original
 		// registry contract. Windows launchers deliberately have no plist.
+		paths := For(r.config.RunnerStateDir, id)
+		bootID, bootErr := CurrentBootID()
+		if bootErr != nil {
+			return SessionInfo{}, fmt.Errorf("prepare runner restart policy: %w", bootErr)
+		}
+		if err := WriteRestartPermit(paths.KeepAlive, bootID); err != nil {
+			return SessionInfo{}, fmt.Errorf("prepare runner restart permit: %w", err)
+		}
+		launchRequest.Env["RUNNER_RESTART_POLICY"] = "boot-scoped"
 		if _, err := writePlist(r.config.LaunchAgentsDir, plistArgs{
 			ID:               id,
 			ProgramArguments: programArguments,
 			Env:              launchRequest.Env,
 			Cwd:              cwd,
 			LogPath:          filepath.Join(r.config.RunnerStateDir, id+".log"),
+			KeepAlivePath:    paths.KeepAlive,
 		}); err != nil {
+			_ = os.Remove(paths.KeepAlive)
 			return SessionInfo{}, err
 		}
 	}

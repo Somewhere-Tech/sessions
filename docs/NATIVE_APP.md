@@ -86,6 +86,24 @@ The viewer checks for updates in the background but installation remains an
 explicit user or authorized local-agent action. Update checks do not send
 session content.
 
+## Login and crash recovery
+
+macOS runner supervision is boot-scoped. A per-runner permit lets launchd
+restart an unexpected runner crash during the same boot, but retained history
+does not imply permission to launch every provider again after login.
+
+At a new boot Sessions automatically restores at most eight explicitly pinned,
+non-lane session roots that were actually running before shutdown. It never
+automatically repeats a headless lane. Other prior runners stay stopped; their
+metadata, event logs, transcripts, and launch records remain intact and a
+`restore-pending` marker records why automatic restoration paused. Daemon
+discovery reconciles those records without spawning providers or deleting that
+recovery evidence.
+
+This is a safety ceiling, not a retention ceiling. It limits the process fanout
+that one login can cause while keeping every durable conversation available for
+explicit inspection or recovery.
+
 ## Network and browser boundary
 
 The native client may connect to:

@@ -48,7 +48,7 @@ const (
 const laneInterruptedNotice = "\r\n[sessions: this lane was stopped by shutdown before its command finished. " +
 	"It was not re-run at the next login; start it again if the work still needs to happen.]\r\n"
 
-var version = "0.2.22"
+var version = "0.2.23"
 
 type config struct {
 	id                string
@@ -259,8 +259,11 @@ func run() int {
 		return 2
 	}
 	// TypeScript intentionally exits successfully on corrupt args so launchd's
-	// SuccessfulExit=false policy does not create a crash loop.
+	// keepalive policy does not create a crash loop.
 	if malformedArgs != "" {
+		if cfg.stateDir != "" && cfg.id != "" {
+			_ = os.Remove(state.For(cfg.stateDir, cfg.id).KeepAlive)
+		}
 		fmt.Fprintf(os.Stderr, "runner: failed to parse RUNNER_ARGS_JSON=%q: %s\n", malformedArgs, errText(malformedArgs))
 		return 0
 	}
@@ -269,7 +272,36 @@ func run() int {
 		return 1
 	}
 	paths := state.For(cfg.stateDir, cfg.id)
+	bootScopedRestart := os.Getenv("RUNNER_RESTART_POLICY") == "boot-scoped"
+	cleanupFailedStartupPermit := bootScopedRestart
+	if bootScopedRestart {
+		defer func() {
+			if cleanupFailedStartupPermit {
+				_ = os.Remove(paths.KeepAlive)
+			}
+		}()
+		bootID, bootErr := state.CurrentBootID()
+		if bootErr != nil {
+			_ = os.Remove(paths.KeepAlive)
+			_ = state.WriteRestorePending(paths.RestorePending, cfg.id,
+				"automatic restore paused because Sessions could not identify this boot: "+bootErr.Error())
+			fmt.Fprintln(os.Stderr, "runner: automatic restore paused:", bootErr)
+			return 0
+		}
+		decision, decisionErr := state.EvaluateRestartPermit(paths, bootID, state.DefaultPinnedBootRestoreLimit)
+		if decisionErr != nil || !decision.Allowed {
+			if decisionErr != nil {
+				_ = os.Remove(paths.KeepAlive)
+				_ = state.WriteRestorePending(paths.RestorePending, cfg.id, decision.Reason+": "+decisionErr.Error())
+			}
+			fmt.Fprintln(os.Stderr, "runner:", decision.Reason)
+			return 0
+		}
+	}
 	if anotherRunnerAlive(paths.Socket, cfg.id) {
+		// The existing runner still owns the same-boot crash permit. This is a
+		// duplicate launch, not a shutdown, so do not disable its restart path.
+		cleanupFailedStartupPermit = false
 		fmt.Fprintf(os.Stderr, "runner %s: another instance already owns %s — exiting to avoid a duplicate\n", cfg.id, paths.Socket)
 		return 0
 	}
@@ -284,12 +316,15 @@ func run() int {
 	_ = os.Chmod(paths.Log, 0o644)
 	logger := log.New(io.MultiWriter(os.Stderr, logFile), "runner: ", log.LstdFlags|log.Lmicroseconds)
 	if cfg.kind == state.KindCodexAppServer {
+		cleanupFailedStartupPermit = false
 		return runCodexAppServer(cfg, paths, logger)
 	}
 	if cfg.kind == state.KindClaudeStructured {
+		cleanupFailedStartupPermit = false
 		return runClaudeStructured(cfg, paths, logger)
 	}
 	if code, guarded := guardCompletedLane(cfg, paths, logger); guarded {
+		removeRestartState(paths)
 		return code
 	}
 
@@ -392,23 +427,27 @@ func run() int {
 			// again at the next login.
 			r.writeLaneManifest(r.interruptedManifest)
 		}
-		r.shutdown(permanent, 0)
+		r.shutdownForHostExit(permanent, 0)
 	}()
+	// Startup is committed. Every later exit path owns the permit decision:
+	// normal/end removes it, host shutdown preserves it, and a crash cannot run
+	// cleanup and therefore naturally preserves it.
+	cleanupFailedStartupPermit = false
 
 	select {}
 }
 
-// guardCompletedLane keeps a lane's command from running twice. The runner's
-// launchd job carries RunAtLoad, so a lane interrupted by a reboot is started
-// again at the next login; without this check a deploy, migration, or any
-// other one-shot command would silently repeat. A completion manifest is the
+// guardCompletedLane keeps a lane's command from running twice. Older runner
+// jobs could be launched at login, and current jobs can still be launched
+// explicitly; without this check a deploy, migration, or any other one-shot
+// command could silently repeat. A completion manifest is the
 // durable proof that this lane already reached a terminal record, so the
 // runner leaves that record alone and exits successfully.
 //
-// This does not block the KeepAlive{SuccessfulExit:false} restart of a crashed
-// runner: a runner that dies before its lane finishes never wrote a manifest,
-// so the guard does not fire. It fires only after the terminal record exists,
-// where re-running the command would be the wrong answer anyway.
+// This does not block a same-boot PathState restart of a crashed runner: a
+// runner that dies before its lane finishes never wrote a manifest, so the
+// guard does not fire. It fires only after the terminal record exists, where
+// re-running the command would be the wrong answer anyway.
 func guardCompletedLane(cfg config, paths state.Paths, logger *log.Logger) (int, bool) {
 	if cfg.kind != state.KindLane {
 		return 0, false
@@ -1138,6 +1177,18 @@ func (r *runner) cancelIdleShutdownLocked() {
 }
 
 func (r *runner) shutdown(permanent bool, code int) {
+	r.shutdownWithRestartPolicy(permanent, code, false)
+}
+
+// shutdownForHostExit is the launchd/reboot path. Preserve the boot permit so
+// the next launch can distinguish same-boot recovery from a new boot and apply
+// the bounded restore policy. Explicit Kill and normal provider exit use
+// shutdown, which removes the permit.
+func (r *runner) shutdownForHostExit(permanent bool, code int) {
+	r.shutdownWithRestartPolicy(permanent, code, true)
+}
+
+func (r *runner) shutdownWithRestartPolicy(permanent bool, code int, preserveRestartPermit bool) {
 	r.shutdownOnce.Do(func() {
 		r.streamMu.Lock()
 		if r.listener != nil {
@@ -1145,6 +1196,9 @@ func (r *runner) shutdown(permanent bool, code int) {
 		}
 		_ = ipc.Remove(r.paths.Socket)
 		_ = os.Remove(r.paths.Meta)
+		if !preserveRestartPermit {
+			removeRestartState(r.paths)
+		}
 		if permanent {
 			_ = r.persistent.Unlink()
 		} else {
@@ -1157,6 +1211,11 @@ func (r *runner) shutdown(permanent bool, code int) {
 		r.streamMu.Unlock()
 		os.Exit(code)
 	})
+}
+
+func removeRestartState(paths state.Paths) {
+	_ = os.Remove(paths.KeepAlive)
+	_ = os.Remove(paths.RestorePending)
 }
 
 func writeBytes(w io.Writer, b []byte) error {

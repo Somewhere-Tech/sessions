@@ -241,11 +241,12 @@ func (a *app) writeSessionTranscript(id string) error {
 // parses send's answer can read this one too; reply is always present so its
 // absence is a value rather than a missing key.
 type askJSONResult struct {
-	Submitted  bool      `json:"submitted"`
-	Confidence string    `json:"confidence"`
-	Reason     string    `json:"reason,omitempty"`
-	Working    *bool     `json:"working,omitempty"`
-	Reply      *askReply `json:"reply"`
+	OperationID string    `json:"operation_id,omitempty"`
+	Submitted   bool      `json:"submitted"`
+	Confidence  string    `json:"confidence"`
+	Reason      string    `json:"reason,omitempty"`
+	Working     *bool     `json:"working,omitempty"`
+	Reply       *askReply `json:"reply"`
 }
 
 type askReply struct {
@@ -301,7 +302,7 @@ func (a *app) cmdAsk(args []string) error {
 		// told the ask had succeeded.
 		if a.wantJSON {
 			if err := writeJSON(a.stdout, sendJSONResult{
-				Submitted: nil, Confidence: "unconfirmed", Tool: result.Tool,
+				OperationID: result.OperationID, Submitted: nil, Confidence: "unconfirmed", Tool: result.Tool,
 			}, false); err != nil {
 				return err
 			}
@@ -315,7 +316,7 @@ func (a *app) cmdAsk(args []string) error {
 		if a.wantJSON {
 			composerTail := result.ComposerTail
 			output := sendJSONResult{
-				Submitted: boolPointer(false), Confidence: "unconfirmed", Reason: result.Reason,
+				OperationID: result.OperationID, Submitted: boolPointer(false), Confidence: result.Confidence, Reason: result.Reason,
 				TextStillInComposer: result.TextStillInComposer, ComposerTail: &composerTail,
 			}
 			if result.SnapshotState != nil {
@@ -386,7 +387,7 @@ func (a *app) cmdAsk(args []string) error {
 			if a.wantJSON {
 				working := current.Working
 				if err := writeJSON(a.stdout, askJSONResult{
-					Submitted: true, Confidence: result.Confidence,
+					OperationID: result.OperationID, Submitted: true, Confidence: result.Confidence,
 					Reason: "wait-timeout", Working: &working,
 				}, false); err != nil {
 					return err
@@ -414,7 +415,7 @@ func (a *app) cmdAsk(args []string) error {
 	if last == nil {
 		if a.wantJSON {
 			return writeJSON(a.stdout, askJSONResult{
-				Submitted: true, Confidence: result.Confidence,
+				OperationID: result.OperationID, Submitted: true, Confidence: result.Confidence,
 			}, false)
 		}
 		_, err := io.WriteString(a.stdout, "(no assistant reply found)\n")
@@ -423,7 +424,7 @@ func (a *app) cmdAsk(args []string) error {
 	replyText := extractEventText(last)
 	if a.wantJSON {
 		return writeJSON(a.stdout, askJSONResult{
-			Submitted: true, Confidence: result.Confidence,
+			OperationID: result.OperationID, Submitted: true, Confidence: result.Confidence,
 			Reply: &askReply{Text: replyText, Timestamp: eventTimestamp(last)},
 		}, false)
 	}

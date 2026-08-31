@@ -14,6 +14,8 @@ root.
 ├── open
 ├── vapid.json
 ├── push-subscriptions.json
+├── delivery-operations/
+│   └── <operation-id>.json
 ├── uploads/
 │   └── <sanitized-stem>-<8 UUID chars><ext>
 ├── idle/
@@ -24,6 +26,8 @@ root.
     ├── <session-id>.events
     ├── <session-id>.events.tmp       # transient trim file only
     ├── <session-id>.log
+    ├── <session-id>.keepalive.json         # boot-scoped restart permit
+    ├── <session-id>.restore-pending.json   # paused automatic restore reason
     ├── <session-id>.transcript.jsonl      # Go runtime only
     └── <session-id>.transcript.meta.json  # Go runtime only
 
@@ -51,6 +55,8 @@ override:
 - `token` and `open`;
 - `uploads/` (`runtime/internal/api/files.go` `uploadsDir`), matching how recap,
   usage, and integration-error state already resolve;
+- `delivery-operations/`, the content-free idempotency receipts for composer
+  submissions;
 - `recaps/`, `usage.sqlite3`, and `errors.jsonl`.
 
 These do **not** follow it, and resolve from the user state root, which is
@@ -126,6 +132,17 @@ recursively with requested mode 0700 and files are written mode 0600. Names and
 the 25 MiB limit are specified in `http-api.md`. There is no automatic cleanup.
 In the Go runtime this directory follows an explicit `SESSIONS_STATE_DIR` as
 described above; in the Node fixture it is fixed under `os.homedir()`.
+
+### `delivery-operations/<operation-id>.json`
+
+Go-runtime-only, mode 0600 files below a mode-0700 directory. Each file is a
+durable receipt for one logical `/submit` operation: UUID, target session id,
+content SHA-256, content byte count, status, delivery/retry booleans, optional
+reason, and creation/update times. It deliberately does not store the message
+body. A `pending` file left by a crash is treated as `unknown` and must not be
+retried automatically. Reusing an operation id with different content or a
+different target is refused. This directory follows `SESSIONS_STATE_DIR` so an
+isolated daemon cannot read or write the installed daemon's receipts.
 
 ### `idle/<id>`
 
@@ -231,6 +248,29 @@ does not explicitly create, chmod, rotate, truncate, or unlink it; launchd owns
 opening/appending behavior. Despite stale source comments describing stdio-log
 removal, current cleanup code leaves `.log` behind.
 
+### `runners/<id>.keepalive.json` and `.restore-pending.json`
+
+Go runtime only. `.keepalive.json` is a mode-0600 boot-scoped restart permit
+containing the platform boot identity and its creation time. Its presence makes
+launchd's `PathState` true. A runner keeps the permit across an unexpected
+same-boot crash, and removes it on a normal end, explicit stop, malformed
+startup, or other terminal startup failure.
+
+When the permit belongs to an earlier boot, the runner admits only the
+deterministic first eight pinned, non-lane roots whose permits prove they were
+running before shutdown. It renews those permits for the current boot. Every
+other runner removes its stale permit, exits without starting its provider, and
+writes `.restore-pending.json` with the session id, reason, and detection time.
+Discovery treats that marker as an intentional safety state: it preserves the
+metadata, launch record, events, and transcript so retained history can be
+reconciled without spawning provider processes.
+
+Both files are sidecars, not runner metadata documents, and are excluded by
+`RunnerIDFromMetadataName`. Both `/api/health` responses report the current
+marker count as `restore.pending` and the compiled ceiling as
+`restore.automaticPinnedLimit`, so a client can show safe mode without guessing
+from an empty live-session list.
+
 ### `runners/<id>.transcript.jsonl` and `.transcript.meta.json`
 
 Go runtime only; the Node fixture has no equivalent. The transcript file is
@@ -311,11 +351,14 @@ argument and environment pair, is:
   <key>WorkingDirectory</key>
   <string><session cwd></string>
   <key>RunAtLoad</key>
-  <true/>
+  <false/>
   <key>KeepAlive</key>
   <dict>
-    <key>SuccessfulExit</key>
-    <false/>
+    <key>PathState</key>
+    <dict>
+      <key><runner state dir>/<id>.keepalive.json</key>
+      <true/>
+    </dict>
   </dict>
   <key>ProcessType</key>
   <string>Interactive</string>
@@ -328,8 +371,8 @@ argument and environment pair, is:
 ```
 
 Comments explaining KeepAlive and ProcessType are also emitted in the actual
-file, but have no plist semantics. Environment entries retain JavaScript object
-insertion order. XML escaping replaces `&`, `<`, and `>` in text values.
+file, but have no plist semantics. Environment entries are sorted by key. XML
+escaping replaces `&`, `<`, and `>` in text values.
 
 Bootstrap invokes:
 
@@ -351,12 +394,14 @@ source/development tree may use a fresh `dist/runner.js` or
 On a fresh runner start:
 
 1. validate control environment and create the runner state directory;
-2. guard against a duplicate socket owner, then remove a stale socket;
-3. decide the actual PTY spawn args;
-4. spawn the PTY;
-5. open and restore `.events` into the in-memory log/mirror;
-6. write `.json`;
-7. listen on and chmod `.sock`.
+2. validate the boot-scoped restart permit, or record a paused restore and exit
+   without starting the provider;
+3. guard against a duplicate socket owner, then remove a stale socket;
+4. decide the actual PTY spawn args;
+5. spawn the PTY;
+6. open and restore `.events` into the in-memory log/mirror;
+7. write `.json`;
+8. listen on and chmod `.sock`.
 
 When a non-empty `.events` exists and configured args contain
 `--session-id <uuid>`, the runner uses a copied spawn argv with that flag changed
@@ -372,9 +417,18 @@ daemon bootouts/unlinks the plist on EXIT and retains an in-memory exited
 session for its own 30-second grace period. The `.log` remains.
 
 On runner SIGTERM, cleanup removes socket/metadata, closes but preserves events,
-kills the PTY child, and exits 0. KeepAlive with `SuccessfulExit=false` therefore
-does not itself respawn that clean SIGTERM exit; the plist remains for a future
-RunAtLoad. SIGINT and SIGHUP are ignored.
+kills the PTY child, preserves the boot-scoped permit, and exits. launchd uses
+that permit to restart an unexpected same-boot termination; after reboot the
+runner reads its old boot id and applies the bounded restore decision before it
+starts a provider. A normal provider exit, an explicit runner Kill, and daemon
+reaping remove the permit. SIGINT and SIGHUP are ignored.
+
+At daemon startup, canonical Sessions plists carrying the exact older
+`RunAtLoad=true` plus `SuccessfulExit=false` policy are atomically migrated to
+the boot-scoped `PathState` policy, receive the matching runner environment,
+and get a current-boot permit so the following login can apply the bounded
+restore decision visibly. Unknown, hand-edited, and legacy-prefix plists are
+not rewritten.
 
 ## Daemon startup discovery
 
@@ -417,7 +471,8 @@ For every `tech.somewhere.sessions.runner.*.plist`:
   the plist;
 - stat/read problems are handled conservatively by keeping the plist.
 
-Thus an events-only session is intentionally preserved for a later RunAtLoad.
+Thus an events-only session is intentionally preserved for explicit recovery.
 A lone socket or lone metadata file also prevents this pre-pass from deleting
-the plist. The later socket-connection failure path is stricter as described
-above.
+the plist. A `.restore-pending.json` marker additionally prevents cleanup of a
+runner deliberately paused by the reboot budget. The later socket-connection
+failure path is stricter as described above.

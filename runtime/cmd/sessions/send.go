@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,6 +45,7 @@ type snapshotState struct {
 }
 
 type sendResult struct {
+	OperationID         string
 	Confirmed           *bool
 	Confidence          string
 	ExitCode            int
@@ -54,7 +57,18 @@ type sendResult struct {
 	SnapshotState       *snapshotState
 }
 
+type deliveryReceipt struct {
+	OperationID string `json:"operation_id"`
+	SessionID   string `json:"session_id"`
+	Status      string `json:"status"`
+	Delivered   bool   `json:"delivered"`
+	Retry       bool   `json:"retry"`
+	Reason      string `json:"reason,omitempty"`
+	Duplicate   bool   `json:"duplicate"`
+}
+
 var (
+	sendOperationIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	composerWorkingPattern = regexp.MustCompile(`(?i)(^|\n)\s*[•·∙]\s*Working\b`)
 	pickerFooterPattern    = regexp.MustCompile(`Enter to select.*[↑↓].*to navigate`)
 	numberedOptionPattern  = regexp.MustCompile(`^\s*([❯>]\s*)?\d+[\.)]\s+\S.+$`)
@@ -312,7 +326,7 @@ func firstValue(value map[string]any, keys ...string) any {
 // submitComposer sends one logical message through the daemon's atomic submit
 // boundary. Raw terminal keystrokes still use /input; message text and Enter
 // must never be interleaved with another agent's concurrent submission.
-func (a *app) submitComposer(inputPath, text, sourceSessionID string) error {
+func (a *app) submitComposer(inputPath, text, sourceSessionID, operationID string, timeout time.Duration) (deliveryReceipt, error) {
 	headers := make(http.Header)
 	if sourceSessionID == "" {
 		sourceSessionID = a.api.creatorSession
@@ -321,7 +335,61 @@ func (a *app) submitComposer(inputPath, text, sourceSessionID string) error {
 		headers.Set("X-Sessions-Creator-Session", sourceSessionID)
 	}
 	submitPath := strings.TrimSuffix(inputPath, "/input") + "/submit"
-	return a.postJSONWithHeaders(submitPath, map[string]string{"data": text}, &map[string]any{}, 1, headers)
+	ctx := context.Background()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	response, err := a.api.requestWithHeaders(ctx, http.MethodPost, submitPath, map[string]string{
+		"data": text, "operation_id": operationID,
+	}, 0, headers)
+	if err != nil {
+		return a.lookupDeliveryAfterTransportFailure(operationID, err)
+	}
+	var receipt deliveryReceipt
+	if decodeErr := json.Unmarshal(response.body, &receipt); decodeErr != nil {
+		return deliveryReceipt{}, fmt.Errorf("%s returned an unreadable delivery receipt: %w", submitPath, decodeErr)
+	}
+	if receipt.OperationID == "" {
+		receipt.OperationID = operationID
+	}
+	// Older compatible daemons return only {"ok":true}. Treat that as the
+	// synchronous acceptance they have always promised; the durable status
+	// lookup becomes available once the daemon is upgraded with the CLI.
+	if response.status < 400 && receipt.Status == "" {
+		receipt.Status = "accepted"
+		receipt.Delivered = true
+	}
+	if response.status >= 400 && receipt.Status == "" {
+		var payload struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(response.body, &payload)
+		if payload.Error == "" {
+			payload.Error = fmt.Sprintf("%s → %d", submitPath, response.status)
+		}
+		return deliveryReceipt{}, errors.New(payload.Error)
+	}
+	return receipt, nil
+}
+
+func (a *app) lookupDeliveryAfterTransportFailure(operationID string, transportErr error) (deliveryReceipt, error) {
+	path := "/api/message-deliveries/" + operationID
+	response, err := a.api.request(context.Background(), http.MethodGet, path, nil, 2*time.Second)
+	if err == nil && response.status == http.StatusOK {
+		var receipt deliveryReceipt
+		if decodeErr := json.Unmarshal(response.body, &receipt); decodeErr == nil {
+			if receipt.Reason == "" && receipt.Status == "unknown" {
+				receipt.Reason = "the send connection ended before a final receipt; query this operation instead of retrying the message"
+			}
+			return receipt, nil
+		}
+	}
+	return deliveryReceipt{
+		OperationID: operationID, Status: "unknown", Retry: false,
+		Reason: "delivery outcome is unknown because Sessions could not query the durable receipt after: " + transportErr.Error(),
+	}, nil
 }
 
 func (a *app) pressComposerEnter(inputPath string) error {
@@ -369,11 +437,46 @@ func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, _ bool,
 		}
 	}
 	inputPath := "/api/sessions/" + escapeID(id) + "/input"
-	if err := a.submitComposer(inputPath, text, sourceSessionID); err != nil {
+	operationID, err := randomUUID()
+	if err != nil {
+		return sendResult{}, fmt.Errorf("create message operation id: %w", err)
+	}
+	return a.sendAndConfirmOperation(id, text, timeout, sourceSessionID, operationID, baseTimestamp, baseNextIndex, tool, confirmable, inputPath)
+}
+
+func (a *app) sendAndConfirmOperation(
+	id, text string,
+	timeout time.Duration,
+	sourceSessionID, operationID string,
+	baseTimestamp, baseNextIndex int64,
+	tool string,
+	confirmable bool,
+	inputPath string,
+) (sendResult, error) {
+	receipt, err := a.submitComposer(inputPath, text, sourceSessionID, operationID, timeout)
+	if err != nil {
 		return sendResult{}, err
 	}
+	if receipt.Status != "accepted" {
+		confirmed := false
+		exitCode := exitTransport
+		if receipt.Status == "not-delivered" && receipt.Retry {
+			exitCode = 1
+		}
+		return sendResult{
+			OperationID: receipt.OperationID, Confirmed: &confirmed, Confidence: receipt.Status,
+			ExitCode: exitCode, Reason: receipt.Reason, Tool: tool,
+		}, nil
+	}
+	if receipt.Duplicate {
+		confirmed := true
+		return sendResult{
+			OperationID: receipt.OperationID, Confirmed: &confirmed,
+			Confidence: "accepted", ExitCode: 0, Tool: tool,
+		}, nil
+	}
 	if !confirmable {
-		return sendResult{Confirmed: nil, Tool: tool}, nil
+		return sendResult{OperationID: receipt.OperationID, Confirmed: nil, Tool: tool}, nil
 	}
 	snippetSource := text
 	for _, line := range strings.Split(text, "\n") {
@@ -400,7 +503,8 @@ func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, _ bool,
 		if currentSession == nil {
 			confirmed := false
 			return sendResult{
-				Confirmed: &confirmed, Confidence: "unconfirmed", ExitCode: 1,
+				OperationID: receipt.OperationID,
+				Confirmed:   &confirmed, Confidence: "unconfirmed", ExitCode: 1,
 				Reason: "session-unreachable",
 			}, nil
 		}
@@ -423,7 +527,8 @@ func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, _ bool,
 			confirmed := true
 			decision := decideSendConfirmation(sendEvidence{JSONLConfirmed: true})
 			return sendResult{
-				Confirmed: &confirmed, Confidence: decision.Confidence, ExitCode: decision.ExitCode,
+				OperationID: receipt.OperationID,
+				Confirmed:   &confirmed, Confidence: decision.Confidence, ExitCode: decision.ExitCode,
 				Text: confirmedText,
 			}, nil
 		}
@@ -442,7 +547,8 @@ func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, _ bool,
 			})
 			confirmed := decision.ExitCode == 0
 			return sendResult{
-				Confirmed: &confirmed, Confidence: decision.Confidence, ExitCode: decision.ExitCode,
+				OperationID: receipt.OperationID,
+				Confirmed:   &confirmed, Confidence: decision.Confidence, ExitCode: decision.ExitCode,
 				Reason: "timeout", TextStillInComposer: &textStillInComposer,
 				ComposerTail: composerTail, SnapshotState: &state,
 			}, nil
@@ -473,6 +579,7 @@ func anyLineContains(lines []string, snippet string) bool {
 }
 
 type sendJSONResult struct {
+	OperationID             string  `json:"operation_id,omitempty"`
 	Submitted               *bool   `json:"submitted"`
 	Confidence              string  `json:"confidence"`
 	Reason                  string  `json:"reason,omitempty"`
@@ -486,7 +593,7 @@ type sendJSONResult struct {
 
 func (a *app) cmdSend(args []string) error {
 	if len(args) == 0 || args[0] == "" {
-		return fail(1, "usage: sessions send <id> [--from session] [--no-wait] [--timeout Ns] [--file path] <text...>")
+		return fail(1, "usage: sessions send <id> [--from session] [--no-wait] [--timeout Ns] [--file path] [--operation-id UUID] <text...>")
 	}
 	idArg := args[0]
 	args = args[1:]
@@ -507,6 +614,10 @@ func (a *app) cmdSend(args []string) error {
 	if hasFile && filePath == "" {
 		return fail(1, "--file needs a path")
 	}
+	operationID, hasOperationID := pluck(&args, "--operation-id")
+	if hasOperationID && operationID == "" {
+		return fail(1, "--operation-id needs a UUID")
+	}
 	// An unrecognized option in the leading position is a mistake, not message
 	// text: silently typing `--json` into someone's agent session is worse than
 	// refusing it. Later words are left alone so a message may still contain a
@@ -515,7 +626,7 @@ func (a *app) cmdSend(args []string) error {
 		if args[0] == "--" {
 			args = args[1:]
 		} else if strings.HasPrefix(args[0], "--") {
-			return fail(1, "unknown send option %s — valid options are --from, --timeout, --no-wait, and --file; to send it as text use `sessions send <id> -- %s ...`",
+			return fail(1, "unknown send option %s — valid options are --from, --timeout, --no-wait, --file, and --operation-id; to send it as text use `sessions send <id> -- %s ...`",
 				args[0], args[0])
 		}
 	}
@@ -531,7 +642,7 @@ func (a *app) cmdSend(args []string) error {
 		text = string(encoded)
 	}
 	if text == "" {
-		return fail(1, "usage: sessions send <id> [--from session] [--no-wait] [--timeout Ns] [--file path] <text...>")
+		return fail(1, "usage: sessions send <id> [--from session] [--no-wait] [--timeout Ns] [--file path] [--operation-id UUID] <text...>")
 	}
 	id, err := a.resolveSessionID(idArg)
 	if err != nil {
@@ -543,7 +654,42 @@ func (a *app) cmdSend(args []string) error {
 			return err
 		}
 	}
-	result, err := a.sendAndConfirmFrom(id, text, timeout, noWait, sourceID)
+	var result sendResult
+	if hasOperationID {
+		if !sendOperationIDPattern.MatchString(operationID) {
+			return fail(1, "--operation-id must be a lowercase UUID")
+		}
+		sessions, listErr := a.listSessions(false)
+		if listErr != nil {
+			return listErr
+		}
+		var baseline *session
+		for index := range sessions {
+			if sessions[index].ID == id {
+				baseline = &sessions[index]
+				break
+			}
+		}
+		if baseline == nil {
+			return fail(1, "%s", unknownSessionMessage(id))
+		}
+		baseTimestamp := int64(0)
+		if baseline.LastUserMessageAt != nil {
+			baseTimestamp = *baseline.LastUserMessageAt
+		}
+		baseNextIndex := int64(0)
+		tool := toolOfSession(*baseline)
+		confirmable := isConfirmableTool(tool)
+		if confirmable {
+			var events eventsResponse
+			if eventsErr := a.getJSON("/api/sessions/"+escapeID(id)+"/events?tail=1", &events); eventsErr == nil {
+				baseNextIndex = events.NextIndex
+			}
+		}
+		result, err = a.sendAndConfirmOperation(id, text, timeout, sourceID, operationID, baseTimestamp, baseNextIndex, tool, confirmable, "/api/sessions/"+escapeID(id)+"/input")
+	} else {
+		result, err = a.sendAndConfirmFrom(id, text, timeout, noWait, sourceID)
+	}
 	if err != nil {
 		return err
 	}
@@ -551,7 +697,7 @@ func (a *app) cmdSend(args []string) error {
 		if !isConfirmableTool(result.Tool) {
 			if a.wantJSON {
 				return writeJSON(a.stdout, sendJSONResult{
-					Submitted: nil, Confidence: "unconfirmed", Tool: result.Tool,
+					OperationID: result.OperationID, Submitted: nil, Confidence: "unconfirmed", Tool: result.Tool,
 				}, false)
 			}
 			_, err := fmt.Fprintf(a.stdout, "sent (submission confirmation not available for tool: %s)\n", result.Tool)
@@ -561,7 +707,7 @@ func (a *app) cmdSend(args []string) error {
 	}
 	if *result.Confirmed {
 		if a.wantJSON {
-			output := sendJSONResult{Submitted: boolPointer(true), Confidence: result.Confidence, Text: result.Text}
+			output := sendJSONResult{OperationID: result.OperationID, Submitted: boolPointer(true), Confidence: result.Confidence, Text: result.Text}
 			if result.Confidence == "accepted" {
 				output.Reason = "working-jsonl-pending"
 			}
@@ -576,7 +722,7 @@ func (a *app) cmdSend(args []string) error {
 	}
 	if a.wantJSON {
 		output := sendJSONResult{
-			Submitted: boolPointer(false), Confidence: "unconfirmed", Reason: result.Reason,
+			OperationID: result.OperationID, Submitted: boolPointer(false), Confidence: result.Confidence, Reason: result.Reason,
 			TextStillInComposer: result.TextStillInComposer,
 		}
 		composerTail := result.ComposerTail
@@ -606,7 +752,33 @@ func (a *app) cmdSend(args []string) error {
 			fmt.Fprintf(a.stderr, "  inspect the terminal with `sessions snap %s` if the provider is showing a picker or prompt\n", id)
 		}
 	}
+	if !a.wantJSON && result.OperationID != "" {
+		fmt.Fprintf(a.stderr, "  delivery operation: %s (inspect with `sessions send-status %s`)\n", result.OperationID, result.OperationID)
+	}
 	return status(result.ExitCode)
+}
+
+func (a *app) cmdSendStatus(args []string) error {
+	if len(args) != 1 || !sendOperationIDPattern.MatchString(args[0]) {
+		return fail(1, "usage: sessions send-status <operation-id>")
+	}
+	var receipt deliveryReceipt
+	if err := a.getJSON("/api/message-deliveries/"+args[0], &receipt); err != nil {
+		return err
+	}
+	if a.wantJSON {
+		return writeJSON(a.stdout, receipt, false)
+	}
+	fmt.Fprintf(a.stdout, "%s  %s\n", receipt.Status, receipt.OperationID)
+	if receipt.Reason != "" {
+		fmt.Fprintln(a.stdout, receipt.Reason)
+	}
+	if receipt.Retry {
+		fmt.Fprintln(a.stdout, "Sessions confirmed that retrying this exact operation is safe.")
+	} else if receipt.Status != "accepted" {
+		fmt.Fprintln(a.stdout, "Do not resend the message automatically.")
+	}
+	return nil
 }
 
 func boolPointer(value bool) *bool { return &value }

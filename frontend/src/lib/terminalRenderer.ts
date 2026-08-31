@@ -1,16 +1,22 @@
 export type TerminalRenderer = 'webgl' | 'canvas' | 'dom';
 
-// Tauri uses WKWebView on Apple platforms. xterm's WebGL renderer is fast
-// there, but full-screen TUIs that erase and repaint rows can leave stale
-// glyph textures composited over the new frame. Canvas avoids the WebGL
-// texture path but still paints through a retained canvas layer, which can
-// exhibit the same stale-row composition during Claude's settings/login
-// screens. Use xterm's correctness-first DOM renderer in native Apple
-// WebViews. Chromium/WebView2 clients keep the faster WebGL path.
-export function terminalRenderer(nativeClient: boolean, userAgent: string): TerminalRenderer {
-  const appleWebView = nativeClient
-    && /(?:Macintosh|Mac OS X|iPhone|iPad|iPod)/i.test(userAgent)
-    && /AppleWebKit/i.test(userAgent)
-    && !/(?:Chrome|Chromium|Edg)\//i.test(userAgent);
-  return appleWebView ? 'dom' : 'webgl';
+// Full-screen provider TUIs redraw large grids for every keystroke. xterm's
+// DOM renderer turns those frames into thousands of styled spans and layout
+// work, which is not an acceptable fallback for an interactive terminal.
+// WebGL is therefore the default on every native client, including WKWebView;
+// useTerminal retains Canvas as the runtime fallback when WebGL is unavailable.
+export function terminalRenderer(_nativeClient: boolean, _userAgent: string): TerminalRenderer {
+  return 'webgl';
+}
+
+// A retained GPU atlas can very occasionally show glyphs from the preceding
+// full-screen view after a provider clears or swaps its alternate screen. Do
+// not repaint every PTY frame to compensate: that was the source of macOS
+// typing lag. Repair only the explicit reset/erase/buffer-switch sequences.
+export function terminalNeedsGpuRepair(data: string): boolean {
+  return (
+    data.includes('\x1bc')
+    || /\x1b\[(?:2|3)J/.test(data)
+    || /\x1b\[\?(?:47|1047|1049)[hl]/.test(data)
+  );
 }

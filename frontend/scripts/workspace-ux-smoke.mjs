@@ -93,6 +93,36 @@ try {
   assert.ok(bounds.drawerBottom <= bounds.viewportHeight, 'terminal drawer must stay on screen');
   assert.ok(bounds.conversationHeight > bounds.drawerHeight, 'conversation must remain the primary surface behind the drawer');
 
+  // Conversation intentionally keeps xterm mounted behind it. Its floating
+  // terminal controls must remain in that hidden paint layer instead of
+  // escaping above the composer and stealing clicks from Send.
+  await page.setContent(`
+    <style>${styles}</style>
+    <main class="session-view view-remote" style="width:850px;height:650px;display:grid;grid-template-rows:1fr">
+      <div class="session-body">
+        <div class="session-terminal-pane">
+          <div class="terminal-host"></div>
+          <button id="hidden-terminal-jump" class="scroll-to-bottom">↓</button>
+        </div>
+        <div class="session-remote-pane">
+          <div class="remote-view">
+            <div class="remote-scroll"><div style="height:900px"></div></div>
+            <div class="remote-input-wrap"><div class="input-bar"><div class="input-composer">
+              <textarea class="input-textarea"></textarea>
+              <div class="input-composer-footer"><span class="input-composer-spacer"></span><button id="conversation-send" class="input-send">↑</button></div>
+            </div></div></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  `);
+  const composerHitTarget = await page.evaluate(() => {
+    const send = document.querySelector('#conversation-send').getBoundingClientRect();
+    const hit = document.elementFromPoint(send.left + send.width / 2, send.top + send.height / 2);
+    return hit?.id ?? '';
+  });
+  assert.equal(composerHitTarget, 'conversation-send', 'a hidden terminal control must not cover Conversation Send');
+
   await page.setViewport({ width: 1100, height: 760 });
   await page.setContent(`
     <style>${styles}</style>

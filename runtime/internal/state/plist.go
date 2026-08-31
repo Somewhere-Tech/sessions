@@ -19,6 +19,7 @@ type plistArgs struct {
 	Env              map[string]string
 	Cwd              string
 	LogPath          string
+	KeepAlivePath    string
 }
 
 func plistPath(launchAgentsDir, id string) string {
@@ -71,6 +72,10 @@ func plistXML(args plistArgs) string {
 			"    <string>"+escape(args.Env[key])+"</string>",
 		)
 	}
+	keepAlivePath := args.KeepAlivePath
+	if keepAlivePath == "" {
+		keepAlivePath = filepath.Join(filepath.Dir(args.LogPath), args.ID+".keepalive.json")
+	}
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -88,14 +93,17 @@ func plistXML(args plistArgs) string {
   <key>WorkingDirectory</key>
   <string>` + escape(args.Cwd) + `</string>
   <key>RunAtLoad</key>
-  <true/>
-  <!-- Restart the runner if it dies UNEXPECTEDLY (crash, kill -9,
-       sessionsd-side socket cleanup nudging it out), but NOT when the
-       underlying PTY closes normally. -->
+  <false/>
+  <!-- The permit exists only while this runner belongs to the current boot.
+       That preserves same-boot crash recovery without fanning every retained
+       session back out after login. -->
   <key>KeepAlive</key>
   <dict>
-    <key>SuccessfulExit</key>
-    <false/>
+    <key>PathState</key>
+    <dict>
+      <key>` + escape(keepAlivePath) + `</key>
+      <true/>
+    </dict>
   </dict>
   <!-- These runners own interactive PTYs. -->
   <key>ProcessType</key>

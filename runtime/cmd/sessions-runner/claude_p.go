@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -62,6 +59,7 @@ func runClaudeStructured(cfg config, paths state.Paths, logger *log.Logger) int 
 	}
 	if err := host.start(); err != nil {
 		logger.Printf("structured Claude host failed: %v", err)
+		removeRestartState(paths)
 		cancel()
 		return 1
 	}
@@ -72,7 +70,7 @@ func runClaudeStructured(cfg config, paths state.Paths, logger *log.Logger) int 
 	go func() {
 		select {
 		case <-term:
-			host.shutdown(false, 1)
+			host.shutdownForHostExit(false, 1)
 		case <-ctx.Done():
 		}
 	}()
@@ -209,26 +207,12 @@ func (r *claudeStructuredRunner) openHistory() error {
 		_ = file.Close()
 		return err
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	history, err := readStructuredHistoryTail(file)
+	if err != nil {
 		_ = file.Close()
 		return err
 	}
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), structuredScannerBuffer)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) > 0 && json.Valid(line) {
-			r.history = append(r.history, append(json.RawMessage(nil), line...))
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if _, err := file.Seek(0, io.SeekEnd); err != nil {
-		_ = file.Close()
-		return err
-	}
+	r.history = history
 	r.historyFile = file
 	return nil
 }
@@ -479,7 +463,7 @@ func (r *claudeStructuredRunner) appendStructured(raw json.RawMessage) {
 		r.logger.Printf("append structured Claude history failed: %v", err)
 	}
 	r.mu.Lock()
-	r.history = append(r.history, append(json.RawMessage(nil), raw...))
+	r.history = retainStructuredEvent(r.history, raw)
 	clients := make([]*client, 0, len(r.clients))
 	for c := range r.clients {
 		clients = append(clients, c)
@@ -498,6 +482,14 @@ func (r *claudeStructuredRunner) snapshot() string {
 }
 
 func (r *claudeStructuredRunner) shutdown(permanent bool, code int) {
+	r.shutdownWithRestartPolicy(permanent, code, false)
+}
+
+func (r *claudeStructuredRunner) shutdownForHostExit(permanent bool, code int) {
+	r.shutdownWithRestartPolicy(permanent, code, true)
+}
+
+func (r *claudeStructuredRunner) shutdownWithRestartPolicy(permanent bool, code int, preserveRestartPermit bool) {
 	r.shutdownOnce.Do(func() {
 		r.cancel()
 		r.streamMu.Lock()
@@ -505,6 +497,9 @@ func (r *claudeStructuredRunner) shutdown(permanent bool, code int) {
 			_ = r.listener.Close()
 		}
 		_ = ipc.Remove(r.paths.Socket)
+		if !preserveRestartPermit {
+			removeRestartState(r.paths)
+		}
 		r.mu.Lock()
 		exitCode := code
 		exit := exitInfo{Code: &exitCode}
