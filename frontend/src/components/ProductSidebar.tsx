@@ -190,9 +190,13 @@ export function ProductSidebar({ active, theme, onNavigate, onNewSession, onOpen
               disabled={providerBusy !== null}
               onClick={() => void installProviderUpdate(providerUpdate)}
             >
-              {providerBusy === providerUpdate.id ? 'Updating…' : 'Update'}
+              {providerBusy === providerUpdate.id ? 'Installing…' : 'Update'}
             </button>
-            <small>{providerTarget} · Running work keeps going.</small>
+            <small>
+              {providerBusy === providerUpdate.id
+                ? `${providerTarget} · This can take a few minutes.`
+                : `${providerTarget} · Running work keeps going.`}
+            </small>
           </div>
         ) : null}
         {providerUpdateError ? <small className="product-update-error" role="alert">{providerUpdateError}</small> : null}

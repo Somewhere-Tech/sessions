@@ -1,6 +1,7 @@
 import type { ClaudeSettings, CreateSessionRequest, SessionInfo, DirectoryCandidate } from '../types';
 import { getActiveServer, getServer, isLocalServer, serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
+import { randomUUID } from '../lib/uuid';
 
 // Thrown when the daemon returns HTTP 401 (token required / wrong token).
 // Callers (UI components) can instanceof-check this to show an auth prompt
@@ -918,12 +919,27 @@ export async function fetchProviderStatuses(signal?: AbortSignal): Promise<Provi
 }
 
 export async function updateProvider(id: ProviderStatus['id']): Promise<{ provider: ProviderStatus; output: string }> {
-  const r = await apiFetch(`${httpBase()}/api/providers/${id}/update`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: '{}'
-  });
-  return featureJSON<{ provider: ProviderStatus; output: string }>(r, 'Provider update');
+  const controller = new AbortController();
+  // Current runtimes stop the complete installer tree after five minutes.
+  // Keep a slightly wider client boundary so an older remote runtime can
+  // never leave the native sidebar in an endless busy state.
+  const timer = window.setTimeout(() => controller.abort(), 5 * 60_000 + 20_000);
+  try {
+    const r = await apiFetch(`${httpBase()}/api/providers/${id}/update`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      signal: controller.signal
+    });
+    return await featureJSON<{ provider: ProviderStatus; output: string }>(r, 'Provider update');
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error('The update took too long and was stopped. Running sessions were not affected.');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export async function updateSessionTags(
@@ -1434,14 +1450,70 @@ export async function sendInput(sessionId: string, data: string, serverId?: stri
   await json<{ ok: boolean }>(r);
 }
 
+interface MessageDeliveryReceipt {
+  operation_id: string;
+  session_id: string;
+  status: 'accepted' | 'not-delivered' | 'unknown' | 'text-delivered';
+  delivered: boolean;
+  retry: boolean;
+  reason?: string;
+  duplicate?: boolean;
+}
+
+function deliveryError(receipt: MessageDeliveryReceipt): Error {
+  if (receipt.status === 'not-delivered' && receipt.retry) {
+    return new Error(receipt.reason || 'The session could not accept the message. It is safe to try again.');
+  }
+  if (receipt.status === 'text-delivered') {
+    return new Error('The message text reached the session, but Sessions could not confirm Enter. Check the conversation before trying again.');
+  }
+  return new Error('Sessions could not confirm whether the message arrived. Check the conversation before trying again.');
+}
+
+async function readDeliveryResponse(response: Response): Promise<MessageDeliveryReceipt | { ok: true }> {
+  let body: MessageDeliveryReceipt | { ok: true } | { error?: string };
+  try {
+    body = await response.json() as MessageDeliveryReceipt | { ok: true } | { error?: string };
+  } catch {
+    throw new Error(`sessionsd ${response.status}: ${response.statusText || 'invalid delivery response'}`);
+  }
+  // Compatibility with daemons from before durable delivery receipts.
+  if ('ok' in body && body.ok === true) return body;
+  if ('status' in body) return body;
+  const detail = 'error' in body ? body.error : '';
+  throw new Error(`sessionsd ${response.status}: ${detail || response.statusText}`);
+}
+
 export async function submitMessage(sessionId: string, data: string, serverId?: string): Promise<void> {
   const server = requestedServer(serverId);
-  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/submit`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ data })
-  });
-  await json<{ ok: boolean }>(r);
+  const operationId = randomUUID();
+  let response: Response;
+  try {
+    response = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/submit`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ data, operation_id: operationId })
+    });
+  } catch (initialError) {
+    // A broken response does not prove a broken send. Ask the daemon for the
+    // durable, content-free receipt before allowing a person or agent to
+    // retry and accidentally duplicate the message.
+    try {
+      const receiptResponse = await serverFetch(
+        server,
+        `${httpBaseForServer(server)}/api/message-deliveries/${encodeURIComponent(operationId)}`
+      );
+      const recovered = await readDeliveryResponse(receiptResponse);
+      if ('ok' in recovered || recovered.status === 'accepted') return;
+      throw deliveryError(recovered);
+    } catch (receiptError) {
+      if (receiptError instanceof AuthError) throw receiptError;
+      throw new Error('The connection changed while sending. Sessions could not confirm delivery, so it did not retry. Check the conversation before sending again.', { cause: initialError });
+    }
+  }
+  const receipt = await readDeliveryResponse(response);
+  if ('ok' in receipt || receipt.status === 'accepted') return;
+  throw deliveryError(receipt);
 }
 
 // Upload a file to the sessionsd host's uploads dir. Returns the absolute

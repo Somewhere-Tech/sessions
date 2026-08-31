@@ -72,7 +72,12 @@ func (s *Server) handleProvidersRoute(response http.ResponseWriter, request *htt
 		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": id + " is not installed"}, corsOrigin)
 		return true
 	}
-	providerUpdateMu.Lock()
+	if !providerUpdateMu.TryLock() {
+		s.sendJSON(response, http.StatusConflict, map[string]any{
+			"error": "an agent update is already running on this machine",
+		}, corsOrigin)
+		return true
+	}
 	defer providerUpdateMu.Unlock()
 	// Provider installers replace their own executable. Once explicitly
 	// started, an app close or client disconnect must not kill that installer
@@ -80,6 +85,7 @@ func (s *Server) handleProvidersRoute(response http.ResponseWriter, request *htt
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 5*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, path, "update")
+	configureProviderUpdateCommand(command)
 	command.Env = append(os.Environ(), "NO_COLOR=1")
 	output, runErr := command.CombinedOutput()
 	if ctx.Err() != nil {

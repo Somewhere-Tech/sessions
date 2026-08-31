@@ -103,9 +103,9 @@ export function RemoteView({
 }: Props): JSX.Element {
   const providerName = provider === 'codex' ? 'Codex' : 'Claude';
   const providerIdentity: ProviderIdentity = provider === 'codex' ? 'codex' : 'claude';
-  // Event-derived user contents — passed to useDispatch so pendings get
-  // flipped to 'sent' when provider history confirms them (instead of timing out
-  // as 'failed'). Computed once per events change; the Set is
+  // Event-derived user contents — passed to useDispatch so an acknowledged
+  // local copy is replaced when provider history contains the same turn.
+  // Computed once per events change; the Map is
   // stable across renders when its contents don't change so useDispatch's
   // effect doesn't re-run unnecessarily.
   const eventMessages = useMemo(() => eventsToMessages(events), [events]);
@@ -127,23 +127,21 @@ export function RemoteView({
     eventUserContentCounts
   });
   const hasRecoverableLocalState = dispatchMessages.some(
-    (message) => message.status === 'pending' || message.status === 'failed'
+    (message) => message.status === 'failed'
   );
 
   // JSONL events are the authoritative chat record. Merge in only the
-  // dispatch log's still-unconfirmed (pending/failed) user entries — sends
-  // that haven't shown up in the JSONL yet. useDispatch flips an entry to
+  // dispatch log's acknowledged or legacy-failed user entries — sends that
+  // haven't shown up in provider history yet. useDispatch flips an entry to
   // 'sent' (dropping it from this merge) as soon as a matching JSONL
-  // occurrence appears; it's count-aware, so a re-send of text that's
-  // already in history stays visibly pending until ITS bytes actually land
-  // (the old content-set filter hid it immediately — making a dropped
-  // re-send look delivered).
+  // occurrence appears. It is count-aware, so repeated identical turns are
+  // matched one-for-one instead of being hidden by an old occurrence.
   const messages = useMemo<DispatchMessage[]>(() => {
     if (eventMessages.length === 0) return dispatchMessages;
-    const stillPending = dispatchMessages.filter(
-      (m) => m.role === 'user' && (m.status === 'pending' || m.status === 'failed')
+    const locallyHeld = dispatchMessages.filter(
+      (m) => m.role === 'user' && (m.status === 'accepted' || m.status === 'failed')
     );
-    return [...eventMessages, ...stillPending];
+    return [...eventMessages, ...locallyHeld];
   }, [eventMessages, dispatchMessages]);
   const changedFiles = useMemo(() => {
     const files = new Set<string>();
@@ -381,7 +379,7 @@ export function RemoteView({
 
   return (
     <div className="remote-view">
-      {/* Recovery valve for pending/failed local send artifacts. Provider
+      {/* Recovery valve for legacy failed local-send artifacts. Provider
           history is never cleared. Uses inline confirmation because native
           WebViews suppress window.confirm. */}
       {hasRecoverableLocalState && clearConfirm ? (
@@ -668,12 +666,6 @@ function RemoteMessageInner({
                 <span>{m.errorResponse}</span>
               </div>
             ) : null}
-            {m.status === 'pending' ? (
-              <div className="remote-bubble-status">
-                <span className="remote-bubble-spinner" aria-hidden />
-                <span>sending</span>
-              </div>
-            ) : null}
             {m.status === 'failed' ? (
               <div className="remote-bubble-status remote-bubble-failed">
                 <span>{m.failureReason ? `not delivered: ${m.failureReason}` : 'not delivered'}</span>
@@ -697,7 +689,7 @@ function RemoteMessageInner({
             ) : null}
           </div>
           <footer className="remote-message-meta is-user">
-            {m.status === 'pending' ? <span>Sending…</span> : m.status === 'failed' ? <span>Needs attention</span> : null}
+            {m.status === 'failed' ? <span>Needs attention</span> : null}
             {m.author ? <span className="remote-message-author">{m.author.name} · via Sessions</span> : null}
             <time dateTime={new Date(m.createdAt).toISOString()} title={timestampTitle}>{timestamp}</time>
             <CopyButton getText={m.content} iconOnly label="Copy message" />

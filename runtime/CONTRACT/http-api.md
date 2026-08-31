@@ -382,9 +382,12 @@ device may request the update; anonymous open remote access receives 403 before
 executable lookup or mutation. The client must identify the destination machine
 in its confirmation UI. The provider ID must be `claude` or `codex`; the daemon
 then runs that installed provider's own `update` command with a five-minute
-deadline. Success returns the refreshed provider object and bounded installer
-output. Unknown, absent, failed, or timed-out providers return 4xx/5xx without
-changing Sessions itself.
+deadline. Only one provider update runs on a machine at a time; a second request
+returns 409 instead of waiting behind the first. The updater runs in an isolated
+process tree, and a timeout stops its package-manager descendants as well as the
+provider parent. Success returns the refreshed provider object and bounded
+installer output. Unknown, absent, failed, or timed-out providers return 4xx/5xx
+without changing Sessions itself.
 
 ### `GET /api/worktrees`
 
