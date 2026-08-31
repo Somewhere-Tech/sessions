@@ -639,17 +639,38 @@ turn accepted input into an error.
 
 ### `POST /api/sessions/:id/submit`
 
-Auth required. Body is `{"data":"<one complete composer message>"}`. The
-daemon serializes logical submissions across callers, writes `data`, waits for
-the provider TUI to settle, and writes carriage return as a second PTY frame.
-This is the message boundary used by the CLI and desktop composer: concurrent
-agents cannot interleave one message's text with another message's Enter.
-Terminal keys and paste-without-submit continue to use `/input`.
+Auth required. Body is
+`{"data":"<one complete composer message>","operation_id":"<UUID v4>"}`.
+`operation_id` is optional for older callers; the daemon generates one when it
+is absent. The daemon durably records the operation before runner input,
+serializes logical submissions across callers, writes `data`, waits for the
+provider TUI to settle, and writes carriage return as a second PTY frame. This
+is the message boundary used by the CLI and desktop composer: concurrent agents
+cannot interleave one message's text with another message's Enter. Terminal
+keys and paste-without-submit continue to use `/input`.
 
-Success is `200 {"ok":true}`. Unknown/exited targets return `404`. If text was
-accepted but Enter could not be delivered, the error includes
-`{"delivered":true,"retry":false}` so an automated caller does not duplicate
-the prompt.
+The response is a delivery receipt with `operation_id`, `session_id`, `status`,
+`delivered`, `retry`, `reason`, `duplicate`, `created_at_ms`, and
+`updated_at_ms`. `status` is one of `accepted`, `not-delivered`, `unknown`, or
+`text-delivered`. Retrying the same operation id with the same target and
+content reads the original receipt without sending another message, including
+after a daemon restart. Reusing it for different content or a different target
+returns 409. Receipts store only the target id, byte count, and SHA-256 digest;
+message text is not copied into the receipt directory.
+
+An unknown/exited target is `not-delivered` with `retry:true`. A failure after
+runner input may have happened is `unknown` or `text-delivered` with
+`retry:false`; an automated caller must inspect the receipt instead of creating
+a new operation. This conservative boundary prevents a lost HTTP response from
+turning into a duplicate provider writer.
+
+### `GET /api/message-deliveries/:operation-id`
+
+Auth required. Returns the latest durable receipt for a composer submission.
+A record left `pending` by a daemon crash is exposed as `unknown` with
+`retry:false`, because Sessions cannot prove whether runner input happened
+before the crash. A missing operation is 404. This endpoint never returns the
+message body or its content digest.
 
 ### `POST /api/sessions/:id/upload`
 

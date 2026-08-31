@@ -459,6 +459,92 @@ func TestConcurrentSubmitKeepsEachMessageWithItsTarget(t *testing.T) {
 	}
 }
 
+func TestSubmitOperationIsIdempotentAcrossDaemonRestart(t *testing.T) {
+	daemon := newTestDaemon(t)
+	recorder := &recordingSessionInput{sessionService: daemon.registry}
+	daemon.handler.registry = recorder
+	created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/bash", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const operationID = "11111111-2222-4333-8444-555555555555"
+	body := `{"data":"ship exactly once","operation_id":"` + operationID + `"}`
+
+	first := serve(t, daemon.handler, http.MethodPost, "/api/sessions/"+created.ID+"/submit", strings.NewReader(body), "127.0.0.1:4567", nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first submit = %d %s", first.Code, first.Body.String())
+	}
+	var firstReceipt map[string]any
+	decodeBody(t, first, &firstReceipt)
+	if firstReceipt["operation_id"] != operationID || firstReceipt["status"] != "accepted" || firstReceipt["duplicate"] != false {
+		t.Fatalf("first receipt = %#v", firstReceipt)
+	}
+
+	// New Server means a new in-memory submit lock and delivery service. The
+	// receipt on disk, not process memory, must be what prevents the resend.
+	restarted := New(daemon.config, recorder)
+	second := serve(t, restarted, http.MethodPost, "/api/sessions/"+created.ID+"/submit", strings.NewReader(body), "127.0.0.1:4567", nil)
+	if second.Code != http.StatusOK {
+		t.Fatalf("duplicate submit = %d %s", second.Code, second.Body.String())
+	}
+	var secondReceipt map[string]any
+	decodeBody(t, second, &secondReceipt)
+	if secondReceipt["status"] != "accepted" || secondReceipt["duplicate"] != true {
+		t.Fatalf("duplicate receipt = %#v", secondReceipt)
+	}
+
+	recorder.mu.Lock()
+	calls := append([]recordedSessionInput(nil), recorder.calls...)
+	recorder.mu.Unlock()
+	if len(calls) != 2 || calls[0].data != "ship exactly once" || calls[1].data != "\r" {
+		t.Fatalf("runner inputs = %#v, want one text + Enter pair", calls)
+	}
+
+	status := serve(t, restarted, http.MethodGet, "/api/message-deliveries/"+operationID, nil, "127.0.0.1:4567", nil)
+	if status.Code != http.StatusOK {
+		t.Fatalf("delivery status = %d %s", status.Code, status.Body.String())
+	}
+	var statusReceipt map[string]any
+	decodeBody(t, status, &statusReceipt)
+	if statusReceipt["status"] != "accepted" || statusReceipt["session_id"] != created.ID {
+		t.Fatalf("status receipt = %#v", statusReceipt)
+	}
+}
+
+func TestPendingSubmitOperationIsReportedUnknownAndNeverRetried(t *testing.T) {
+	daemon := newTestDaemon(t)
+	recorder := &recordingSessionInput{sessionService: daemon.registry}
+	daemon.handler.registry = recorder
+	created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/bash", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const operationID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	const message = "outcome was lost"
+	if _, createdRecord, err := daemon.handler.deliveries.Begin(operationID, created.ID, message); err != nil || !createdRecord {
+		t.Fatalf("seed pending operation: created=%t err=%v", createdRecord, err)
+	}
+	body := `{"data":"` + message + `","operation_id":"` + operationID + `"}`
+	result := serve(t, daemon.handler, http.MethodPost, "/api/sessions/"+created.ID+"/submit", strings.NewReader(body), "127.0.0.1:4567", nil)
+	if result.Code != http.StatusOK {
+		t.Fatalf("pending duplicate = %d %s", result.Code, result.Body.String())
+	}
+	var receipt map[string]any
+	decodeBody(t, result, &receipt)
+	if receipt["status"] != "unknown" || receipt["retry"] != false || receipt["duplicate"] != true {
+		t.Fatalf("pending receipt = %#v", receipt)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if len(recorder.calls) != 0 {
+		t.Fatalf("pending operation was resent: %#v", recorder.calls)
+	}
+}
+
 // TestSubmitsToDifferentSessionsRunConcurrently is the scaling half of the same
 // invariant. Every submit holds its session's lock across a fixed settle delay;
 // with one process-wide lock, N agents on N different sessions took N delays.

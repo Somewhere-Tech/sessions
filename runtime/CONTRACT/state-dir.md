@@ -14,6 +14,8 @@ root.
 ├── open
 ├── vapid.json
 ├── push-subscriptions.json
+├── delivery-operations/
+│   └── <operation-id>.json
 ├── uploads/
 │   └── <sanitized-stem>-<8 UUID chars><ext>
 ├── idle/
@@ -51,6 +53,8 @@ override:
 - `token` and `open`;
 - `uploads/` (`runtime/internal/api/files.go` `uploadsDir`), matching how recap,
   usage, and integration-error state already resolve;
+- `delivery-operations/`, the content-free idempotency receipts for composer
+  submissions;
 - `recaps/`, `usage.sqlite3`, and `errors.jsonl`.
 
 These do **not** follow it, and resolve from the user state root, which is
@@ -126,6 +130,17 @@ recursively with requested mode 0700 and files are written mode 0600. Names and
 the 25 MiB limit are specified in `http-api.md`. There is no automatic cleanup.
 In the Go runtime this directory follows an explicit `SESSIONS_STATE_DIR` as
 described above; in the Node fixture it is fixed under `os.homedir()`.
+
+### `delivery-operations/<operation-id>.json`
+
+Go-runtime-only, mode 0600 files below a mode-0700 directory. Each file is a
+durable receipt for one logical `/submit` operation: UUID, target session id,
+content SHA-256, content byte count, status, delivery/retry booleans, optional
+reason, and creation/update times. It deliberately does not store the message
+body. A `pending` file left by a crash is treated as `unknown` and must not be
+retried automatically. Reusing an operation id with different content or a
+different target is refused. This directory follows `SESSIONS_STATE_DIR` so an
+isolated daemon cannot read or write the installed daemon's receipts.
 
 ### `idle/<id>`
 

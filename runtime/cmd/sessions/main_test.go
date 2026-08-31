@@ -154,6 +154,127 @@ func TestClaudeNoWaitStillConfirmsProviderDelivery(t *testing.T) {
 	}
 }
 
+func TestExplicitSendOperationIsForwardedAndReturned(t *testing.T) {
+	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	const operationID = "11111111-2222-4333-8444-555555555555"
+	const message = "Review the durable receipt."
+	delivered := false
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			var lastUser any
+			if delivered {
+				lastUser = int64(2)
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
+				"id": id, "cmd": "claude", "tool": "claude-code", "lastUserMessageAt": lastUser,
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions/"+id+"/events":
+			events := []any{}
+			if delivered {
+				events = append(events, map[string]any{
+					"type": "user", "message": map[string]any{"role": "user", "content": message},
+				})
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": events, "nextIndex": len(events)})
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/submit":
+			var body map[string]string
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["operation_id"] != operationID || body["data"] != message {
+				t.Errorf("submit body = %#v", body)
+			}
+			delivered = true
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"operation_id": operationID, "session_id": id, "status": "accepted", "delivered": true, "retry": false,
+			})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--host", server.URL, "--json", "send", id, "--operation-id", operationID, message}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("send exit=%d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	var output sendJSONResult
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.OperationID != operationID || output.Submitted == nil || !*output.Submitted || output.Confidence != "confirmed" {
+		t.Fatalf("send output = %+v", output)
+	}
+}
+
+func TestUnknownSendReceiptIsMachineReadableAndNotRetried(t *testing.T) {
+	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	const operationID = "11111111-2222-4333-8444-555555555555"
+	submits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
+				"id": id, "cmd": "claude", "tool": "claude-code",
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions/"+id+"/events":
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": []any{}, "nextIndex": 0})
+		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+id+"/submit":
+			submits++
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"operation_id": operationID, "session_id": id, "status": "unknown", "delivered": false,
+				"retry": false, "reason": "connection ended after intent was recorded", "duplicate": true,
+			})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--host", server.URL, "--json", "send", id, "--operation-id", operationID, "do not duplicate"}, strings.NewReader(""), &stdout, &stderr)
+	if code != exitTransport || submits != 1 {
+		t.Fatalf("send exit=%d submits=%d stderr=%q stdout=%q", code, submits, stderr.String(), stdout.String())
+	}
+	var output sendJSONResult
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.OperationID != operationID || output.Submitted == nil || *output.Submitted || output.Confidence != "unknown" {
+		t.Fatalf("unknown send output = %+v", output)
+	}
+}
+
+func TestSendStatusReadsDurableReceipt(t *testing.T) {
+	const operationID = "11111111-2222-4333-8444-555555555555"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/message-deliveries/"+operationID {
+			http.NotFound(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"operation_id": operationID, "session_id": "target", "status": "accepted", "delivered": true, "retry": false,
+		})
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "--json", "send-status", operationID}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("send-status exit=%d stderr=%q", code, stderr.String())
+	}
+	var receipt deliveryReceipt
+	if err := json.Unmarshal(stdout.Bytes(), &receipt); err != nil || receipt.OperationID != operationID || receipt.Status != "accepted" {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+}
+
 func TestLiveStatusNeverLooksTerminalBecauseOfLastTurn(t *testing.T) {
 	setAsideAt := int64(1)
 	tests := []struct {
