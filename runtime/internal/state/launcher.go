@@ -31,13 +31,29 @@ func (l *LaunchdLauncher) ProgramArguments(proto.LaunchRequest) []string {
 }
 
 func (l *LaunchdLauncher) Prepare(request proto.LaunchRequest) error {
-	_, err := writePlist(l.config.LaunchAgentsDir, plistArgs{
+	paths := For(l.config.RunnerStateDir, request.Info.ID)
+	bootID, err := CurrentBootID()
+	if err != nil {
+		return fmt.Errorf("prepare runner restart policy: %w", err)
+	}
+	if err := WriteRestartPermit(paths.KeepAlive, bootID); err != nil {
+		return fmt.Errorf("prepare runner restart permit: %w", err)
+	}
+	if request.Env == nil {
+		request.Env = make(map[string]string)
+	}
+	request.Env["RUNNER_RESTART_POLICY"] = "boot-scoped"
+	_, err = writePlist(l.config.LaunchAgentsDir, plistArgs{
 		ID:               request.Info.ID,
 		ProgramArguments: l.ProgramArguments(request),
 		Env:              request.Env,
 		Cwd:              request.Info.Cwd,
 		LogPath:          filepath.Join(l.config.RunnerStateDir, request.Info.ID+".log"),
+		KeepAlivePath:    paths.KeepAlive,
 	})
+	if err != nil {
+		_ = os.Remove(paths.KeepAlive)
+	}
 	return err
 }
 
@@ -154,7 +170,15 @@ func (l *LaunchdLauncher) Reap(id string) error {
 			reapErrors = append(reapErrors, removeErr)
 		}
 	}
-	if !found {
+	for _, path := range []string{
+		For(l.config.RunnerStateDir, id).KeepAlive,
+		For(l.config.RunnerStateDir, id).RestorePending,
+	} {
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			reapErrors = append(reapErrors, removeErr)
+		}
+	}
+	if !found && len(reapErrors) == 0 {
 		return nil
 	}
 	return errors.Join(reapErrors...)

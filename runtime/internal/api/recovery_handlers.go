@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -46,6 +47,11 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		}
 		defer store.Close()
 		result := recovery.Reopen(request.Context(), report, s.registry, store.Observations(), recovery.ReopenOptions{Force: body.Force})
+		for _, outcome := range result.Outcomes {
+			if outcome.NewLaneID != "" {
+				s.clearPausedRestore(outcome.SourceLaneID)
+			}
+		}
 		s.sendJSON(response, http.StatusOK, result, corsOrigin)
 	case request.URL.Path == "/api/recovery/fork" && request.Method == http.MethodPost:
 		var body struct {
@@ -372,6 +378,9 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 				if result.Partial {
 					status = http.StatusAccepted
 				}
+				if source != nil && result.LaneID != "" {
+					s.clearPausedRestore(source.LaneID)
+				}
 				s.sendJSON(response, status, result, corsOrigin)
 				return
 			}
@@ -451,6 +460,9 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 				status := http.StatusCreated
 				if result.Partial {
 					status = http.StatusAccepted
+				}
+				if source != nil && result.LaneID != "" {
+					s.clearPausedRestore(source.LaneID)
 				}
 				s.sendJSON(response, status, result, corsOrigin)
 				return
@@ -549,6 +561,9 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			if result.Partial {
 				status = http.StatusAccepted
 			}
+			if source != nil && result.LaneID != "" {
+				s.clearPausedRestore(source.LaneID)
+			}
 			s.sendJSON(response, status, result, corsOrigin)
 			return
 		}
@@ -574,10 +589,20 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		if result.Partial {
 			status = http.StatusAccepted
 		}
+		if source != nil && result.LaneID != "" {
+			s.clearPausedRestore(source.LaneID)
+		}
 		s.sendJSON(response, status, result, corsOrigin)
 	default:
 		s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": request.URL.Path}, corsOrigin)
 	}
+}
+
+func (s *Server) clearPausedRestore(sourceSessionID string) {
+	if sourceSessionID == "" {
+		return
+	}
+	_ = os.Remove(state.For(s.config.RunnerStateDir, sourceSessionID).RestorePending)
 }
 
 func forkTranscriptMessages(

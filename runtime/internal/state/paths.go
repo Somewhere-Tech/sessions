@@ -17,16 +17,18 @@ import (
 
 // Paths is the complete on-disk file group for one runner.
 type Paths struct {
-	Dir          string
-	ID           string
-	Socket       string
-	Meta         string
-	Events       string
-	Log          string
-	Manifest     string
-	Structured   string
-	ClaudeP      string
-	Continuation string
+	Dir            string
+	ID             string
+	Socket         string
+	Meta           string
+	Events         string
+	Log            string
+	Manifest       string
+	KeepAlive      string
+	RestorePending string
+	Structured     string
+	ClaudeP        string
+	Continuation   string
 	// Transcript is Sessions' own append-only copy of the provider
 	// conversation, and TranscriptMeta records where it came from. The
 	// provider owns the original and prunes it on its own schedule; these are
@@ -38,16 +40,18 @@ type Paths struct {
 func For(dir, id string) Paths {
 	base := filepath.Join(dir, id)
 	return Paths{
-		Dir:          dir,
-		ID:           id,
-		Socket:       ipc.RunnerEndpoint(dir, id),
-		Meta:         base + ".json",
-		Events:       base + ".events",
-		Log:          base + ".log",
-		Manifest:     base + ".manifest.json",
-		Structured:   base + ".codexapp.jsonl",
-		ClaudeP:      base + ".claudep.jsonl",
-		Continuation: base + ".continuation.json",
+		Dir:            dir,
+		ID:             id,
+		Socket:         ipc.RunnerEndpoint(dir, id),
+		Meta:           base + ".json",
+		Events:         base + ".events",
+		Log:            base + ".log",
+		Manifest:       base + ".manifest.json",
+		KeepAlive:      base + ".keepalive.json",
+		RestorePending: base + ".restore-pending.json",
+		Structured:     base + ".codexapp.jsonl",
+		ClaudeP:        base + ".claudep.jsonl",
+		Continuation:   base + ".continuation.json",
 
 		Transcript:     base + ".transcript.jsonl",
 		TranscriptMeta: base + ".transcript.meta.json",
@@ -60,6 +64,8 @@ func For(dir, id string) Paths {
 // session that has one produces a phantom runner id.
 var runnerSidecarJSONSuffixes = []string{
 	".manifest.json",
+	".keepalive.json",
+	".restore-pending.json",
 	".continuation.json",
 	".transcript.meta.json",
 }

@@ -310,6 +310,7 @@ export interface ServerHealth {
   };
   discovering: boolean;
   sessionsLoaded: number;
+  restore?: { pending: number; automaticPinnedLimit: number };
 }
 
 export const API_PROTOCOL_VERSION = 1;

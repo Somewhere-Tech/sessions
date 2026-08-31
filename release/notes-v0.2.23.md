@@ -9,3 +9,9 @@
   unbounded replay or restarting the work they own.
 - Avoids repeated socket retries for runner artifacts whose recorded process is
   definitely gone, keeping restart recovery responsive on long-lived hosts.
+- Prevents login-time provider storms: same-boot runner crashes still recover,
+  but a reboot restores only a bounded set of pinned roots, never repeats a
+  headless lane, and preserves every paused session for explicit recovery.
+- Makes delayed message delivery idempotent with durable operation receipts and
+  a queryable final state, so a lost response cannot turn a retry into a
+  duplicate prompt.

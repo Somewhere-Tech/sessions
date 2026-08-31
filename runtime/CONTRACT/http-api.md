@@ -177,7 +177,8 @@ No auth. Returns 200:
     "runner": { "current": 2, "minimum": 0, "maximum": 2 }
   },
   "discovering": false,
-  "sessionsLoaded": 0
+  "sessionsLoaded": 0,
+  "restore": { "pending": 0, "automaticPinnedLimit": 8 }
 }
 ```
 
@@ -208,7 +209,11 @@ Clients preserve their legacy behavior when an older daemon omits the additive
 object, but must stop before normal use when their protocol is outside an
 advertised range. The count includes exited sessions still in their 30-second
 grace period. The deep-health response carries the same `compatibility` and
-`access` objects but no `listen` or `lan`.
+`access` objects but no `listen` or `lan`. `restore.pending` counts runners
+Sessions deliberately left stopped after reboot rather than starting an
+unbounded retained fleet; their recovery evidence is preserved.
+`restore.automaticPinnedLimit` is the compiled ceiling for pinned non-lane
+roots that may return automatically.
 
 ### `GET /api/health/deep`
 
@@ -221,6 +226,7 @@ Requires authentication (loopback peers are already authorized). Returns 200:
   "version": "0.2.3",
   "discovering": false,
   "sessionsLoaded": 1,
+  "restore": { "pending": 0, "automaticPinnedLimit": 8 },
   "uptimeSec": 12,
   "sessions": [
     {

@@ -136,6 +136,10 @@ func TestResumeRestoresCodexTranscriptWhenNativeHandleWasNeverRecorded(t *testin
 		t.Fatal(err)
 	}
 	awaitSessionExited(t, daemon.registry, created.ID)
+	pausedMarker := state.For(daemon.config.RunnerStateDir, created.ID).RestorePending
+	if err := state.WriteRestorePending(pausedMarker, created.ID, "paused after reboot"); err != nil {
+		t.Fatal(err)
+	}
 
 	// Codex partitions rollouts by the LOCAL date (verified against real
 	// rollout files: one written 19:51 PDT lands in that day's directory, not
@@ -183,6 +187,9 @@ func TestResumeRestoresCodexTranscriptWhenNativeHandleWasNeverRecorded(t *testin
 	}
 	if len(daemon.launcher.Launches) != 2 {
 		t.Fatalf("launch count = %d, want ended source + one successor", len(daemon.launcher.Launches))
+	}
+	if _, err := os.Stat(pausedMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful explicit resume left paused marker: %v", err)
 	}
 }
 
@@ -300,7 +307,7 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 	var body map[string]any
 	decodeBody(t, health, &body)
-	for _, key := range []string{"ok", "name", "version", "listen", "lan", "access", "system", "compatibility", "discovering", "sessionsLoaded"} {
+	for _, key := range []string{"ok", "name", "version", "listen", "lan", "access", "system", "compatibility", "discovering", "sessionsLoaded", "restore"} {
 		if _, exists := body[key]; !exists {
 			t.Errorf("health missing key %q: %#v", key, body)
 		}
@@ -329,6 +336,10 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 	if runnerCompatibility["minimum"] != float64(0) || runnerCompatibility["maximum"] != float64(2) {
 		t.Fatalf("unexpected runner compatibility: %#v", runnerCompatibility)
+	}
+	restore := body["restore"].(map[string]any)
+	if restore["pending"] != float64(0) || restore["automaticPinnedLimit"] != float64(state.DefaultPinnedBootRestoreLimit) {
+		t.Fatalf("unexpected reboot restore health: %#v", restore)
 	}
 
 	// Deep health carries live session IDs and host PIDs, so unlike plain

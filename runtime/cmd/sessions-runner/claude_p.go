@@ -59,6 +59,7 @@ func runClaudeStructured(cfg config, paths state.Paths, logger *log.Logger) int 
 	}
 	if err := host.start(); err != nil {
 		logger.Printf("structured Claude host failed: %v", err)
+		removeRestartState(paths)
 		cancel()
 		return 1
 	}
@@ -69,7 +70,7 @@ func runClaudeStructured(cfg config, paths state.Paths, logger *log.Logger) int 
 	go func() {
 		select {
 		case <-term:
-			host.shutdown(false, 1)
+			host.shutdownForHostExit(false, 1)
 		case <-ctx.Done():
 		}
 	}()
@@ -481,6 +482,14 @@ func (r *claudeStructuredRunner) snapshot() string {
 }
 
 func (r *claudeStructuredRunner) shutdown(permanent bool, code int) {
+	r.shutdownWithRestartPolicy(permanent, code, false)
+}
+
+func (r *claudeStructuredRunner) shutdownForHostExit(permanent bool, code int) {
+	r.shutdownWithRestartPolicy(permanent, code, true)
+}
+
+func (r *claudeStructuredRunner) shutdownWithRestartPolicy(permanent bool, code int, preserveRestartPermit bool) {
 	r.shutdownOnce.Do(func() {
 		r.cancel()
 		r.streamMu.Lock()
@@ -488,6 +497,9 @@ func (r *claudeStructuredRunner) shutdown(permanent bool, code int) {
 			_ = r.listener.Close()
 		}
 		_ = ipc.Remove(r.paths.Socket)
+		if !preserveRestartPermit {
+			removeRestartState(r.paths)
+		}
 		r.mu.Lock()
 		exitCode := code
 		exit := exitInfo{Code: &exitCode}

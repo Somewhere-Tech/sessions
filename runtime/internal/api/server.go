@@ -93,6 +93,10 @@ type sessionService interface {
 	DeepDiagnostics() []map[string]any
 }
 
+type rebootRestoreHealthService interface {
+	RestorePendingCount() int
+}
+
 type attributedKillService interface {
 	RequestKillAttributed(context.Context, string, bool, state.EndSessionRequest) error
 }
@@ -246,6 +250,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			},
 			"discovering":    s.registry.IsDiscovering(),
 			"sessionsLoaded": len(s.registry.List(true)),
+			"restore":        s.rebootRestoreHealth(),
 		}, corsOrigin)
 		return
 	}
@@ -300,6 +305,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			},
 			"discovering":    s.registry.IsDiscovering(),
 			"sessionsLoaded": len(s.registry.List(true)),
+			"restore":        s.rebootRestoreHealth(),
 			"uptimeSec":      int64(math.Round(s.registry.Uptime().Seconds())),
 			"sessions":       s.registry.DeepDiagnostics(),
 		}, corsOrigin)
@@ -570,6 +576,17 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": path}, corsOrigin)
+}
+
+func (s *Server) rebootRestoreHealth() map[string]any {
+	pending := 0
+	if reporter, ok := s.registry.(rebootRestoreHealthService); ok {
+		pending = reporter.RestorePendingCount()
+	}
+	return map[string]any{
+		"pending":              pending,
+		"automaticPinnedLimit": state.DefaultPinnedBootRestoreLimit,
+	}
 }
 
 func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) {

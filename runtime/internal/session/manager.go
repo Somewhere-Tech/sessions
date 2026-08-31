@@ -179,6 +179,9 @@ type Manager struct {
 	notifications       map[string]*sessionNotificationState
 	notificationsClosed bool
 	discoveryMu         sync.Mutex
+	restoreHealthMu     sync.Mutex
+	restoreHealthAt     time.Time
+	restoreHealthCount  int
 	bindMu              sync.Mutex
 	// completionGeneration records the newest delegated-task completion
 	// attempt per session so a fresh idle classification supersedes an
@@ -246,6 +249,11 @@ type runtimeSession struct {
 }
 
 func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...ManagerOptions) *Manager {
+	if migrated, err := state.MigrateRunnerPlistRestartPolicies(config.LaunchAgentsDir, config.RunnerStateDir); err != nil {
+		log.Printf("runner restart policy migration: %v", err)
+	} else if migrated > 0 {
+		log.Printf("runner restart policy: bounded login restore enabled for %d existing session(s)", migrated)
+	}
 	selected := ManagerOptions{}
 	if len(options) > 0 {
 		selected = options[0]
@@ -2331,6 +2339,24 @@ func (m *Manager) Discover(ctx context.Context) error {
 	return m.DiscoverWithOptions(ctx, DiscoverOptions{})
 }
 
+// RestorePendingCount is the calm, queryable safe-mode signal exposed through
+// daemon health. It never starts or adopts a runner.
+func (m *Manager) RestorePendingCount() int {
+	m.restoreHealthMu.Lock()
+	defer m.restoreHealthMu.Unlock()
+	if !m.restoreHealthAt.IsZero() && time.Since(m.restoreHealthAt) < 5*time.Second {
+		return m.restoreHealthCount
+	}
+	count, err := state.CountRestorePending(m.config.RunnerStateDir)
+	if err != nil {
+		log.Printf("count paused reboot restores: %v", err)
+		return m.restoreHealthCount
+	}
+	m.restoreHealthAt = time.Now()
+	m.restoreHealthCount = count
+	return count
+}
+
 func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptions) error {
 	m.discoveryMu.Lock()
 	defer m.discoveryMu.Unlock()
@@ -2363,6 +2389,15 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 				// runner died. Preserve every artifact for a later retry.
 				log.Printf("[discover] runner %s metadata unreadable — leaving it alone: %v", id, metadataErr)
 				delete(candidates, id)
+				continue
+			}
+			if _, pendingErr := os.Stat(state.For(m.config.RunnerStateDir, id).RestorePending); pendingErr == nil {
+				// The runner deliberately declined to respawn this provider after a
+				// reboot. Keep its metadata, transcripts, and launch record intact so
+				// recovery can show the user what was paused; a stale-artifact sweep
+				// must not erase the evidence that safe mode exists to preserve.
+				delete(candidates, id)
+				delete(deadArtifacts, id)
 				continue
 			}
 			probe := metadata.Info

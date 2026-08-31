@@ -426,7 +426,8 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   }, []);
   const localServer = servers.find((server) => server.isDefault && isLocalServer(server)) ?? null;
   const selectedMachineName = selectedServer ? serverDisplayName(selectedServer, true) : 'this machine';
-  const recoveryVisible = Boolean(sessionsError || serverHealth?.discovering);
+  const pausedAfterRestart = serverHealth?.restore?.pending ?? 0;
+  const recoveryVisible = Boolean(sessionsError || serverHealth?.discovering || pausedAfterRestart > 0);
   const recoverSelectedMachine = useCallback(async (): Promise<void> => {
     if (!activeServerId || manualRecoveryBusy) return;
     setManualRecoveryBusy(true);
@@ -791,10 +792,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
               discovering={Boolean(serverHealth?.discovering)}
               recovered={serverHealth?.sessionsLoaded ?? rawSessions.length}
               expected={knownSessionCount}
+              paused={pausedAfterRestart}
               busy={manualRecoveryBusy || nativeRuntimeReconnecting}
               detail={nativeRuntimeError ?? sessionsError}
               localAlternative={!localRuntimeSelected && localServer ? serverDisplayName(localServer, true) : undefined}
               onRecover={() => void recoverSelectedMachine()}
+              onReview={() => navigateProduct('tabs')}
               onStartLocal={!localRuntimeSelected && localServer ? startOnLocalMachine : undefined}
             />
           ) : null}

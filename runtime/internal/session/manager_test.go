@@ -1205,7 +1205,9 @@ func TestLaunchdFreeCreateWritesMetadataAndPlist(t *testing.T) {
 	}
 	for _, want := range []string{
 		"tech.somewhere.sessions.runner." + created.ID,
-		"<key>KeepAlive</key>", "<key>SuccessfulExit</key>",
+		"<key>KeepAlive</key>", "<key>PathState</key>",
+		filepath.Join(config.RunnerStateDir, created.ID+".keepalive.json"),
+		"<key>RunAtLoad</key>\n  <false/>",
 		"<string>Interactive</string>", "<key>RUNNER_ID</key>", "<key>SESSIONS_SESSION_ID</key>",
 		"<string>" + created.ID + "</string>",
 		"<string>a&amp;b&lt;c&gt;</string>",
@@ -1213,6 +1215,9 @@ func TestLaunchdFreeCreateWritesMetadataAndPlist(t *testing.T) {
 		if !strings.Contains(string(plist), want) {
 			t.Errorf("plist missing %q:\n%s", want, plist)
 		}
+	}
+	if strings.Contains(string(plist), "<key>SuccessfulExit</key>") {
+		t.Fatalf("runner plist retained unbounded restart policy:\n%s", plist)
 	}
 	if strings.Contains(string(plist), "NODE_OPTIONS") || strings.Contains(string(plist), "caller-value") ||
 		strings.Contains(string(plist), "caller-session") {
@@ -1412,6 +1417,46 @@ func TestDiscoveryNeverDeletesStructuredHistoryForDeadRunner(t *testing.T) {
 		if _, err := os.Stat(historyPath); err != nil {
 			t.Fatalf("discovery deleted structured history %s: %v", historyPath, err)
 		}
+	}
+}
+
+func TestDiscoveryPreservesRunnerPausedByBoundedRebootRestore(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.RunnerStateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "00000000-0000-4000-8000-000000000094"
+	paths := state.For(config.RunnerStateDir, id)
+	if err := state.WriteMetadata(paths.Meta, state.Metadata{
+		ID: id, Cmd: "claude", Cwd: root, Cols: 120, Rows: 40,
+		CreatedAt: 1, PID: 989898, SockPath: paths.Socket,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Transcript, []byte("{\"retained\":true}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteRestorePending(paths.RestorePending, id, "paused after reboot"); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &reapRecordingLauncher{Launcher: prototest.NewLauncher()}
+	manager := NewManager(config, launcher, ManagerOptions{
+		DisableWatchers: true, DiscoveryRetries: 1, DiscoveryDelay: time.Millisecond,
+		ProcessAlive: func(int) bool { return false },
+	})
+	t.Cleanup(manager.Close)
+
+	if err := manager.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.Meta, paths.Transcript, paths.RestorePending} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("discovery removed paused restore evidence %s: %v", path, err)
+		}
+	}
+	if len(launcher.reaped) != 0 {
+		t.Fatalf("discovery reaped a deliberately paused runner: %v", launcher.reaped)
 	}
 }
 
