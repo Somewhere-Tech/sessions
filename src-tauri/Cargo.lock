@@ -3786,7 +3786,7 @@ dependencies = [
 
 [[package]]
 name = "sessions-app"
-version = "0.2.23"
+version = "0.2.24"
 dependencies = [
  "log",
  "reqwest",
