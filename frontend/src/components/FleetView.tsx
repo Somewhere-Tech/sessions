@@ -679,9 +679,10 @@ const FLEET_SORT_PRIORITY: Record<SessionStatusState, number> = {
   limited: 3,
   working: 4,
   ready: 5,
-  'not-started': 6,
-  finished: 7,
-  ended: 8
+  unavailable: 6,
+  'not-started': 7,
+  finished: 8,
+  ended: 9
 };
 
 function sortFleetSessions(sessions: SessionInfo[]): SessionInfo[] {

@@ -356,6 +356,17 @@ func (s *Session) setNameSource(source string) {
 	s.mu.Unlock()
 }
 
+// setConversationID records the provider-owned conversation identity in the
+// live view after the transcript watcher has proved which provider record it
+// is following. The metadata file is written first by Registry, so an app or
+// daemon restart can never expose an in-memory binding that was not made
+// durable.
+func (s *Session) setConversationID(conversationID string) {
+	s.mu.Lock()
+	s.info.ConversationID = conversationID
+	s.mu.Unlock()
+}
+
 func (s *Session) setFirstMessageDescription(description string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

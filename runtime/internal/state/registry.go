@@ -634,6 +634,51 @@ func (r *Registry) AdoptProviderTitle(id, title string) (bool, error) {
 	return true, nil
 }
 
+// BindProviderConversation persists an identity learned from the provider's
+// own transcript. Fresh terminal-backed Codex sessions do not know their
+// conversation UUID at process launch; the watcher learns it only after an
+// exact submitted-message match selects one rollout. Keeping that binding only
+// in memory made every daemon restart forget the assistant side of the
+// conversation until another message happened to be sent.
+//
+// An existing, different identity is never replaced here. Changing ownership
+// is a recovery operation with its own ledger boundary, not a side effect of a
+// transcript watcher.
+func (r *Registry) BindProviderConversation(id, conversationID string) (bool, error) {
+	if !validMetadataID(id) {
+		return false, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if !providerargs.IsConversationUUID(conversationID) {
+		return false, errors.New("provider conversation id must be a canonical UUID")
+	}
+	session, live := r.Get(id)
+	path := filepath.Join(r.config.RunnerStateDir, id+".json")
+	changed := false
+	_, err := updateMetadata(path, func(metadata *Metadata) error {
+		existing := strings.TrimSpace(metadata.ConversationID)
+		if existing != "" && existing != conversationID {
+			return fmt.Errorf("session is already bound to provider conversation %s", existing)
+		}
+		if existing == conversationID {
+			return nil
+		}
+		metadata.ConversationID = conversationID
+		changed = true
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+		}
+		return false, fmt.Errorf("persist provider conversation: %w", err)
+	}
+	if changed && live {
+		session.setConversationID(conversationID)
+	}
+	return changed, nil
+}
+
 // ReleaseName hands the card back to the provider after an explicit rename.
 // The stored name changes only if the provider has already titled the
 // conversation; otherwise the current name stays and the next title adopts.

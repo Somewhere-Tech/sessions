@@ -204,12 +204,21 @@ try {
     idleReason: undefined,
     unreachable: true,
     unreachableReason: 'runner-lost',
+    pid: 4242,
     provenanceStatus: 'lost'
   };
   assert.equal(classifySession(reconnecting).state, 'reconnecting');
   assert.equal(classifySession(reconnecting).label, 'Reconnecting');
   assert.equal(sessionIsFinished(reconnecting), false);
   assert.equal(sessionNeedsYou(reconnecting), false);
+
+  // A ledger-restored record with no process identity is not "reconnecting"
+  // forever. Sessions did not observe an exit, so it also must not claim the
+  // runtime ended; "Connection lost" is the complete literal fact.
+  const unavailable = { ...reconnecting, id: 'runner-unavailable', pid: 0 };
+  assert.equal(classifySession(unavailable).state, 'unavailable');
+  assert.equal(classifySession(unavailable).label, 'Connection lost');
+  assert.equal(sessionIsFinished(unavailable), false);
 
   // Ordinary live states.
   const working = { ...askingWhileBusy, id: 'working', idleReason: undefined };
@@ -226,13 +235,13 @@ try {
 
   // Every state carries exactly one label and one `is-<state>` class token.
   const states = new Set();
-  for (const sample of [reconnecting, crashed, endedButAsking, askingWhileBusy, working, liveMcpWarning, ready]) {
+  for (const sample of [reconnecting, unavailable, crashed, endedButAsking, askingWhileBusy, working, liveMcpWarning, ready]) {
     const status = classifySession(sample);
     assert.equal(status.className, `is-${status.state}`);
     assert.ok(status.label.length > 0);
     states.add(status.state);
   }
-  assert.equal(states.size, 7, 'each sample must land in a distinct state');
+  assert.equal(states.size, 8, 'each sample must land in a distinct state');
 
   console.log('session status smoke: ok');
 } finally {

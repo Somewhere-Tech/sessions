@@ -183,3 +183,82 @@ func TestProfileConfigRootsReachLiveClaudeAndCodexWatchers(t *testing.T) {
 		return ok && current.ClaudeEventCount() == 2
 	})
 }
+
+func TestTerminalCodexConversationRebuildsAfterDaemonRestart(t *testing.T) {
+	root := t.TempDir()
+	store, err := ledger.Open(context.Background(), ledger.Options{Path: filepath.Join(root, "ledger", "lanes.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	launcher := prototest.NewLauncher()
+	config := testConfig(root)
+	options := ManagerOptions{
+		ActivityInterval: time.Hour,
+		Boundaries:       store.Boundaries(), Observations: store.Observations(), LedgerReader: store,
+		Notify:         func(PushPayload) {},
+		ProcessAlive:   func(int) bool { return true },
+		ProcessCommand: func(int) string { return "sessions-runner" },
+	}
+	manager := NewManager(config, launcher, options)
+	const (
+		providerID = "019f7181-cb32-76e0-952d-2f5f7862e668"
+		prompt     = "help me understand these external drives"
+	)
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "codex", Cwd: root, Profile: "restart-codex", Description: prompt,
+	})
+	if err != nil {
+		manager.Close()
+		t.Fatal(err)
+	}
+	createdAt := time.UnixMilli(created.CreatedAt).UTC()
+	rollout := filepath.Join(created.ConfigDir, "sessions", createdAt.Format("2006"), createdAt.Format("01"), createdAt.Format("02"), "rollout-restart-"+providerID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rollout), 0o700); err != nil {
+		manager.Close()
+		t.Fatal(err)
+	}
+	records := []string{
+		`{"timestamp":"` + createdAt.Format(time.RFC3339Nano) + `","type":"session_meta","payload":{"id":"` + providerID + `","cwd":"` + root + `","timestamp":"` + createdAt.Format(time.RFC3339Nano) + `"}}`,
+		`{"timestamp":"` + createdAt.Add(time.Second).Format(time.RFC3339Nano) + `","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"` + prompt + `"}]}}`,
+		`{"timestamp":"` + createdAt.Add(2*time.Second).Format(time.RFC3339Nano) + `","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Keep the APFS drive for Mac work."}]}}`,
+	}
+	if err := os.WriteFile(rollout, []byte(strings.Join(records, "\n")+"\n"), 0o600); err != nil {
+		manager.Close()
+		t.Fatal(err)
+	}
+	// Production runners own this socket. The in-memory launcher does not
+	// create filesystem artifacts, so provide the discovery signal explicitly.
+	if err := os.WriteFile(state.For(config.RunnerStateDir, created.ID).Socket, nil, 0o600); err != nil {
+		manager.Close()
+		t.Fatal(err)
+	}
+	awaitCondition(t, func() bool {
+		current, ok := manager.Get(created.ID)
+		return ok && current.ClaudeEventCount() == 2 && current.Info().ConversationID == providerID
+	})
+	metadata, err := state.ReadRunnerMetadata(filepath.Join(config.RunnerStateDir, created.ID+".json"))
+	if err != nil || metadata.Info.ConversationID != providerID {
+		manager.Close()
+		t.Fatalf("persisted provider identity = %q, error %v", metadata.Info.ConversationID, err)
+	}
+	manager.Close()
+
+	// The second daemon has no in-memory watcher history and no new user input.
+	// It must resolve the saved provider UUID and backfill both sides anyway.
+	restarted := NewManager(config, launcher, options)
+	defer restarted.Close()
+	if err := restarted.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	awaitCondition(t, func() bool {
+		current, ok := restarted.Get(created.ID)
+		return ok && current.ClaudeEventCount() == 2
+	})
+	current, _ := restarted.Get(created.ID)
+	window := current.EventsWindow(nil, nil, nil)
+	encoded, _ := json.Marshal(window.Events)
+	if !strings.Contains(string(encoded), "external drives") || !strings.Contains(string(encoded), "APFS drive") {
+		t.Fatalf("rebuilt Conversation history = %s", encoded)
+	}
+}

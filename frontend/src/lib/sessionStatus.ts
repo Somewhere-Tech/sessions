@@ -21,9 +21,11 @@ import type { SessionInfo } from '../types';
 //
 // ── Precedence, and why it is in this order ────────────────────────────────
 //
-// 1. reconnecting — session.unreachable. The daemon lost its runner socket
-//    but did not observe an exit. This outranks stale provenance and activity
-//    hints so a recoverable connection problem is never presented as an end.
+// 1. unavailable / reconnecting — session.unreachable. When the daemon still
+//    has a process identity it is actively reconnecting. A restored record
+//    with no process identity cannot honestly promise that; it says
+//    "Connection lost" while preserving the saved record and never inventing
+//    an exit. Both outrank stale provenance and activity hints.
 //
 // 2. failed — isCrashedSession(). Highest among known lifecycle outcomes
 //    because it is the only state where
@@ -77,6 +79,7 @@ import type { SessionInfo } from '../types';
 
 export type SessionStatusState =
   | 'reconnecting'
+  | 'unavailable'
   | 'failed'
   | 'ended'
   | 'needs-you'
@@ -114,6 +117,7 @@ export interface SessionStatus {
 
 const STATE_LABELS: Record<SessionStatusState, string> = {
   reconnecting: 'Reconnecting',
+  unavailable: 'Connection lost',
   failed: 'Failed',
   ended: 'Ended',
   'needs-you': 'Needs you',
@@ -126,6 +130,7 @@ const STATE_LABELS: Record<SessionStatusState, string> = {
 
 const STATE_TONES: Record<SessionStatusState, SessionStatusTone> = {
   reconnecting: 'ready',
+  unavailable: 'ended',
   failed: 'attention',
   ended: 'ended',
   'needs-you': 'needs',
@@ -147,7 +152,7 @@ export interface ClassifyOptions {
 }
 
 function statusState(session: SessionInfo, options: ClassifyOptions): SessionStatusState {
-  if (session.unreachable) return 'reconnecting';
+  if (session.unreachable) return session.pid && session.pid > 0 ? 'reconnecting' : 'unavailable';
   if (isCrashedSession(session)) return 'failed';
   if (session.exited) return 'ended';
   if (session.idleReason === 'needs-input') return 'needs-you';

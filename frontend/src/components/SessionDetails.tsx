@@ -12,6 +12,7 @@ import { PIN_UNAVAILABLE_WHEN_ENDED } from '../lib/workingSet';
 // same meaning — this view has room for a sentence, not a different answer.
 const STATE_DETAIL: Record<SessionStatusState, string> = {
   reconnecting: 'Sessions lost the runner connection and is recovering this session',
+  unavailable: 'Sessions lost this runner connection and has no live process to reconnect to; saved history remains available',
   failed: 'The runtime stopped unexpectedly; saved history is still available',
   ended: 'The runtime is no longer running',
   'needs-you': 'Waiting for your response',

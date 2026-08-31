@@ -2047,10 +2047,28 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 		if info.ConfigDir != "" {
 			sessionsDir = filepath.Join(info.ConfigDir, "sessions")
 		}
+		watcherArgs := info.Args
+		requireInputMatch := true
+		if providerargs.IsConversationUUID(info.ConversationID) {
+			// The watcher is not launching Codex, so this synthetic resume argv is
+			// only an exact provider-id lookup. Persisting the binding means a
+			// daemon restart can rebuild Conversation without waiting for another
+			// user message or guessing between same-folder rollouts.
+			watcherArgs = []string{"resume", info.ConversationID}
+			requireInputMatch = false
+		}
 		watcher = watch.WatchCodexRollout(watch.CodexWatcherOptions{
-			CWD: info.Cwd, Args: info.Args, CreatedAt: time.UnixMilli(info.CreatedAt), SessionsDir: sessionsDir,
-			RequireInputMatch: true,
+			CWD: info.Cwd, Args: watcherArgs, CreatedAt: time.UnixMilli(info.CreatedAt), SessionsDir: sessionsDir,
+			RequireInputMatch: requireInputMatch,
 		})
+		if requireInputMatch && strings.TrimSpace(info.Description) != "" {
+			// The desktop stores its initial request as the session description
+			// before delivery. On recovery that exact authored text is evidence,
+			// not a timestamp guess: the resolver binds only when one provider
+			// rollout contains the same user message. CLI descriptions which are
+			// merely prose match nothing and remain safely unbound until input.
+			watcher.ExpectInput(info.Description)
+		}
 	default:
 		return
 	}
@@ -2063,6 +2081,9 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 			case event, ok := <-watcher.Events:
 				if !ok {
 					return
+				}
+				if info.Tool == state.ToolCodex {
+					r.bindCodexWatcher(watcher.Path())
 				}
 				raw, err := json.Marshal(event)
 				if err == nil {
@@ -2091,6 +2112,41 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 	}) {
 		watcher.Close()
 	}
+}
+
+// bindCodexWatcher makes an exact watcher resolution durable. The resolver
+// reaches a path only from a provider UUID already in metadata or from one
+// exact submitted-message match. Reading the rollout's session_meta therefore
+// promotes provider truth; no terminal text or timestamp heuristic is parsed.
+func (r *runtimeSession) bindCodexWatcher(path string) {
+	info := r.session.Info()
+	if info.Tool != state.ToolCodex || info.ConversationID != "" || path == "" {
+		return
+	}
+	providerID, _, err := watch.ReadCodexConversationIdentity(path)
+	if err != nil {
+		log.Printf("[provider] read Codex identity for %s: %v", info.ID, err)
+		return
+	}
+	if !providerargs.IsConversationUUID(providerID) {
+		// Older or synthetic rollouts may omit the id. Their events remain
+		// readable, but there is no identity Sessions can safely persist.
+		return
+	}
+	changed, err := r.manager.registry.BindProviderConversation(info.ID, providerID)
+	if err != nil {
+		log.Printf("[provider] bind Codex identity for %s: %v", info.ID, err)
+		return
+	}
+	if !changed {
+		return
+	}
+	resumeArgv := ledger.ResumeRecipeForProvider("codex", info.Cmd, providerID)
+	r.manager.observe(context.Background(), "provider bound", func(writer ledger.ObservationWriter) error {
+		return writer.RecordProviderBound(context.Background(), ledger.ProviderBound{
+			Meta: ledger.Meta{LaneID: info.ID}, ProviderUUID: providerID, ResumeArgv: resumeArgv,
+		})
+	})
 }
 
 // followProviderTitle keeps the session's stored name on whatever the provider
