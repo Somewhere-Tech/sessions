@@ -6,6 +6,8 @@
 - Keeps the terminal anchored where the user intentionally scrolled while new
   output, resize, replay, reconnect, and alternate-screen changes occur; Jump
   to latest returns it to following live output.
+- Keeps the hidden Terminal pane's controls behind Conversation so its
+  jump-to-latest button cannot cover or intercept the Send button.
 - Bounds the structured-event window held in runner and daemon memory while
   preserving complete append-only provider history on disk.
 - Lets a newly updated daemon adopt older durable runners without retaining an

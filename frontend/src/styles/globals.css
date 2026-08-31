@@ -2416,6 +2416,11 @@ button:active:not(:disabled),
 }
 .session-terminal-pane {
   position: relative;
+  /* The terminal stays mounted behind Conversation so its PTY state survives
+   * view changes. Keep its absolutely-positioned controls in this paint layer:
+   * without a stacking context, the terminal's jump-to-latest button can
+   * escape above the Conversation composer and intercept Send. */
+  isolation: isolate;
   min-width: 0;
   min-height: 0;
 }
