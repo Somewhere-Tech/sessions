@@ -58,8 +58,18 @@ type updateHealth struct {
 
 type updateSessions struct {
 	Sessions []struct {
-		ID string `json:"id"`
+		ID     string `json:"id"`
+		PID    *int   `json:"pid"`
+		Exited bool   `json:"exited"`
 	} `json:"sessions"`
+}
+
+func liveUpdateSession(id string, pid *int, exited bool) bool {
+	// A missing pid is an older-daemon response and remains eligible so an
+	// update never weakens preservation for a compatible installed version.
+	// Current daemons explicitly use pid=0 for retained history, which must not
+	// turn a finite runner-preservation check into an unbounded history check.
+	return strings.TrimSpace(id) != "" && !exited && (pid == nil || *pid > 0)
 }
 
 type nativeUpdateManifest struct {
@@ -143,7 +153,7 @@ func (a *app) captureUpdateConvergenceBaseline(
 		return baseline, false
 	}
 	for _, session := range sessions.Sessions {
-		if strings.TrimSpace(session.ID) != "" {
+		if liveUpdateSession(session.ID, session.PID, session.Exited) {
 			baseline.SessionIDs[session.ID] = struct{}{}
 		}
 	}
@@ -190,7 +200,9 @@ func (a *app) waitForUpdateConvergence(
 			} else {
 				current := make(map[string]struct{}, len(sessions.Sessions))
 				for _, session := range sessions.Sessions {
-					current[session.ID] = struct{}{}
+					if liveUpdateSession(session.ID, session.PID, session.Exited) {
+						current[session.ID] = struct{}{}
+					}
 				}
 				missing := 0
 				for id := range baseline.SessionIDs {

@@ -30,6 +30,12 @@ struct HealthResponse {
 #[derive(Debug, Deserialize)]
 struct SessionIdentity {
     id: String,
+    // Older daemons did not report a pid. Treat an absent value as live for
+    // update compatibility, but a current daemon's explicit pid=0 is retained
+    // history rather than a runner the lifecycle must re-adopt.
+    pid: Option<u32>,
+    #[serde(default)]
+    exited: bool,
 }
 
 #[derive(Debug, Deserialize)]

@@ -209,7 +209,12 @@ func TestUpdateCommandWaitsForDaemonCLIAndLiveSessionConvergence(t *testing.T) {
 			})
 		case "/api/sessions":
 			_ = json.NewEncoder(response).Encode(map[string]any{
-				"sessions": []map[string]any{{"id": "session-a"}, {"id": "session-b"}},
+				"sessions": []map[string]any{
+					{"id": "session-a"},
+					{"id": "session-b"},
+					{"id": "retained-stale", "pid": 0},
+					{"id": "retained-ended", "pid": 123, "exited": true},
+				},
 			})
 		default:
 			http.NotFound(response, request)

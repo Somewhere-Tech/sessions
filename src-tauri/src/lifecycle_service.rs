@@ -284,6 +284,7 @@ fn fetch_sessions(config: &RuntimeConfig) -> LifecycleResult<BTreeSet<String>> {
     Ok(response
         .sessions
         .into_iter()
+        .filter(|session| !session.exited && session.pid != Some(0))
         .map(|session| session.id)
         .filter(|id| !id.is_empty())
         .collect())
