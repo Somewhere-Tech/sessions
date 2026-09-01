@@ -212,7 +212,11 @@ func TestTerminalCodexConversationRebuildsAfterDaemonRestart(t *testing.T) {
 		manager.Close()
 		t.Fatal(err)
 	}
-	createdAt := time.UnixMilli(created.CreatedAt).UTC()
+	// Codex stores rollouts under the machine-local calendar date. Keeping this
+	// in the local location matters around UTC midnight: an August 31 launch in
+	// Los Angeles is September 1 in UTC, but Codex still writes the August 31
+	// directory that the production resolver watches.
+	createdAt := time.UnixMilli(created.CreatedAt)
 	rollout := filepath.Join(created.ConfigDir, "sessions", createdAt.Format("2006"), createdAt.Format("01"), createdAt.Format("02"), "rollout-restart-"+providerID+".jsonl")
 	if err := os.MkdirAll(filepath.Dir(rollout), 0o700); err != nil {
 		manager.Close()
@@ -226,6 +230,14 @@ func TestTerminalCodexConversationRebuildsAfterDaemonRestart(t *testing.T) {
 	if err := os.WriteFile(rollout, []byte(strings.Join(records, "\n")+"\n"), 0o600); err != nil {
 		manager.Close()
 		t.Fatal(err)
+	}
+	resolution := watch.ResolveCodexRolloutPath(watch.CodexResolveOptions{
+		CWD: root, CreatedAt: createdAt, SessionsDir: filepath.Join(created.ConfigDir, "sessions"),
+		Now: time.Now(), ExpectedInput: prompt,
+	})
+	if resolution.Path != rollout {
+		manager.Close()
+		t.Fatalf("resolve restart rollout = %#v, want %q", resolution, rollout)
 	}
 	// Production runners own this socket. The in-memory launcher does not
 	// create filesystem artifacts, so provide the discovery signal explicitly.
