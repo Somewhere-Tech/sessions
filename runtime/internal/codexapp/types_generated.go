@@ -74,6 +74,20 @@ type TurnStartResponse struct {
 	Turn Turn `json:"turn"`
 }
 
+// TurnSteerParams adds user input to the currently active turn. Codex applies
+// this input at the next safe tool-call boundary instead of starting a hidden
+// client-side prompt queue.
+type TurnSteerParams struct {
+	ThreadID            string      `json:"threadId"`
+	ExpectedTurnID      string      `json:"expectedTurnId"`
+	Input               []UserInput `json:"input"`
+	ClientUserMessageID string      `json:"clientUserMessageId,omitempty"`
+}
+
+type TurnSteerResponse struct {
+	TurnID string `json:"turnId"`
+}
+
 type Turn struct {
 	ID     string       `json:"id"`
 	Items  []ThreadItem `json:"items"`

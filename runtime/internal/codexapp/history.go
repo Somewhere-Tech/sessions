@@ -22,6 +22,25 @@ func UserHistoryEvent(conversationID, text string, at time.Time) (json.RawMessag
 	})
 }
 
+// SteeringHistoryEvent records provider-accepted input for an active Codex
+// turn. queued is intentionally explicit so every client can explain that the
+// message will be applied after Codex's next tool call. A turn-completed event
+// later resolves this into ordinary authored history in the UI.
+func SteeringHistoryEvent(conversationID, turnID, text string, at time.Time) (json.RawMessage, error) {
+	return marshalHistory(map[string]any{
+		"type":           "user",
+		"subtype":        "user_steer",
+		"source":         HistorySource,
+		"timestamp":      historyTimestamp(at),
+		"conversationId": conversationID,
+		"turnId":         turnID,
+		"queued":         true,
+		"message": map[string]any{
+			"role": "user", "content": text,
+		},
+	})
+}
+
 // ImportedHistoryEvent mirrors one authored source message into Sessions'
 // normalized destination history after app-server accepts the same message.
 // The source marker lets the UI explain that these turns predate this runtime.
@@ -48,6 +67,16 @@ func InputRejectedEvent(conversationID, message string, at time.Time) (json.RawM
 		"type": "system", "subtype": "input_rejected", "source": HistorySource,
 		"timestamp": historyTimestamp(at), "conversationId": conversationID,
 		"error": message,
+	})
+}
+
+// SteeringRejectedEvent retains the exact input Codex refused so a different
+// client can restore it even when the originating composer is gone.
+func SteeringRejectedEvent(conversationID, text, message string, at time.Time) (json.RawMessage, error) {
+	return marshalHistory(map[string]any{
+		"type": "system", "subtype": "input_rejected", "source": HistorySource,
+		"timestamp": historyTimestamp(at), "conversationId": conversationID,
+		"input": text, "error": message,
 	})
 }
 

@@ -97,7 +97,10 @@ localStorage.setItem('sessions:active-server','fixture');
   // Type it and press Search, the way a person does.
   const search = async (text) => {
     const input = await page.$('#surface-search .search-query-row input');
-    await input.click({ clickCount: 3 });
+    await input.evaluate((element) => {
+      element.focus();
+      element.select();
+    });
     await page.keyboard.type(text);
     await page.click('#surface-search .search-ai-submit');
     // The view goes busy synchronously on submit and leaves busy in the same

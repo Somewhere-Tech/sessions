@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer';
 import { closeBrowser } from './lib/smoke.mjs';
+import { readStylesheetTree } from './lib/source-styles.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const [app, palette, picker, launcher, sessionView, preference, sidebar, navigator, fleetSessions, styles] = await Promise.all([
@@ -14,7 +15,7 @@ const [app, palette, picker, launcher, sessionView, preference, sidebar, navigat
   source('src/components/ProductSidebar.tsx'),
   source('src/components/SessionNavigator.tsx'),
   source('src/hooks/useFleetSessions.ts'),
-  source('src/styles/globals.css')
+  readStylesheetTree(new URL('../src/styles/globals.css', import.meta.url))
 ]);
 
 assert.match(app, /event\.key\.toLowerCase\(\) === 'k'/);
@@ -24,7 +25,7 @@ assert.match(app, /<CommandPalette/);
 assert.match(app, /<SessionsWorkspaceSkeleton/);
 assert.match(palette, /role="dialog"/);
 assert.match(palette, /aria-modal="true"/);
-assert.match(palette, /sessionLabel\(session\)/);
+assert.match(palette, /resolvedSessionLabel\(session\)/);
 assert.match(picker, /Search \$\{providerName\} models/);
 assert.match(picker, /claude-fable-5/);
 assert.match(picker, /Use exact model ID/);

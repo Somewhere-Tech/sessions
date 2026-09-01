@@ -32,7 +32,11 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
     read('frontend/src/components/FleetView.tsx'),
     read('frontend/src/lib/servers.ts'),
     read('frontend/scripts/run-smoke.mjs'),
-    read('runtime/internal/api/server.go'),
+    Promise.all([
+      read('runtime/internal/api/server.go'),
+      read('runtime/internal/api/server_routes.go'),
+      read('runtime/internal/api/server_helpers.go')
+    ]).then((parts) => parts.join('\n')),
     read('.github/workflows/windows-preview.yml'),
     read('frontend/package.json'),
     read('scripts/build-app-runtime.ps1'),
@@ -78,15 +82,13 @@ test('Windows uses the signed app updater and appears as a versioned Fleet host'
   assert.match(health, /goruntime\.GOOS/);
   assert.match(health, /goruntime\.GOARCH/);
   assert.match(fleet, /reported\.includes\('windows'\)/);
-  // The local machine used to be labelled per platform, so Windows needed its
-  // own branch to avoid reading "This Mac". Naming is platform-neutral now --
-  // servers.ts calls it "This machine" -- which satisfies the same concern
-  // structurally, so the assertion pins that rather than the removed branch:
-  // no Mac-specific label may reach the fleet naming path on any host.
+  // The compact local annotation is platform-specific. Pin both branches so a
+  // Windows client can never inherit the Mac label while remote machines keep
+  // their reported or user-assigned name.
   assert.match(servers, /'This machine'/,
     'the local machine needs a platform-neutral default name');
-  assert.doesNotMatch(servers, /'This Mac'|'This PC'/,
-    'fleet naming must not hard-code a platform label; it runs on Windows too');
+  assert.match(servers, /'This Mac'/);
+  assert.match(servers, /'This PC'/);
   assert.match(fleet, /machineVersionState/);
   assert.match(fleet, /Sessions \$\{version\}/);
 

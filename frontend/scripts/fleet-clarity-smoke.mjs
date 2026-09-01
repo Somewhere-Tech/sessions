@@ -2,13 +2,15 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer';
 import { closeBrowser } from './lib/smoke.mjs';
+import { readStylesheetTree } from './lib/source-styles.mjs';
+import { readSessionsdSource } from './lib/source-api.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const [fleet, servers, api, styles, status] = await Promise.all([
   source('src/components/FleetView.tsx'),
   source('src/lib/servers.ts'),
-  source('src/api/sessionsd.ts'),
-  source('src/styles/globals.css'),
+  readSessionsdSource(),
+  readStylesheetTree(new URL('../src/styles/globals.css', import.meta.url)),
   source('src/lib/sessionStatus.ts')
 ]);
 
@@ -31,10 +33,10 @@ assert.match(fleet, /Sessions \$\{version\}/);
 assert.match(fleet, /Name this machine/);
 assert.match(fleet, /updateServer\(server\.id, \{ name, customName: name \}\)/);
 assert.match(fleet, /serverDisplayName\(server, true\)/);
-assert.match(servers, /custom \|\| reported \|\|/,
+assert.match(servers, /if \(custom\) return custom;/,
   'a custom Fleet label must override a renamed system hostname');
-assert.match(servers, /`\$\{base\} \(this machine\)`/,
-  'the local annotation must follow the actual machine name');
+assert.match(servers, /return 'This Mac';/,
+  'the local machine needs a short human label instead of its system hostname');
 assert.match(api, /\/api\/machine/,
   'clients must refresh the authenticated stable machine identity');
 assert.match(styles, /grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(420px,\s*100%\),\s*1fr\)\)/);

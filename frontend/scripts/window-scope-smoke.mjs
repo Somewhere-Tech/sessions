@@ -9,7 +9,10 @@ import { smoke, stableDistSnapshot, closeBrowser, closeServer } from './lib/smok
 
 const t = smoke('window-scope');
 const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const appSource = fs.readFileSync(path.join(frontendDir, 'src', 'App.tsx'), 'utf8');
+const appSource = [
+  fs.readFileSync(path.join(frontendDir, 'src', 'App.tsx'), 'utf8'),
+  fs.readFileSync(path.join(frontendDir, 'src', 'AppAuxiliaryViews.tsx'), 'utf8'),
+].join('\n');
 // The suites below serve the real build. They serve a private snapshot of it
 // rather than frontend/dist itself: `vite build` empties dist before rewriting
 // it, so any concurrent build on the machine used to yank the app out from

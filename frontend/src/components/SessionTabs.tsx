@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SessionInfo } from '../types';
 import { ParserIcon } from './ParserIcon';
-import { getTabLabel, setTabLabel, sessionLabel } from '../lib/tabLabels';
+import { resolvedSessionLabel, setTabLabel } from '../lib/tabLabels';
 import { useSessions } from '../store/sessions';
 
 export type TabStatus = 'working' | 'finished' | 'idle';
@@ -28,7 +28,7 @@ interface Props {
 // name. Delegates the base resolution to lib/tabLabels.sessionLabel so
 // all callers use one authoritative chain.
 export function shortLabel(s: SessionInfo): string {
-  return getTabLabel(s.id) ?? sessionLabel(s);
+  return resolvedSessionLabel(s);
 }
 
 export function SessionTabs({

@@ -46,6 +46,16 @@ func TestNormalizeCodexRolloutLine(t *testing.T) {
 			wantEvents: nil,
 		},
 		{
+			name:       "repository instructions filtered",
+			raw:        `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions\n\n<INSTRUCTIONS>internal</INSTRUCTIONS>"}]}}`,
+			wantEvents: nil,
+		},
+		{
+			name:       "plugin catalog filtered",
+			raw:        `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<recommended_plugins>internal catalog</recommended_plugins>"},{"type":"input_text","text":"# AGENTS.md instructions"}]}}`,
+			wantEvents: nil,
+		},
+		{
 			name:       "developer message filtered",
 			raw:        `{"type":"response_item","payload":{"type":"message","role":"developer","content":"hidden"}}`,
 			wantEvents: nil,

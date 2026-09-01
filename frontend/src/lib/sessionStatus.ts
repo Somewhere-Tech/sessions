@@ -116,8 +116,8 @@ export interface SessionStatus {
 }
 
 const STATE_LABELS: Record<SessionStatusState, string> = {
-  reconnecting: 'Reconnecting',
-  unavailable: 'Connection lost',
+  reconnecting: 'Connecting…',
+  unavailable: 'Not connected',
   failed: 'Failed',
   ended: 'Ended',
   'needs-you': 'Needs you',

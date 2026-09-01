@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import headless from '@xterm/headless';
 import serializePackage from '@xterm/addon-serialize';
+import { readStylesheetTree } from './lib/source-styles.mjs';
 
 const { Terminal } = headless;
 const { SerializeAddon } = serializePackage;
@@ -70,7 +71,7 @@ try {
   assert.match(sessionView, /sendInput\('\\x1b\\x1b'\).*↶ Earlier/,
     'mobile terminal controls must expose Claude\'s native Esc Esc rewind');
 
-  const css = await readFile(new URL('../src/styles/globals.css', import.meta.url), 'utf8');
+  const css = await readStylesheetTree(new URL('../src/styles/globals.css', import.meta.url));
   assert.match(css, /html,\s*body,\s*#root\s*\{[^}]*overflow:\s*hidden/s);
   assert.match(css, /\.operations-content\s*\{[^}]*overflow:\s*hidden/s);
   assert.match(css, /\.remote-scroll\s*\{[^}]*overscroll-behavior:\s*contain/s);

@@ -238,14 +238,43 @@ try {
   assert.equal(rejected.length, 1);
   assert.match(rejected[0].errorResponse, /not sent or queued/);
 
-  // Codex refuses a message typed mid-turn instead of queuing it. That
-  // rejection is routed through codexEventsToMessages, which is a completely
-  // separate walk from the Claude one above, so it needs its own coverage:
-  // without an explicit branch the event matched no subtype and vanished, and
-  // the user's message was lost with nothing on screen to say so.
-  const codexRejectionText =
-    'Codex is still working. This message was not sent or queued; send it again after the turn finishes.';
+  // Codex accepts input for an active turn through turn/steer. Sessions keeps
+  // that provider-native state visible until the owning turn completes.
   const codexBase = { source: 'codex-app-server', conversationId: 'thread-2' };
+  const codexQueued = eventsToMessages([
+    { ...codexBase, type: 'codex', subtype: 'turn_started', turnId: 'turn-1', timestamp: '2026-07-20T10:00:00Z' },
+    {
+      ...codexBase,
+      type: 'user',
+      subtype: 'user_steer',
+      turnId: 'turn-1',
+      queued: true,
+      timestamp: '2026-07-20T10:00:02Z',
+      message: { role: 'user', content: 'Also run the integration tests.' }
+    }
+  ]);
+  assert.equal(codexQueued.filter((message) => message.queued).length, 1);
+  assert.equal(codexQueued.find((message) => message.role === 'user')?.content, 'Also run the integration tests.');
+
+  const codexCompletedQueue = eventsToMessages([
+    { ...codexBase, type: 'codex', subtype: 'turn_started', turnId: 'turn-1', timestamp: '2026-07-20T10:00:00Z' },
+    {
+      ...codexBase,
+      type: 'user',
+      subtype: 'user_steer',
+      turnId: 'turn-1',
+      queued: true,
+      timestamp: '2026-07-20T10:00:02Z',
+      message: { role: 'user', content: 'Also run the integration tests.' }
+    },
+    { ...codexBase, type: 'codex', subtype: 'turn_completed', turnId: 'turn-1', status: 'completed', timestamp: '2026-07-20T10:00:03Z' }
+  ]);
+  assert.equal(codexCompletedQueue.filter((message) => message.queued).length, 0);
+
+  // A provider refusal is still explicit. It remains separate from the turn
+  // in flight rather than vanishing or being mistaken for assistant prose.
+  const codexRejectionText =
+    'Codex did not accept the message for its active turn. The message was not queued.';
   const codexRejected = eventsToMessages([
     { ...codexBase, type: 'codex', subtype: 'turn_started', turnId: 'turn-1', timestamp: '2026-07-20T10:00:00Z' },
     {
@@ -277,6 +306,24 @@ try {
   assert.ok(
     codexRejected[0].createdAt <= codexRejections[0].createdAt,
     'the rejection is ordered after the turn it interrupted'
+  );
+
+  const codexRecoverableRejection = eventsToMessages([
+    {
+      ...codexBase,
+      type: 'system',
+      subtype: 'input_rejected',
+      timestamp: '2026-07-20T10:00:02Z',
+      input: 'Do not lose this follow-up.',
+      error: codexRejectionText
+    }
+  ]);
+  assert.deepEqual(
+    codexRecoverableRejection.map((message) => ({
+      role: message.role, content: message.content, status: message.status
+    })),
+    [{ role: 'user', content: 'Do not lose this follow-up.', status: 'failed' }],
+    'a refused steering message must remain recoverable on every client'
   );
 
   // Same event with no turn ever started: previously ensureTurn returned null

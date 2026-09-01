@@ -45,6 +45,7 @@ const GATE = [
   'lifecycle-clarity',
   'workspace-ux',
   'session-status',
+  'title-clarity',
   'surface-truth',
   'search-rollup',
   'conversation-browser',

@@ -183,11 +183,20 @@ export function ProductSidebar({ active, theme, onNavigate, onNewSession, onOpen
         ) : null}
         {providerUpdate ? (
           <div className="product-update-card is-provider">
-            <div><span>{providerUpdate.name} {providerUpdate.latestVersion}</span><strong>Agent update available on {providerTarget}</strong></div>
-            <button type="button" disabled={providerBusy !== null} onClick={() => void installProviderUpdate(providerUpdate)}>
-              {providerBusy === providerUpdate.id ? `Updating on ${providerTarget}…` : `Update ${providerUpdate.name} on ${providerTarget}`}
+            <div><span>{providerUpdate.name} {providerUpdate.latestVersion}</span><strong>Update available</strong></div>
+            <button
+              type="button"
+              aria-label={`Update ${providerUpdate.name} on ${providerTarget}`}
+              disabled={providerBusy !== null}
+              onClick={() => void installProviderUpdate(providerUpdate)}
+            >
+              {providerBusy === providerUpdate.id ? 'Installing…' : 'Update'}
             </button>
-            <small>This runs on {providerTarget}. Running agents continue; new sessions there use the update.</small>
+            <small>
+              {providerBusy === providerUpdate.id
+                ? `${providerTarget} · This can take a few minutes.`
+                : `${providerTarget} · Running work keeps going.`}
+            </small>
           </div>
         ) : null}
         {providerUpdateError ? <small className="product-update-error" role="alert">{providerUpdateError}</small> : null}

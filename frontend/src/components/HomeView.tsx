@@ -1,5 +1,5 @@
 import type { SessionInfo } from '../types';
-import { getTabLabel, sessionLabel } from '../lib/tabLabels';
+import { resolvedSessionLabel } from '../lib/tabLabels';
 import { classifySession, sessionNeedsYou } from '../lib/sessionStatus';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 
@@ -33,7 +33,7 @@ export function HomeView({ sessions, machine, onOpen, onNew, onNavigate }: Props
           {recent.map((session) => {
             const provider = normalizeProvider(session.tool);
             const status = classifySession(session);
-            return <button type="button" key={session.id} onClick={() => onOpen(session.id)} title={status.label}><span className={`home-session-dot ${status.className}`} /><span className="home-session-copy"><strong>{getTabLabel(session.id) ?? sessionLabel(session)}</strong><small>{session.lastSummary || session.idleDetail || session.description || session.cwd}</small></span>{provider ? <ProviderBadge provider={provider} compact /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}<span className="home-session-time">{new Date(session.lastDataAt || session.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span></button>;
+            return <button type="button" key={session.id} onClick={() => onOpen(session.id)} title={status.label}><span className={`home-session-dot ${status.className}`} /><span className="home-session-copy"><strong>{resolvedSessionLabel(session)}</strong><small>{session.lastSummary || session.idleDetail || session.description || session.cwd}</small></span>{provider ? <ProviderBadge provider={provider} compact /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}<span className="home-session-time">{new Date(session.lastDataAt || session.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span></button>;
           })}
           {recent.length === 0 ? <div className="home-empty">New sessions will appear here as an operational inbox.</div> : null}
         </div>

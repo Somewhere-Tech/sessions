@@ -8,7 +8,6 @@ import {
   searchServer,
   type HistoryTranscript,
   type ResumableSession,
-  type SearchMatch,
   type SearchSessionHits,
   type SmartSearchPlan
 } from '../api/sessionsd';
@@ -21,21 +20,19 @@ import {
   type SearchConversationGroup
 } from '../lib/searchConversations';
 import {
-  compactMachineName,
-  compactPath,
   isPromptHistoryOnly,
   managedSourceSessionID,
   plural,
-  relativeDate,
   type BrowseFilters,
   type ConversationRow,
   type ResumeTarget
 } from '../lib/conversationBrowser';
-import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
+import { serverDisplayName, useServers } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
 import { ConversationBrowser } from './ConversationBrowser';
 import { ProviderBadge, normalizeProvider, type Provider } from './ProviderBadge';
-import { ParserIcon } from './ParserIcon';
+import { ConversationReader, normalizeTranscriptIndexes } from './SearchConversationReader';
+import { SearchConversationCard, SearchRollupCard } from './SearchResultCards';
 import type { SessionInfo } from '../types';
 
 type SearchMode = 'ai' | 'ranked';
@@ -43,16 +40,13 @@ type Speaker = 'user' | '' | 'assistant' | 'tool';
 type Tool = '' | Provider;
 type SortMode = 'relevance' | 'timeline';
 type DateRange = 'all' | 'today' | '7d' | '30d';
-type ReaderMode = 'around' | 'after' | 'user' | 'full' | 'range';
-const READER_PAGE_SIZE = 500;
-
-type Result = FleetSearchResult;
+export type Result = FleetSearchResult;
 
 // The daemon's per-session rollup, tagged with the machine it came from. It
 // counts every hit in the index, not the page of messages that came back, so
 // it is the only thing on this screen that can answer "which session was that"
 // for a session whose messages never reached the page.
-interface RollupSession extends SearchSessionHits {
+export interface RollupSession extends SearchSessionHits {
   serverId: string;
   serverName: string;
 }
@@ -73,7 +67,7 @@ interface SearchMeta {
 // One session's hits, summed over every Sessions run that continued the same
 // conversation. Null when this daemon did not send a rollup at all — which is
 // different from a rollup that says zero.
-interface RollupSummary {
+export interface RollupSummary {
   hits: number;
   firstHitAt: string | null;
   lastHitAt: string | null;
@@ -84,7 +78,7 @@ type ResultRow =
   | { kind: 'group'; key: string; group: SearchConversationGroup; rollup: RollupSummary | null }
   | { kind: 'rollup'; key: string; entry: RollupSession };
 
-interface SelectedConversation {
+export interface SelectedConversation {
   token: number;
   key: string;
   serverId: string;
@@ -753,483 +747,6 @@ function FilterButton({ active, onClick, children }: { active: boolean; onClick:
   return <button type="button" className={active ? 'is-active' : ''} onClick={onClick}>{children}</button>;
 }
 
-function SearchConversationCard({
-  group,
-  rollup,
-  countsArePartial,
-  ranked,
-  onView,
-  onResume,
-  resumePending = false
-}: {
-  group: SearchConversationGroup;
-  rollup: RollupSummary | null;
-  countsArePartial: boolean;
-  ranked: boolean;
-  onView: (result: Result) => void;
-  onResume?: () => Promise<void>;
-  resumePending?: boolean;
-}): JSX.Element {
-  const result = group.primary;
-  const provider = normalizeProvider(result.tool);
-  const messageMatches = group.matches.filter((match) => !match.title_match);
-  const titleMatched = group.matches.some((match) => match.title_match) || rollup?.titleMatch === true;
-  const latest = group.matches.reduce<string | null>((current, match) => {
-    if (!match.timestamp) return current;
-    return !current || timestampValue(match.timestamp) > timestampValue(current) ? match.timestamp : current;
-  }, null);
-  const promptHistoryOnly = isPromptHistoryOnly(result.session_id);
-  // The rollup counts the session; the page only carries what fitted. Taking
-  // the larger of the two keeps the number a lower bound either way, and never
-  // prints a total smaller than the matches listed right underneath it.
-  const hits = rollup ? Math.max(rollup.hits, messageMatches.length) : null;
-  const span = formatHitSpan(rollup?.firstHitAt ?? null, rollup?.lastHitAt ?? null);
-  return (
-    <article className={`search-result-card${provider ? ` is-${provider}` : ''}`}>
-      <span className="search-result-provider" aria-label={provider ? `${provider} conversation` : 'Saved conversation'}>
-        <ParserIcon icon={provider === 'claude' ? '🟠' : provider === 'codex' ? '🟢' : '⬛'} size={24} />
-      </span>
-      <span className="search-result-body">
-        <button type="button" className="search-result-main" onClick={() => onView(result)}>
-          <span className="search-result-source">
-            <strong>{group.title}</strong>
-            {titleMatched ? <span className="search-title-match">Title match</span> : null}
-          </span>
-          <span className="search-conversation-match-count">
-            {promptHistoryOnly
-              ? `${plural(messageMatches.length, 'retained user prompt')} · full transcript not locally readable`
-              : hits !== null
-              ? `${countsArePartial ? 'at least ' : ''}${plural(hits, 'matching message')}${hits > messageMatches.length
-                ? ` · ${messageMatches.length > 0 ? `${messageMatches.length} shown here` : 'none shown here'}`
-                : ''}`
-              : messageMatches.length > 0
-              ? plural(messageMatches.length, 'matching message')
-              : 'Named conversation'}
-            {group.sourceSessionIds.length > 1 ? ` · continued across ${group.sourceSessionIds.length} Sessions runs` : ''}
-          </span>
-        </button>
-        <span className="search-conversation-matches">
-          {messageMatches.slice(0, 2).map((match) => (
-            <button
-              type="button"
-              className="search-conversation-match"
-              key={`${match.session_id}:${match.message_id || match.message_index}`}
-              onClick={() => onView(match)}
-            >
-              <span>{searchSpeakerLabel(match, provider)}</span>
-              <span className="search-snippet"><SearchSnippet value={match.snippet} /></span>
-            </button>
-          ))}
-          {messageMatches.length > 2 ? (
-            <span className="search-conversation-more">+ {messageMatches.length - 2} more matches</span>
-          ) : null}
-        </span>
-        <span className="search-result-footer">
-          <span className="search-result-location">
-            {provider ? <ProviderBadge provider={provider} compact /> : null}
-            <span>{compactMachineName(result.serverName || result.machine)}</span>
-            {result.cwd ? <code>{compactPath(result.cwd)}</code> : null}
-            {span
-              ? <time className="search-session-span" title={span.title}>{span.label}</time>
-              : latest ? <time>{relativeDate(latest)}</time> : null}
-            {ranked && !titleMatched ? <span>{rankedMatchLabel(result.score)}</span> : null}
-          </span>
-          <span className="search-result-actions">
-            <button type="button" onClick={() => onView(result)}>{promptHistoryOnly ? 'View retained prompts' : 'Open conversation'} <span aria-hidden>→</span></button>
-            {onResume ? (
-              <button type="button" className="is-resume" disabled={resumePending} onClick={() => { void onResume(); }}>
-                {resumePending ? 'Resuming…' : 'Resume conversation'}
-              </button>
-            ) : null}
-          </span>
-        </span>
-      </span>
-    </article>
-  );
-}
-
-// A session the rollup counted whose messages never reached the returned page.
-// Without this card the conversation is simply invisible — which is the exact
-// failure the rollup exists to end.
-function SearchRollupCard({
-  entry,
-  countsArePartial,
-  onView
-}: {
-  entry: RollupSession;
-  countsArePartial: boolean;
-  onView: () => void;
-}): JSX.Element {
-  const provider = normalizeProvider(entry.tool ?? '');
-  const span = formatHitSpan(entry.first_hit_at ?? null, entry.last_hit_at ?? null);
-  const snippets = (entry.snippets ?? []).filter((snippet) => snippet.trim()).slice(0, 2);
-  return (
-    <article className={`search-result-card is-rollup-only${provider ? ` is-${provider}` : ''}`}>
-      <span className="search-result-provider" aria-label={provider ? `${provider} conversation` : 'Saved conversation'}>
-        <ParserIcon icon={provider === 'claude' ? '🟠' : provider === 'codex' ? '🟢' : '⬛'} size={24} />
-      </span>
-      <span className="search-result-body">
-        <button type="button" className="search-result-main" onClick={onView}>
-          <span className="search-result-source">
-            <strong>{entry.name.trim() || 'Saved conversation'}</strong>
-            {entry.title_match ? <span className="search-title-match">Title match</span> : null}
-          </span>
-          <span className="search-conversation-match-count">
-            {`${countsArePartial ? 'at least ' : ''}${plural(entry.hits, 'matching message')} · none shown here`}
-          </span>
-        </button>
-        {snippets.length > 0 ? (
-          <span className="search-conversation-matches">
-            {snippets.map((snippet, index) => (
-              <span className="search-conversation-match is-static" key={index}>
-                <span>In this chat</span>
-                <span className="search-snippet"><SearchSnippet value={snippet} /></span>
-              </span>
-            ))}
-          </span>
-        ) : null}
-        <span className="search-result-footer">
-          <span className="search-result-location">
-            {provider ? <ProviderBadge provider={provider} compact /> : null}
-            <span>{compactMachineName(entry.serverName || entry.machine || '')}</span>
-            {entry.cwd ? <code>{compactPath(entry.cwd)}</code> : null}
-            {span ? <time className="search-session-span" title={span.title}>{span.label}</time> : null}
-          </span>
-          <span className="search-result-actions">
-            <button type="button" onClick={onView}>Open conversation <span aria-hidden>→</span></button>
-          </span>
-        </span>
-      </span>
-    </article>
-  );
-}
-
-function searchSpeakerLabel(result: Result, provider: Provider | null): string {
-  if (result.role === 'user') return 'You said';
-  if (result.role === 'tool') return operationLabel(result.kind);
-  if (provider === 'claude') return 'Claude said';
-  if (provider === 'codex') return 'Codex said';
-  return 'Agent said';
-}
-
-function SearchSnippet({ value }: { value: string }): JSX.Element {
-  const parts = value.split(/(\[\[|\]\])/);
-  let highlighted = false;
-  return (
-    <>
-      {parts.map((part, index) => {
-        if (part === '[[') {
-          highlighted = true;
-          return null;
-        }
-        if (part === ']]') {
-          highlighted = false;
-          return null;
-        }
-        return highlighted ? <mark key={index}>{part}</mark> : <span key={index}>{part}</span>;
-      })}
-    </>
-  );
-}
-
-function operationLabel(kind?: SearchMatch['kind']): string {
-  if (kind === 'delegation') return 'Delegation';
-  if (kind === 'handoff') return 'Handoff';
-  if (kind === 'automation') return 'Automation';
-  if (kind === 'status') return 'Status';
-  return 'Operation';
-}
-
-function ConversationReader({
-  selected,
-  server,
-  onBack,
-  onResumeConversation,
-  continuing,
-  continuationError
-}: {
-  selected: SelectedConversation;
-  server: ServerConfig | undefined;
-  onBack: () => void;
-  onResumeConversation: (
-    serverId: string,
-    providerSessionId: string,
-    sourceSessionId?: string,
-    historyId?: string
-  ) => Promise<void>;
-  continuing: boolean;
-  continuationError: string | null;
-}): JSX.Element {
-  const [readerMode, setReaderMode] = useState<ReaderMode>('around');
-  const [rangeStart, setRangeStart] = useState<number | null>(null);
-  const [rangeEnd, setRangeEnd] = useState<number | null>(null);
-  const [readerTranscript, setReaderTranscript] = useState(selected.transcript);
-  const [readerLoading, setReaderLoading] = useState(selected.loading);
-  const [readerError, setReaderError] = useState(selected.error);
-  const [readerNextIndex, setReaderNextIndex] = useState(selected.transcript?.next_index ?? 0);
-  const [readerHasMore, setReaderHasMore] = useState(false);
-  const [readerLimit, setReaderLimit] = useState<number | null>(null);
-  const anchorRef = useRef<HTMLElement | null>(null);
-  const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
-  const readerAbort = useRef<AbortController | null>(null);
-  const provider = normalizeProvider(readerTranscript?.session.tool ?? selected.tool);
-  // A rollup-opened session has no anchor. The reader still needs a number to
-  // page from, but nothing may be labelled "Match" on the strength of it.
-  const anchored = selected.anchor !== null;
-  const anchor = selected.anchor ?? 0;
-
-  const visibleMessages = readerTranscript?.messages ?? [];
-
-  useEffect(() => {
-    setReaderTranscript(selected.transcript);
-    setReaderLoading(selected.loading);
-    setReaderError(selected.error);
-    setReaderNextIndex(selected.transcript?.next_index ?? 0);
-    setReaderHasMore(false);
-  }, [selected.transcript, selected.loading, selected.error]);
-
-  useEffect(() => () => readerAbort.current?.abort(), []);
-
-  useEffect(() => {
-    if (!readerTranscript) return;
-    window.requestAnimationFrame(() => anchorRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
-  }, [readerTranscript, readerMode]);
-
-  const loadReaderMode = (next: ReaderMode): void => {
-    if (!server) return;
-    if (next === 'range' && (rangeStart === null || rangeEnd === null)) return;
-    setReaderMode(next);
-    readerAbort.current?.abort();
-    const controller = new AbortController();
-    readerAbort.current = controller;
-    setReaderLoading(true);
-    setReaderError(null);
-    let window: { start?: number; end?: number; role?: 'user' } | undefined;
-    let limit: number | null = null;
-    if (next === 'around') window = { start: Math.max(0, anchor - 2), end: anchor + 11 };
-    if (next === 'after') window = { start: anchor, end: anchor + READER_PAGE_SIZE };
-    if (next === 'user') window = { start: 0, end: READER_PAGE_SIZE, role: 'user' };
-    if (next === 'full') window = undefined;
-    if (next === 'range') {
-      limit = Math.max(rangeStart as number, rangeEnd as number) + 1;
-      const start = Math.min(rangeStart as number, rangeEnd as number);
-      window = {
-        start,
-        end: Math.min(limit, start + READER_PAGE_SIZE)
-      };
-    }
-    setReaderLimit(limit);
-    void fetchServerHistoryTranscript(server, selected.sessionId, controller.signal, window)
-      .then((transcript) => {
-        if (!controller.signal.aborted) {
-          const normalized = normalizeTranscriptIndexes(transcript);
-          setReaderTranscript(normalized);
-          const nextIndex = normalized.next_index ?? normalized.messages.length;
-          setReaderNextIndex(nextIndex);
-          setReaderHasMore(
-            next !== 'around'
-            && next !== 'full'
-            && Boolean(normalized.has_more)
-            && (limit === null || nextIndex < limit)
-          );
-          setReaderLoading(false);
-        }
-      })
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted) {
-          setReaderError(reason instanceof Error ? reason.message : 'Could not load the transcript view');
-          setReaderLoading(false);
-        }
-      });
-  };
-
-  const loadMore = (): void => {
-    if (!server || !readerHasMore || readerLoading) return;
-    const end = Math.min(readerNextIndex + READER_PAGE_SIZE, readerLimit ?? Number.MAX_SAFE_INTEGER);
-    const controller = new AbortController();
-    readerAbort.current?.abort();
-    readerAbort.current = controller;
-    setReaderLoading(true);
-    setReaderError(null);
-    void fetchServerHistoryTranscript(server, selected.sessionId, controller.signal, {
-      start: readerNextIndex,
-      end,
-      role: readerMode === 'user' ? 'user' : undefined
-    }).then((transcript) => {
-      if (controller.signal.aborted) return;
-      const normalized = normalizeTranscriptIndexes(transcript);
-      setReaderTranscript((current) => current ? {
-        ...normalized,
-        messages: [...current.messages, ...normalized.messages]
-      } : normalized);
-      const nextIndex = normalized.next_index ?? end;
-      setReaderNextIndex(nextIndex);
-      setReaderHasMore(Boolean(normalized.has_more) && (readerLimit === null || nextIndex < readerLimit));
-      setReaderLoading(false);
-    }).catch((reason: unknown) => {
-      if (!controller.signal.aborted) {
-        setReaderError(reason instanceof Error ? reason.message : 'Could not load more of the transcript');
-        setReaderLoading(false);
-      }
-    });
-  };
-
-  const chooseRangeStart = (index: number): void => {
-    setRangeStart(index);
-  };
-  const chooseRangeEnd = (index: number): void => {
-    setRangeEnd(index);
-  };
-  const jumpToLatest = (): void => {
-    const scroll = transcriptScrollRef.current;
-    if (!scroll) return;
-    scroll.scrollTo({ top: scroll.scrollHeight, behavior: 'smooth' });
-  };
-
-  const providerSessionID = readerTranscript?.session.provider_session_id
-    ?? selected.providerSessionId;
-  const historyID = readerTranscript?.session.id ?? selected.sessionId;
-  const promptHistoryOnly = isPromptHistoryOnly(selected.sessionId);
-  const canResume = Boolean(historyID && provider);
-
-  return (
-    <div className="search-view search-conversation-view">
-      <div className="search-shell search-reader-shell">
-        <div className="search-reader-chrome">
-          <button type="button" className="search-back" onClick={onBack}>← Back to results</button>
-          <header className="search-conversation-heading">
-            <div>
-              <span className="search-conversation-kicker">
-                {promptHistoryOnly ? 'Claude prompt history only' : 'Read-only transcript'}{selected.matchCount === null ? '' : ` · ${plural(selected.matchCount, 'message match', 'message matches')}`} · {anchored ? `opened at message ${anchor + 1}` : 'opened from the start'}
-              </span>
-              <h1>{readerTranscript?.session.name || selected.title || selected.sessionId.slice(0, 8)}</h1>
-              <p>
-                {provider ? <ProviderBadge provider={provider} /> : null}
-                <span>{compactMachineName(server?.name ?? selected.serverName)}</span>
-                {readerTranscript?.session.cwd ? <code>{compactPath(readerTranscript.session.cwd)}</code> : null}
-              </p>
-            </div>
-            <div className="search-conversation-actions">
-              <span>{promptHistoryOnly
-                ? 'Sessions found Claude’s prompt index, but not a full local transcript. Resume restores this exact conversation in its recorded workspace.'
-                : 'Viewing is read-only. Resume opens this exact conversation in a new runtime.'}</span>
-              {canResume ? (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={continuing}
-                  onClick={() => { void onResumeConversation(
-                    selected.serverId,
-                    providerSessionID || historyID,
-                    managedSourceSessionID(selected.sessionId),
-                    !providerSessionID || promptHistoryOnly ? historyID : undefined
-                  ); }}
-                >
-                  {continuing ? 'Resuming…' : 'Resume conversation'}
-                </button>
-              ) : null}
-            </div>
-          </header>
-
-          <div className="search-reader-toolbar">
-            <div className="usage-segmented" role="tablist" aria-label="Transcript view">
-              <ReaderButton active={readerMode === 'around'} onClick={() => loadReaderMode('around')}>Around match</ReaderButton>
-              <ReaderButton active={readerMode === 'after'} onClick={() => loadReaderMode('after')}>Everything after</ReaderButton>
-              <ReaderButton active={readerMode === 'user'} onClick={() => loadReaderMode('user')}>What you said</ReaderButton>
-              <ReaderButton active={readerMode === 'full'} onClick={() => loadReaderMode('full')}>Full transcript</ReaderButton>
-              <ReaderButton active={readerMode === 'range'} disabled={rangeStart === null || rangeEnd === null} onClick={() => loadReaderMode('range')}>
-                Selected range
-              </ReaderButton>
-            </div>
-            <div className="search-reader-position">
-              <span>
-                {readerMode === 'range' || rangeStart !== null || rangeEnd !== null
-                  ? `${rangeStart === null ? 'Choose a start' : `Start ${rangeStart + 1}`} · ${rangeEnd === null ? 'choose an end' : `End ${rangeEnd + 1}`}`
-                  : `${visibleMessages.length}${readerTranscript?.session.message_count ? ` of ${readerTranscript.session.message_count}` : ''} messages`}
-              </span>
-              {readerMode === 'full' && visibleMessages.length > 0 ? (
-                <button type="button" onClick={jumpToLatest}>Jump to latest ↓</button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-
-        {continuationError ? <div className="search-errors">{continuationError}</div> : null}
-        {readerError ? <div className="search-errors">{readerError}</div> : null}
-        {readerLoading ? <div className="usage-empty">Loading this transcript view…</div> : null}
-        {readerTranscript && !readerLoading ? (
-          <div className="search-transcript" ref={transcriptScrollRef}>
-            {visibleMessages.map((message) => {
-              const isAnchor = anchored && message.index === anchor;
-              return (
-                <article
-                  ref={isAnchor ? (node) => { anchorRef.current = node; } : undefined}
-                  className={`search-transcript-message is-${message.role}${isAnchor ? ' is-match' : ''}`}
-                  key={message.index}
-                >
-                  <header>
-                    <span>
-                      {isAnchor ? <span className="search-match-marker">Match</span> : null}
-                      {message.role === 'user'
-                        ? <span className="search-role is-user">{message.author ? `${message.author.name} · via Sessions` : 'You said'}</span>
-                        : message.role === 'tool'
-                          ? <span className="search-role is-tool">{operationLabel(message.kind)}</span>
-                          : provider ? <ProviderBadge provider={provider} compact /> : <span className="search-role">Agent</span>}
-                      <span className="search-message-index">#{message.index + 1}</span>
-                    </span>
-                    <span>
-                      {message.role === 'user' ? (
-                        <>
-                          <button type="button" onClick={() => chooseRangeStart(message.index)}>Start range</button>
-                          <button type="button" onClick={() => chooseRangeEnd(message.index)}>End range</button>
-                        </>
-                      ) : null}
-                      <time>{message.timestamp ? relativeDate(message.timestamp) : ''}</time>
-                    </span>
-                  </header>
-                  <p>{message.text}</p>
-                </article>
-              );
-            })}
-            {visibleMessages.length === 0 ? <div className="usage-empty">No messages in this view.</div> : null}
-            {readerHasMore ? (
-              <button type="button" className="search-load-more" disabled={readerLoading} onClick={loadMore}>
-                {readerLoading ? 'Loading…' : `Load the next ${READER_PAGE_SIZE} message positions`}
-              </button>
-            ) : null}
-            <div className="search-transcript-latest" aria-hidden />
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function ReaderButton({
-  active,
-  disabled = false,
-  onClick,
-  children
-}: {
-  active: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}): JSX.Element {
-  return <button type="button" disabled={disabled} className={active ? 'is-active' : ''} onClick={onClick}>{children}</button>;
-}
-
-function normalizeTranscriptIndexes(transcript: HistoryTranscript): HistoryTranscript {
-  return {
-    ...transcript,
-    messages: transcript.messages.map((message, index) => ({
-      ...message,
-      index: Number.isFinite(message.index) ? message.index : index,
-      id: message.id || `legacy:${Number.isFinite(message.index) ? message.index : index}`
-    }))
-  };
-}
-
 function dateFilters(range: DateRange): { since?: string; until?: string } {
   if (range === 'all') return {};
   const now = new Date();
@@ -1256,16 +773,8 @@ function timestampValue(value: string | null): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function rankedMatchLabel(score: number): string {
-  if (score >= 0.85) return 'Best match';
-  if (score >= 0.5) return 'Strong match';
-  return 'Related';
-}
-
-// compactPath, compactMachineName, managedSourceSessionID, isPromptHistoryOnly,
-// plural and relativeDate now live in lib/conversationBrowser.ts: the browse
-// rows below the search box draw the same conversation row and must read a
-// path, a machine, a date and a resume target identically.
+// Shared browse helpers live in lib/conversationBrowser.ts so the rows below
+// the search box and the history browser resolve conversations identically.
 
 // Adds one conversation's rollup rows together. Several Sessions runs can
 // continue the same conversation, and the user asked about the conversation.
@@ -1330,35 +839,6 @@ function describeQueryRewrite(
 
 function normalizeQueryText(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
-}
-
-// How long the subject was live in a conversation. Both ends come from the
-// rollup, so this covers every hit and not only the ones on the page.
-function formatHitSpan(first: string | null, last: string | null): { label: string; title: string } | null {
-  const start = first && timestampValue(first) ? first : null;
-  const end = last && timestampValue(last) ? last : null;
-  if (!start && !end) return null;
-  const startDay = start ? calendarDay(start) : '';
-  const endDay = end ? calendarDay(end) : '';
-  if (!start || !end || startDay === endDay) {
-    const only = (end ?? start) as string;
-    return { label: relativeDate(only), title: `Matched here on ${relativeDate(only)}` };
-  }
-  return {
-    label: `${shortDate(start)} → ${shortDate(end)}`,
-    title: `Matches here run from ${relativeDate(start)} to ${relativeDate(end)}`
-  };
-}
-
-function calendarDay(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toDateString();
-}
-
-function shortDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function filterTitleSearchSessions(
@@ -1451,4 +931,3 @@ function filterTitleSearchResumable(
     return true;
   });
 }
-

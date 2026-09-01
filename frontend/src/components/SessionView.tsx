@@ -10,7 +10,7 @@ import { requestSnapshot } from '../lib/wsMux';
 import { SessionDetails } from './SessionDetails';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import { getActiveServer, serverDisplayName } from '../lib/servers';
-import { sessionLabel, useTabLabel } from '../lib/tabLabels';
+import { resolvedSessionLabel } from '../lib/tabLabels';
 import { SessionHistoryView } from './SessionHistoryView';
 import { classifySession } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
@@ -22,7 +22,7 @@ import { ConversationForkButton } from './ConversationForkButton';
 import { agentLedDescendants } from '../lib/workingSet';
 import { SubagentsPanel } from './SubagentsPanel';
 
-import type { ActiveStatus } from '../App';
+import type { ActiveStatus } from '../lib/activeStatus';
 
 interface Props {
   sessionId: string;
@@ -90,7 +90,6 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   const endSession = useSessions((s) => s.kill);
   const updateName = useSessions((s) => s.updateName);
   const updateModel = useSessions((s) => s.updateModel);
-  const customLabel = useTabLabel(sessionId, session?.cwd);
   const subagents = useMemo(
     () => session ? agentLedDescendants(session.id, allSessions) : [],
     [allSessions, session]
@@ -463,9 +462,9 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
       <header className="session-active-header">
         {onBack ? <button type="button" className="mobile-session-back" onClick={onBack} aria-label="Back to sessions">‹</button> : null}
         <div className="session-active-copy">
-          {parent ? <span className="session-parent-breadcrumb">{sessionLabel(parent)} <span>/</span> {session?.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}</span> : null}
+          {parent ? <span className="session-parent-breadcrumb">{resolvedSessionLabel(parent)} <span>/</span> {session?.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}</span> : null}
           <div className="session-active-title-row">
-            <h1>{customLabel ?? (session ? sessionLabel(session) : 'Session')}</h1>
+            <h1>{session ? resolvedSessionLabel(session) : 'Session'}</h1>
             <span className={`session-live-pill${statusTone}`}>{statusLabel}</span>
             {session ? (
               <span className="session-runtime-anchor">
@@ -533,7 +532,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               <span aria-hidden>›</span>
             </button>
           ) : null}
-          {session ? <SessionPopOutButton sessionId={session.id} label={customLabel ?? sessionLabel(session)} /> : null}
+          {session ? <SessionPopOutButton sessionId={session.id} label={resolvedSessionLabel(session)} /> : null}
           {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(sessionId)} title="Close this tab. The agent keeps running and remains in Live.">Close tab</button> : null}
         </div>
       </header>

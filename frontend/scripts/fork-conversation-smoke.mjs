@@ -1,7 +1,8 @@
 import fs from 'node:fs';
+import { readSessionsdSourceSync } from './lib/source-api.mjs';
 
 const navigator = fs.readFileSync(new URL('../src/components/SessionNavigator.tsx', import.meta.url), 'utf8');
-const api = fs.readFileSync(new URL('../src/api/sessionsd.ts', import.meta.url), 'utf8');
+const api = readSessionsdSourceSync();
 const history = fs.readFileSync(new URL('../src/components/SessionHistoryView.tsx', import.meta.url), 'utf8');
 const conversation = fs.readFileSync(new URL('../src/components/RemoteView.tsx', import.meta.url), 'utf8');
 const view = fs.readFileSync(new URL('../src/components/SessionView.tsx', import.meta.url), 'utf8');

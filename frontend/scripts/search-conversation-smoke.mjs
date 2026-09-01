@@ -6,14 +6,19 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
 import { closeBrowser } from './lib/smoke.mjs';
+import { readStylesheetTree } from './lib/source-styles.mjs';
+import { readSessionsdSource } from './lib/source-api.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-const [searchView, searchAPI, app, styles] = await Promise.all([
+const [searchViewRoot, searchReader, searchCards, searchAPI, app, styles] = await Promise.all([
   source('src/components/SearchView.tsx'),
-  source('src/api/sessionsd.ts'),
+  source('src/components/SearchConversationReader.tsx'),
+  source('src/components/SearchResultCards.tsx'),
+  readSessionsdSource(),
   source('src/App.tsx'),
-  source('src/styles/globals.css')
+  readStylesheetTree(new URL('../src/styles/globals.css', import.meta.url))
 ]);
+const searchView = [searchViewRoot, searchReader, searchCards].join('\n');
 
 assert.match(searchView, /groupSearchResults\(orderedResults\)/);
 assert.match(searchView, />What you said<\/FilterButton>/);

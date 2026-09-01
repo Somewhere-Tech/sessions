@@ -42,7 +42,8 @@ describe('capability: update an agent tool on a paired machine', () => {
     const update = await screen.findByRole('button', {
       name: 'Update Codex on Studio Mini'
     }, { timeout: 3_000 });
-    expect(screen.getByText('Agent update available on Studio Mini')).toBeInTheDocument();
+    expect(screen.getByText('Update available')).toBeInTheDocument();
+    expect(screen.getByText('Studio Mini · Running work keeps going.')).toBeInTheDocument();
     await user.click(update);
 
     await waitFor(() => {

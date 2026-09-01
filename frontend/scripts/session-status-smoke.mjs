@@ -208,16 +208,16 @@ try {
     provenanceStatus: 'lost'
   };
   assert.equal(classifySession(reconnecting).state, 'reconnecting');
-  assert.equal(classifySession(reconnecting).label, 'Reconnecting');
+  assert.equal(classifySession(reconnecting).label, 'Connecting…');
   assert.equal(sessionIsFinished(reconnecting), false);
   assert.equal(sessionNeedsYou(reconnecting), false);
 
   // A ledger-restored record with no process identity is not "reconnecting"
   // forever. Sessions did not observe an exit, so it also must not claim the
-  // runtime ended; "Connection lost" is the complete literal fact.
+  // runtime ended; "Not connected" is the complete literal fact.
   const unavailable = { ...reconnecting, id: 'runner-unavailable', pid: 0 };
   assert.equal(classifySession(unavailable).state, 'unavailable');
-  assert.equal(classifySession(unavailable).label, 'Connection lost');
+  assert.equal(classifySession(unavailable).label, 'Not connected');
   assert.equal(sessionIsFinished(unavailable), false);
 
   // Ordinary live states.

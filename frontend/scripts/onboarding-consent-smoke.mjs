@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readSessionsdSourceSync } from './lib/source-api.mjs';
 
 const source = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
 const app = source('src/App.tsx');
-const api = source('src/api/sessionsd.ts');
+const api = readSessionsdSourceSync();
 const onboarding = source('src/components/OnboardingDialog.tsx');
 const settings = source('src/components/SettingsView.tsx');
 const newSession = source('src/components/NewSessionDialog.tsx');

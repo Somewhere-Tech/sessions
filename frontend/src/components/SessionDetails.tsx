@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { SessionInfo } from '../types';
 import { getActiveServer, serverDisplayName } from '../lib/servers';
-import { getTabLabel, sessionLabel } from '../lib/tabLabels';
+import { resolvedSessionLabel } from '../lib/tabLabels';
 import { canContinueSession, classifySession, endedAtLabel, endedSummary, type SessionStatusState } from '../lib/sessionStatus';
 import { sessionModeName } from '../lib/sessionMode';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
@@ -11,8 +11,8 @@ import { PIN_UNAVAILABLE_WHEN_ENDED } from '../lib/workingSet';
 // Long-form expansions of the classifier's one-word state. Same ordering,
 // same meaning — this view has room for a sentence, not a different answer.
 const STATE_DETAIL: Record<SessionStatusState, string> = {
-  reconnecting: 'Sessions lost the runner connection and is recovering this session',
-  unavailable: 'Sessions lost this runner connection and has no live process to reconnect to; saved history remains available',
+  reconnecting: 'Sessions is reconnecting to this agent; its work keeps running',
+  unavailable: 'Sessions cannot currently reach this agent; its saved conversation remains available',
   failed: 'The runtime stopped unexpectedly; saved history is still available',
   ended: 'The runtime is no longer running',
   'needs-you': 'Waiting for your response',
@@ -31,6 +31,7 @@ interface Props {
 }
 
 export function SessionDetails({ session, allSessions, onEnd, onResume }: Props): JSX.Element {
+  const activeServer = getActiveServer();
   const [confirming, setConfirming] = useState(false);
   const [endReason, setEndReason] = useState('');
   // `onEnd` rejects when the daemon refuses. Swallowing it left the panel
@@ -130,7 +131,7 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
           {session.sourceRepo ? <Row label="Repository" value={session.sourceRepo}/> : null}
         </DetailsCard>
         <DetailsCard title="Runtime">
-          <Row label="Machine" value={serverDisplayName(getActiveServer(), true)}/>
+          <Row label="Machine" value={serverDisplayName(activeServer, true)}/>
           <Row label="Started" value={new Date(session.createdAt).toLocaleString()}/>
           {end ? (
             <>
@@ -143,7 +144,7 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
           <Row label="Recovery" value={session.provenanceStatus === 'lost' ? 'Runner connection lost' : 'History is tracked'}/>
         </DetailsCard>
         <DetailsCard title="Relationships">
-          <Row label="Parent" value={parent ? getTabLabel(parent.id) ?? sessionLabel(parent) : 'Top-level session'}/>
+          <Row label="Parent" value={parent ? resolvedSessionLabel(parent) : 'Top-level session'}/>
           <Row label="Children" value={`${children.filter((child) => !child.exited).length} running · ${children.filter((child) => child.exited).length} ended`}/>
           <Row label="Created by" value={session.creatorKind === 'session' ? 'Another session' : session.creatorKind === 'external' ? 'An outside agent or CLI' : 'You'}/>
           {session.resumedFrom ? <Row label="Continued from" value={`Session ${session.resumedFrom.slice(0, 8)}`} /> : null}
@@ -166,7 +167,7 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
       <details className="details-technical">
         <summary>Technical details</summary>
         <div className="details-grid">
-          <DetailsCard title="Runtime identifiers"><Row label="Session ID" value={session.id}/><Row label="Process ID" value={session.pid || 'Not running'}/><Row label="Runner" value={session.runnerVersion || 'Bundled runtime'}/><Row label="Terminal size" value={`${session.cols} × ${session.rows}`}/></DetailsCard>
+          <DetailsCard title="Runtime identifiers"><Row label="Session ID" value={session.id}/><Row label="System name" value={activeServer.systemName || activeServer.host}/><Row label="Process ID" value={session.pid || 'Not running'}/><Row label="Runner" value={session.runnerVersion || 'Bundled runtime'}/><Row label="Terminal size" value={`${session.cols} × ${session.rows}`}/></DetailsCard>
           <DetailsCard title="Launch configuration"><Row label="Command" value={[session.cmd, ...session.args].join(' ')}/><Row label="Config folder" value={value(session.configDir)}/><Row label="Idle action" value={value(session.onIdle)}/><Row label="Ledger" value={session.provenanceStatus || 'Verified'}/></DetailsCard>
         </div>
       </details>

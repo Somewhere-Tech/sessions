@@ -5,8 +5,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // On a fresh Android install over cellular, this is the difference
 // between "instant tap-to-content" and "wait for the terminal lib to
 // download even though you didn't open Terminal view."
-import { muxEndpointKey, snapshot as fetchServerSnapshot, fetchClaudeEvents } from '../api/sessionsd';
-import { attachSession, sendSessionInput, submitSessionMessage, type SessionChannel, type MuxStatus } from '../lib/wsMux';
+import { muxEndpointKey, snapshot as fetchServerSnapshot, fetchClaudeEvents, submitMessage as submitSessionMessage } from '../api/sessionsd';
+import { attachSession, sendSessionInput, type SessionChannel, type MuxStatus } from '../lib/wsMux';
 import { useServers } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
 import { terminalNeedsGpuRepair, terminalRenderer } from '../lib/terminalRenderer';
@@ -127,6 +127,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
   // The selector re-runs on every servers-store change and the hook only
   // re-renders when the resulting URL actually differs.
   const muxUrl = useServers(() => muxEndpointKey());
+  const activeServerId = useServers((state) => state.activeId);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -343,7 +344,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       sendConfirmedInputRef.current = (data: string): Promise<void> =>
         sendSessionInput(muxUrl, sessionId, data);
       submitMessageRef.current = (data: string): Promise<void> =>
-        submitSessionMessage(muxUrl, sessionId, data);
+        submitSessionMessage(sessionId, data, activeServerId ?? undefined);
 
       setExitInfo(null);
       setResumedFromSeq(null);
@@ -602,7 +603,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
             sendConfirmedInputRef.current = (data: string): Promise<void> =>
               sendSessionInput(muxUrl, sessionId, data);
             submitMessageRef.current = (data: string): Promise<void> =>
-              submitSessionMessage(muxUrl, sessionId, data);
+              submitSessionMessage(sessionId, data, activeServerId ?? undefined);
             setStatus('open');
           }
           setResumedFromSeq(msg.resumedFromSeq);
@@ -884,7 +885,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       disposed = true;
       if (runCleanup) runCleanup();
     };
-  }, [sessionId, muxUrl, mountTerminal]);
+  }, [activeServerId, sessionId, muxUrl, mountTerminal]);
 
   // Activeness changes are NOT a mount-effect dependency (that would
   // dispose + rebuild xterm on every tab switch). Instead, re-subscribe

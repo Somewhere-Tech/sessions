@@ -144,4 +144,39 @@ describe('capability: send the first message', () => {
       'List the connected external drives'
     ]));
   });
+
+  it('submits a message to a working Codex turn instead of blocking the composer', async () => {
+    const machine = localMachine();
+    const daemon = installFakeDaemon([machine]);
+    useFakeMachines([machine]);
+    const user = userEvent.setup();
+
+    render(
+      <RemoteView
+        sessionId={SESSION_ID}
+        events={[]}
+        historyPending={false}
+        sendConfirmed={(data) => sendInput(SESSION_ID, data)}
+        submitMessage={(data) => submitMessage(SESSION_ID, data)}
+        connected
+        hasEarlierClaudeEvents={false}
+        loadingEarlierClaudeEvents={false}
+        onLoadEarlierClaudeEvents={() => {}}
+        sidebar={{ ...idleSidebar, parserName: 'Codex', isWorking: true }}
+        cwd="/Users/example/project"
+        onOpenTerminal={() => {}}
+        terminalAvailable={false}
+        provider="codex"
+      />
+    );
+
+    const composer = await screen.findByPlaceholderText(/Message Codex/);
+    await user.type(composer, 'Also verify the Windows package');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(daemon.delivered[SESSION_ID]).toEqual([
+      'Also verify the Windows package'
+    ]));
+    expect(await screen.findByText('submitted after Codex’s next tool call')).toBeInTheDocument();
+  });
 });

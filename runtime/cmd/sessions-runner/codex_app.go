@@ -27,11 +27,12 @@ const structuredScannerBuffer = 8 * 1024 * 1024
 // conversation. The app-server owns the conversation; this process owns the
 // client connection, normalized history, and canonical runner socket.
 type codexAppRunner struct {
-	cfg       config
-	paths     state.Paths
-	createdAt int64
-	client    *codexapp.Client
-	logger    *log.Logger
+	cfg        config
+	paths      state.Paths
+	createdAt  int64
+	client     *codexapp.Client
+	turnClient codexTurnClient
+	logger     *log.Logger
 
 	conversationID string
 	remoteEndpoint string
@@ -44,6 +45,7 @@ type codexAppRunner struct {
 	done   chan int
 
 	streamMu sync.Mutex
+	steerMu  sync.Mutex
 	mu       sync.Mutex
 	clients  map[*client]struct{}
 	history  []json.RawMessage
@@ -51,6 +53,12 @@ type codexAppRunner struct {
 	active   bool
 
 	shutdownOnce sync.Once
+}
+
+type codexTurnClient interface {
+	SendUserTurn(context.Context, string, string) (*codexapp.TurnStream, error)
+	SteerTurn(context.Context, string, string) (string, error)
+	InterruptTurn(context.Context, string) error
 }
 
 func runCodexAppServer(cfg config, paths state.Paths, logger *log.Logger) int {
@@ -105,6 +113,7 @@ func (r *codexAppRunner) start() error {
 		return err
 	}
 	r.client = client
+	r.turnClient = client
 	conversationOptions := codexConversationOptions(r.cfg)
 	if r.continuation != nil {
 		conversationOptions.DeveloperInstructions = codexContinuationInstructions(*r.continuation)
@@ -402,7 +411,7 @@ func (r *codexAppRunner) handleInput(data string) {
 		return
 	}
 	r.mu.Lock()
-	var rejected []json.RawMessage
+	var steering []string
 	parts := strings.Split(data, "\r")
 	for index, part := range parts {
 		r.composer.WriteString(part)
@@ -415,24 +424,15 @@ func (r *codexAppRunner) handleInput(data string) {
 			continue
 		}
 		if r.active {
-			// The composer has already been emptied, so silently dropping the
-			// text would destroy the message with no trace anywhere.
-			event, err := codexapp.InputRejectedEvent(
-				r.conversationID,
-				"Codex is still working. This message was not sent or queued; send it again after the turn finishes.",
-				time.Now(),
-			)
-			if err == nil {
-				rejected = append(rejected, event)
-			}
+			steering = append(steering, text)
 			continue
 		}
 		r.active = true
 		go r.runTurn(text)
 	}
 	r.mu.Unlock()
-	for _, event := range rejected {
-		r.appendStructured(event)
+	for _, text := range steering {
+		r.steerActiveTurn(text)
 	}
 }
 
@@ -443,8 +443,35 @@ func isCodexInterruptInput(data string) bool {
 func (r *codexAppRunner) interruptTurn() {
 	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
 	defer cancel()
-	if err := r.client.InterruptTurn(ctx, r.conversationID); err != nil {
+	if err := r.turnClient.InterruptTurn(ctx, r.conversationID); err != nil {
 		r.logger.Printf("interrupt Codex turn failed: %v", err)
+	}
+}
+
+func (r *codexAppRunner) steerActiveTurn(text string) {
+	// Multiple clients can submit to one runner. Serialize provider calls so
+	// Codex receives steering messages in the same order Sessions accepted
+	// them. This mutex provides transport ordering, not a second prompt queue.
+	r.steerMu.Lock()
+	defer r.steerMu.Unlock()
+	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
+	defer cancel()
+	turnID, err := r.turnClient.SteerTurn(ctx, r.conversationID, text)
+	if err != nil {
+		event, encodeErr := codexapp.SteeringRejectedEvent(
+			r.conversationID,
+			text,
+			"Codex did not accept the message for its active turn: "+err.Error()+" The message was not queued.",
+			time.Now(),
+		)
+		if encodeErr == nil {
+			r.appendStructured(event)
+		}
+		return
+	}
+	event, err := codexapp.SteeringHistoryEvent(r.conversationID, turnID, text, time.Now())
+	if err == nil {
+		r.appendStructured(event)
 	}
 }
 
@@ -460,7 +487,7 @@ func (r *codexAppRunner) runTurn(text string) {
 		r.active = false
 		r.mu.Unlock()
 	}()
-	stream, err := r.client.SendUserTurn(r.ctx, r.conversationID, text)
+	stream, err := r.turnClient.SendUserTurn(r.ctx, r.conversationID, text)
 	if err != nil {
 		r.recordTurnFailure(err)
 		return

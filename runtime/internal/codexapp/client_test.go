@@ -94,6 +94,108 @@ func TestConversationTurnStreamsStructuredEventsAndAutoApproves(t *testing.T) {
 	}
 }
 
+func TestSteerTurnUsesActiveTurnPrecondition(t *testing.T) {
+	serverInput, clientInput := io.Pipe()
+	clientOutput, serverOutput := io.Pipe()
+	serverDone := make(chan error, 1)
+	go func() {
+		defer serverOutput.Close()
+		decoder := json.NewDecoder(serverInput)
+		encoder := json.NewEncoder(serverOutput)
+		request, err := readTestRequest(decoder, "initialize")
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if err := encoder.Encode(map[string]any{"id": request.ID, "result": map[string]any{}}); err != nil {
+			serverDone <- err
+			return
+		}
+		if _, err := readTestRequest(decoder, "initialized"); err != nil {
+			serverDone <- err
+			return
+		}
+		request, err = readTestRequest(decoder, "thread/start")
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if err := encoder.Encode(map[string]any{"id": request.ID, "result": map[string]any{
+			"thread": map[string]any{"id": "thread-1"},
+		}}); err != nil {
+			serverDone <- err
+			return
+		}
+		request, err = readTestRequest(decoder, "turn/start")
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if err := encoder.Encode(map[string]any{"id": request.ID, "result": map[string]any{
+			"turn": map[string]any{"id": "turn-1", "items": []any{}, "status": "inProgress"},
+		}}); err != nil {
+			serverDone <- err
+			return
+		}
+		request, err = readTestRequest(decoder, "turn/steer")
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		var steer TurnSteerParams
+		if err := json.Unmarshal(request.Params, &steer); err != nil {
+			serverDone <- err
+			return
+		}
+		if steer.ThreadID != "thread-1" || steer.ExpectedTurnID != "turn-1" ||
+			len(steer.Input) != 1 || steer.Input[0].Text != "also verify the tests" {
+			serverDone <- fmt.Errorf("steer params = %+v", steer)
+			return
+		}
+		if err := encoder.Encode(map[string]any{"id": request.ID, "result": map[string]any{"turnId": "turn-1"}}); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- encoder.Encode(map[string]any{"method": "turn/completed", "params": map[string]any{
+			"threadId": "thread-1", "turn": map[string]any{"id": "turn-1", "items": []any{}, "status": "completed"},
+		}})
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client, err := newClient(ctx, clientInput, clientOutput, func() {
+		_ = clientInput.Close()
+		_ = clientOutput.Close()
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	conversationID, err := client.NewConversation(ctx, ConversationOptions{CWD: "/tmp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.SendUserTurn(ctx, conversationID, "start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnID, err := client.SteerTurn(ctx, conversationID, "also verify the tests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turnID != "turn-1" {
+		t.Fatalf("steered turn id = %q", turnID)
+	}
+	if _, err := stream.Result(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for range stream.Events {
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNotificationWithoutTurnIDDoesNotMutateActiveTurn(t *testing.T) {
 	state := newTurnState("thread-1")
 	if !state.acceptTurnID("turn-1") {
