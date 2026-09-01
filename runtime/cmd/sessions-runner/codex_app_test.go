@@ -1,17 +1,40 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
+
+type fakeCodexTurnClient struct {
+	steered  []string
+	steerErr error
+}
+
+func (*fakeCodexTurnClient) SendUserTurn(context.Context, string, string) (*codexapp.TurnStream, error) {
+	return nil, errors.New("not implemented in this test")
+}
+
+func (f *fakeCodexTurnClient) SteerTurn(_ context.Context, conversationID, text string) (string, error) {
+	if f.steerErr != nil {
+		return "", f.steerErr
+	}
+	if conversationID != "thread-1" {
+		return "", errors.New("unexpected conversation")
+	}
+	f.steered = append(f.steered, text)
+	return "turn-1", nil
+}
+
+func (*fakeCodexTurnClient) InterruptTurn(context.Context, string) error { return nil }
 
 func newCodexTestRunner(t *testing.T) *codexAppRunner {
 	t.Helper()
@@ -21,6 +44,7 @@ func newCodexTestRunner(t *testing.T) *codexAppRunner {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = file.Close() })
+	fake := &fakeCodexTurnClient{}
 	return &codexAppRunner{
 		cfg:            config{id: paths.ID, cmd: "codex", cwd: "/tmp"},
 		paths:          paths,
@@ -28,6 +52,8 @@ func newCodexTestRunner(t *testing.T) *codexAppRunner {
 		logger:         log.New(io.Discard, "", 0),
 		clients:        make(map[*client]struct{}),
 		historyFile:    file,
+		ctx:            context.Background(),
+		turnClient:     fake,
 	}
 }
 
@@ -68,43 +94,62 @@ func TestCodexInterruptInputDoesNotConfuseBracketedPaste(t *testing.T) {
 	}
 }
 
-func TestCodexInputDuringActiveTurnIsReportedNotDiscarded(t *testing.T) {
+func TestCodexInputDuringActiveTurnUsesProviderSteering(t *testing.T) {
 	r := newCodexTestRunner(t)
 	r.active = true
 
 	r.handleInput("deploy the staging fix\r")
 
 	if len(r.history) != 1 {
-		t.Fatalf("history after a refused message = %d events, want the refusal to be recorded", len(r.history))
+		t.Fatalf("history after steering = %d events, want the accepted message to be recorded", len(r.history))
 	}
 	var event map[string]any
 	if err := json.Unmarshal(r.history[0], &event); err != nil {
 		t.Fatal(err)
 	}
-	if event["type"] != "system" || event["subtype"] != "input_rejected" ||
+	if event["type"] != "user" || event["subtype"] != "user_steer" || event["queued"] != true ||
 		event["source"] != codexapp.HistorySource || event["conversationId"] != "thread-1" {
-		t.Fatalf("refusal event = %#v", event)
+		t.Fatalf("steering event = %#v", event)
 	}
-	message, _ := event["error"].(string)
-	if message == "" {
-		t.Fatalf("refusal carried no explanation: %#v", event)
+	message, _ := event["message"].(map[string]any)
+	if message["content"] != "deploy the staging fix" || event["turnId"] != "turn-1" {
+		t.Fatalf("steering event lost content or turn identity: %#v", event)
 	}
-	for _, want := range []string{"Codex is still working", "not sent or queued", "send it again"} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("refusal message %q does not explain %q", message, want)
-		}
+	fake := r.turnClient.(*fakeCodexTurnClient)
+	if len(fake.steered) != 1 || fake.steered[0] != "deploy the staging fix" {
+		t.Fatalf("provider steering calls = %#v", fake.steered)
 	}
-	// The refusal is also durable, so a client that reconnects after the turn
-	// still learns the message never went anywhere.
+	// Provider-accepted steering is durable, so a reconnect still explains
+	// where the message is waiting.
 	persisted, err := os.ReadFile(r.paths.Structured)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(persisted) == 0 {
-		t.Fatal("refusal was not appended to the durable history file")
+		t.Fatal("steering input was not appended to the durable history file")
 	}
 	if r.composer.Len() != 0 {
 		t.Fatalf("composer retained %q after a refused message", r.composer.String())
+	}
+}
+
+func TestCodexRejectedSteeringIsExplicit(t *testing.T) {
+	r := newCodexTestRunner(t)
+	r.active = true
+	r.turnClient.(*fakeCodexTurnClient).steerErr = errors.New("active turn is no longer steerable")
+
+	r.handleInput("follow up\r")
+
+	if len(r.history) != 1 {
+		t.Fatalf("history after rejected steering = %d events", len(r.history))
+	}
+	var event map[string]any
+	if err := json.Unmarshal(r.history[0], &event); err != nil {
+		t.Fatal(err)
+	}
+	message, _ := event["error"].(string)
+	if event["subtype"] != "input_rejected" || message == "" {
+		t.Fatalf("rejected steering event = %#v", event)
 	}
 }
 

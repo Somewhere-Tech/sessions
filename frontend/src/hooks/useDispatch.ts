@@ -27,7 +27,7 @@ export interface DispatchMessage {
   // accepted means sessionsd acknowledged the complete composer submission.
   // sent means the provider's own history also contains the turn. Failed is
   // retained only for old local records written before receipt-backed sends.
-  status: 'accepted' | 'sent' | 'failed';
+  status: 'accepted' | 'queued' | 'sent' | 'failed';
   createdAt: number;
   author?: import('../types').MessageAuthor;
   confirmedAt?: number;
@@ -104,7 +104,7 @@ interface Args {
 export interface DispatchAPI {
   messages: DispatchMessage[];
   // Called only after sessionsd acknowledges the atomic text + Enter submit.
-  recordSent: (content: string) => void;
+  recordSent: (content: string, queued?: boolean) => void;
   restoreDraft: (id: string) => void;
   remove: (id: string) => void;
   resetLog: () => void;
@@ -133,13 +133,14 @@ export function useDispatch({ sessionId, eventUserContentCounts }: Args): Dispat
     setMessages((previous) => {
       let changed = false;
       const next = previous.map((message) => {
-        if (message.role !== 'user' || message.status !== 'accepted') return message;
+        if (message.role !== 'user' || (message.status !== 'accepted' && message.status !== 'queued')) return message;
         const count = eventUserContentCounts.get(message.content.trim()) ?? 0;
         if (count <= (message.confirmBaseline ?? 0)) return message;
         changed = true;
         return {
           ...message,
           status: 'sent' as const,
+          queued: false,
           confirmedAt: Date.now()
         };
       });
@@ -147,7 +148,7 @@ export function useDispatch({ sessionId, eventUserContentCounts }: Args): Dispat
     });
   }, [eventUserContentCounts]);
 
-  const recordSent = useCallback((content: string): void => {
+  const recordSent = useCallback((content: string, queued = false): void => {
     if (!content.trim()) return;
     const now = Date.now();
     const previous = messagesRef.current;
@@ -155,16 +156,17 @@ export function useDispatch({ sessionId, eventUserContentCounts }: Args): Dispat
     const providerCount = eventCountsRef.current?.get(trimmed) ?? 0;
     const acceptedAhead = previous.filter((message) =>
       message.role === 'user'
-      && message.status === 'accepted'
+      && (message.status === 'accepted' || message.status === 'queued')
       && message.content.trim() === trimmed
     ).length;
     const message: DispatchMessage = {
       id: `user-${now}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'user',
       content,
-      status: 'accepted',
+      status: queued ? 'queued' : 'accepted',
       createdAt: now,
       confirmedAt: now,
+      queued: queued || undefined,
       confirmBaseline: providerCount + acceptedAhead
     };
     setMessages((current) => [...current, message]);

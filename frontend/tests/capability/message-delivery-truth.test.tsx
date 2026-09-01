@@ -33,4 +33,29 @@ describe('capability: acknowledged messages stay acknowledged', () => {
     expect(result.current.messages.at(-1)?.failureReason).toBeUndefined();
     vi.useRealTimers();
   });
+
+  it('keeps Codex steering visibly queued until provider history confirms it', () => {
+    const machine: FakeMachine = {
+      id: 'local', name: 'Fixture Mac', host: 'localhost', port: 8787,
+      isDefault: true, sessions: []
+    };
+    useFakeMachines([machine]);
+    const counts = new Map<string, number>();
+    const { result, rerender } = renderHook(
+      ({ eventUserContentCounts }) => useDispatch({
+        sessionId: 'queued-codex-session', eventUserContentCounts
+      }),
+      { initialProps: { eventUserContentCounts: counts } }
+    );
+
+    act(() => result.current.recordSent('Follow up after the tool call', true));
+    expect(result.current.messages.at(-1)).toMatchObject({
+      status: 'queued', queued: true
+    });
+
+    rerender({ eventUserContentCounts: new Map([['Follow up after the tool call', 1]]) });
+    expect(result.current.messages.at(-1)).toMatchObject({
+      status: 'sent', queued: false
+    });
+  });
 });

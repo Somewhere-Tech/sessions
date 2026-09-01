@@ -74,6 +74,43 @@ func TestInputRejectedEventReportsTheRefusedMessage(t *testing.T) {
 	}
 }
 
+func TestSteeringHistoryEventPreservesQueueState(t *testing.T) {
+	event, err := SteeringHistoryEvent("thread-1", "turn-1", "also run the tests", time.Unix(6, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(event, &value); err != nil {
+		t.Fatal(err)
+	}
+	message, _ := value["message"].(map[string]any)
+	if value["type"] != "user" || value["subtype"] != "user_steer" ||
+		value["source"] != HistorySource || value["turnId"] != "turn-1" ||
+		value["queued"] != true || message["content"] != "also run the tests" {
+		t.Fatalf("steering history = %#v", value)
+	}
+	if working, authoritative := HistoryLifecycle(event); working || authoritative {
+		t.Fatalf("steering input lifecycle = working:%v authoritative:%v", working, authoritative)
+	}
+}
+
+func TestSteeringRejectedEventRetainsRecoverableInput(t *testing.T) {
+	event, err := SteeringRejectedEvent(
+		"thread-1", "do not lose this", "the active turn ended", time.Unix(7, 0),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(event, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value["subtype"] != "input_rejected" || value["input"] != "do not lose this" ||
+		value["error"] != "the active turn ended" {
+		t.Fatalf("steering rejection = %#v", value)
+	}
+}
+
 func TestHistoryEventPreservesCompleteThreadItemForGUI(t *testing.T) {
 	raw := json.RawMessage(`{
 		"id":"command-1",

@@ -672,6 +672,37 @@ func (c *Client) SendUserTurn(ctx context.Context, conversationID, text string) 
 	return state.stream(), nil
 }
 
+// SteerTurn submits input to Codex's active turn. Codex owns the scheduling
+// semantics: it applies the message after the next tool call. Sessions does
+// not maintain a second prompt queue or retry against a later turn.
+func (c *Client) SteerTurn(ctx context.Context, conversationID, text string) (string, error) {
+	if conversationID == "" {
+		return "", errors.New("conversation id is required")
+	}
+	if text == "" {
+		return "", errors.New("steering text is required")
+	}
+	state, turnID, err := c.activeTurn(ctx, conversationID)
+	if err != nil {
+		return "", err
+	}
+	var response TurnSteerResponse
+	if err := c.call(ctx, "turn/steer", TurnSteerParams{
+		ThreadID:       conversationID,
+		ExpectedTurnID: turnID,
+		Input:          []UserInput{{Type: "text", Text: text}},
+	}, &response); err != nil {
+		return "", fmt.Errorf("steer Codex turn: %w", err)
+	}
+	if response.TurnID == "" {
+		return "", errors.New("steer Codex turn: empty turn id")
+	}
+	if response.TurnID != turnID || state.currentTurnID() != turnID {
+		return "", fmt.Errorf("steer Codex turn: response turn id %q did not match active turn %q", response.TurnID, turnID)
+	}
+	return turnID, nil
+}
+
 // InterruptTurn asks app-server to stop the active turn without terminating
 // the durable conversation or its runner. This is the structured equivalent
 // of Escape in the Codex TUI and is safe for the Sessions chat surface.
@@ -679,29 +710,9 @@ func (c *Client) InterruptTurn(ctx context.Context, conversationID string) error
 	if conversationID == "" {
 		return errors.New("conversation id is required")
 	}
-	c.mu.Lock()
-	state := c.turns[conversationID]
-	c.mu.Unlock()
-	if state == nil {
-		return fmt.Errorf("conversation %q has no active turn", conversationID)
-	}
-	turnID := ""
-	for turnID == "" {
-		turnID = state.currentTurnID()
-		if turnID != "" {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("wait for conversation %q active turn: %w", conversationID, ctx.Err())
-		case <-time.After(10 * time.Millisecond):
-		}
-		c.mu.Lock()
-		stillActive := c.turns[conversationID] == state
-		c.mu.Unlock()
-		if !stillActive {
-			return fmt.Errorf("conversation %q has no active turn", conversationID)
-		}
+	_, turnID, err := c.activeTurn(ctx, conversationID)
+	if err != nil {
+		return err
 	}
 	params := struct {
 		ThreadID string `json:"threadId"`
@@ -711,6 +722,34 @@ func (c *Client) InterruptTurn(ctx context.Context, conversationID string) error
 		return fmt.Errorf("interrupt Codex turn: %w", err)
 	}
 	return nil
+}
+
+func (c *Client) activeTurn(ctx context.Context, conversationID string) (*turnState, string, error) {
+	c.mu.Lock()
+	state := c.turns[conversationID]
+	c.mu.Unlock()
+	if state == nil {
+		return nil, "", fmt.Errorf("conversation %q has no active turn", conversationID)
+	}
+	turnID := ""
+	for turnID == "" {
+		turnID = state.currentTurnID()
+		if turnID != "" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, "", fmt.Errorf("wait for conversation %q active turn: %w", conversationID, ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+		c.mu.Lock()
+		stillActive := c.turns[conversationID] == state
+		c.mu.Unlock()
+		if !stillActive {
+			return nil, "", fmt.Errorf("conversation %q has no active turn", conversationID)
+		}
+	}
+	return state, turnID, nil
 }
 
 func validApprovalPolicy(policy string) bool {

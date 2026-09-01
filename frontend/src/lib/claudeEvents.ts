@@ -321,6 +321,7 @@ function isCodexAppServerHistory(events: ClaudeSessionEvent[]): boolean {
 function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] {
   const out: DispatchMessage[] = [];
   const turns = new Map<string, CodexTurnProjection>();
+  const steeringByTurn = new Map<string, DispatchMessage[]>();
   let latestTurnID = '';
 
   const ensureTurn = (turnID: string, at: number): CodexTurnProjection | null => {
@@ -379,6 +380,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
 
   for (const event of events) {
     const at = timestampMs(event.timestamp);
+    const subtype = event.subtype ?? '';
     if (event.source === 'sessions-continuation' && (event.type === 'user' || event.type === 'assistant')) {
       if (event.type === 'user' && event.message?.role === 'user') {
         const { text, hasImage } = extractUserContent(event.message.content);
@@ -414,7 +416,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       const { text, hasImage } = extractUserContent(event.message.content);
       const content = text || (hasImage ? '[image attached]' : '');
       if (!content || isSystemUserPseudoMessage(content)) continue;
-      out.push({
+      const message: DispatchMessage = {
         id: event.uuid ?? `codex-user-${out.length}`,
         role: 'user',
         content,
@@ -422,12 +424,18 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
         createdAt: at,
         confirmedAt: at,
         blockId: event.uuid,
-        author: event.author
-      });
+        author: event.author,
+        queued: subtype === 'user_steer' || undefined
+      };
+      out.push(message);
+      if (message.queued && event.turnId) {
+        const queued = steeringByTurn.get(event.turnId) ?? [];
+        queued.push(message);
+        steeringByTurn.set(event.turnId, queued);
+      }
       continue;
     }
 
-    const subtype = event.subtype ?? '';
     if (subtype === 'turn_started') {
       if (event.turnId) latestTurnID = event.turnId;
       ensureTurn(event.turnId ?? '', at);
@@ -444,6 +452,18 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
     if (event.type === 'system' && subtype === 'input_rejected') {
       const rejection = (event as Record<string, unknown>).error;
       if (typeof rejection !== 'string' || !rejection.trim()) continue;
+      const rejectedInput = (event as Record<string, unknown>).input;
+      if (typeof rejectedInput === 'string' && rejectedInput.trim()) {
+        out.push({
+          id: event.uuid ?? `codex-input-rejected-${out.length}`,
+          role: 'user',
+          content: rejectedInput,
+          status: 'failed',
+          createdAt: at,
+          failureReason: rejection
+        });
+        continue;
+      }
       out.push({
         id: event.uuid ?? `codex-input-rejected-${out.length}`,
         role: 'assistant',
@@ -508,6 +528,9 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       const error = event.error?.message;
       if (error) projection.message.errorResponse = error;
       refreshTurn(projection);
+      for (const message of steeringByTurn.get(event.turnId ?? '') ?? []) {
+        message.queued = false;
+      }
     }
   }
 

@@ -4,8 +4,8 @@ import type { SessionTool } from '../types';
 import { ComposerModelControl } from './ComposerModelControl';
 
 interface Props {
-  // Acknowledged sender from useTerminal. Messages are never queued while the
-  // connection is down; a failed send leaves the draft visible for retry.
+  // Acknowledged sender from useTerminal. Failed sends leave the draft visible
+  // for retry; active Codex turns use the provider's native steering queue.
   send: (data: string) => Promise<void>;
   submitMessage: (data: string) => Promise<void>;
   // Display-stream status. This may reconnect independently of the durable
@@ -23,7 +23,7 @@ interface Props {
   // parent to render an optimistic "pending" message in the Sessions
   // view so the user sees their message land instantly, instead of
   // waiting for Claude's TUI redraw + parser throttle (~500ms-1s).
-  onSubmitted?: (text: string) => void;
+  onSubmitted?: (text: string, queued: boolean) => void;
   // Failed Remote sends restore their text here so the user's draft is
   // recoverable without copy/pasting from the red bubble. The version
   // changes per failed attempt.
@@ -188,7 +188,7 @@ export function InputBar({
       return;
     }
 
-    if (richSession && providerWorking) {
+    if (richSession && providerWorking && provider !== 'codex') {
       setComposerNotice({
         tone: 'info',
         title: 'Claude is still working',
@@ -202,6 +202,7 @@ export function InputBar({
     // composer usable.
     submitInFlightRef.current = true;
     setSubmitting(true);
+    const submittedToActiveCodex = provider === 'codex' && providerWorking;
     try {
       if (text) {
         // The daemon owns text + Enter as one atomic operation. It still
@@ -212,7 +213,7 @@ export function InputBar({
         // Empty buffer — just an Enter, e.g. to accept a y/n prompt.
         await send('\r');
       }
-      if (text && onSubmitted) onSubmitted(text);
+      if (text && onSubmitted) onSubmitted(text, submittedToActiveCodex);
       setText('');
       restoredDraftRef.current = null;
       setFeedback('sent');

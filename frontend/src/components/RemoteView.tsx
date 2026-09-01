@@ -115,7 +115,7 @@ export function RemoteView({
   const eventUserContentCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const m of eventMessages) {
-      if (m.role !== 'user') continue;
+      if (m.role !== 'user' || m.status !== 'sent') continue;
       const c = m.content.trim();
       counts.set(c, (counts.get(c) ?? 0) + 1);
     }
@@ -138,10 +138,28 @@ export function RemoteView({
   // matched one-for-one instead of being hidden by an old occurrence.
   const messages = useMemo<DispatchMessage[]>(() => {
     if (eventMessages.length === 0) return dispatchMessages;
+    const providerFailures = new Map<string, number>();
+    for (const message of eventMessages) {
+      if (message.role !== 'user' || message.status !== 'failed') continue;
+      const content = message.content.trim();
+      providerFailures.set(content, (providerFailures.get(content) ?? 0) + 1);
+    }
     const locallyHeld = dispatchMessages.filter(
-      (m) => m.role === 'user' && (m.status === 'accepted' || m.status === 'failed')
+      (message) => {
+        if (message.role !== 'user' || (
+          message.status !== 'accepted' && message.status !== 'queued' && message.status !== 'failed'
+        )) return false;
+        const content = message.content.trim();
+        const failedCount = providerFailures.get(content) ?? 0;
+        if (failedCount === 0) return true;
+        providerFailures.set(content, failedCount - 1);
+        return false;
+      }
     );
-    return [...eventMessages, ...locallyHeld];
+    return [...eventMessages, ...locallyHeld]
+      .map((message, index) => ({ message, index }))
+      .sort((left, right) => left.message.createdAt - right.message.createdAt || left.index - right.index)
+      .map(({ message }) => message);
   }, [eventMessages, dispatchMessages]);
   const changedFiles = useMemo(() => {
     const files = new Set<string>();
@@ -649,7 +667,9 @@ function RemoteMessageInner({
             {m.queued ? (
               <div className="remote-bubble-badge remote-bubble-badge-queued" aria-label="queued">
                 <span aria-hidden>⏳</span>
-                <span>queued — Claude is finishing the previous turn</span>
+                <span>{agentName === 'Codex'
+                  ? 'submitted after Codex’s next tool call'
+                  : 'queued — Claude is finishing the previous turn'}</span>
               </div>
             ) : null}
             {m.interrupted ? (
