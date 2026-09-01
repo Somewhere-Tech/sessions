@@ -97,6 +97,31 @@ mod tests {
     }
 
     #[test]
+    fn update_baseline_excludes_retained_history_without_a_live_runner() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let body = r#"{"sessions":[{"id":"live","pid":42},{"id":"stale","pid":0},{"id":"ended","pid":43,"exited":true},{"id":"older-daemon"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(), body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let root = env::temp_dir().join("sessions-update-live-baseline-test");
+        let config = fixture_config(&root, "tech.somewhere.sessions.live-baseline", port);
+
+        assert_eq!(
+            fetch_sessions(&config).unwrap(),
+            BTreeSet::from(["live".to_string(), "older-daemon".to_string()])
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
     fn concurrent_service_mutations_are_refused_instead_of_interleaved() {
         let held = lock_service_mutation().unwrap();
         let refused = lock_service_mutation().unwrap_err();
