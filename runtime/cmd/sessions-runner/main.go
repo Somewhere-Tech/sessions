@@ -45,7 +45,7 @@ const (
 const laneInterruptedNotice = "\r\n[sessions: this lane was stopped by shutdown before its command finished. " +
 	"It was not re-run at the next login; start it again if the work still needs to happen.]\r\n"
 
-var version = "0.2.24"
+var version = "0.2.25"
 
 type config struct {
 	id                string
