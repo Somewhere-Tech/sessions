@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
 import { closeBrowser } from './lib/smoke.mjs';
+import { readStylesheetTree } from './lib/source-styles.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const mux = await source('src/lib/wsMux.ts');
@@ -55,7 +56,7 @@ const [
   source('src/api/sessionsd.ts'),
   source('src/lib/tabLabels.ts'),
   source('src/store/sessions.ts'),
-  source('src/styles/globals.css')
+  readStylesheetTree(new URL('../src/styles/globals.css', import.meta.url))
 ]);
 
 const subagents = await source('src/components/SubagentsPanel.tsx');

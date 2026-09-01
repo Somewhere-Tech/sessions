@@ -6,13 +6,14 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
 import { closeBrowser } from './lib/smoke.mjs';
+import { readStylesheetTree } from './lib/source-styles.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const [searchView, searchAPI, app, styles] = await Promise.all([
   source('src/components/SearchView.tsx'),
   source('src/api/sessionsd.ts'),
   source('src/App.tsx'),
-  source('src/styles/globals.css')
+  readStylesheetTree(new URL('../src/styles/globals.css', import.meta.url))
 ]);
 
 assert.match(searchView, /groupSearchResults\(orderedResults\)/);

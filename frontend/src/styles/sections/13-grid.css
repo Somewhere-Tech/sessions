@@ -1,0 +1,291 @@
+/* Grid view tiles. Single row of full-height columns: each cell wants
+ * ≥ 320px. If enough cells fit the viewport, columns expand to share
+ * the width via 1fr. If not, the cells keep their 320px floor and the
+ * container scrolls horizontally — preferred over shrinking them
+ * narrower, which would make the chat content unreadable.
+ * Order follows the session-tab order (user-controlled).
+ *
+ * Watermark: faint Claude logo centered behind the cells so the grid
+ * never reads as a "blank page" — the product art anchors the view
+ * even when individual cells have sparse content. The pointer-events
+ * pseudo-element + position:fixed means it doesn't affect cell
+ * scrolling or interaction. */
+.grid-view {
+  position: relative;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(320px, 1fr);
+  grid-template-rows: 100%;
+  gap: 8px;
+  height: 100%;
+  padding: 8px;
+  background: var(--bg-base);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.grid-view::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(50vmin, 540px);
+  height: min(50vmin, 540px);
+  background-image: url('/claude-icon.svg');
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  opacity: 0.15;
+  pointer-events: none;
+  z-index: 0;
+}
+/* Cells need to sit above the watermark. */
+.grid-view > .grid-cell { position: relative; z-index: 1; }
+.grid-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-base);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+}
+.grid-cell-probe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: pre;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+.grid-cell-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  background: var(--bg-elev-1);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.grid-cell-name {
+  flex: 1;
+  font-weight: 600;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid-cell-name:hover { color: var(--accent); }
+.grid-cell-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.grid-cell-popout,
+.grid-cell-expand,
+.grid-cell-close {
+  border: 0;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  font-size: 12px;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+}
+.grid-cell-popout:hover,
+.grid-cell-expand:hover { color: var(--fg); background: var(--bg-elev-3); }
+.grid-cell-close { font-size: 14px; }
+.grid-cell-close:hover { color: var(--danger); background: rgba(239, 68, 68, 0.12); }
+.grid-cell-close-label { font-size: 12px; color: var(--fg-dim); }
+.grid-cell-close-label[role="alert"] { color: var(--danger); }
+/* The cell itself is the input target — tabIndex=0 + onKeyDown forwards
+ * each press to the session's PTY. Visual indication when focused so
+ * the user knows which session is going to receive their typing. */
+.grid-cell { outline: none; cursor: text; border: 1px solid var(--border); }
+.grid-cell.is-focused {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+/* Working state — slow pulsing orange outline so the user can tell at
+ * a glance which sessions are still chewing and which are done. Same
+ * accent color as the heartbeat strip in Remote view. The pulse is
+ * intentionally slow (3s cycle) to feel ambient, not anxious. */
+.grid-cell.is-working {
+  border-color: rgba(251, 146, 60, 0.55);
+  animation: gridCellPulse 3s ease-in-out infinite;
+}
+.grid-cell.is-exited {
+  border-color: var(--border);
+  opacity: 0.7;
+}
+@keyframes gridCellPulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.3); }
+  50%      { box-shadow: 0 0 0 3px rgba(251, 146, 60, 0.55); }
+}
+/* When a working cell is ALSO focused, the focus ring wins (teal),
+ * but the pulse animation continues underneath via border-color. */
+.grid-cell.is-working.is-focused {
+  box-shadow: 0 0 0 2px var(--accent);
+  animation: none;
+}
+
+/* Typing popup — floats centered over the cell while focused with
+ * buffered text. Doesn't push layout. Disappears when buffer empties
+ * (Enter / Escape / blur) so the cell goes back to clean preview. */
+.grid-cell-typing-popup {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 36px;  /* clears the cell footer */
+  z-index: 6;
+  background: var(--bg-elev-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: var(--fg);
+  box-shadow: var(--shadow-2);
+  word-break: break-word;
+  max-height: 60%;
+  overflow-y: auto;
+}
+.grid-cell-typing-text { white-space: pre-wrap; }
+.grid-cell-typing-placeholder {
+  color: var(--fg-faint);
+  font-style: italic;
+}
+.grid-cell-typing-caret {
+  color: var(--accent);
+  animation: caret-blink 1s steps(2, start) infinite;
+  margin-left: 2px;
+}
+/* Status pill in the header: working dot + relative time. */
+.grid-cell-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  margin-left: 4px;
+}
+.grid-cell-status.is-working { color: var(--ok); }
+.grid-cell-status.is-exited { color: var(--danger); }
+.grid-cell-status .grid-cell-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+/* Footer strip: focus cue. Replaces the per-cell input we removed —
+ * the actual input target is the cell div itself, but users need a
+ * visible "you can type here, you're typing into THIS session" cue. */
+.grid-cell-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev-1);
+  font-size: 12px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+}
+.grid-cell.is-focused .grid-cell-foot {
+  background: var(--bg-elev-3);
+  color: var(--fg);
+}
+.grid-cell-caret {
+  color: var(--accent);
+  animation: caret-blink 1s steps(2, start) infinite;
+}
+.grid-cell-foot-hint { font-style: italic; }
+@keyframes caret-blink {
+  to { visibility: hidden; }
+}
+.grid-cell-body {
+  flex: 1;
+  margin: 0;
+  padding: 6px 10px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--fg);
+  white-space: pre-wrap;
+  cursor: pointer;
+}
+
+/* Chat-style cell body — bubbles for user_input and claude_message
+ * blocks, mirroring Remote view at a compact scale. The `pre-wrap`
+ * from .grid-cell-body is intentionally inherited so user-typed
+ * messages preserve their newlines. */
+.grid-cell-body-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+}
+.grid-cell-msg {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+}
+.grid-cell-msg-user { justify-content: flex-end; }
+.grid-cell-msg-assistant { justify-content: flex-start; }
+.grid-cell-bubble {
+  max-width: 88%;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.grid-cell-bubble-user {
+  /* Subtle accent tint, matching Remote view. Was an 80%-opacity teal
+   * fill which read as bright green against light foreground text and
+   * was hard to read at the cell's small font size. */
+  background: var(--accent-bg-soft);
+  color: var(--fg);
+  border: 1px solid var(--accent-border-soft);
+}
+.grid-cell-bubble-assistant {
+  background: var(--bg-elev-1);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  white-space: normal;
+}
+/* Trim heading/code-block weight so the bubbles stay readable at
+ * grid-cell size — md-content's defaults are tuned for the larger
+ * Remote view column. */
+.grid-cell-bubble.md-content h1,
+.grid-cell-bubble.md-content h2,
+.grid-cell-bubble.md-content h3 {
+  font-size: 1em;
+  margin: 4px 0;
+}
+.grid-cell-bubble.md-content pre {
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.grid-cell-bubble.md-content p { margin: 4px 0; }
+.grid-cell-empty {
+  color: var(--fg-faint);
+  font-size: 12px;
+  font-style: italic;
+  text-align: center;
+  margin-top: 30%;
+}

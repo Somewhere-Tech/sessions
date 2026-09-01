@@ -1,0 +1,497 @@
+/* ── Interface size ──
+ * The operations shell above scales as one surface. These rules keep
+ * conversation copy proportionate inside Compact / Comfortable / Large
+ * instead of leaving the primary reading surface visually unchanged.
+ *
+ * Readability contract: user-visible type never drops below 12px, even
+ * in Compact. `scripts/typography-smoke.mjs` enforces that floor. */
+.text-size-s .sessions-message,
+.text-size-s .sessions-message-body,
+.text-size-s .md-content { font-size: 13px; line-height: 1.55; }
+.text-size-m .sessions-message,
+.text-size-m .sessions-message-body,
+.text-size-m .md-content { font-size: 14px; line-height: 1.6; }
+.text-size-l .sessions-message,
+.text-size-l .sessions-message-body,
+.text-size-l .md-content { font-size: 15px; line-height: 1.65; }
+
+/* Reflowed view scales too. Keep its monospace text on a similar
+ * scale so toggling between Sessions and Reflowed isn't jarring. */
+.text-size-s .reflowed-body { font-size: 12px; line-height: 1.2; }
+.text-size-m .reflowed-body { font-size: 13px; line-height: 1.2; }
+.text-size-l .reflowed-body { font-size: 14px; line-height: 1.25; }
+
+/* Form inputs scale with the same picker. The textarea is the most
+ * visible — user explicitly called the previous mobile-forced 16px
+ * "too big". iOS will auto-zoom on focus when < 16px; accepting that
+ * as the price of smaller resting text. */
+.text-size-s .input-textarea,
+.text-size-s .dir-browser-path,
+.text-size-s .server-selector-add-form input,
+.text-size-s .grid-cell-input-ta { font-size: 13px; }
+.text-size-m .input-textarea,
+.text-size-m .dir-browser-path,
+.text-size-m .server-selector-add-form input,
+.text-size-m .grid-cell-input-ta { font-size: 14px; }
+.text-size-l .input-textarea,
+.text-size-l .dir-browser-path,
+.text-size-l .server-selector-add-form input,
+.text-size-l .grid-cell-input-ta { font-size: 15px; }
+
+/* Headings scale relative to the body (em). Code blocks intentionally
+ * keep their fixed monospace size — they need to stay readable AND
+ * preserve column alignment for diffs / output. */
+
+/* Mobile */
+@media (max-width: 720px) {
+  /* App shell is already flex-column above; mobile-nav joins as a
+   * sticky-bottom sibling. No padding-bottom needed because the nav
+   * is part of the layout, not floating above it. */
+  .mobile-nav { display: flex; }
+  .app-brand { display: none; }
+  .tabs-strip,
+  .tab-new,
+  .conn-status .conn-label { display: none; }
+  .session-control-pill { display: none; }
+  .session-toolbar { gap: 6px; padding-inline: 8px; }
+  .session-toolbar > .status-text { display: none; }
+  .terminal-runtime-notice {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 82px);
+    right: 8px;
+    left: 8px;
+    width: auto;
+    max-height: calc(100dvh - 160px);
+    overflow-y: auto;
+  }
+  .terminal-runtime-notice::before { display: none; }
+
+  .search-mode-row { align-items: flex-start; flex-wrap: wrap; }
+  .search-plan { order: 3; width: 100%; }
+  .search-result-count { margin-left: auto; }
+  .search-filter-panel { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .search-filter-group { justify-content: space-between; width: 100%; }
+  .search-filter-group > span { min-width: 48px; }
+  .search-filter-group > div { flex: 1; flex-wrap: wrap; }
+  .search-more-filters { margin-left: 0; }
+  .search-advanced-filters { grid-template-columns: 1fr; }
+  .search-result-card { grid-template-columns: 28px minmax(0, 1fr); }
+  .search-result-footer { align-items: flex-start; flex-direction: column; }
+  .search-result-actions { align-items: flex-start; flex-wrap: wrap; margin-left: 0; }
+  .search-conversation-match { grid-template-columns: 72px minmax(0, 1fr); }
+  .conversation-browser-head { align-items: flex-start; flex-direction: column; }
+  .conversation-browser-foot { align-items: flex-start; flex-direction: column; }
+  .conversation-preview-line { grid-template-columns: 1fr; gap: 2px; }
+  .search-conversation-heading { flex-direction: column; }
+  .search-conversation-actions { max-width: none; align-items: flex-start; text-align: left; }
+  .search-reader-toolbar { align-items: flex-start; flex-direction: column; }
+  .search-reader-toolbar .usage-segmented { flex-wrap: wrap; }
+  .search-reader-position { flex-wrap: wrap; text-align: left; }
+
+  /* Prevent ANY child from overflowing the viewport horizontally.
+   * Long file paths, code blocks with no spaces, wide tables — all
+   * get clamped to the viewport width and either wrap or scroll
+   * within their own container, never push the page sideways. */
+  html, body { overflow-x: hidden; }
+  .sessions-message,
+  .sessions-message-body,
+  .md-content,
+  .sessions-block,
+  .sessions-tool-body,
+  .sessions-command-output,
+  .sessions-file-body {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  /* Code blocks scroll horizontally within their own card instead of
+   * blowing out the page. */
+  .md-content pre,
+  .code-pre-wrap pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  /* Mobile in split mode: stack terminal on top, sessions on bottom
+   * (50/50). Phone viewport is narrower than the PTY's 120 cols so
+   * xterm reflows the buffer at ~50 cols and Claude's TUI looks
+   * mangled in the terminal pane — that's a rendering compromise
+   * we live with for raw-terminal access; users should pick Sessions
+   * mode on phone for clean output. The Sessions pane reads the
+   * server snapshot at full PTY width regardless. */
+  .session-view.view-split .session-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+  }
+  /* In Sessions / Terminal solo modes on mobile, the active pane fills.
+   * Sessions pane: scroll on top, input on bottom — same as desktop, but
+   * here it fills the whole body since there's no split sibling. */
+  .session-view.view-sessions .session-sessions-pane,
+  .session-view.view-split  .session-sessions-pane {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+    grid-template-areas: "scroll" "input";
+    inset: auto;
+    z-index: auto;
+  }
+  .session-sessions-pane > .status-sidebar { display: none; }
+  .sessions-view { padding: 10px; }
+  .tab-label { max-width: 10ch; }
+
+  /* Subtle shadow on the InputBar so scrolled content visually slides
+   * UNDER it rather than appearing flush. */
+  .sessions-input-wrap,
+  .reflowed-input-wrap {
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.4);
+  }
+
+  /* Form inputs scale with the text-size picker — see the .text-size-*
+   * blocks above. Note: iOS Safari auto-zooms when an input's
+   * font-size is < 16px and the user taps to focus it. We accept that
+   * trade because the user explicitly asked for smaller input text;
+   * the zoom is a one-time per-focus thing modern iOS recovers from
+   * gracefully. If you're on iOS and want the no-zoom behavior, pick
+   * Large in Settings — at 15px it's still under 16, but only just. */
+
+  /* Drop the heavy card chrome on mobile. Flush-left prose is easier to
+   * read on a narrow column than a gray
+   * boxed-card with accent stripe. The "Copy" button + click-to-copy
+   * still work; we just stop visually framing every message.
+   * Font-size is set per text-size class below; this rule provides
+   * the layout baseline only. */
+  .sessions-message {
+    background: transparent;
+    border: none;
+    border-left: none;
+    padding: 4px 2px;
+    border-radius: 6px;
+    line-height: 1.55;
+    max-width: none;
+    margin: 10px 0;
+  }
+  /* Release the 820px centering on mobile — phones don't need a
+   * reading-column ceiling; they ARE the column. */
+  .sessions-block > .sessions-tool,
+  .sessions-block > .sessions-command,
+  .sessions-block > .sessions-file,
+  .sessions-block > .sessions-search,
+  .sessions-block > .sessions-error,
+  .sessions-block > .sessions-passthrough,
+  .sessions-block > .sessions-unknown,
+  .sessions-block > .sessions-thinking,
+  .sessions-block > .sessions-banner,
+  .sessions-block > .sessions-divider,
+  .sessions-block > .sessions-notice,
+  .sessions-user {
+    max-width: none;
+    margin-left: 0;
+    margin-right: 0;
+  }
+  .sessions-message:hover { background: rgba(217, 119, 87, 0.04); }
+  .sessions-block { margin: 12px 0; }
+  /* User input bubble — keep the boxed style so sent messages remain
+   * visually distinct from Claude's prose. Slightly tighter padding. */
+  .sessions-user { padding: 10px 14px; margin-top: 18px; }
+
+  /* Tight padding on the scroll area + tap-target sizing for buttons.
+   * Coarse-pointer media query later in this file handles min-height
+   * on quick-key buttons; here we just tune the InputBar density. */
+  .sessions-scroll, .reflowed-scroll { padding: 0 14px 16px; }
+  .sessions-view { padding: 0; }
+  .input-bar { padding: 8px 10px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
+  .input-send { min-height: 36px; width: 36px; height: 36px; }
+  .mobile-terminal-keys {
+    position: absolute;
+    right: 8px;
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    left: 8px;
+    z-index: 5;
+    display: flex;
+    gap: 5px;
+    padding: 5px;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-elev-1) 92%, transparent);
+    box-shadow: var(--shadow-2);
+    backdrop-filter: blur(14px);
+  }
+  .session-view:not(.view-terminal) .mobile-terminal-keys { display: none; }
+  .mobile-terminal-keys button {
+    flex: 1;
+    min-height: 38px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg-elev-3);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  /* Reflowed view: comfortable default font-size on mobile. The 12px
+   * we had felt squinty on a 390px viewport. */
+  .reflowed-body {
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+  .reflowed-probe { font-size: 14px; }
+}
+
+/* ── Parser brand icon (Claude PNG / OpenAI SVG / fallback emoji) ──
+ * Renders inline next to text — tabs, toolbar, sidebar header, grid
+ * cell header. vertical-align:middle keeps the optical baseline aligned
+ * with the surrounding label text. */
+.parser-icon-img {
+  display: inline-block;
+  vertical-align: middle;
+  border-radius: 3px;
+  /* cover crops to fill the box; brand assets typically have padding
+   * around the logo, so this trims the whitespace and shows a bigger
+   * visible glyph than `contain` (which letterboxes). */
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+/* ── Floating "scroll to latest" button ──
+ * Positioned absolute inside whichever pane wraps it (terminal-pane,
+ * sessions-pane). The pane MUST be position:relative for this to land
+ * in the right place — both already are. */
+.scroll-to-bottom {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg-elev-3);
+  border: 1px solid var(--border-strong);
+  color: var(--fg-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: var(--shadow-2);
+  z-index: 5;
+  transition: transform 100ms ease, color 100ms ease, border-color 100ms ease, background 100ms ease;
+  /* Subtle entrance: slide up from a bit below + fade in. */
+  animation: scrollBtnIn 180ms ease-out;
+}
+.scroll-to-bottom:hover {
+  transform: translateY(-1px);
+  color: var(--fg);
+  border-color: var(--accent);
+  background: var(--bg-elev-2);
+}
+@keyframes scrollBtnIn {
+  from { transform: translateY(8px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}
+
+/* ── Sticky anchor for Sessions' scroll-to-latest ──
+ * Lives as the LAST child of .sessions-scroll. Mirrors the centered prose
+ * column's max-width, so the button always pins to the column's right
+ * edge — not the pane's right edge (which is past the 280px sidebar).
+ * Sticky bottom keeps it pinned to the viewport edge while scrolled up;
+ * height:0 + the button's own translate means it floats over content
+ * without claiming layout space. */
+.scroll-to-bottom-anchor {
+  position: sticky;
+  bottom: 16px;
+  z-index: 5;
+  width: 100%;
+  max-width: 820px;
+  margin-left: auto;
+  margin-right: auto;
+  height: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.scroll-to-bottom-anchor > .scroll-to-bottom {
+  /* Override the default absolute positioning — inside the anchor we
+   * use normal flow so flex-end anchors us to the column's right. */
+  position: relative;
+  inset: auto;
+  pointer-events: auto;
+  /* Center above the composer. Keeping this away from the right edge is
+   * important: the send and model controls live there at every width. Lift
+   * up by button height + a bit so it floats above the content. The default
+   * .scroll-to-bottom entrance animation lands at translateY(0),
+   * which would fight this — disable it here. */
+  transform: translateY(-44px);
+  animation: none;
+}
+.scroll-to-bottom-anchor > .scroll-to-bottom:hover {
+  transform: translateY(-45px);
+}
+
+.session-history-jump-anchor {
+  position: sticky;
+  bottom: 14px;
+  z-index: 7;
+  display: flex;
+  justify-content: flex-end;
+  width: min(860px, calc(100% - 48px));
+  height: 0;
+  margin: 0 auto;
+  pointer-events: none;
+}
+.session-history-jump-anchor > .scroll-to-bottom {
+  position: relative;
+  inset: auto;
+  flex: 0 0 auto;
+  margin-right: 2px;
+  transform: translateY(-48px);
+  pointer-events: auto;
+  animation: none;
+}
+.session-history-jump-anchor > .scroll-to-bottom:hover { transform: translateY(-49px); }
+
+/* ── Copy button (used by claude_message + command + per-codeblock) ── */
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: background 80ms ease, border-color 80ms ease, color 80ms ease;
+  user-select: none;
+}
+.copy-btn:hover { background: var(--bg-elev-3); color: var(--fg); border-color: var(--accent); }
+.copy-btn.ok { background: rgba(110, 255, 140, 0.15); border-color: var(--ok); color: var(--ok); }
+.copy-btn.err { background: rgba(255, 110, 110, 0.15); border-color: var(--danger); color: var(--danger); }
+.copy-btn.is-icon-only {
+  display: inline-grid;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  place-items: center;
+  border-color: transparent;
+  background: transparent;
+  border-radius: 7px;
+  color: var(--fg-faint);
+}
+.copy-btn.is-icon-only svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.45; }
+.copy-btn.is-icon-only:hover { border-color: var(--border); background: var(--bg-elev-2); color: var(--fg); }
+.grid-cell-copy { flex: 0 0 22px; width: 22px !important; height: 22px !important; opacity: .55; }
+.grid-cell-msg:hover .grid-cell-copy { opacity: 1; }
+.sessions-command-copy { margin-left: auto; }
+
+/* ── Rendered markdown inside .md-content ── */
+/* Render the Markdown elements used in provider responses: paragraphs,
+ * lists, headings, inline and fenced code, links, and rules. Block code
+ * styling matches the rest of the Sessions pane. */
+.md-content { color: var(--fg); }
+.md-content p { margin: 0.6em 0; }
+.md-content p:first-child { margin-top: 0; }
+.md-content p:last-child { margin-bottom: 0; }
+.md-content h1, .md-content h2, .md-content h3, .md-content h4 {
+  margin: 1em 0 0.4em;
+  line-height: 1.25;
+  font-weight: 700;
+}
+.md-content h1 { font-size: 1.35em; }
+.md-content h2 { font-size: 1.2em; }
+.md-content h3 { font-size: 1.1em; }
+.md-content h4 { font-size: 1em; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.md-content strong { font-weight: 700; color: var(--fg); }
+.md-content em { font-style: italic; }
+.md-content ul, .md-content ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+}
+.md-content li { margin: 0.1em 0; }
+.md-content li > p { margin: 0.2em 0; }
+.md-content hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1em 0;
+}
+.md-content a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+}
+.md-content a:hover { color: var(--accent-hover); border-bottom-style: solid; }
+.md-content a.file-link {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--accent);
+}
+/* Inline code (single backticks) */
+.md-content code {
+  background: var(--bg-elev-3);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--fg);
+}
+/* Fenced code blocks — wrapped in .code-pre-wrap by addCodeCopyButtons. */
+.md-content pre {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin: 0.5em 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.md-content pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+.code-pre-wrap {
+  position: relative;
+}
+.code-pre-wrap > .code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev-2);
+  color: var(--fg-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 80ms ease, background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+.code-pre-wrap:hover > .code-copy { opacity: 1; }
+.code-pre-wrap > .code-copy:hover { background: var(--bg-elev-3); color: var(--fg); border-color: var(--accent); }
+.code-pre-wrap > .code-copy.ok { opacity: 1; background: rgba(110, 255, 140, 0.15); border-color: var(--ok); color: var(--ok); }
+.code-pre-wrap > .code-copy.err { opacity: 1; background: rgba(255, 110, 110, 0.15); border-color: var(--danger); color: var(--danger); }
+@media (hover: none) {
+  .code-pre-wrap > .code-copy { opacity: 0.6; }
+}
+.md-content blockquote {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 10px;
+  margin: 0.4em 0;
+  color: var(--fg-dim);
+}
+.md-content table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.92em;
+}
+.md-content th, .md-content td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+.md-content th { background: var(--bg-elev-2); }

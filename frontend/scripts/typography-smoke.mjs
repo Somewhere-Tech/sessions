@@ -47,7 +47,9 @@ function contrast(foreground, background) {
   return (values[0] + 0.05) / (values[1] + 0.05);
 }
 
-const globals = readFileSync(join(root, 'styles', 'globals.css'), 'utf8');
+// Theme tokens may live in an imported stylesheet. Inspect the complete style
+// tree instead of assuming globals.css contains every declaration directly.
+const globals = styles.map((path) => readFileSync(path, 'utf8')).join('\n');
 const darkTheme = globals.match(/:root\s*\{([\s\S]*?)\n\}/)?.[1] ?? '';
 const lightTheme = globals.match(/\.operations-shell\[data-theme="light"\]\s*\{([\s\S]*?)\n\}/)?.[1] ?? '';
 function token(block, name) {

@@ -1,7 +1,8 @@
 import fs from 'node:fs';
+import { readStylesheetTreeSync } from './lib/source-styles.mjs';
 
 const main = fs.readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
-const css = fs.readFileSync(new URL('../src/styles/globals.css', import.meta.url), 'utf8');
+const css = readStylesheetTreeSync(new URL('../src/styles/globals.css', import.meta.url));
 const native = fs.readFileSync(new URL('../../src-tauri/src/lib.rs', import.meta.url), 'utf8');
 const lifecycle = fs.readFileSync(new URL('../../src-tauri/src/lifecycle.rs', import.meta.url), 'utf8');
 const app = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
