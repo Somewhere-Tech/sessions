@@ -11,6 +11,7 @@
     "ship": "bash scripts/ship.sh",
     "build": "tauri build --bundles app",
     "bootstrap": "npm ci && npm --prefix frontend ci",
+    "check:source-size": "bash scripts/check-source-size.sh",
     "test:updater-release": "node --test scripts/render-updater-manifest.test.mjs scripts/verify-updater-signature.test.mjs scripts/windows-platform-contract.test.mjs scripts/collect-windows-host-evidence.test.mjs"
   },
   "devDependencies": {

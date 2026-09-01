@@ -18,22 +18,21 @@ import { SettingsView } from './components/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
 import { SessionsWorkspaceSkeleton } from './components/LoadingShell';
 import { OnboardingDialog } from './components/OnboardingDialog';
+import { DaemonBanner, SinglePopOut } from './AppAuxiliaryViews';
 import { useSessions } from './store/sessions';
 import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer, isLocalServer, serverDisplayName } from './lib/servers';
 import { SettingsMenu } from './components/SettingsMenu';
 import { TailnetAccessInbox } from './components/TailnetAccessInbox';
 import { MachineRecoveryNotice } from './components/MachineRecoveryNotice';
 import { useIsMobile } from './hooks/useMediaQuery';
-import { ParserIcon } from './components/ParserIcon';
 import { ConnectScreen } from './components/ConnectScreen';
-import { formatServerEndpoint } from './lib/serverEndpoint';
 import { readTabOrder, writeTabOrder, applyOrder, moveBefore } from './lib/tabOrder';
-import { useTabLabel } from './lib/tabLabels';
 import { getNativeConnectionSettings, getNativeRuntimeStatus, isTauri, notify, recoverNativeRuntime, syncTrayServers } from './lib/tauriBridge';
 import { readTextSize, writeTextSize, type TextSize } from './lib/textSize';
 import { preloadUsage } from './lib/usageCache';
 import { preloadDaily } from './lib/dailyCache';
 import { providerConversationId } from './lib/sessionStatus';
+import { INITIAL_STATUS, type ActiveStatus } from './lib/activeStatus';
 import { effectiveParentId } from './lib/workingSet';
 import { preferNextSessionView } from './lib/sessionViewPreference';
 import { handleExternalLinkClick } from './lib/externalLinks';
@@ -59,20 +58,6 @@ const TOOL_ICONS: Record<SessionTool, string> = {
 // the tab strip and mobile nav can reflect it. Only the *active* session
 // has live data here — inactive tabs stay 'idle' until we add background
 // polling (deferred from Phase 4).
-export interface ActiveStatus {
-  isWorking: boolean;
-  parserIcon: string;
-  parserName: string;
-  terminalStatus: string; // 'open' | 'connecting' | 'reconnecting' | 'error' | 'closed'
-}
-
-const INITIAL_STATUS: ActiveStatus = {
-  isWorking: false,
-  parserIcon: '⬛',
-  parserName: 'Terminal',
-  terminalStatus: 'connecting'
-};
-
 // Pop-out mode: a second window opened by Tauri (or window.open in the
 // browser) for a single session. URL signals it: `?session=<id>&mode=single`.
 // We render a stripped shell — no tabs, no server selector, no mobile nav,
@@ -991,160 +976,3 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
 // in the string — stable regardless of the exact message wording.
 // updateServer is added by stream E to lib/servers.ts; we call it via
 // getState() with a runtime guard so this compiles without a type cast.
-function DaemonBanner({
-  error,
-  onRetry
-}: {
-  error: string;
-  onRetry: () => void;
-}): JSX.Element {
-  const isAuthError = /\b401\b/.test(error);
-  const server = getActiveServer();
-  const [tokenInput, setTokenInput] = useState('');
-  const [tokenSaveError, setTokenSaveError] = useState('');
-
-  const handleTokenSubmit = async (): Promise<void> => {
-    const token = tokenInput.trim();
-    if (!token) return;
-    // Save the pasted token onto the active server config, then retry.
-    setTokenSaveError('');
-    try {
-      await useServers.getState().updateServer(server.id, { token });
-      onRetry();
-    } catch (reason) {
-      setTokenSaveError(
-        reason instanceof Error
-          ? reason.message
-          : 'Sessions could not protect and save this machine credential.'
-      );
-    }
-  };
-
-  return (
-    <div className="daemon-banner">
-      {isAuthError ? (
-        <>
-          <p className="daemon-banner-title">Authentication required</p>
-          <p className="daemon-banner-host">{formatServerEndpoint(server)}</p>
-          <p className="daemon-banner-hint">Enter the daemon token to connect.</p>
-          <div className="daemon-banner-token-row">
-            <input
-              type="password"
-              className="daemon-banner-token-input"
-              placeholder="Token"
-              value={tokenInput}
-              autoFocus
-              onChange={(e) => setTokenInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') void handleTokenSubmit(); }}
-            />
-            <button
-              type="button"
-              className="btn btn-primary daemon-banner-token-submit"
-              disabled={!tokenInput.trim()}
-              onClick={() => void handleTokenSubmit()}
-            >
-              Connect
-            </button>
-          </div>
-          {tokenSaveError ? <p className="daemon-banner-hint" role="alert">{tokenSaveError}</p> : null}
-        </>
-      ) : (
-        <>
-          <p className="daemon-banner-title">Daemon unreachable</p>
-          <p className="daemon-banner-host">{server.host}:{server.port}</p>
-          <p className="daemon-banner-hint">
-            sessionsd is not responding. Check that it is running on{' '}
-            <strong>{server.host}</strong> port <strong>{server.port}</strong>.
-          </p>
-          <button
-            type="button"
-            className="btn daemon-banner-retry"
-            onClick={onRetry}
-          >
-            Retry
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-// Pop-out window shell. Renders a minimal top bar showing WHICH session
-// this window is attached to (cwd basename + parser icon + working
-// indicator) so the user can tell windows apart at a glance. Also
-// drives document.title — Tauri's native window title is initially
-// set in Rust via .title(...), but the WebView replaces it with the
-// HTML <title> on load; setting document.title here keeps the macOS
-// title bar in sync with the session.
-function SinglePopOut({
-  sessionId,
-  sessions,
-  textSize
-}: {
-  sessionId: string;
-  sessions: import('./types').SessionInfo[];
-  textSize: import('./lib/textSize').TextSize;
-}): JSX.Element {
-  const session = sessions.find((s) => s.id === sessionId);
-  const overrideLabel = useTabLabel(sessionId);
-  // Display label — same resolution as SessionTabs:
-  //   user sessions override > claude custom > claude ai-title > cwd > cmd > short id.
-  const label = useMemo(() => {
-    if (overrideLabel) return overrideLabel;
-    if (!session) return 'session';
-    if (session.claudeCustomTitle) return session.claudeCustomTitle;
-    if (session.claudeAiTitle) return session.claudeAiTitle;
-    if (session.cwd) {
-      const parts = session.cwd.split('/').filter(Boolean);
-      const last = parts[parts.length - 1];
-      if (last) return last;
-    }
-    return session.cmd || session.id.slice(0, 6);
-  }, [overrideLabel, session]);
-
-  const [status, setStatus] = useState<ActiveStatus>(INITIAL_STATUS);
-  const cwdShort = useMemo(() => {
-    const c = session?.cwd ?? '';
-    if (!c) return '';
-    // Shorten the OS home dir to ~ for compactness, without hardcoding a
-    // username — match the standard macOS (/Users/<user>) and Linux
-    // (/home/<user>) home layouts so it works for any operator.
-    return c.replace(/^\/(Users|home)\/[^/]+/, '~');
-  }, [session?.cwd]);
-
-  // Keep the OS window title (and tab title) in sync with the session
-  // and its live status. The working glyph in the title is a useful
-  // peripheral signal when the window is in the background.
-  useEffect(() => {
-    const workingMark = status.isWorking ? '✻ ' : '';
-    document.title = `${workingMark}${label} — Sessions`;
-  }, [label, status.isWorking]);
-
-  return (
-    <div className={`app-shell single-mode text-size-${textSize.toLowerCase()}`} onClickCapture={handleExternalLinkClick}>
-      <header className="single-mode-header">
-        <ParserIcon icon={status.parserIcon} size={18} />
-        <span className="single-mode-label">{label}</span>
-        {cwdShort ? <span className="single-mode-cwd">{cwdShort}</span> : null}
-        <span className="single-mode-spacer" />
-        {status.isWorking ? (
-          <span className="single-mode-working" aria-label="working">✻ working</span>
-        ) : (
-          <span className="single-mode-idle" aria-label="idle">○ idle</span>
-        )}
-      </header>
-      <SessionView
-        key={sessionId}
-        sessionId={sessionId}
-        isActive
-        preferFullTerminal
-        onStatusChange={setStatus}
-        onOpenSession={(nextSessionId) => {
-          const next = new URL(window.location.href);
-          next.searchParams.set('session', nextSessionId);
-          window.location.assign(next);
-        }}
-      />
-    </div>
-  );
-}

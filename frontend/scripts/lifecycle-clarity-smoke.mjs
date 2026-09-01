@@ -8,11 +8,13 @@ import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
 import { closeBrowser } from './lib/smoke.mjs';
 import { readStylesheetTree } from './lib/source-styles.mjs';
+import { readSessionsdSource } from './lib/source-api.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const mux = await source('src/lib/wsMux.ts');
 const [
   app,
+  appAuxiliary,
   connection,
   navigator,
   details,
@@ -36,6 +38,7 @@ const [
   styles
 ] = await Promise.all([
   source('src/App.tsx'),
+  source('src/AppAuxiliaryViews.tsx'),
   source('src/components/ConnectionStatus.tsx'),
   source('src/components/SessionNavigator.tsx'),
   source('src/components/SessionDetails.tsx'),
@@ -53,7 +56,7 @@ const [
   source('src/components/ContinueElsewhereButton.tsx'),
   source('src/components/ProductSidebar.tsx'),
   source('src/components/SettingsView.tsx'),
-  source('src/api/sessionsd.ts'),
+  readSessionsdSource(),
   source('src/lib/tabLabels.ts'),
   source('src/store/sessions.ts'),
   readStylesheetTree(new URL('../src/styles/globals.css', import.meta.url))
@@ -134,7 +137,7 @@ assert.doesNotMatch(tabs, /onResume|tab-resume|tab-popout/);
 assert.doesNotMatch(app, /onResume=\{\(\) => setDialogOpen\('resume'\)\}/);
 assert.match(app, /const showManagerTabs = activeManagerTabs\.length > 1/);
 assert.match(app, /sessionWorkspace && showManagerTabs/);
-assert.match(app, /sessionId=\{sessionId\}[\s\S]*isActive[\s\S]*onStatusChange=\{setStatus\}/);
+assert.match(`${app}\n${appAuxiliary}`, /sessionId=\{sessionId\}[\s\S]*isActive[\s\S]*onStatusChange=\{setStatus\}/);
 assert.match(popout, />Pop out<\/span>/);
 assert.match(popout, /mode'\) === 'single'/);
 assert.match(view, /No terminal for this Rich session/);

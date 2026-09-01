@@ -3,12 +3,13 @@ import { readFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer';
 import { closeBrowser } from './lib/smoke.mjs';
 import { readStylesheetTree } from './lib/source-styles.mjs';
+import { readSessionsdSource } from './lib/source-api.mjs';
 
 const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const [fleet, servers, api, styles, status] = await Promise.all([
   source('src/components/FleetView.tsx'),
   source('src/lib/servers.ts'),
-  source('src/api/sessionsd.ts'),
+  readSessionsdSource(),
   readStylesheetTree(new URL('../src/styles/globals.css', import.meta.url)),
   source('src/lib/sessionStatus.ts')
 ]);

@@ -22,7 +22,7 @@ import { ConversationForkButton } from './ConversationForkButton';
 import { agentLedDescendants } from '../lib/workingSet';
 import { SubagentsPanel } from './SubagentsPanel';
 
-import type { ActiveStatus } from '../App';
+import type { ActiveStatus } from '../lib/activeStatus';
 
 interface Props {
   sessionId: string;

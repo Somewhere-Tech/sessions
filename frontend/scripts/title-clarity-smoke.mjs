@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 
 const scratch = await mkdtemp(join(tmpdir(), 'sessions-title-clarity-'));
@@ -11,8 +11,8 @@ const output = join(scratch, 'entry.mjs');
 
 try {
   await writeFile(entry, [
-    `export { sessionLabel, sessionTitleFromPrompt } from ${JSON.stringify(new URL('../src/lib/tabLabels.ts', import.meta.url).pathname)};`,
-    `export { serverDisplayName } from ${JSON.stringify(new URL('../src/lib/servers.ts', import.meta.url).pathname)};`
+    `export { sessionLabel, sessionTitleFromPrompt } from ${JSON.stringify(fileURLToPath(new URL('../src/lib/tabLabels.ts', import.meta.url)))};`,
+    `export { serverDisplayName } from ${JSON.stringify(fileURLToPath(new URL('../src/lib/servers.ts', import.meta.url)))};`
   ].join('\n'));
   await build({
     entryPoints: [entry], bundle: true, format: 'esm', outfile: output,
