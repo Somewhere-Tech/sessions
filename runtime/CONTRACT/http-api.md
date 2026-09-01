@@ -774,7 +774,7 @@ Auth required. Resolves one explicit provider conversation and creates its
 successor through the normal write-ahead session boundary:
 
 ```json
-{"target":"<provider UUID or conversation path>","sourceSessionId":"<optional ended Sessions id>","force":false}
+{"target":"<provider UUID or conversation path>","sourceSessionId":"<optional ended Sessions id>","force":false,"claudePermissionMode":"<optional Claude mode>"}
 ```
 
 A complete adoption returns `201` with `ok: true`, the new `laneId`, and the
@@ -791,6 +791,14 @@ explicit `terminal` selects the provider terminal. Terminal is accepted only
 for same-provider continuation; cross-provider continuation requires Rich mode
 because its imported/linked context is delivered through the structured
 runtime.
+
+`claudePermissionMode` is an optional per-launch Claude override using the same
+typed values as `POST /api/sessions` (`inherit`, Claude's constrained modes, or
+`bypassPermissions`). It is accepted only for a same-provider native Claude
+resume. Transcript-only restoration, cross-provider continuation, Codex, and
+repair reject it rather than pretending to alter a runtime they cannot control.
+The CLI maps `sessions resume ID --permissions full` to
+`bypassPermissions`; an existing constrained process is not silently mutated.
 
 ```json
 {
@@ -1184,6 +1192,11 @@ the typed per-launch setting through the normal session-creation boundary;
 Rich, Codex, cross-provider, and repair requests reject the combination rather
 than silently ignoring it. The CLI equivalent is
 `sessions continue <history-id> --terminal --remote-control`.
+The same route accepts `claudePermissionMode` for a same-provider Claude
+continuation. The CLI equivalent `sessions resume <history-id> --permissions
+full` starts the successor with Claude's exact skip-permissions flag. This is a
+new process bound to the same provider conversation, because Claude's live
+permission-mode cycle cannot elevate a process that was launched constrained.
 
 ### `POST /api/search/plan`
 

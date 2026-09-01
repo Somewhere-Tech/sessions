@@ -170,15 +170,16 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		s.sendJSON(response, http.StatusCreated, result, corsOrigin)
 	case request.URL.Path == "/api/recovery/adopt" && request.Method == http.MethodPost:
 		var body struct {
-			Target              string `json:"target"`
-			HistoryID           string `json:"historyId,omitempty"`
-			Name                string `json:"name,omitempty"`
-			SourceSessionID     string `json:"sourceSessionId,omitempty"`
-			RepairLaneID        string `json:"repairLaneId,omitempty"`
-			DestinationProvider string `json:"destinationProvider,omitempty"`
-			RuntimeMode         string `json:"runtimeMode,omitempty"`
-			RemoteControl       *bool  `json:"remoteControl,omitempty"`
-			Force               bool   `json:"force,omitempty"`
+			Target               string `json:"target"`
+			HistoryID            string `json:"historyId,omitempty"`
+			Name                 string `json:"name,omitempty"`
+			SourceSessionID      string `json:"sourceSessionId,omitempty"`
+			RepairLaneID         string `json:"repairLaneId,omitempty"`
+			DestinationProvider  string `json:"destinationProvider,omitempty"`
+			RuntimeMode          string `json:"runtimeMode,omitempty"`
+			RemoteControl        *bool  `json:"remoteControl,omitempty"`
+			ClaudePermissionMode string `json:"claudePermissionMode,omitempty"`
+			Force                bool   `json:"force,omitempty"`
 		}
 		if err := readJSON(request, &body); err != nil {
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
@@ -319,6 +320,12 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 					source.SourceKind == string(watch.ClaudeMirror)
 			}
 			if restoreFromTranscript {
+				if strings.TrimSpace(body.ClaudePermissionMode) != "" {
+					s.sendJSON(response, http.StatusConflict, map[string]any{
+						"error": "A permission override requires Claude's native resume handle; this conversation can only be restored from its Sessions transcript.",
+					}, corsOrigin)
+					return
+				}
 				if history.PromptHistoryOnly || !history.ConversationAvailable {
 					s.sendJSON(response, http.StatusConflict, map[string]any{
 						"error": "This conversation has neither a provider resume handle nor a complete Sessions transcript.",
@@ -385,6 +392,12 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 				return
 			}
 			if destination != "" && destination != sourceProvider {
+				if strings.TrimSpace(body.ClaudePermissionMode) != "" {
+					s.sendJSON(response, http.StatusBadRequest, map[string]any{
+						"error": "--permissions applies only to a same-provider Claude resume, not a cross-provider copy",
+					}, corsOrigin)
+					return
+				}
 				if body.RuntimeMode == "terminal" {
 					s.sendJSON(response, http.StatusBadRequest, map[string]any{
 						"error": "Terminal is available only when continuing with the original provider; cross-provider continuation uses Rich mode",
@@ -503,18 +516,28 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			source = adoptSourceFromSession(candidate)
 		}
 		var claudeOptions *state.ClaudeSessionOptions
-		if body.RemoteControl != nil {
+		if body.RemoteControl != nil || strings.TrimSpace(body.ClaudePermissionMode) != "" {
 			if adoption.Tool != string(state.ToolClaude) {
 				s.sendJSON(response, http.StatusBadRequest, map[string]any{
-					"error": "Remote Control is available only when continuing a Claude conversation in Terminal",
+					"error": "Claude runtime options are available only when continuing a Claude conversation",
 				}, corsOrigin)
 				return
 			}
-			choice := state.ClaudeChoiceOff
-			if *body.RemoteControl {
-				choice = state.ClaudeChoiceOn
+			claudeOptions = &state.ClaudeSessionOptions{}
+			if body.RemoteControl != nil {
+				choice := state.ClaudeChoiceOff
+				if *body.RemoteControl {
+					choice = state.ClaudeChoiceOn
+				}
+				claudeOptions.RemoteControl = choice
 			}
-			claudeOptions = &state.ClaudeSessionOptions{RemoteControl: choice}
+			if mode := strings.TrimSpace(body.ClaudePermissionMode); mode != "" {
+				claudeOptions.PermissionMode = mode
+				if _, normalizeErr := state.ResolveClaudeSettings(state.DefaultClaudeSettings(), claudeOptions); normalizeErr != nil {
+					s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": normalizeErr.Error()}, corsOrigin)
+					return
+				}
+			}
 		}
 		if body.RepairLaneID != "" {
 			successorSession, live := s.registry.Get(body.RepairLaneID)

@@ -39,6 +39,7 @@ Daily workflows:
   new                      create an interactive session
   profiles                 list Claude and Codex login profiles
   onboarding               inspect user consent and delegated access
+  defaults                 inspect or change new-session defaults
   providers                inspect or update agent CLIs
   run                      run a command in a headless lane
   tags                     view or edit session tags
@@ -187,6 +188,25 @@ Show whether this machine has completed Sessions onboarding, whether Claude Remo
 Examples:
   sessions onboarding
   sessions --json onboarding
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions defaults`
+
+```text
+Usage:
+  sessions defaults [--permissions settings|ask|accept-edits|auto|plan|dont-ask|full]
+
+inspect or change new-session defaults
+
+Inspect the Claude launch defaults stored by Sessions on the selected machine. --permissions changes the mode for future Claude sessions while preserving the other Claude settings. Full access maps to Claude's exact skip-permissions launch mode. Existing sessions keep their current provider mode; for a blocked live Terminal session, use `sessions keys SESSION shift-tab` to cycle Claude's own mode without replacing the session.
+
+Examples:
+  sessions defaults
+  sessions defaults --permissions full
+  sessions --machine mini defaults --permissions full
+  sessions --json defaults
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -907,15 +927,16 @@ Examples:
 
 ```text
 Usage:
-  sessions keys <id> <esc|up|down|left|right|^c|^d|enter|tab>
+  sessions keys <id> <esc|up|down|left|right|^c|^d|enter|tab|shift-tab>
 
 send a named key to a session
 
-Translate a supported key name to terminal bytes and send it to the session.
+Translate a supported key name to terminal bytes and send it to the session. `shift-tab` is Claude's provider-native permission-mode control, so a user or agent can repair a blocked Terminal session without opening the raw terminal or replacing its runner.
 
 Examples:
   sessions keys 0123abcd esc
   sessions keys 0123abcd ^c
+  sessions keys PM shift-tab
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
@@ -996,15 +1017,15 @@ Examples:
 
 ```text
 Usage:
-  sessions resume <[machine::]name-or-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
+  sessions resume <[machine::]name-or-id> [--with claude|codex] [--permissions inherit|constrained|full] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
 
 resume one saved conversation
 
-Resume a conversation by its durable Sessions title, full id, id prefix, or exact machine::history-id across the approved fleet. Sessions first recovers a missing Codex identity from the provider's session_meta, then uses the native provider resume. If the provider handle is truly gone but the authored transcript remains, Sessions creates one linked same-provider successor from that transcript instead of losing the conversation. `continue` and `resurrect` remain compatibility aliases. Claude resumes in its native interactive runtime by default; Codex resumes in its Rich app-server runtime. --with creates a linked copy in the other provider. --source links the ended Sessions runtime, and --repair only completes missing records for an already-live successor.
+Resume a conversation by its durable Sessions title, full id, id prefix, or exact machine::history-id across the approved fleet. Sessions first recovers a missing Codex identity from the provider's session_meta, then uses the native provider resume. If the provider handle is truly gone but the authored transcript remains, Sessions creates one linked same-provider successor from that transcript instead of losing the conversation. `continue` and `resurrect` remain compatibility aliases. Claude resumes in its native interactive runtime by default; Codex resumes in its Rich app-server runtime. --permissions full reopens a Claude conversation with the exact skip-permissions launch mode; this is the supported repair when a constrained process is blocked, because Claude cannot elevate that live process through its mode cycle. --with creates a linked copy in the other provider. --source links the ended Sessions runtime, and --repair only completes missing records for an already-live successor.
 
 Examples:
   sessions resume db-final-review-sol
-  sessions resume PM
+  sessions resume PM --permissions full
   sessions resume 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'
   sessions resume db-final-review-sol --with claude
   sessions --json resume provider:codex:00000000-0000-4000-8000-000000000001

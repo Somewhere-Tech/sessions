@@ -18,13 +18,14 @@ var keyBytes = map[string]string{
 	"esc": "\x1b", "escape": "\x1b", "up": "\x1b[A", "down": "\x1b[B",
 	"left": "\x1b[D", "right": "\x1b[C", "^c": "\x03", "ctrlc": "\x03",
 	"^d": "\x04", "ctrld": "\x04", "enter": "\r", "tab": "\t",
+	"shift-tab": "\x1b[Z", "backtab": "\x1b[Z",
 }
 
-var keyOrder = []string{"esc", "escape", "up", "down", "left", "right", "^c", "ctrlc", "^d", "ctrld", "enter", "tab"}
+var keyOrder = []string{"esc", "escape", "up", "down", "left", "right", "^c", "ctrlc", "^d", "ctrld", "enter", "tab", "shift-tab", "backtab"}
 
 func (a *app) cmdKeys(args []string) error {
 	if len(args) < 2 || args[0] == "" || args[1] == "" {
-		return fail(1, "usage: sessions keys <id> <esc|up|down|left|right|^c|^d|enter|tab>")
+		return fail(1, "usage: sessions keys <id> <esc|up|down|left|right|^c|^d|enter|tab|shift-tab>")
 	}
 	data, ok := keyBytes[strings.ToLower(args[1])]
 	if !ok {

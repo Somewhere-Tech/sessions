@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/recovery"
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 func (a *app) cmdContinue(args []string) error {
@@ -14,8 +16,9 @@ func (a *app) cmdContinue(args []string) error {
 	terminal := removeFirst(&args, "--terminal")
 	structured := removeFirst(&args, "--structured")
 	remoteControl := removeFirst(&args, "--remote-control")
+	permissions, permissionsSet := pluck(&args, "--permissions")
 	if len(args) != 1 || args[0] == "" {
-		return fail(1, "usage: sessions resume <name-or-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
+		return fail(1, "usage: sessions resume <name-or-id> [--with claude|codex] [--permissions inherit|constrained|full] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
 	}
 	resolution, err := a.resolveHistoryReference(args[0])
 	if err != nil {
@@ -52,6 +55,25 @@ func (a *app) cmdContinue(args []string) error {
 	if remoteControl && destinationSet && destinationProvider != "claude" {
 		return fail(1, "--remote-control is available only with Claude")
 	}
+	permissionMode := ""
+	if permissionsSet {
+		switch strings.ToLower(strings.TrimSpace(permissions)) {
+		case state.PermissionsInherit:
+			permissionMode = state.ClaudeChoiceInherit
+		case state.PermissionsConstrained:
+			permissionMode = state.ClaudePermissionManual
+		case state.PermissionsFull:
+			permissionMode = state.ClaudePermissionBypass
+		default:
+			return fail(1, "--permissions must be inherit, constrained, or full")
+		}
+		if destinationSet && destinationProvider != "claude" {
+			return fail(1, "--permissions on resume is currently available only with Claude")
+		}
+		if repairSet {
+			return fail(1, "--permissions cannot be combined with --repair")
+		}
+	}
 	body := map[string]any{"historyId": args[0], "force": force}
 	if sourceSet {
 		body["sourceSessionId"] = sourceSessionID
@@ -70,6 +92,9 @@ func (a *app) cmdContinue(args []string) error {
 	}
 	if remoteControl {
 		body["remoteControl"] = true
+	}
+	if permissionMode != "" {
+		body["claudePermissionMode"] = permissionMode
 	}
 	var result recovery.AdoptResult
 	if err := a.postJSON("/api/recovery/adopt", body, &result, 2); err != nil {

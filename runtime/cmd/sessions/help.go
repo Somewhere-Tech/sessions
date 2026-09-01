@@ -47,6 +47,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions onboarding", "sessions --json onboarding"}, run: (*app).cmdOnboarding,
 	},
 	{
+		name: "defaults", usage: "defaults [--permissions settings|ask|accept-edits|auto|plan|dont-ask|full]",
+		summary: "inspect or change new-session defaults", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Inspect the Claude launch defaults stored by Sessions on the selected machine. --permissions changes the mode for future Claude sessions while preserving the other Claude settings. Full access maps to Claude's exact skip-permissions launch mode. Existing sessions keep their current provider mode; for a blocked live Terminal session, use `sessions keys SESSION shift-tab` to cycle Claude's own mode without replacing the session.",
+		examples: []string{"sessions defaults", "sessions defaults --permissions full", "sessions --machine mini defaults --permissions full", "sessions --json defaults"}, run: (*app).cmdDefaults,
+	},
+	{
 		name: "providers", usage: "providers [update claude|codex]",
 		summary: "inspect or update agent CLIs", group: dailyCommandGroup, localJSON: true,
 		longHelp: "Show the locally installed Claude Code and Codex versions using only local provider metadata. `providers update` explicitly invokes that provider's own updater; it may access the internet and change the provider executable. Existing sessions keep their running process, while new sessions use the updated binary.",
@@ -253,10 +259,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions input 0123abcd 'Continue.'", "sessions --json input 0123abcd 'Continue.'", "sessions input 0123abcd --json 'Continue.'"}, run: (*app).cmdSend,
 	},
 	{
-		name: "keys", usage: "keys <id> <esc|up|down|left|right|^c|^d|enter|tab>",
+		name: "keys", usage: "keys <id> <esc|up|down|left|right|^c|^d|enter|tab|shift-tab>",
 		summary: "send a named key to a session", group: dailyCommandGroup,
-		longHelp: "Translate a supported key name to terminal bytes and send it to the session.",
-		examples: []string{"sessions keys 0123abcd esc", "sessions keys 0123abcd ^c"}, run: (*app).cmdKeys,
+		longHelp: "Translate a supported key name to terminal bytes and send it to the session. `shift-tab` is Claude's provider-native permission-mode control, so a user or agent can repair a blocked Terminal session without opening the raw terminal or replacing its runner.",
+		examples: []string{"sessions keys 0123abcd esc", "sessions keys 0123abcd ^c", "sessions keys PM shift-tab"}, run: (*app).cmdKeys,
 	},
 	{
 		name: "resize", usage: "resize <id> <cols> <rows>",
@@ -283,10 +289,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions adopt 00000000-0000-4000-8000-000000000001", "sessions adopt ~/.claude/projects/example/session.jsonl --force", "sessions adopt 00000000-0000-4000-8000-000000000001 --repair 0123abcd --source 4567cdef"}, run: (*app).cmdAdopt,
 	},
 	{
-		name: "resume", aliases: []string{"continue", "resurrect"}, usage: "resume <[machine::]name-or-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]",
+		name: "resume", aliases: []string{"continue", "resurrect"}, usage: "resume <[machine::]name-or-id> [--with claude|codex] [--permissions inherit|constrained|full] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]",
 		summary: "resume one saved conversation", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Resume a conversation by its durable Sessions title, full id, id prefix, or exact machine::history-id across the approved fleet. Sessions first recovers a missing Codex identity from the provider's session_meta, then uses the native provider resume. If the provider handle is truly gone but the authored transcript remains, Sessions creates one linked same-provider successor from that transcript instead of losing the conversation. `continue` and `resurrect` remain compatibility aliases. Claude resumes in its native interactive runtime by default; Codex resumes in its Rich app-server runtime. --with creates a linked copy in the other provider. --source links the ended Sessions runtime, and --repair only completes missing records for an already-live successor.",
-		examples: []string{"sessions resume db-final-review-sol", "sessions resume PM", "sessions resume 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'", "sessions resume db-final-review-sol --with claude", "sessions --json resume provider:codex:00000000-0000-4000-8000-000000000001"}, run: (*app).cmdContinue,
+		longHelp: "Resume a conversation by its durable Sessions title, full id, id prefix, or exact machine::history-id across the approved fleet. Sessions first recovers a missing Codex identity from the provider's session_meta, then uses the native provider resume. If the provider handle is truly gone but the authored transcript remains, Sessions creates one linked same-provider successor from that transcript instead of losing the conversation. `continue` and `resurrect` remain compatibility aliases. Claude resumes in its native interactive runtime by default; Codex resumes in its Rich app-server runtime. --permissions full reopens a Claude conversation with the exact skip-permissions launch mode; this is the supported repair when a constrained process is blocked, because Claude cannot elevate that live process through its mode cycle. --with creates a linked copy in the other provider. --source links the ended Sessions runtime, and --repair only completes missing records for an already-live successor.",
+		examples: []string{"sessions resume db-final-review-sol", "sessions resume PM --permissions full", "sessions resume 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'", "sessions resume db-final-review-sol --with claude", "sessions --json resume provider:codex:00000000-0000-4000-8000-000000000001"}, run: (*app).cmdContinue,
 	},
 	{
 		name: "fork", usage: "fork <live-session> [--with claude|codex] [--at MESSAGE_INDEX [--message-id ID]]",
