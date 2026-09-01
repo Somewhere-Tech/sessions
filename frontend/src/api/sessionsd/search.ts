@@ -369,6 +369,7 @@ export async function fetchServerHistoryTranscript(
   signal?: AbortSignal,
   window?: {
     preview?: boolean;
+    previewLimit?: number;
     start?: number;
     end?: number;
     role?: 'user' | 'assistant' | 'tool';
@@ -380,6 +381,7 @@ export async function fetchServerHistoryTranscript(
   if (window?.start !== undefined) query.set('start', String(window.start));
   if (window?.end !== undefined) query.set('end', String(window.end));
   if (window?.role) query.set('role', window.role);
+  if (window?.previewLimit !== undefined) query.set('limit', String(window.previewLimit));
   if (window?.messageId) {
     query.set('anchor', String(window.anchor ?? 0));
     query.set('message_id', window.messageId);

@@ -128,8 +128,10 @@ out of the default working set without stopping it, and ended-session
 cross-provider or cross-machine actions route through the existing audited
 continuation dialogs. `SessionHistoryView.tsx` is the
 explicit exited-session path: it fetches the bounded history preview and never
-mounts xterm or a live WebSocket; its Continue button opens the audited provider
-adoption picker with that identity preselected. The picker is provider-neutral:
+mounts xterm or a live WebSocket; it initially renders only the latest 60
+messages and expands older history on request. Its Resume button immediately
+adopts that exact conversation through the audited recovery contract. The
+separate global Resume entry point owns the provider-neutral picker:
 `runtime/internal/api/resumable.go` merges provider files, prompt-index history,
 and Sessions ledger records into one row per Claude/Codex conversation with a
 linked continuation chain. `ContinueElsewhereButton.tsx` runs the bundled CLI's

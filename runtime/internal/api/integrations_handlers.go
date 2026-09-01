@@ -111,8 +111,19 @@ func (s *Server) handleIntegrationsRoute(response http.ResponseWriter, request *
 	var err error
 	switch variant {
 	case "preview":
+		maxMessages := transcriptPreviewMaxMessages
+		if raw := request.URL.Query().Get("limit"); raw != "" {
+			requested, parseErr := strconv.Atoi(raw)
+			if parseErr != nil || requested < 1 || requested > transcriptPreviewMaxMessages {
+				s.sendJSON(response, http.StatusBadRequest, map[string]any{
+					"error": fmt.Sprintf("preview limit must be between 1 and %d", transcriptPreviewMaxMessages),
+				}, corsOrigin)
+				return true
+			}
+			maxMessages = requested
+		}
 		transcript, err = s.integrationEndpoints.TranscriptPreview(
-			s.registry.List(true), id, transcriptPreviewMaxBytes, transcriptPreviewMaxMessages,
+			s.registry.List(true), id, transcriptPreviewMaxBytes, maxMessages,
 		)
 	case "window":
 		var options integrations.TranscriptWindowOptions

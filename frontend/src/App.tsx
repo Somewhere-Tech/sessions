@@ -31,7 +31,6 @@ import { getNativeConnectionSettings, getNativeRuntimeStatus, isTauri, notify, r
 import { readTextSize, writeTextSize, type TextSize } from './lib/textSize';
 import { preloadUsage } from './lib/usageCache';
 import { preloadDaily } from './lib/dailyCache';
-import { providerConversationId } from './lib/sessionStatus';
 import { INITIAL_STATUS, type ActiveStatus } from './lib/activeStatus';
 import { effectiveParentId } from './lib/workingSet';
 import { preferNextSessionView } from './lib/sessionViewPreference';
@@ -46,6 +45,7 @@ import {
   type ServerHealth
 } from './api/sessionsd';
 import { adoptConversationWithRepair, adoptionWarning } from './lib/adoptConversation';
+import { resumeExactSession } from './lib/resumeExactSession';
 import type { SessionInfo, SessionTool } from './types';
 
 const TOOL_ICONS: Record<SessionTool, string> = {
@@ -339,23 +339,28 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // setLayoutMode is a stable React setter declared below; callbacks run only
   // after the component has completed initialization.
   }, [setActive, updateSetAside, writeOpenTabs]);
-  const resumeSession = useCallback((
+  const resumeSession = useCallback(async (
     session: SessionInfo,
     destinationProvider?: 'claude' | 'codex',
     runtimeMode?: 'rich' | 'terminal'
-  ): void => {
-    const providerId = providerConversationId(session);
-    setDialogOpen({
-      // A Sessions history id is a valid recovery target even when an older
-      // runner did not persist the provider UUID. Keep the exact row the user
-      // clicked instead of falling back to an unrelated generic picker.
-      resumeProviderId: providerId ?? session.id,
-      sourceSessionId: session.id,
-      historyId: providerId ? undefined : session.id,
-      destinationProvider,
-      runtimeMode: providerId ? runtimeMode : 'rich'
-    });
-  }, []);
+  ): Promise<void> => {
+    // A button attached to one ended session means "resume this one". It must
+    // not route through the global conversation browser and ask the person to
+    // identify the conversation a second time. The generic Resume entry point
+    // still owns that browser; this path goes straight to the same durable
+    // adoption contract the browser eventually calls.
+    const adopted = await resumeExactSession(session, destinationProvider, runtimeMode);
+    const result = adopted.result;
+    setAdoptionNotice(adoptionWarning(adopted));
+    await refresh();
+    preferNextSessionView(
+      result.laneId,
+      result.transcriptRecovery || result.destinationProvider === 'codex' || result.mode
+        ? 'remote'
+        : 'terminal'
+    );
+    openSession(result.laneId);
+  }, [openSession, refresh]);
   const forkSession = useCallback(async (
     session: SessionInfo,
     destinationProvider: 'claude' | 'codex',

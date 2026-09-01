@@ -12,9 +12,12 @@ import { SessionPopOutButton } from './SessionPopOutButton';
 import { ContinueElsewhereButton } from './ContinueElsewhereButton';
 import { ConversationForkButton } from './ConversationForkButton';
 
+const INITIAL_PREVIEW_MESSAGES = 60;
+const MAX_PREVIEW_MESSAGES = 400;
+
 interface Props {
   session: SessionInfo;
-  onResume?: (session: SessionInfo) => void;
+  onResume?: (session: SessionInfo) => void | Promise<void>;
   onFork?: (
     session: SessionInfo,
     destinationProvider: 'claude' | 'codex',
@@ -37,12 +40,16 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
   const [error, setError] = useState<string | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [resumeBusy, setResumeBusy] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  const [previewMessages, setPreviewMessages] = useState(INITIAL_PREVIEW_MESSAGES);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [forkPoint, setForkPoint] = useState<number | null>(null);
   const [forkMode, setForkMode] = useState(false);
   const [forkBusy, setForkBusy] = useState(false);
   const [forkError, setForkError] = useState<string | null>(null);
   const historyBodyRef = useRef<HTMLDivElement>(null);
+  const previousHistoryHeight = useRef(0);
   const displayParentID = session.displayParentSessionId !== undefined
     ? session.displayParentSessionId
     : session.parentSessionId;
@@ -80,10 +87,27 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    setTranscript(null);
-    void fetchServerHistoryTranscript(getActiveServer(), session.id, controller.signal, { preview: true })
+    if (previewMessages === INITIAL_PREVIEW_MESSAGES) setTranscript(null);
+    void fetchServerHistoryTranscript(getActiveServer(), session.id, controller.signal, {
+      preview: true,
+      previewLimit: previewMessages
+    })
       .then((value) => {
-        if (!controller.signal.aborted) setTranscript(value);
+        if (!controller.signal.aborted) {
+          // Older compatible daemons ignore the additive `limit` query and
+          // return their full 400-message preview. Bound it again in the
+          // client so a newer viewer stays responsive during version skew.
+          setTranscript(value.messages.length > previewMessages
+            ? { ...value, messages: value.messages.slice(-previewMessages), truncated: true }
+            : value);
+          if (previousHistoryHeight.current > 0) {
+            window.requestAnimationFrame(() => {
+              const element = historyBodyRef.current;
+              if (element) element.scrollTop += element.scrollHeight - previousHistoryHeight.current;
+              previousHistoryHeight.current = 0;
+            });
+          }
+        }
       })
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Could not load the conversation.');
@@ -92,7 +116,26 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [activeServerId, session.id, supportsConversation]);
+  }, [activeServerId, session.id, supportsConversation, previewMessages]);
+
+  const resumeExactConversation = async (): Promise<void> => {
+    if (!onResume || resumeBusy) return;
+    setResumeBusy(true);
+    setResumeError(null);
+    try {
+      await onResume(session);
+    } catch (reason) {
+      setResumeError(reason instanceof Error ? reason.message : 'Could not resume this conversation.');
+    } finally {
+      setResumeBusy(false);
+    }
+  };
+
+  const showEarlierMessages = (): void => {
+    const element = historyBodyRef.current;
+    previousHistoryHeight.current = element?.scrollHeight ?? 0;
+    setPreviewMessages((current) => Math.min(MAX_PREVIEW_MESSAGES, current + INITIAL_PREVIEW_MESSAGES));
+  };
 
   const updateJumpToLatest = useCallback(() => {
     const element = historyBodyRef.current;
@@ -189,7 +232,7 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
                 {continuation && onOpenSession ? (
                   <button type="button" className="btn btn-primary" onClick={() => onOpenSession(continuation.id)}>Open {continuationIsLive ? 'live ' : ''}continuation <span aria-hidden>→</span></button>
                 ) : canContinueSession(session) ? (
-                  <button type="button" className="btn btn-primary" onClick={() => onResume?.(session)}>Resume conversation <span aria-hidden>→</span></button>
+                  <button type="button" className="btn btn-primary" disabled={resumeBusy} onClick={() => void resumeExactConversation()}>{resumeBusy ? 'Resuming…' : 'Resume conversation'} {!resumeBusy ? <span aria-hidden>→</span> : null}</button>
                 ) : hasContinuation ? (
                   <span>The continuation is recorded on another machine.</span>
                 ) : (
@@ -202,6 +245,7 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
               </div>
             </div>
             {archiveError ? <div className="session-history-action-error" role="alert">{archiveError}</div> : null}
+            {resumeError ? <div className="session-history-action-error" role="alert">{resumeError}</div> : null}
             {forkMode ? (
               <div className="conversation-fork-mode-note" role="status">
                 <span>Choose a message to branch from.</span>
@@ -210,7 +254,14 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
             ) : null}
             {loading ? <div className="usage-empty">Loading the conversation…</div> : null}
             {error ? <div className="search-errors">{error}</div> : null}
-            {transcript?.truncated ? <div className="search-preview-notice">Showing {transcript.messages.length} recent messages from a bounded preview (up to 400).</div> : null}
+            {transcript?.truncated ? (
+              <div className="search-preview-notice session-history-preview-control">
+                <span>Showing the latest {transcript.messages.length} messages so this conversation opens quickly.</span>
+                {previewMessages < MAX_PREVIEW_MESSAGES ? (
+                  <button type="button" className="btn btn-ghost" disabled={loading} onClick={showEarlierMessages}>{loading ? 'Loading…' : 'Show earlier messages'}</button>
+                ) : <span>Use Search to find anything earlier.</span>}
+              </div>
+            ) : null}
             {transcript?.messages.map((message, index) => {
               const continuation = message.role === 'assistant' && transcript.messages[index - 1]?.role === 'assistant';
               return (

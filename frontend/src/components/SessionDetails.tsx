@@ -28,7 +28,7 @@ interface Props {
   session: SessionInfo;
   allSessions: SessionInfo[];
   onEnd: (id: string, reason?: string) => Promise<void>;
-  onResume?: (session: SessionInfo) => void;
+  onResume?: (session: SessionInfo) => void | Promise<void>;
 }
 
 export function SessionDetails({ session, allSessions, onEnd, onResume }: Props): JSX.Element {

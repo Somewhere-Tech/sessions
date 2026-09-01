@@ -222,6 +222,8 @@
 .session-view.view-details .session-details-pane { position: absolute; inset: 0; z-index: 3; display: flex; overflow: auto; }
 .session-history-body { position: relative; min-height: 0; flex: 1; overflow: auto; background: var(--bg-base); }
 .session-history-transcript { width: min(860px, calc(100% - 48px)); margin: 0 auto; padding: 28px 0 80px; }
+.session-history-preview-control { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.session-history-preview-control .btn { flex: none; }
 .session-history-message { display: flex; flex-direction: column; margin: 20px 0; color: var(--fg); }
 .session-history-message.is-assistant.is-continuation { margin-top: -8px; }
 .session-history-message.is-user { align-items: flex-end; }

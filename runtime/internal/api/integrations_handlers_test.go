@@ -107,6 +107,15 @@ func TestHistoryRoutesExposeStableListTranscriptTextAndRawShapes(t *testing.T) {
 	if previewResponse.Code != http.StatusOK || transcript.Truncated || len(transcript.Messages) != 2 {
 		t.Fatalf("preview status=%d transcript=%#v", previewResponse.Code, transcript)
 	}
+	limitedPreview := serve(t, daemon.handler, http.MethodGet, "/api/history/"+id+"/preview?format=json&limit=1", nil, "127.0.0.1:4321", nil)
+	decodeBody(t, limitedPreview, &transcript)
+	if limitedPreview.Code != http.StatusOK || !transcript.Truncated || len(transcript.Messages) != 1 || transcript.Messages[0].Text != "Fixture remembered." {
+		t.Fatalf("limited preview status=%d transcript=%#v", limitedPreview.Code, transcript)
+	}
+	invalidPreview := serve(t, daemon.handler, http.MethodGet, "/api/history/"+id+"/preview?format=json&limit=0", nil, "127.0.0.1:4321", nil)
+	if invalidPreview.Code != http.StatusBadRequest {
+		t.Fatalf("invalid preview status=%d body=%s", invalidPreview.Code, invalidPreview.Body.String())
+	}
 	windowResponse := serve(t, daemon.handler, http.MethodGet, "/api/history/"+id+"/window?format=json&start=1&end=2", nil, "127.0.0.1:4321", nil)
 	decodeBody(t, windowResponse, &transcript)
 	if windowResponse.Code != http.StatusOK || !transcript.Truncated || transcript.Session.MessageCount != 2 ||

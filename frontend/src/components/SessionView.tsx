@@ -35,7 +35,7 @@ interface Props {
     session: import('../types').SessionInfo,
     destinationProvider?: 'claude' | 'codex',
     runtimeMode?: 'rich' | 'terminal'
-  ) => void;
+  ) => void | Promise<void>;
   onFork?: (
     session: import('../types').SessionInfo,
     destinationProvider: 'claude' | 'codex',

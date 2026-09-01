@@ -1249,7 +1249,9 @@ giant transcript in one daemon response or WebView render.
 
 The compatibility viewer may request the distinct
 `GET /api/history/<id>/preview?format=json` path, which reads at most the latest 2 MiB of the JSONL
-artifact and returns at most its latest 400 normalized messages. The additive
+artifact and returns at most its latest 400 normalized messages. An optional
+`limit=1..400` lowers the message count for a particular interactive view;
+invalid limits return 400 rather than being ignored. The additive
 response field `"truncated":true` appears when either bound removed older
 content; it is omitted for a complete preview. This bound does not change the
 deliberate full-history JSON/text response or `/api/history/<id>/raw` download.
