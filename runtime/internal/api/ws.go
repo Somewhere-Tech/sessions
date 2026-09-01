@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,7 +90,11 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 	}
 	session, ok := s.registry.Get(id)
 	if !ok {
-		_ = peer.send(ctx, map[string]any{"type": "error", "message": "unknown session " + id})
+		if pending, paused := s.pendingRestore(id); paused {
+			_ = peer.send(ctx, pendingRestoreSocketError(id, pending))
+		} else {
+			_ = peer.send(ctx, map[string]any{"type": "error", "message": "unknown session " + id})
+		}
 		_ = peer.connection.Close(websocket.StatusPolicyViolation, "unknown session")
 		return
 	}
@@ -224,10 +229,14 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 			}
 			session, ok := s.registry.Get(message.SessionID)
 			if !ok {
-				_ = peer.send(ctx, map[string]any{
-					"type": "error", "message": "unknown session " + message.SessionID,
-					"sessionId": message.SessionID,
-				})
+				if pending, paused := s.pendingRestore(message.SessionID); paused {
+					_ = peer.send(ctx, pendingRestoreSocketError(message.SessionID, pending))
+				} else {
+					_ = peer.send(ctx, map[string]any{
+						"type": "error", "message": "unknown session " + message.SessionID,
+						"sessionId": message.SessionID,
+					})
+				}
 				continue
 			}
 			includeOutput := message.OutputReplay == nil || *message.OutputReplay
@@ -439,6 +448,11 @@ func (s *Server) handleMuxSnapshot(ctx context.Context, peer *wsPeer, message cl
 	}
 	session, ok := s.registry.Get(message.SessionID)
 	if !ok {
+		if pending, paused := s.pendingRestore(message.SessionID); paused {
+			sendRPCError(ctx, peer, message.RequestID,
+				pendingRestoreMessage(message.SessionID, pending), "SESSION_NEEDS_RECREATE", message.SessionID)
+			return
+		}
 		sendRPCError(ctx, peer, message.RequestID, "unknown session "+message.SessionID, "not_found", message.SessionID)
 		return
 	}
@@ -463,6 +477,11 @@ func (s *Server) handleMuxEvents(ctx context.Context, peer *wsPeer, message clie
 	}
 	session, ok := s.registry.Get(message.SessionID)
 	if !ok {
+		if pending, paused := s.pendingRestore(message.SessionID); paused {
+			sendRPCError(ctx, peer, message.RequestID,
+				pendingRestoreMessage(message.SessionID, pending), "SESSION_NEEDS_RECREATE", message.SessionID)
+			return
+		}
 		sendRPCError(ctx, peer, message.RequestID, "unknown session "+message.SessionID, "not_found", message.SessionID)
 		return
 	}
@@ -471,6 +490,22 @@ func (s *Server) handleMuxEvents(ctx context.Context, peer *wsPeer, message clie
 	body["requestId"] = message.RequestID
 	body["sessionId"] = message.SessionID
 	_ = peer.send(ctx, body)
+}
+
+func pendingRestoreMessage(id string, pending state.RestorePending) string {
+	reason := strings.TrimSpace(pending.Reason)
+	if reason == "" {
+		reason = "the runner stayed paused after reboot"
+	}
+	return "session is paused after reboot and cannot be read or controlled until it is resumed: " +
+		reason + "; run sessions resume " + id
+}
+
+func pendingRestoreSocketError(id string, pending state.RestorePending) map[string]any {
+	return map[string]any{
+		"type": "error", "code": "SESSION_NEEDS_RECREATE", "sessionId": id,
+		"message": pendingRestoreMessage(id, pending), "action": "sessions resume " + id,
+	}
 }
 
 func sendRPCError(ctx context.Context, peer *wsPeer, requestID, message, code, sessionID string) {

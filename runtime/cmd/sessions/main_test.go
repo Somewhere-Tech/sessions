@@ -286,6 +286,8 @@ func TestLiveStatusNeverLooksTerminalBecauseOfLastTurn(t *testing.T) {
 		{name: "failed turn remains live", session: session{IdleReason: "failed"}, want: "idle"},
 		{name: "never started remains live", session: session{IdleReason: "never-started"}, want: "idle"},
 		{name: "approval is actionable", session: session{IdleReason: "needs-input"}, want: "needs-you"},
+		{name: "reboot pause needs recovery", session: session{Unreachable: true, UnreachableReason: "restart-restore-pending"}, want: "needs-recovery"},
+		{name: "lost runner is unreachable", session: session{Unreachable: true, UnreachableReason: "runner-lost"}, want: "unreachable"},
 		{name: "working wins over last turn", session: session{Working: true, IdleReason: "completed"}, want: "working"},
 		{name: "set aside is organizational", session: session{SetAsideAt: &setAsideAt}, want: "set-aside"},
 		{name: "only exited is terminal", session: session{Exited: true, IdleReason: "completed"}, want: "exited"},
@@ -296,6 +298,22 @@ func TestLiveStatusNeverLooksTerminalBecauseOfLastTurn(t *testing.T) {
 				t.Fatalf("liveStatusState() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestAPIReadFailureMakesRebootPauseActionable(t *testing.T) {
+	id := "11111111-2222-4333-8444-555555555555"
+	err := apiReadFailure("/api/sessions/"+id+"/snapshot", apiResponse{
+		status: http.StatusConflict,
+		body:   []byte(`{"code":"SESSION_NEEDS_RECREATE","error":"paused after reboot","action":"sessions resume ` + id + `"}`),
+	})
+	if exitCode(err) != exitTargetUnavailable {
+		t.Fatalf("exitCode() = %d, want %d; err=%v", exitCode(err), exitTargetUnavailable, err)
+	}
+	for _, fragment := range []string{"SESSION_NEEDS_RECREATE", "paused after reboot", "sessions resume " + id} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("error %q does not contain %q", err, fragment)
+		}
 	}
 }
 

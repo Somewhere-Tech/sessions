@@ -78,6 +78,10 @@ type rebootRestoreHealthService interface {
 	RestorePendingCount() int
 }
 
+type pendingRestoreService interface {
+	PendingRestore(string) (state.RestorePending, bool)
+}
+
 type attributedKillService interface {
 	RequestKillAttributed(context.Context, string, bool, state.EndSessionRequest) error
 }

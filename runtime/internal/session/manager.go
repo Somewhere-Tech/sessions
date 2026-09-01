@@ -348,6 +348,7 @@ func (m *Manager) List(includeExited bool) []state.SessionInfo {
 	// clothes. withDurableClosed adds ended records only when they were asked
 	// for.
 	infos = m.withDurableClosed(ctx, infos, includeExited)
+	infos = m.withPendingRestores(infos)
 	return m.withProvenance(ctx, infos)
 }
 func (m *Manager) Get(id string) (*state.Session, bool) { return m.registry.Get(id) }

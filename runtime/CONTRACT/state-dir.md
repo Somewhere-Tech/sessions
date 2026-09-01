@@ -256,20 +256,23 @@ launchd's `PathState` true. A runner keeps the permit across an unexpected
 same-boot crash, and removes it on a normal end, explicit stop, malformed
 startup, or other terminal startup failure.
 
-When the permit belongs to an earlier boot, the runner admits only the
-deterministic first eight pinned, non-lane roots whose permits prove they were
+When the permit belongs to an earlier boot, the runner admits only the eight
+most recently active pinned, non-lane roots whose permits prove they were
 running before shutdown. It renews those permits for the current boot. Every
 other runner removes its stale permit, exits without starting its provider, and
 writes `.restore-pending.json` with the session id, reason, and detection time.
-Discovery treats that marker as an intentional safety state: it preserves the
-metadata, launch record, events, and transcript so retained history can be
-reconciled without spawning provider processes.
+Discovery treats that marker as an actionable safety state: it preserves the
+metadata, launch record, events, and transcript, includes the session in the
+ordinary list as `unreachableReason: "restart-restore-pending"`, and never
+reports an empty successful live read for it.
 
 Both files are sidecars, not runner metadata documents, and are excluded by
 `RunnerIDFromMetadataName`. Both `/api/health` responses report the current
 marker count as `restore.pending` and the compiled ceiling as
-`restore.automaticPinnedLimit`, so a client can show safe mode without guessing
-from an empty live-session list.
+`restore.automaticPinnedLimit`. A non-zero count also makes health `status`
+and `restore.status` equal `"degraded"`, with code `SESSION_RESTORE_PENDING`
+and the explicit recovery action, so a client or operator does not have to
+infer recovery failure from an empty live-session list.
 
 ### `runners/<id>.transcript.jsonl` and `.transcript.meta.json`
 

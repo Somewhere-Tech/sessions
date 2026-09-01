@@ -267,6 +267,18 @@ type testDaemon struct {
 	root     string
 }
 
+type pendingRestoreRegistry struct {
+	*state.Registry
+	pending map[string]state.RestorePending
+}
+
+func (r *pendingRestoreRegistry) PendingRestore(id string) (state.RestorePending, bool) {
+	pending, ok := r.pending[id]
+	return pending, ok
+}
+
+func (r *pendingRestoreRegistry) RestorePendingCount() int { return len(r.pending) }
+
 func newTestDaemon(t *testing.T) testDaemon {
 	t.Helper()
 	root := t.TempDir()
@@ -307,7 +319,7 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	}
 	var body map[string]any
 	decodeBody(t, health, &body)
-	for _, key := range []string{"ok", "name", "version", "listen", "lan", "access", "system", "compatibility", "discovering", "sessionsLoaded", "restore"} {
+	for _, key := range []string{"ok", "name", "version", "status", "listen", "lan", "access", "system", "compatibility", "discovering", "sessionsLoaded", "restore"} {
 		if _, exists := body[key]; !exists {
 			t.Errorf("health missing key %q: %#v", key, body)
 		}
@@ -338,7 +350,8 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 		t.Fatalf("unexpected runner compatibility: %#v", runnerCompatibility)
 	}
 	restore := body["restore"].(map[string]any)
-	if restore["pending"] != float64(0) || restore["automaticPinnedLimit"] != float64(state.DefaultPinnedBootRestoreLimit) {
+	if restore["pending"] != float64(0) || restore["automaticPinnedLimit"] != float64(state.DefaultPinnedBootRestoreLimit) ||
+		restore["degraded"] != false || restore["status"] != "healthy" || body["status"] != "healthy" {
 		t.Fatalf("unexpected reboot restore health: %#v", restore)
 	}
 
@@ -377,6 +390,47 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	spa := serve(t, daemon.handler, http.MethodGet, "/sessions/example", nil, "198.51.100.10:4321", nil)
 	if spa.Code != http.StatusOK || !strings.Contains(spa.Body.String(), "sessions test ui") {
 		t.Fatalf("SPA fallback: status=%d body=%q", spa.Code, spa.Body.String())
+	}
+}
+
+func TestPausedAfterRebootIsDegradedAndEveryReadFailsLoudly(t *testing.T) {
+	daemon := newTestDaemon(t)
+	id := "11111111-2222-4333-8444-555555555555"
+	registry := &pendingRestoreRegistry{
+		Registry: daemon.registry,
+		pending: map[string]state.RestorePending{id: {
+			SessionID: id, Reason: "bounded restart recovery paused this runner", DetectedAtMS: 123,
+		}},
+	}
+	handler := New(daemon.config, registry)
+
+	health := serve(t, handler, http.MethodGet, "/api/health", nil, "127.0.0.1:1", nil)
+	var healthBody map[string]any
+	decodeBody(t, health, &healthBody)
+	restore := healthBody["restore"].(map[string]any)
+	if healthBody["status"] != "degraded" || restore["degraded"] != true ||
+		restore["code"] != "SESSION_RESTORE_PENDING" || restore["action"] != "sessions doctor" {
+		t.Fatalf("degraded health = %#v", healthBody)
+	}
+
+	for _, path := range []string{
+		"/api/sessions/" + id + "/snapshot",
+		"/api/sessions/" + id + "/events",
+	} {
+		response := serve(t, handler, http.MethodGet, path, nil, "127.0.0.1:1", nil)
+		if response.Code != http.StatusConflict {
+			t.Fatalf("GET %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		var body map[string]any
+		decodeBody(t, response, &body)
+		if body["code"] != "SESSION_NEEDS_RECREATE" || body["action"] != "sessions resume "+id {
+			t.Fatalf("GET %s body=%#v", path, body)
+		}
+	}
+
+	unknown := serve(t, handler, http.MethodGet, "/api/sessions/not-recorded/snapshot", nil, "127.0.0.1:1", nil)
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("unknown snapshot status=%d body=%s", unknown.Code, unknown.Body.String())
 	}
 }
 

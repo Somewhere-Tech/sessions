@@ -220,6 +220,17 @@ try {
   assert.equal(classifySession(unavailable).label, 'Not connected');
   assert.equal(sessionIsFinished(unavailable), false);
 
+  // A deliberately reboot-paused runtime is not generic connection loss and
+  // never reads as idle. It has one actionable state across every surface.
+  const needsRecovery = {
+    ...unavailable,
+    id: 'runner-paused-after-reboot',
+    unreachableReason: 'restart-restore-pending'
+  };
+  assert.equal(classifySession(needsRecovery).state, 'needs-recovery');
+  assert.equal(classifySession(needsRecovery).label, 'Needs recovery');
+  assert.equal(sessionWantsAttention(needsRecovery), true);
+
   // Ordinary live states.
   const working = { ...askingWhileBusy, id: 'working', idleReason: undefined };
   assert.equal(classifySession(working).state, 'working');
@@ -235,13 +246,13 @@ try {
 
   // Every state carries exactly one label and one `is-<state>` class token.
   const states = new Set();
-  for (const sample of [reconnecting, unavailable, crashed, endedButAsking, askingWhileBusy, working, liveMcpWarning, ready]) {
+  for (const sample of [reconnecting, unavailable, needsRecovery, crashed, endedButAsking, askingWhileBusy, working, liveMcpWarning, ready]) {
     const status = classifySession(sample);
     assert.equal(status.className, `is-${status.state}`);
     assert.ok(status.label.length > 0);
     states.add(status.state);
   }
-  assert.equal(states.size, 8, 'each sample must land in a distinct state');
+  assert.equal(states.size, 9, 'each sample must land in a distinct state');
 
   console.log('session status smoke: ok');
 } finally {

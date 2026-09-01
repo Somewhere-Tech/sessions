@@ -80,6 +80,7 @@ import type { SessionInfo } from '../types';
 export type SessionStatusState =
   | 'reconnecting'
   | 'unavailable'
+  | 'needs-recovery'
   | 'failed'
   | 'ended'
   | 'needs-you'
@@ -118,6 +119,7 @@ export interface SessionStatus {
 const STATE_LABELS: Record<SessionStatusState, string> = {
   reconnecting: 'Connecting…',
   unavailable: 'Not connected',
+  'needs-recovery': 'Needs recovery',
   failed: 'Failed',
   ended: 'Ended',
   'needs-you': 'Needs you',
@@ -131,6 +133,7 @@ const STATE_LABELS: Record<SessionStatusState, string> = {
 const STATE_TONES: Record<SessionStatusState, SessionStatusTone> = {
   reconnecting: 'ready',
   unavailable: 'ended',
+  'needs-recovery': 'needs',
   failed: 'attention',
   ended: 'ended',
   'needs-you': 'needs',
@@ -152,6 +155,7 @@ export interface ClassifyOptions {
 }
 
 function statusState(session: SessionInfo, options: ClassifyOptions): SessionStatusState {
+  if (session.unreachableReason === 'restart-restore-pending') return 'needs-recovery';
   if (session.unreachable) return session.pid && session.pid > 0 ? 'reconnecting' : 'unavailable';
   if (isCrashedSession(session)) return 'failed';
   if (session.exited) return 'ended';
@@ -174,7 +178,7 @@ export function classifySession(session: SessionInfo, options: ClassifyOptions =
     degraded: isDegradedSession(session),
     needsYou: state === 'needs-you',
     finished: state === 'ended' || state === 'finished',
-    wantsAttention: state === 'needs-you' || state === 'failed' || state === 'limited'
+    wantsAttention: state === 'needs-recovery' || state === 'needs-you' || state === 'failed' || state === 'limited'
   };
 }
 

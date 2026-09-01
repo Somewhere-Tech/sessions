@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -67,8 +68,10 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		if !s.mayReadLANEndpoint(request) {
 			lanState.URL = nil
 		}
+		restore := s.rebootRestoreHealth()
 		s.sendJSON(response, http.StatusOK, map[string]any{
 			"ok": true, "name": "sessionsd", "version": Version,
+			"status": restore["status"],
 			"listen": map[string]any{"host": s.config.Host, "port": s.config.Port},
 			"lan":    lanState,
 			"access": map[string]any{"open": s.openAccessEnabled()},
@@ -83,7 +86,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			},
 			"discovering":    s.registry.IsDiscovering(),
 			"sessionsLoaded": len(s.registry.List(true)),
-			"restore":        s.rebootRestoreHealth(),
+			"restore":        restore,
 		}, corsOrigin)
 		return
 	}
@@ -125,8 +128,10 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	// `sessions doctor`, which reaches the daemon over loopback (or with a
 	// per-device token when targeting another machine).
 	if path == "/api/health/deep" && request.Method == http.MethodGet {
+		restore := s.rebootRestoreHealth()
 		s.sendJSON(response, http.StatusOK, map[string]any{
 			"ok": true, "name": "sessionsd", "version": Version,
+			"status": restore["status"],
 			"access": map[string]any{"open": s.openAccessEnabled()},
 			"compatibility": map[string]any{
 				"api": map[string]any{
@@ -138,7 +143,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			},
 			"discovering":    s.registry.IsDiscovering(),
 			"sessionsLoaded": len(s.registry.List(true)),
-			"restore":        s.rebootRestoreHealth(),
+			"restore":        restore,
 			"uptimeSec":      int64(math.Round(s.registry.Uptime().Seconds())),
 			"sessions":       s.registry.DeepDiagnostics(),
 		}, corsOrigin)
@@ -416,10 +421,19 @@ func (s *Server) rebootRestoreHealth() map[string]any {
 	if reporter, ok := s.registry.(rebootRestoreHealthService); ok {
 		pending = reporter.RestorePendingCount()
 	}
-	return map[string]any{
+	health := map[string]any{
 		"pending":              pending,
 		"automaticPinnedLimit": state.DefaultPinnedBootRestoreLimit,
+		"degraded":             pending > 0,
+		"status":               "healthy",
 	}
+	if pending > 0 {
+		health["status"] = "degraded"
+		health["code"] = "SESSION_RESTORE_PENDING"
+		health["message"] = fmt.Sprintf("%d session(s) are paused after reboot and need recovery", pending)
+		health["action"] = "sessions doctor"
+	}
+	return health
 }
 
 func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) {
@@ -511,6 +525,9 @@ func (s *Server) requireLocalPrincipal(response http.ResponseWriter, request *ht
 
 func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.Request, id, suffix, corsOrigin string) {
 	session, ok := s.registry.Get(id)
+	if !ok && sessionRuntimeRoute(request.Method, suffix) && s.sendPendingRestore(response, id, corsOrigin) {
+		return
+	}
 	if suffix == "/model-options" && request.Method == http.MethodGet {
 		if !ok {
 			s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "unknown session", "id": id}, corsOrigin)
@@ -905,6 +922,45 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		return
 	}
 	s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": request.URL.Path}, corsOrigin)
+}
+
+func sessionRuntimeRoute(method, suffix string) bool {
+	switch suffix {
+	case "/snapshot", "/events", "/model-options":
+		return method == http.MethodGet
+	case "/input", "/submit":
+		return method == http.MethodPost
+	case "/model":
+		return method == http.MethodPut
+	default:
+		return false
+	}
+}
+
+func (s *Server) pendingRestore(id string) (state.RestorePending, bool) {
+	reporter, ok := s.registry.(pendingRestoreService)
+	if !ok {
+		return state.RestorePending{}, false
+	}
+	return reporter.PendingRestore(id)
+}
+
+func (s *Server) sendPendingRestore(response http.ResponseWriter, id, corsOrigin string) bool {
+	pending, ok := s.pendingRestore(id)
+	if !ok {
+		return false
+	}
+	reason := strings.TrimSpace(pending.Reason)
+	if reason == "" {
+		reason = "the runner stayed paused after reboot"
+	}
+	action := "sessions resume " + id
+	s.sendJSON(response, http.StatusConflict, map[string]any{
+		"code": "SESSION_NEEDS_RECREATE", "sessionId": id,
+		"error":  "session is paused after reboot and cannot be read or controlled until it is resumed: " + reason,
+		"action": action,
+	}, corsOrigin)
+	return true
 }
 
 // setCORSHeaders writes the one CORS answer this daemon gives. Every response

@@ -247,7 +247,7 @@ func (a *app) getJSON(path string, target any) error {
 		}
 	}
 	if response.status >= 400 {
-		return fail(2, "%s → %d %s", path, response.status, prefixBytes(response.body, 200))
+		return apiReadFailure(path, response)
 	}
 	if err := json.Unmarshal(response.body, target); err != nil {
 		return err
@@ -336,9 +336,32 @@ func (a *app) getText(path string) (string, error) {
 		return "", nil
 	}
 	if response.status >= 400 {
-		return "", fail(2, "%s → %d", path, response.status)
+		return "", apiReadFailure(path, response)
 	}
 	return string(response.body), nil
+}
+
+func apiReadFailure(path string, response apiResponse) error {
+	var payload struct {
+		Code   string `json:"code"`
+		Error  string `json:"error"`
+		Action string `json:"action"`
+	}
+	if json.Unmarshal(response.body, &payload) == nil && payload.Error != "" {
+		message := payload.Error
+		if payload.Code != "" {
+			message = payload.Code + ": " + message
+		}
+		if payload.Action != "" {
+			message += "; next: " + payload.Action
+		}
+		code := 2
+		if payload.Code == "SESSION_NEEDS_RECREATE" {
+			code = 4
+		}
+		return fail(code, "%s", message)
+	}
+	return fail(2, "%s → %d %s", path, response.status, prefixBytes(response.body, 200))
 }
 
 func prefixBytes(value []byte, count int) string {

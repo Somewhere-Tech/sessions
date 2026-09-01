@@ -58,6 +58,9 @@ type statusOutput struct {
 	SetAsideAtMS      *int64                   `json:"set_aside_at_ms,omitempty"`
 	Permissions       string                   `json:"permissions,omitempty"`
 	Lifecycle         string                   `json:"lifecycle,omitempty"`
+	Unreachable       bool                     `json:"unreachable,omitempty"`
+	UnreachableReason string                   `json:"unreachable_reason,omitempty"`
+	UnreachableSince  *int64                   `json:"unreachable_since_ms,omitempty"`
 }
 
 func (a *app) cmdStatus(args []string) error {
@@ -116,6 +119,8 @@ func (a *app) cmdStatus(args []string) error {
 		EndOperationID: current.EndOperationID,
 		SetAsideAtMS:   current.SetAsideAt,
 		Permissions:    current.Permissions, Lifecycle: current.Lifecycle,
+		Unreachable: current.Unreachable, UnreachableReason: current.UnreachableReason,
+		UnreachableSince: current.UnreachableSince,
 	}
 	if current.Exited {
 		output.ExitCode = current.ExitCode
@@ -132,6 +137,12 @@ func (a *app) cmdStatus(args []string) error {
 func liveStatusState(current session) string {
 	if current.Exited {
 		return "exited"
+	}
+	if current.Unreachable {
+		if current.UnreachableReason == "restart-restore-pending" {
+			return "needs-recovery"
+		}
+		return "unreachable"
 	}
 	if current.SetAsideAt != nil {
 		return "set-aside"
@@ -294,6 +305,15 @@ func (a *app) writeStatusCard(output statusOutput, lastActivityAt int64) error {
 	}
 	if output.ExitCode != nil {
 		if _, err := fmt.Fprintf(a.stdout, "  exit     %d\n", *output.ExitCode); err != nil {
+			return err
+		}
+	}
+	if output.Unreachable {
+		detail := output.UnreachableReason
+		if detail == "restart-restore-pending" {
+			detail = "paused after reboot — run `sessions resume " + output.ID + "`"
+		}
+		if _, err := fmt.Fprintf(a.stdout, "  recovery %s\n", detail); err != nil {
 			return err
 		}
 	}

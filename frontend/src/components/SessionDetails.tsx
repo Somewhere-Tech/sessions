@@ -13,6 +13,7 @@ import { PIN_UNAVAILABLE_WHEN_ENDED } from '../lib/workingSet';
 const STATE_DETAIL: Record<SessionStatusState, string> = {
   reconnecting: 'Sessions is reconnecting to this agent; its work keeps running',
   unavailable: 'Sessions cannot currently reach this agent; its saved conversation remains available',
+  'needs-recovery': 'This agent stayed paused after restart; resume it when you are ready',
   failed: 'The runtime stopped unexpectedly; saved history is still available',
   ended: 'The runtime is no longer running',
   'needs-you': 'Waiting for your response',

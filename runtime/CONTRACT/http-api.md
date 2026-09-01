@@ -212,8 +212,13 @@ grace period. The deep-health response carries the same `compatibility` and
 `access` objects but no `listen` or `lan`. `restore.pending` counts runners
 Sessions deliberately left stopped after reboot rather than starting an
 unbounded retained fleet; their recovery evidence is preserved.
-`restore.automaticPinnedLimit` is the compiled ceiling for pinned non-lane
-roots that may return automatically.
+`restore.automaticPinnedLimit` is the compiled ceiling for the most recently
+active pinned non-lane roots that may return automatically. A non-zero pending
+count sets top-level `status` and `restore.status` to `"degraded"` and adds
+`restore.code: "SESSION_RESTORE_PENDING"`, a human-readable message, and
+`restore.action: "sessions doctor"`. `ok` continues to mean that the
+daemon itself is serving requests; `status` carries this recoverable degraded
+condition.
 
 ### `GET /api/health/deep`
 
@@ -224,9 +229,15 @@ Requires authentication (loopback peers are already authorized). Returns 200:
   "ok": true,
   "name": "sessionsd",
   "version": "0.2.3",
+  "status": "healthy",
   "discovering": false,
   "sessionsLoaded": 1,
-  "restore": { "pending": 0, "automaticPinnedLimit": 8 },
+  "restore": {
+    "pending": 0,
+    "automaticPinnedLimit": 8,
+    "degraded": false,
+    "status": "healthy"
+  },
   "uptimeSec": 12,
   "sessions": [
     {

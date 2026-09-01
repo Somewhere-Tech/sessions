@@ -1,0 +1,137 @@
+package session
+
+import (
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
+)
+
+const restartRestorePendingReason = "restart-restore-pending"
+
+// PendingRestore reports the durable marker for a session that intentionally
+// stayed stopped after a reboot. It is a separate state from unknown, ended,
+// and idle; API reads use it to return an actionable error rather than an
+// empty successful response.
+func (m *Manager) PendingRestore(id string) (state.RestorePending, bool) {
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\\`) {
+		return state.RestorePending{}, false
+	}
+	path := state.For(m.config.RunnerStateDir, id).RestorePending
+	pending, err := state.ReadRestorePending(path)
+	if err == nil {
+		return pending, true
+	}
+	if os.IsNotExist(err) {
+		return state.RestorePending{}, false
+	}
+	// An unreadable marker still proves restoration did not complete. Keep the
+	// session unavailable and give the operator a repair path instead of
+	// silently turning corrupt recovery evidence into "unknown session".
+	detectedAt := int64(0)
+	if info, statErr := os.Stat(path); statErr == nil {
+		detectedAt = info.ModTime().UnixMilli()
+	}
+	return state.RestorePending{
+		SessionID: id, DetectedAtMS: detectedAt,
+		Reason: "the reboot recovery marker is unreadable: " + err.Error(),
+	}, true
+}
+
+// withPendingRestores adds reboot-paused sessions to the ordinary live list.
+// The metadata is the last durable runtime identity; no field here claims the
+// provider is alive. A reachable registry connection always wins.
+func (m *Manager) withPendingRestores(infos []state.SessionInfo) []state.SessionInfo {
+	indices := make(map[string]int, len(infos))
+	for index, info := range infos {
+		indices[info.ID] = index
+	}
+	entries, err := os.ReadDir(m.config.RunnerStateDir)
+	if os.IsNotExist(err) {
+		return infos
+	}
+	if err != nil {
+		log.Printf("[restore] list paused reboot sessions: %v", err)
+		return infos
+	}
+	const suffix = ".restore-pending.json"
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), suffix) {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), suffix)
+		// A real registry connection is stronger evidence than a stale marker.
+		// A durable closed/lost record is not: reboot-pending is the current
+		// actionable state and must replace it instead of disappearing behind it.
+		if m.registry != nil {
+			if existing, live := m.registry.Get(id); live && !existing.Info().Unreachable {
+				continue
+			}
+		}
+		pending, exists := m.PendingRestore(id)
+		if !exists {
+			continue
+		}
+		metadata, metadataErr := state.ReadRunnerMetadata(filepath.Join(m.config.RunnerStateDir, id+".json"))
+		if metadataErr != nil {
+			log.Printf("[restore] read paused session %s metadata: %v", id, metadataErr)
+			metadata = state.RunnerMetadata{}
+		} else if metadata.Info.ID != id {
+			log.Printf("[restore] paused session %s metadata belongs to %s", id, metadata.Info.ID)
+			metadata = state.RunnerMetadata{}
+		}
+		info := pendingSessionInfo(id, metadata, pending)
+		if index, exists := indices[id]; exists {
+			infos[index] = info
+			continue
+		}
+		indices[id] = len(infos)
+		infos = append(infos, info)
+	}
+	return infos
+}
+
+func pendingSessionInfo(id string, metadata state.RunnerMetadata, pending state.RestorePending) state.SessionInfo {
+	lastDataAt := metadata.Info.CreatedAt
+	for _, candidate := range []*int64{metadata.LastHumanMessageAt, metadata.LastAgentMessageAt} {
+		if candidate != nil && *candidate > lastDataAt {
+			lastDataAt = *candidate
+		}
+	}
+	since := pending.DetectedAtMS
+	if since == 0 {
+		since = lastDataAt
+	}
+	tool := state.ToolTerminal
+	command := strings.ToLower(filepath.Base(metadata.Info.Cmd))
+	switch {
+	case metadata.Kind == state.KindLane:
+		tool = state.ToolLane
+	case metadata.Kind == state.KindCodexAppServer || command == "codex":
+		tool = state.ToolCodex
+	case metadata.Kind == state.KindClaudeStructured || command == "claude":
+		tool = state.ToolClaude
+	}
+	return state.SessionInfo{
+		ID: id, Name: metadata.Name, NameSource: metadata.NameSource,
+		Description: metadata.Description, DescriptionSource: metadata.DescriptionSource,
+		Tags: state.CloneTags(metadata.Tags), Kind: metadata.Kind, SpecPath: metadata.SpecPath,
+		Cmd: metadata.Info.Cmd, Args: append([]string(nil), metadata.Info.Args...),
+		Cwd: metadata.Info.Cwd, Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
+		Cols: metadata.Info.Cols, Rows: metadata.Info.Rows, CreatedAt: metadata.Info.CreatedAt,
+		PID: 0, Tool: tool, LastDataAt: lastDataAt,
+		Unreachable: true, UnreachableReason: restartRestorePendingReason, UnreachableSince: &since,
+		IdleReason: "needs-recovery", IdleDetail: pending.Reason, IdleSince: &since,
+		ConversationID: metadata.Info.ConversationID, RemoteEndpoint: metadata.Info.RemoteEndpoint,
+		ClaudeSessionID:        metadata.Info.ClaudeSessionID,
+		ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
+		ContinuedFromProvider:  metadata.ContinuedFromProvider,
+		ContinuationMode:       metadata.ContinuationMode, ImportedMessageCount: metadata.ImportedMessageCount,
+		DisplayParentSessionID: metadata.DisplayParentSessionID, SetAsideAt: metadata.SetAsideAt,
+		Pinned: metadata.Pinned, LastHumanMessageAt: metadata.LastHumanMessageAt,
+		LastAgentMessageAt: metadata.LastAgentMessageAt, DelegationKind: metadata.DelegationKind,
+		Permissions: metadata.Permissions, Lifecycle: metadata.Lifecycle,
+	}
+}

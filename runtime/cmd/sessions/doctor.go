@@ -21,12 +21,13 @@ import (
 )
 
 type doctorRow struct {
-	ID    string `json:"id"`
-	Tool  string `json:"tool"`
-	Size  string `json:"size"`
-	QoS   string `json:"qos"`
-	Spawn string `json:"spawn"`
-	OK    bool   `json:"ok"`
+	ID       string `json:"id"`
+	Tool     string `json:"tool"`
+	Size     string `json:"size"`
+	QoS      string `json:"qos"`
+	Spawn    string `json:"spawn"`
+	Recovery bool   `json:"needs_recovery,omitempty"`
+	OK       bool   `json:"ok"`
 }
 
 // doctorMirrorRow is one stored conversation that reports having stopped
@@ -41,8 +42,11 @@ type doctorMirrorRow struct {
 const legacyRunnerLabelPrefix = "tech.pretty-pty.runner."
 
 func (a *app) cmdDoctor() error {
-	if err := ptyPreflight(); err != nil {
-		return err
+	localRuntime := a.api.localToken
+	if localRuntime {
+		if err := ptyPreflight(); err != nil {
+			return err
+		}
 	}
 	sessions, err := a.listSessions(false)
 	if err != nil {
@@ -55,30 +59,12 @@ func (a *app) cmdDoctor() error {
 	processTypePattern := regexp.MustCompile(`<key>ProcessType</key>\s*<string>([^<]+)</string>`)
 	rows := make([]doctorRow, 0, len(sessions))
 	for _, value := range sessions {
-		// Per-session service QoS is a launchd concept. The Windows adapter is
-		// a logon supervisor with no ProcessType, so reporting "no-plist"
-		// there would invent a fault; say the probe does not apply instead.
-		qos := probeNotApplicable
-		if runtime.GOOS == "darwin" {
-			qos = runnerQoS(a.home, value.ID, processTypePattern)
-		}
-		spawn := "dead?"
-		if value.PID != 0 {
-			// The runner is intentionally independent of the daemon and the
-			// app. It may be re-parented after either one updates, so its
-			// parent command is not evidence of how the runner itself was
-			// launched. Inspect the durable runner process instead.
-			spawn = probeNotApplicable
-			if canProbeProcessCommand() {
-				spawn = classifyRunnerSpawn(psField("command=", value.PID))
-			}
-		}
-		rows = append(rows, doctorRow{
-			ID: value.ID, Tool: toolOfSession(value), Size: fmt.Sprintf("%dx%d", value.Cols, value.Rows),
-			QoS: qos, Spawn: spawn, OK: doctorRowOK(qos, spawn),
-		})
+		rows = append(rows, a.doctorRunnerRow(value, localRuntime, processTypePattern))
 	}
-	damagedMirrors := damagedTranscriptMirrors()
+	damagedMirrors := []doctorMirrorRow(nil)
+	if localRuntime {
+		damagedMirrors = damagedTranscriptMirrors()
+	}
 	if a.wantJSON {
 		return writeJSON(a.stdout, struct {
 			Daemon         any               `json:"daemon"`
@@ -97,26 +83,97 @@ func (a *app) cmdDoctor() error {
 	}
 	fmt.Fprintf(a.stdout, "%s%s%s%s%sSTATUS\n",
 		fixedWidth("ID", 10), fixedWidth("TOOL", 8), fixedWidth("SIZE", 10), fixedWidth("QoS", 13), fixedWidth("SPAWN", 10))
-	bad := 0
+	runnerFaults := 0
+	recoveryRows := 0
 	for _, row := range rows {
 		statusText := "ok"
-		if !row.OK {
+		if row.Recovery {
+			statusText = "⚠ resume required"
+			recoveryRows++
+		} else if !row.OK {
 			statusText = "⚠ needs recreate"
-			bad++
+			runnerFaults++
 		}
 		fmt.Fprintf(a.stdout, "%s%s%s%s%s%s\n",
 			fixedWidth(prefixString(row.ID, 8), 10), fixedWidth(shortToolName(row.Tool), 8),
 			fixedWidth(row.Size, 10), fixedWidth(row.QoS, 13), fixedWidth(row.Spawn, 10), statusText)
 	}
-	fmt.Fprintf(a.stdout, "\n%d of %d sessions need recreate ", bad, len(rows))
-	if bad > 0 {
-		io.WriteString(a.stdout, doctorUnhealthyAdvice()+"\n")
+	recovery := max(recoveryRows, restorePendingFromHealth(deep))
+	attention := recovery + runnerFaults
+	fmt.Fprintf(a.stdout, "\n%d session(s) need attention", attention)
+	if attention > 0 {
+		io.WriteString(a.stdout, ": ")
+		if recovery > 0 {
+			fmt.Fprintf(a.stdout, "%d paused after reboot — resume only the sessions you want with `sessions resume <id>`", recovery)
+		}
+		if runnerFaults > 0 {
+			if recovery > 0 {
+				io.WriteString(a.stdout, "; ")
+			}
+			fmt.Fprintf(a.stdout, "%d runner fault(s) %s", runnerFaults, doctorUnhealthyAdvice())
+		}
+		io.WriteString(a.stdout, "\n")
 		a.exitCode = 1
 	} else {
-		io.WriteString(a.stdout, doctorHealthySummary()+"\n")
+		io.WriteString(a.stdout, " "+doctorHealthySummary()+"\n")
 	}
 	a.writeDoctorMirrorHealth(damagedMirrors)
 	return nil
+}
+
+// doctorRunnerRow inspects process and launch-service state only when the CLI
+// and daemon are on the same machine. A PID and plist path are host-local
+// identities; applying the MacBook's ps/LaunchAgents results to a Mini made a
+// healthy remote fleet look entirely broken.
+func (a *app) doctorRunnerRow(value session, localRuntime bool, processTypePattern *regexp.Regexp) doctorRow {
+	row := doctorRow{
+		ID: value.ID, Tool: toolOfSession(value), Size: fmt.Sprintf("%dx%d", value.Cols, value.Rows),
+		QoS: probeNotApplicable, Spawn: probeNotApplicable,
+	}
+	if value.UnreachableReason == "restart-restore-pending" {
+		row.Spawn = "paused"
+		row.Recovery = true
+		return row
+	}
+	if !localRuntime {
+		row.OK = true
+		return row
+	}
+	// Per-session service QoS is a launchd concept. The Windows adapter is a
+	// logon supervisor with no ProcessType, so the probe does not apply there.
+	if runtime.GOOS == "darwin" {
+		row.QoS = runnerQoS(a.home, value.ID, processTypePattern)
+	}
+	row.Spawn = "dead?"
+	if value.PID != 0 {
+		// The runner is intentionally independent of the daemon and app and may
+		// be re-parented after either updates. Inspect the runner itself.
+		row.Spawn = probeNotApplicable
+		if canProbeProcessCommand() {
+			row.Spawn = classifyRunnerSpawn(psField("command=", value.PID))
+		}
+	}
+	row.OK = doctorRowOK(row.QoS, row.Spawn)
+	return row
+}
+
+func restorePendingFromHealth(deep any) int {
+	health, ok := deep.(map[string]any)
+	if !ok {
+		return 0
+	}
+	restore, ok := health["restore"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	switch pending := restore["pending"].(type) {
+	case float64:
+		return max(int(pending), 0)
+	case int:
+		return max(pending, 0)
+	default:
+		return 0
+	}
 }
 
 // writeDoctorMirrorHealth reports stored conversations that are missing

@@ -53,6 +53,25 @@ func TestDoctorRowOKTreatsSkippedProbesAsNeutral(t *testing.T) {
 	}
 }
 
+func TestRemoteDoctorNeverAppliesLocalProcessOrLaunchAgentEvidence(t *testing.T) {
+	a := &app{home: t.TempDir()}
+	pattern := regexp.MustCompile(`<key>ProcessType</key>\s*<string>([^<]+)</string>`)
+	row := a.doctorRunnerRow(session{
+		ID: "11111111-2222-4333-8444-555555555555", Tool: "claude-code", PID: 999999,
+		Cols: 300, Rows: 50,
+	}, false, pattern)
+	if !row.OK || row.QoS != probeNotApplicable || row.Spawn != probeNotApplicable {
+		t.Fatalf("remote runner was judged with local evidence: %+v", row)
+	}
+}
+
+func TestDoctorReadsRemoteRestoreCountFromHealth(t *testing.T) {
+	deep := map[string]any{"restore": map[string]any{"pending": float64(57)}}
+	if got := restorePendingFromHealth(deep); got != 57 {
+		t.Fatalf("restorePendingFromHealth() = %d, want 57", got)
+	}
+}
+
 // doctor must stay usable on a Windows host: the PTY preflight is the Unix
 // terminal adapter, and its remedy names a macOS-only toolchain.
 func TestDoctorProbesAreGuardedByHost(t *testing.T) {

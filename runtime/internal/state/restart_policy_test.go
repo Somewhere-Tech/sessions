@@ -114,6 +114,28 @@ func TestPinnedSelectionDoesNotCountAlreadyStoppedSessions(t *testing.T) {
 	}
 }
 
+func TestPinnedSelectionPrefersRecentActivityOverLexicographicID(t *testing.T) {
+	dir := t.TempDir()
+	older := "11111111-2222-4333-8444-555555555551"
+	newer := "99999999-2222-4333-8444-555555555559"
+	oldActivity, newActivity := int64(100), int64(900)
+	for id, activity := range map[string]*int64{older: &oldActivity, newer: &newActivity} {
+		if err := WriteMetadata(For(dir, id).Meta, Metadata{
+			ID: id, Pinned: true, Cmd: "claude", Cwd: "/work", Cols: 80, Rows: 24,
+			CreatedAt: 10, LastHumanMessageAt: activity,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteRestartPermit(For(dir, id).KeepAlive, "old-boot"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selected, err := pinnedRestoreIDs(dir, 1)
+	if err != nil || len(selected) != 1 || selected[0] != newer {
+		t.Fatalf("selected=%v err=%v, want most recently active %s", selected, err, newer)
+	}
+}
+
 func TestCountRestorePendingIncludesUnreadableEvidence(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"one.restore-pending.json", "two.restore-pending.json"} {
