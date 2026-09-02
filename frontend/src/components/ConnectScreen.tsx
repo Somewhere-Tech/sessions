@@ -216,20 +216,16 @@ export function ConnectScreen({
               </button>
             </form>
           </section>
-          <section className="connect-discovery" aria-labelledby="discovery-title">
+          {!isAndroidClient ? <section className="connect-discovery" aria-labelledby="discovery-title">
             <div className="connect-discovery-heading">
               <div>
                 <span>Private machine discovery</span>
                 <h2 id="discovery-title">Find your machines</h2>
-                <p>{isAndroidClient
-                  ? 'Automatic Android discovery and Tailscale onboarding are coming next. The one-time link above connects directly on a trusted LAN today.'
-                  : 'Sessions checks encrypted Tailscale and nearby Bonjour independently, then shows only verified Sessions runtimes.'}</p>
+                <p>Sessions checks encrypted Tailscale and nearby Bonjour independently, then shows only verified Sessions runtimes.</p>
               </div>
-              {!isAndroidClient ? (
-                <button type="button" className="connect-submit connect-find" disabled={connectionDisabled} onClick={() => void findMachines()}>
-                  {discoveryBusy ? 'Searching…' : discoveredPeers === null ? 'Find machines' : 'Search again'}
-                </button>
-              ) : <span className="connect-coming-soon">Coming next</span>}
+              <button type="button" className="connect-submit connect-find" disabled={connectionDisabled} onClick={() => void findMachines()}>
+                {discoveryBusy ? 'Searching…' : discoveredPeers === null ? 'Find machines' : 'Search again'}
+              </button>
             </div>
             {discoveredPeers !== null && discoveredPeers.length > 0 ? (
               <div className="connect-peer-list">
@@ -250,7 +246,7 @@ export function ConnectScreen({
                 })}
               </div>
             ) : null}
-          </section>
+          </section> : null}
           </>
         ) : null}
 

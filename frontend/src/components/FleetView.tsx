@@ -242,7 +242,6 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
             onOpenMachine={() => onOpenMachine(server.id)}
           />
         ))}
-        <CloudFleetCard />
       </div>
     </div>
   );
@@ -266,26 +265,6 @@ function serverMatchesPeer(server: ServerConfig, endpoint: string): boolean {
   } catch {
     return false;
   }
-}
-
-function CloudFleetCard(): JSX.Element {
-  return (
-    <section className="fleet-server-group fleet-cloud-machine is-placeholder" aria-label="Somewhere cloud workspace coming soon">
-      <header className="fleet-machine-header">
-        <span className="fleet-platform-mark is-cloud" aria-hidden><PlatformIcon platform="cloud" /></span>
-        <div className="fleet-server-identity">
-          <div className="fleet-machine-title"><h2>Somewhere VM</h2><span className="fleet-machine-badge">Coming soon</span></div>
-          <span className="fleet-machine-status"><span className="fleet-reachability-dot" aria-hidden />Not configured</span>
-        </div>
-      </header>
-      <div className="fleet-machine-meta"><span>Cloud workspace</span><span>Outbound-only worker</span></div>
-      <div className="fleet-cloud-machine-body">
-        <p>An always-on private computer for your sessions, with provider logins isolated inside its own workspace.</p>
-        <div><span>Cloud usage</span><span>Encrypted backup</span><span>Scoped files</span></div>
-        <button type="button" className="btn" disabled>Set up · coming soon</button>
-      </div>
-    </section>
-  );
 }
 
 function FleetServerGroup({
@@ -582,7 +561,7 @@ function compareReleaseVersions(left: string, right: string): -1 | 0 | 1 | null 
   return 0;
 }
 
-type Platform = 'macos' | 'windows' | 'linux' | 'cloud' | 'server';
+type Platform = 'macos' | 'windows' | 'linux' | 'server';
 
 function platformFromReportedOS(value: string | undefined): Platform | null {
   const reported = value?.toLowerCase() ?? '';
@@ -623,9 +602,6 @@ function PlatformIcon({ platform }: { platform: Platform }): JSX.Element {
   }
   if (platform === 'linux') {
     return <svg viewBox="0 0 24 24" role="img" aria-label="Linux"><path d="M12 2c-3.1 0-5 2.8-5 6.8 0 1.4-.5 2.8-1.4 4.2-1.3 2-1.3 4.3-.2 5.8.8 1 2 1.1 3.3.4.9.6 2 1 3.3 1s2.4-.4 3.3-1c1.3.7 2.5.6 3.3-.4 1.2-1.5 1.1-3.8-.2-5.8-.9-1.4-1.4-2.8-1.4-4.2C17 4.8 15.1 2 12 2Zm-2 5.2c-.6 0-1-.6-1-1.3s.4-1.3 1-1.3 1 .6 1 1.3-.4 1.3-1 1.3Zm4 0c-.6 0-1-.6-1-1.3s.4-1.3 1-1.3 1 .6 1 1.3-.4 1.3-1 1.3Zm-2 4.2-2.2-1.6L12 8.6l2.2 1.2L12 11.4Z" /></svg>;
-  }
-  if (platform === 'cloud') {
-    return <svg viewBox="0 0 24 24" role="img" aria-label="Cloud"><path d="M7 19h10a5 5 0 0 0 .8-9.9A6.5 6.5 0 0 0 5.4 7.7 5.7 5.7 0 0 0 7 19Z" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg>;
   }
   return <svg viewBox="0 0 24 24" role="img" aria-label="Server"><path d="M4 4h16v6H4V4Zm0 10h16v6H4v-6Z" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M7 7h.01M7 17h.01" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" /></svg>;
 }

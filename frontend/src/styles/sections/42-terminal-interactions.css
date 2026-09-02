@@ -1,9 +1,6 @@
 /* The details panel reuses the settings toggle inside a details card, where
    the card owns the spacing and a full-height row would not fit. */
 .details-pin-toggle { min-height: 0; padding-top: 9px; gap: 10px; }
-.settings-coming-card > span { color: var(--accent); font-size: 12px; font-weight: 750; text-transform: uppercase; }
-.settings-coming-card h2 { margin: 7px 0; font-size: 16px; }
-.settings-coming-card p { margin: 0; color: var(--fg-dim); font-size: 12px; line-height: 1.6; }
 .settings-panel > .connections-view { min-height: 100%; }
 .settings-select-row,
 .settings-static-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; }

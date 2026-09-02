@@ -696,15 +696,6 @@
 .somewhere-recovery code { overflow: auto; padding: 9px; border-radius: var(--radius-sm); background: #070707; color: #fde68a; font: 12px var(--font-mono); white-space: nowrap; }
 .somewhere-recovery > div:last-child { display: flex; gap: 6px; }
 .somewhere-message { margin: 0 26px 18px; padding: 9px 11px; border: 1px solid rgba(94, 234, 212, .16); border-radius: var(--radius-sm); background: rgba(45, 212, 191, .04); color: var(--fg-dim); font-size: 12px; }
-.somewhere-coming-heading { display: flex; align-items: center; justify-content: space-between; margin: 0 26px; padding-top: 18px; border-top: 1px solid rgba(167, 139, 250, .15); color: var(--fg-faint); font: 12px var(--font-mono); text-transform: uppercase; letter-spacing: .07em; }
-.somewhere-coming-heading strong { color: #c4b5fd; font-size: 12px; }
-.somewhere-coming-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 12px 26px 26px; }
-.somewhere-coming-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 74px; padding: 11px 12px; border: 1px solid rgba(167, 139, 250, .13); border-radius: var(--radius-md); background: rgba(7, 7, 9, .38); }
-.somewhere-coming-card > span { display: grid; width: 30px; height: 30px; border: 1px solid rgba(167, 139, 250, .18); border-radius: 50%; color: #c4b5fd; place-items: center; }
-.somewhere-coming-card > div { min-width: 0; }
-.somewhere-coming-card strong { color: var(--fg); font-size: 12px; }
-.somewhere-coming-card p { margin: 3px 0 0; color: var(--fg-faint); font-size: 12px; line-height: 1.45; }
-.somewhere-coming-card small { align-self: start; padding: 2px 5px; border: 1px solid rgba(167, 139, 250, .18); border-radius: 999px; color: #a78bfa; font: 12px var(--font-mono); text-transform: uppercase; }
 
 /* First-run consent is a product boundary, not a dismissible marketing
  * modal. It deliberately covers the app until the user makes one explicit
@@ -856,8 +847,6 @@
   .somewhere-live-grid { padding: 14px 19px; }
   .somewhere-recovery,
   .somewhere-message { margin-right: 19px; margin-left: 19px; }
-  .somewhere-coming-heading { margin-right: 19px; margin-left: 19px; }
-  .somewhere-coming-grid { grid-template-columns: 1fr; padding: 12px 19px 19px; }
 }
 
 /* An adoption whose history annotations did not finish. Calm, not red: the

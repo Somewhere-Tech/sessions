@@ -318,7 +318,6 @@ button:active:not(:disabled),
 }
 .connect-pair-link input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .connect-pair-link .connect-submit { width: 100%; }
-.connect-coming-soon { align-self: center; padding: 6px 9px; border: 1px solid var(--accent-border-soft); border-radius: 999px; background: var(--accent-bg-soft); white-space: nowrap; }
 .connect-discovery-heading {
   display: flex;
   align-items: flex-end;

@@ -101,8 +101,7 @@ verified tailnet and Bonjour discovery independently and uses the host-approved
 claim commands from Connections, sharing the
 durable requester ID through `frontend/src/lib/tailnetClient.ts`. The current
 computer is visually primary, an unreachable machine fades as a complete
-card, and the Somewhere VM remains a clearly disabled coming-soon machine card
-rather than a fake live endpoint. macOS Local Network purpose and
+card. macOS Local Network purpose and
 `_sessions._tcp` declarations live in `src-tauri/Info.plist`.
 The navigator never derives parentage from cwd or timestamps. Manager pins and
 open-tab IDs are bounded local UI preferences; the main list explicitly requests
@@ -157,8 +156,7 @@ A newly created profile never receives task input during its provider login flow
 `SettingsView.tsx` provides native light/dark appearance, working agent/recap
 preferences with rollback and stale-request protection, profile visibility,
 signed update checks/install, Connections, and the existing encrypted
-Somewhere backup surface, with unimplemented platform services labeled Coming
-soon.
+Somewhere backup surface.
 
 The native process is a management plane, not the owner of session work. Its
 installer writes and kickstarts the per-user daemon service, but launchd owns

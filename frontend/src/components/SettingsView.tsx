@@ -552,10 +552,6 @@ function AgentSettings(props: AgentSettingsProps): JSX.Element {
         </label>
         {props.recapMessage ? <div className="settings-message">{props.recapMessage}</div> : null}
       </div>
-      <div className="settings-card">
-        <h2>Model</h2>
-        <div className="settings-static-row"><span><strong>Provider default</strong><small>Sessions avoids hardcoding a model. Explicit per-feature models are coming soon.</small></span><span className="coming-soon-pill">Coming soon</span></div>
-      </div>
     </section>
   );
 }
@@ -573,7 +569,6 @@ function AccountSettings({ profiles }: { profiles: AccountProfile[] }): JSX.Elem
           {profiles.length === 0 ? <p>No named profiles yet. Choose “Add another login” in New Session.</p> : null}
         </div>
       </div>
-      <div className="settings-coming-card"><span>Fleet · Coming soon</span><h2>Profile health across machines</h2><p>Fleet will show which accounts are available on each machine without copying credentials between them.</p></div>
     </section>
   );
 }
@@ -658,7 +653,6 @@ function NotificationSettings(props: NotificationSettingsProps): JSX.Element {
         {props.providerMessage ? <div className="settings-message" role="status">{props.providerMessage}</div> : null}
         <div className="settings-message">The action runs on {props.providerUpdateTarget} and replaces only that machine's CLI executable. Existing Claude and Codex processes continue unchanged; new sessions there use the updated version.</div>
       </div>
-      <div className="settings-coming-card"><span>Native session alerts · Coming soon</span><h2>Needs-you and completion alerts</h2><p>The notification center will add per-session approval, question, completion, and lost-session rules without relying on the retired browser control surface.</p></div>
     </section>
   );
 }

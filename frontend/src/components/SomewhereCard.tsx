@@ -115,7 +115,7 @@ export function SomewhereCard(): JSX.Element {
             <span>somewhere.tech</span>
           </a>
           <h2>Your Sessions cloud</h2>
-          <p>Encrypted backup is available now. A dedicated Sessions account space, hosted search, cloud usage, and always-on machines are being designed here before the platform APIs ship.</p>
+          <p>Encrypted backup sends your session data directly to a Somewhere project you control.</p>
         </div>
         <span className="somewhere-live-badge">Backup available now</span>
       </header>
@@ -147,7 +147,7 @@ export function SomewhereCard(): JSX.Element {
                 Somewhere project
                 <input value={project} onChange={(event) => setProject(event.currentTarget.value)} placeholder="my-sessions-backup" spellCheck={false} disabled={!isTauri() || busy !== null} />
               </label>
-              <small>A dedicated Sessions slot on somewhere.tech is coming soon. For now, choose a project you own.</small>
+              <small>Choose a Somewhere project you own.</small>
               <button type="button" className="btn" disabled={!isTauri() || !cli?.installed || !project.trim() || busy !== null} onClick={() => void enableBackup()}>{busy === 'enable' ? 'Enabling…' : 'Enable encrypted backup'}</button>
             </>
           )}
@@ -178,23 +178,6 @@ export function SomewhereCard(): JSX.Element {
 
       {message ? <div className="somewhere-message" role="status">{message}</div> : null}
 
-      <div className="somewhere-coming-heading"><span>Account cloud</span><strong>Coming soon</strong></div>
-      <div className="somewhere-coming-grid">
-        <ComingSoon title="Session library" icon="◫">Browse encrypted archives by machine and recover Claude or Codex provider history.</ComingSoon>
-        <ComingSoon title="Hosted search" icon="⌕">Search only the transcripts you explicitly choose to make server-indexable.</ComingSoon>
-        <ComingSoon title="Cloud usage" icon="◒">Keep provider, token, cost, project, and daily rollups centrally without requiring transcript contents.</ComingSoon>
-        <ComingSoon title="Password recovery" icon="◇">Wrap the local encryption key with a password-derived key; Somewhere never stores the password itself.</ComingSoon>
-      </div>
     </section>
-  );
-}
-
-function ComingSoon({ title, icon, children }: { title: string; icon: string; children: string }): JSX.Element {
-  return (
-    <article className="somewhere-coming-card">
-      <span aria-hidden>{icon}</span>
-      <div><strong>{title}</strong><p>{children}</p></div>
-      <small>Coming soon</small>
-    </article>
   );
 }
