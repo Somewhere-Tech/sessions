@@ -40,6 +40,13 @@ type Session struct {
 	OptOut             bool
 }
 
+// codexHistoryStartWindow bounds how long after a session started a rollout
+// may begin and still be taken as that session's when nothing else identifies
+// it. Codex writes session_meta as the process starts, so a real match is
+// seconds away; minutes covers a slow launch without reaching the next
+// conversation someone opens in the same folder.
+const codexHistoryStartWindow = 5 * time.Minute
+
 type Resolver struct {
 	ClaudeProjectsDir string
 	CodexSessionsDir  string
@@ -155,10 +162,23 @@ func (r Resolver) Resolve(session Session) (path, tool string) {
 		if session.ConfigDir != "" {
 			sessionsDir = filepath.Join(session.ConfigDir, "sessions")
 		}
+		// History has one shot at naming the right rollout, so it resolves by
+		// identity: the recorded thread id, else the first message the
+		// session sent. A session that never sent anything claims a rollout
+		// only when exactly one started with it (see StrictStart); guessing
+		// the nearest rollout in a shared folder attributed other people's
+		// conversations to ended sessions.
+		expected := ""
+		if session.DescriptionSource == state.DescriptionFirstMessage {
+			expected = session.Description
+		}
 		resolution := watch.ResolveCodexRolloutPath(watch.CodexResolveOptions{
 			CWD: session.CWD, Args: session.Args,
 			CreatedAt:   time.UnixMilli(session.CreatedAt),
 			SessionsDir: sessionsDir, Now: now,
+			ExpectedInput:  expected,
+			ConversationID: session.ConversationID,
+			StrictStart:    codexHistoryStartWindow,
 		})
 		return resolution.Path, "codex"
 	default:

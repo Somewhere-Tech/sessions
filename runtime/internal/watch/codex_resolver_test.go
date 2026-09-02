@@ -293,3 +293,51 @@ func writeRolloutFixtureWithPrompt(t *testing.T, path, cwd string, timestamp tim
 		t.Fatal(err)
 	}
 }
+
+// History resolution has one shot at naming the right rollout. With
+// StrictStart set, a session that recorded no thread id and sent no first
+// message claims a rollout only when exactly one started with it; the
+// nearest-timestamp full scan that suits a live watcher is not attempted.
+func TestResolveCodexRolloutStrictStartRefusesToGuess(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, time.September, 2, 9, 0, 0, 0, time.Local)
+	createdAt := now.Add(-time.Hour)
+	cwd := "/tmp/strict-target"
+	dir := codexDateDir(root, createdAt)
+
+	// One rollout six minutes after the session started: someone else's.
+	late := filepath.Join(dir, "rollout-late-0000000a.jsonl")
+	writeRolloutFixture(t, late, cwd, createdAt.Add(6*time.Minute), "")
+	got := ResolveCodexRolloutPath(CodexResolveOptions{CWD: cwd, CreatedAt: createdAt, SessionsDir: root, Now: now, StrictStart: 5 * time.Minute})
+	if got.Reason != CodexUnclaimed || got.Path != "" {
+		t.Fatalf("late rollout resolution = %+v, want unclaimed", got)
+	}
+
+	// The same lookup without StrictStart still guesses, as a live watcher may.
+	if loose := ResolveCodexRolloutPath(CodexResolveOptions{CWD: cwd, CreatedAt: createdAt, SessionsDir: root, Now: now}); loose.Path != late {
+		t.Fatalf("loose resolution = %+v, want %q", loose, late)
+	}
+
+	// A single rollout that started seconds after the session is claimed.
+	early := filepath.Join(dir, "rollout-early-0000000b.jsonl")
+	writeRolloutFixture(t, early, cwd, createdAt.Add(3*time.Second), "")
+	got = ResolveCodexRolloutPath(CodexResolveOptions{CWD: cwd, CreatedAt: createdAt, SessionsDir: root, Now: now, StrictStart: 5 * time.Minute})
+	if got.Reason != CodexUnclaimed || got.AmbiguousCount != 2 {
+		t.Fatalf("two candidates = %+v, want unclaimed with ambiguity 2", got)
+	}
+	if err := os.Remove(late); err != nil {
+		t.Fatal(err)
+	}
+	got = ResolveCodexRolloutPath(CodexResolveOptions{CWD: cwd, CreatedAt: createdAt, SessionsDir: root, Now: now, StrictStart: 5 * time.Minute})
+	if got.Reason != CodexFreshMatch || got.Path != early {
+		t.Fatalf("single close rollout = %+v, want %q", got, early)
+	}
+
+	// A recorded thread id identifies the rollout wherever it is.
+	elsewhere := filepath.Join(root, "2000", "01", "01", "rollout-2000-01-01T00-00-00-0000000c-aaaa-bbbb-cccc-dddddddddddd.jsonl")
+	writeRolloutFixture(t, elsewhere, "/tmp/other", createdAt.Add(-time.Hour), "")
+	got = ResolveCodexRolloutPath(CodexResolveOptions{CWD: cwd, CreatedAt: createdAt, SessionsDir: root, Now: now, StrictStart: 5 * time.Minute, ConversationID: "0000000c-aaaa-bbbb-cccc-dddddddddddd"})
+	if got.Reason != CodexResumeMatch || got.Path != elsewhere {
+		t.Fatalf("thread id resolution = %+v, want %q", got, elsewhere)
+	}
+}

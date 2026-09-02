@@ -40,6 +40,10 @@ const (
 	CodexEmptyDir       CodexResolveReason = "empty-dir"
 	CodexNoCWDMatch     CodexResolveReason = "no-cwd-match"
 	CodexNoAfterSpawn   CodexResolveReason = "no-after-spawn"
+	// CodexUnclaimed is the strict-window answer when nothing identifies a
+	// rollout as this session's: no thread id, no first message to match,
+	// and no single rollout that started alongside the session.
+	CodexUnclaimed CodexResolveReason = "unclaimed"
 )
 
 // CodexResolution identifies the rollout to follow.
@@ -59,6 +63,17 @@ type CodexResolveOptions struct {
 	SessionsDir   string
 	Now           time.Time
 	ExpectedInput string
+	// ConversationID is the provider thread id Sessions recorded for the
+	// session, when it has one. It identifies the rollout exactly.
+	ConversationID string
+	// StrictStart turns off guessing. A live watcher may follow the newest
+	// rollout in a folder because it will confirm the match against the
+	// first input moments later; a history lookup has no second chance, and
+	// on a shared folder the nearest rollout is usually someone else's
+	// conversation. With StrictStart set, a session with no thread id and no
+	// first message claims a rollout only when exactly one started within
+	// StrictStart of the session, and the full-scan fallback is skipped.
+	StrictStart time.Duration
 }
 
 type rolloutCandidate struct {
@@ -392,6 +407,11 @@ func ResolveCodexRolloutPath(options CodexResolveOptions) CodexResolution {
 	if resumed, ok := resolveResumedCodex(root, options.Args); ok {
 		return resumed
 	}
+	if id := strings.TrimSpace(options.ConversationID); id != "" && codexResumeIDPattern.MatchString(id) {
+		if resolved, ok := resolveResumedCodex(root, []string{"resume", id}); ok {
+			return resolved
+		}
+	}
 	targetCWD := normalizeCWD(options.CWD)
 
 	now := options.Now
@@ -429,6 +449,12 @@ func ResolveCodexRolloutPath(options CodexResolveOptions) CodexResolution {
 		if resolution, handled := resolveCodexInputMatch(matches, options.ExpectedInput); handled {
 			return resolution
 		}
+		if options.StrictStart > 0 {
+			if len(matches) == 1 && !matches[0].meta.timestamp.After(options.CreatedAt.Add(options.StrictStart)) {
+				return CodexResolution{Path: matches[0].path, Reason: CodexFreshMatch}
+			}
+			return CodexResolution{Reason: CodexUnclaimed, AmbiguousCount: ambiguousCount(len(matches))}
+		}
 		sort.Slice(matches, func(i, j int) bool {
 			if !matches[i].meta.timestamp.Equal(matches[j].meta.timestamp) {
 				return matches[i].meta.timestamp.Before(matches[j].meta.timestamp)
@@ -449,6 +475,9 @@ func ResolveCodexRolloutPath(options CodexResolveOptions) CodexResolution {
 	}
 	if sawCWDMatch {
 		return CodexResolution{Reason: CodexNoAfterSpawn}
+	}
+	if options.StrictStart > 0 {
+		return CodexResolution{Reason: CodexUnclaimed}
 	}
 
 	fullScan := make([]rolloutCandidate, 0)
