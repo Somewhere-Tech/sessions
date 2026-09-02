@@ -56,8 +56,9 @@ does not restart, terminate, or alter existing sessions.
 ## Delegated task access
 
 The same user-facing onboarding/Settings surface asks whether agent-created
-children should inherit a manager's exact permission mode or receive autonomous
-full access. Inheritance is the default. The daemon resolves the choice below
+children should receive autonomous full access or inherit a manager's exact
+permission mode. Autonomous access is the default; inheritance is the explicit
+narrower choice. The daemon resolves the choice below
 the UI and CLI, rejects child self-escalation, and applies it only to newly
 created children. The authenticated CLI exposes the current state read-only;
 an agent cannot grant autonomous consent through the normal command surface.

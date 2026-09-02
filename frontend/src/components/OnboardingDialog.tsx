@@ -67,15 +67,15 @@ export function OnboardingDialog({ machine, busy, error, onChoose }: Props): JSX
             </div>
             {error ? <div className="onboarding-error" role="alert">{error}</div> : null}
             <div className="onboarding-actions">
-              <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void onChoose(remoteControl, 'inherit')}>
-                {busy ? 'Saving…' : 'Inherit manager permissions'}
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void onChoose(remoteControl, 'autonomous')}>
+                {busy ? 'Saving…' : 'Let delegated work run on its own'}
               </button>
-              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void onChoose(remoteControl, 'autonomous')}>
-                Allow autonomous delegated work
+              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void onChoose(remoteControl, 'inherit')}>
+                Make them inherit my permissions
               </button>
             </div>
             <button type="button" className="onboarding-back" disabled={busy} onClick={() => setStep(2)}>Back</button>
-            <small className="onboarding-footnote">You can change this later in Settings. An agent cannot enable autonomous access for itself.</small>
+            <small className="onboarding-footnote">Autonomous is the default so background work finishes without you. You can change this later in Settings; an agent cannot widen this for itself.</small>
           </>
         )}
       </div>

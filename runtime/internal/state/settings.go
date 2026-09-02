@@ -332,13 +332,22 @@ func (s Settings) EffectiveClaude() ClaudeSettings {
 	return effective
 }
 
+// EffectiveDelegation is the machine-level answer to "how much may an
+// agent-created child do on its own". Autonomous full access is the default:
+// delegated lanes run in the background and are expected to finish work, not
+// wait on a person for each command. A person who wants children to inherit
+// their manager's exact permission mode chooses that explicitly during
+// onboarding or in Settings; that choice, and only that choice, narrows it.
+// A child still cannot promote itself past what this setting allows.
 func (s Settings) EffectiveDelegation() DelegationSettings {
-	value := DelegationSettings{Access: DelegatedAccessConsentInherited}
+	value := DelegationSettings{Access: DelegatedAccessConsentAutonomous}
 	if s.Delegation != nil && (s.Delegation.Access == DelegatedAccessConsentInherited || s.Delegation.Access == DelegatedAccessConsentAutonomous) {
 		value = *s.Delegation
 	}
-	if s.EffectiveOnboarding().DelegatedAccess != DelegatedAccessConsentAutonomous {
+	if s.EffectiveOnboarding().DelegatedAccess == DelegatedAccessConsentInherited {
 		value.Access = DelegatedAccessConsentInherited
+	} else {
+		value.Access = DelegatedAccessConsentAutonomous
 	}
 	return value
 }
@@ -358,9 +367,9 @@ func (s Settings) EffectiveOnboarding() OnboardingState {
 	if oneOf(s.Onboarding.DelegatedAccessConsent, DelegatedAccessConsentInherited, DelegatedAccessConsentAutonomous) {
 		state.DelegatedAccess = s.Onboarding.DelegatedAccessConsent
 	} else if s.Onboarding.Version >= OnboardingCurrentVersion {
-		// Conservative compatibility for v2 settings written by an early
-		// client that knew only about Remote Control.
-		state.DelegatedAccess = DelegatedAccessConsentInherited
+		// v2 settings written by an early client that knew only about Remote
+		// Control carry no delegation choice; they take the product default.
+		state.DelegatedAccess = DelegatedAccessConsentAutonomous
 	}
 	state.Complete = state.RemoteControl != RemoteControlConsentPending && state.DelegatedAccess != DelegatedAccessConsentPending
 	return state

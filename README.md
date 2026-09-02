@@ -81,17 +81,19 @@ surface browses the same conversations `sessions history` does, and typing
 narrows them. Session IDs may be replaced with a unique prefix shown by
 `sessions ls`.
 
-Agents created from a managed parent inherit that parent's exact provider
-permission mode by default. They cannot silently promote themselves to full
-access. An agent-created task worker also closes its runtime after a successful
+Agents created from a managed parent run with autonomous full access by
+default, so delegated work finishes in the background instead of waiting on a
+person for each command; you can narrow this in Settings so children inherit
+their parent's exact provider permission mode. A child can never widen its own
+access past what the machine allows. An agent-created task worker also closes its runtime after a successful
 final response while its transcript, lineage, and workspace remain available.
 If a provider is waiting for approval, `sessions wait` returns `reason:
 needs-input` with the actual prompt instead of pretending that the worker is
 still making progress; `--summary` adds prose but never changes the shape.
 Waiting on a session always answers with one JSON object and an exit code that
 agrees with it: 0 satisfied, 1 usage, 2 daemon unreachable, 3 timed out, 4 the
-target is gone or failed. Users can explicitly opt into autonomous delegated
-work during onboarding or later in Settings.
+target is gone or failed. The delegated-access choice is made during
+onboarding and can be changed later in Settings.
 
 ## The CLI in 60 seconds
 

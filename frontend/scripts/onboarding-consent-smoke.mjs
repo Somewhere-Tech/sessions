@@ -23,9 +23,11 @@ assert.match(onboarding, /Keep sessions local/);
 assert.match(onboarding, /connect directly to Anthropic/);
 assert.match(onboarding, /Sessions does not relay that conversation through Somewhere/);
 assert.match(onboarding, /cannot grant it for you/);
-assert.match(onboarding, /Inherit manager permissions/);
-assert.match(onboarding, /Allow autonomous delegated work/);
-assert.match(onboarding, /An agent cannot enable autonomous access for itself/);
+// Autonomous delegated work is the default and the primary choice; inheriting
+// the manager's permissions is the explicit narrower option.
+assert.match(onboarding, /onChoose\(remoteControl, 'autonomous'\)\}>\s*\{busy \? 'Saving…' : 'Let delegated work run on its own'\}/);
+assert.match(onboarding, /Make them inherit my permissions/);
+assert.match(onboarding, /an agent cannot widen this for itself/);
 assert.doesNotMatch(onboarding, /onClick=\{onClose\}|launcher-close|dialog-head-link/);
 
 assert.match(settings, /updateOnboardingPreference/);

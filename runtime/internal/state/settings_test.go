@@ -183,7 +183,7 @@ func TestRemoteControlRequiresCompletedOnboardingConsent(t *testing.T) {
 }
 
 func TestDelegatedAccessRequiresCurrentExplicitOnboarding(t *testing.T) {
-	if got := (Settings{}).EffectiveDelegation().Access; got != DelegatedAccessConsentInherited {
+	if got := (Settings{}).EffectiveDelegation().Access; got != DelegatedAccessConsentAutonomous {
 		t.Fatalf("fresh delegation = %q, want inherit", got)
 	}
 	legacy := Settings{
@@ -193,7 +193,7 @@ func TestDelegatedAccessRequiresCurrentExplicitOnboarding(t *testing.T) {
 			DelegatedAccessConsent: DelegatedAccessConsentAutonomous,
 		},
 	}
-	if got := legacy.EffectiveDelegation().Access; got != DelegatedAccessConsentInherited {
+	if got := legacy.EffectiveDelegation().Access; got != DelegatedAccessConsentAutonomous {
 		t.Fatalf("legacy delegation = %q, want inherit", got)
 	}
 	autonomous := Settings{

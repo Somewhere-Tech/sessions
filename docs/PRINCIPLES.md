@@ -18,12 +18,15 @@ clear native UI. An agent may inspect and operate Sessions with the user's
 authority, but it does not bypass approvals, credentials, or destructive-action
 boundaries.
 
-Delegation is explicit authority, not a loophole. A child inherits its
-manager's exact provider permission mode by default and cannot promote itself.
-The user may opt into autonomous delegated work at the machine level, with that
-choice visible in Settings and applied only to newly created children. Provider
-approval prompts are durable `needs-input` state for users and agents; Sessions
-does not clear them by blindly typing into a terminal.
+Delegation is explicit authority, not a loophole. Agent-created children run
+with autonomous full access by default, because delegated work runs in the
+background and is expected to finish rather than wait on a person for each
+command. The user may narrow this at the machine level so children inherit
+their manager's exact provider permission mode instead; that choice is visible
+in Settings and applies only to newly created children. A child can never widen
+its own access past what the machine allows. Provider approval prompts are
+durable `needs-input` state for users and agents; Sessions does not clear them
+by blindly typing into a terminal.
 
 Agent-created children are durable sessions by default. A final response is not
 proof that the caller is done with the runtime: the child may own a server,

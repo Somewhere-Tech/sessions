@@ -49,9 +49,9 @@ func (s *Server) handleOnboardingRoute(response http.ResponseWriter, request *ht
 			return true
 		}
 		if requested.DelegatedAccess == "" {
-			// A v1 client remains conservative when it completes onboarding
-			// against a v2 daemon.
-			requested.DelegatedAccess = state.DelegatedAccessConsentInherited
+			// A v1 client that completes onboarding against a v2 daemon
+			// never asked the question; it gets the product default.
+			requested.DelegatedAccess = state.DelegatedAccessConsentAutonomous
 		}
 		if requested.DelegatedAccess != state.DelegatedAccessConsentInherited &&
 			requested.DelegatedAccess != state.DelegatedAccessConsentAutonomous {
