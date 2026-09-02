@@ -142,12 +142,32 @@ func (a *app) homeRelative(path string) string {
 	if a.home == "" || path == "" {
 		return path
 	}
-	home := a.home
+	home := filepath.Clean(a.home)
 	if resolved, err := filepath.EvalSymlinks(home); err == nil {
 		home = resolved
 	}
+	path = filepath.Clean(path)
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
+	}
+	return abbreviateHomePath(home, path)
+}
+
+// abbreviateHomePath keeps the CLI's display paths native to the machine. It
+// recognizes Windows paths independently of the host running the test so
+// drive-letter case and backslash behavior stay covered on macOS CI.
+func abbreviateHomePath(home, path string) string {
+	if windowsHome, ok := normalizedWindowsPath(home); ok {
+		if windowsPath, pathOK := normalizedWindowsPath(path); pathOK {
+			if strings.EqualFold(windowsPath, windowsHome) {
+				return "~"
+			}
+			prefix := windowsHome + `\`
+			if len(windowsPath) > len(prefix) && strings.EqualFold(windowsPath[:len(prefix)], prefix) {
+				return `~\` + windowsPath[len(prefix):]
+			}
+			return path
+		}
 	}
 	if path == home {
 		return "~"
@@ -160,6 +180,26 @@ func (a *app) homeRelative(path string) string {
 		return "~/" + path[len(prefix):]
 	}
 	return path
+}
+
+func normalizedWindowsPath(value string) (string, bool) {
+	value = strings.ReplaceAll(value, "/", `\`)
+	switch {
+	case len(value) >= len(`\\?\UNC\`) && strings.EqualFold(value[:len(`\\?\UNC\`)], `\\?\UNC\`):
+		value = `\\` + value[len(`\\?\UNC\`):]
+	case strings.HasPrefix(value, `\\?\`):
+		value = value[len(`\\?\`):]
+	}
+	isDrivePath := len(value) >= 3 && value[1] == ':' && value[2] == '\\' &&
+		((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z'))
+	isUNCPath := strings.HasPrefix(value, `\\`)
+	if !isDrivePath && !isUNCPath {
+		return "", false
+	}
+	if !(isDrivePath && len(value) == 3) {
+		value = strings.TrimRight(value, `\`)
+	}
+	return value, true
 }
 
 func oneLine(value string) string {

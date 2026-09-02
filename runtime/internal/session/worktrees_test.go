@@ -90,6 +90,19 @@ func TestWorktreeCreateUsesNameBaseProvenanceAndCollisionSuffix(t *testing.T) {
 	}
 }
 
+func TestWorktreeNamesAvoidWindowsReservedDevices(t *testing.T) {
+	for _, reserved := range []string{"CON", "prn", "Aux", "NUL", "COM1", "com9", "LPT1", "lpt9"} {
+		if got, want := sanitizeWorktreeName(reserved), "session-"+strings.ToLower(reserved); got != want {
+			t.Errorf("sanitizeWorktreeName(%q) = %q, want %q", reserved, got, want)
+		}
+	}
+	for _, ordinary := range []string{"console", "com0", "com10", "lpt-work"} {
+		if got := sanitizeWorktreeName(ordinary); got != ordinary {
+			t.Errorf("sanitizeWorktreeName(%q) = %q, want unchanged", ordinary, got)
+		}
+	}
+}
+
 func TestWorktreeCreateTeachingErrorsAreAtomic(t *testing.T) {
 	root := t.TempDir()
 	repo := initWorktreeTestRepo(t, root, "atomic")

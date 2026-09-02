@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 )
 
 // One request, one lane per installed provider, one join: the fan-out is the
@@ -110,5 +111,19 @@ func TestFanoutStartsOneLanePerProviderAndJoinsThem(t *testing.T) {
 	stderr.Reset()
 	if code := run([]string{"--host", server.URL, "fanout", "--with", "cursor", "--", "x"}, strings.NewReader(""), &stdout, &stderr); code != 2 {
 		t.Fatalf("unknown provider exit=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestFanoutNameDoesNotSplitUnicodeAtByteLimit(t *testing.T) {
+	request := strings.Repeat("a", 46) + "\U0001F600 follow-up"
+	got := fanoutName(request)
+	if !utf8.ValidString(got) {
+		t.Fatalf("fanoutName() returned invalid UTF-8: %q", got)
+	}
+	if len(got) > 48 {
+		t.Fatalf("fanoutName() length = %d bytes, want at most 48: %q", len(got), got)
+	}
+	if want := strings.Repeat("a", 46); got != want {
+		t.Fatalf("fanoutName() = %q, want %q", got, want)
 	}
 }

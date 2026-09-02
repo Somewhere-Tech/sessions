@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // fanoutLane is one provider's lane in a fan-out: which provider answered,
@@ -207,7 +208,15 @@ func fanoutName(request string) string {
 	}
 	name := strings.Join(words, " ")
 	if len(name) > 48 {
-		name = name[:48]
+		cut := 0
+		for cut < len(name) {
+			_, size := utf8.DecodeRuneInString(name[cut:])
+			if cut+size > 48 {
+				break
+			}
+			cut += size
+		}
+		name = name[:cut]
 	}
 	return strings.TrimSpace(name)
 }
