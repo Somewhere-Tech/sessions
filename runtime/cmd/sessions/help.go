@@ -138,10 +138,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions lanes", "sessions lanes --mine", "sessions lanes --subtree 0123abcd --direct"}, run: (*app).cmdLanes,
 	},
 	{
-		name: "team", usage: "team [lane-id]",
+		name: "team", usage: "team [lane-id] | team --all",
 		summary: "show the lanes a manager delegated and their state", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Show the lanes one manager is responsible for: its own parent, if any, and its delegated descendants, each with a compact state and the last line of work. Visibility follows responsibility — a lane sees only its parent and its own descendants, never other projects — and every row carries a short summary rather than a transcript, so a manager can watch its workers without pulling their conversations into context. The calling lane is SESSIONS_SESSION_ID; pass a lane id to inspect any lane's team. Rows waiting on a decision are called out so a blocked worker is visible without opening it.",
-		examples: []string{"sessions team", "sessions team 0123abcd", "sessions --json team 0123abcd"}, run: (*app).cmdTeam,
+		longHelp: "Show the lanes one manager is responsible for: its own parent, if any, and its delegated descendants, each with a compact state and the last line of work. Visibility follows responsibility — a lane sees only its parent and its own descendants, never other projects — and every row carries a short summary rather than a transcript, so a manager can watch its workers without pulling their conversations into context. The calling lane is SESSIONS_SESSION_ID; pass a lane id to inspect any lane's team. Rows waiting on a decision are called out so a blocked worker is visible without opening it.\n\n--all is the view from the top: every session that has delegated lanes, with how many are working and which ones wait on you, so a person sees across all their managers without opening any of them.",
+		examples: []string{"sessions team", "sessions team 0123abcd", "sessions --json team 0123abcd", "sessions team --all"}, run: (*app).cmdTeam,
 	},
 	{
 		name: "fanout", usage: "fanout [--with claude,codex] [--name N] [--cwd D] [--timeout D] [--idle D] [--no-wait] [--no-worktree] -- <request...>",

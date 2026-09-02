@@ -43,32 +43,33 @@ type session struct {
 	// LastHumanMessageAt and LastAgentMessageAt are the daemon's own record of
 	// who spoke, stamped at the input boundary. LastUserMessageAt is read back
 	// out of the provider transcript and can include provider-internal turns.
-	LastHumanMessageAt *int64  `json:"lastHumanMessageAt"`
-	LastAgentMessageAt *int64  `json:"lastAgentMessageAt"`
-	IdleReason         string  `json:"idleReason,omitempty"`
-	IdleDetail         string  `json:"idleDetail,omitempty"`
-	IdleSince          *int64  `json:"idleSince,omitempty"`
-	LastSummary        string  `json:"lastSummary,omitempty"`
-	Model              string  `json:"model,omitempty"`
-	Effort             string  `json:"effort,omitempty"`
-	Exited             bool    `json:"exited"`
-	Unreachable        bool    `json:"unreachable,omitempty"`
-	UnreachableReason  string  `json:"unreachableReason,omitempty"`
-	UnreachableSince   *int64  `json:"unreachableSince,omitempty"`
-	ExitCode           *int    `json:"exitCode"`
-	ExitSignal         *string `json:"exitSignal"`
-	ExitedAt           *int64  `json:"exitedAt"`
-	ConversationID     string  `json:"conversationId,omitempty"`
-	RemoteEndpoint     string  `json:"remoteEndpoint,omitempty"`
-	ClaudeSessionID    string  `json:"claudeSessionId,omitempty"`
-	CreatorKind        string  `json:"creator_kind,omitempty"`
-	CreatorID          string  `json:"creator_id,omitempty"`
-	ParentSessionID    string  `json:"parent_session_id,omitempty"`
-	DelegationKind     string  `json:"delegation_kind,omitempty"`
-	Permissions        string  `json:"permissions,omitempty"`
-	Lifecycle          string  `json:"lifecycle,omitempty"`
-	SetAsideAt         *int64  `json:"setAsideAt,omitempty"`
-	Pinned             bool    `json:"pinned"`
+	LastHumanMessageAt     *int64  `json:"lastHumanMessageAt"`
+	LastAgentMessageAt     *int64  `json:"lastAgentMessageAt"`
+	IdleReason             string  `json:"idleReason,omitempty"`
+	IdleDetail             string  `json:"idleDetail,omitempty"`
+	IdleSince              *int64  `json:"idleSince,omitempty"`
+	LastSummary            string  `json:"lastSummary,omitempty"`
+	Model                  string  `json:"model,omitempty"`
+	Effort                 string  `json:"effort,omitempty"`
+	Exited                 bool    `json:"exited"`
+	Unreachable            bool    `json:"unreachable,omitempty"`
+	UnreachableReason      string  `json:"unreachableReason,omitempty"`
+	UnreachableSince       *int64  `json:"unreachableSince,omitempty"`
+	ExitCode               *int    `json:"exitCode"`
+	ExitSignal             *string `json:"exitSignal"`
+	ExitedAt               *int64  `json:"exitedAt"`
+	ConversationID         string  `json:"conversationId,omitempty"`
+	RemoteEndpoint         string  `json:"remoteEndpoint,omitempty"`
+	ClaudeSessionID        string  `json:"claudeSessionId,omitempty"`
+	CreatorKind            string  `json:"creator_kind,omitempty"`
+	CreatorID              string  `json:"creator_id,omitempty"`
+	ParentSessionID        string  `json:"parent_session_id,omitempty"`
+	DisplayParentSessionID *string `json:"display_parent_session_id,omitempty"`
+	DelegationKind         string  `json:"delegation_kind,omitempty"`
+	Permissions            string  `json:"permissions,omitempty"`
+	Lifecycle              string  `json:"lifecycle,omitempty"`
+	SetAsideAt             *int64  `json:"setAsideAt,omitempty"`
+	Pinned                 bool    `json:"pinned"`
 	// Pointers, so a daemon that never reported these and a session that
 	// genuinely costs nothing stay distinguishable. Rendering turns nil into
 	// "-" and never into 0.

@@ -41,6 +41,12 @@ type teamListing struct {
 // caller is the SESSIONS_SESSION_ID of the invoking lane, or an explicit id so
 // a person can inspect any lane's team.
 func (a *app) cmdTeam(args []string) error {
+	if removeFirst(&args, "--all") {
+		if len(args) > 0 {
+			return fail(1, "usage: sessions team --all")
+		}
+		return a.cmdTeamAll()
+	}
 	lane := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		lane = args[0]
