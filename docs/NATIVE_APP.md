@@ -98,11 +98,13 @@ roots a person spoke to within the last 24 hours, most recent first. It never
 automatically repeats a headless lane. Other prior runners stay paused; their
 metadata, event logs, transcripts, and launch records remain intact and a
 `restore-pending` marker records why. The inbox lists them under "Not
-connected" with that reason, and resuming one continues its conversation.
-Daemon discovery exposes those records as needing recovery without spawning
-providers or deleting that recovery evidence. Live read commands fail with
-`SESSION_NEEDS_RECREATE` and a resume action instead of returning an empty
-successful result.
+connected" with that reason. First contact wakes one: opening it in the app,
+sending it a message, or reading it live restarts its runner in place with the
+same id, conversation, and folder, so nothing was lost and nothing had to be
+resumed by hand. Daemon discovery on its own never spawns a provider or deletes
+that recovery evidence. When a wake fails, live commands fail with
+`SESSION_NEEDS_RECREATE`, the failure as the reason, and a resume action
+instead of returning an empty successful result.
 
 This is a safety ceiling, not a retention ceiling. It limits the process fanout
 that one login can cause while keeping every durable conversation available for

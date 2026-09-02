@@ -90,6 +90,11 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 	}
 	session, ok := s.registry.Get(id)
 	if !ok {
+		if woken, live, _ := s.wakePausedSession(ctx, id); live {
+			session, ok = woken, true
+		}
+	}
+	if !ok {
 		if pending, paused := s.pendingRestore(id); paused {
 			_ = peer.send(ctx, pendingRestoreSocketError(id, pending))
 		} else {
@@ -228,6 +233,11 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 				continue
 			}
 			session, ok := s.registry.Get(message.SessionID)
+			if !ok {
+				if woken, live, _ := s.wakePausedSession(ctx, message.SessionID); live {
+					session, ok = woken, true
+				}
+			}
 			if !ok {
 				if pending, paused := s.pendingRestore(message.SessionID); paused {
 					_ = peer.send(ctx, pendingRestoreSocketError(message.SessionID, pending))
@@ -448,6 +458,11 @@ func (s *Server) handleMuxSnapshot(ctx context.Context, peer *wsPeer, message cl
 	}
 	session, ok := s.registry.Get(message.SessionID)
 	if !ok {
+		if woken, live, _ := s.wakePausedSession(ctx, message.SessionID); live {
+			session, ok = woken, true
+		}
+	}
+	if !ok {
 		if pending, paused := s.pendingRestore(message.SessionID); paused {
 			sendRPCError(ctx, peer, message.RequestID,
 				pendingRestoreMessage(message.SessionID, pending), "SESSION_NEEDS_RECREATE", message.SessionID)
@@ -477,6 +492,11 @@ func (s *Server) handleMuxEvents(ctx context.Context, peer *wsPeer, message clie
 	}
 	session, ok := s.registry.Get(message.SessionID)
 	if !ok {
+		if woken, live, _ := s.wakePausedSession(ctx, message.SessionID); live {
+			session, ok = woken, true
+		}
+	}
+	if !ok {
 		if pending, paused := s.pendingRestore(message.SessionID); paused {
 			sendRPCError(ctx, peer, message.RequestID,
 				pendingRestoreMessage(message.SessionID, pending), "SESSION_NEEDS_RECREATE", message.SessionID)
@@ -497,7 +517,7 @@ func pendingRestoreMessage(id string, pending state.RestorePending) string {
 	if reason == "" {
 		reason = "the runner stayed paused after reboot"
 	}
-	return "session is paused after reboot and cannot be read or controlled until it is resumed: " +
+	return "session is paused after reboot and could not be restarted in place: " +
 		reason + "; run sessions resume " + id
 }
 

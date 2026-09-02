@@ -102,6 +102,10 @@ type messageAttributionService interface {
 	MessageRelays(context.Context, string) ([]ledger.MessageRelayed, error)
 }
 
+type pausedWaker interface {
+	WakePaused(context.Context, string) (state.SessionInfo, error)
+}
+
 type approvalService interface {
 	Approve(context.Context, string, proto.ApprovalControl) (state.SessionInfo, error)
 }

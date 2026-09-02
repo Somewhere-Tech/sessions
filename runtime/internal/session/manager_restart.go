@@ -1,13 +1,66 @@
 package session
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
+
+// ErrNotPaused: the session is not one that stayed paused after a reboot.
+var ErrNotPaused = errors.New("session is not paused after a reboot")
+
+// WakePaused restarts a session that deliberately stayed paused after a
+// reboot and returns it live. A person's first message or first look is the
+// trigger; nothing is restarted on a mere listing. The restart cap only
+// decides what comes back on its own at boot, not what a person can reach.
+func (m *Manager) WakePaused(ctx context.Context, id string) (state.SessionInfo, error) {
+	if existing, live := m.registry.Get(id); live && !existing.Info().Unreachable {
+		return existing.Info(), nil
+	}
+	if _, paused := m.PendingRestore(id); !paused {
+		return state.SessionInfo{}, fmt.Errorf("%w: %s", ErrNotPaused, id)
+	}
+	waker, ok := m.launcher.(proto.RunnerWaker)
+	if !ok {
+		return state.SessionInfo{}, errors.New("this machine cannot restart a paused session in place; resume it with `sessions resume " + id + "`")
+	}
+	m.wakeMu.Lock()
+	defer m.wakeMu.Unlock()
+	if existing, live := m.registry.Get(id); live && !existing.Info().Unreachable {
+		return existing.Info(), nil
+	}
+	runner, err := waker.Wake(ctx, id)
+	if err != nil {
+		return state.SessionInfo{}, fmt.Errorf("wake paused session %s: %w", id, err)
+	}
+	// The runner rewrites its metadata as it starts; a paused runner may have
+	// left none behind, in which case what it reports over the socket is the
+	// identity.
+	metadata, err := state.ReadRunnerMetadata(filepath.Join(m.config.RunnerStateDir, id+".json"))
+	if err != nil {
+		metadata = state.RunnerMetadata{Info: runner.Info()}
+	}
+	session, err := m.registry.RegisterMetadata(ctx, runner, metadata, "")
+	if err != nil {
+		if existing, live := m.registry.Get(id); live {
+			return existing.Info(), nil
+		}
+		return state.SessionInfo{}, fmt.Errorf("register woken session %s: %w", id, err)
+	}
+	m.manage(session)
+	// The marker said "paused"; the session is live now, whichever launcher
+	// brought it back.
+	_ = os.Remove(state.For(m.config.RunnerStateDir, id).RestorePending)
+	log.Printf("[restore] woke paused session %s on first contact", id)
+	return session.Info(), nil
+}
 
 const restartRestorePendingReason = "restart-restore-pending"
 

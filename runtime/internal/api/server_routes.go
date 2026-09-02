@@ -546,8 +546,22 @@ func (s *Server) requireLocalPrincipal(response http.ResponseWriter, request *ht
 
 func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.Request, id, suffix, corsOrigin string) {
 	session, ok := s.registry.Get(id)
-	if !ok && sessionRuntimeRoute(request.Method, suffix) && s.sendPendingRestore(response, id, corsOrigin) {
-		return
+	if !ok && sessionRuntimeRoute(request.Method, suffix) {
+		// First contact wakes a session that stayed paused after a reboot.
+		woken, live, wakeErr := s.wakePausedSession(request.Context(), id)
+		if wakeErr != nil {
+			s.sendJSON(response, http.StatusConflict, map[string]any{
+				"code": "SESSION_NEEDS_RECREATE", "sessionId": id,
+				"error":  "session is paused after reboot and could not be restarted: " + wakeErr.Error(),
+				"action": "sessions resume " + id,
+			}, corsOrigin)
+			return
+		}
+		if live {
+			session, ok = woken, true
+		} else if s.sendPendingRestore(response, id, corsOrigin) {
+			return
+		}
 	}
 	if suffix == "/model-options" && request.Method == http.MethodGet {
 		if !ok {

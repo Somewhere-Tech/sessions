@@ -149,6 +149,9 @@ func (e *ConversationMovedError) Error() string {
 type Manager struct {
 	config   state.Config
 	launcher proto.RunnerLauncher
+	// wakeMu serializes WakePaused so two first messages cannot kick one
+	// runner twice.
+	wakeMu   sync.Mutex
 	registry *state.Registry
 	push     *PushService
 	guard    MassKillGuard

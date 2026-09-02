@@ -16,8 +16,11 @@ type Launcher struct {
 	mu       sync.Mutex
 	Runners  map[string]*Runner
 	Launches []proto.LaunchRequest
-	PID      int
-	Err      error
+	// Wakes records the paused sessions the daemon asked to restart.
+	Wakes   []string
+	WakeErr error
+	PID     int
+	Err     error
 }
 
 func NewLauncher() *Launcher {
@@ -49,6 +52,20 @@ func (l *Launcher) Attach(_ context.Context, info proto.RunnerInfo) (proto.Runne
 	if !ok {
 		return nil, errors.New("fake runner is not available")
 	}
+	return runner, nil
+}
+
+// Wake stands in for a launchd kickstart: a fresh fake runner answers for
+// the paused id from then on.
+func (l *Launcher) Wake(_ context.Context, id string) (proto.Runner, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.Wakes = append(l.Wakes, id)
+	if l.WakeErr != nil {
+		return nil, l.WakeErr
+	}
+	runner := NewRunner(proto.RunnerInfo{ID: id, PID: l.PID, ProtocolVersion: proto.ProtocolVersion, Cols: 120, Rows: 40})
+	l.Runners[id] = runner
 	return runner, nil
 }
 

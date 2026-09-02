@@ -394,3 +394,21 @@ func (s *Server) sendPendingRestore(response http.ResponseWriter, id, corsOrigin
 	}, corsOrigin)
 	return true
 }
+
+// wakePausedSession restarts a reboot-paused session on first contact and
+// returns it live. False means it is not paused, or waking failed; the
+// caller then reports the paused state with the failure as its reason.
+func (s *Server) wakePausedSession(ctx context.Context, id string) (*state.Session, bool, error) {
+	if _, paused := s.pendingRestore(id); !paused {
+		return nil, false, nil
+	}
+	waker, ok := s.registry.(pausedWaker)
+	if !ok {
+		return nil, false, nil
+	}
+	if _, err := waker.WakePaused(ctx, id); err != nil {
+		return nil, false, err
+	}
+	session, live := s.registry.Get(id)
+	return session, live, nil
+}

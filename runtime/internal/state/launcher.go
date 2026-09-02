@@ -140,6 +140,55 @@ func (l *LaunchdLauncher) waitAndAttach(ctx context.Context, info proto.RunnerIn
 	}
 }
 
+// Wake restarts a runner that stayed paused after a reboot: renew its
+// same-boot permit so the runner accepts the launch, kick the launchd job,
+// and attach. A runner that still refuses gets its paused marker back, so
+// the session never reads as unknown.
+func (l *LaunchdLauncher) Wake(ctx context.Context, id string) (proto.Runner, error) {
+	paths := For(l.config.RunnerStateDir, id)
+	pending, pendingErr := ReadRestorePending(paths.RestorePending)
+	if pendingErr != nil {
+		return nil, fmt.Errorf("session %s is not paused after a reboot: %w", id, pendingErr)
+	}
+	bootID, err := CurrentBootID()
+	if err != nil {
+		return nil, err
+	}
+	if err := WriteRestartPermit(paths.KeepAlive, bootID); err != nil {
+		return nil, fmt.Errorf("renew runner permit: %w", err)
+	}
+	_ = os.Remove(paths.RestorePending)
+	restorePaused := func(reason string) {
+		_ = os.Remove(paths.KeepAlive)
+		_ = WriteRestorePending(paths.RestorePending, id, pending.Reason+" (last wake attempt: "+reason+")")
+	}
+	domain := fmt.Sprintf("gui/%d", os.Getuid())
+	plist := plistPath(l.config.LaunchAgentsDir, id)
+	label := launchdLabelPrefix + id
+	if _, statErr := os.Stat(plist); statErr != nil {
+		plist = LegacyRunnerPlistPath(l.config.LaunchAgentsDir, id)
+		label = legacyLaunchdLabelPrefix + id
+	}
+	// The job is usually still loaded from boot, in which case bootstrap
+	// would refuse; load it only when launchd does not know it.
+	if exec.Command("launchctl", "print", domain+"/"+label).Run() != nil {
+		if output, bootErr := exec.Command("launchctl", "bootstrap", domain, plist).CombinedOutput(); bootErr != nil {
+			restorePaused("launchctl bootstrap: " + strings.TrimSpace(string(output)))
+			return nil, fmt.Errorf("launchctl bootstrap %s: %w: %s", id, bootErr, strings.TrimSpace(string(output)))
+		}
+	}
+	if output, kickErr := exec.Command("launchctl", "kickstart", domain+"/"+label).CombinedOutput(); kickErr != nil {
+		restorePaused("launchctl kickstart: " + strings.TrimSpace(string(output)))
+		return nil, fmt.Errorf("launchctl kickstart %s: %w: %s", id, kickErr, strings.TrimSpace(string(output)))
+	}
+	runner, err := l.waitAndAttach(ctx, proto.RunnerInfo{ID: id, SocketPath: paths.Socket})
+	if err != nil {
+		restorePaused(err.Error())
+		return nil, err
+	}
+	return runner, nil
+}
+
 // Reap unloads a cleanly exited runner so launchd cannot retain a stale
 // service registration after its plist is removed.
 func (l *LaunchdLauncher) Reap(id string) error {

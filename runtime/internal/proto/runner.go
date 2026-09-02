@@ -96,6 +96,13 @@ type RunnerLauncher interface {
 	Attach(context.Context, RunnerInfo) (Runner, error)
 }
 
+// RunnerWaker is implemented by launchers that can restart a runner which
+// deliberately stayed paused after a reboot, so a person's first message or
+// first look wakes it without a manual resume.
+type RunnerWaker interface {
+	Wake(context.Context, string) (Runner, error)
+}
+
 // RunnerLaunchPreflight is implemented by launchers that can validate a
 // launch without creating persistent state. Registry invokes it before the
 // lifecycle boundary, metadata, plist, and launch-started event.
