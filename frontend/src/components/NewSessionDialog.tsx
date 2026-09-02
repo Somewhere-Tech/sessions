@@ -173,9 +173,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     parentSession
   ));
   const [access, setAccess] = useState<AccessChoice>(initialDefaults.skipPerms ? 'full' : 'ask');
-  const [claudeOptions, setClaudeOptions] = useState<ClaudeSessionOptions>(() => ({
-    permissionMode: claudeModeFor(initialDefaults.skipPerms ? 'full' : 'ask')
-  }));
+  const [claudeOptions, setClaudeOptions] = useState<ClaudeSessionOptions>({});
   const [claudeSafeMode, setClaudeSafeMode] = useState(false);
   const [codexModel, setCodexModel] = useState('');
   const [codexEffort, setCodexEffort] = useState('');
@@ -387,6 +385,11 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         setServerScope(machineId);
       }
       const { cmd, args } = resolveCommand(tool, access, codexModel, codexEffort, claudeSafeMode);
+      const resolvedClaudeOptions: ClaudeSessionOptions = {
+        ...claudeOptions,
+        permissionMode: claudeModeFor(access),
+        ...(claudeSafeMode ? { remoteControl: 'off', chrome: 'off', somewhereMcp: 'inherit' } : {})
+      };
       const info = await create({
         cmd,
         args,
@@ -406,11 +409,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         // cannot distinguish that prompt from the agent composer, so never
         // inject an initial task until the user has authenticated explicitly.
         waitReady: task.trim().length > 0 && !requiresProviderLogin,
-        claude: tool === 'claude-code'
-          ? claudeSafeMode
-            ? { ...claudeOptions, remoteControl: 'off', chrome: 'off', somewhereMcp: 'inherit' }
-            : claudeOptions
-          : undefined,
+        claude: tool === 'claude-code' ? resolvedClaudeOptions : undefined,
         creatorSessionId: parentSession?.id,
         delegationKind: parentSession ? 'user' : undefined
       }, machineId);
@@ -575,9 +574,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                       <select
                         value={access}
                         onChange={(event) => {
-                          const next = event.currentTarget.value as AccessChoice;
-                          setAccess(next);
-                          setClaudeOptions((current) => ({ ...current, permissionMode: claudeModeFor(next) }));
+                          setAccess(event.currentTarget.value as AccessChoice);
                         }}
                         aria-label="Access"
                         title={access === 'full' ? 'Runs commands and edits files without asking' : access === 'plan' ? 'Reads and plans; makes no changes' : 'Asks you before running commands or changing files'}
