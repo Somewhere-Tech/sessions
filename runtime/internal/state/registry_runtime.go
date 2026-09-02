@@ -213,6 +213,14 @@ func (r *Registry) runnerEnvironment(info proto.RunnerInfo, caller map[string]st
 		setRunnerEnvironment(environment, key, value)
 	}
 	setRunnerEnvironment(environment, "TERM", "xterm-256color")
+	// A session invoking the Sessions CLI must return to the daemon that owns
+	// it. In particular, an isolated daemon on a non-default port must not let
+	// delegated commands fall through to the installed daemon on 8787. Set the
+	// route after caller environment merging for the same reason we set the
+	// identity here: neither is caller-controlled ambient state.
+	setRunnerEnvironment(environment, "SESSIONS_HOST", r.config.Host)
+	setRunnerEnvironment(environment, "SESSIONS_PORT", fmt.Sprint(r.config.Port))
+	setRunnerEnvironment(environment, "SESSIONS_STATE_DIR", r.config.RunnerStateDir)
 	// This identity belongs to the newly-created session. Set it after caller
 	// environment merging so a caller cannot forge a different descendant.
 	setRunnerEnvironment(environment, "SESSIONS_SESSION_ID", info.ID)
