@@ -202,8 +202,9 @@ sessions doctor
 sessions status <id>
 ```
 
-Daemon logs on macOS are in
-`~/Library/Logs/sessions/tech.somewhere.sessions.dev.daemon.log`. If the web UI cannot
+The native app's daemon log on macOS is
+`~/Library/Logs/Sessions/sessionsd.log`. A standalone development daemon logs
+to `~/Library/Logs/sessions/tech.somewhere.sessions.dev.daemon.log`. If the web UI cannot
 authenticate, run `sessions token`. See
 [installation troubleshooting](docs/INSTALL.md#troubleshooting).
 

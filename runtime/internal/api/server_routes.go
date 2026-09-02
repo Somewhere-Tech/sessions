@@ -26,6 +26,15 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	path := request.URL.Path
 	origin := request.Header.Get("Origin")
 	corsOrigin := ""
+	if !requestHostIdentifiesListener(request, s.config.Host, s.config.Port, s.lan.activeHost()) {
+		// A verified Tailscale Serve identity is the one supported proxy case:
+		// Serve preserves the tailnet hostname while adding identity headers
+		// that a direct caller cannot safely forge (see tailscaleServeIdentity).
+		if _, ok := tailscaleServeIdentity(request); !ok {
+			s.sendJSON(response, http.StatusMisdirectedRequest, map[string]any{"error": "request host does not identify this Sessions daemon"}, "")
+			return
+		}
+	}
 	originAllowed := allowedOrigin(origin, s.config.Host, s.lan.activeHost())
 	if originAllowed {
 		corsOrigin = origin
@@ -34,13 +43,19 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	// CORS controls whether a browser may read a response; it does not stop a
 	// browser from sending a state-changing request. Reject ambient-authority
 	// writes from untrusted browser origins before authentication or route
-	// dispatch. Credential-bearing remote clients remain valid; a hostile page
-	// cannot add Authorization without a preflight that this server rejects.
+	// dispatch. Credential-bearing remote clients remain valid, but the
+	// credential must verify: header presence alone is ambient browser input.
 	if isStateChangingMethod(request.Method) && origin != "" &&
-		!trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost()) &&
-		strings.TrimSpace(request.Header.Get("Authorization")) == "" {
-		s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
-		return
+		!trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost()) {
+		verified, err := s.presentedCredential(request)
+		if err != nil {
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": "verify request credential: " + err.Error()}, "")
+			return
+		}
+		if !verified {
+			s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
+			return
+		}
 	}
 
 	if request.Method == http.MethodOptions {
@@ -859,6 +874,17 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			}
 			s.sendJSON(response, http.StatusNotFound, map[string]any{"ok": false}, corsOrigin)
 			return
+		}
+		if suffix == "/submit" {
+			if reason, blocked := semanticSubmitRefusal(session.Info()); blocked {
+				record, completeErr := s.deliveries.Complete(body.OperationID, delivery.StatusNotDelivered, false, true, reason)
+				if completeErr != nil {
+					s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": completeErr.Error(), "operation_id": body.OperationID}, corsOrigin)
+					return
+				}
+				s.sendDeliveryRecord(response, record, false, corsOrigin)
+				return
+			}
 		}
 		if err := s.writeSessionInput(request.Context(), id, body.Data, attribution, attributed); err != nil {
 			if suffix == "/submit" {

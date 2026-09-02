@@ -39,7 +39,10 @@ type interopToolchain struct {
 	nodeRunner string
 }
 
-var tools interopToolchain
+var (
+	tools                    interopToolchain
+	interopUnavailableReason string
+)
 
 func TestMain(m *testing.M) {
 	if runtime.GOOS != "darwin" {
@@ -50,6 +53,11 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cutover interop setup: %v\n", err)
 		os.Exit(1)
+	}
+	tsc := filepath.Join(repoRoot, "runtime", "testdata", "node-runtime", "node_modules", ".bin", "tsc")
+	if _, err := os.Stat(tsc); err != nil {
+		interopUnavailableReason = "legacy Node interop fixture dependencies are not installed; run `npm --prefix runtime/testdata/node-runtime ci`"
+		os.Exit(m.Run())
 	}
 	buildRoot, err := os.MkdirTemp("/tmp", "sessions-cutover-build-")
 	if err != nil {
@@ -1088,5 +1096,8 @@ func requireDarwin(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "darwin" {
 		t.Skip("the normative node runner uses node-pty and is supported on darwin")
+	}
+	if interopUnavailableReason != "" {
+		t.Skip(interopUnavailableReason)
 	}
 }

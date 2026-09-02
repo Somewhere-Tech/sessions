@@ -127,6 +127,13 @@ flow. Nearby bootstrap routes:
 - issue only a per-device revocable token after authenticated local host
   approval.
 
+An approved machine is not a passive viewer. Its revocable per-device token is
+a host-administrator credential used by the native client and CLI to create,
+send to, and end sessions. Those actions run with the local Sessions user's
+authority and can therefore execute commands on that computer. Approve only a
+device you control, prefer Tailscale HTTPS outside a private LAN, and revoke a
+lost device. Sessions does not currently issue a read-only pairing token.
+
 LAN traffic is plain HTTP. Credentials and later session traffic are therefore
 not confidential against a hostile observer on shared Wi-Fi even though API
 authorization is required. The product labels this “trusted private network,”

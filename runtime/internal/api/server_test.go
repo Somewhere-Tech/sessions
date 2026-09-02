@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -610,6 +612,47 @@ func TestPendingSubmitOperationIsReportedUnknownAndNeverRetried(t *testing.T) {
 	}
 }
 
+func TestSubmitRefusesClaudeFolderTrustControlWithoutTyping(t *testing.T) {
+	daemon := newTestDaemon(t)
+	recorder := &recordingSessionInput{sessionService: daemon.registry}
+	daemon.handler.registry = recorder
+	created, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "claude", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, ok := daemon.registry.Get(created.ID)
+	if !ok {
+		t.Fatal("created session is not live")
+	}
+	live.SetIdleResult(
+		state.IdleReasonNeedsInput,
+		"Claude is waiting for you to trust this folder",
+		"",
+		time.Now().UnixMilli(),
+	)
+
+	result := serve(
+		t, daemon.handler, http.MethodPost, "/api/sessions/"+created.ID+"/submit",
+		strings.NewReader(`{"data":"please inspect this repository"}`), "127.0.0.1:4567", nil,
+	)
+	if result.Code != http.StatusNotFound {
+		t.Fatalf("submit = %d %s", result.Code, result.Body.String())
+	}
+	var receipt map[string]any
+	decodeBody(t, result, &receipt)
+	if receipt["status"] != "not-delivered" || receipt["delivered"] != false || receipt["retry"] != true ||
+		!strings.Contains(receipt["reason"].(string), "Terminal view") {
+		t.Fatalf("receipt = %#v", receipt)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if len(recorder.calls) != 0 {
+		t.Fatalf("trust control received semantic input: %#v", recorder.calls)
+	}
+}
+
 // TestSubmitsToDifferentSessionsRunConcurrently is the scaling half of the same
 // invariant. Every submit holds its session's lock across a fixed settle delay;
 // with one process-wide lock, N agents on N different sessions took N delays.
@@ -832,6 +875,23 @@ func TestAuthAndOriginMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("bogus bearer cannot bypass the loopback origin guard", func(t *testing.T) {
+		before := len(daemon.registry.List(true))
+		response := serve(t, daemon.handler, http.MethodPost, "/api/sessions",
+			strings.NewReader(`{"cmd":"/bin/sh"}`), "127.0.0.1:4567",
+			http.Header{
+				"Authorization": {"Bearer not-a-token"},
+				"Content-Type":  {"application/json"},
+				"Origin":        {"https://evil.test"},
+			})
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusForbidden, response.Body.String())
+		}
+		if after := len(daemon.registry.List(true)); after != before {
+			t.Fatalf("bogus bearer changed session count from %d to %d", before, after)
+		}
+	})
+
 	t.Run("native JSON endpoints reject simple browser content types", func(t *testing.T) {
 		before := len(daemon.registry.List(true))
 		response := serve(t, daemon.handler, http.MethodPost, "/api/sessions",
@@ -928,6 +988,30 @@ func TestTrustedAmbientWriteOrigin(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if got := trustedAmbientWriteOrigin(test.origin, "127.0.0.1", 8787, "mini.tail.test"); got != test.want {
 				t.Fatalf("trustedAmbientWriteOrigin(%q) = %v, want %v", test.origin, got, test.want)
+			}
+		})
+	}
+}
+
+func TestTrustedRequestHost(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{name: "loopback", host: "127.0.0.1:8787", want: true},
+		{name: "localhost", host: "localhost:8787", want: true},
+		{name: "IPv6 loopback", host: "[::1]:8787", want: true},
+		{name: "LAN listener", host: "192.0.2.8:8787", want: true},
+		{name: "wrong port", host: "127.0.0.1:3000", want: false},
+		{name: "DNS rebinding hostname", host: "evil.example:8787", want: false},
+		{name: "missing port", host: "127.0.0.1", want: false},
+		{name: "malformed IPv6", host: "::1:8787", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := trustedRequestHost(test.host, "127.0.0.1", 8787, "192.0.2.8"); got != test.want {
+				t.Fatalf("trustedRequestHost(%q) = %v, want %v", test.host, got, test.want)
 			}
 		})
 	}
@@ -1649,6 +1733,10 @@ func awaitWSType(t *testing.T, ctx context.Context, connection *websocket.Conn, 
 func serve(t *testing.T, handler http.Handler, method, target string, body io.Reader, remote string, headers http.Header) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, target, body)
+	request.Host = "127.0.0.1:8787"
+	if server, ok := handler.(*Server); ok {
+		request.Host = net.JoinHostPort(server.config.Host, strconv.Itoa(server.config.Port))
+	}
 	request.RemoteAddr = remote
 	for key, values := range headers {
 		for _, value := range values {

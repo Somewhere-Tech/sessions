@@ -53,6 +53,7 @@ func TestVersionLess(t *testing.T) {
 func TestProviderUpdateRejectsOpenAccessClientBeforeMutation(t *testing.T) {
 	server := &Server{}
 	request := httptest.NewRequest(http.MethodPost, "/api/providers/codex/update", strings.NewReader(`{}`))
+	request.Host = ""
 	request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, authPrincipal{
 		Kind: ledger.CreatorExternal,
 		ID:   "remote:open-access",

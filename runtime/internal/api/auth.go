@@ -185,6 +185,73 @@ func trustedAmbientWriteOrigin(origin, bindHost string, bindPort int, additional
 	return false
 }
 
+// trustedRequestHost rejects DNS-rebinding requests before any route can use
+// loopback trust. A browser can resolve an attacker-controlled hostname to
+// 127.0.0.1 and send a perfectly ordinary GET with that hostname in Host; the
+// peer address alone therefore cannot prove the request was addressed to
+// Sessions. Every accepted host names the configured listener itself and uses
+// its bound port.
+func trustedRequestHost(value, bindHost string, bindPort int, additionalHosts ...string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	host, portText, err := net.SplitHostPort(value)
+	if err != nil {
+		// A missing port is only an exact description of the listener when it
+		// is using HTTP's default port. Malformed host:port values fail closed.
+		if strings.Contains(value, ":") || bindPort != 80 {
+			return false
+		}
+		host = value
+		portText = "80"
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || (bindPort != 0 && port != bindPort) {
+		return false
+	}
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" ||
+		strings.EqualFold(host, strings.Trim(bindHost, "[]")) {
+		return true
+	}
+	for _, additional := range additionalHosts {
+		if additional != "" && strings.EqualFold(host, strings.Trim(additional, "[]")) {
+			return true
+		}
+	}
+	return false
+}
+
+func requestHostIdentifiesListener(request *http.Request, bindHost string, bindPort int, additionalHosts ...string) bool {
+	// HTTP/1.0 permits an empty Host. It carries no attacker-controlled DNS
+	// name to rebind, so keep it only for a direct loopback peer. Browsers and
+	// every HTTP/1.1 client send Host and take the strict path below.
+	if strings.TrimSpace(request.Host) == "" {
+		return isLoopbackPeer(request)
+	}
+	if trustedRequestHost(request.Host, bindHost, bindPort, additionalHosts...) {
+		return true
+	}
+	// Test servers and embedders may bind an ephemeral port instead of the
+	// configured production port. The address on the accepted connection is
+	// authoritative and cannot be supplied by the remote caller, so an exact
+	// Host match against it is safe and keeps the handler independently usable.
+	local, ok := request.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if !ok || local == nil {
+		return false
+	}
+	host, portText, err := net.SplitHostPort(local.String())
+	if err != nil {
+		return false
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return false
+	}
+	return trustedRequestHost(request.Host, host, port)
+}
+
 // websocketWritesAllowed reports whether a `/ws` upgrade may carry the frames
 // that reach a live runner: `input`, `submit`, `resize`, and the raw binary /
 // non-JSON text frames of single-session mode.
@@ -214,10 +281,10 @@ func (s *Server) websocketWritesAllowed(request *http.Request) (bool, error) {
 }
 
 // presentedCredential reports whether the request carried a token that actually
-// verifies. Mere presence is not enough here, unlike the HTTP Authorization
-// check in ServeHTTP: a browser cannot set headers on a WebSocket at all, so
-// `?token=` is a channel a hostile page can use too. Only a verifying token
-// distinguishes a real client from ambient browser authority.
+// verifies. Mere presence is never enough: a browser cannot set headers on a
+// WebSocket at all, so `?token=` is a channel a hostile page can use too. Only
+// a verifying token distinguishes a real client from ambient browser
+// authority.
 func (s *Server) presentedCredential(request *http.Request) (bool, error) {
 	expected, err := s.tokens.token()
 	if err != nil {

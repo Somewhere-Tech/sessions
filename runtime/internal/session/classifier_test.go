@@ -36,6 +36,23 @@ func TestClassifySnapshotUsesCodexApprovalReason(t *testing.T) {
 	}
 }
 
+func TestClassifySnapshotRecognizesClaudeFolderTrustDialog(t *testing.T) {
+	snapshot := `
+Quick safety check: Is this a project you created or one you trust?
+
+Claude Code can read, edit, and execute files in this folder.
+
+  ❯ 1. No, exit
+    2. Yes, I trust this folder
+
+Enter to confirm · Esc to cancel
+`
+	got := ClassifySnapshot(snapshot)
+	if got.Outcome != IdleBlocked || got.Line != "Claude is waiting for you to trust this folder" {
+		t.Fatalf("ClassifySnapshot() = %#v", got)
+	}
+}
+
 func TestFinalAssistantSummary(t *testing.T) {
 	events := []json.RawMessage{
 		json.RawMessage(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"## Shipped **lovable notifications**. Added rich hook metadata too."}]}}`),

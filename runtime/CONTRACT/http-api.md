@@ -1,8 +1,9 @@
 # sessionsd HTTP API contract
 
-This document records the behavior of the normative TypeScript implementation,
-principally `runtime/testdata/node-runtime/src/http.ts`. It describes observed compatibility behavior,
-including quirks; it is not a redesign.
+This document records the behavior of the normative Go daemon in
+`runtime/internal/api`. The frozen TypeScript implementation under
+`runtime/testdata/node-runtime` is a compatibility fixture for the supported
+runner cutover boundary, not the product server.
 
 ## Listener and common behavior
 
@@ -20,16 +21,17 @@ including quirks; it is not a redesign.
     x-sessions-filename, x-sessions-user-consent`
   - `Access-Control-Allow-Origin: <request Origin>` only when the Origin is
     allowed as described below.
-- Every `OPTIONS` request, regardless of path, returns 204 before auth or route
-  matching. `send()` supplies `{}`, but Node suppresses the body for 204.
+- Every `OPTIONS` request with a Host that identifies the listener returns 204
+  before auth or route matching. An invalid Host is rejected first as described
+  below.
 - JSON bodies are limited to 2 MiB. An empty body decodes as `{}`. Invalid JSON
   and an oversized body become the route's documented error response.
 - A method/path combination not matched below reaches `404
   {"error":"not found","path":"<pathname>"}` after auth. Thus a wrong method
   on an API path normally requires auth before returning 404.
-- An uncaught handler error is converted by `server.ts` to 500
-  `{"error":"<message>"}`. That outer error path does not add the normal CORS
-  headers.
+- Route handlers return the documented JSON errors explicitly. A panic is not
+  part of the HTTP contract; Go's `net/http` server terminates the affected
+  request rather than exposing an internal error string to the client.
 
 ## Authentication
 
@@ -51,8 +53,15 @@ with a protected signed-in-user + LocalSystem DACL; `sessions` and `sessionsd`
 resolve the same path. `SESSIONS_STATE_DIR` relocates both platform forms for
 scratch state. The local CLI relies on the same loopback-peer exemption and does
 not add the master token to loopback HTTP headers or WebSocket URLs. A present
-`open` file beside the token bypasses token auth. Failed auth is
-`401 {"error":"unauthorized"}`.
+`open` file beside the token bypasses token auth. This is full daemon control,
+not a read-only sharing mode: it includes creating sessions, sending input, and
+ending processes. Failed auth is `401 {"error":"unauthorized"}`.
+
+The per-device token issued by pairing is likewise a host-administrator
+credential. It intentionally supports the native client and agent parity
+surface, including session creation, input, and termination. Anyone who holds
+one can run commands with the authority of the Sessions user; revoke a lost or
+untrusted device immediately. Pairing is not a transcript-only viewer grant.
 
 The Go runtime adds two narrowly exempt Tailscale bootstrap routes documented
 below. They do not accept caller-supplied identity: the immediate TCP peer must
@@ -65,6 +74,12 @@ these headers and already has local daemon control.
 
 ## Origin and CORS rules
 
+Before CORS or route dispatch, the daemon verifies that the HTTP `Host` names
+its configured loopback or enabled LAN listener on the bound port. This closes
+DNS rebinding, where an attacker-controlled hostname resolves to 127.0.0.1.
+Tailscale Serve is the supported proxy exception and must supply a verified
+Serve identity from an immediate loopback peer. A rejected Host returns 421.
+
 An absent `Origin` is allowed. A present value must parse as a URL and satisfy
 one of these rules:
 
@@ -74,9 +89,11 @@ one of these rules:
 3. its hostname is exactly the configured bind host.
 
 Scheme and port are unrestricted for the hostname rules. The two hosted values
-are serialized-origin matches, so another scheme or port fails. For HTTP, a
-disallowed or malformed Origin does **not** reject the request; it merely omits
-`Access-Control-Allow-Origin`, leaving browser CORS enforcement to block access.
+are serialized-origin matches, so another scheme or port fails. For HTTP
+reads, a disallowed or malformed Origin omits `Access-Control-Allow-Origin`.
+For state-changing methods, a browser Origin outside the native/same-listener
+allowlist is rejected with 403 unless the request carries a credential that
+actually verifies; the mere presence of an Authorization header is not enough.
 The WebSocket rule is stricter; see `ws.md`.
 
 ## Shared object schemas
@@ -148,7 +165,7 @@ never existed.
 
 ### Standard error bodies
 
-Error strings originating from Node, the filesystem, JSON parsing, launchd, or
+Error strings originating from the provider, filesystem, JSON parsing, launchd, or
 session creation are passed through as strings. Consumers must not depend on
 such platform-dependent text. The literal error bodies listed per route are
 stable source literals.
@@ -163,7 +180,7 @@ No auth. Returns 200:
 {
   "ok": true,
   "name": "sessionsd",
-  "version": "0.2.3",
+  "version": "0.2.26",
   "listen": { "host": "127.0.0.1", "port": 8787 },
   "lan": {
     "enabled": true,
@@ -228,7 +245,7 @@ Requires authentication (loopback peers are already authorized). Returns 200:
 {
   "ok": true,
   "name": "sessionsd",
-  "version": "0.2.3",
+  "version": "0.2.26",
   "status": "healthy",
   "discovering": false,
   "sessionsLoaded": 1,

@@ -30,6 +30,8 @@ var (
 	inputPromptRE            = regexp.MustCompile(`(?i)\b(?:y/n|yes/no|do you want)\b|\[[yn]/[yn]\]|\b(?:continue|proceed)\s*\?|\?\s*$`)
 	permissionPromptRE       = regexp.MustCompile(`(?i)^\s*[❯›]\s*(?:approve|allow|trust)\b|\b(?:approve|allow|trust)\b.*(?:\?|:)\s*$`)
 	confirmationFooterRE     = regexp.MustCompile(`(?i)\bpress\s+enter\s+to\s+(?:confirm|continue|approve|allow)\b|\benter\s+to\s+(?:confirm|continue|approve|allow)\b.*\besc\s+to\s+(?:cancel|go\s+back)\b`)
+	claudeTrustQuestionRE    = regexp.MustCompile(`(?i)\bis this a project you created or one you trust\?`)
+	claudeTrustChoiceRE      = regexp.MustCompile(`(?i)\b(?:yes,?\s+i trust this folder|no,?\s+exit)\b`)
 	promptReasonRE           = regexp.MustCompile(`(?i)^\s*reason\s*:\s*(.+)$`)
 	choicePromptRE           = regexp.MustCompile(`(?i)\b(?:which|select|choose)\b.*(?:\?|:)\s*$`)
 	numberedChoiceRE         = regexp.MustCompile(`^\s*(?:[>❯›^]\s*)?\d+[.)]\s+\S`)
@@ -82,6 +84,18 @@ func ClassifyIdleReason(snapshot string) IdleOutcome { return ClassifySnapshot(s
 
 func ClassifySnapshot(snapshot string) IdleClassification {
 	lines := snapshotLines(snapshot)
+	// Claude's first-run folder trust dialog is a provider control, not an
+	// ordinary assistant question. It can span more lines than the generic
+	// terminal-tail window, so recognize the complete dialog before looking at
+	// only the trailing controls. Sending a semantic message to this screen can
+	// otherwise activate the selected "No, exit" choice and kill the session.
+	joined := strings.Join(lines, "\n")
+	if claudeTrustQuestionRE.MatchString(joined) && claudeTrustChoiceRE.MatchString(joined) {
+		return IdleClassification{
+			Outcome: IdleBlocked,
+			Line:    "Claude is waiting for you to trust this folder",
+		}
+	}
 	trailing := lines
 	if len(trailing) > 12 {
 		trailing = trailing[len(trailing)-12:]

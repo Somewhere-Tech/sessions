@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,54 @@ func TestClassifyRunnerSpawn(t *testing.T) {
 		if got := classifyRunnerSpawn(command); got != want {
 			t.Fatalf("classifyRunnerSpawn(%q) = %q, want %q", command, got, want)
 		}
+	}
+}
+
+func TestRunnerSpawnResolvesPTYChildParent(t *testing.T) {
+	fields := map[string]string{
+		"command=:123": "/opt/homebrew/bin/claude",
+		"ppid=:123":    "122",
+		"command=:122": "/Applications/Sessions.app/Contents/Resources/runtime/sessions-runner",
+	}
+	lookup := func(format string, pid int) string {
+		return fields[format+":"+strconv.Itoa(pid)]
+	}
+	if got := runnerSpawn(123, lookup); got != "native" {
+		t.Fatalf("runnerSpawn() = %q, want native", got)
+	}
+}
+
+func TestRunnerSpawnKeepsStructuredRunnerAndRealFaultsDistinct(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name: "structured runner is the recorded pid",
+			fields: map[string]string{
+				"command=:123": "/Applications/Sessions.app/Contents/Resources/runtime/sessions-runner",
+			},
+			want: "native",
+		},
+		{
+			name: "unrelated child and parent remain a fault",
+			fields: map[string]string{
+				"command=:123": "/bin/zsh", "ppid=:123": "1", "command=:1": "/sbin/launchd",
+			},
+			want: "other",
+		},
+		{name: "missing process is dead", fields: map[string]string{}, want: "dead?"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lookup := func(format string, pid int) string {
+				return test.fields[format+":"+strconv.Itoa(pid)]
+			}
+			if got := runnerSpawn(123, lookup); got != test.want {
+				t.Fatalf("runnerSpawn() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

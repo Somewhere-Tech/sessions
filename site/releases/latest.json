@@ -1,11 +1,11 @@
 {
-  "version": "0.2.20",
-  "notes": "# Sessions 0.2.20\n\n- Lets the safe macOS background-service updater wait through a long retained-session discovery sweep before capturing its preservation baseline.\n- Prevents heavily used hosts from staging a new release and then silently leaving the previous daemon active because the local session inventory needed more than 30 seconds to respond.\n- Keeps the existing bounded 15-minute ceiling and never replaces the daemon unless the pre-update live-session baseline can be read successfully.",
-  "pub_date": "2026-08-12T16:21:08.960Z",
+  "version": "0.2.26",
+  "notes": "# Sessions 0.2.26\n\n- Keeps signed app updates bounded to live runner processes instead of treating retained history as work that must be re-adopted.\n- Prevents heavily used Macs from rolling a healthy background-service update back merely because old, non-running session records changed during restart.\n- Preserves compatibility with older daemons that did not yet report runner process identifiers.\n\nUpdating the app does not stop running sessions. Existing runners continue on their compatible bundled version until they finish.",
+  "pub_date": "2026-09-01T05:00:49.077Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeThmbWFlSVRBOGdpTmtVL1VrYXRqMUNiZFV3TFVIb1ZCUHdjdjdweUtyMnZVRy9RL1ZoNEFRWThlRCszZFV1QXRhMitCQmRETWxiVVVQK2R4QWtWNmVGbkxRTFdVMXdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTUxNjY4CWZpbGU6U2Vzc2lvbnMuYXBwLnRhci5negpLanlqdDV2NXVPdm9EUGZmRHdoWWRsbWd1YU5ZelNkbzdxdG5ZQkg0RzIyQmlQR05ZMXMrVmdYVkk2L1hkajZKbmEyMVpGNjdsSXJlZnlSaHYzZ1lBUT09Cg==",
-      "url": "https://github.com/somewhere-tech/sessions/releases/download/v0.2.20/Sessions.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeThmbWFlSVRBOGlnZCsvOUNIdlFKQ1dNR09KSm9vVXJyTEpqNjFqaDlmNmZjcWhGejdPbFZuOXNhVysxVy9wZFc0OXhVNVBFWlNkQnFGc1IvSitsMko2R3RCeFRRSndJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MjM4ODQ3CWZpbGU6U2Vzc2lvbnMuYXBwLnRhci5negpuOUE4YWZ2cHROVzE4TDg4MXUzUC9xMnFTSS9yeTZFV3BLUnFxY21YTzNsN3J0SURMRVNETEcvMkhHVW1CcE5yTi9XYzJYeEI5dUR6aU5qRjI3eTlDdz09Cg==",
+      "url": "https://github.com/somewhere-tech/sessions/releases/download/v0.2.26/Sessions.app.tar.gz"
     }
   }
 }

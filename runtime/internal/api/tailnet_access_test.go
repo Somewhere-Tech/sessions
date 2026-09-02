@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,10 @@ func serveNearby(
 ) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, target, body)
+	request.Host = "127.0.0.1:8787"
+	if server, ok := handler.(*Server); ok {
+		request.Host = net.JoinHostPort(server.config.Host, strconv.Itoa(server.config.Port))
+	}
 	request.RemoteAddr = remote
 	request = request.WithContext(context.WithValue(request.Context(), lanRequestContextKey{}, true))
 	for key, values := range headers {

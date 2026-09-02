@@ -150,7 +150,7 @@ func (a *app) doctorRunnerRow(value session, localRuntime bool, processTypePatte
 		// be re-parented after either updates. Inspect the runner itself.
 		row.Spawn = probeNotApplicable
 		if canProbeProcessCommand() {
-			row.Spawn = classifyRunnerSpawn(psField("command=", value.PID))
+			row.Spawn = runnerSpawn(value.PID, psField)
 		}
 	}
 	row.OK = doctorRowOK(row.QoS, row.Spawn)
@@ -354,6 +354,23 @@ func classifyRunnerSpawn(runnerCommand string) string {
 	default:
 		return "dead?"
 	}
+}
+
+// runnerSpawn resolves the process that owns the provider child recorded in
+// session metadata. PTY sessions record the provider PID (Claude, Codex, or a
+// shell), whose direct parent is sessions-runner; structured sessions record
+// sessions-runner itself. Treating the child command as the runner made doctor
+// falsely condemn every healthy PTY session.
+func runnerSpawn(pid int, field func(string, int) string) string {
+	command := field("command=", pid)
+	if classified := classifyRunnerSpawn(command); classified == "native" || classified == "dead?" {
+		return classified
+	}
+	parent, err := strconv.Atoi(strings.TrimSpace(field("ppid=", pid)))
+	if err != nil || parent <= 0 {
+		return "other"
+	}
+	return classifyRunnerSpawn(field("command=", parent))
 }
 
 func psField(format string, pid int) string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -53,6 +54,13 @@ func isWildcardHost(host string) bool {
 
 func main() {
 	handled, err := runPlatformSupervisor(os.Args[1:])
+	if err != nil {
+		log.Fatal(err)
+	}
+	if handled {
+		return
+	}
+	handled, err = handleDaemonArgs(os.Args[1:], os.Stdout)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -143,4 +151,21 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("sessionsd shutdown: %v", err)
 	}
+}
+
+func handleDaemonArgs(arguments []string, output io.Writer) (bool, error) {
+	if len(arguments) == 0 || (len(arguments) == 1 && arguments[0] == "--serve") {
+		return false, nil
+	}
+	if len(arguments) == 1 {
+		switch arguments[0] {
+		case "-h", "--help":
+			fmt.Fprintln(output, "Usage: sessionsd [--serve]\n\nRuns the Sessions background service. Configuration uses SESSIONS_HOST, SESSIONS_PORT, and the state environment described in docs/DEV.md.")
+			return true, nil
+		case "-v", "--version":
+			fmt.Fprintln(output, version)
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("sessionsd: unknown arguments %q; run sessionsd --help", strings.Join(arguments, " "))
 }

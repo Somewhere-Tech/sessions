@@ -36,6 +36,11 @@ CI before the GitHub Release becomes visible. Extract it, move `Sessions.app` to
 Applications, and open it normally. First run installs or adopts the independent
 daemon; quitting the app does not end the daemon or any session.
 
+The app-managed service uses the launchd label
+`tech.somewhere.sessions.daemon`. Its log is
+`~/Library/Logs/Sessions/sessionsd.log`. Those are separate from the
+development label and log used by the standalone `sessions install` command.
+
 Install the native app through Homebrew with:
 
 ```sh
@@ -131,7 +136,7 @@ that do not have `gh` can use the direct HTTPS form:
 ```sh
 # Substitute the version you intend to install. The releases page always shows
 # the current one: https://github.com/somewhere-tech/sessions/releases/latest
-VERSION=0.2.18
+VERSION=0.2.26
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}.sha256"
@@ -218,7 +223,7 @@ login, and the Sessions-managed `sessions` symlinks in
 `/opt/homebrew/bin`, `/usr/local/bin`, and `~/.local/bin`:
 
 ```sh
-/Applications/Sessions.app/Contents/MacOS/Sessions --remove-integration
+/Applications/Sessions.app/Contents/MacOS/sessions-app --remove-integration
 ```
 
 Windows runs the same step automatically from the uninstaller, where it also
@@ -251,7 +256,9 @@ Common checks:
 - **`sessions: command not found`:** confirm the install directory is on `PATH`.
 - **Missing daemon or runner:** install all three binaries into the same
   directory and rerun `sessions install` on macOS.
-- **Daemon unhealthy:** inspect
+- **App-managed daemon unhealthy:** inspect
+  `~/Library/Logs/Sessions/sessionsd.log` on macOS.
+- **Standalone development daemon unhealthy:** inspect
   `~/Library/Logs/sessions/tech.somewhere.sessions.dev.daemon.log` on macOS.
 - **Web UI says unauthorized:** run `sessions token`, then paste the token into
   the UI's server settings.
