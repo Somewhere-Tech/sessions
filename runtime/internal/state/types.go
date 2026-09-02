@@ -256,18 +256,22 @@ const (
 )
 
 type CreateSessionRequest struct {
-	Cmd         string            `json:"cmd,omitempty"`
-	Args        []string          `json:"args,omitempty"`
-	Cwd         string            `json:"cwd,omitempty"`
-	Cols        int               `json:"cols,omitempty"`
-	Rows        int               `json:"rows,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Name        string            `json:"name,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Tags        map[string]string `json:"tags,omitempty"`
-	Profile     string            `json:"profile,omitempty"`
-	Worktree    bool              `json:"worktree,omitempty"`
-	Base        string            `json:"base,omitempty"`
+	Cmd  string   `json:"cmd,omitempty"`
+	Args []string `json:"args,omitempty"`
+	// InitialInput is a provider-authored first request already present in Args.
+	// It is a watcher binding hint, not a second input to deliver, and is never
+	// persisted separately from the provider transcript.
+	InitialInput string            `json:"initialInput,omitempty"`
+	Cwd          string            `json:"cwd,omitempty"`
+	Cols         int               `json:"cols,omitempty"`
+	Rows         int               `json:"rows,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	Name         string            `json:"name,omitempty"`
+	Description  string            `json:"description,omitempty"`
+	Tags         map[string]string `json:"tags,omitempty"`
+	Profile      string            `json:"profile,omitempty"`
+	Worktree     bool              `json:"worktree,omitempty"`
+	Base         string            `json:"base,omitempty"`
 	// NoWorktree declines the worktree an agent-created child would otherwise
 	// get by default, so a lane can deliberately share its manager's checkout.
 	NoWorktree bool   `json:"noWorktree,omitempty"`

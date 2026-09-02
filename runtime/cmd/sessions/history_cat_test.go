@@ -74,6 +74,30 @@ func TestCatAcceptsLiveSessionsIDLikeTranscript(t *testing.T) {
 	}
 }
 
+func TestCatExplainsThatATerminalCodexTranscriptIsStillPending(t *testing.T) {
+	const id = "9cd94e86-2222-4333-8444-555555555555"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{{
+				"id": id, "name": "review", "tool": "codex", "cwd": "/work", "exited": false,
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions/"+id+"/events":
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": []any{}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "cat", id}, strings.NewReader(""), &stdout, &stderr); code != 0 ||
+		stdout.String() != "(waiting for Codex to publish its conversation transcript)\n" || stderr.Len() != 0 {
+		t.Fatalf("cat exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestResumeResolvesFriendlySessionsTitle(t *testing.T) {
 	const historyID = "762c779a-b891-4966-9e05-26eb796f5208"
 	var resumed string

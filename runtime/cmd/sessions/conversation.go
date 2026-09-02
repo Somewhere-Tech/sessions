@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 type messageTurn struct {
@@ -246,7 +248,23 @@ func (a *app) writeSessionTranscript(id string) error {
 		return writeJSON(a.stdout, turns, true)
 	}
 	if len(turns) == 0 {
-		_, err := io.WriteString(a.stdout, "(no messages)\n")
+		message := "(no messages)\n"
+		sessions, listErr := a.listSessions(true)
+		if listErr != nil {
+			return listErr
+		}
+		for _, current := range sessions {
+			if current.ID != id || toolOfSession(current) != "codex" || current.Kind == state.KindCodexAppServer {
+				continue
+			}
+			if current.Exited {
+				message = "(Codex did not publish a conversation transcript before this terminal session ended)\n"
+			} else {
+				message = "(waiting for Codex to publish its conversation transcript)\n"
+			}
+			break
+		}
+		_, err := io.WriteString(a.stdout, message)
 		return err
 	}
 	for index, turn := range turns {

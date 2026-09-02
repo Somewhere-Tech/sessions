@@ -1393,6 +1393,42 @@ func TestInheritedNewUsesTheManagersCurrentDirectory(t *testing.T) {
 	}
 }
 
+func TestTerminalCodexCreationCarriesItsPositionalRequestAsAWatcherHint(t *testing.T) {
+	const (
+		id     = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+		prompt = "Audit the terminal transcript binding"
+	)
+	var request createSessionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, httpRequest *http.Request) {
+		if httpRequest.URL.Path != "/api/sessions" || httpRequest.Method != http.MethodPost {
+			http.NotFound(response, httpRequest)
+			return
+		}
+		if err := json.NewDecoder(httpRequest.Body).Decode(&request); err != nil {
+			t.Errorf("decode create request: %v", err)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusCreated)
+		_, _ = response.Write([]byte(`{"id":"` + id + `"}`))
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	if code := run(
+		[]string{"--host", server.URL, "new", "--tool", "codex", "--pty-codex", prompt},
+		strings.NewReader(""), &stdout, &stderr,
+	); code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if request.InitialInput != prompt {
+		t.Fatalf("initial input = %q, want %q", request.InitialInput, prompt)
+	}
+	if !slices.Contains(request.Args, prompt) {
+		t.Fatalf("terminal Codex argv %q lost its positional request", request.Args)
+	}
+}
+
 func TestCodexNewSurfacesCatalogValidationErrorClearly(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/sessions" || request.Method != http.MethodPost {

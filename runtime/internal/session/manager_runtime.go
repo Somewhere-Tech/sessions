@@ -103,6 +103,23 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 	return runtime
 }
 
+// expectProviderInput gives a terminal transcript watcher authored text which
+// reached the provider without crossing Manager.Input. Fresh Codex PTYs take
+// their first prompt from argv, so without this handoff the safe resolver has
+// no exact fact with which to choose among same-directory rollout files.
+func (r *runtimeSession) expectProviderInput(input string) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return
+	}
+	r.mu.Lock()
+	watcher := r.watcher
+	r.mu.Unlock()
+	if watcher != nil {
+		watcher.ExpectInput(input)
+	}
+}
+
 func structuredHistoryLifecycle(kind string, raw json.RawMessage) (bool, bool) {
 	switch kind {
 	case state.KindCodexAppServer:

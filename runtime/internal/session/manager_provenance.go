@@ -484,6 +484,11 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 		return state.SessionInfo{}, fmt.Errorf("created session %s was not registered", info.ID)
 	}
 	runtime := m.manage(session)
+	runtime.expectProviderInput(request.InitialInput)
+	if strings.TrimSpace(request.InitialInput) != "" {
+		m.captureFirstMessageDescription(info.ID, request.InitialInput)
+		m.captureFirstMessageDescription(info.ID, "\r")
+	}
 	if request.WaitReady {
 		m.waitReady(ctx, runtime)
 	}
