@@ -228,6 +228,7 @@ func (r *runtimeSession) observe() {
 		case proto.EventOutput:
 			r.mu.Lock()
 			r.recentBytes += len(event.Output.Data)
+			r.preTurnOutput = true
 			r.mu.Unlock()
 			select {
 			case r.outputObserved <- struct{}{}:
@@ -348,6 +349,9 @@ func (r *runtimeSession) tick() {
 		}
 	}
 	r.setWorking(next)
+	if !next {
+		r.inspectPreTurn(recent)
+	}
 }
 
 func (r *runtimeSession) setWorking(next bool) {
@@ -358,6 +362,7 @@ func (r *runtimeSession) setWorking(next bool) {
 		r.workingStartedAt = now
 		r.structuredDone = false
 		r.terminalTurnDone = false
+		r.preTurnBlocked = false
 		r.cancelWaitingLocked()
 		r.manager.removeIdleSentinel(r.session.Info().ID)
 	}

@@ -414,7 +414,10 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           snap
           && classifySnapshotComposerState(snap.text).kind !== 'normal-composer'
         );
-        if (present && !lastPickerSeenRef.current) {
+        // A control the conversation view can answer itself (the daemon
+        // reports needs-input and the card shows the choices) does not need
+        // the terminal drawer, which would cover that card.
+        if (present && !lastPickerSeenRef.current && session?.idleReason !== 'needs-input') {
           lastPickerSeenRef.current = true;
           setViewMode('terminal');
           // Tell the user their InputBar draft is safe — RemoteView is
@@ -430,7 +433,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     void tick();
     const id = window.setInterval(() => { void tick(); }, 2000);
     return () => { alive = false; window.clearInterval(id); };
-  }, [sessionId, session?.tool, isActive, effectiveView, terminalBackedAgent]);
+  }, [sessionId, session?.tool, isActive, effectiveView, terminalBackedAgent, session?.idleReason]);
 
   // Auto-clear the picker notice after 4s.
   useEffect(() => {
@@ -686,6 +689,10 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             onForkFromMessage={onFork ? forkFromVisibleMessage : undefined}
             forkMode={forkMode}
             onExitForkMode={() => setForkMode(false)}
+            needsInputDetail={session?.idleReason === 'needs-input'
+              ? (session.idleDetail || 'The provider is waiting for a choice.')
+              : null}
+            sendRawInput={richSession ? undefined : sendInput}
           />
         </div>
         <div className="session-details-pane">

@@ -237,6 +237,13 @@ type runtimeSession struct {
 	firstMessageInput          []byte
 	firstMessageDone           bool
 	providerInput              []byte
+	// preTurnOutput records terminal output that arrived while the session
+	// has not yet completed a turn, so a provider dialog drawn before the
+	// first request (Claude's folder-trust screen, a login prompt) can be
+	// classified without waiting for a working-to-idle edge that never comes.
+	preTurnOutput      bool
+	preTurnBlocked     bool
+	preTurnInspectedAt time.Time
 }
 
 func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...ManagerOptions) *Manager {

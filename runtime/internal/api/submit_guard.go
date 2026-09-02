@@ -26,5 +26,5 @@ func semanticSubmitRefusal(info state.SessionInfo) (string, bool) {
 	if detail == "" {
 		detail = "the provider is waiting for a terminal choice"
 	}
-	return "message not sent: " + detail + "; answer the provider control in Terminal view or with `sessions input`", true
+	return "message not sent: " + detail + "; answer the provider control in Terminal view or with `sessions keys <id> down|up|enter|esc`", true
 }

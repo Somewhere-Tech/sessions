@@ -1676,3 +1676,61 @@ func TestGuardedDiscoverySweepStillReconcilesLedgerAndExplainsTheRefusal(t *test
 	}
 	t.Logf("guarded discovery refusal: %s", message)
 }
+
+func TestPreTurnProviderDialogBecomesNeedsInputWithoutAWorkingEdge(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(root)
+	launcher := prototest.NewLauncher()
+	manager := NewManager(config, launcher, ManagerOptions{DisableWatchers: true, ActivityInterval: time.Hour})
+	t.Cleanup(manager.Close)
+	previousInterval := preTurnInspectInterval
+	preTurnInspectInterval = 0
+	t.Cleanup(func() { preTurnInspectInterval = previousInterval })
+
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{Cmd: "claude", Cwd: root, Name: "trust"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Tool != state.ToolClaude || created.IdleReason != state.IdleReasonNeverStarted {
+		t.Fatalf("created = %#v", created)
+	}
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.tick()
+
+	runner := launcher.Runner(created.ID)
+	dialog := " Accessing workspace:\n\n /tmp/work\n\n Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.\n\n Claude Code'll be able to read, edit, and execute files here.\n\n Security guide\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n"
+	runner.AddOutput(dialog)
+	<-runtime.outputObserved
+	settle := func() state.SessionInfo {
+		for attempt := 0; attempt < 20; attempt++ {
+			runtime.tick()
+			info, _ := manager.Get(created.ID)
+			if info.Info().IdleReason != state.IdleReasonNeverStarted && !info.Info().Working {
+				return info.Info()
+			}
+		}
+		info, _ := manager.Get(created.ID)
+		return info.Info()
+	}
+	info := settle()
+	if info.IdleReason != state.IdleReasonNeedsInput || info.IdleDetail != "Claude is waiting for you to trust this folder" {
+		t.Fatalf("pre-turn dialog classified as %q/%q, want needs-input with the trust line", info.IdleReason, info.IdleDetail)
+	}
+
+	// Answering the dialog replaces it with the composer; the session returns
+	// to never-started so the first request can be sent normally.
+	runner.AddOutput("\x1b[2J\n❯ Try \"fix typecheck errors\"\n\n  ⏸ manual mode on · ? for shortcuts\n")
+	<-runtime.outputObserved
+	for attempt := 0; attempt < 20; attempt++ {
+		runtime.tick()
+		info, _ = func() (state.SessionInfo, bool) { s, ok := manager.Get(created.ID); return s.Info(), ok }()
+		if info.IdleReason == state.IdleReasonNeverStarted {
+			break
+		}
+	}
+	if info.IdleReason != state.IdleReasonNeverStarted || info.IdleDetail != "" {
+		t.Fatalf("answered dialog left %q/%q, want never-started", info.IdleReason, info.IdleDetail)
+	}
+}

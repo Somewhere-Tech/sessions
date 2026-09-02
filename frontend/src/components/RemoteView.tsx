@@ -8,13 +8,14 @@ import { ScrollToBottomButton } from './ScrollToBottomButton';
 import StatusSidebar from './StatusSidebar';
 import { saveScrollPosition, readScrollPosition } from '../lib/scrollMemory';
 import { eventsToMessages } from '../lib/claudeEvents';
-import { snapshot as fetchServerSnapshot } from '../api/sessionsd';
-import { classifySnapshotComposerState, type SnapshotComposerState } from '../lib/detectMultiChoice';
 import type { DispatchMessage } from '../hooks/useDispatch';
 import { ProviderMark, type Provider as ProviderIdentity } from './ProviderBadge';
 import { CopyButton } from './CopyButton';
 import { linkifyFilePaths } from '../lib/filePaths';
 import { PlanPanel } from './RemotePlanPanel';
+import { ProviderControlCard } from './ProviderControlCard';
+import { RemoteEmptyState } from './RemoteEmptyState';
+import { useProviderControl } from '../hooks/useProviderControl';
 
 function renderFileReference(path: string, cwd = ''): string {
   const escaped = path
@@ -63,6 +64,13 @@ interface Props {
   ) => Promise<void>;
   forkMode?: boolean;
   onExitForkMode?: () => void;
+  // The daemon's durable needs-input state for this session, when set. It
+  // arrives before any send is attempted, so the provider control is shown
+  // (and answerable) the moment the session stops at one.
+  needsInputDetail?: string | null;
+  // Raw keystrokes for answering a provider control in place. Only the
+  // banner uses it; conversation text still goes through sendConfirmed.
+  sendRawInput?: (data: string) => void;
 }
 
 // Provider-neutral conversation view over the durable session transport.
@@ -100,7 +108,9 @@ export function RemoteView({
   onContinueInTerminal,
   onForkFromMessage,
   forkMode = false,
-  onExitForkMode
+  onExitForkMode,
+  needsInputDetail = null,
+  sendRawInput
 }: Props): JSX.Element {
   const providerName = provider === 'codex' ? 'Codex' : 'Claude';
   const providerIdentity: ProviderIdentity = provider === 'codex' ? 'codex' : 'claude';
@@ -223,7 +233,6 @@ export function RemoteView({
   const failedSendKey = latestFailedSend
     ? `${latestFailedSend.id}:${latestFailedSend.createdAt}`
     : null;
-  const [blockingState, setBlockingState] = useState<SnapshotComposerState | null>(null);
   const [forkPointId, setForkPointId] = useState<string | null>(null);
   const [forkBusy, setForkBusy] = useState(false);
   const [forkError, setForkError] = useState<string | null>(null);
@@ -256,35 +265,9 @@ export function RemoteView({
     setForkError(null);
   }, [forkMode]);
 
-  useEffect(() => {
-    // Snapshot prompt classification is a terminal-screen heuristic. Rich
-    // sessions have structured provider events but no terminal stream, so
-    // applying it there can turn ordinary conversation text into a false
-    // "open Terminal" warning with an impossible action.
-    if (!terminalAvailable || !failedSendKey) {
-      setBlockingState(null);
-      return;
-    }
-
-    let alive = true;
-    const checkSnapshot = async (): Promise<void> => {
-      try {
-        const snap = await fetchServerSnapshot(sessionId);
-        if (!alive) return;
-        if (!snap) {
-          setBlockingState(null);
-          return;
-        }
-        const state = classifySnapshotComposerState(snap.text);
-        setBlockingState(state.kind === 'normal-composer' ? null : state);
-      } catch {
-        if (alive) setBlockingState(null);
-      }
-    };
-
-    void checkSnapshot();
-    return () => { alive = false; };
-  }, [failedSendKey, sessionId, terminalAvailable]);
+  const { blockingState, trustChoice, answerControl, controlPending } = useProviderControl({
+    sessionId, terminalAvailable: Boolean(terminalAvailable), failedSendKey, needsInputDetail, sendRawInput
+  });
 
   // Scroll-anchor preservation across window expansion. Prepending
   // older messages grows scrollHeight by ~the prepended block's
@@ -444,27 +427,22 @@ export function RemoteView({
         ref={scrollRef}
         onScroll={onScroll}
       >
-        {messages.length === 0 && historyPending ? (
-          <div className="remote-history-loading" role="status" aria-busy="true" aria-label="Loading conversation history">
-            <span className="loading-skeleton is-title" />
-            <span className="loading-skeleton is-line" />
-            <span className="loading-skeleton is-line is-medium" />
-            <div>
-              <span className="loading-skeleton is-line" />
-              <span className="loading-skeleton is-line is-short" />
-            </div>
-          </div>
-        ) : messages.length === 0 ? (
-          <div className="remote-empty">
-            <ProviderMark provider={providerIdentity} size={48} />
-            <span>Ready</span>
-            <h2>Start a {providerName} conversation</h2>
-            <p className="remote-empty-hint">
-              {terminalAvailable
-                ? 'Send the first request below. Conversation and Terminal stay connected to the same provider session.'
-                : 'Send the first request below. Rich sessions use the provider’s structured conversation interface.'}
-            </p>
-          </div>
+        {messages.length === 0 ? (
+          <RemoteEmptyState
+            historyPending={historyPending}
+            providerIdentity={providerIdentity}
+            providerName={providerName}
+            terminalAvailable={Boolean(terminalAvailable)}
+            control={controlPending ? (
+              <ProviderControlCard
+                detail={needsInputDetail}
+                blockingState={blockingState}
+                trustChoice={trustChoice}
+                answer={sendRawInput ? answerControl : undefined}
+                onOpenTerminal={onOpenTerminal}
+              />
+            ) : null}
+          />
         ) : null}
         {hiddenCount > 0 || hasEarlierClaudeEvents ? (
           <button
@@ -519,6 +497,15 @@ export function RemoteView({
               : undefined}
           />
         ))}
+        {controlPending && messages.length > 0 ? (
+          <ProviderControlCard
+            detail={needsInputDetail}
+            blockingState={blockingState}
+            trustChoice={trustChoice}
+            answer={sendRawInput ? answerControl : undefined}
+            onOpenTerminal={onOpenTerminal}
+          />
+        ) : null}
         {/* Sticky-anchor: pins the down-arrow to the right edge of the
             centered 820px message column (same pattern as Sessions). */}
         <div className="scroll-to-bottom-anchor" aria-hidden={atBottom}>
@@ -538,20 +525,6 @@ export function RemoteView({
         checklist={sidebar.checklist}
       />
 
-      {blockingState ? (
-        <div className="remote-blocking-banner" role="status" aria-live="polite">
-          <span className="remote-blocking-banner-text">
-            {blockingState.description} Open Terminal view to respond.
-          </span>
-          <button
-            type="button"
-            className="remote-blocking-banner-action"
-            onClick={onOpenTerminal}
-          >
-            Terminal
-          </button>
-        </div>
-      ) : null}
 
       <div className="remote-input-wrap">
         <InputBar

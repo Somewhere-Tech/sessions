@@ -167,6 +167,67 @@ func idleReason(outcome IdleOutcome) string {
 	}
 }
 
+// preTurnInspectInterval bounds how often a quiet, never-started terminal is
+// re-read. A dialog is drawn once; cursor blinks and resizes redraw it, and
+// each redraw is a few bytes that would otherwise trigger a snapshot per tick.
+var preTurnInspectInterval = 500 * time.Millisecond
+
+// inspectPreTurn classifies a provider terminal that has produced output and
+// gone quiet before its first turn. The working-to-idle edge is the normal
+// trigger for classification, but a provider control drawn at launch (Claude's
+// folder-trust dialog, a login prompt) never makes the session "working", so
+// without this the session reads never-started while a real choice is
+// pending, and a message typed into it activates the highlighted option.
+//
+// Only the blocked outcome is recorded. A quiet never-started session is not
+// completed or failed; it is waiting for its first request, and reporting
+// anything else would misstate a lifecycle that has not begun. When the
+// control is answered and the screen no longer shows it, the session returns
+// to never-started so the composer opens again.
+func (r *runtimeSession) inspectPreTurn(recentBytes int) {
+	info := r.session.Info()
+	if info.Exited || info.Working || !supportsTurnLifecycle(info) ||
+		info.Kind == state.KindClaudeStructured || info.Kind == state.KindCodexAppServer {
+		return
+	}
+	if recentBytes >= workingBytesThreshold {
+		return
+	}
+	r.mu.Lock()
+	pending := r.preTurnOutput
+	blocked := r.preTurnBlocked
+	last := r.preTurnInspectedAt
+	r.mu.Unlock()
+	if !pending || time.Since(last) < preTurnInspectInterval {
+		return
+	}
+	if info.IdleReason != state.IdleReasonNeverStarted && !(blocked && info.IdleReason == state.IdleReasonNeedsInput) {
+		return
+	}
+	snapshot, _, err := r.session.Snapshot(context.Background(), 0)
+	if err != nil {
+		return
+	}
+	classification := ClassifySnapshot(snapshot)
+	now := time.Now()
+	r.mu.Lock()
+	r.preTurnOutput = false
+	r.preTurnInspectedAt = now
+	switch {
+	case classification.Outcome == IdleBlocked:
+		r.preTurnBlocked = true
+	case blocked:
+		r.preTurnBlocked = false
+	}
+	r.mu.Unlock()
+	switch {
+	case classification.Outcome == IdleBlocked:
+		r.session.SetIdleResult(state.IdleReasonNeedsInput, classification.Line, "", now.UnixMilli())
+	case blocked:
+		r.session.SetIdleResult(state.IdleReasonNeverStarted, "", "", now.UnixMilli())
+	}
+}
+
 func (m *Manager) handleIdle(session *state.Session, duration time.Duration) IdleClassification {
 	info := session.Info()
 	if info.Exited {

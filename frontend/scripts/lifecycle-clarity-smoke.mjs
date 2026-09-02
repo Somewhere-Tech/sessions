@@ -184,11 +184,15 @@ assert.doesNotMatch(remote, />retry<\/button>/);
 assert.match(remote, />restore draft<\/button>/);
 assert.doesNotMatch(await source('src/hooks/useDispatch.ts'), /ENTER_RETRY_OFFSETS_MS|scheduleEnterRetries|send\('\\r'\)/);
 assert.match(input, /\/rename\(\?:\\s\|\$\)/);
-// The snapshot heuristic still runs only for a terminal-backed session that
-// has an unconfirmed failed send. `failedSendKey` is that send's identity —
-// the effect reads it directly so its dependency list is honest.
-assert.match(remote, /if \(!terminalAvailable \|\| !failedSendKey\)/);
+// The snapshot heuristic runs only for a terminal-backed session, and only
+// when there is something to explain: an unconfirmed failed send, or the
+// daemon's own needs-input state (a control drawn before the first turn).
+// `failedSendKey` is the send's identity — the hook reads it directly so its
+// dependency list is honest.
+const providerControl = await source('src/hooks/useProviderControl.ts');
+assert.match(providerControl, /if \(!terminalAvailable \|\| \(!failedSendKey && !needsInputDetail\)\)/);
 assert.match(remote, /const failedSendKey = latestFailedSend/);
+assert.match(remote, /useProviderControl\(\{/);
 assert.match(remote, /richSession=\{!terminalAvailable\}/);
 assert.match(modelControl, /Next message/);
 assert.match(modelControl, /listSessionModelOptions\(sessionId\)/);

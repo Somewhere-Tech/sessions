@@ -381,6 +381,66 @@
   border-color: #fb923c;
 }
 
+/* Provider control card: a dialog, picker, or confirmation the provider is
+ * showing, answered from the conversation with the choices it offers. */
+.provider-control-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 520px;
+  margin: 12px auto;
+  padding: 16px 18px;
+  border: 1px solid rgba(251, 146, 60, 0.45);
+  border-radius: var(--radius);
+  background: rgba(251, 146, 60, 0.08);
+  color: var(--fg);
+  text-align: left;
+}
+.provider-control-card-title {
+  color: #fb923c;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+.provider-control-card-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.provider-control-card-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.provider-control-card-action {
+  border: 1px solid rgba(251, 146, 60, 0.65);
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.provider-control-card-action:hover { background: var(--bg-elev-3); }
+.provider-control-card-action.is-primary {
+  background: #fb923c;
+  border-color: #fb923c;
+  color: #1a1207;
+  font-weight: 600;
+}
+.provider-control-card-action.is-primary:hover { background: #f97316; }
+.provider-control-card-terminal {
+  border: 0;
+  background: none;
+  color: var(--fg-dim);
+  font-size: 12px;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 /* "Refresh" — wipe Remote's owned log and re-derive from parser blocks.
  * Acknowledged not-great UI; ghost button in the top-right corner of
  * the chat region. Low contrast at rest, hovers up to readable. */

@@ -244,3 +244,27 @@ export function detectMultiChoice(rawSnapshot: string): MultiChoice | null {
     selectedIndex: selectedIndex >= 0 ? selectedIndex : 0
   };
 }
+
+// Claude Code's folder-trust dialog is a two-option picker without the
+// numbered-picker footer. The highlighted option carries the ❯ glyph; the
+// answer buttons need to know which one it is so they can move the cursor
+// before pressing Enter instead of guessing.
+export interface TrustChoice {
+  selected: 'yes' | 'no';
+}
+
+const TRUST_YES_RE = /\byes,?\s+i trust this folder\b/i;
+const TRUST_NO_RE = /\bno,?\s+exit\b/i;
+
+export function detectTrustChoice(rawSnapshot: string): TrustChoice | null {
+  const lines = tailLines(rawSnapshot, 44);
+  let yesLine: string | null = null;
+  let noLine: string | null = null;
+  for (const line of lines) {
+    if (TRUST_YES_RE.test(line)) yesLine = line;
+    if (TRUST_NO_RE.test(line)) noLine = line;
+  }
+  if (!yesLine || !noLine) return null;
+  if (/[❯>]/.test(yesLine)) return { selected: 'yes' };
+  return { selected: 'no' };
+}

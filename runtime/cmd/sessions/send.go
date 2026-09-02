@@ -736,6 +736,11 @@ func (a *app) cmdSend(args []string) error {
 		}
 	} else if result.Reason == "session-unreachable" {
 		io.WriteString(a.stderr, "sessions send: session exited or became unreachable before submission was confirmed\n")
+	} else if result.Confidence == "not-delivered" && result.Reason != "" {
+		// The daemon refused before typing anything: the session is showing a
+		// provider control, so the message never reached the composer and the
+		// confirmation advice below does not apply.
+		fmt.Fprintf(a.stderr, "sessions send: %s\n", result.Reason)
 	} else {
 		fmt.Fprintf(a.stderr, "sessions send: could not confirm submission after %dms\n", timeout.Milliseconds())
 		if isBlockingSnapshotState(result.SnapshotState) {
