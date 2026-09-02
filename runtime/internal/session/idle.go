@@ -112,6 +112,9 @@ func structuredIdleClassification(kind string, events []json.RawMessage) (IdleCl
 				continue
 			}
 			if strings.EqualFold(event.Status, "completed") {
+				if question, asked := AssistantQuestion(events[:index+1]); asked {
+					return IdleClassification{Outcome: IdleBlocked, Line: question}, true
+				}
 				return IdleClassification{Outcome: IdleDone}, true
 			}
 			return IdleClassification{
@@ -123,6 +126,9 @@ func structuredIdleClassification(kind string, events []json.RawMessage) (IdleCl
 				continue
 			}
 			if !event.IsError && strings.EqualFold(event.Subtype, "success") {
+				if question, asked := AssistantQuestion(events[:index+1]); asked {
+					return IdleClassification{Outcome: IdleBlocked, Line: question}, true
+				}
 				return IdleClassification{Outcome: IdleDone}, true
 			}
 			return IdleClassification{

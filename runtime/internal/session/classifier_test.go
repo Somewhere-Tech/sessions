@@ -124,3 +124,43 @@ func TestClaudeWorkingFromSnapshot(t *testing.T) {
 		})
 	}
 }
+
+// A Rich lane that ends its turn by asking its manager something is waiting,
+// not done. The structured log has no terminal to read, so the last assistant
+// message is the signal, and it must actually ask.
+func TestStructuredTurnEndingInAQuestionNeedsInput(t *testing.T) {
+	assistant := func(text string) string {
+		encoded, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant", "content": text}})
+		return string(encoded)
+	}
+	codexDone := `{"source":"codex-app-server","type":"codex","subtype":"turn_completed","status":"completed"}`
+	claudeDone := `{"source":"claude-p-stream-json","type":"result","subtype":"success","is_error":false}`
+	tests := []struct {
+		name string
+		kind string
+		text string
+		done string
+		want IdleOutcome
+		line string
+	}{
+		{name: "codex asks which", kind: state.KindCodexAppServer, done: codexDone,
+			text: "I found two ways to fix the flake. Which one do you want me to take?", want: IdleBlocked, line: "Which one do you want me to take?"},
+		{name: "claude offers options", kind: state.KindClaudeStructured, done: claudeDone,
+			text: "The migration can go two ways:\n\n1. Rewrite the table in place\n2. Shadow-copy and swap\n\nWhich should I do?", want: IdleBlocked, line: "Which should I do?"},
+		{name: "let me know closer", kind: state.KindCodexAppServer, done: codexDone,
+			text: "Done. Tests pass. Let me know if you want the changelog too?", want: IdleBlocked, line: "Let me know if you want the changelog too?"},
+		{name: "plain completion", kind: state.KindCodexAppServer, done: codexDone,
+			text: "Refactored the resolver and added tests. All 14 pass.", want: IdleDone},
+		{name: "rhetorical question mid-message", kind: state.KindClaudeStructured, done: claudeDone,
+			text: "Why did it fail? The lock was held. I released it and the build is green.", want: IdleDone},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events := []json.RawMessage{json.RawMessage(assistant(test.text)), json.RawMessage(test.done)}
+			got, ok := structuredIdleClassification(test.kind, events)
+			if !ok || got.Outcome != test.want || got.Line != test.line {
+				t.Fatalf("structuredIdleClassification() = %#v, %v; want %q %q", got, ok, test.want, test.line)
+			}
+		})
+	}
+}

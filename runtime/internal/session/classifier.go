@@ -209,6 +209,77 @@ func displayLine(line string) string {
 
 // FinalAssistantSummary returns the concise last assistant text, or an empty
 // string when no usable structured event exists.
+// finalAssistantText returns the full text of the last assistant message in a
+// structured event log, or "" when there is none.
+func finalAssistantText(events []json.RawMessage) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		var event map[string]any
+		if json.Unmarshal(events[i], &event) != nil || event["type"] != "assistant" {
+			continue
+		}
+		message, ok := event["message"].(map[string]any)
+		if !ok || message["role"] != "assistant" {
+			continue
+		}
+		if text := strings.TrimSpace(assistantContent(message["content"])); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+var (
+	askPhraseRE      = regexp.MustCompile(`(?i)\b(?:which|should i|do you want|would you like|do you prefer|shall i|can you confirm|please confirm|let me know|what would you|how would you|which one)\b`)
+	optionListLineRE = regexp.MustCompile(`(?m)^\s*(?:\d+[.)]|[a-c][.)]|[-*])\s+\S`)
+)
+
+// AssistantQuestion reports whether the last assistant message stopped to ask
+// the person something, and returns the question. A structured turn has no
+// terminal to read, so this is the only signal that a Rich lane is waiting on
+// its manager rather than done. It is deliberately conservative: the closing
+// line must end in a question mark, and the message must either ask outright
+// (which / should I / do you want / let me know) or lay out options to pick
+// from. A rhetorical "?" mid-message does not qualify.
+func AssistantQuestion(events []json.RawMessage) (string, bool) {
+	text := finalAssistantText(events)
+	if text == "" {
+		return "", false
+	}
+	plain := conciseFull(text)
+	if !strings.HasSuffix(plain, "?") {
+		return "", false
+	}
+	if !askPhraseRE.MatchString(plain) && !optionListLineRE.MatchString(text) {
+		return "", false
+	}
+	// The question is the last sentence of the last line, read before markdown
+	// stripping joins an option list into the sentence before it.
+	lines := strings.Split(text, "\n")
+	last := ""
+	for i := len(lines) - 1; i >= 0 && last == ""; i-- {
+		last = conciseFull(lines[i])
+	}
+	question := last
+	if len(question) > 1 {
+		if index := strings.LastIndexAny(question[:len(question)-1], ".!?"); index >= 0 && index+1 < len(question) {
+			question = strings.TrimSpace(question[index+1:])
+		}
+	}
+	return conciseText(question, 160), true
+}
+
+// conciseFull strips markdown like conciseText but keeps the whole text, so
+// a trailing question mark can be inspected wherever it sits.
+func conciseFull(text string) string {
+	text = codeFenceRE.ReplaceAllString(text, " ")
+	text = imageRE.ReplaceAllString(text, "$1")
+	text = linkRE.ReplaceAllString(text, "$1")
+	text = markdownPrefixRE.ReplaceAllString(text, "")
+	text = htmlTagRE.ReplaceAllString(text, " ")
+	text = markdownPunctuationRE.ReplaceAllString(text, "")
+	return strings.TrimSpace(allSpaceRE.ReplaceAllString(text, " "))
+}
+
 func FinalAssistantSummary(events []json.RawMessage) string {
 	for i := len(events) - 1; i >= 0; i-- {
 		var event map[string]any
