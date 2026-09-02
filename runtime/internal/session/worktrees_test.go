@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -199,7 +200,7 @@ func TestWorktreesListReportsCleanDirtyAndMergedState(t *testing.T) {
 	ahead := createWorktreeSession(t, manager, repo, "Ahead List")
 	writeAndCommit(t, ahead.Cwd, "ahead.txt", "ahead\n", "unmerged work")
 
-	listed, err := manager.Worktrees(context.Background())
+	listed, err := manager.Worktrees(context.Background(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +222,7 @@ func TestWorktreesListReportsCleanDirtyAndMergedState(t *testing.T) {
 func TestWorktreesCleanOnlyRemovesDeadCleanMergedAndDryRunDoesNothing(t *testing.T) {
 	root := t.TempDir()
 	repo := initWorktreeTestRepo(t, root, "cleaning")
-	manager, launcher, _ := newWorktreeTestManager(t, root)
+	manager, launcher, store := newWorktreeTestManager(t, root)
 
 	eligible := createWorktreeSession(t, manager, repo, "Eligible")
 	dirty := createWorktreeSession(t, manager, repo, "Dirty")
@@ -263,6 +264,47 @@ func TestWorktreesCleanOnlyRemovesDeadCleanMergedAndDryRunDoesNothing(t *testing
 	if _, err := gitOutput(context.Background(), repo, "show-ref", "--verify", "--quiet", "refs/heads/"+eligible.Branch); err == nil {
 		t.Fatalf("eligible branch %s still exists", eligible.Branch)
 	}
+	listed, err := manager.Worktrees(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listed {
+		if item.SessionID == eligible.ID {
+			t.Fatalf("cleaned worktree remained in default listing: %#v", item)
+		}
+	}
+	all, err := manager.Worktrees(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundCleaned := false
+	for _, item := range all {
+		if item.SessionID != eligible.ID {
+			continue
+		}
+		foundCleaned = true
+		if !item.Cleaned || item.TreeState != "cleaned" || item.Exists || !item.BranchRemoved || item.CleanedAtMS == 0 {
+			t.Fatalf("retained cleaned status = %#v", item)
+		}
+	}
+	if !foundCleaned {
+		t.Fatalf("cleaned worktree missing from all listing: %#v", all)
+	}
+	events, err := store.Events(context.Background(), eligible.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cleanEvents []ledger.EventType
+	for _, event := range events {
+		if event.Type == ledger.EventWorktreeCleanRequested || event.Type == ledger.EventWorktreeCleaned {
+			cleanEvents = append(cleanEvents, event.Type)
+		}
+	}
+	if !reflect.DeepEqual(cleanEvents, []ledger.EventType{
+		ledger.EventWorktreeCleanRequested, ledger.EventWorktreeCleaned,
+	}) {
+		t.Fatalf("cleanup ledger events = %v", cleanEvents)
+	}
 	if got := bySession[dirty.ID]; got.Action != "skipped" || got.Reason != "worktree is DIRTY" {
 		t.Fatalf("dirty clean result = %#v", got)
 	}
@@ -275,6 +317,44 @@ func TestWorktreesCleanOnlyRemovesDeadCleanMergedAndDryRunDoesNothing(t *testing
 	for _, item := range []state.SessionInfo{dirty, unmerged, live} {
 		if _, err := os.Stat(item.Cwd); err != nil {
 			t.Fatalf("unsafe clean removed %s: %v", item.Cwd, err)
+		}
+	}
+}
+
+func TestWorktreesCleanReconcilesRemovalAfterDurableIntent(t *testing.T) {
+	root := t.TempDir()
+	repo := initWorktreeTestRepo(t, root, "interrupted-clean")
+	manager, launcher, store := newWorktreeTestManager(t, root)
+	worktree := createWorktreeSession(t, manager, repo, "Interrupted")
+	exitWorktreeSession(t, manager, launcher, worktree.ID)
+
+	branchHead := strings.TrimSpace(gitTest(t, repo, "rev-parse", "refs/heads/"+worktree.Branch+"^{commit}"))
+	if err := store.Worktrees().RecordWorktreeCleanRequested(context.Background(), ledger.WorktreeCleanRequested{
+		Meta:         ledger.Meta{LaneID: worktree.ID, Actor: ledger.ActorUser},
+		WorktreePath: worktree.WorktreePath, Branch: worktree.Branch, BranchHead: branchHead,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repo, "worktree", "remove", "--", worktree.WorktreePath)
+
+	results, err := manager.CleanWorktrees(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cleanResultsBySession(results)[worktree.ID]
+	if got.Action != "recorded-clean" || !got.Cleaned || !got.BranchRemoved {
+		t.Fatalf("reconciled clean = %#v", got)
+	}
+	if _, err := gitOutput(context.Background(), repo, "show-ref", "--verify", "--quiet", "refs/heads/"+worktree.Branch); err == nil {
+		t.Fatalf("reconciled branch %s still exists", worktree.Branch)
+	}
+	listed, err := manager.Worktrees(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listed {
+		if item.SessionID == worktree.ID {
+			t.Fatalf("reconciled clean remained in default listing: %#v", item)
 		}
 	}
 }
@@ -311,7 +391,7 @@ func newWorktreeTestManager(t *testing.T, root string) (*Manager, *prototest.Lau
 	launcher := prototest.NewLauncher()
 	manager := NewManager(testConfig(filepath.Join(root, "daemon")), launcher, ManagerOptions{
 		DisableWatchers: true, ActivityInterval: time.Hour,
-		Boundaries: store.Boundaries(), Observations: store.Observations(), LedgerReader: store,
+		Boundaries: store.Boundaries(), Observations: store.Observations(), Worktrees: store.Worktrees(), LedgerReader: store,
 		Notify: func(PushPayload) {},
 	})
 	t.Cleanup(manager.Close)
@@ -338,7 +418,7 @@ func exitWorktreeSession(t *testing.T, manager *Manager, launcher *prototest.Lau
 		if !ok || !session.Info().Exited {
 			return false
 		}
-		listed, err := manager.Worktrees(context.Background())
+		listed, err := manager.Worktrees(context.Background(), false)
 		if err != nil {
 			return false
 		}
@@ -405,7 +485,7 @@ func TestWorktreesNeverCleanAnUnreachableSessionWithoutARealExit(t *testing.T) {
 		return false
 	})
 
-	listed, err := manager.Worktrees(context.Background())
+	listed, err := manager.Worktrees(context.Background(), false)
 	if err != nil {
 		t.Fatal(err)
 	}

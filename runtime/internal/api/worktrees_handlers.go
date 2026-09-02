@@ -8,7 +8,7 @@ import (
 )
 
 type worktreeService interface {
-	Worktrees(context.Context) ([]sessionruntime.WorktreeStatus, error)
+	Worktrees(context.Context, bool) ([]sessionruntime.WorktreeStatus, error)
 	CleanWorktrees(context.Context, bool) ([]sessionruntime.WorktreeCleanResult, error)
 }
 
@@ -27,7 +27,8 @@ func (s *Server) handleWorktreesRoute(response http.ResponseWriter, request *htt
 		return true
 	}
 	if request.URL.Path == "/api/worktrees" && request.Method == http.MethodGet {
-		worktrees, err := service.Worktrees(request.Context())
+		includeCleaned := request.URL.Query().Get("all") == "true"
+		worktrees, err := service.Worktrees(request.Context(), includeCleaned)
 		if err != nil {
 			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
 			return true

@@ -87,6 +87,29 @@ func TestExplicitCreatedDescriptionWinsOverDerivedFallback(t *testing.T) {
 	}
 }
 
+func TestWorktreeCleanupFactsFoldOnlyForCreatedIdentity(t *testing.T) {
+	events := []Event{
+		ledgerEvent(1, "lane", EventCreated, 100, createdPayload{
+			Tool: "terminal", Cwd: "/tmp/project-wt/lane", LaneUUID: "lane",
+			WorktreePath: "/tmp/project-wt/lane", Branch: "sessions/lane", Base: "main", SourceRepo: "/tmp/project",
+		}),
+		ledgerEvent(2, "lane", EventWorktreeCleanRequested, 200, worktreeCleanRequestedPayload{
+			WorktreePath: "/tmp/other", Branch: "sessions/other", BranchHead: "wrong",
+		}),
+		ledgerEvent(3, "lane", EventWorktreeCleanRequested, 300, worktreeCleanRequestedPayload{
+			WorktreePath: "/tmp/project-wt/lane", Branch: "sessions/lane", BranchHead: "abc123",
+		}),
+		ledgerEvent(4, "lane", EventWorktreeCleaned, 400, worktreeCleanedPayload{
+			WorktreePath: "/tmp/project-wt/lane", Branch: "sessions/lane", BranchRemoved: true,
+		}),
+	}
+	state := Fold(events)[0]
+	if !state.WorktreeCleanRequested || state.WorktreeCleanBranchHead != "abc123" ||
+		!state.WorktreeCleaned || state.WorktreeCleanedAtMS != 400 || !state.WorktreeBranchRemoved {
+		t.Fatalf("worktree cleanup state = %#v", state)
+	}
+}
+
 func TestTombstoneWinsForever(t *testing.T) {
 	provider := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 	events := []Event{

@@ -16,26 +16,28 @@ const SchemaVersion = 1
 type EventType string
 
 const (
-	EventCreated            EventType = "created"
-	EventLaunchStarted      EventType = "launch_started"
-	EventRunnerReady        EventType = "runner_ready"
-	EventProviderBound      EventType = "provider_bound"
-	EventAttached           EventType = "attached"
-	EventActivity           EventType = "activity"
-	EventIdle               EventType = "idle"
-	EventRenamed            EventType = "renamed"
-	EventDescriptionDerived EventType = "description_derived"
-	EventUserKillRequested  EventType = "user_kill_requested"
-	EventRunnerExited       EventType = "runner_exited"
-	EventRunnerLost         EventType = "runner_lost"
-	EventReaped             EventType = "reaped"
-	EventReopened           EventType = "reopened"
-	EventArchived           EventType = "archived"
-	EventDaemonRestart      EventType = "daemon_restart"
-	EventMovedTo            EventType = "moved_to"
-	EventMovedFrom          EventType = "moved_from"
-	EventProviderRebound    EventType = "provider_rebound"
-	EventMessageRelayed     EventType = "message_relayed"
+	EventCreated                EventType = "created"
+	EventLaunchStarted          EventType = "launch_started"
+	EventRunnerReady            EventType = "runner_ready"
+	EventProviderBound          EventType = "provider_bound"
+	EventAttached               EventType = "attached"
+	EventActivity               EventType = "activity"
+	EventIdle                   EventType = "idle"
+	EventRenamed                EventType = "renamed"
+	EventDescriptionDerived     EventType = "description_derived"
+	EventUserKillRequested      EventType = "user_kill_requested"
+	EventRunnerExited           EventType = "runner_exited"
+	EventRunnerLost             EventType = "runner_lost"
+	EventReaped                 EventType = "reaped"
+	EventReopened               EventType = "reopened"
+	EventArchived               EventType = "archived"
+	EventDaemonRestart          EventType = "daemon_restart"
+	EventMovedTo                EventType = "moved_to"
+	EventMovedFrom              EventType = "moved_from"
+	EventProviderRebound        EventType = "provider_rebound"
+	EventMessageRelayed         EventType = "message_relayed"
+	EventWorktreeCleanRequested EventType = "worktree_clean_requested"
+	EventWorktreeCleaned        EventType = "worktree_cleaned"
 )
 
 // Actor identifies the subsystem that observed or requested a lifecycle fact.
@@ -207,6 +209,26 @@ type Archived struct {
 	Meta
 }
 
+// WorktreeCleanRequested is the durable intent written after the final safety
+// checks and before Git removes a Sessions-owned worktree. BranchHead lets a
+// retry finish branch cleanup without deleting a branch that advanced later.
+type WorktreeCleanRequested struct {
+	Meta
+	WorktreePath string
+	Branch       string
+	BranchHead   string
+}
+
+// WorktreeCleaned records that the worktree directory was removed. A branch
+// deletion refusal does not undo that fact, so BranchRemoved is reported
+// separately when retained cleanup history is requested.
+type WorktreeCleaned struct {
+	Meta
+	WorktreePath  string
+	Branch        string
+	BranchRemoved bool
+}
+
 // MovedTo and MovedFrom are provenance facts for resume-elsewhere. They do
 // not imply that either runner was killed.
 type MovedTo struct {
@@ -262,6 +284,14 @@ type MigrationWriter interface {
 // silently aging records out.
 type RetentionWriter interface {
 	RecordArchived(context.Context, []Archived) error
+}
+
+// WorktreeWriter owns the two durable facts around explicit worktree cleanup.
+// Keeping it separate prevents background lifecycle code from gaining this
+// destructive authority.
+type WorktreeWriter interface {
+	RecordWorktreeCleanRequested(context.Context, WorktreeCleanRequested) error
+	RecordWorktreeCleaned(context.Context, WorktreeCleaned) error
 }
 
 // AttributionWriter is separate from lifecycle boundaries and observations:

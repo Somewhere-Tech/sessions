@@ -76,6 +76,7 @@ func TestWorktreeBaseRequiresWorktree(t *testing.T) {
 
 func TestWorktreesListAndCleanCLIJSONAndHumanPlan(t *testing.T) {
 	postedDryRun := false
+	listedAll := false
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		item := map[string]any{
@@ -86,6 +87,14 @@ func TestWorktreesListAndCleanCLIJSONAndHumanPlan(t *testing.T) {
 		}
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/api/worktrees":
+			listedAll = request.URL.Query().Get("all") == "true"
+			if listedAll {
+				item["tree_state"] = "cleaned"
+				item["exists"] = false
+				item["cleaned"] = true
+				item["cleaned_at"] = 1234
+				item["branch_removed"] = true
+			}
 			_ = json.NewEncoder(response).Encode(map[string]any{"worktrees": []any{item}})
 		case request.Method == http.MethodPost && request.URL.Path == "/api/worktrees/clean":
 			var body map[string]any
@@ -106,6 +115,10 @@ func TestWorktreesListAndCleanCLIJSONAndHumanPlan(t *testing.T) {
 	stdout, stderr, code := runWorktreeCLI(t, server.URL, "--json", "worktrees")
 	if code != 0 || stderr != "" || !strings.Contains(stdout, `"worktree_path": "/tmp/project-wt/parser"`) {
 		t.Fatalf("JSON list exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	stdout, stderr, code = runWorktreeCLI(t, server.URL, "worktrees", "--all")
+	if code != 0 || stderr != "" || !listedAll || !strings.Contains(stdout, "cleaned") {
+		t.Fatalf("all list exit=%d queried_all=%v stdout=%q stderr=%q", code, listedAll, stdout, stderr)
 	}
 	stdout, stderr, code = runWorktreeCLI(t, server.URL, "worktrees", "clean", "--dry-run")
 	if code != 0 || stderr != "" || !postedDryRun || !strings.Contains(stdout, "would remove /tmp/project-wt/parser (sessions/parser)") {

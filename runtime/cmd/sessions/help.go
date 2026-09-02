@@ -78,10 +78,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions rename 0123abcd DB", "sessions rename 0123abcd --auto", "sessions --json rename 0123abcd 'Database migration'"}, run: (*app).cmdRename,
 	},
 	{
-		name: "worktrees", usage: "worktrees [clean [--dry-run]]",
+		name: "worktrees", usage: "worktrees [--all | clean [--dry-run]]",
 		summary: "list or safely clean Sessions-created worktrees", group: dailyCommandGroup, localJSON: true,
-		longHelp: "List worktrees recorded in the Sessions ledger with dirty, merge, and session state. clean removes only worktrees whose session has exited, whose tree is clean, and whose branch is fully merged into its recorded base; every other worktree is skipped with a reason. --dry-run shows the plan without mutation. There is no force option, and killing a session never cleans its worktree automatically.",
-		examples: []string{"sessions worktrees", "sessions --json worktrees", "sessions worktrees clean --dry-run", "sessions worktrees clean"}, run: (*app).cmdWorktrees,
+		longHelp: "List worktrees recorded in the Sessions ledger with dirty, merge, and session state. Worktrees successfully removed by clean are omitted by default; --all includes their durable cleaned records. clean removes only worktrees whose session has exited, whose tree is clean, and whose branch is fully merged into its recorded base; every other worktree is skipped with a reason. --dry-run shows the plan without mutation. There is no force option, and killing a session never cleans its worktree automatically.",
+		examples: []string{"sessions worktrees", "sessions worktrees --all", "sessions --json worktrees", "sessions worktrees clean --dry-run", "sessions worktrees clean"}, run: (*app).cmdWorktrees,
 	},
 	{
 		name: "transcripts", usage: "transcripts [--apply | --dry-run]",

@@ -42,25 +42,30 @@ type LaneState struct {
 	EndReason                string
 	EndOperationID           string
 
-	Created           bool
-	LaunchStarted     bool
-	RunnerReady       bool
-	ProviderBound     bool
-	Attached          bool
-	ManagedActive     bool
-	UserKillRequested bool
-	RunnerExited      bool
-	RunnerLost        bool
-	Reaped            bool
-	ReopenedAs        string
-	Archived          bool
-	ProviderReboundAs string
-	MovedToMachine    string
-	MovedToLaneID     string
-	MovedToSeq        int64
-	MovedFromMachine  string
-	MovedFromLaneID   string
-	MovedFromSeq      int64
+	Created                 bool
+	LaunchStarted           bool
+	RunnerReady             bool
+	ProviderBound           bool
+	Attached                bool
+	ManagedActive           bool
+	UserKillRequested       bool
+	RunnerExited            bool
+	RunnerLost              bool
+	Reaped                  bool
+	ReopenedAs              string
+	Archived                bool
+	ProviderReboundAs       string
+	MovedToMachine          string
+	MovedToLaneID           string
+	MovedToSeq              int64
+	MovedFromMachine        string
+	MovedFromLaneID         string
+	MovedFromSeq            int64
+	WorktreeCleanRequested  bool
+	WorktreeCleanBranchHead string
+	WorktreeCleaned         bool
+	WorktreeCleanedAtMS     int64
+	WorktreeBranchRemoved   bool
 }
 
 // Fold reduces an event stream in seq order. Input order is irrelevant as
@@ -238,6 +243,22 @@ func Fold(events []Event) []LaneState {
 			state.Archived = true
 			state.ArchivedAtMS = event.AtMS
 			state.ManagedActive = false
+		case EventWorktreeCleanRequested:
+			var payload worktreeCleanRequestedPayload
+			if json.Unmarshal(event.Payload, &payload) == nil &&
+				payload.WorktreePath == state.WorktreePath && payload.Branch == state.Branch &&
+				payload.BranchHead != "" {
+				state.WorktreeCleanRequested = true
+				state.WorktreeCleanBranchHead = payload.BranchHead
+			}
+		case EventWorktreeCleaned:
+			var payload worktreeCleanedPayload
+			if json.Unmarshal(event.Payload, &payload) == nil &&
+				payload.WorktreePath == state.WorktreePath && payload.Branch == state.Branch {
+				state.WorktreeCleaned = true
+				state.WorktreeCleanedAtMS = event.AtMS
+				state.WorktreeBranchRemoved = payload.BranchRemoved
+			}
 		case EventMovedTo:
 			var payload movedToPayload
 			if json.Unmarshal(event.Payload, &payload) == nil {

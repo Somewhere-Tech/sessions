@@ -108,8 +108,9 @@ func fuzzEventType(value byte) EventType {
 		EventAttached, EventReopened, EventActivity, EventRenamed,
 		EventProviderBound, EventRunnerExited, EventReaped, EventLaunchStarted,
 		EventIdle, EventDaemonRestart, EventMovedTo, EventMovedFrom, EventProviderRebound,
+		EventWorktreeCleanRequested, EventWorktreeCleaned,
 	}
-	if int(value)%18 == 17 {
+	if int(value)%20 == 19 {
 		return EventType(fmt.Sprintf("unknown-%02x", value))
 	}
 	return types[int(value)%len(types)]
@@ -141,6 +142,10 @@ func fuzzPayload(kind EventType, choice byte, raw []byte) json.RawMessage {
 		return json.RawMessage(`{"newLaneId":"replacement"}`)
 	case EventProviderRebound:
 		return json.RawMessage(`{"provider_uuid":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","new_lane_id":"replacement"}`)
+	case EventWorktreeCleanRequested:
+		return json.RawMessage(`{"worktree_path":"/tmp/worktree","branch":"sessions/lane","branch_head":"abc123"}`)
+	case EventWorktreeCleaned:
+		return json.RawMessage(`{"worktree_path":"/tmp/worktree","branch":"sessions/lane","branch_removed":true}`)
 	default:
 		return json.RawMessage(`{}`)
 	}

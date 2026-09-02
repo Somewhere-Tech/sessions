@@ -90,7 +90,9 @@ keeps running; a hand-back is a report, not an end.
 When a lane ends, its branch and worktree are kept. `sessions worktrees`
 lists them with their merge state, and `sessions worktrees clean` removes only
 worktrees whose session has ended, whose tree is clean, and whose branch is
-fully merged. Sessions never cleans a worktree on its own.
+fully merged. A successful clean is recorded in the append-only ledger and
+then omitted from the default listing; `sessions worktrees --all` includes the
+cleaned record. Sessions never cleans a worktree on its own.
 
 ## Not losing a session
 
@@ -114,4 +116,4 @@ good is resumed from its conversation with `sessions resume`.
 | Allow or decline a lane's permission request | `sessions approve <id> [--deny \| --for-session]` |
 | Read a lane's conversation on purpose | `sessions cat <id>` |
 | Name a folder as a project | `sessions projects name <folder> <name>` |
-| Kept worktrees, and cleaning the merged ones | `sessions worktrees`, `sessions worktrees clean` |
+| Kept worktrees, and cleaning the merged ones | `sessions worktrees [--all]`, `sessions worktrees clean` |

@@ -18,6 +18,9 @@ type worktreeStatus struct {
 	SessionState    string `json:"session_state"`
 	InspectionError string `json:"inspection_error,omitempty"`
 	Exists          bool   `json:"exists"`
+	Cleaned         bool   `json:"cleaned"`
+	CleanedAtMS     int64  `json:"cleaned_at,omitempty"`
+	BranchRemoved   bool   `json:"branch_removed"`
 }
 
 type worktreeCleanResult struct {
@@ -28,15 +31,18 @@ type worktreeCleanResult struct {
 
 func (a *app) cmdWorktrees(args []string) error {
 	if len(args) == 0 {
-		return a.listWorktrees()
+		return a.listWorktrees(false)
+	}
+	if len(args) == 1 && args[0] == "--all" {
+		return a.listWorktrees(true)
 	}
 	if args[0] != "clean" {
-		return fail(1, "usage: sessions worktrees [clean [--dry-run]]")
+		return fail(1, "usage: sessions worktrees [--all | clean [--dry-run]]")
 	}
 	dryRun := false
 	for _, argument := range args[1:] {
 		if argument != "--dry-run" || dryRun {
-			return fail(1, "usage: sessions worktrees clean [--dry-run]")
+			return fail(1, "usage: sessions worktrees [--all | clean [--dry-run]]")
 		}
 		dryRun = true
 	}
@@ -68,6 +74,14 @@ func (a *app) cmdWorktrees(args []string) error {
 			if _, err := fmt.Fprintf(a.stdout, "removed worktree %s but kept branch %s: %s\n", result.WorktreePath, result.Branch, result.Reason); err != nil {
 				return err
 			}
+		case "recorded-clean":
+			if _, err := fmt.Fprintf(a.stdout, "recorded cleaned worktree %s (%s): %s\n", result.WorktreePath, result.Branch, result.Reason); err != nil {
+				return err
+			}
+		case "removed-unrecorded":
+			if _, err := fmt.Fprintf(a.stdout, "removed %s, but cleanup is not recorded: %s\n", result.WorktreePath, result.Reason); err != nil {
+				return err
+			}
 		default:
 			if _, err := fmt.Fprintf(a.stdout, "skip %s: %s\n", result.WorktreePath, result.Reason); err != nil {
 				return err
@@ -77,11 +91,15 @@ func (a *app) cmdWorktrees(args []string) error {
 	return nil
 }
 
-func (a *app) listWorktrees() error {
+func (a *app) listWorktrees(includeCleaned bool) error {
 	var response struct {
 		Worktrees []worktreeStatus `json:"worktrees"`
 	}
-	if err := a.getJSON("/api/worktrees", &response); err != nil {
+	path := "/api/worktrees"
+	if includeCleaned {
+		path += "?all=true"
+	}
+	if err := a.getJSON(path, &response); err != nil {
 		return err
 	}
 	if a.wantJSON {
