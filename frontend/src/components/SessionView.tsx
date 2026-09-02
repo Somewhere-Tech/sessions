@@ -4,7 +4,7 @@ import { useSessionSidebar } from '../hooks/useSessionSidebar';
 import { RemoteView } from './RemoteView';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import { useSessions } from '../store/sessions';
-import { fetchOnboardingState, fetchServerHistoryTranscript, wsMuxUrl } from '../api/sessionsd';
+import { fetchOnboardingState, fetchServerHistoryTranscript, submitMessage as submitAttributedMessage, wsMuxUrl } from '../api/sessionsd';
 import { classifySnapshotComposerState } from '../lib/detectMultiChoice';
 import { requestSnapshot } from '../lib/wsMux';
 import { SessionDetails } from './SessionDetails';
@@ -529,7 +529,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
                 return next;
               })}
             >
-              <span>Subagents</span>
+              <span>Lanes</span>
               <strong>{subagents.length}</strong>
               {workingSubagents ? <small>· {workingSubagents} working</small> : null}
               <span aria-hidden>›</span>
@@ -711,6 +711,19 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             }}
             onMakeMain={(childId) => onReparent(childId, null)}
             onEnd={endSession}
+            onHandBack={async (lane) => {
+              const line = (lane.idleReason === 'needs-input' && lane.idleDetail)
+                ? `is waiting: ${lane.idleDetail}`
+                : lane.lastSummary?.trim()
+                  ? `reports: ${lane.lastSummary.trim().split('\n')[0]}`
+                  : 'has nothing to report yet';
+              await submitAttributedMessage(
+                session.id,
+                `Lane "${resolvedSessionLabel(lane)}" ${line} (id ${lane.id.slice(0, 8)}; \`sessions cat ${lane.id.slice(0, 8)}\` for the full conversation).`,
+                undefined,
+                lane.id
+              );
+            }}
           />
         </div>
       ) : null}

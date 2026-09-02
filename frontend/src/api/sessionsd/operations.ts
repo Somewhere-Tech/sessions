@@ -631,14 +631,20 @@ async function readDeliveryResponse(response: Response): Promise<MessageDelivery
   throw new Error(`sessionsd ${response.status}: ${detail || response.statusText}`);
 }
 
-export async function submitMessage(sessionId: string, data: string, serverId?: string): Promise<void> {
+// fromSessionId records another lane as the author of the message, the way
+// `sessions send --from` does, so a hand-back reads in the manager's history
+// as coming from the lane rather than from the person.
+export async function submitMessage(sessionId: string, data: string, serverId?: string, fromSessionId?: string): Promise<void> {
   const server = requestedServer(serverId);
   const operationId = randomUUID();
   let response: Response;
   try {
     response = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/submit`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(fromSessionId ? { 'X-Sessions-Creator-Session': fromSessionId } : {})
+      },
       body: JSON.stringify({ data, operation_id: operationId })
     });
   } catch (initialError) {

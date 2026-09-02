@@ -12,6 +12,10 @@ interface Props {
   onOpen: (sessionId: string) => void;
   onMakeMain: (sessionId: string) => Promise<void>;
   onEnd: (sessionId: string) => Promise<void>;
+  // Hand a lane's result back to its manager: posts the lane's last line of
+  // work into the manager's conversation, attributed to the lane. The lane
+  // keeps running; this is a report, not an end.
+  onHandBack?: (lane: SessionInfo) => Promise<void>;
 }
 
 function relativeTime(value: number): string {
@@ -38,8 +42,16 @@ function activityAt(session: SessionInfo): number {
   return Math.max(session.lastDataAt || 0, session.idleSince || 0, session.createdAt || 0);
 }
 
-export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain, onEnd }: Props): JSX.Element {
+// lastLine is what a lane most recently said or is waiting for, in one line.
+function lastLine(session: SessionInfo): string {
+  if (session.idleReason === 'needs-input' && session.idleDetail) return session.idleDetail;
+  return session.lastSummary?.trim().split('\n')[0] ?? '';
+}
+
+export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain, onEnd, onHandBack }: Props): JSX.Element {
   const [movingId, setMovingId] = useState<string | null>(null);
+  const [handingBackId, setHandingBackId] = useState<string | null>(null);
+  const [handedBackId, setHandedBackId] = useState<string | null>(null);
   const [endingId, setEndingId] = useState<string | null>(null);
   const [confirmEndId, setConfirmEndId] = useState<string | null>(null);
   const [reviewInactive, setReviewInactive] = useState(false);
@@ -83,6 +95,21 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
     }
   };
 
+  const handBack = async (session: SessionInfo): Promise<void> => {
+    if (!onHandBack) return;
+    setHandingBackId(session.id);
+    setError(null);
+    try {
+      await onHandBack(session);
+      setHandedBackId(session.id);
+      window.setTimeout(() => setHandedBackId((current) => current === session.id ? null : current), 2400);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not hand this lane back.');
+    } finally {
+      setHandingBackId(null);
+    }
+  };
+
   const copyCleanupRequest = async (): Promise<void> => {
     const request = 'Clean up your subagents. End only delegated sessions whose work is complete; leave anything active or uncertain running.';
     try {
@@ -99,10 +126,10 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
       <header>
         <div>
           <span>Delegated work</span>
-          <h2 id="subagents-panel-title">Subagents</h2>
+          <h2 id="subagents-panel-title">Lanes</h2>
           <p>{ordered.length} total{working ? ` · ${working} working` : ''}{needsYou ? ` · ${needsYou} need you` : ''}</p>
         </div>
-        <button type="button" aria-label="Close subagents" onClick={onClose}>×</button>
+        <button type="button" aria-label="Close lanes" onClick={onClose}>×</button>
       </header>
       <div className="subagents-manager-note">Work delegated by <strong>{resolvedSessionLabel(manager)}</strong></div>
       {error ? <div className="subagents-error" role="alert">{error}</div> : null}
@@ -137,8 +164,16 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
                 {provider ? <ProviderMark provider={provider} size={24} /> : <span className="subagent-shell" title="Shell">⌘</span>}
               </div>
               <p>{purpose(session)}</p>
+              {lastLine(session) && lastLine(session) !== purpose(session) ? (
+                <p className={`subagent-last${status.needsYou ? ' is-attention' : ''}`}>{status.needsYou ? 'Waiting: ' : ''}{lastLine(session)}</p>
+              ) : null}
               <div className="subagent-card-actions">
                 <button type="button" className="btn btn-secondary" onClick={() => onOpen(session.id)}>Open</button>
+                {onHandBack && !session.exited ? (
+                  <button type="button" className="btn btn-ghost" disabled={handingBackId !== null} onClick={() => void handBack(session)} title="Post this lane's latest result into the manager's conversation">
+                    {handingBackId === session.id ? 'Handing back…' : handedBackId === session.id ? 'Handed back' : 'Hand back'}
+                  </button>
+                ) : null}
                 <button type="button" className="btn btn-ghost" disabled={movingId !== null} onClick={() => void makeMain(session)}>
                   {movingId === session.id ? 'Moving…' : 'Make main session'}
                 </button>
@@ -159,7 +194,7 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
           );
         })}
       </div>
-      <footer>User-driven sessions are permanent. Subagents stay searchable and resumable after you end them.</footer>
+      <footer>User-driven sessions are permanent. Lanes stay searchable and resumable after you end them.</footer>
     </aside>
   );
 }
