@@ -6,7 +6,8 @@ const sessionsdFiles = [
   '../../src/api/sessionsd/core.ts',
   '../../src/api/sessionsd/sessions.ts',
   '../../src/api/sessionsd/search.ts',
-  '../../src/api/sessionsd/operations.ts'
+  '../../src/api/sessionsd/operations.ts',
+  '../../src/api/sessionsd/team.ts'
 ];
 
 export async function readSessionsdSource() {

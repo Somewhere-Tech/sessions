@@ -26,7 +26,8 @@ import type {
   ProviderStatus,
   ResumableSession,
   SearchMatch,
-  SearchResponse
+  SearchResponse,
+  TeamListing
 } from '../../src/api/sessionsd';
 
 export interface FakeMachine {
@@ -56,6 +57,7 @@ export interface FakeMachine {
   profiles?: unknown[];
   directories?: DirectoryCandidate[];
   providers?: ProviderStatus[];
+  team?: TeamListing;
   /** Optional latency used to expose same-tick duplicate-action races. */
   createDelayMS?: number;
   submitDelayMS?: number;
@@ -262,6 +264,7 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       return jsonResponse({ machineId: machine.machineId ?? machine.id, name: machine.name });
     }
     if (path === '/api/lan') return jsonResponse({ enabled: false, url: null });
+    if (path === '/api/lanes/mine' && machine.team) return jsonResponse(machine.team);
 
     // ── session list & lifecycle ────────────────────────────────────────
     if (path === '/api/sessions' && method === 'GET') {

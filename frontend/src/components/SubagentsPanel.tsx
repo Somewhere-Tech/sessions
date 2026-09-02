@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { fetchTeam, type TeamListing, type TeamMember } from '../api/sessionsd';
 import { classifySession } from '../lib/sessionStatus';
 import { subagentNeedsReview } from '../lib/workingSet';
 import { resolvedSessionLabel } from '../lib/tabLabels';
@@ -50,7 +51,12 @@ function lastLine(session: SessionInfo): string {
   return session.lastSummary?.trim().split('\n')[0] ?? '';
 }
 
+function teamLastLine(member: TeamMember): string {
+  return member.waiting?.trim() || member.summary?.trim() || '';
+}
+
 export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain, onEnd, onHandBack, onApprove }: Props): JSX.Element {
+  const [team, setTeam] = useState<TeamListing | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [handingBackId, setHandingBackId] = useState<string | null>(null);
   const [handedBackId, setHandedBackId] = useState<string | null>(null);
@@ -60,6 +66,21 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
   const [copiedCleanupRequest, setCopiedCleanupRequest] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [approvingId, setApprovingId] = useState<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    let current = true;
+    setTeam(null);
+    void fetchTeam(manager.id, controller.signal).then((listing) => {
+      if (current) setTeam(listing);
+    }).catch(() => {
+      // Older daemons do not have the team route. The session-list rows below
+      // remain the compatibility view for an unavailable request.
+    });
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [manager.id]);
   const ordered = [...subagents].sort((left, right) => {
     const leftStatus = classifySession(left);
     const rightStatus = classifySession(right);
@@ -69,7 +90,8 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
     return rank(leftStatus) - rank(rightStatus) || activityAt(right) - activityAt(left);
   });
   const working = ordered.filter((session) => !session.exited && session.working).length;
-  const needsYou = ordered.filter((session) => classifySession(session).needsYou).length;
+  const needsYou = team?.needs_input ?? ordered.filter((session) => classifySession(session).needsYou).length;
+  const teamById = new Map((team?.members ?? []).map((member) => [member.id, member]));
   const inactive = ordered.filter((session) => subagentNeedsReview(session));
   const visible = reviewInactive ? inactive : ordered;
 
@@ -168,6 +190,9 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
       <div className="subagents-list">
         {visible.map((session, index) => {
           const status = classifySession(session);
+          const teamMember = teamById.get(session.id);
+          const recentLine = teamMember ? teamLastLine(teamMember) : lastLine(session);
+          const needsAttention = teamMember?.needs_you ?? status.needsYou;
           const provider = normalizeProvider(session.tool);
           return (
             <article className={`subagent-card ${status.className}`} key={session.id}>
@@ -186,8 +211,8 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
                   {session.exited ? ' · once merged, `sessions worktrees clean` removes its worktree' : ''}
                 </p>
               ) : null}
-              {lastLine(session) && lastLine(session) !== purpose(session) ? (
-                <p className={`subagent-last${status.needsYou ? ' is-attention' : ''}`}>{status.needsYou ? 'Waiting: ' : ''}{lastLine(session)}</p>
+              {recentLine && recentLine !== purpose(session) ? (
+                <p className={`subagent-last${needsAttention ? ' is-attention' : ''}`}>{needsAttention ? 'Waiting: ' : ''}{recentLine}</p>
               ) : null}
               {session.pendingApproval && onApprove ? (
                 <div className="subagent-approval" role="group" aria-label="Permission request">
