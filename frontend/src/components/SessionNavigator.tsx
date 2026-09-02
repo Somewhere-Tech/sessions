@@ -846,6 +846,9 @@ export function SessionNavigator({
       >
         {moveError ? <div className="session-move-error" role="alert">{moveError}</div> : null}
         {archiveError ? <div className="session-move-error" role="alert">{archiveError}</div> : null}
+        {!showingAllMachines && projectLookup.error ? (
+          <div className="inbox-projects-note" role="status">Project grouping could not be refreshed. Sessions are shown together. {projectLookup.error}</div>
+        ) : null}
         {!showingAllMachines && selectingEnded ? (
           <div className="session-bulk-actions">
             <strong>{selectedEnded.size} selected</strong>

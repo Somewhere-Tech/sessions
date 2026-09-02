@@ -61,19 +61,28 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
   const [reviewInactive, setReviewInactive] = useState(false);
   const [copiedCleanupRequest, setCopiedCleanupRequest] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [teamError, setTeamError] = useState<string | null>(null);
   const [approvingId, setApprovingId] = useState<string | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     let current = true;
     setTeam(null);
+    setTeamError(null);
     // Lanes change while the panel is open, so the team view is re-read on a
     // short cadence; the session-list rows stay the fallback throughout.
     const load = (): void => {
       void fetchTeam(manager.id, controller.signal).then((listing) => {
-        if (current) setTeam(listing);
-      }).catch(() => {
+        if (current) {
+          setTeam(listing);
+          setTeamError(null);
+        }
+      }).catch((reason: unknown) => {
+        if (!current || controller.signal.aborted) return;
         // Older daemons do not have the team route. The session-list rows below
         // remain the compatibility view for an unavailable request.
+        const detail = reason instanceof Error ? reason.message : 'Team details could not be loaded.';
+        if (/sessionsd (404|501):/.test(detail)) return;
+        setTeamError(`Team details could not be refreshed. ${detail}`);
       });
     };
     load();
@@ -173,7 +182,7 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
         <button type="button" aria-label="Close lanes" onClick={onClose}>×</button>
       </header>
       <div className="subagents-manager-note">Work delegated by <strong>{resolvedSessionLabel(manager)}</strong></div>
-      {error ? <div className="subagents-error" role="alert">{error}</div> : null}
+      {error || teamError ? <div className="subagents-error" role="alert">{error ?? teamError}</div> : null}
       {inactive.length > 0 ? (
         <section className="subagents-review-note">
           <div>

@@ -115,5 +115,26 @@ describe('capability: manage delegated work from its manager', () => {
     expect(screen.getByText('Waiting: Pick a client-side option')).toHaveClass('is-attention');
     expect(screen.getByText(/1 need you/)).toBeInTheDocument();
     await waitFor(() => expect(daemon.unhandled.some((request) => request.path === '/api/lanes/mine')).toBe(true));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows a team refresh failure while keeping the session-list fallback', async () => {
+    const manager = makeSession({ id: 'manager' });
+    const helper = makeSession({
+      id: 'helper',
+      idleReason: 'needs-input',
+      idleDetail: 'Pick a client-side option'
+    });
+    const machine = {
+      id: 'local', name: 'Fixture Mac', host: 'localhost', port: 8787, isDefault: true,
+      sessions: [manager, helper], teamFailure: { status: 401, message: 'token required' }
+    };
+    installFakeDaemon([machine]);
+    useFakeMachines([machine]);
+
+    render(<SubagentsPanel manager={manager} subagents={[helper]} onClose={() => {}} onOpen={() => {}} onMakeMain={async () => {}} onEnd={async () => {}} />);
+
+    expect(screen.getByText('Waiting: Pick a client-side option')).toHaveClass('is-attention');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Team details could not be refreshed. sessionsd: authentication required');
   });
 });
