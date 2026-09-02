@@ -916,7 +916,7 @@ turning into a duplicate provider writer.
 
 ### `POST /api/sessions/:id/approve`
 
-Auth required. Answers the permission a Rich Codex session is holding open.
+Auth required. Answers the permission a Rich Claude or Codex session is holding open.
 A lane that inherits the person's permissions instead of running autonomously
 asks before it runs a command, changes files, or takes more access; the runner
 holds the request, the session reads `needs-input` with `idleDetail` set to
@@ -932,7 +932,7 @@ lane, and the runner records an `approval_resolved` event with that id in
 `by` (empty when a person decided). Responses:
 
 - `200 {"ok":true,"id":"<session>","decision":"<decision>","approval":{...}}`
-- `400` for an unknown decision or a session that is not Rich Codex
+- `400` for an unknown decision or a session that is not Rich
 - `404` for an unknown session
 - `409` when nothing is waiting, the id does not match, or the session ended
 - `501` when the daemon cannot route approvals

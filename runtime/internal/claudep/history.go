@@ -229,6 +229,13 @@ func HistoryLifecycle(raw json.RawMessage) (working bool, authoritative bool) {
 	if value.Type == "result" {
 		return false, true
 	}
+	// A lane waiting on a permission is not working; the answer restarts it.
+	if value.Type == "system" && value.Subtype == "approval_requested" {
+		return false, true
+	}
+	if value.Type == "system" && value.Subtype == "approval_resolved" {
+		return true, true
+	}
 	return false, false
 }
 
@@ -250,3 +257,91 @@ func marshalHistory(value map[string]any) (json.RawMessage, error) {
 }
 
 func historyTimestamp(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+
+// ApprovalSummary is the one line a person or a manager sees before deciding
+// whether Claude may use a tool: the command for Bash, the file for an edit,
+// the tool name otherwise.
+func ApprovalSummary(toolName string, input json.RawMessage) string {
+	var fields struct {
+		Command  string `json:"command"`
+		FilePath string `json:"file_path"`
+		Path     string `json:"path"`
+		URL      string `json:"url"`
+	}
+	_ = json.Unmarshal(input, &fields)
+	switch toolName {
+	case "Bash":
+		if command := strings.Join(strings.Fields(fields.Command), " "); command != "" {
+			if len(command) > 160 {
+				command = command[:159] + "…"
+			}
+			return "Run `" + command + "`"
+		}
+		return "Run a command"
+	case "Edit", "Write", "MultiEdit", "NotebookEdit":
+		if path := firstNonEmpty(fields.FilePath, fields.Path); path != "" {
+			return "Change " + path
+		}
+		return "Change files"
+	case "WebFetch":
+		if fields.URL != "" {
+			return "Fetch " + fields.URL
+		}
+		return "Fetch a web page"
+	default:
+		if toolName == "" {
+			return "Use a tool"
+		}
+		return "Use " + toolName
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// ApprovalRequestedEvent records that a Claude lane is waiting on a permission
+// decision; the daemon reads it to mark the session needs-you.
+func ApprovalRequestedEvent(sessionID, id, toolName string, input json.RawMessage, at time.Time) (json.RawMessage, error) {
+	var command string
+	var fields struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal(input, &fields) == nil {
+		command = fields.Command
+	}
+	return marshalHistory(map[string]any{
+		"type": "system", "subtype": "approval_requested", "source": HistorySource,
+		"timestamp": historyTimestamp(at), "session_id": sessionID,
+		"approval": map[string]any{
+			"id": id, "kind": approvalKind(toolName), "summary": ApprovalSummary(toolName, input),
+			"command": command, "tool": toolName, "reason": "",
+		},
+	})
+}
+
+func approvalKind(toolName string) string {
+	switch toolName {
+	case "Bash":
+		return "command"
+	case "Edit", "Write", "MultiEdit", "NotebookEdit":
+		return "file-change"
+	default:
+		return "permissions"
+	}
+}
+
+// ApprovalResolvedEvent records the answer and who gave it: empty `by` is
+// the person, otherwise the session id of the lane that decided.
+func ApprovalResolvedEvent(sessionID, id, decision, by string, at time.Time) (json.RawMessage, error) {
+	return marshalHistory(map[string]any{
+		"type": "system", "subtype": "approval_resolved", "source": HistorySource,
+		"timestamp": historyTimestamp(at), "session_id": sessionID,
+		"approval": map[string]any{"id": id, "decision": decision, "by": by},
+	})
+}

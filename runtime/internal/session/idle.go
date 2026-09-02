@@ -130,7 +130,13 @@ func structuredIdleClassification(kind string, events []json.RawMessage) (IdleCl
 				Line:    structuredFailureDetail(event.Status, event.Error, ""),
 			}, true
 		case state.KindClaudeStructured:
-			if event.Source != claudep.HistorySource || event.Type != "result" {
+			if event.Source != claudep.HistorySource {
+				continue
+			}
+			if event.Type == "system" && event.Subtype == "approval_requested" {
+				return IdleClassification{Outcome: IdleBlocked, Line: approvalLine(events[index])}, true
+			}
+			if event.Type != "result" {
 				continue
 			}
 			if !event.IsError && strings.EqualFold(event.Subtype, "success") {

@@ -250,6 +250,9 @@ func main() {
 }
 
 func run() int {
+	if len(os.Args) > 1 && os.Args[1] == "approval-shim" {
+		return runApprovalShim(os.Args[2:])
+	}
 	cfg, malformedArgs, err := configFromEnv()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "runner:", err)

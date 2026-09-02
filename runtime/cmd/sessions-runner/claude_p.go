@@ -37,6 +37,11 @@ type claudeStructuredRunner struct {
 	historyFile  *os.File
 	continuation *state.ContinuationContext
 
+	// approvals holds the permission requests the prompt shim forwarded
+	// until the daemon answers each with an Approve frame.
+	approvals        approvalDesk
+	approvalListener net.Listener
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan int
@@ -124,7 +129,30 @@ func (r *claudeStructuredRunner) start() error {
 	}
 	r.listener = listener
 	go r.acceptLoop()
+	endpoint := approvalEndpoint(r.paths.Socket)
+	_ = ipc.Remove(endpoint)
+	if approvals, err := ipc.Listen(endpoint); err == nil {
+		r.approvalListener = approvals
+		go serveApprovalSocket(approvals, r.decideApproval)
+	} else {
+		r.logger.Printf("approval endpoint unavailable, permission requests will be declined: %v", err)
+	}
 	return nil
+}
+
+// decideApproval answers one request from the prompt shim: announce it on
+// the structured stream, wait for the daemon's Approve frame, record the
+// outcome. The turn stays open meanwhile.
+func (r *claudeStructuredRunner) decideApproval(request shimApprovalRequest) shimApprovalReply {
+	id, decided := r.approvals.open()
+	if raw, err := claudep.ApprovalRequestedEvent(r.sessionID, id, request.ToolName, request.Input, time.Now()); err == nil {
+		r.appendStructured(raw)
+	}
+	control := r.approvals.wait(r.ctx, r.ctx, id, decided)
+	if raw, err := claudep.ApprovalResolvedEvent(r.sessionID, id, control.Decision, control.By, time.Now()); err == nil {
+		r.appendStructured(raw)
+	}
+	return shimApprovalReply{Decision: control.Decision, By: control.By}
 }
 
 func (r *claudeStructuredRunner) prepareContinuation() error {
@@ -292,6 +320,14 @@ func (r *claudeStructuredRunner) handleFrame(c *client, frame proto.Frame) error
 			return marshalErr
 		}
 		return c.write(proto.ModelRes, payload)
+	case proto.Approve:
+		control, err := proto.DecodeApprovalControl(frame.Payload)
+		if err == nil {
+			err = r.approvals.resolve(control)
+		}
+		if err != nil {
+			r.logger.Printf("reject approval control: %v", err)
+		}
 	case proto.Resize:
 		return nil
 	case proto.SnapshotReq:
@@ -399,6 +435,11 @@ func (r *claudeStructuredRunner) runTurn(text string) {
 		}
 		cfg.args = withContinuationSystemPrompt(cfg.args, continuationBridge(updated))
 	}
+	if r.approvalListener != nil {
+		if executable, err := os.Executable(); err == nil {
+			cfg.args = withApprovalShim(cfg.args, executable, approvalEndpoint(r.paths.Socket))
+		}
+	}
 	stream, err := r.client.SendTurn(r.ctx, text, claudep.TurnOptions{
 		CWD: cfg.cwd, SessionID: r.sessionID, Resume: resume,
 		Model: providerargs.Value(cfg.args, providerargs.ModelFlags()...), ExtraArgs: cfg.args,
@@ -496,6 +537,10 @@ func (r *claudeStructuredRunner) shutdownWithRestartPolicy(permanent bool, code 
 		if r.listener != nil {
 			_ = r.listener.Close()
 		}
+		if r.approvalListener != nil {
+			_ = r.approvalListener.Close()
+		}
+		_ = ipc.Remove(approvalEndpoint(r.paths.Socket))
 		_ = ipc.Remove(r.paths.Socket)
 		if !preserveRestartPermit {
 			removeRestartState(r.paths)

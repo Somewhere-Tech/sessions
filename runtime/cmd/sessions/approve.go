@@ -15,7 +15,7 @@ type approveResult struct {
 	Approval *state.ApprovalPrompt `json:"approval,omitempty"`
 }
 
-// cmdApprove answers the permission a Rich Codex lane is waiting on. Run from
+// cmdApprove answers the permission a Rich lane is waiting on. Run from
 // inside a manager lane it is attributed to that lane, so the worker's
 // transcript says who decided.
 func (a *app) cmdApprove(args []string) error {

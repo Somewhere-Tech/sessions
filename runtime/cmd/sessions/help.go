@@ -145,7 +145,7 @@ var commandTable = []commandSpec{
 	},
 	{
 		name: "approve", usage: "approve <session-id> [--deny | --for-session]",
-		summary: "answer the permission a Rich Codex lane is waiting on", group: dailyCommandGroup, localJSON: true,
+		summary: "answer the permission a Rich lane is waiting on", group: dailyCommandGroup, localJSON: true,
 		longHelp: "A lane that inherits your permissions instead of running on its own asks before it runs a command, changes files, or takes more access. The request shows as the lane's needs-you line (`sessions ls`, `sessions team`, the app) and the lane waits until it is answered. `approve` allows it once; --for-session allows the same kind of request for the rest of the lane's session; --deny refuses and lets the lane continue without it. Run from inside a manager lane, the decision is attributed to that lane in the worker's transcript.",
 		examples: []string{"sessions approve 0123abcd", "sessions approve 0123abcd --for-session", "sessions approve 0123abcd --deny"}, run: (*app).cmdApprove,
 	},

@@ -115,3 +115,46 @@ func TestRichCodexApprovalRoutesThroughSessions(t *testing.T) {
 		t.Fatalf("resumed session still idle: %#v", resumed)
 	}
 }
+
+// The Claude path carries the same contract: the permission-prompt shim's
+// request becomes an approval_requested event, and the answer travels back
+// over the same Approve frame.
+func TestRichClaudeApprovalRoutesThroughSessions(t *testing.T) {
+	daemon := newTestDaemon(t)
+	manager := sessionruntime.NewManager(daemon.config, daemon.launcher, sessionruntime.ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour,
+	})
+	t.Cleanup(manager.Close)
+	daemon.handler = New(daemon.config, manager)
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "claude", Cwd: daemon.root, Kind: state.KindClaudeStructured,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := daemon.launcher.Runner(created.ID)
+	runner.AddCodexEvent(map[string]any{"type": "claude", "subtype": "turn_started", "source": "claude-p-stream-json", "session_id": "s-1"})
+	waitForSession(t, daemon.handler, created.ID, func(info state.SessionInfo) bool { return info.Working })
+	runner.AddCodexEvent(map[string]any{
+		"type": "system", "subtype": "approval_requested", "source": "claude-p-stream-json", "session_id": "s-1",
+		"approval": map[string]any{"id": "approval-1", "kind": "command", "summary": "Run `touch a.txt`", "command": "touch a.txt", "tool": "Bash"},
+	})
+	waiting := waitForSession(t, daemon.handler, created.ID, func(info state.SessionInfo) bool {
+		return !info.Working && info.PendingApproval != nil && info.IdleReason == state.IdleReasonNeedsInput
+	})
+	if waiting.IdleDetail != "Allow? Run `touch a.txt`" {
+		t.Fatalf("waiting detail = %q", waiting.IdleDetail)
+	}
+	answered := serve(t, daemon.handler, http.MethodPost, "/api/sessions/"+created.ID+"/approve", strings.NewReader(`{"decision":"deny"}`), "127.0.0.1:1", nil)
+	if answered.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", answered.Code, answered.Body.String())
+	}
+	if controls := runner.Approvals(); len(controls) != 1 || controls[0].Decision != "deny" || controls[0].By != "" {
+		t.Fatalf("runner approvals = %#v", controls)
+	}
+	runner.AddCodexEvent(map[string]any{
+		"type": "system", "subtype": "approval_resolved", "source": "claude-p-stream-json", "session_id": "s-1",
+		"approval": map[string]any{"id": "approval-1", "decision": "deny", "by": ""},
+	})
+	waitForSession(t, daemon.handler, created.ID, func(info state.SessionInfo) bool { return info.Working && info.PendingApproval == nil })
+}
