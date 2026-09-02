@@ -18,6 +18,6 @@
 - Restores more after a reboot: pinned sessions first, then every session you spoke to in the last day, up to eight, so a restart no longer loses the work you were in the middle of.
 - Wakes a session that stayed paused after a reboot on first contact: opening it, sending it a message, or reading it live restarts its runner in place with the same conversation and folder, so the restart cap only decides what comes back at login by itself, never what you can reach.
 - Removes the retired `sessions deploy` notice-only stub and no-action Coming soon cards, so the CLI and app show only operations that exist.
-- Loads secondary app views only when opened, reducing the initial JavaScript bundle from 701,455 bytes to 583,201 bytes while keeping the total bundle within its existing budget.
+- Loads secondary app views only when opened, reducing the initial JavaScript bundle from 701,455 bytes to about 584,000 bytes while keeping the total bundle within its existing budget.
 
 Existing sessions keep running across the update. No session is ended or re-adopted to install it.
