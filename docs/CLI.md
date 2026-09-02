@@ -54,6 +54,7 @@ Daily workflows:
   ls                       list interactive sessions
   list                     list agent sessions and headless lanes
   lanes                    list headless lanes
+  team                     show the lanes a manager delegated and their state
   send                     send text and Enter to a session
   send-status              inspect a durable message-delivery receipt
   ask                      send, wait, and print the reply
@@ -502,6 +503,24 @@ Examples:
   sessions lanes
   sessions lanes --mine
   sessions lanes --subtree 0123abcd --direct
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions team`
+
+```text
+Usage:
+  sessions team [lane-id]
+
+show the lanes a manager delegated and their state
+
+Show the lanes one manager is responsible for: its own parent, if any, and its delegated descendants, each with a compact state and the last line of work. Visibility follows responsibility — a lane sees only its parent and its own descendants, never other projects — and every row carries a short summary rather than a transcript, so a manager can watch its workers without pulling their conversations into context. The calling lane is SESSIONS_SESSION_ID; pass a lane id to inspect any lane's team. Rows waiting on a decision are called out so a blocked worker is visible without opening it.
+
+Examples:
+  sessions team
+  sessions team 0123abcd
+  sessions --json team 0123abcd
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
