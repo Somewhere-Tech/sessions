@@ -88,12 +88,7 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 		_ = peer.connection.Close(websocket.StatusPolicyViolation, "missing sessionId")
 		return
 	}
-	session, ok := s.registry.Get(id)
-	if !ok {
-		if woken, live, _ := s.wakePausedSession(ctx, id); live {
-			session, ok = woken, true
-		}
-	}
+	session, ok := s.sessionOnContact(ctx, id)
 	if !ok {
 		if pending, paused := s.pendingRestore(id); paused {
 			_ = peer.send(ctx, pendingRestoreSocketError(id, pending))
@@ -232,12 +227,7 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 			if exists {
 				continue
 			}
-			session, ok := s.registry.Get(message.SessionID)
-			if !ok {
-				if woken, live, _ := s.wakePausedSession(ctx, message.SessionID); live {
-					session, ok = woken, true
-				}
-			}
+			session, ok := s.sessionOnContact(ctx, message.SessionID)
 			if !ok {
 				if pending, paused := s.pendingRestore(message.SessionID); paused {
 					_ = peer.send(ctx, pendingRestoreSocketError(message.SessionID, pending))
@@ -456,12 +446,7 @@ func (s *Server) handleMuxSnapshot(ctx context.Context, peer *wsPeer, message cl
 	if message.RequestID == "" || message.SessionID == "" {
 		return
 	}
-	session, ok := s.registry.Get(message.SessionID)
-	if !ok {
-		if woken, live, _ := s.wakePausedSession(ctx, message.SessionID); live {
-			session, ok = woken, true
-		}
-	}
+	session, ok := s.sessionOnContact(ctx, message.SessionID)
 	if !ok {
 		if pending, paused := s.pendingRestore(message.SessionID); paused {
 			sendRPCError(ctx, peer, message.RequestID,
@@ -490,12 +475,7 @@ func (s *Server) handleMuxEvents(ctx context.Context, peer *wsPeer, message clie
 	if message.RequestID == "" || message.SessionID == "" {
 		return
 	}
-	session, ok := s.registry.Get(message.SessionID)
-	if !ok {
-		if woken, live, _ := s.wakePausedSession(ctx, message.SessionID); live {
-			session, ok = woken, true
-		}
-	}
+	session, ok := s.sessionOnContact(ctx, message.SessionID)
 	if !ok {
 		if pending, paused := s.pendingRestore(message.SessionID); paused {
 			sendRPCError(ctx, peer, message.RequestID,
