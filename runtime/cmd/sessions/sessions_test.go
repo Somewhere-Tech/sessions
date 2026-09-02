@@ -150,6 +150,30 @@ func TestSessionTablesAddProfileColumnOnlyWhenNeeded(t *testing.T) {
 	}
 }
 
+func TestSessionTablesDoNotAbbreviateHomeInsideAnotherPathComponent(t *testing.T) {
+	home := "/__sessions_home_for_test__"
+	cwd := "/prefix/__sessions_home_for_test__/project"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		if request.URL.Path != "/api/sessions" {
+			http.NotFound(response, request)
+			return
+		}
+		_, _ = response.Write([]byte(`{"sessions":[{"id":"22000000-0000-4000-8000-000000000001","name":"agent","cmd":"codex","cwd":"` + cwd + `","createdAt":1,"pid":1,"tool":"codex","idleReason":"completed"}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("HOME", home)
+	for _, command := range []string{"list", "ls"} {
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"--host", server.URL, command}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+			t.Fatalf("%s exit=%d stderr=%q", command, code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), cwd) || strings.Contains(stdout.String(), "/prefix~/") {
+			t.Fatalf("%s cwd abbreviation crossed a path boundary: %q", command, stdout.String())
+		}
+	}
+}
+
 func TestWaitReturnsProviderPromptWithoutTerminalBabysitting(t *testing.T) {
 	id := "23000000-0000-4000-8000-000000000001"
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

@@ -268,7 +268,7 @@ func (a *app) writeStatusCard(output statusOutput, lastActivityAt int64) error {
 		return err
 	}
 	if _, err := fmt.Fprintf(a.stdout, "  id       %s\n  kind     %s\n  tool     %s\n  cwd      %s\n",
-		output.ID, output.Kind, output.Tool, strings.Replace(output.Cwd, a.home, "~", 1)); err != nil {
+		output.ID, output.Kind, output.Tool, a.homeRelative(output.Cwd)); err != nil {
 		return err
 	}
 	description := output.Description
@@ -280,14 +280,14 @@ func (a *app) writeStatusCard(output statusOutput, lastActivityAt int64) error {
 	}
 	if output.Profile != "" {
 		if _, err := fmt.Fprintf(a.stdout, "  profile  %s\n  config   %s\n", output.Profile,
-			strings.Replace(output.ConfigDir, a.home, "~", 1)); err != nil {
+			a.homeRelative(output.ConfigDir)); err != nil {
 			return err
 		}
 	}
 	if output.WorktreePath != "" {
 		if _, err := fmt.Fprintf(a.stdout, "  worktree %s\n  branch   %s\n  base     %s\n  source   %s\n",
-			strings.Replace(output.WorktreePath, a.home, "~", 1), output.Branch, output.Base,
-			strings.Replace(output.SourceRepo, a.home, "~", 1)); err != nil {
+			a.homeRelative(output.WorktreePath), output.Branch, output.Base,
+			a.homeRelative(output.SourceRepo)); err != nil {
 			return err
 		}
 	}
