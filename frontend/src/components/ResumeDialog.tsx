@@ -109,6 +109,17 @@ export function ResumeDialog({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Escape closes the picker like the Close button does, unless a resume is
+  // in flight; the request would still complete with nowhere to report to.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || busy) return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy, onClose]);
   const [error, setError] = useState<string | null>(null);
   const [partialResult, setPartialResult] = useState<AdoptOutcome | null>(null);
   const [view, setView] = useState<ViewMode>(readViewMode);
@@ -244,9 +255,18 @@ export function ResumeDialog({
     selected?.tool
   ]);
 
+  // A conversation every one of whose runtimes was started by another lane
+  // is delegated work. It stays resumable, but a person opening this picker
+  // is looking for a chat they had, so those rows sit under their own fold.
+  const isDelegated = (s: ResumableSession): boolean => (
+    (s.runs?.length ?? 0) > 0 && s.runs!.every((run) => run.creatorKind === 'session')
+  );
   // Flat = newest-first across all folders. Backend already sorts
-  // resumable by modifiedAt desc, so we just keep that order.
-  const flatList = available ?? [];
+  // resumable by modifiedAt desc; the split below keeps that order inside
+  // each part.
+  const flatList = useMemo(() => (available ?? []).filter((s) => !isDelegated(s)), [available]);
+  const delegatedList = useMemo(() => (available ?? []).filter(isDelegated), [available]);
+  const [showDelegated, setShowDelegated] = useState(false);
 
   // Grouped = one section per cwd, sections themselves sorted by their
   // most-recent session's modifiedAt.
@@ -411,14 +431,14 @@ export function ResumeDialog({
               {loadError ? <small>{loadError}</small> : null}
               <button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>
             </div>
-          ) : flatList.length === 0 ? (
+          ) : flatList.length === 0 && delegatedList.length === 0 ? (
             <div className="resume-empty">
               <p>
                 {query.trim()
                   ? `No ${providerFilter === 'all' ? 'chats' : providerFilter === 'claude' ? 'Claude chats' : 'Codex chats'} match "${query.trim()}".`
                   : openCount > 0 && (resumable?.length ?? 0) === openCount
                     ? 'All resumable conversations are already open in Sessions.'
-                    : 'No prior Claude or Codex conversations found on this machine.'}
+                    : 'No prior Claude or Codex conversations found on this Mac. Conversations on your other machines are listed in Fleet.'}
               </p>
               <button
                 type="button"
@@ -433,6 +453,21 @@ export function ResumeDialog({
               {flatList.map((s) => (
                 <ResumeCard key={`${s.tool}:${s.sessionId}`} session={s} selected={selected?.sessionId === s.sessionId && selected.tool === s.tool} onPick={() => setSelected(s)} disabled={busy} />
               ))}
+              {delegatedList.length > 0 ? (
+                <section className="resume-delegated">
+                  <button
+                    type="button"
+                    className="resume-delegated-toggle"
+                    aria-expanded={showDelegated}
+                    onClick={() => setShowDelegated((current) => !current)}
+                  >
+                    {showDelegated ? '▾' : '▸'} Delegated work · {delegatedList.length} conversation{delegatedList.length === 1 ? '' : 's'} started by other lanes
+                  </button>
+                  {showDelegated ? delegatedList.map((s) => (
+                    <ResumeCard key={`${s.tool}:${s.sessionId}`} session={s} selected={selected?.sessionId === s.sessionId && selected.tool === s.tool} onPick={() => setSelected(s)} disabled={busy} />
+                  )) : null}
+                </section>
+              ) : null}
             </div>
           ) : (
             <div className="resume-grouped">

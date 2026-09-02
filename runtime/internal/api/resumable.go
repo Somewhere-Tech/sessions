@@ -24,16 +24,28 @@ type resumableListing struct {
 // individual Sessions runtimes are continuation-chain evidence, not duplicate
 // conversations.
 func (s *Server) resumableConversations() resumableListing {
-	// History degrades one row at a time and returns a nil error
-	// unconditionally; there is no wholesale failure to propagate.
-	history, _ := s.integrationEndpoints.History(s.registry.List(true))
-	// History has already populated the provider scan cache. Reuse it so the
-	// Resume dialog does not wait for a second full filesystem traversal.
+	// The Resume view shows titles, folders, and recency, never message
+	// counts, so it takes the cheap listing. The exact listing parses every
+	// transcript whose file changed, and a live conversation changes every
+	// few seconds; on a real corpus that made each open of the Resume dialog
+	// re-read gigabytes and take ten seconds, while this listing takes tens of
+	// milliseconds once its per-file cache is warm. Rows degrade one at a
+	// time and the error is nil unconditionally.
+	sessions, _ := s.integrationEndpoints.SearchSessions(s.registry.List(true))
+	unreadable, skipped := 0, 0
+	for _, session := range sessions {
+		if session.Unreadable {
+			unreadable++
+		}
+		skipped += session.SkippedRecords
+	}
+	// The listing has already populated the provider scan cache. Reuse it so
+	// the Resume dialog does not wait for a second full filesystem traversal.
 	scanned := s.integrationEndpoints.ResumableProviderConversations()
 	return resumableListing{
-		Sessions:           mergeResumableConversations(scanned, history.Sessions),
-		UnreadableSessions: history.UnreadableSessions,
-		SkippedRecords:     history.SkippedRecords,
+		Sessions:           mergeResumableConversations(scanned, sessions),
+		UnreadableSessions: unreadable,
+		SkippedRecords:     skipped,
 	}
 }
 
@@ -75,17 +87,32 @@ func mergeResumableConversations(
 				Runs: []watch.ResumableRun{{
 					SessionID: source.ID, Name: source.Name, StartedAt: source.CreatedAt,
 					LastActivityAt: source.LastActivityAt, Machine: source.Machine,
-					ReopenedAs: source.ReopenedAs, ResumedFrom: source.ResumedFrom,
+					CreatorKind: source.CreatorKind,
+					ReopenedAs:  source.ReopenedAs, ResumedFrom: source.ResumedFrom,
 				}},
 			}
 			continue
 		}
 		key := resumableIdentity(tool, source.ProviderSessionID)
 		session := byIdentity[key]
-		if session == nil {
-			if !source.PromptHistoryOnly {
+		if session == nil && !source.PromptHistoryOnly {
+			// The provider's own file is not on this machine (pruned, moved, or
+			// written under another provider home), but Sessions kept its own
+			// copy and can resume from it. Dropping the row here made a
+			// conversation Sessions ran disappear from Resume while History
+			// still listed it.
+			if !source.ConversationAvailable || source.External {
 				continue
 			}
+			session = &watch.ResumableSession{
+				SessionID: source.ProviderSessionID, Tool: tool, Origin: "Sessions copy",
+				Title: source.Name, HistoryID: source.ID, Cwd: source.CWD,
+				ModifiedAt: float64(source.LastActivityAt), FirstUserMessage: source.Name,
+				TranscriptRecovery: true,
+			}
+			byIdentity[key] = session
+		}
+		if session == nil {
 			session = &watch.ResumableSession{
 				SessionID: source.ProviderSessionID, Tool: tool,
 				Origin: "Claude prompt index", Title: source.Name,
@@ -127,7 +154,8 @@ func mergeResumableConversations(
 		session.Runs = append(session.Runs, watch.ResumableRun{
 			SessionID: source.ID, Name: source.Name, StartedAt: source.CreatedAt,
 			LastActivityAt: source.LastActivityAt, Machine: source.Machine,
-			ReopenedAs: source.ReopenedAs, ResumedFrom: source.ResumedFrom,
+			CreatorKind: source.CreatorKind,
+			ReopenedAs:  source.ReopenedAs, ResumedFrom: source.ResumedFrom,
 			MovedToEndpoint: source.MovedToEndpoint, MovedToSessionID: source.MovedToSessionID,
 			MovedFromEndpoint: source.MovedFromEndpoint, MovedFromSessionID: source.MovedFromSessionID,
 		})

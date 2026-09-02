@@ -39,8 +39,12 @@ var (
 	selectedChoiceRE         = regexp.MustCompile(`^\s*[❯›]\s+\S`)
 	otherChoiceRE            = regexp.MustCompile(`(?i)^\s*(?:[○◯●◉]|\[[ x]\])\s+\S`)
 	errorRE                  = regexp.MustCompile(`(?i)\b(?:error|failed|exception|panic|traceback|fatal)\b`)
-	benignErrorRE            = regexp.MustCompile(`(?i)\b(?:0\s+(?:errors?|fail(?:ed|ures?)?)|no\s+(?:errors?|failures?))\b`)
-	resolutionRE             = regexp.MustCompile(`(?i)\b(?:resolved|recovered|fixed|succeeded|successful|passed|completed|all checks pass|done)\b`)
+	// A provider warning is not a failed turn. Codex prints "⚠ MCP startup
+	// incomplete (failed: name)" when an optional MCP server is down and then
+	// answers normally; treating that line as the outcome reported a completed
+	// turn as failed.
+	benignErrorRE = regexp.MustCompile(`(?i)\b(?:0\s+(?:errors?|fail(?:ed|ures?)?)|no\s+(?:errors?|failures?))\b|^\s*⚠|\bMCP (?:startup|client|server)\b`)
+	resolutionRE  = regexp.MustCompile(`(?i)\b(?:resolved|recovered|fixed|succeeded|successful|passed|completed|all checks pass|done)\b`)
 
 	workingSpinnerRE = regexp.MustCompile(`(?:…|\.\.\.)\s*\(\s*\d+\s*[hms]`)
 	workingFooterRE  = regexp.MustCompile(`(?i)[·•∙]\s*esc\s+to\s+interrupt`)

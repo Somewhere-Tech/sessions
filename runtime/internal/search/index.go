@@ -39,6 +39,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_v4 USING fts5(
     text, tokenize='porter unicode61'
 );
 CREATE TABLE IF NOT EXISTS session_fingerprint_v4 (session_id TEXT PRIMARY KEY, fp TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS session_progress_v4 (
+    session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL, prefix_fp TEXT NOT NULL
+);
 `
 
 const searchIndexVersion = "transcript-v6"
@@ -315,7 +318,23 @@ func refreshIndexedSession(ctx context.Context, db *sql.DB, session rankedSessio
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("read search index fingerprint for %s: %w", session.history.ID, err)
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM messages_v4 WHERE session_id = ?", session.history.ID); err != nil {
+	// A live conversation grows every few seconds, and re-inserting its whole
+	// transcript on every search made each search cost as much as indexing
+	// the conversation from scratch. Transcripts are append-only, so when the
+	// rows already indexed are still the prefix of what the transcript holds
+	// now, only the new messages are inserted. Any change to the prefix or to
+	// the session's own metadata (which every row carries) rebuilds it.
+	firstIndex := 0
+	var indexedCount int
+	var indexedPrefix string
+	err = tx.QueryRowContext(ctx, "SELECT message_count, prefix_fp FROM session_progress_v4 WHERE session_id = ?", session.history.ID).Scan(&indexedCount, &indexedPrefix)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read search index progress for %s: %w", session.history.ID, err)
+	}
+	if err == nil && indexedCount > 0 && indexedCount <= len(messages) &&
+		indexedPrefix == transcriptPrefixFingerprint(session, messages[:indexedCount]) {
+		firstIndex = indexedCount
+	} else if _, err := tx.ExecContext(ctx, "DELETE FROM messages_v4 WHERE session_id = ?", session.history.ID); err != nil {
 		return fmt.Errorf("clear search index session %s: %w", session.history.ID, err)
 	}
 	insert, err := tx.PrepareContext(ctx, `
@@ -327,7 +346,8 @@ INSERT INTO messages_v4(
 		return fmt.Errorf("prepare search index messages for %s: %w", session.history.ID, err)
 	}
 	defer insert.Close()
-	for index, message := range messages {
+	for index := firstIndex; index < len(messages); index++ {
+		message := messages[index]
 		var timestamp any
 		var timestampMS any
 		if message.Timestamp != nil {
@@ -349,10 +369,24 @@ INSERT INTO session_fingerprint_v4(session_id, fp) VALUES (?, ?)
 ON CONFLICT(session_id) DO UPDATE SET fp = excluded.fp`, session.history.ID, fingerprint); err != nil {
 		return fmt.Errorf("write search index fingerprint for %s: %w", session.history.ID, err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO session_progress_v4(session_id, message_count, prefix_fp) VALUES (?, ?, ?)
+ON CONFLICT(session_id) DO UPDATE SET message_count = excluded.message_count, prefix_fp = excluded.prefix_fp`,
+		session.history.ID, len(messages), transcriptPrefixFingerprint(session, messages)); err != nil {
+		return fmt.Errorf("write search index progress for %s: %w", session.history.ID, err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit search index refresh for %s: %w", session.history.ID, err)
 	}
 	return nil
+}
+
+// transcriptPrefixFingerprint identifies what the indexed rows for a session
+// say: the session metadata stored on every row plus each message. Unlike the
+// source fingerprint it does not include the file's size or mtime, so it can
+// be recomputed over the first N messages of a longer transcript.
+func transcriptPrefixFingerprint(session rankedSession, messages []integrations.TranscriptMessage) string {
+	return transcriptFingerprint(session, messages)
 }
 
 func transcriptFingerprint(session rankedSession, messages []integrations.TranscriptMessage) string {
@@ -401,6 +435,9 @@ func removeIndexedSession(ctx context.Context, db *sql.DB, sessionID string) err
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, "DELETE FROM messages_v4 WHERE session_id = ?", sessionID); err != nil {
 		return fmt.Errorf("clear stale search index session %s: %w", sessionID, err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM session_progress_v4 WHERE session_id = ?", sessionID); err != nil {
+		return fmt.Errorf("clear search index progress for %s: %w", sessionID, err)
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM session_fingerprint_v4 WHERE session_id = ?", sessionID); err != nil {
 		return fmt.Errorf("clear stale search index fingerprint %s: %w", sessionID, err)

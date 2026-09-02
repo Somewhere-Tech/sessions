@@ -41,8 +41,12 @@ type ResumableSession struct {
 }
 
 type ResumableRun struct {
-	SessionID          string `json:"sessionId"`
-	Name               string `json:"name,omitempty"`
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name,omitempty"`
+	// CreatorKind is who started this runtime: "user" for a person, "session"
+	// for a lane created by another lane. The Resume picker uses it to keep a
+	// person's own conversations ahead of delegated work.
+	CreatorKind        string `json:"creatorKind,omitempty"`
 	StartedAt          int64  `json:"startedAt"`
 	LastActivityAt     int64  `json:"lastActivityAt"`
 	Machine            string `json:"machine,omitempty"`

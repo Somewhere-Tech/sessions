@@ -395,6 +395,8 @@ export interface ResumableSession {
 export interface ResumableRun {
   sessionId: string;
   name?: string;
+  // "user" for a person, "session" for a lane started by another lane.
+  creatorKind?: string;
   startedAt: number;
   lastActivityAt: number;
   machine?: string;

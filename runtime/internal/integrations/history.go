@@ -227,6 +227,17 @@ func (h *HistoryStore) countMessages(
 		return count, skipped, err == nil, err
 	case countCached:
 		count, skipped, ok := h.cachedMessageCount(path, info)
+		if !ok {
+			// Nothing is parsed in this mode, but a transcript that cannot be
+			// opened must still degrade its row: a Resume list that quietly
+			// drops an unreadable conversation looks identical to one where
+			// the conversation never existed. One open, no read.
+			file, err := os.Open(path)
+			if err != nil {
+				return 0, 0, false, err
+			}
+			_ = file.Close()
+		}
 		return count, skipped, ok, nil
 	default:
 		return 0, 0, false, nil
