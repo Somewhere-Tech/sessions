@@ -144,6 +144,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions team", "sessions team 0123abcd", "sessions --json team 0123abcd"}, run: (*app).cmdTeam,
 	},
 	{
+		name: "fanout", usage: "fanout [--with claude,codex] [--name N] [--cwd D] [--timeout D] [--idle D] [--no-wait] [--no-worktree] -- <request...>",
+		summary: "give one request to a lane per provider and join them", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Start one lane per installed provider with the same request and wait for all of them, so a change can be checked by an agent from each provider in one step. --with picks the providers; the default is every installed one. Run from inside a lane, the new lanes are its delegated children (autonomous, each in its own worktree unless --no-worktree); from a shell they are your own sessions. --no-wait prints the lanes and returns; otherwise the command joins them like `sessions wait --all --summary` and reports each lane's last line. Every lane keeps running afterwards and can be opened, questioned, or ended like any other.",
+		examples: []string{"sessions fanout -- review the diff on this branch and list any bug you are sure about", "sessions fanout --with codex --no-wait -- run the test suite and report failures", "sessions --json fanout --timeout 20m -- summarize what changed in src/"}, run: (*app).cmdFanout,
+	},
+	{
 		name: "approve", usage: "approve <session-id> [--deny | --for-session]",
 		summary: "answer the permission a Rich lane is waiting on", group: dailyCommandGroup, localJSON: true,
 		longHelp: "A lane that inherits your permissions instead of running on its own asks before it runs a command, changes files, or takes more access. The request shows as the lane's needs-you line (`sessions ls`, `sessions team`, the app) and the lane waits until it is answered. `approve` allows it once; --for-session allows the same kind of request for the rest of the lane's session; --deny refuses and lets the lane continue without it. Run from inside a manager lane, the decision is attributed to that lane in the worker's transcript.",

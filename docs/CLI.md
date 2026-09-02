@@ -55,6 +55,7 @@ Daily workflows:
   list                     list agent sessions and headless lanes
   lanes                    list headless lanes
   team                     show the lanes a manager delegated and their state
+  fanout                   give one request to a lane per provider and join them
   approve                  answer the permission a Rich lane is waiting on
   projects                 list or name the projects sessions are grouped under
   send                     send text and Enter to a session
@@ -523,6 +524,24 @@ Examples:
   sessions team
   sessions team 0123abcd
   sessions --json team 0123abcd
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions fanout`
+
+```text
+Usage:
+  sessions fanout [--with claude,codex] [--name N] [--cwd D] [--timeout D] [--idle D] [--no-wait] [--no-worktree] -- <request...>
+
+give one request to a lane per provider and join them
+
+Start one lane per installed provider with the same request and wait for all of them, so a change can be checked by an agent from each provider in one step. --with picks the providers; the default is every installed one. Run from inside a lane, the new lanes are its delegated children (autonomous, each in its own worktree unless --no-worktree); from a shell they are your own sessions. --no-wait prints the lanes and returns; otherwise the command joins them like `sessions wait --all --summary` and reports each lane's last line. Every lane keeps running afterwards and can be opened, questioned, or ended like any other.
+
+Examples:
+  sessions fanout -- review the diff on this branch and list any bug you are sure about
+  sessions fanout --with codex --no-wait -- run the test suite and report failures
+  sessions --json fanout --timeout 20m -- summarize what changed in src/
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
