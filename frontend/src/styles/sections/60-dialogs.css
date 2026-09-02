@@ -848,3 +848,13 @@ select.field-input {
   gap: 8px;
   margin-top: 4px;
 }
+
+/* Why a conversation from another machine is not in the Resume list. */
+.resume-machines-note {
+  margin: 0;
+  padding: 6px 20px 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-dim);
+}
+.resume-machines-note.is-offline { color: var(--warn, #e9b44c); }

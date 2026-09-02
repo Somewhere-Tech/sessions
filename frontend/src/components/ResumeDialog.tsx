@@ -13,6 +13,8 @@ import {
 import { getCwdLabel } from '../lib/tabLabels';
 import { providerConversationId } from '../lib/sessionStatus';
 import { ProviderBadge } from './ProviderBadge';
+import { ResumeMachinesNote, resumeMachinesLine } from './ResumeMachinesNote';
+import { useOtherMachines } from '../hooks/useOtherMachines';
 
 // Dedicated resume picker — opened from an ended session or New Session
 // (separate from "+ New session"). The old design tucked resume inside
@@ -128,6 +130,7 @@ export function ResumeDialog({
   const [selected, setSelected] = useState<ResumableSession | null>(null);
   const [destinationProvider, setDestinationProvider] = useState<'claude' | 'codex'>('claude');
   const [runtimeMode, setRuntimeMode] = useState<'rich' | 'terminal'>('terminal');
+  const otherMachines = useOtherMachines(true);
   const preferredDestinationApplied = useRef(false);
   const preferredRuntimeApplied = useRef(false);
 
@@ -438,7 +441,7 @@ export function ResumeDialog({
                   ? `No ${providerFilter === 'all' ? 'chats' : providerFilter === 'claude' ? 'Claude chats' : 'Codex chats'} match "${query.trim()}".`
                   : openCount > 0 && (resumable?.length ?? 0) === openCount
                     ? 'All resumable conversations are already open in Sessions.'
-                    : 'No prior Claude or Codex conversations found on this Mac. Conversations on your other machines are listed in Fleet.'}
+                    : `No prior Claude or Codex conversations found on this Mac. ${resumeMachinesLine(otherMachines) ?? ''}`.trim()}
               </p>
               <button
                 type="button"
@@ -525,6 +528,7 @@ export function ResumeDialog({
             )}
           </div>
         ) : null}
+        {flatList.length > 0 || delegatedList.length > 0 ? <ResumeMachinesNote machines={otherMachines} /> : null}
         <footer className="resume-dialog-foot">
           <button type="button" className="btn btn-ghost" onClick={onStartNew} disabled={busy}>
             + New session instead
