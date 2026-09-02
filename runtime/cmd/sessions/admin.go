@@ -358,10 +358,3 @@ func outputOrError(output []byte, err error) string {
 	}
 	return "unknown error"
 }
-
-func (a *app) cmdDeploy(args []string) error {
-	if len(args) != 0 {
-		return fail(1, "usage: sessions deploy")
-	}
-	return fail(2, "sessions deploy was retired with the Node daemon; no changes were made. Sessions.app is the macOS install/update path. See docs/RELEASE.md and docs/NATIVE_APP.md in the source repository")
-}

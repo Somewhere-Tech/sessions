@@ -94,7 +94,6 @@ Models and interactive:
 Admin/operational:
   install                  install and start the development daemon
   uninstall                stop and remove the development daemon
-  deploy                   explain the retired Node deploy path
   update                   securely update Sessions.app
   pair                     pair a device on the same LAN
   devices                  list or revoke paired devices
@@ -1211,22 +1210,6 @@ Stop and remove the development sessionsd macOS LaunchAgent.
 
 Examples:
   sessions uninstall
-
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
-```
-
-## `sessions deploy`
-
-```text
-Usage:
-  sessions deploy
-
-explain the retired Node deploy path
-
-The mutating Node-daemon deploy path is retired. Sessions.app is the macOS release and update vehicle; this command exits without changing files, services, or sessions and points operators to the current release documentation.
-
-Examples:
-  sessions deploy
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

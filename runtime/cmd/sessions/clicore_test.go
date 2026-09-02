@@ -227,18 +227,6 @@ func TestDeclarativeHelpIsCompleteDailyFirstAndSuccessful(t *testing.T) {
 	}
 }
 
-func TestDeployIsRetiredAndNonMutating(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"deploy"}, strings.NewReader(""), &stdout, &stderr)
-	if code != 2 {
-		t.Fatalf("deploy exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "retired with the Node daemon") || !strings.Contains(stderr.String(), "no changes were made") {
-		t.Fatalf("deploy stdout=%q stderr=%q", stdout.String(), stderr.String())
-	}
-}
-
 func TestRunWaitPropagatesExitAndOptionallyPrintsOutput(t *testing.T) {
 	const laneID = "00000000-0000-4000-8000-000000000055"
 	tests := []struct {

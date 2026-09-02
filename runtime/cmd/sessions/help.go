@@ -355,12 +355,6 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions uninstall"}, run: (*app).cmdUninstall,
 	},
 	{
-		name: "deploy", usage: "deploy",
-		summary: "explain the retired Node deploy path", group: adminCommandGroup,
-		longHelp: "The mutating Node-daemon deploy path is retired. Sessions.app is the macOS release and update vehicle; this command exits without changing files, services, or sessions and points operators to the current release documentation.",
-		examples: []string{"sessions deploy"}, run: (*app).cmdDeploy,
-	},
-	{
 		name: "update", usage: "update [--check]",
 		summary: "securely update Sessions.app", group: adminCommandGroup, localJSON: true,
 		longHelp: "Check or install the latest macOS Sessions release. The updater accepts no URL or key overrides: it fetches only the public Somewhere release manifest, requires the pinned Minisign key, validates the exact immutable GitHub artifact path, and verifies the Developer ID and notarization before an atomic app swap. Only the Sessions UI is restarted; sessionsd and runners are never stopped.",
