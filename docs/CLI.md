@@ -302,14 +302,15 @@ Examples:
 
 ```text
 Usage:
-  sessions worktrees [clean [--dry-run]]
+  sessions worktrees [--all | clean [--dry-run]]
 
 list or safely clean Sessions-created worktrees
 
-List worktrees recorded in the Sessions ledger with dirty, merge, and session state. clean removes only worktrees whose session has exited, whose tree is clean, and whose branch is fully merged into its recorded base; every other worktree is skipped with a reason. --dry-run shows the plan without mutation. There is no force option, and killing a session never cleans its worktree automatically.
+List worktrees recorded in the Sessions ledger with dirty, merge, and session state. Worktrees successfully removed by clean are omitted by default; --all includes their durable cleaned records. clean removes only worktrees whose session has exited, whose tree is clean, and whose branch is fully merged into its recorded base; every other worktree is skipped with a reason. --dry-run shows the plan without mutation. There is no force option, and killing a session never cleans its worktree automatically.
 
 Examples:
   sessions worktrees
+  sessions worktrees --all
   sessions --json worktrees
   sessions worktrees clean --dry-run
   sessions worktrees clean

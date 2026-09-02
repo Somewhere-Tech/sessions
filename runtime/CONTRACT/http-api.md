@@ -536,13 +536,15 @@ without changing Sessions itself.
 ### `GET /api/worktrees`
 
 Auth required. Returns worktrees created by Sessions according to ledger
-provenance, never arbitrary Git worktrees. Each result includes `session`,
-`session_name`, `worktree_path`, `branch`, `base`, `source_repo`, `tree_state`,
-`dirty`, `merged_into_base`, `session_state`, `exists`, and an optional
-`inspection_error`:
+provenance, never arbitrary Git worktrees. Successfully cleaned worktrees are
+omitted unless the optional `all=true` query is present. Each result includes
+`session`, `session_name`, `worktree_path`, `branch`, `base`, `source_repo`,
+`tree_state`, `dirty`, `merged_into_base`, `session_state`, `exists`, `cleaned`,
+`branch_removed`, and an optional `inspection_error`. Retained cleaned rows also
+include `cleaned_at` as Unix milliseconds; their `tree_state` is `cleaned`:
 
 ```json
-{"worktrees":[]}
+{"worktrees":[{"session":"<Sessions id>","session_name":"parser","worktree_path":"/work/project-wt/parser","branch":"sessions/parser","base":"main","source_repo":"/work/project","tree_state":"cleaned","dirty":false,"merged_into_base":true,"session_state":"exited","exists":false,"cleaned":true,"cleaned_at":1788389151693,"branch_removed":true}]}
 ```
 
 The route is implemented in
@@ -566,6 +568,11 @@ refused operations return `action:"skipped"` with a `reason`. Dry-run returns
 There is no force option, and session kill does not call this route
 ([`internal/session/worktrees.go`](../internal/session/worktrees.go),
 [`internal/session/manager.go`](../internal/session/manager.go)).
+Before Git mutation, cleanup records an append-only `worktree_clean_requested`
+fact after the final safety check. After removal it records `worktree_cleaned`,
+so the row remains auditable through `GET /api/worktrees?all=true` but no longer
+clutters the default listing. An interrupted cleanup intent is reconciled by a
+later clean without weakening the original safety decision.
 
 ### `GET /api/projects`
 

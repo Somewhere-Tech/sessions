@@ -94,6 +94,7 @@ type ManagerOptions struct {
 	Boundaries         ledger.BoundaryWriter
 	Observations       ledger.ObservationWriter
 	Retention          ledger.RetentionWriter
+	Worktrees          ledger.WorktreeWriter
 	Attributions       ledger.AttributionWriter
 	LedgerReader       LedgerReader
 	UsageRecorder      UsageRecorder
@@ -161,6 +162,7 @@ type Manager struct {
 	boundaries   ledger.BoundaryWriter
 	observations ledger.ObservationWriter
 	retention    ledger.RetentionWriter
+	worktrees    ledger.WorktreeWriter
 	attributions ledger.AttributionWriter
 	ledgerReader LedgerReader
 	usage        UsageRecorder
@@ -301,7 +303,7 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 		push: NewPushService(root), guard: MassKillGuard{Limit: selected.MassKillLimit},
 		options: selected, started: time.Now(), ctx: ctx, cancel: cancel,
 		boundaries: selected.Boundaries, observations: selected.Observations,
-		retention: selected.Retention, attributions: selected.Attributions,
+		retention: selected.Retention, worktrees: selected.Worktrees, attributions: selected.Attributions,
 		ledgerReader: selected.LedgerReader,
 		usage:        selected.UsageRecorder,
 		runtimes:     make(map[string]*runtimeSession), hooks: loadGlobalHooks(config.GlobalHooksPath),

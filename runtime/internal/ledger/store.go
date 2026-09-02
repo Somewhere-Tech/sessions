@@ -65,6 +65,7 @@ type observationWriter struct{ store *Store }
 type migrationWriter struct{ store *Store }
 type retentionWriter struct{ store *Store }
 type attributionWriter struct{ store *Store }
+type worktreeWriter struct{ store *Store }
 
 // DefaultPath resolves the ledger outside Sessions' runner state directory.
 //
@@ -255,6 +256,8 @@ func (s *Store) Migrations() MigrationWriter { return migrationWriter{store: s} 
 func (s *Store) Retention() RetentionWriter { return retentionWriter{store: s} }
 
 func (s *Store) Attributions() AttributionWriter { return attributionWriter{store: s} }
+
+func (s *Store) Worktrees() WorktreeWriter { return worktreeWriter{store: s} }
 
 func (w boundaryWriter) RecordCreated(ctx context.Context, value Created) error {
 	if value.LaneID == "" {
@@ -580,6 +583,45 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 	return nil
 }
 
+func (w worktreeWriter) RecordWorktreeCleanRequested(ctx context.Context, value WorktreeCleanRequested) error {
+	if err := validateWorktreeCleanIdentity(value.WorktreePath, value.Branch); err != nil {
+		return fmt.Errorf("record worktree clean requested: %w", err)
+	}
+	if strings.TrimSpace(value.BranchHead) == "" {
+		return errors.New("record worktree clean requested: branch head is required")
+	}
+	if value.Actor == "" {
+		value.Actor = ActorUser
+	}
+	payload := worktreeCleanRequestedPayload{
+		WorktreePath: value.WorktreePath, Branch: value.Branch, BranchHead: value.BranchHead,
+	}
+	return w.store.append(ctx, EventWorktreeCleanRequested, value.Meta, payload, false)
+}
+
+func (w worktreeWriter) RecordWorktreeCleaned(ctx context.Context, value WorktreeCleaned) error {
+	if err := validateWorktreeCleanIdentity(value.WorktreePath, value.Branch); err != nil {
+		return fmt.Errorf("record worktree cleaned: %w", err)
+	}
+	if value.Actor == "" {
+		value.Actor = ActorDaemon
+	}
+	payload := worktreeCleanedPayload{
+		WorktreePath: value.WorktreePath, Branch: value.Branch, BranchRemoved: value.BranchRemoved,
+	}
+	return w.store.append(ctx, EventWorktreeCleaned, value.Meta, payload, false)
+}
+
+func validateWorktreeCleanIdentity(path, branch string) error {
+	if !filepath.IsAbs(path) {
+		return errors.New("worktree path must be absolute")
+	}
+	if strings.TrimSpace(branch) == "" {
+		return errors.New("branch is required")
+	}
+	return nil
+}
+
 func (s *Store) observe(ctx context.Context, kind EventType, meta Meta, actor Actor, payload any) error {
 	if meta.Actor == "" {
 		meta.Actor = actor
@@ -734,6 +776,18 @@ type messageRelayedPayload struct {
 	ContentBytes     int           `json:"content_bytes"`
 	NormalizedSHA256 string        `json:"normalized_sha256"`
 	NormalizedBytes  int           `json:"normalized_bytes"`
+}
+
+type worktreeCleanRequestedPayload struct {
+	WorktreePath string `json:"worktree_path"`
+	Branch       string `json:"branch"`
+	BranchHead   string `json:"branch_head"`
+}
+
+type worktreeCleanedPayload struct {
+	WorktreePath  string `json:"worktree_path"`
+	Branch        string `json:"branch"`
+	BranchRemoved bool   `json:"branch_removed"`
 }
 
 // DecodeMessageRelayed validates and expands one durable attribution event.

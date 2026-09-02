@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 )
 
 type createdWorktree struct {
@@ -36,6 +38,12 @@ type WorktreeStatus struct {
 	SessionState    string `json:"session_state"`
 	InspectionError string `json:"inspection_error,omitempty"`
 	Exists          bool   `json:"exists"`
+	Cleaned         bool   `json:"cleaned"`
+	CleanedAtMS     int64  `json:"cleaned_at,omitempty"`
+	BranchRemoved   bool   `json:"branch_removed"`
+
+	cleanRequested  bool
+	cleanBranchHead string
 }
 
 type WorktreeCleanResult struct {
@@ -262,7 +270,7 @@ func deleteUnadvancedWorktreeBranch(ctx context.Context, worktree createdWorktre
 	return nil
 }
 
-func (m *Manager) Worktrees(ctx context.Context) ([]WorktreeStatus, error) {
+func (m *Manager) Worktrees(ctx context.Context, includeCleaned bool) ([]WorktreeStatus, error) {
 	states, err := m.ledgerStates(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read worktree provenance: %w", err)
@@ -272,10 +280,14 @@ func (m *Manager) Worktrees(ctx context.Context) ([]WorktreeStatus, error) {
 		if lane.WorktreePath == "" {
 			continue
 		}
+		if lane.WorktreeCleaned && !includeCleaned {
+			continue
+		}
 		status := WorktreeStatus{
 			SessionID: lane.LaneID, SessionName: lane.Name,
 			WorktreePath: lane.WorktreePath, Branch: lane.Branch, Base: lane.Base, SourceRepo: lane.SourceRepo,
 			SessionState: "live", TreeState: "missing",
+			cleanRequested: lane.WorktreeCleanRequested, cleanBranchHead: lane.WorktreeCleanBranchHead,
 		}
 		// Kill intent is written before process termination and therefore is
 		// not evidence that a session is dead. Cleanup requires an observed
@@ -289,6 +301,15 @@ func (m *Manager) Worktrees(ctx context.Context) ([]WorktreeStatus, error) {
 		}
 		if closed {
 			status.SessionState = "exited"
+		}
+		if lane.WorktreeCleaned {
+			status.TreeState = "cleaned"
+			status.MergedIntoBase = true
+			status.Cleaned = true
+			status.CleanedAtMS = lane.WorktreeCleanedAtMS
+			status.BranchRemoved = lane.WorktreeBranchRemoved
+			result = append(result, status)
+			continue
 		}
 		inspectWorktree(ctx, &status)
 		result = append(result, status)
@@ -360,7 +381,7 @@ func inspectWorktree(ctx context.Context, status *WorktreeStatus) {
 }
 
 func (m *Manager) CleanWorktrees(ctx context.Context, dryRun bool) ([]WorktreeCleanResult, error) {
-	worktrees, err := m.Worktrees(ctx)
+	worktrees, err := m.Worktrees(ctx, false)
 	if err != nil {
 		return nil, err
 	}
@@ -372,6 +393,8 @@ func (m *Manager) CleanWorktrees(ctx context.Context, dryRun bool) ([]WorktreeCl
 			result.Reason = "session is live"
 		case worktree.InspectionError != "":
 			result.Reason = worktree.InspectionError
+		case !worktree.Exists && worktree.cleanRequested && !dryRun:
+			m.finishRequestedWorktreeClean(ctx, &result, true)
 		case !worktree.Exists:
 			result.Reason = "worktree path is missing"
 		case worktree.Dirty:
@@ -381,10 +404,16 @@ func (m *Manager) CleanWorktrees(ctx context.Context, dryRun bool) ([]WorktreeCl
 		case dryRun:
 			result.Action = "would-remove"
 		default:
+			if m.worktrees == nil {
+				result.Reason = "worktree cleanup ledger is unavailable; worktree was left untouched"
+				break
+			}
 			fresh := worktree
 			fresh.Dirty = false
 			fresh.MergedIntoBase = false
 			fresh.InspectionError = ""
+			fresh.Exists = false
+			fresh.TreeState = "missing"
 			inspectWorktree(ctx, &fresh)
 			if fresh.InspectionError != "" {
 				result.Reason = "final safety check: " + fresh.InspectionError
@@ -392,6 +421,10 @@ func (m *Manager) CleanWorktrees(ctx context.Context, dryRun bool) ([]WorktreeCl
 			}
 			if fresh.Dirty {
 				result.Reason = "final safety check: worktree is DIRTY"
+				break
+			}
+			if !fresh.Exists {
+				result.Reason = "final safety check: worktree path is missing"
 				break
 			}
 			if !fresh.MergedIntoBase {
@@ -404,23 +437,73 @@ func (m *Manager) CleanWorktrees(ctx context.Context, dryRun bool) ([]WorktreeCl
 				break
 			}
 			branchHead = strings.TrimSpace(branchHead)
+			if err := m.worktrees.RecordWorktreeCleanRequested(ctx, ledger.WorktreeCleanRequested{
+				Meta:         ledger.Meta{LaneID: fresh.SessionID, Actor: ledger.ActorUser},
+				WorktreePath: fresh.WorktreePath, Branch: fresh.Branch, BranchHead: branchHead,
+			}); err != nil {
+				result.Reason = "record cleanup intent before removal: " + err.Error()
+				break
+			}
 			if _, err := gitOutput(ctx, worktree.SourceRepo, "worktree", "remove", "--", worktree.WorktreePath); err != nil {
 				result.Reason = "git worktree remove refused: " + err.Error()
 				break
 			}
-			if _, err := gitOutput(ctx, worktree.SourceRepo, "branch", "-d", "--", worktree.Branch); err != nil {
-				// branch -d compares against the source checkout's HEAD when
-				// --base names a different ref. The explicit ancestry check above
-				// is the safety proof; expected-old makes deletion race-safe.
-				if _, updateErr := gitOutput(ctx, worktree.SourceRepo, "update-ref", "-d", "refs/heads/"+worktree.Branch, branchHead); updateErr != nil {
-					result.Action = "removed-worktree"
-					result.Reason = "worktree removed, but safe branch deletion was refused: " + updateErr.Error()
-					break
-				}
-			}
-			result.Action = "removed"
+			result.cleanRequested = true
+			result.cleanBranchHead = branchHead
+			m.finishRequestedWorktreeClean(ctx, &result, false)
 		}
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+func (m *Manager) finishRequestedWorktreeClean(ctx context.Context, result *WorktreeCleanResult, recovering bool) {
+	if m.worktrees == nil {
+		result.Reason = "worktree cleanup ledger is unavailable; rerun after restoring the ledger"
+		return
+	}
+	branchRemoved := true
+	if recovering {
+		branchExists, err := localBranchExists(ctx, result.SourceRepo, result.Branch)
+		if err != nil {
+			branchRemoved = false
+			result.Reason = "worktree was removed, but safe branch deletion was refused: " + err.Error()
+		} else if branchExists {
+			if _, err := gitOutput(ctx, result.SourceRepo, "update-ref", "-d", "refs/heads/"+result.Branch, result.cleanBranchHead); err != nil {
+				branchRemoved = false
+				result.Reason = "worktree was removed, but safe branch deletion was refused: " + err.Error()
+			}
+		}
+	} else if _, err := gitOutput(ctx, result.SourceRepo, "branch", "-d", "--", result.Branch); err != nil {
+		// branch -d compares against the source checkout's HEAD when
+		// --base names a different ref. The explicit ancestry check above
+		// is the safety proof; expected-old makes deletion race-safe.
+		if _, updateErr := gitOutput(ctx, result.SourceRepo, "update-ref", "-d", "refs/heads/"+result.Branch, result.cleanBranchHead); updateErr != nil {
+			branchRemoved = false
+			result.Reason = "worktree removed, but safe branch deletion was refused: " + updateErr.Error()
+		}
+	}
+	if err := m.worktrees.RecordWorktreeCleaned(ctx, ledger.WorktreeCleaned{
+		Meta:         ledger.Meta{LaneID: result.SessionID, Actor: ledger.ActorDaemon},
+		WorktreePath: result.WorktreePath, Branch: result.Branch, BranchRemoved: branchRemoved,
+	}); err != nil {
+		if result.Reason != "" {
+			result.Reason += "; "
+		}
+		result.Reason += "record cleanup completion: " + err.Error() + "; rerun `sessions worktrees clean` to reconcile"
+		result.Action = "removed-unrecorded"
+		return
+	}
+	result.Cleaned = true
+	result.TreeState = "cleaned"
+	result.Exists = false
+	result.BranchRemoved = branchRemoved
+	if !branchRemoved {
+		result.Action = "removed-worktree"
+	} else if recovering {
+		result.Action = "recorded-clean"
+		result.Reason = "worktree was already removed after cleanup was requested"
+	} else {
+		result.Action = "removed"
+	}
 }

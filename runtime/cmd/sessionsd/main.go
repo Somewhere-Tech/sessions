@@ -100,6 +100,7 @@ func main() {
 	manager := session.NewManager(config, state.NewPlatformLauncher(config), session.ManagerOptions{
 		Boundaries: ledgerStore.Boundaries(), Observations: ledgerStore.Observations(), LedgerReader: ledgerStore,
 		Retention:     ledgerStore.Retention(),
+		Worktrees:     ledgerStore.Worktrees(),
 		Attributions:  ledgerStore.Attributions(),
 		UsageRecorder: usageService,
 	})
