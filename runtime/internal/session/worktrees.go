@@ -176,10 +176,28 @@ func sanitizeWorktreeName(name string) string {
 	if slug == "" {
 		slug = "session"
 	}
+	if windowsReservedWorktreeName(slug) {
+		slug = "session-" + slug
+	}
 	if len(slug) > 48 {
 		slug = strings.TrimRight(slug[:48], "-")
 	}
 	return slug
+}
+
+// Windows resolves these basenames as devices even when they have an
+// extension. Keep Sessions-owned worktrees portable when a lane is created on
+// one platform and checked out or managed on another.
+func windowsReservedWorktreeName(name string) bool {
+	switch strings.ToLower(name) {
+	case "con", "prn", "aux", "nul":
+		return true
+	}
+	if len(name) == 4 && name[3] >= '1' && name[3] <= '9' {
+		prefix := strings.ToLower(name[:3])
+		return prefix == "com" || prefix == "lpt"
+	}
+	return false
 }
 
 func worktreeSuffix() (string, error) {
