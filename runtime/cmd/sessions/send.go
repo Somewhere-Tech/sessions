@@ -328,9 +328,6 @@ func firstValue(value map[string]any, keys ...string) any {
 // must never be interleaved with another agent's concurrent submission.
 func (a *app) submitComposer(inputPath, text, sourceSessionID, operationID string, timeout time.Duration) (deliveryReceipt, error) {
 	headers := make(http.Header)
-	if sourceSessionID == "" {
-		sourceSessionID = a.api.creatorSession
-	}
 	if sourceSessionID != "" {
 		headers.Set("X-Sessions-Creator-Session", sourceSessionID)
 	}
@@ -423,6 +420,7 @@ func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, _ bool,
 	if baseline == nil {
 		return sendResult{}, fail(1, "%s", unknownSessionMessage(id))
 	}
+	sourceSessionID = a.sourceSessionOnSelectedDaemon(sessions, sourceSessionID)
 	tool := toolOfSession(*baseline)
 	confirmable := isConfirmableTool(tool)
 	baseTimestamp := int64(0)
@@ -442,6 +440,28 @@ func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, _ bool,
 		return sendResult{}, fmt.Errorf("create message operation id: %w", err)
 	}
 	return a.sendAndConfirmOperation(id, text, timeout, sourceSessionID, operationID, baseTimestamp, baseNextIndex, tool, confirmable, inputPath)
+}
+
+// sourceSessionOnSelectedDaemon keeps inherited session identity scoped to the
+// daemon which owns it. A CLI running inside a real session may explicitly
+// target a scratch or remote daemon where that UUID has no ledger record; the
+// header is optional authorship metadata, so its absence there must not turn a
+// valid message into a failed delivery. An explicit --from has already been
+// resolved against the selected daemon and remains strict.
+func (a *app) sourceSessionOnSelectedDaemon(sessions []session, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	inherited := strings.TrimSpace(a.api.creatorSession)
+	if inherited == "" {
+		return ""
+	}
+	for _, current := range sessions {
+		if current.ID == inherited {
+			return inherited
+		}
+	}
+	return ""
 }
 
 func (a *app) sendAndConfirmOperation(
@@ -673,6 +693,7 @@ func (a *app) cmdSend(args []string) error {
 		if baseline == nil {
 			return fail(1, "%s", unknownSessionMessage(id))
 		}
+		sourceID = a.sourceSessionOnSelectedDaemon(sessions, sourceID)
 		baseTimestamp := int64(0)
 		if baseline.LastUserMessageAt != nil {
 			baseTimestamp = *baseline.LastUserMessageAt
