@@ -440,6 +440,7 @@ export function RemoteView({
                 trustChoice={trustChoice}
                 answer={sendRawInput ? answerControl : undefined}
                 onOpenTerminal={onOpenTerminal}
+                terminalAvailable={Boolean(terminalAvailable)}
               />
             ) : null}
           />
@@ -504,6 +505,7 @@ export function RemoteView({
             trustChoice={trustChoice}
             answer={sendRawInput ? answerControl : undefined}
             onOpenTerminal={onOpenTerminal}
+            terminalAvailable={Boolean(terminalAvailable)}
           />
         ) : null}
         {/* Sticky-anchor: pins the down-arrow to the right edge of the

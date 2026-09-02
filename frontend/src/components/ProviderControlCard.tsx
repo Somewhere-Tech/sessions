@@ -9,6 +9,9 @@ interface Props {
   // Sends raw keystrokes in order with a short gap so the TUI can redraw.
   answer?: (keys: string[]) => void;
   onOpenTerminal: () => void;
+  // Rich sessions have no terminal; a question from one is answered in the
+  // composer, so the card must not point at a terminal that does not exist.
+  terminalAvailable?: boolean;
 }
 
 // A provider control (Claude's folder-trust dialog, a picker, a confirmation)
@@ -16,9 +19,11 @@ interface Props {
 // showing. Typing a message into a control activates whichever option is
 // highlighted, so the daemon refuses sends while one is open and this card is
 // the way through.
-export function ProviderControlCard({ detail, blockingState, trustChoice, answer, onOpenTerminal }: Props) {
+export function ProviderControlCard({ detail, blockingState, trustChoice, answer, onOpenTerminal, terminalAvailable = true }: Props) {
   if (!detail && !blockingState) return null;
   const text = detail ?? blockingState?.description ?? 'The provider is waiting for a choice.';
+  // No terminal control was detected: the lane asked a question in prose.
+  const isQuestion = !blockingState && !answer;
   return (
     <div className="provider-control-card" role="group" aria-label="Provider control">
       <span className="provider-control-card-title">Needs you</span>
@@ -48,9 +53,13 @@ export function ProviderControlCard({ detail, blockingState, trustChoice, answer
           <button type="button" className="provider-control-card-action" onClick={() => answer(['\x1b'])}>Esc</button>
         </div>
       ) : null}
-      <button type="button" className="provider-control-card-terminal" onClick={onOpenTerminal}>
-        {answer ? 'Show the exact terminal' : 'Open Terminal view to respond'}
-      </button>
+      {isQuestion || !terminalAvailable ? (
+        <span className="provider-control-card-hint">Reply in the message box below.</span>
+      ) : (
+        <button type="button" className="provider-control-card-terminal" onClick={onOpenTerminal}>
+          {answer ? 'Show the exact terminal' : 'Open Terminal view to respond'}
+        </button>
+      )}
     </div>
   );
 }
