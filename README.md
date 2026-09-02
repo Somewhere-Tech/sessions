@@ -158,6 +158,7 @@ record whether the report came from an agent, direct use, or both.
 - [Conversation continuation and cross-provider behavior](docs/CONTINUATION.md)
 - [Open-source and private-service boundary](docs/OPEN_SOURCE_BOUNDARY.md)
 - [Product principles](docs/PRINCIPLES.md)
+- [Lanes: delegated work, approvals, hand-back](docs/LANES.md)
 - [Native app package and lifetime contract](docs/NATIVE_APP.md)
 - [Android client, pairing, and development build](docs/ANDROID.md)
 - [Broad public roadmap](ROADMAP.md)
