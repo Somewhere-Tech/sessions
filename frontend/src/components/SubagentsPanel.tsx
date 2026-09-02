@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchTeam, type TeamListing, type TeamMember } from '../api/sessionsd';
 import { classifySession } from '../lib/sessionStatus';
-import { subagentNeedsReview } from '../lib/workingSet';
+import { sessionActivityAt, subagentNeedsReview } from '../lib/workingSet';
 import { resolvedSessionLabel } from '../lib/tabLabels';
 import type { ApprovalDecision, SessionInfo } from '../types';
 import { normalizeProvider, ProviderMark } from './ProviderBadge';
@@ -39,10 +39,6 @@ function purpose(session: SessionInfo): string {
   if (summary) return summary;
   const workspace = session.cwd.split('/').filter(Boolean).pop();
   return workspace ? `Working in ${workspace}` : 'No purpose recorded yet.';
-}
-
-function activityAt(session: SessionInfo): number {
-  return Math.max(session.lastDataAt || 0, session.idleSince || 0, session.createdAt || 0);
 }
 
 // lastLine is what a lane most recently said or is waiting for, in one line.
@@ -94,7 +90,7 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
     const rank = (status: ReturnType<typeof classifySession>): number => (
       status.needsYou ? 0 : status.state === 'failed' ? 1 : status.state === 'working' ? 2 : status.finished ? 4 : 3
     );
-    return rank(leftStatus) - rank(rightStatus) || activityAt(right) - activityAt(left);
+    return rank(leftStatus) - rank(rightStatus) || sessionActivityAt(right) - sessionActivityAt(left);
   });
   const working = ordered.filter((session) => !session.exited && session.working).length;
   const needsYou = team?.needs_input ?? ordered.filter((session) => classifySession(session).needsYou).length;
@@ -201,13 +197,14 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
           const recentLine = teamMember ? teamLastLine(teamMember) : lastLine(session);
           const needsAttention = teamMember?.needs_you ?? status.needsYou;
           const provider = normalizeProvider(session.tool);
+          const activityLabel = relativeTime(sessionActivityAt(session));
           return (
             <article className={`subagent-card ${status.className}`} key={session.id}>
               <div className="subagent-card-head">
                 <span className={`subagent-status ${status.className}`} aria-hidden />
                 <div>
                   <strong>{index + 1}. {resolvedSessionLabel(session)}</strong>
-                  <small>{status.label}{relativeTime(activityAt(session)) ? ` · ${relativeTime(activityAt(session))}` : ''}</small>
+                  <small>{status.label}{activityLabel ? ` · ${activityLabel}` : ''}</small>
                 </div>
                 {provider ? <ProviderMark provider={provider} size={24} /> : <span className="subagent-shell" title="Shell">⌘</span>}
               </div>

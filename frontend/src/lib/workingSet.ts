@@ -151,12 +151,16 @@ export function isAgentLedChild(session: SessionInfo): boolean {
 
 export const SUBAGENT_REVIEW_AGE_MS = 24 * 60 * 60 * 1000;
 
+export function sessionActivityAt(session: SessionInfo): number {
+  return Math.max(session.lastDataAt || 0, session.idleSince || 0, session.createdAt || 0);
+}
+
 export function subagentNeedsReview(
   session: SessionInfo,
   now = Date.now(),
   age = SUBAGENT_REVIEW_AGE_MS
 ): boolean {
-  const activity = Math.max(session.lastDataAt || 0, session.idleSince || 0, session.createdAt || 0);
+  const activity = sessionActivityAt(session);
   return !session.exited && !session.working && activity > 0 && now - activity >= age;
 }
 
