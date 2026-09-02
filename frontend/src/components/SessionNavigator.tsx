@@ -25,6 +25,9 @@ import { MachineMark } from './MachineMark';
 import { ContinueElsewhereButton } from './ContinueElsewhereButton';
 import { serverDisplayName, useServers } from '../lib/servers';
 import { useFleetSessions, type FleetSessionSnapshot } from '../hooks/useFleetSessions';
+import { useProjects } from '../hooks/useProjects';
+import { buildInboxLayout } from '../lib/inboxSections';
+import { InboxSections } from './InboxSections';
 
 type PrimaryFilter = 'all' | 'needs' | 'working' | 'ended';
 type ProviderFilter = 'all' | 'claude' | 'codex' | 'shell';
@@ -348,6 +351,17 @@ export function SessionNavigator({
   };
 
   const filteredLiveSessions = liveSessions.filter(matches);
+  // Project membership comes from the daemon; the inbox groups the single
+  // machine's live rows by it and folds recent finished ones per project.
+  const projectLookup = useProjects(navigatorSessions.map((session) => session.id), !showingAllMachines);
+  const inboxLayout = useMemo(() => buildInboxLayout({
+    live: filteredLiveSessions,
+    ended: navigatorSessions.filter((session) => session.exited && matches(session)),
+    attention: sessions.filter((session) => !session.exited && matches(session)),
+    lastActivity,
+    projectFor: (session) => projectLookup.bySession.get(session.id) ?? null
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [filteredLiveSessions, navigatorSessions, sessions, projectLookup.bySession, primary, provider, project, date, query]);
   const filteredPinnedSessions = pinnedSessions.filter(matches);
   const filteredEnded = navigatorSessions
     .filter((session) => session.exited)
@@ -495,6 +509,10 @@ export function SessionNavigator({
     const parent = currentParentID ? sessions.find((candidate) => candidate.id === currentParentID) : null;
     const resumedFrom = session.resumedFrom ? sessions.find((candidate) => candidate.id === session.resumedFrom) : null;
     const label = resolvedSessionLabel(session);
+    // Lanes this session delegated are folded out of the list; the row keeps
+    // a compact rollup so a blocked lane is visible without opening anything.
+    const lanes = sessions.filter((candidate) => !candidate.exited && isAgentLedChild(candidate) && effectiveParentId(candidate) === session.id);
+    const lanesNeedingYou = lanes.filter(sessionNeedsYou).length;
     return (
       <div className="session-tree-node" key={session.id}>
         <div
@@ -529,6 +547,11 @@ export function SessionNavigator({
           {isPinned(session) ? <span className="manager-pin is-pinned" title="Pinned" aria-label="Pinned">📌</span> : null}
           <span className="session-nav-copy">
             <span className="session-nav-title">{label}</span>
+            {lanes.length > 0 ? (
+              <span className={`session-nav-rollup${lanesNeedingYou > 0 ? ' is-attention' : ''}`} title={`${lanes.length} delegated lane${lanes.length === 1 ? '' : 's'}`}>
+                {lanes.length} lane{lanes.length === 1 ? '' : 's'}{lanesNeedingYou > 0 ? ` · ${lanesNeedingYou} needs you` : ''}
+              </span>
+            ) : null}
             {end ? <span className={`session-nav-ended is-${end.tone}`}>{end.label}</span> : null}
             {resumedFrom ? <span className="session-nav-parent">Resumed from {resolvedSessionLabel(resumedFrom)}</span> : null}
             {endedFlat && parent ? <span className="session-nav-parent">Under {resolvedSessionLabel(parent)}</span> : null}
@@ -836,17 +859,20 @@ export function SessionNavigator({
           </button>
           {pinnedOpen ? filteredPinnedSessions.map((session) => renderNode(session)) : null}
         </div> : null}
-        {!showingAllMachines && primary !== 'ended' ? <div className="session-tree-group">
-          <button type="button" className="session-tree-group-head" onClick={() => setRunningOpen((current) => !current)}>
-            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Live</span><strong>{counts.liveGroup}</strong>
-          </button>
-          {runningOpen ? (
-            <>
-              {filteredLiveSessions.map((session) => renderNode(session))}
-              {filteredLiveSessions.length === 0 ? <div className="session-tree-empty is-compact">No matching live sessions.</div> : null}
-            </>
-          ) : null}
-        </div> : null}
+        {!showingAllMachines && primary !== 'ended' ? (
+          <InboxSections
+            layout={inboxLayout}
+            renderNode={renderNode}
+            onOpen={onOpen}
+            onShowAllNeedsYou={() => setPrimary('needs')}
+            folderOf={projectName}
+            relativeTime={relativeTime}
+            lastActivity={lastActivity}
+          />
+        ) : null}
+        {!showingAllMachines && primary !== 'ended' && filteredLiveSessions.length === 0 && inboxLayout.sections.length === 0 && !inboxLayout.other
+          ? <div className="session-tree-empty is-compact">No matching live sessions.</div>
+          : null}
         {!showingAllMachines && primary !== 'working' && primary !== 'needs' ? <div className="session-tree-group">
           <div className="session-tree-group-head">
             <button type="button" onClick={() => setEndedOpen((current) => !current)}><span className="session-group-disclosure"><DisclosureChevron open={endedOpen} /> Ended</span><strong>{visibleEnded.length}</strong></button>

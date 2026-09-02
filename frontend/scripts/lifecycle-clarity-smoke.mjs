@@ -71,7 +71,12 @@ assert.match(connection, /Can’t reach \$\{machine\}/);
 
 assert.match(navigator, /RECENTLY_ENDED_DAYS = 7/);
 assert.match(navigator, /RECENTLY_ENDED_LIMIT = 20/);
-assert.match(navigator, /DisclosureChevron open=\{runningOpen\} \/> Live/);
+// The single-machine body is organized by attention and project: a needs-you
+// strip, then one section per project, rendered by InboxSections from the
+// navigator's own row renderer. The old flat "Live" group is gone.
+assert.match(navigator, /<InboxSections/);
+assert.match(navigator, /layout=\{inboxLayout\}/);
+assert.doesNotMatch(navigator, /DisclosureChevron open=\{runningOpen\} \/> Live/);
 assert.match(navigator, /DisclosureChevron open=\{endedOpen\} \/> Ended/);
 assert.doesNotMatch(navigator, /> Later<|> Quiet<|Pin manager|Move to Later/);
 assert.doesNotMatch(navigator, /session-tree-toggle/);
@@ -86,7 +91,11 @@ assert.match(navigator, /Start linked session…/);
 assert.match(navigator, /Close tab <small>keeps running<\/small>/);
 assert.match(navigator, /filter\(\(session\) => !isAgentLedChild\(session\)\)/);
 assert.doesNotMatch(navigator, /className="session-helper-summary"/);
-assert.doesNotMatch(navigator, /session-nav-rollup/);
+// Lanes stay folded out of the list, but a manager row carries a compact
+// rollup (n lanes · n needs you) so a blocked lane is visible without opening
+// anything — the "compact status rollup" docs/PRINCIPLES.md describes.
+assert.match(navigator, /session-nav-rollup/);
+assert.match(navigator, /lanesNeedingYou > 0 \? ` · \$\{lanesNeedingYou\} needs you` : ''/);
 assert.match(subagents, /className="subagents-panel"/);
 assert.match(navigator, /<summary>Fork <small>original stays here<\/small><\/summary>/);
 assert.match(navigator, /'In Claude'/);

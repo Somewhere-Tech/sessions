@@ -60,7 +60,9 @@ describe('capability: end a session', () => {
       expect(screen.getByRole('button', { name: ENDED_GROUP })).toBeInTheDocument();
     });
     await user.click(screen.getByRole('button', { name: ENDED_GROUP }));
-    expect(await screen.findByText('Long build')).toBeInTheDocument();
+    // The ended session stays visible: in its project's Finished fold summary
+    // and in the Ended group, so the label may legitimately appear twice.
+    expect((await screen.findAllByText('Long build')).length).toBeGreaterThan(0);
     expect(await screen.findByRole('button', { name: 'Actions for Do not touch this one' })).toBeInTheDocument();
   });
 });

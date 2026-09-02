@@ -767,3 +767,28 @@ export function muxEndpointKey(): string {
   try { return wsMuxUrl(); }
   catch { return ''; }
 }
+
+export interface ProjectView {
+  id: string;
+  name: string;
+  implicit: boolean;
+  roots: string[];
+  github?: string;
+  somewhere?: string;
+  pinned?: boolean;
+  session_ids: string[];
+  live: number;
+  needs_input: number;
+  updated_at?: number;
+}
+
+// The daemon groups sessions by the work they belong to (a folder, a git
+// checkout with its worktrees, or a Somewhere project). Older daemons have no
+// such route; an empty list means "group by nothing", not an error.
+export async function fetchProjects(signal?: AbortSignal): Promise<ProjectView[]> {
+  const server = getActiveServer();
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/projects`, { signal });
+  if (r.status === 404 || r.status === 501) return [];
+  const body = await json<{ projects: ProjectView[] }>(r);
+  return body.projects ?? [];
+}

@@ -225,6 +225,14 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
   // Which labelled section each row is rendered under. The group heads are the
   // user-visible answer to "where is this session?", so the assertions read
   // them rather than any internal id set.
+  // Unpinned live rows now sit under project sections (one per named project,
+  // plus "Other projects" for folders nobody has named) rather than a single
+  // "Live" group. `liveRowsOf` gathers them so the assertions below keep
+  // asking "is this session listed as a main session?" regardless of which
+  // project section it landed in.
+  const liveRowsOf = (groups) => Object.entries(groups)
+    .filter(([label]) => label !== 'Pinned' && !label.startsWith('Ended') && !label.startsWith('Needs you'))
+    .flatMap(([, ids]) => ids);
   const readGroups = () => page.evaluate(() => {
     const groups = {};
     for (const group of document.querySelectorAll('#surface-navigator .session-tree-group')) {
@@ -259,10 +267,10 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
   assert.ok('Pinned' in initial, `the navigator must render a "Pinned" section; saw ${Object.keys(initial).join(', ')}`);
   assert.deepEqual(initial.Pinned, ['pinned-manager'],
     'the Pinned group holds the pinned main session and does not leak its subagents');
-  assert.ok(initial.Live.includes('plain-manager'));
-  assert.ok(!initial.Live.includes('pinned-child'),
+  assert.ok(liveRowsOf(initial).includes('plain-manager'));
+  assert.ok(!liveRowsOf(initial).includes('pinned-child'),
     'an agent-created helper must not leak into another main-session group');
-  assert.ok(!initial.Live.includes('pinned-manager'),
+  assert.ok(!liveRowsOf(initial).includes('pinned-manager'),
     'a pinned session must not also be listed under Live');
   assert.equal(await page.$('[data-session-id="pinned-child"]'), null,
     'the helper is available from the manager Subagents panel, not the left navigator');
@@ -284,7 +292,7 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
   );
   const afterPin = await readGroups();
   assert.ok(afterPin.Pinned.includes('plain-manager'));
-  assert.ok(!afterPin.Live.includes('plain-manager'),
+  assert.ok(!liveRowsOf(afterPin).includes('plain-manager'),
     'pinning must remove the row from Live, not duplicate it');
   // Every live session in this fixture is now pinned, so the Live group is
   // empty. That must not read as "you have nothing going on": the navigator
@@ -310,7 +318,7 @@ localStorage.setItem('sessions:navigator-machine-scope','fixture');
     'the unpinned session to leave the Pinned group'
   );
   const afterUnpin = await readGroups();
-  assert.ok(afterUnpin.Live.includes('plain-manager'),
+  assert.ok(liveRowsOf(afterUnpin).includes('plain-manager'),
     'unpinning returns the row to the group it came from');
   assert.deepEqual(afterUnpin.Pinned, ['pinned-manager'],
     'the Pinned group is back to exactly the main sessions that are still pinned');
