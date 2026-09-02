@@ -27,8 +27,22 @@ runner cutover boundary, not the product server.
 - JSON bodies are limited to 2 MiB. An empty body decodes as `{}`. Invalid JSON
   and an oversized body become the route's documented error response.
 - A method/path combination not matched below reaches `404
-  {"error":"not found","path":"<pathname>"}` after auth. Thus a wrong method
-  on an API path normally requires auth before returning 404.
+  {"error":"not found","path":"<pathname>"}` after auth. Most Go route
+  families claim their path first and answer a wrong method with `405
+  {"error":"method not allowed"}` (the handlers that use
+  `http.StatusMethodNotAllowed` in `runtime/internal/api`); the exact-path
+  routes matched inline in `server_routes.go` (`/api/sessions`,
+  `/api/machine`, `/api/sessions/end-batch`, `/api/recovery/*`,
+  `/api/directories`, `/api/fs/list`, `/api/claude-sessions`,
+  `/api/resumable-conversations`, `/api/models/codex`, the push routes) and
+  the per-session suffixes served by `handleSessionRoute` (`/snapshot`,
+  `/events`, `/model-options`, `/model`, `/input`, `/submit`, `/name`,
+  `/tags`, `/upload`, `/display-parent`, `/set-aside`, the bare `DELETE`)
+  still fall through to the 404 body. `/pin`, `/wait`, `/wait-state`, and
+  `/verdict` return 405. Either way the request is authenticated before the
+  method is judged, so a wrong method on an API path normally requires auth
+  before returning 404 or 405. Each route entry below states its own
+  behavior where it differs.
 - Route handlers return the documented JSON errors explicitly. A panic is not
   part of the HTTP contract; Go's `net/http` server terminates the affected
   request rather than exposing an internal error string to the client.
@@ -276,6 +290,20 @@ Requires authentication (loopback peers are already authorized). Returns 200:
 including events evicted from the in-memory front. `lastDataAgeMs` is computed
 at request time.
 
+### `GET /api/machine`
+
+Auth required. Returns the daemon's stable machine identity, the same
+`machine_id` a paired device receives from `POST /api/pair/claim`:
+
+```json
+{"machine_id":"<stable machine UUID>","name":"<hostname>"}
+```
+
+`name` is the current OS hostname, truncated to the machine-name limit; the
+stored identity name is used when the hostname is unavailable or empty. When
+the identity file could not be created or read, the route returns
+`500 {"error":"<message>"}`. Other methods fall through to the 404 body.
+
 ### `GET /api/push/vapid`
 
 Auth required. Returns `200 {"publicKey":"<base64url string>"}`. It lazily
@@ -308,6 +336,28 @@ stored record with that endpoint; absence is still success. Responses:
 - `400 {"error":"endpoint is required"}` for missing, empty, or non-string
   endpoint
 - `400 {"error":"<message>"}` for JSON/body errors
+
+### `GET /api/notify`
+
+Auth required. Returns the persisted push-notification preferences and whether
+any Web Push subscription is registered:
+
+```json
+{"notify":{"done":true,"waiting":true,"lost":true},"subscribed":false}
+```
+
+`done`, `waiting`, and `lost` are the three notification kinds. A settings
+read failure is 500.
+
+### `POST /api/notify`
+
+Auth required. Body `{"enabled":<boolean>,"kind":"<done|waiting|lost>"}`.
+`enabled` is mandatory; an absent or non-boolean value is
+`400 {"error":"enabled must be true or false"}`. An empty or omitted `kind`
+sets all three kinds at once; any other value is
+`400 {"error":"unknown notification kind ..."}`. The result is persisted in
+daemon settings and the same body as `GET /api/notify` is returned.
+Persistence failures are 500; other methods return 405.
 
 ### `GET /api/sessions`
 
@@ -353,9 +403,14 @@ child on the interactive terminal and never enables Remote Control by itself.
 The daemon rejects self-escalation. A machine-level autonomous
 delegation choice can make new agent-created children full-access; only the
 explicit user-facing onboarding/Settings route can grant that choice. Success
-is 201 with a bare `SessionInfo` object, not an envelope. Any caught failure is
-`400 {"error":"<message>"}`. Creating a session invokes the platform runner
-supervisor; there is no unmanaged create path in the normative implementation.
+is 201 with a bare `SessionInfo` object, not an envelope. A create failure is
+`400 {"error":"<message>"}`, with one exception: when the request resumes a
+provider conversation that is already live in another session
+(`sessionruntime.ConversationLiveError`) or that has been moved to another
+machine (`sessionruntime.ConversationMovedError`), the daemon returns
+`409 {"error":"<message>"}` so a client can distinguish a guard from bad
+input. Creating a session invokes the platform runner supervisor; there is no
+unmanaged create path in the normative implementation.
 
 When a `task` worker produces a successful final response and becomes idle,
 the daemon records the normal durable end boundary and closes its runtime. Its
@@ -372,6 +427,63 @@ same root for watcher, transcript, search, backup, and recovery resolution
 ([`internal/session/profiles.go`](../internal/session/profiles.go),
 [`internal/state/registry.go`](../internal/state/registry.go),
 [`internal/backup/sessions.go`](../internal/backup/sessions.go)).
+
+### `GET /api/lanes`
+
+Auth required. Lists every session whose `kind` is `lane`, exited or not, in
+daemon map order. Each element is a `SessionInfo` plus an additive `manifest`
+object when the lane's completion manifest is readable:
+
+```json
+{"lanes":[{/* SessionInfo fields */,"manifest":{"exit_code":0,"signal":null,"duration_ms":1234,"last_output_tail":"...","spec_path":"...","files_changed":3}}],"user_creator_id":"<local user creator id>"}
+```
+
+`manifest` is omitted while a lane is still running or has no manifest;
+`files_changed` is omitted when unknown. A failure to resolve the local user
+creator ID is 500; other methods return 405.
+
+### `POST /api/lanes`
+
+Auth required. Accepts the same body as `POST /api/sessions` and forces
+`kind` to `lane`; a body whose `kind` is anything else is
+`400 {"error":"lane kind must be \"lane\""}`. `cmd` is mandatory for a lane
+(`400 {"error":"lane command is required"}`). Creator headers are captured
+exactly as for `POST /api/sessions`. Success is 201 with a bare `SessionInfo`.
+Every other create failure is `400 {"error":"<message>"}`; this route does not
+map the live/moved conversation guards to 409.
+
+### `GET /api/lanes/:id/manifest`
+
+Auth required. `:id` must be a 36-character hyphenated UUID; any other id, any
+other suffix below `/api/lanes/`, or any other method is the standard 404
+body. A lane that is still running returns
+`409 {"error":"lane is still running","id":"<id>"}`. Otherwise the completion
+manifest is returned bare (`exit_code`, `signal`, `duration_ms`,
+`last_output_tail`, `spec_path`, optional `files_changed`). A missing manifest
+is `404 {"error":"unknown lane","id":"<id>"}` and any other read error is 500.
+
+### `GET /api/lanes/mine`
+
+Auth required. Answers "what am I responsible for" for one calling lane. The
+caller is identified by `?lane=<id>` or, when that is absent, by the
+`X-Sessions-Creator-Session` header; a missing identity or a malformed header
+is 400, and an id that matches no session on this machine is
+`404 {"error":"no session matches <id> on this machine"}`. The listing never
+widens beyond the caller, its parent, and its transitive descendants (display
+parent preferred over creator lineage, depth capped at 8):
+
+```json
+{"self":{...},"parent":{...},"members":[{...}],"needs_input":1}
+```
+
+Every member object carries `id`, optional `name`, `tool`, optional `cwd`,
+`relation` (`self`, `parent`, or `child`), `depth`, `state` (`ended`,
+`needs-you`, `working`, `failed`, `not-started`, or `idle`), `needs_you`,
+`working`, `exited`, optional `summary`, optional `waiting`, and optional
+`updated_at`. `summary` and `waiting` are capped at 200 bytes; no transcript,
+args, or env is included. `parent` is omitted when the caller has none.
+`members` sorts by `depth`, then `updated_at` descending; `needs_input` counts
+live members waiting on a decision.
 
 ### `GET /api/profiles`
 
@@ -450,6 +562,46 @@ refused operations return `action:"skipped"` with a `reason`. Dry-run returns
 There is no force option, and session kill does not call this route
 ([`internal/session/worktrees.go`](../internal/session/worktrees.go),
 [`internal/session/manager.go`](../internal/session/manager.go)).
+
+### `GET /api/projects`
+
+Auth required. Groups every known session, exited included, by resolved
+project. Stored projects appear even with no sessions; implicit ones exist
+only while a session sits in their folder:
+
+```json
+{"projects":[{"id":"p_...","name":"...","implicit":false,"roots":["/absolute/folder"],"github":"owner/repo","somewhere":"...","pinned":true,"session_ids":["<Sessions id>"],"live":2,"needs_input":1,"updated_at":1750000000000}]}
+```
+
+`github`, `somewhere`, and `pinned` are omitted when empty. Order is pinned
+first, then stored before implicit, then `updated_at` descending. A resolution
+failure is 500. When the project store is unavailable every `/api/projects`
+path returns `501 {"error":"projects are not available on this runtime"}`.
+
+### `GET /api/projects/suggest`
+
+Auth required. Query `cwd` is mandatory (`400 {"error":"cwd is required"}`).
+Returns a bare `Project` to seed a "name this project" form: for an unclaimed
+folder, `name`, `roots` (the folder's top level), and any detected `github` or
+`somewhere`, with `id`, `created_at`, and `updated_at` at their zero values;
+for a folder that already belongs to a stored project, that project, so naming
+it again renames in place.
+
+### `PUT /api/projects`
+
+Auth required. Body is a `Project` (`id`, `name`, `roots`, `github`,
+`somewhere`, `pinned`); an empty `id` creates and a known `id` updates.
+`name` is mandatory and at most 120 characters, at least one root is required,
+every root must be an absolute folder, and a root already belonging to another
+project is rejected; each of these is `400 {"error":"<message>"}`. Returns 200
+with the stored `Project`, including `created_at` and `updated_at`.
+
+### `DELETE /api/projects/:id`
+
+Auth required. Forgets a stored project; its sessions become implicit again.
+Returns `200 {"ok":true}`. An empty or nested id, or an unknown project, is
+404. Any other method on a `/api/projects` path is
+`405 {"error":"method not allowed","path":"<pathname>"}`.
 
 ### `POST /api/retention/gc`
 
@@ -618,6 +770,24 @@ sessions return 404. Ended records return 409 because a pin marks a live
 workbench; archive is the organizational verb for ended records. Any method
 other than `PUT` returns 405.
 
+### `GET /api/sessions/:id/tags`
+
+Auth required. Returns `{"tags":{"<key>":"<value>"}}` from the live session or,
+for an ended one, from its stored metadata. An unknown session or missing
+metadata file is `404 {"error":"unknown session","id":"<id>"}`; a metadata
+read failure is `500 {"error":"<message>","id":"<id>"}` so a caller does not
+retry forever against a lane that exists.
+
+### `PUT /api/sessions/:id/tags`
+
+Auth required. Body `{"tags":{"<key>":"<value>"}}` replaces the whole tag set;
+an empty or absent object clears it. Keys are trimmed and lowercased and must
+use letters, numbers, `.`, `_`, or `-` (at most 64 characters); values are
+trimmed, must be non-empty, and are at most 256 characters; at most 32 tags.
+Returns `200 {"tags":{...}}` with the normalized set, which a live runner also
+adopts immediately. Validation and persistence failures are 400; an unknown
+session or missing metadata file is 404.
+
 ### `GET /api/sessions/:id/snapshot`
 
 Auth required. Optional `cols=N` is converted with `Number`, truncated through a
@@ -661,6 +831,48 @@ All indices are absolute. Let `base` be the number evicted from the front and
   before the current end. `startIndex`/`endIndex` describe the returned window.
 
 Unknown session is `404 {"error":"unknown session","id":"<id>"}`.
+
+### `GET /api/sessions/:id/wait` and `GET /api/sessions/:id/wait-state`
+
+Auth required. Both paths return the same observational facts a client needs
+in order to wait on a session without scraping its terminal:
+
+```json
+{"session":"<id>","cwd":"/absolute/workspace","working":false,"source":"structured"}
+```
+
+`source` is `structured` when the Claude or Codex event classifier supplies
+`working` and `heuristic` when it comes from raw terminal activity; neither
+claims more than that evidence. An unknown session is
+`404 {"error":"unknown session","id":"<id>"}`; an exited one is
+`409 {"error":"session exited","id":"<id>"}`. Other methods return 405.
+
+### `GET /api/sessions/:id/verdict`
+
+Auth required. `:id` must match `[A-Za-z0-9][A-Za-z0-9._-]{0,127}` (400
+otherwise) and is not required to name a live session. Returns the newest
+decodable verdict record for that lane:
+
+```json
+{"schemaVersion":1,"verdict":"pass","findings":[{"severity":"error","title":"...","detail":"...","file":"...","line":12}],"meta":{},"seq":3,"emitted_at":"<RFC3339>"}
+```
+
+`findings` and `meta` are omitted when empty; `detail`, `file`, and `line` are
+omitted per finding when absent. `skipped_records` appears, nonzero only, when
+the torn-record policy skipped records while answering, meaning the returned
+verdict is the newest usable one rather than provably the newest. No record is
+`404 {"error":"no verdict","id":"<id>"}`; a store that cannot be opened is 500
+and any other read error is 400.
+
+### `POST /api/sessions/:id/verdict`
+
+Auth required. Body is one verdict document decoded strictly: unknown fields,
+duplicate keys, and trailing content are rejected. `schemaVersion` must be
+`1`, `verdict` must be a non-empty string, each finding needs a non-empty
+`severity` and `title`, and `line`, when present, must be positive. An invalid
+document is `400 {"error":"<message>"}`. Success appends the record and returns
+201 with the stored record, `seq` and `emitted_at` assigned by the daemon.
+Append failures are 500; other methods return 405.
 
 ### `POST /api/sessions/:id/input`
 
@@ -784,6 +996,44 @@ transcript. A native client may pass the chosen `sessionId` to the existing
 `POST /api/recovery/adopt` boundary; the recovery layer still applies its live,
 moved, collision, and explicit-provider guards before creating a Sessions
 lane. The legacy Claude-only route retains its original response shape.
+
+### `GET /api/recovery`
+
+Auth required. Opens the append-only creator ledger and returns the recovery
+report that `sessions doctor` reads:
+
+```json
+{"generatedAtMs":1750000000000,"lanes":[{"id":"<Sessions id>","tool":"claude","cwd":"/absolute/workspace","providerUuid":"<provider conversation UUID>","class":"...","anomalies":[],"reality":{"processAlive":false,"managerVisible":false,"conversation":"<provider file>","transcriptMirror":"<Sessions copy>","conversationRecoverable":true}}],"plan":{/* ledger RecoveryPlan */}}
+```
+
+Each lane also carries, when known, `name`, `profile`, `config_dir`,
+`createdAtMs`, `lastEventAtMs`, `lastActivityAtMs`, `lastHumanInputAtMs`,
+`lastProviderActivityAtMs`, `lastActivitySource`, `reopenedAs`, and
+`resumeArgv`. In `reality`, `conversation` is the provider's own file, which is
+what makes a native resume possible; `transcriptMirror` is Sessions' copy,
+which makes the conversation readable and recoverable through Sessions but
+never makes a native resume work; `conversationRecoverable` reports whether
+either exists; `probeErrors` lists probe failures and is omitted when empty.
+A ledger open or report failure is `500 {"error":"<message>"}`. Other methods
+fall through to the 404 body.
+
+### `POST /api/recovery/reopen`
+
+Auth required. Body `{"force":false}`; both the body and `force` are optional.
+Rebuilds the recovery report and reopens lost lanes, creating at most one live
+lane per provider UUID, serialized against the other recovery mutations so two
+concurrent requests cannot launch the same conversation twice. Returns 200:
+
+```json
+{"ok":true,"outcomes":[{"sourceLaneId":"<ended id>","name":"...","providerUuid":"...","status":"reopened","newLaneId":"<new id>"}]}
+```
+
+Every lost lane appears in `outcomes`, including refusals, so an unsafe
+candidate is never silently omitted. `status` is `reopened`,
+`skipped-live-provider`, `blocked`, or `failed`; `name`, `providerUuid`,
+`newLaneId`, and `error` are omitted when empty. A successful reopen also
+clears any paused-after-reboot restore record for the source lane. Invalid
+JSON is 400; a ledger open or report failure is 500.
 
 ### `POST /api/recovery/adopt`
 
@@ -1022,6 +1272,106 @@ Errors:
   input first falls back to `path.resolve`, the eventual `statSync` normally
   supplies the `ENOENT` 404.
 
+### `GET /api/usage`
+
+Auth required. Scans local Claude and Codex provider history and returns a
+token and cost report. Query parameters: `group` (`daily`, `weekly`,
+`monthly`, `session`, `tag`, `provider`, or `model`), `mode` (`auto`,
+`calculate`, or `display`), `provider` (`claude` or `codex`), `dimension`
+(mandatory when `group=tag`), `since` and `until` as local `YYYY-MM-DD` dates
+(`until` is inclusive and `since` must not be after it), and `events=1` to
+include per-event identities. Any other value is `400 {"error":"<message>"}`.
+Returns 200:
+
+```json
+{"schemaVersion":1,"machine":"<machine id>","generatedAt":"<RFC3339>","group":"daily","mode":"auto","pricing":{"source":"...","revision":"...","url":"...","note":"..."},"scan":{"filesSeen":0,"filesRead":0,"linesRead":0,"entriesSeen":0},"rows":[/* ReportRow */],"totals":{/* ReportRow */},"eventsIncluded":false}
+```
+
+`dimension` is present only when set and `events` only with `events=1`. A
+`ReportRow` carries `key`, optional `start`, `provider`, `sessionId`,
+`providerSessionId`, and `tags`, then `models`, `tokens` (`inputTokens`,
+`outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `reasoningTokens`),
+`costUSD`, `recordedCostUSD`, `calculatedCostUSD`, `entries`, and
+`missingPricingEntries`. Report failures are 500; other methods return 405.
+
+### `GET /api/backup/status`
+
+Auth required. Returns the non-secret backup configuration and last-push
+counters:
+
+```json
+{"enabled":true,"encrypt":true,"key_path":"...","project":"...","interval":"1h","last_push_at":"<RFC3339>","last_push_count":0,"last_push_skipped":0,"last_push_pending":0,"last_session_count":0}
+```
+
+`key_path`, `project`, `interval`, and `last_push_at` are omitted when empty.
+Every `/api/backup/*` route returns
+`503 {"error":"backup home is unavailable"}` when the daemon's state root does
+not belong to the current user's home. A status read failure is 500.
+
+### `POST /api/backup/now`
+
+Auth required. Runs one backup push immediately and returns 200:
+
+```json
+{"pushed_at":"<RFC3339>","uploaded":3,"skipped":1,"session_count":4,"unresolved":1,"unresolved_sessions":[{"id":"<Sessions id>","reason":"..."}],"manifest_path":"..."}
+```
+
+`unresolved_sessions` (omitted when empty) names each session this push could
+not back up, such as a live transcript that grew mid-read or a single failed
+upload; the rest of the run continues and the next push retries them, so a
+partial push is never reported as complete. A push that fails as a whole is
+`502 {"error":"<message>"}`.
+
+### `POST /api/backup/reload`
+
+Auth required. Re-reads the backup configuration and restarts the periodic
+push schedule, returning `200 {"ok":true}`. A configuration error is 400. Any
+other method on the three backup paths returns 405.
+
+### `GET /api/recap`
+
+Auth required. Query `date` is a local `YYYY-MM-DD` day and defaults to today;
+any other value is `400 {"error":"date must use YYYY-MM-DD"}`. Returns 200:
+
+```json
+{"date":"2026-09-01","timezone":"<local zone name>","settings":{"provider":"off"},"activities":[/* DailyActivity */],"usage":{/* usage ReportRow totals for the day */},"document":null,"documentStale":false}
+```
+
+`activities` combines Sessions-managed lanes with provider conversations
+observed outside Sessions (`"source":"provider"`, `"provenanceStatus":"Outside
+Sessions"`), sorted by `lastActivityAt` then `id`. `document` is the stored
+recap (`date`, `provider`, `generatedAt`, `inputDigest`, `markdown`) or `null`;
+`documentStale` is true when a stored recap no longer matches the day's input
+or the configured provider. Usage, settings, or recap-store failures are 500;
+other methods return 405.
+
+### `GET /api/recap/dates`
+
+Auth required. Returns `{"dates":["YYYY-MM-DD", ...]}` for every stored recap
+document; an absent recap directory yields an empty list. Read failures are
+500; other methods return 405.
+
+### `POST /api/recap/generate`
+
+Auth required. Body `{"date":"YYYY-MM-DD","force":false}`; an empty or absent
+`date` means today. Builds the day's input, runs the configured provider CLI
+under a five-minute deadline, stores the document, and returns the same body
+as `GET /api/recap` with `document` filled and `documentStale` false. `force`
+regenerates even when the stored document is current. When the recap provider
+is `off` the request is
+`400 {"error":"daily recap is off; choose Codex or Claude in Settings first"}`;
+a bad date is 400; invalid JSON is 400; generation and store failures are 500;
+other methods return 405.
+
+### `GET /api/recap/settings` and `PUT /api/recap/settings`
+
+Auth required. `GET` returns `{"provider":"off"}`, `{"provider":"codex"}`, or
+`{"provider":"claude"}`; recap is opt-in and `off` means Sessions never
+launches a model for daily synthesis. `PUT` accepts the same shape, lowercases
+and trims the value, treats an empty provider as `off`, persists it in daemon
+settings, and returns the normalized value. An unknown provider or invalid JSON
+is 400; persistence failures are 500; other methods return 405.
+
 ## Go runtime extension: tailnet discovery approval
 
 The native client discovers online peers from the local `tailscale status
@@ -1049,11 +1399,14 @@ Repeating the request for the same Tailscale login and client UUID returns the
 same pending request. At most 64 requests wait at once. The request secret is
 returned only to the requester and is never exposed by the host listing.
 
-The normally authenticated `GET /api/tailnet/access/requests` returns
-`{"requests":[...]}` with pending request ID, client ID, device name, Tailscale
-login/display name, creation/expiry times, and status. The authenticated
-`POST /api/tailnet/access/requests/<request-id>` accepts
-`{"decision":"accept"}` or `{"decision":"deny"}`.
+Host approval lives on `GET /api/access/requests` and
+`POST /api/access/requests/:id`, documented below; the collection covers
+tailnet and nearby (LAN) requests alike. The original
+`/api/tailnet/access/requests` and `/api/tailnet/access/requests/:id` paths
+are **deprecated** aliases served by the same handler: they behave
+identically, but every response on them carries `Deprecation: true` and
+`Link: </api/access/requests...>; rel="successor-version"` (RFC 8594). They
+remain only until every shipped client speaks the canonical path.
 
 The requester polls `POST /api/tailnet/access/claim` through the same verified
 Tailscale Serve identity with:
@@ -1078,6 +1431,117 @@ safely request again.
 
 `sessions pair` remains the explicit same-LAN fallback for devices without
 Tailscale. It no longer creates Tailscale QR links.
+
+Several routes in this section are **local-principal only**
+(`requireLocalPrincipal` in `server_routes.go`): only a direct loopback peer
+qualifies. A caller authorized by the master token from another host, a paired
+device token, or the `open` sentinel receives
+`403 {"error":"<operation> is available only on this machine"}` even though it
+authenticated.
+
+### `POST /api/lan/access/request`
+
+The nearby (same-LAN) counterpart of `POST /api/tailnet/access/request`. It is
+dispatched before bearer authentication but answers only on the user-enabled
+LAN listener (`POST /api/lan`); on the loopback listener it is
+`403 {"error":"nearby access is available only on this machine's trusted LAN listener"}`.
+The peer must be a private, non-loopback IPv4 address (403 otherwise), the
+request must carry no `Origin` header (403) and exactly one
+`Content-Type: application/json` (415). Body
+`{"client_id":"<lowercase v4 UUID>","name":"<device name>"}` returns 202 with
+the same `{"request_id","request_secret","expires_at","status":"pending"}`
+shape as the tailnet route; the request is recorded with `transport`
+`nearby`, the peer address, and a login of `nearby:<address>`. An invalid
+client id or device name is 400 and a full queue (64 pending) is 429. Other
+methods return 405.
+
+### `POST /api/lan/access/claim`
+
+Same listener, peer, origin, and content-type gates as
+`POST /api/lan/access/request`. Body
+`{"request_id":"<UUID>","request_secret":"<secret>"}`. A pending request is
+`202 {"status":"pending"}`, a denied one
+`403 {"status":"denied","error":"<message>"}`, and an expired or mismatched one
+`410 {"status":"expired","error":"<message>"}`. Acceptance returns 201 with
+`{"device_id","token","name","machine_id","machine_name"}`, the
+`POST /api/pair/claim` shape, under the same two-minute acknowledgement rule
+described above. An unavailable machine identity is 503.
+
+### `GET /api/access/requests`
+
+Auth required, local-principal only. Returns the pending tailnet and nearby
+requests, oldest first:
+
+```json
+{"requests":[{"request_id":"<UUID>","client_id":"<UUID>","name":"MacBook Pro","login":"<Tailscale login or nearby:<address>>","user_name":"<Tailscale display name>","transport":"tailnet","address":"<peer IPv4>","created_at":"<RFC3339>","expires_at":"<RFC3339>","status":"pending"}]}
+```
+
+`user_name` and `address` are omitted when empty; `transport` is `tailnet` or
+`nearby`. Decided and expired requests are not listed, and the request secret
+is never included. Other methods return 405.
+
+### `POST /api/access/requests/:id`
+
+Auth required, local-principal only. Body `{"decision":"accept"}` or
+`{"decision":"deny"}`; returns 200 with the decided request in the listing
+shape and `status` `accepted` or `denied`. An unknown, expired, or malformed
+request id, or a decision other than those two words, is
+`404 {"error":"access request is invalid or expired"}`; a request that was
+already decided is 400; invalid JSON is 400. An empty or nested id is
+`404 {"error":"access request not found"}`. Other methods return 405.
+
+### `GET /api/lan`
+
+Auth required. Returns the state of the user-enabled plaintext LAN listener:
+
+```json
+{"enabled":false,"url":null,"bonjour":{"advertised":false,"service":"<Bonjour service name>"}}
+```
+
+`url` is the `http://<address>` of the running LAN listener or `null`;
+`bonjour.error` carries the last advertisement error and is omitted when
+empty.
+
+### `POST /api/lan`
+
+Auth required, local-principal only: opening the LAN listener and its Bonjour
+advertisement is a separate capability from remote API access and is never
+enabled as a side effect of another route. Body `{"enabled":true}` or
+`{"enabled":false}`; a missing or non-boolean value is
+`400 {"error":"enabled must be true or false"}`. The choice is persisted in
+daemon settings and the resulting state is returned in the `GET /api/lan`
+shape. A listener that cannot be started or stopped is
+`409 {"error":"<message>"}`. Other methods return 405.
+
+### `POST /api/pair/ticket`
+
+Auth required, local-principal only. Body `{"name":"<device name>"}`, trimmed
+and truncated to the device-name limit. Mints a single-use pairing ticket
+valid for five minutes and returns 201:
+
+```json
+{"ticket":"<id>.<secret>","expires_at":"<RFC3339>"}
+```
+
+This is the ticket `sessions pair` displays and the device presents to
+`POST /api/pair/claim`. A random-source failure is 500; other methods return
+405.
+
+### `GET /api/devices`
+
+Auth required, local-principal only. Returns
+`{"devices":[{"device_id":"<UUID>","name":"...","created_at":"<RFC3339>","last_used_at":"<RFC3339>"}]}`
+sorted by `created_at`, then `device_id`. Token hashes are never returned, and
+a device whose credential is still pending acknowledgement is hidden until its
+first authenticated request. A store read failure is 500; other methods return
+405.
+
+### `DELETE /api/devices/:id`
+
+Auth required, local-principal only. Revokes one paired device's bearer
+credential and returns `200 {"ok":true,"device_id":"<id>"}`. An empty or
+nested id, or an unknown device, is `404 {"error":"device not found"}`; a
+store write failure is 500; other methods return 405.
 
 ## Go runtime extensions: smart search
 
@@ -1274,6 +1738,42 @@ content; it is omitted for a complete preview. This bound does not change the
 deliberate full-history JSON/text response or `/api/history/<id>/raw` download.
 The distinct path is intentional: an older runtime returns 404 instead of
 silently ignoring a query parameter and sending an unbounded transcript.
+
+### `GET /api/errors`
+
+Auth required. Returns the daemon's append-only error feed for integrations:
+
+```json
+{"schemaVersion":1,"errors":[{"seq":1,"ts":"<RFC3339>","kind":"daemon_error","session_id":"<Sessions id>","summary":"...","detail":"...","machine":"<machine id>"}],"nextSeq":2}
+```
+
+`since=<sequence>` returns only events whose `seq` is greater than that value;
+anything but a non-negative integer is
+`400 {"error":"since must be a non-negative integer sequence"}`. `nextSeq` is
+the value to pass as the next `since`. `session_id` is omitted when an event is
+not tied to a session. `skipped_records` (nonzero only) counts undecodable
+records, and `truncated_before` (nonzero only) is the lowest sequence still
+retained after older events aged out, so a `since` below it means a gap the
+caller can fill from the log file. A feed read failure is 500. Any method other
+than `GET` on `/api/errors` or any `/api/history` path returns 405.
+
+### `GET /api/history/:id/source`
+
+Auth required. Describes where one history conversation's bytes come from
+without reading them:
+
+```json
+{"schemaVersion":1,"session":{/* history session summary */},"source_kind":"provider-jsonl","source_path":"/absolute/provider/file.jsonl","raw_bytes":1234,"raw_available":true,"text_available":true}
+```
+
+`source_kind` is `provider-jsonl`, `prompt-index`, `sessions-mirror`, or
+`missing`; `source_path` and `raw_bytes` are omitted when unknown.
+`mirror_damaged` and `mirror_detail` appear only when the conversation is
+served from Sessions' own mirror and that mirror records having stopped storing
+provider records; both are absent for a non-mirror source or an unknown mirror
+health. An unknown id is
+`404 {"error":"history session not found","id":"<id>"}`; any other failure is
+recorded on the error feed as a `daemon_error` and returned as 500.
 
 ## Static GETs
 
