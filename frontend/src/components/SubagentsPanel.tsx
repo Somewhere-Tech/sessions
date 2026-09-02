@@ -70,14 +70,21 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
     const controller = new AbortController();
     let current = true;
     setTeam(null);
-    void fetchTeam(manager.id, controller.signal).then((listing) => {
-      if (current) setTeam(listing);
-    }).catch(() => {
-      // Older daemons do not have the team route. The session-list rows below
-      // remain the compatibility view for an unavailable request.
-    });
+    // Lanes change while the panel is open, so the team view is re-read on a
+    // short cadence; the session-list rows stay the fallback throughout.
+    const load = (): void => {
+      void fetchTeam(manager.id, controller.signal).then((listing) => {
+        if (current) setTeam(listing);
+      }).catch(() => {
+        // Older daemons do not have the team route. The session-list rows below
+        // remain the compatibility view for an unavailable request.
+      });
+    };
+    load();
+    const timer = window.setInterval(load, 10_000);
     return () => {
       current = false;
+      window.clearInterval(timer);
       controller.abort();
     };
   }, [manager.id]);
