@@ -217,7 +217,7 @@ const workspaceControl = newSession.indexOf('launcher-intent-control is-workspac
 const launcherComposer = newSession.indexOf('launcher-task-field launcher-composer');
 const folderControl = newSession.indexOf('launcher-workspace-shell');
 const advancedControl = newSession.indexOf('launcher-advanced');
-const permissionsControl = newSession.indexOf('aria-label="Permissions"');
+const permissionsControl = newSession.indexOf('aria-label="Access"');
 assert.ok(launcherHero > 0 && launcherHero < agentControl && agentControl < machineControl && machineControl < workspaceControl && workspaceControl < launcherComposer && launcherComposer < folderControl,
   'new-session must present agent, computer, and folder before the prompt');
 assert.ok(permissionsControl > launcherComposer && permissionsControl < advancedControl,

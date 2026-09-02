@@ -26,7 +26,11 @@ interface ToolDef {
 
 type RuntimeMode = 'rich' | 'terminal';
 
-function defaultRuntimeMode(tool: NewSessionTool, parent: SessionInfo | null, fullAccess: boolean): RuntimeMode {
+// AccessChoice is the one permission question Sessions asks: run on its
+// own, ask before acting, or only plan. Each provider's own flags follow.
+type AccessChoice = 'full' | 'ask' | 'plan';
+
+function defaultRuntimeMode(tool: NewSessionTool, parent: SessionInfo | null): RuntimeMode {
   if (tool === 'shell') return 'terminal';
   // Claude always starts in its native interactive runtime. Conversation,
   // Terminal, claude.ai, and mobile then observe one provider session even
@@ -35,9 +39,13 @@ function defaultRuntimeMode(tool: NewSessionTool, parent: SessionInfo | null, fu
   if (parent && parent.tool === tool) {
     return parent.kind === 'codex-app-server' || parent.kind === 'claude-structured' ? 'rich' : 'terminal';
   }
-  // Codex Rich cannot present app-server approval prompts yet. Until that UI
-  // exists, only an explicit saved Full Access choice may default into Rich.
-  return tool === 'codex' && fullAccess ? 'rich' : 'terminal';
+  // A Codex Conversation session asks through Sessions when it is not given
+  // full access, so the view no longer depends on the permission choice.
+  return tool === 'codex' ? 'rich' : 'terminal';
+}
+
+function claudeModeFor(access: AccessChoice): ClaudeSessionOptions['permissionMode'] {
+  return access === 'full' ? 'bypassPermissions' : access === 'plan' ? 'plan' : 'manual';
 }
 
 function effortLabel(effort: string): string {
@@ -114,7 +122,7 @@ interface Props {
 // boundary, keeping the provider transcript and Sessions record aligned.
 function resolveCommand(
   tool: NewSessionTool,
-  skipPerms: boolean,
+  access: AccessChoice,
   codexModel: string,
   codexEffort: string,
   claudeSafeMode: boolean
@@ -125,12 +133,14 @@ function resolveCommand(
     return { cmd: 'claude', args };
   }
   if (tool === 'codex') {
-    // Full Access is explicit and maps to Codex's exact no-sandbox,
-    // no-approval flag. The public default remains workspace-write with
-    // on-request approvals.
-    const args = skipPerms
+    // Full access maps to Codex's exact no-sandbox, no-approval flag. Ask me
+    // is workspace-write with on-request approvals, routed through Sessions.
+    // Plan keeps Codex read-only so it can look and think but not change.
+    const args = access === 'full'
         ? ['--dangerously-bypass-approvals-and-sandbox']
-        : ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request'];
+        : access === 'plan'
+          ? ['--sandbox', 'read-only', '--ask-for-approval', 'on-request']
+          : ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request'];
     if (codexModel.trim()) args.push('--model', codexModel.trim());
     if (codexEffort) args.push('-c', `model_reasoning_effort="${codexEffort}"`);
     return { cmd: 'codex', args };
@@ -159,11 +169,12 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const [tool, setTool] = useState<NewSessionTool>(() => parentSession?.tool === 'terminal' ? 'shell' : parentSession?.tool ?? initialDefaults.tool);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(() => defaultRuntimeMode(
     parentSession?.tool === 'terminal' ? 'shell' : parentSession?.tool ?? initialDefaults.tool,
-    parentSession,
-    initialDefaults.skipPerms
+    parentSession
   ));
-  const [skipPerms, setSkipPerms] = useState(initialDefaults.skipPerms);
-  const [claudeOptions, setClaudeOptions] = useState<ClaudeSessionOptions>({});
+  const [access, setAccess] = useState<AccessChoice>(initialDefaults.skipPerms ? 'full' : 'ask');
+  const [claudeOptions, setClaudeOptions] = useState<ClaudeSessionOptions>(() => ({
+    permissionMode: claudeModeFor(initialDefaults.skipPerms ? 'full' : 'ask')
+  }));
   const [claudeSafeMode, setClaudeSafeMode] = useState(false);
   const [codexModel, setCodexModel] = useState('');
   const [codexEffort, setCodexEffort] = useState('');
@@ -374,7 +385,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         selectActiveMachine(machineId);
         setServerScope(machineId);
       }
-      const { cmd, args } = resolveCommand(tool, skipPerms, codexModel, codexEffort, claudeSafeMode);
+      const { cmd, args } = resolveCommand(tool, access, codexModel, codexEffort, claudeSafeMode);
       const info = await create({
         cmd,
         args,
@@ -459,7 +470,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   };
   const chooseTool = (nextTool: NewSessionTool): void => {
     setTool(nextTool);
-    setRuntimeMode(defaultRuntimeMode(nextTool, parentSession, skipPerms));
+    setRuntimeMode(defaultRuntimeMode(nextTool, parentSession));
   };
   const selectedWorkspace = recentWorkspaces.find((item) => item.path === cwd)
     ?? displayedWorkspaces.find((item) => item.path === cwd);
@@ -558,36 +569,23 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                         {effortChoices.map((effort) => <option key={effort} value={effort}>{effortLabel(effort)}</option>)}
                       </select>
                     </label>
-                    {tool === 'claude-code' ? (
-                      <label className="launcher-permissions-chip">
-                        <span className="sr-only">Permissions</span>
-                        <select
-                          value={claudeOptions.permissionMode ?? ''}
-                          onChange={(event) => setClaudeOptions((current) => ({ ...current, permissionMode: event.currentTarget.value as ClaudeSessionOptions['permissionMode'] }))}
-                          aria-label="Permissions"
-                        >
-                          <option value="">Settings permissions</option>
-                          <option value="manual">Ask every time</option>
-                          <option value="acceptEdits">Accept edits</option>
-                          <option value="auto">Auto</option>
-                          <option value="plan">Plan only</option>
-                          <option value="dontAsk">Don’t ask</option>
-                          <option value="bypassPermissions">Full access</option>
-                        </select>
-                      </label>
-                    ) : (
-                      <label className="launcher-permissions-chip">
-                        <span className="sr-only">Permissions</span>
-                        <select value={skipPerms ? 'full' : 'safe'} onChange={(event) => {
-                          const fullAccess = event.currentTarget.value === 'full';
-                          setSkipPerms(fullAccess);
-                          if (!fullAccess && runtimeMode === 'rich') setRuntimeMode('terminal');
-                        }} aria-label="Permissions">
-                          <option value="safe">Ask when needed</option>
-                          <option value="full">Full access</option>
-                        </select>
-                      </label>
-                    )}
+                    <label className="launcher-permissions-chip">
+                      <span className="sr-only">Access</span>
+                      <select
+                        value={access}
+                        onChange={(event) => {
+                          const next = event.currentTarget.value as AccessChoice;
+                          setAccess(next);
+                          setClaudeOptions((current) => ({ ...current, permissionMode: claudeModeFor(next) }));
+                        }}
+                        aria-label="Access"
+                        title={access === 'full' ? 'Runs commands and edits files without asking' : access === 'plan' ? 'Reads and plans; makes no changes' : 'Asks you before running commands or changing files'}
+                      >
+                        <option value="full">Full access</option>
+                        <option value="ask">Ask me</option>
+                        <option value="plan">Plan</option>
+                      </select>
+                    </label>
                   </>
                 ) : null}
               </div>
@@ -687,7 +685,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                   <select className="field-input" value={runtimeMode} onChange={(event) => {
                     const nextMode = event.currentTarget.value as RuntimeMode;
                     setRuntimeMode(nextMode);
-                    if (nextMode === 'rich') setSkipPerms(true);
                   }} aria-label="Session experience">
                     <option value="rich">Conversation</option>
                     <option value="terminal">Terminal</option>
