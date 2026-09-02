@@ -36,7 +36,7 @@ runner cutover boundary, not the product server.
   `/api/directories`, `/api/fs/list`, `/api/claude-sessions`,
   `/api/resumable-conversations`, `/api/models/codex`, the push routes) and
   the per-session suffixes served by `handleSessionRoute` (`/snapshot`,
-  `/events`, `/model-options`, `/model`, `/input`, `/submit`, `/name`,
+  `/events`, `/model-options`, `/model`, `/input`, `/submit`, `/approve`, `/name`,
   `/tags`, `/upload`, `/display-parent`, `/set-aside`, the bare `DELETE`)
   still fall through to the 404 body. `/pin`, `/wait`, `/wait-state`, and
   `/verdict` return 405. Either way the request is authenticated before the
@@ -147,6 +147,7 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `idleDetail` | string, optional | useful prompt or error line from idle classification |
 | `idleSince` | number, optional | Unix epoch milliseconds when the current idle outcome began |
 | `lastSummary` | string, optional | last useful structured assistant or terminal-tail summary |
+| `pendingApproval` | object, optional | permission a Rich session is waiting on, with `id`, `kind` (`command`, `file-change`, or `permissions`), `summary`, `command`, `cwd`, `reason`, and `at`; absent when no approval is pending |
 | `exited` | boolean | whether Sessions reaped a real status for the session's process: an EXIT frame, a signal, or a completed user-requested end. It is never set because the daemon lost contact with a runner |
 | `exitCode` | number or null | PTY exit code |
 | `exitSignal` | string or null | PTY exit signal as a string |
@@ -397,7 +398,10 @@ Auth required. Every request field is optional:
 `LD_PRELOAD` caller keys are stripped. User-created Claude/Codex sessions are
 constrained unless full access is explicitly requested. An agent-created child
 inherits the parent's exact Claude permission mode or Codex sandbox and
-approval flags. Newly attributed Claude agent children default to the
+approval flags. When no exact Codex policy is inherited or supplied, the
+constrained default is a workspace-write sandbox with the provider's untrusted
+approval policy; on-request remains valid only when the caller explicitly
+supplies or inherits it. Newly attributed Claude agent children default to the
 provider's structured runtime; `providerTerminal: true` deliberately keeps a
 child on the interactive terminal and never enables Remote Control by itself.
 The daemon rejects self-escalation. A machine-level autonomous
@@ -917,15 +921,16 @@ turning into a duplicate provider writer.
 ### `POST /api/sessions/:id/approve`
 
 Auth required. Answers the permission a Rich Claude or Codex session is holding open.
-A lane that inherits the person's permissions instead of running autonomously
-asks before it runs a command, changes files, or takes more access; the runner
-holds the request, the session reads `needs-input` with `idleDetail` set to
-`Allow? <summary>`, and the session object carries `pendingApproval` with
-`id`, `kind` (`command`, `file-change`, `permissions`), `summary`, `command`,
-`cwd`, `reason`, and `at`. Body is `{"decision":"allow"|"allow-session"|"deny"}`
-with an optional `id` that must match the pending approval. `allow-session`
-lets the same kind of request through for the rest of the session; `deny`
-refuses it and the lane continues without it.
+A user-created session started with **Ask me**, or a lane that inherits the
+person's permissions instead of running autonomously, asks before it runs a
+command, changes files, or takes more access. Codex's **Ask me** choice is its
+untrusted policy in a workspace-write sandbox. The runner holds the request,
+the session reads `needs-input` with `idleDetail` set to `Allow? <summary>`, and
+the session object carries the `pendingApproval` described in `SessionInfo`.
+Body is `{"decision":"allow"|"allow-session"|"deny"}` with an optional `id`
+that must match the pending approval. `allow-session` lets the same kind of
+request through for the rest of the session; `deny` refuses it and the session
+continues without it.
 
 The optional `X-Sessions-Creator-Session` header attributes the decision to a
 lane, and the runner records an `approval_resolved` event with that id in

@@ -338,8 +338,9 @@ child, defaults to `session` lifecycle. A caller can explicitly mark a bounded
 end it; lifecycle metadata stays visible to the manager that owns the decision.
 Claude children use the structured provider boundary by default so their
 manager receives exact events and submission confirmation without parsing a
-terminal. Codex children retain the constrained terminal default until
-app-server approval prompts can be represented without weakening the sandbox.
+terminal. Codex children retain the terminal default unless the caller chooses
+app-server; constrained Rich Codex sessions route their approval prompts through
+Sessions and use Codex's untrusted policy rather than on-request.
 
 ### `agentcall`
 
@@ -627,7 +628,8 @@ local daemon and every approved machine concurrently. Results add a stable
 while retaining their `available_on` locations. Per-machine status is included
 in JSON; reachable results still succeed when another machine is offline.
 `sessions grep` accepts familiar `-i` and `-C` spelling over this contract,
-`sessions cat` streams the exact normalized transcript from its source, and
+`sessions cat` streams the exact normalized transcript from its source,
+including `approval_requested` and `approval_resolved` audit records, and
 `sessions resurrect` is an accepted spelling of `sessions resume`. No transcript
 is materialized into a shared plaintext directory for OS-level grep. The fleet
 merge preserves the per-session rollup, machine-qualifies it the same way
@@ -847,14 +849,15 @@ while `embedui` builds embed the built SPA and provide guarded route fallback
    (`runtime/internal/session/manager.go`,
    `runtime/internal/state/registry.go`).
 
-Idle classification treats a provider approval or confirmation footer as
-`needs-input` and preserves its actual `Reason:` line. That state flows through
-status, list, Fleet, notifications, JSON, and `sessions wait`, whose envelope
-reports `reason: needs-input` with or without `--summary`; no
-watcher sends Enter on the user's behalf. Lifecycle metadata records whether a
-caller intended a bounded task or a durable conversation, but provider output
-never authorizes Sessions to end either one. Only an explicit End records the
-boundary and closes the runner-owned process tree.
+Idle classification treats a provider approval or confirmation footer, or a
+structured `approval_requested` event, as `needs-input` and preserves its
+actionable detail. That state flows through status, list, Fleet, notifications,
+JSON, and `sessions wait`, whose envelope reports `reason: needs-input` with or
+without `--summary`; no watcher sends Enter on the user's behalf. Lifecycle
+metadata records whether a caller intended a bounded task or a durable
+conversation, but provider output never authorizes Sessions to end either one.
+Only an explicit End records the boundary and closes the runner-owned process
+tree.
 
 A server or watcher that must outlive an agent turn should be launched as its
 own Sessions command session. A process backgrounded inside a provider terminal

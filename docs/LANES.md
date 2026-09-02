@@ -56,9 +56,12 @@ runner holds it open, the session reads as needing you with a line such as
 "Allow? Run `npm test`", and it is answered from the conversation view, from a
 lane row in the Lanes panel, with `sessions approve <id> [--deny |
 --for-session]`, or over the API. The answer is recorded in the session's
-transcript with who gave it, and a manager lane can answer for its own lanes.
-Nothing is approved on silence: a request still open when the turn is
-cancelled or the runner stops is denied.
+transcript with who gave it, `sessions cat <id>` shows both the request and the
+answer as approval audit records, and a manager lane can answer for its own
+lanes. For Codex, **Ask me** uses the provider's untrusted approval policy in a
+workspace-write sandbox, so ordinary commands ask instead of proceeding under
+the on-request policy. Nothing is approved on silence: a request still open
+when the turn is cancelled or the runner stops is denied.
 
 Your own Claude allow and deny rules still apply first, so an asking session
 prompts only for what you would have been asked yourself.
