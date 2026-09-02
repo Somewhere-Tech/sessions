@@ -1047,7 +1047,7 @@ func TestAgentControlTranslation(t *testing.T) {
 	}
 	joined := strings.Join(body.Args, " ")
 	for _, want := range []string{
-		"--sandbox workspace-write", "--ask-for-approval on-request", "--model gpt-5.2-codex",
+		"--sandbox workspace-write", "--ask-for-approval untrusted", "--model gpt-5.2-codex",
 		`model_reasoning_effort="high"`, `service_tier="priority"`,
 	} {
 		if !strings.Contains(joined, want) {

@@ -119,7 +119,7 @@ func applyResolvedPermissions(tool state.SessionTool, args []string, permissions
 		if permissions == state.PermissionsFull {
 			cleaned = append([]string{"--dangerously-bypass-approvals-and-sandbox"}, cleaned...)
 		} else if len(extractPermissionArgs(tool, cleaned)) == 0 {
-			cleaned = append([]string{"--sandbox", "workspace-write", "--ask-for-approval", "on-request"}, cleaned...)
+			cleaned = append([]string{"--sandbox", "workspace-write", "--ask-for-approval", "untrusted"}, cleaned...)
 		}
 	}
 	return cleaned

@@ -27,7 +27,7 @@ func TestApplyInheritedPermissionsPreservesProviderSpecificMode(t *testing.T) {
 		},
 		{
 			name: "Codex sandbox", tool: state.ToolCodex,
-			child:  []string{"--sandbox", "workspace-write", "--ask-for-approval", "on-request", "--model", "gpt"},
+			child:  []string{"--sandbox", "workspace-write", "--ask-for-approval", "untrusted", "--model", "gpt"},
 			parent: []string{"--sandbox", "read-only", "--ask-for-approval", "untrusted"},
 			want:   []string{"--sandbox", "read-only", "--ask-for-approval", "untrusted", "--model", "gpt"},
 		},

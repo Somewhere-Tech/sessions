@@ -134,13 +134,14 @@ function resolveCommand(
   }
   if (tool === 'codex') {
     // Full access maps to Codex's exact no-sandbox, no-approval flag. Ask me
-    // is workspace-write with on-request approvals, routed through Sessions.
+    // is workspace-write with Codex's untrusted policy, so ordinary commands
+    // really ask and the request routes through Sessions.
     // Plan keeps Codex read-only so it can look and think but not change.
     const args = access === 'full'
         ? ['--dangerously-bypass-approvals-and-sandbox']
         : access === 'plan'
           ? ['--sandbox', 'read-only', '--ask-for-approval', 'on-request']
-          : ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request'];
+          : ['--sandbox', 'workspace-write', '--ask-for-approval', 'untrusted'];
     if (codexModel.trim()) args.push('--model', codexModel.trim());
     if (codexEffort) args.push('-c', `model_reasoning_effort="${codexEffort}"`);
     return { cmd: 'codex', args };

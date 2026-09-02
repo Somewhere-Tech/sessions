@@ -50,7 +50,7 @@ var toolPresets = map[string]toolPreset{
 	},
 	"codex": {
 		command:  "codex",
-		args:     []string{"-c", "check_for_update_on_startup=false", "--sandbox", "workspace-write", "--ask-for-approval", "on-request"},
+		args:     []string{"-c", "check_for_update_on_startup=false", "--sandbox", "workspace-write", "--ask-for-approval", "untrusted"},
 		fullArgs: []string{"-c", "check_for_update_on_startup=false", "--dangerously-bypass-approvals-and-sandbox"},
 	},
 	"shell": {},
