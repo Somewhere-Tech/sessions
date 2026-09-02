@@ -799,7 +799,7 @@ export async function fetchProjects(signal?: AbortSignal): Promise<ProjectView[]
   return body.projects ?? [];
 }
 
-// approveSession answers the permission a Rich Codex lane is waiting on.
+// approveSession answers the permission a Rich lane is waiting on.
 // fromSessionId attributes the decision to a lane, the way `sessions approve`
 // run inside a manager does; a person deciding passes nothing.
 export async function approveSession(

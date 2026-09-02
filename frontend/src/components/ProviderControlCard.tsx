@@ -14,7 +14,7 @@ interface Props {
   // Rich sessions have no terminal; a question from one is answered in the
   // composer, so the card must not point at a terminal that does not exist.
   terminalAvailable?: boolean;
-  // A permission a Rich Codex lane is holding open. It is decided, not
+  // A permission a Rich lane is holding open. It is decided, not
   // replied to: the lane waits until one of these buttons is pressed.
   approval?: PendingApproval | null;
   onApprove?: (decision: ApprovalDecision) => Promise<void> | void;

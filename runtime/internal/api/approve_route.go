@@ -9,7 +9,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
-// handleApprove answers the permission a Rich Codex session is holding open.
+// handleApprove answers the permission a Rich session is holding open.
 // The decision goes to the runner as an Approve frame; the runner's own
 // approval_resolved event is what clears the pending prompt, so the response
 // here reports what was answered rather than a state the daemon guessed.
