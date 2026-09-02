@@ -62,6 +62,8 @@
 }
 .session-active-copy { min-width: 0; }
 .session-parent-breadcrumb { display: block; margin-bottom: 2px; color: var(--fg-faint); font-size: 12px; }
+button.session-parent-breadcrumb { appearance: none; background: none; border: 0; padding: 0; margin-bottom: 2px; font: inherit; font-size: 12px; color: var(--fg-faint); cursor: pointer; text-align: left; }
+button.session-parent-breadcrumb:hover, button.session-parent-breadcrumb:focus-visible { color: var(--fg); text-decoration: underline; outline: none; }
 .session-parent-breadcrumb span { padding: 0 4px; }
 .session-active-title-row { display: flex; align-items: center; gap: 9px; }
 .session-active-title-row h1 { min-width: 0; overflow: hidden; margin: 0; color: var(--fg); font-size: 17px; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }

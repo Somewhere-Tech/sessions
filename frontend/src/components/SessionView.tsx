@@ -19,7 +19,8 @@ import { MachineMark } from './MachineMark';
 import { readInitialSessionView, writeSessionView, type SessionViewMode } from '../lib/sessionViewPreference';
 import { LoadingShell } from './LoadingShell';
 import { ConversationForkButton } from './ConversationForkButton';
-import { agentLedDescendants } from '../lib/workingSet';
+import { agentLedDescendants, isAgentLedChild } from '../lib/workingSet';
+import { handBackMessage } from '../lib/handBack';
 import { SubagentsPanel } from './SubagentsPanel';
 
 import type { ActiveStatus } from '../lib/activeStatus';
@@ -83,6 +84,19 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   const [forkMode, setForkMode] = useState(false);
   const [terminalExpanded, setTerminalExpanded] = useState(false);
   const [subagentsOpen, setSubagentsOpen] = useState(false);
+  const [handingBack, setHandingBack] = useState(false);
+  // The breakout loop: a lane opened from its manager reports back into the
+  // manager's conversation and returns the person there.
+  const handBackToManager = async (managerId: string): Promise<void> => {
+    if (!session) return;
+    setHandingBack(true);
+    try {
+      await submitAttributedMessage(managerId, handBackMessage(session), undefined, session.id);
+      onOpenSession?.(managerId);
+    } finally {
+      setHandingBack(false);
+    }
+  };
   const sessionViewRef = useRef<HTMLDivElement>(null);
   const terminalModePillRef = useRef<HTMLSpanElement>(null);
   const session = useSessions((s) => s.sessions.find((x) => x.id === sessionId)) ?? null;
@@ -465,7 +479,15 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
       <header className="session-active-header">
         {onBack ? <button type="button" className="mobile-session-back" onClick={onBack} aria-label="Back to sessions">‹</button> : null}
         <div className="session-active-copy">
-          {parent ? <span className="session-parent-breadcrumb">{resolvedSessionLabel(parent)} <span>/</span> {session?.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}</span> : null}
+          {parent ? (
+            onOpenSession ? (
+              <button type="button" className="session-parent-breadcrumb" onClick={() => onOpenSession(parent.id)} title={`Back to ${resolvedSessionLabel(parent)}`}>
+                ‹ {resolvedSessionLabel(parent)} <span>/</span> {session && isAgentLedChild(session) ? 'lane' : session?.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}
+              </button>
+            ) : (
+              <span className="session-parent-breadcrumb">{resolvedSessionLabel(parent)} <span>/</span> {session?.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}</span>
+            )
+          ) : null}
           <div className="session-active-title-row">
             <h1>{session ? resolvedSessionLabel(session) : 'Session'}</h1>
             <span className={`session-live-pill${statusTone}`}>{statusLabel}</span>
@@ -533,6 +555,17 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               <strong>{subagents.length}</strong>
               {workingSubagents ? <small>· {workingSubagents} working</small> : null}
               <span aria-hidden>›</span>
+            </button>
+          ) : null}
+          {session && parent && isAgentLedChild(session) && !session.exited && onOpenSession ? (
+            <button
+              type="button"
+              className="btn btn-ghost session-handback-action"
+              disabled={handingBack}
+              title={`Post this lane's latest result into ${resolvedSessionLabel(parent)} and go back to it`}
+              onClick={() => void handBackToManager(parent.id)}
+            >
+              {handingBack ? 'Handing back…' : 'Hand back'}
             </button>
           ) : null}
           {session ? <SessionPopOutButton sessionId={session.id} label={resolvedSessionLabel(session)} /> : null}
@@ -715,18 +748,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             onEnd={endSession}
             onApprove={(lane, decision) => approveSession(lane.id, decision)}
             onHandBack={async (lane) => {
-              const line = (lane.idleReason === 'needs-input' && lane.idleDetail)
-                ? `is waiting: ${lane.idleDetail}`
-                : lane.lastSummary?.trim()
-                  ? `reports: ${lane.lastSummary.trim().split('\n')[0]}`
-                  : 'has nothing to report yet';
-              const where = lane.branch ? ` Its work is on branch ${lane.branch}${lane.worktreePath ? ` in ${lane.worktreePath}` : ''}.` : '';
-              await submitAttributedMessage(
-                session.id,
-                `Lane "${resolvedSessionLabel(lane)}" ${line} (id ${lane.id.slice(0, 8)}; \`sessions cat ${lane.id.slice(0, 8)}\` for the full conversation).${where}`,
-                undefined,
-                lane.id
-              );
+              await submitAttributedMessage(session.id, handBackMessage(lane), undefined, lane.id);
             }}
           />
         </div>
