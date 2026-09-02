@@ -129,7 +129,7 @@ func (a *app) nameProject(folder, name string) error {
 	}
 	var suggestion projectRecord
 	if err := a.getJSON("/api/projects/suggest?cwd="+escapeID(absolute), &suggestion); err != nil {
-		return err
+		return fail(2, "could not name this project: %s", err)
 	}
 	suggestion.Name = strings.TrimSpace(name)
 	var saved projectRecord

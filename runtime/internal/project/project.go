@@ -294,21 +294,23 @@ func (s *Store) resolveLocked(cwd string) Resolution {
 // Suggest is what "Name this project" starts from for an implicit project:
 // the folder's top-level as the single root, the GitHub repo or folder name
 // as the name, and whatever the folder identifies about itself.
-func (s *Store) Suggest(cwd string) Project {
+func (s *Store) Suggest(cwd string) (Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_ = s.load()
+	if err := s.load(); err != nil {
+		return Project{}, err
+	}
 	resolution := s.resolveLocked(cwd)
 	if !resolution.Implicit {
 		// The folder is already claimed: hand back that project so naming
 		// it again renames in place instead of colliding with itself.
 		for _, project := range s.projects {
 			if project.ID == resolution.ProjectID {
-				return project
+				return project, nil
 			}
 		}
 	}
-	return Project{Name: resolution.Name, Roots: []string{resolution.TopLevel}, GitHub: resolution.GitHub, Somewhere: resolution.Somewhere}
+	return Project{Name: resolution.Name, Roots: []string{resolution.TopLevel}, GitHub: resolution.GitHub, Somewhere: resolution.Somewhere}, nil
 }
 
 func newID(root string, now int64) string {

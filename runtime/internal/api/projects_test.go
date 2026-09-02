@@ -95,3 +95,17 @@ func TestProjectsRouteCreatesAndForgets(t *testing.T) {
 		t.Fatalf("second delete status=%d", again.Code)
 	}
 }
+
+func TestProjectsSuggestRouteReportsProjectFileError(t *testing.T) {
+	daemon := newTestDaemon(t)
+	path := filepath.Join(t.TempDir(), "projects.json")
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	daemon.handler.projects = project.NewStore(path, nil)
+
+	response := serve(t, daemon.handler, http.MethodGet, "/api/projects/suggest?cwd="+t.TempDir(), nil, "127.0.0.1:4321", nil)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "Sessions could not suggest this project: parse projects") {
+		t.Fatalf("suggest status=%d body=%s", response.Code, response.Body.String())
+	}
+}

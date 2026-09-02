@@ -68,7 +68,10 @@ func TestNamedProjectClaimsFoldersAndRejectsDoubleClaims(t *testing.T) {
 	clock := time.Date(2026, 9, 2, 9, 0, 0, 0, time.UTC)
 	store := NewStore(path, func() time.Time { return clock })
 
-	suggestion := store.Suggest(worktree)
+	suggestion, err := store.Suggest(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if suggestion.Name != "somewhere-tech/sessions" || len(suggestion.Roots) != 1 || suggestion.Roots[0] != repo {
 		t.Fatalf("suggestion = %#v", suggestion)
 	}
@@ -109,6 +112,17 @@ func TestNamedProjectClaimsFoldersAndRejectsDoubleClaims(t *testing.T) {
 	back, _ := again.Resolve(repo)
 	if !back.Implicit {
 		t.Fatalf("deleted project still claims folder: %#v", back)
+	}
+}
+
+func TestSuggestReturnsProjectFileLoadError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects.json")
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(path, nil)
+	if _, err := store.Suggest(t.TempDir()); err == nil {
+		t.Fatal("suggestion hid an unreadable project file")
 	}
 }
 
