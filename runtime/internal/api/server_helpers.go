@@ -412,3 +412,14 @@ func (s *Server) wakePausedSession(ctx context.Context, id string) (*state.Sessi
 	session, live := s.registry.Get(id)
 	return session, live, nil
 }
+
+// sessionOnContact returns a live session, waking a reboot-paused one when
+// needed. WebSocket reads report any remaining paused state to the peer, so
+// they need the live result rather than a separate wake error.
+func (s *Server) sessionOnContact(ctx context.Context, id string) (*state.Session, bool) {
+	if session, live := s.registry.Get(id); live {
+		return session, true
+	}
+	session, live, _ := s.wakePausedSession(ctx, id)
+	return session, live
+}

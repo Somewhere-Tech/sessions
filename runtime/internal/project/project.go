@@ -49,7 +49,7 @@ type Resolution struct {
 	Somewhere string `json:"somewhere,omitempty"`
 }
 
-type file struct {
+type projectFile struct {
 	Version  int       `json:"version"`
 	Projects []Project `json:"projects"`
 }
@@ -86,7 +86,7 @@ func (s *Store) load() error {
 	if err != nil {
 		return fmt.Errorf("read projects: %w", err)
 	}
-	var parsed file
+	var parsed projectFile
 	if err := json.Unmarshal(encoded, &parsed); err != nil {
 		return fmt.Errorf("parse projects %s: %w", s.path, err)
 	}
@@ -99,7 +99,7 @@ func (s *Store) save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("create projects directory: %w", err)
 	}
-	encoded, err := json.MarshalIndent(file{Version: fileVersion, Projects: s.projects}, "", "  ")
+	encoded, err := json.MarshalIndent(projectFile{Version: fileVersion, Projects: s.projects}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode projects: %w", err)
 	}
