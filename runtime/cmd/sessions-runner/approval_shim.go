@@ -75,6 +75,16 @@ type jsonrpcError struct {
 }
 
 func runApprovalShim(args []string) int {
+	endpoint := approvalShimEndpointArg(args)
+	if endpoint == "" {
+		fmt.Fprintln(os.Stderr, "approval-shim: --socket is required")
+		return 2
+	}
+	dial := func(ctx context.Context) (net.Conn, error) { return ipc.DialContext(ctx, endpoint) }
+	return serveApprovalShim(os.Stdin, os.Stdout, dial)
+}
+
+func approvalShimEndpointArg(args []string) string {
 	endpoint := ""
 	for index := 0; index < len(args); index++ {
 		if args[index] == "--socket" && index+1 < len(args) {
@@ -82,12 +92,7 @@ func runApprovalShim(args []string) int {
 			index++
 		}
 	}
-	if endpoint == "" {
-		fmt.Fprintln(os.Stderr, "approval-shim: --socket is required")
-		return 2
-	}
-	dial := func(ctx context.Context) (net.Conn, error) { return ipc.DialContext(ctx, endpoint) }
-	return serveApprovalShim(os.Stdin, os.Stdout, dial)
+	return endpoint
 }
 
 func serveApprovalShim(stdin io.Reader, stdout io.Writer, dial func(context.Context) (net.Conn, error)) int {

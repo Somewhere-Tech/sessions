@@ -39,6 +39,36 @@ func TestWithApprovalShimSkipsBypassingLanes(t *testing.T) {
 	}
 }
 
+func TestApprovalShimWindowsPathsRoundTripThroughMCPConfig(t *testing.T) {
+	runner := `C:\Program Files\Sessions\runtime\sessions-runner.exe`
+	socket := `\\.\pipe\somewhere-sessions-0123456789ab-11111111-2222-4333-8444-555555555555`
+	endpoint := approvalEndpoint(socket)
+	if endpoint != socket+"-approve" {
+		t.Fatalf("approval endpoint = %q", endpoint)
+	}
+
+	args := withApprovalShim(nil, runner, endpoint)
+	if len(args) != 4 || args[2] != "--mcp-config" {
+		t.Fatalf("Claude args = %#v", args)
+	}
+	var definition struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(args[3]), &definition); err != nil {
+		t.Fatalf("decode MCP config %q: %v", args[3], err)
+	}
+	server := definition.MCPServers["sessions"]
+	if server.Command != runner {
+		t.Fatalf("shim executable = %q, want %q", server.Command, runner)
+	}
+	if got := approvalShimEndpointArg(server.Args); got != endpoint {
+		t.Fatalf("shim --socket = %q, want %q; args=%#v", got, endpoint, server.Args)
+	}
+}
+
 // The shim speaks MCP on stdio and forwards each tools/call to the runner's
 // approval endpoint, returning Claude's allow/deny payload.
 func TestApprovalShimForwardsToTheRunner(t *testing.T) {

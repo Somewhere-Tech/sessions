@@ -8,8 +8,19 @@ import (
 	"testing"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
+
+type launcherWithoutWake struct{}
+
+func (launcherWithoutWake) ProgramArguments(proto.LaunchRequest) []string { return nil }
+func (launcherWithoutWake) Launch(context.Context, proto.LaunchRequest) (proto.Runner, error) {
+	return nil, nil
+}
+func (launcherWithoutWake) Attach(context.Context, proto.RunnerInfo) (proto.Runner, error) {
+	return nil, nil
+}
 
 func TestPendingRestoreAppearsAsUnavailableInsteadOfIdle(t *testing.T) {
 	dir := t.TempDir()
@@ -82,6 +93,24 @@ func TestPendingRestoreOverridesOlderLostRecord(t *testing.T) {
 	if len(listed) != 1 || listed[0].UnreachableReason != restartRestorePendingReason ||
 		listed[0].IdleReason != "needs-recovery" {
 		t.Fatalf("pending restore did not replace stale lost record: %+v", listed)
+	}
+}
+
+func TestPausedSessionWithoutPlatformWakerNamesTheExactResumeCommand(t *testing.T) {
+	dir := t.TempDir()
+	id := "11111111-2222-4333-8444-777777777777"
+	if err := state.WriteRestorePending(state.For(dir, id).RestorePending, id, "paused after restart"); err != nil {
+		t.Fatal(err)
+	}
+	launcher := launcherWithoutWake{}
+	manager := &Manager{
+		config: state.Config{RunnerStateDir: dir}, launcher: launcher,
+		registry: state.NewRegistry(state.Config{RunnerStateDir: dir}, launcher),
+	}
+	_, err := manager.WakePaused(context.Background(), id)
+	want := "this machine cannot restart a paused session in place; resume it with `sessions resume " + id + "`"
+	if err == nil || err.Error() != want {
+		t.Fatalf("WakePaused() error = %q, want %q", err, want)
 	}
 }
 

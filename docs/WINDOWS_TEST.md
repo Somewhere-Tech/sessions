@@ -498,6 +498,178 @@ daemon into the same read-modify-write.
 unavailable on this platform" on Windows, so only its goroutine assertion is
 live. A handle leak in the cancellation path is not covered by a green run.
 
+### 9a. Delegated lanes and approval plumbing — 25 minutes
+
+These paths are covered by portable tests and the Windows compile gate, but the
+named-pipe handoff, Git-for-Windows process, and provider launches still need a
+real Windows user session. Start with the argument contracts:
+
+```powershell
+cd runtime
+go test .\cmd\sessions-runner `
+  -run '^TestApprovalShimWindowsPathsRoundTripThroughMCPConfig$' -count=1 -v
+go test .\internal\session `
+  -run '^TestPausedSessionWithoutPlatformWakerNamesTheExactResumeCommand$' `
+  -count=1 -v
+go test .\internal\session `
+  -run '^TestWorktreesCleanOnlyRemovesDeadCleanMergedAndDryRunDoesNothing$' `
+  -count=1 -v
+```
+
+**Pass:** all three tests pass. The first proves that an executable under
+`C:\Program Files`, JSON escaping in `--mcp-config`, and a
+`\\.\pipe\somewhere-sessions-...-approve` argument decode to the exact original
+strings. The second pins the recovery instruction used by the Windows launcher,
+which does not implement in-place wake. The third pins the cleanup ledger order:
+`worktree_clean_requested`, then `worktree_cleaned`.
+
+Create a disposable repository and a shell manager. Run this in a normal,
+unelevated PowerShell whose `sessions` CLI points at the Windows host under test:
+
+```powershell
+$repo = Join-Path $env:USERPROFILE "sessions-lanes-$PID"
+New-Item -ItemType Directory -Path $repo | Out-Null
+git -C $repo init -b main
+git -C $repo config user.name 'Sessions Windows Test'
+git -C $repo config user.email 'sessions-windows@example.test'
+Set-Content -LiteralPath (Join-Path $repo README.md) -Value 'fixture'
+git -C $repo add README.md
+git -C $repo commit -m 'fixture'
+
+$manager = sessions --json new --tool shell --cwd $repo `
+  --name windows-lane-manager | ConvertFrom-Json
+$env:SESSIONS_SESSION_ID = $manager.id
+$device = sessions --json new --tool shell --cwd $repo --name CON |
+  ConvertFrom-Json
+$deviceStatus = sessions --json status $device.id | ConvertFrom-Json
+$deviceStatus | Select-Object id, cwd, worktree_path, branch, base, source_repo
+git -C $deviceStatus.worktree_path status --short --branch
+sessions team $manager.id
+sessions team --all
+```
+
+**Pass:** `worktree_path` is
+`<parent-of-repo>\sessions-lanes-<pid>-wt\session-con`, the branch is
+`sessions/session-con`, and Git reports a clean worktree. Both team commands
+show the child; every displayed path under the profile begins with `~\`, never
+the mixed form `~/...\...`. `CON` becoming `session-con` is required: `CON`,
+`PRN`, `AUX`, `NUL`, `COM1`–`COM9`, and `LPT1`–`LPT9` are Windows device names,
+not usable directory basenames.
+
+Exercise the path-length boundary separately. This makes the source path long
+without making any individual NTFS component longer than 255 characters:
+
+```powershell
+$deep = $env:USERPROFILE
+1..4 | ForEach-Object {
+  $deep = Join-Path $deep ("segment-$_-" + ('x' * 40))
+}
+$deepRepo = Join-Path $deep repo
+New-Item -ItemType Directory -Path $deepRepo -Force | Out-Null
+git -C $deepRepo init -b main
+git -C $deepRepo config user.name 'Sessions Windows Test'
+git -C $deepRepo config user.email 'sessions-windows@example.test'
+Set-Content -LiteralPath (Join-Path $deepRepo README.md) -Value 'long fixture'
+git -C $deepRepo add README.md
+git -C $deepRepo commit -m 'long fixture'
+
+$long = sessions --json new --tool shell --cwd $deepRepo `
+  --name ('n' * 48) | ConvertFrom-Json
+$longStatus = sessions --json status $long.id | ConvertFrom-Json
+$longStatus.worktree_path
+$longStatus.worktree_path.Length
+git -C $longStatus.worktree_path status --short --branch
+```
+
+**Pass:** creation exits zero, the reported worktree exists, and Git reads it.
+If `git worktree add` rejects the length on this machine, record
+`LongPathsEnabled` and `git config --show-origin --get core.longpaths`; then
+confirm `git -C $deepRepo worktree list` contains only the source checkout and
+`git -C $deepRepo branch --list 'sessions/*'` contains no branch from the failed
+attempt. That failure is a host-compatibility result, but a leftover directory
+or branch is a Sessions rollback bug.
+
+End and clean the short child, then inspect both views:
+
+```powershell
+sessions kill $device.id
+Start-Sleep -Seconds 3
+sessions --json worktrees clean | ConvertFrom-Json
+sessions --json worktrees | ConvertFrom-Json
+sessions --json worktrees --all | ConvertFrom-Json |
+  Where-Object session -eq $device.id |
+  Select-Object session, tree_state, cleaned, cleaned_at, branch_removed
+```
+
+**Pass:** cleanup reports `action: removed`; the default list omits the child;
+`--all` reports `tree_state: cleaned`, `cleaned: true`, a nonzero `cleaned_at`,
+and `branch_removed: true`. The unit test above is the direct evidence that the
+two append-only ledger events were written in order.
+
+With disposable Claude and Codex credentials available to this Windows user,
+exercise the two provider paths:
+
+```powershell
+$fanout = sessions --json fanout --with claude,codex --no-wait --cwd $repo `
+  -- 'Reply with WINDOWS_FANOUT_OK and your provider name.' | ConvertFrom-Json
+$fanout.lanes | Format-Table provider, id, name, error
+sessions team $manager.id
+sessions team --all
+
+$approval = sessions --json new --tool claude --permissions constrained `
+  --cwd $repo --name windows-approval `
+  'Use Bash to run git status --short, and wait for approval.' | ConvertFrom-Json
+do {
+  $approvalStatus = sessions --json status $approval.id | ConvertFrom-Json
+  if ($approvalStatus.state -ne 'needs-you') { Start-Sleep -Seconds 1 }
+} until ($approvalStatus.state -eq 'needs-you')
+Get-ChildItem \\.\pipe\ |
+  Where-Object Name -Like 'somewhere-sessions-*-approve'
+sessions team $manager.id
+sessions approve $approval.id
+sessions cat $approval.id
+```
+
+**Pass:** fanout starts exactly one lane for each provider with no `error`, and
+both team views count them under the shell manager. Before approval, the Claude
+lane reads `needs-you`, at least one pipe name ends in `-approve`, and no shim
+error mentions a malformed executable, JSON document, or pipe path. After
+approval, `sessions cat` contains one `approval_requested` and one
+`approval_resolved` audit record.
+
+Finally, pin the current Windows recovery behavior without stopping a real
+runner. A synthetic paused marker is enough because first contact reaches the
+launcher capability check before any provider launch:
+
+```powershell
+$runnerRoot = if ($env:SESSIONS_STATE_DIR) {
+  $env:SESSIONS_STATE_DIR
+} else {
+  Join-Path $env:LOCALAPPDATA 'Sessions\state\runners'
+}
+$paused = [guid]::NewGuid().ToString()
+$marker = Join-Path $runnerRoot "$paused.restore-pending.json"
+$json = @{
+  session_id = $paused
+  reason = 'manual Windows wake check'
+  detected_at_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+} | ConvertTo-Json -Compress
+[IO.File]::WriteAllText($marker, $json, [Text.UTF8Encoding]::new($false))
+sessions cat $paused
+Remove-Item -LiteralPath $marker
+
+$fanout.lanes | ForEach-Object { sessions kill $_.id }
+sessions kill $approval.id
+sessions kill $long.id
+sessions kill $manager.id
+```
+
+**Pass:** `sessions cat` exits nonzero and names the exact safe action
+`sessions resume <id>`. It must not silently create a replacement id. Windows
+has no launchd job or persisted per-runner launch environment from which the
+daemon can safely reconstruct an in-place wake; native same-id wake remains a
+future Windows implementation task.
+
 ### 10. Uninstall, last, because it ends the run — 15 minutes
 
 Uninstall removes the two things Sessions wrote outside its own package: the
