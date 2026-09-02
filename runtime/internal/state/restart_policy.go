@@ -13,6 +13,13 @@ import (
 
 const DefaultPinnedBootRestoreLimit = 8
 
+// RecentRestoreWindow is how recently a person must have spoken to an unpinned
+// session for it to come back automatically after a reboot. A session is
+// durable work; the person who was talking to it yesterday expects it to be
+// there, not to find it paused. Pinned roots come back regardless of age.
+// Lanes never restart on their own, and the process ceiling still applies.
+const RecentRestoreWindow = 24 * time.Hour
+
 type RestartPermit struct {
 	BootID      string `json:"boot_id"`
 	CreatedAtMS int64  `json:"created_at_ms"`
@@ -61,7 +68,7 @@ func EvaluateRestartPermit(paths Paths, currentBootID string, pinnedLimit int) (
 	if pinnedLimit <= 0 {
 		pinnedLimit = DefaultPinnedBootRestoreLimit
 	}
-	eligible, scanErr := pinnedRestoreIDs(paths.Dir, pinnedLimit)
+	eligible, scanErr := restoreCandidateIDs(paths.Dir, pinnedLimit, time.Now())
 	if scanErr == nil {
 		index := sort.SearchStrings(eligible, paths.ID)
 		if index < len(eligible) && eligible[index] == paths.ID {
@@ -72,9 +79,9 @@ func EvaluateRestartPermit(paths Paths, currentBootID string, pinnedLimit int) (
 			return RestartDecision{Allowed: true, PinnedRestore: true}, nil
 		}
 	}
-	reason := fmt.Sprintf("automatic restore paused after reboot; only the %d most recently active pinned session roots restart automatically", pinnedLimit)
+	reason := fmt.Sprintf("paused after restart; Sessions restarts at most %d sessions automatically (pinned ones, then the ones spoken to in the last 24 hours) — resume this one to continue its conversation", pinnedLimit)
 	if scanErr != nil {
-		reason = "automatic restore paused after reboot because Sessions could not safely select pinned roots: " + scanErr.Error()
+		reason = "paused after restart because Sessions could not safely choose which sessions to restart: " + scanErr.Error() + " — resume this one to continue its conversation"
 	}
 	if err := os.Remove(paths.KeepAlive); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return RestartDecision{Reason: reason}, fmt.Errorf("remove stale runner permit: %w", err)
@@ -145,29 +152,39 @@ func CountRestorePending(dir string) (int, error) {
 	return count, nil
 }
 
-func pinnedRestoreIDs(dir string, limit int) ([]string, error) {
+// restoreCandidateIDs chooses which session roots restart automatically on a
+// new boot: pinned roots first, then unpinned roots a person spoke to within
+// RecentRestoreWindow, most recent first, capped at limit. Everything else
+// stays paused with a resumable marker. Lanes are never chosen.
+func restoreCandidateIDs(dir string, limit int, now time.Time) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 	type candidate struct {
 		id       string
+		pinned   bool
 		activity int64
 	}
 	candidates := make([]candidate, 0)
+	cutoff := now.Add(-RecentRestoreWindow).UnixMilli()
 	for _, entry := range entries {
 		id, ok := RunnerIDFromMetadataName(entry.Name())
 		if !ok {
 			continue
 		}
 		metadata, err := ReadRunnerMetadata(filepath.Join(dir, entry.Name()))
-		if err != nil || !metadata.Pinned || metadata.Kind == KindLane {
+		if err != nil || metadata.Kind == KindLane {
 			continue
 		}
-		// A pinned but already-stopped session must not consume one of the
-		// bounded restore slots. The permit is the durable proof that this
-		// runner was actually alive before the reboot.
+		// An already-stopped session must not consume one of the bounded
+		// restore slots. The permit is the durable proof that this runner was
+		// actually alive before the reboot.
 		if _, err := readRestartPermit(For(dir, id).KeepAlive); err != nil {
+			continue
+		}
+		recentlySpokenTo := metadata.LastHumanMessageAt != nil && *metadata.LastHumanMessageAt >= cutoff
+		if !metadata.Pinned && !recentlySpokenTo {
 			continue
 		}
 		activity := metadata.Info.CreatedAt
@@ -176,9 +193,12 @@ func pinnedRestoreIDs(dir string, limit int) ([]string, error) {
 				activity = *stamp
 			}
 		}
-		candidates = append(candidates, candidate{id: id, activity: activity})
+		candidates = append(candidates, candidate{id: id, pinned: metadata.Pinned, activity: activity})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].pinned != candidates[j].pinned {
+			return candidates[i].pinned
+		}
 		if candidates[i].activity == candidates[j].activity {
 			return candidates[i].id < candidates[j].id
 		}

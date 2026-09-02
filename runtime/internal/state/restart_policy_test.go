@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRestartPermitKeepsSameBootCrashRestartable(t *testing.T) {
@@ -88,7 +89,7 @@ func TestPinnedSelectionIgnoresSidecars(t *testing.T) {
 	if err := WriteRestartPermit(For(dir, id).KeepAlive, "old-boot"); err != nil {
 		t.Fatal(err)
 	}
-	selected, err := pinnedRestoreIDs(dir, 8)
+	selected, err := restoreCandidateIDs(dir, 8, time.Now())
 	if err != nil || len(selected) != 1 || selected[0] != id {
 		t.Fatalf("selected=%v err=%v", selected, err)
 	}
@@ -108,7 +109,7 @@ func TestPinnedSelectionDoesNotCountAlreadyStoppedSessions(t *testing.T) {
 	if err := WriteRestartPermit(For(dir, running).KeepAlive, "old-boot"); err != nil {
 		t.Fatal(err)
 	}
-	selected, err := pinnedRestoreIDs(dir, 8)
+	selected, err := restoreCandidateIDs(dir, 8, time.Now())
 	if err != nil || len(selected) != 1 || selected[0] != running {
 		t.Fatalf("selected=%v err=%v", selected, err)
 	}
@@ -130,7 +131,7 @@ func TestPinnedSelectionPrefersRecentActivityOverLexicographicID(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	selected, err := pinnedRestoreIDs(dir, 1)
+	selected, err := restoreCandidateIDs(dir, 1, time.Now())
 	if err != nil || len(selected) != 1 || selected[0] != newer {
 		t.Fatalf("selected=%v err=%v, want most recently active %s", selected, err, newer)
 	}
@@ -149,5 +150,63 @@ func TestCountRestorePendingIncludesUnreadableEvidence(t *testing.T) {
 	count, err := CountRestorePending(dir)
 	if err != nil || count != 2 {
 		t.Fatalf("CountRestorePending() = %d, %v", count, err)
+	}
+}
+
+// A session a person spoke to yesterday comes back after a reboot even when it
+// was never pinned; one they have not touched in days stays paused, and pinned
+// roots still take the slots first.
+func TestNewBootRestoresRecentlySpokenToUnpinnedRoots(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	recent := now.Add(-2 * time.Hour).UnixMilli()
+	stale := now.Add(-3 * 24 * time.Hour).UnixMilli()
+	write := func(id string, pinned bool, human int64) {
+		t.Helper()
+		if err := WriteMetadata(For(dir, id).Meta, Metadata{
+			ID: id, Pinned: pinned, Cmd: "claude", Cwd: "/work", Cols: 80, Rows: 24,
+			LastHumanMessageAt: &human,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteRestartPermit(For(dir, id).KeepAlive, "old-boot"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recentUnpinned := "11111111-2222-4333-8444-555555555561"
+	staleUnpinned := "11111111-2222-4333-8444-555555555562"
+	oldPinned := "11111111-2222-4333-8444-555555555563"
+	write(recentUnpinned, false, recent)
+	write(staleUnpinned, false, stale)
+	write(oldPinned, true, stale)
+
+	ids, err := restoreCandidateIDs(dir, 8, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, id := range ids {
+		got[id] = true
+	}
+	if !got[recentUnpinned] || !got[oldPinned] || got[staleUnpinned] {
+		t.Fatalf("restore candidates = %v", ids)
+	}
+
+	// With one slot, the pinned root wins over the more recent unpinned one.
+	ids, err = restoreCandidateIDs(dir, 1, now)
+	if err != nil || len(ids) != 1 || ids[0] != oldPinned {
+		t.Fatalf("single slot = %v err=%v", ids, err)
+	}
+
+	decision, err := EvaluateRestartPermit(For(dir, recentUnpinned), "new-boot", 8)
+	if err != nil || !decision.Allowed {
+		t.Fatalf("recent unpinned decision=%+v err=%v", decision, err)
+	}
+	decision, err = EvaluateRestartPermit(For(dir, staleUnpinned), "new-boot", 8)
+	if err != nil || decision.Allowed {
+		t.Fatalf("stale unpinned decision=%+v err=%v", decision, err)
+	}
+	if _, err := os.Stat(For(dir, staleUnpinned).RestorePending); err != nil {
+		t.Fatalf("stale session was not marked resumable: %v", err)
 	}
 }
