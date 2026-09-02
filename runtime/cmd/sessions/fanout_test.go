@@ -16,6 +16,13 @@ import (
 // One request, one lane per installed provider, one join: the fan-out is the
 // way a change gets checked by an agent from each provider.
 func TestFanoutStartsOneLanePerProviderAndJoinsThem(t *testing.T) {
+	// This case exercises fanout from a manager, where Claude children use the
+	// structured runtime and receive their first request through submit. Do not
+	// let that contract depend on whether the test process itself runs inside a
+	// real Sessions session.
+	t.Setenv("SESSIONS_SESSION_ID", "bbbbbbbb-0000-4000-8000-000000000000")
+	t.Setenv("SESSIONS_OWNER_ID", "")
+
 	var mu sync.Mutex
 	created := []map[string]any{}
 	submitted := map[string]string{}
