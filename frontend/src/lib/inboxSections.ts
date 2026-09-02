@@ -71,9 +71,11 @@ export function buildInboxLayout(options: {
   const waiting = attention.filter(sessionNeedsYou).sort((a, b) => lastActivity(b) - lastActivity(a));
 
   const sections = new Map<string, InboxSection>();
+  const pinnedProjects = new Set<string>();
   const sectionFor = (session: SessionInfo): InboxSection => {
     const ref = projectFor(session);
     const key = ref && !ref.implicit ? ref.id : OTHER_PROJECTS_ID;
+    if (ref && !ref.implicit && ref.pinned) pinnedProjects.add(key);
     let section = sections.get(key);
     if (!section) {
       section = {
@@ -104,7 +106,10 @@ export function buildInboxLayout(options: {
   const other = sections.get(OTHER_PROJECTS_ID) ?? null;
   const named = [...sections.values()]
     .filter((section) => section.id !== OTHER_PROJECTS_ID)
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+    .sort((a, b) => {
+      const pinned = Number(pinnedProjects.has(b.id)) - Number(pinnedProjects.has(a.id));
+      return pinned || b.updatedAt - a.updatedAt;
+    });
 
   return {
     needsYou: waiting.slice(0, NEEDS_YOU_STRIP_LIMIT),

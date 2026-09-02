@@ -676,6 +676,7 @@ button.session-tree-group-head { width: 100%; }
 
 /* Inbox by attention, then by project. */
 .session-tree-group-head.is-attention { color: var(--warn, #e9b44c); }
+.inbox-projects-note { margin: 1px 2px 7px; color: var(--fg-faint); font-size: 12px; line-height: 1.35; }
 .inbox-needs-row {
   display: grid;
   width: 100%;

@@ -58,6 +58,8 @@ export interface FakeMachine {
   directories?: DirectoryCandidate[];
   providers?: ProviderStatus[];
   team?: TeamListing;
+  projectFailure?: { status: number; message: string };
+  teamFailure?: { status: number; message: string };
   /** Optional latency used to expose same-tick duplicate-action races. */
   createDelayMS?: number;
   submitDelayMS?: number;
@@ -264,6 +266,9 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       return jsonResponse({ machineId: machine.machineId ?? machine.id, name: machine.name });
     }
     if (path === '/api/lan') return jsonResponse({ enabled: false, url: null });
+    if (path === '/api/lanes/mine' && machine.teamFailure) {
+      return jsonResponse({ error: machine.teamFailure.message }, machine.teamFailure.status);
+    }
     if (path === '/api/lanes/mine' && machine.team) return jsonResponse(machine.team);
 
     // ── session list & lifecycle ────────────────────────────────────────
@@ -439,6 +444,9 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     if (path === '/api/models/codex') return jsonResponse({ models: [] });
     if (path === '/api/providers' && method === 'GET') {
       return jsonResponse({ providers: machine.providers ?? [] });
+    }
+    if (path === '/api/projects' && machine.projectFailure) {
+      return jsonResponse({ error: machine.projectFailure.message }, machine.projectFailure.status);
     }
     const providerUpdateRoute = /^\/api\/providers\/(claude|codex)\/update$/.exec(path);
     if (providerUpdateRoute && method === 'POST') {

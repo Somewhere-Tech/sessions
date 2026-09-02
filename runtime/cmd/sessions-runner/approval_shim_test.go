@@ -173,6 +173,109 @@ func TestApprovalShimForwardsToTheRunner(t *testing.T) {
 	}
 }
 
+func TestApprovalShimDeniesAndExitsWhenRunnerConnectionCloses(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		_, _ = bufio.NewReader(connection).ReadBytes('\n')
+		_ = connection.Close()
+	}()
+	dial := func(ctx context.Context) (net.Conn, error) {
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, "tcp", listener.Addr().String())
+	}
+
+	stdinReader, stdinWriter := io.Pipe()
+	var stdout strings.Builder
+	done := make(chan int, 1)
+	go func() { done <- serveApprovalShim(stdinReader, &stdout, dial) }()
+	_, err = io.WriteString(stdinWriter, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"approve","arguments":{"tool_name":"Bash","input":{"command":"npm test"}}}}`+"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("shim exit = %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shim did not exit when the runner connection closed")
+	}
+	var response struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(stdout.String()), &response); err != nil {
+		t.Fatalf("decode shim response %q: %v", stdout.String(), err)
+	}
+	var decision map[string]any
+	if len(response.Result.Content) != 1 || json.Unmarshal([]byte(response.Result.Content[0].Text), &decision) != nil || decision["behavior"] != "deny" {
+		t.Fatalf("shim response = %#v", response)
+	}
+}
+
+func TestApprovalShimCancelsRequestWhenStdinCloses(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requestRead := make(chan struct{})
+	connectionClosed := make(chan struct{})
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		_, _ = bufio.NewReader(connection).ReadBytes('\n')
+		close(requestRead)
+		_, _ = connection.Read(make([]byte, 1))
+		close(connectionClosed)
+	}()
+	dial := func(ctx context.Context) (net.Conn, error) {
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, "tcp", listener.Addr().String())
+	}
+
+	stdinReader, stdinWriter := io.Pipe()
+	done := make(chan int, 1)
+	go func() { done <- serveApprovalShim(stdinReader, io.Discard, dial) }()
+	_, err = io.WriteString(stdinWriter, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"approve","arguments":{"tool_name":"Bash","input":{"command":"npm test"}}}}`+"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-requestRead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner never received the request")
+	}
+	_ = stdinWriter.Close()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("shim exit = %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shim did not exit when stdin closed")
+	}
+	select {
+	case <-connectionClosed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shim left the runner request connected")
+	}
+}
+
 func TestClaudeRunnerHoldsAnApprovalUntilTheDaemonAnswers(t *testing.T) {
 	paths := stateFor(t)
 	file, err := osCreate(paths.Structured)

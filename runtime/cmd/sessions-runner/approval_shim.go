@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
@@ -96,6 +95,8 @@ func approvalShimEndpointArg(args []string) string {
 }
 
 func serveApprovalShim(stdin io.Reader, stdout io.Writer, dial func(context.Context) (net.Conn, error)) int {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	var writeMu sync.Mutex
 	reply := func(id json.RawMessage, result any, failure *jsonrpcError) {
 		if len(id) == 0 || string(id) == "null" {
@@ -115,29 +116,61 @@ func serveApprovalShim(stdin io.Reader, stdout io.Writer, dial func(context.Cont
 		_, _ = stdout.Write(append(encoded, '\n'))
 		writeMu.Unlock()
 	}
-	reader := bufio.NewReader(stdin)
-	var wg sync.WaitGroup
-	for {
-		line, err := reader.ReadBytes('\n')
-		if len(strings.TrimSpace(string(line))) > 0 {
-			var request jsonrpcRequest
-			if json.Unmarshal(line, &request) == nil {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					handleShimRequest(request, dial, reply)
-				}()
+	type readResult struct {
+		line []byte
+		err  error
+	}
+	reads := make(chan readResult, 1)
+	go func() {
+		reader := bufio.NewReader(stdin)
+		for {
+			line, err := reader.ReadBytes('\n')
+			reads <- readResult{line: line, err: err}
+			if err != nil {
+				return
 			}
 		}
-		if err != nil {
-			break
+	}()
+	runnerGone := make(chan struct{}, 1)
+	var wg sync.WaitGroup
+	reading := true
+	for reading {
+		select {
+		case result := <-reads:
+			if len(strings.TrimSpace(string(result.line))) > 0 {
+				var request jsonrpcRequest
+				if json.Unmarshal(result.line, &request) == nil {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						if handleShimRequest(ctx, request, dial, reply) {
+							select {
+							case runnerGone <- struct{}{}:
+							default:
+							}
+						}
+					}()
+				}
+			}
+			if result.err != nil {
+				reading = false
+			}
+		case <-runnerGone:
+			reading = false
 		}
+	}
+	cancel()
+	if closer, ok := stdin.(io.Closer); ok {
+		_ = closer.Close()
 	}
 	wg.Wait()
 	return 0
 }
 
-func handleShimRequest(request jsonrpcRequest, dial func(context.Context) (net.Conn, error), reply func(json.RawMessage, any, *jsonrpcError)) {
+// handleShimRequest reports whether the runner connection disappeared. That
+// ends the per-turn shim: no later permission request could be answered by the
+// runner that Claude launched it for.
+func handleShimRequest(ctx context.Context, request jsonrpcRequest, dial func(context.Context) (net.Conn, error), reply func(json.RawMessage, any, *jsonrpcError)) bool {
 	switch request.Method {
 	case "initialize":
 		var params struct {
@@ -180,28 +213,28 @@ func handleShimRequest(request jsonrpcRequest, dial func(context.Context) (net.C
 		}
 		if err := json.Unmarshal(request.Params, &params); err != nil || params.Name != approvalShimToolName {
 			reply(request.ID, nil, &jsonrpcError{Code: -32602, Message: "unknown tool"})
-			return
+			return false
 		}
-		decision := shimDecision(dial, shimApprovalRequest{
+		decision, runnerLost := shimDecision(ctx, dial, shimApprovalRequest{
 			ToolName: params.Arguments.ToolName, ToolUseID: params.Arguments.ToolUseID, Input: params.Arguments.Input,
 		})
 		encoded, _ := json.Marshal(decision)
 		reply(request.ID, map[string]any{
 			"content": []map[string]any{{"type": "text", "text": string(encoded)}},
 		}, nil)
+		return runnerLost
 	default:
 		reply(request.ID, nil, &jsonrpcError{Code: -32601, Message: "unsupported method: " + request.Method})
 	}
+	return false
 }
 
 // shimDecision is the payload Claude Code reads back from the prompt tool.
 // Anything but a clear allow is a deny with a reason Claude can relay.
-func shimDecision(dial func(context.Context) (net.Conn, error), request shimApprovalRequest) map[string]any {
-	ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
-	defer cancel()
+func shimDecision(ctx context.Context, dial func(context.Context) (net.Conn, error), request shimApprovalRequest) (map[string]any, bool) {
 	answer, err := askRunnerApproval(ctx, dial, request)
 	if err != nil {
-		return map[string]any{"behavior": "deny", "message": "Sessions could not route this permission request: " + err.Error()}
+		return map[string]any{"behavior": "deny", "message": "Sessions could not route this permission request: " + err.Error()}, ctx.Err() == nil
 	}
 	switch answer.Decision {
 	case proto.ApprovalAllow, proto.ApprovalAllowForSession:
@@ -209,12 +242,12 @@ func shimDecision(dial func(context.Context) (net.Conn, error), request shimAppr
 		if len(input) == 0 {
 			input = json.RawMessage(`{}`)
 		}
-		return map[string]any{"behavior": "allow", "updatedInput": input}
+		return map[string]any{"behavior": "allow", "updatedInput": input}, false
 	default:
 		by := "in Sessions"
 		if answer.By != "" {
 			by = "by the lane that delegated this work"
 		}
-		return map[string]any{"behavior": "deny", "message": "Declined " + by + ". Continue without it or explain what you need."}
+		return map[string]any{"behavior": "deny", "message": "Declined " + by + ". Continue without it or explain what you need."}, false
 	}
 }

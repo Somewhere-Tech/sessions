@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -126,4 +128,94 @@ func TestFanoutNameDoesNotSplitUnicodeAtByteLimit(t *testing.T) {
 	if want := strings.Repeat("a", 46); got != want {
 		t.Fatalf("fanoutName() = %q, want %q", got, want)
 	}
+}
+
+func TestFanoutProviderListDeduplicatesExplicitProviders(t *testing.T) {
+	providers, err := (&app{}).fanoutProviderList("claude, CLAUDE, codex,claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"claude", "codex"}; !reflect.DeepEqual(providers, want) {
+		t.Fatalf("providers = %v, want %v", providers, want)
+	}
+}
+
+func TestFanoutStartsOneLaneForRepeatedExplicitProvider(t *testing.T) {
+	created := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodPost && request.URL.Path == "/api/sessions" {
+			created++
+			response.WriteHeader(http.StatusCreated)
+			_, _ = response.Write([]byte(`{"id":"aaaaaaaa-0000-4000-8000-000000000001","name":"review (codex)","cmd":"codex"}`))
+			return
+		}
+		http.NotFound(response, request)
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--host", server.URL, "--json", "fanout", "--with", "codex,codex", "--no-wait", "--", "review"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var report fanoutReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if created != 1 || len(report.Lanes) != 1 || report.Lanes[0].Provider != "codex" {
+		t.Fatalf("created=%d report=%+v", created, report)
+	}
+}
+
+func TestFanoutProviderDiscoveryOnlyFallsBackForMissingRoute(t *testing.T) {
+	t.Run("missing route", func(t *testing.T) {
+		server := httptest.NewServer(http.NotFoundHandler())
+		defer server.Close()
+		application, err := newApp([]string{"--host", server.URL}, strings.NewReader(""), io.Discard, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer application.close()
+		providers, err := application.fanoutProviderList("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(providers, fanoutProviders) {
+			t.Fatalf("providers = %v, want legacy fallback %v", providers, fanoutProviders)
+		}
+	})
+
+	t.Run("authorization failure", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.Header().Set("Content-Type", "application/json")
+			response.WriteHeader(http.StatusUnauthorized)
+			_, _ = response.Write([]byte(`{"error":"provider discovery is not authorized"}`))
+		}))
+		defer server.Close()
+		application, err := newApp([]string{"--host", server.URL}, strings.NewReader(""), io.Discard, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer application.close()
+		providers, err := application.fanoutProviderList("")
+		if err == nil || len(providers) != 0 || !strings.Contains(err.Error(), "not authorized") {
+			t.Fatalf("providers=%v err=%v", providers, err)
+		}
+	})
+
+	t.Run("connection failure", func(t *testing.T) {
+		server := httptest.NewServer(http.NotFoundHandler())
+		url := server.URL
+		server.Close()
+		application, err := newApp([]string{"--host", url}, strings.NewReader(""), io.Discard, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer application.close()
+		providers, err := application.fanoutProviderList("")
+		if err == nil || len(providers) != 0 || !strings.Contains(err.Error(), "could not ask sessionsd") {
+			t.Fatalf("providers=%v err=%v", providers, err)
+		}
+	})
 }

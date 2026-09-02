@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -140,6 +142,7 @@ func (a *app) cmdFanout(args []string) error {
 func (a *app) fanoutProviderList(with string) ([]string, error) {
 	if strings.TrimSpace(with) != "" {
 		var chosen []string
+		seen := make(map[string]bool, len(fanoutProviders))
 		for _, raw := range strings.Split(with, ",") {
 			provider := strings.ToLower(strings.TrimSpace(raw))
 			if provider == "" {
@@ -154,7 +157,10 @@ func (a *app) fanoutProviderList(with string) ([]string, error) {
 			if !known {
 				return nil, fail(2, "--with accepts claude and codex, not %q", provider)
 			}
-			chosen = append(chosen, provider)
+			if !seen[provider] {
+				seen[provider] = true
+				chosen = append(chosen, provider)
+			}
 		}
 		if len(chosen) == 0 {
 			return nil, fail(2, "--with needs at least one provider")
@@ -164,10 +170,20 @@ func (a *app) fanoutProviderList(with string) ([]string, error) {
 	var listed struct {
 		Providers []providerStatus `json:"providers"`
 	}
-	if err := a.getJSON("/api/providers", &listed); err != nil {
+	response, err := a.api.request(context.Background(), http.MethodGet, "/api/providers", nil, 0)
+	if err != nil {
+		return nil, fail(2, "could not ask sessionsd which providers are installed: %s", err)
+	}
+	if response.status == http.StatusNotFound {
 		// An older daemon without the route: try every provider and let the
 		// launch preflight say which one is missing.
 		return append([]string(nil), fanoutProviders...), nil
+	}
+	if response.status >= 400 {
+		return nil, apiReadFailure("/api/providers", response)
+	}
+	if err := json.Unmarshal(response.body, &listed); err != nil {
+		return nil, fail(2, "sessionsd returned an invalid provider list: %s", err)
 	}
 	installed := make([]string, 0, len(fanoutProviders))
 	for _, provider := range fanoutProviders {

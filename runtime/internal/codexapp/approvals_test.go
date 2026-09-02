@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // captureTransport records what the client writes and never produces input.
@@ -138,5 +139,17 @@ func TestApprovalEventsDriveLifecycle(t *testing.T) {
 	}
 	if working, ok := HistoryLifecycle(resolved); !working || !ok {
 		t.Fatalf("resolved lifecycle = %v, %v", working, ok)
+	}
+}
+
+func TestApprovalCommandSummaryTruncatesAtRuneBoundary(t *testing.T) {
+	command := strings.Repeat("a", 158) + "界"
+	summary := ApprovalRequest{Kind: ApprovalCommand, Command: command}.Summary()
+	if !utf8.ValidString(summary) {
+		t.Fatalf("summary is not valid UTF-8: %q", summary)
+	}
+	want := "Run `" + strings.Repeat("a", 157) + "…`"
+	if summary != want {
+		t.Fatalf("summary = %q, want %q", summary, want)
 	}
 }

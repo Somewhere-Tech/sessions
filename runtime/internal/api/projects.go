@@ -118,7 +118,12 @@ func (s *Server) handleProjectsRoute(response http.ResponseWriter, request *http
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "cwd is required"}, corsOrigin)
 			return true
 		}
-		s.sendJSON(response, http.StatusOK, s.projects.Suggest(cwd), corsOrigin)
+		suggestion, err := s.projects.Suggest(cwd)
+		if err != nil {
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": "Sessions could not suggest this project: " + err.Error()}, corsOrigin)
+			return true
+		}
+		s.sendJSON(response, http.StatusOK, suggestion, corsOrigin)
 	case path == "/api/projects" && request.Method == http.MethodPut:
 		var body project.Project
 		if err := readJSON(request, &body); err != nil {

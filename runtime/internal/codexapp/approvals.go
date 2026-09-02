@@ -74,7 +74,19 @@ func truncateSummary(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}
-	return value[:limit-1] + "…"
+	ellipsis := "…"
+	if limit < len(ellipsis) {
+		return ""
+	}
+	maxPrefix := limit - len(ellipsis)
+	cut := 0
+	for index := range value {
+		if index > maxPrefix {
+			break
+		}
+		cut = index
+	}
+	return value[:cut] + ellipsis
 }
 
 // ApprovalHandler decides one approval request. It runs off the read loop and

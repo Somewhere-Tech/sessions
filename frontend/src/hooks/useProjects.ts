@@ -10,8 +10,10 @@ import type { ProjectRef } from '../lib/inboxSections';
 export function useProjects(sessionIds: string[], enabled: boolean): {
   bySession: Map<string, ProjectRef>;
   projects: ProjectView[];
+  error: string | null;
 } {
   const [projects, setProjects] = useState<ProjectView[]>([]);
+  const [error, setError] = useState<string | null>(null);
   const key = sessionIds.slice().sort().join(',');
   useEffect(() => {
     if (!enabled) return;
@@ -19,9 +21,15 @@ export function useProjects(sessionIds: string[], enabled: boolean): {
     const load = async (): Promise<void> => {
       try {
         const listed = await fetchProjects();
-        if (alive) setProjects(listed);
-      } catch {
-        if (alive) setProjects([]);
+        if (alive) {
+          setProjects(listed);
+          setError(null);
+        }
+      } catch (reason) {
+        if (alive) {
+          setProjects([]);
+          setError(reason instanceof Error ? reason.message : 'Project groups could not be loaded.');
+        }
       }
     };
     void load();
@@ -36,5 +44,5 @@ export function useProjects(sessionIds: string[], enabled: boolean): {
     }
     return map;
   }, [projects]);
-  return { bySession, projects };
+  return { bySession, projects, error };
 }
