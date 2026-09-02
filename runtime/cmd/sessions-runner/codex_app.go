@@ -644,8 +644,13 @@ func (r *codexAppRunner) shutdownWithRestartPolicy(permanent bool, code int, pre
 		}
 		r.closeHistory()
 		if permanent {
+			// The runner record goes; the conversation copy stays. This
+			// sidecar is the only copy Sessions holds of a structured
+			// conversation, and a provider that keeps its own history in a
+			// database or under another home leaves nothing else to resume
+			// from. Ending a session must never make its conversation
+			// unrecoverable (docs/PRINCIPLES.md, "Sessions are durable work").
 			_ = os.Remove(r.paths.Meta)
-			_ = os.Remove(r.paths.Structured)
 		}
 		r.streamMu.Unlock()
 		r.done <- code
