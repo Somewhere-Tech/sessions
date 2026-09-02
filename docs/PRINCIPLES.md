@@ -26,7 +26,10 @@ their manager's exact provider permission mode instead; that choice is visible
 in Settings and applies only to newly created children. A child can never widen
 its own access past what the machine allows. Provider approval prompts are
 durable `needs-input` state for users and agents; Sessions does not clear them
-by blindly typing into a terminal.
+by blindly typing into a terminal. A Rich lane that inherits permissions asks
+through Sessions itself: the request stays open, the lane reads as needing you,
+and the person or the lane that delegated the work answers it. Nothing is
+approved on silence, and the answer is recorded with who gave it.
 
 Agent-created children are durable sessions by default. A final response is not
 proof that the caller is done with the runtime: the child may own a server,

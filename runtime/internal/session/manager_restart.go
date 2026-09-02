@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
@@ -130,10 +132,10 @@ func (m *Manager) withPendingRestores(infos []state.SessionInfo) []state.Session
 		metadata, metadataErr := state.ReadRunnerMetadata(filepath.Join(m.config.RunnerStateDir, id+".json"))
 		if metadataErr != nil {
 			log.Printf("[restore] read paused session %s metadata: %v", id, metadataErr)
-			metadata = state.RunnerMetadata{}
+			metadata = m.pausedIdentityFromLedger(id)
 		} else if metadata.Info.ID != id {
 			log.Printf("[restore] paused session %s metadata belongs to %s", id, metadata.Info.ID)
-			metadata = state.RunnerMetadata{}
+			metadata = m.pausedIdentityFromLedger(id)
 		}
 		info := pendingSessionInfo(id, metadata, pending)
 		if index, exists := indices[id]; exists {
@@ -187,4 +189,36 @@ func pendingSessionInfo(id string, metadata state.RunnerMetadata, pending state.
 		LastAgentMessageAt: metadata.LastAgentMessageAt, DelegationKind: metadata.DelegationKind,
 		Permissions: metadata.Permissions, Lifecycle: metadata.Lifecycle,
 	}
+}
+
+// pausedIdentityFromLedger rebuilds what a paused session is from its
+// creation record when the runner left no metadata behind, so the inbox shows
+// its name, folder, and age rather than blanks until it is woken.
+func (m *Manager) pausedIdentityFromLedger(id string) state.RunnerMetadata {
+	if m.ledgerReader == nil {
+		return state.RunnerMetadata{}
+	}
+	events, err := m.ledgerReader.Events(context.Background(), id)
+	if err != nil {
+		return state.RunnerMetadata{}
+	}
+	for _, event := range events {
+		if event.Type != ledger.EventCreated {
+			continue
+		}
+		var created ledger.Created
+		if json.Unmarshal(event.Payload, &created) != nil {
+			continue
+		}
+		command := created.Tool
+		if command == "" || command == string(state.ToolTerminal) {
+			command = ""
+		}
+		return state.RunnerMetadata{
+			Info: proto.RunnerInfo{ID: id, Cmd: command, Cwd: created.Cwd, CreatedAt: event.AtMS},
+			Name: created.Name, Description: created.Description, Kind: created.Kind,
+			Profile: created.Profile, ConfigDir: created.ConfigDir, DelegationKind: created.DelegationKind,
+		}
+	}
+	return state.RunnerMetadata{}
 }
