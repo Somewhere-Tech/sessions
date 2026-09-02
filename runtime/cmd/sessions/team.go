@@ -119,10 +119,17 @@ func (a *app) homeRelative(path string) string {
 	if a.home == "" || path == "" {
 		return path
 	}
-	if path == a.home {
+	home := a.home
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	if path == home {
 		return "~"
 	}
-	prefix := a.home
+	prefix := home
 	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
 		prefix += string(filepath.Separator)
 	}

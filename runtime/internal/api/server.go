@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"path/filepath"
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/backup"
@@ -9,6 +10,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/delivery"
 	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/project"
 	"github.com/somewhere-tech/sessions/runtime/internal/recap"
 	sessionruntime "github.com/somewhere-tech/sessions/runtime/internal/session"
 	"github.com/somewhere-tech/sessions/runtime/internal/smartsearch"
@@ -34,6 +36,7 @@ var Version = "0.2.27"
 
 type Server struct {
 	config               state.Config
+	projects             *project.Store
 	registry             sessionService
 	push                 pushService
 	tokens               tokenStore
@@ -169,6 +172,16 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 			ConfigPath: backup.ConfigPath(home), RunnerStateDir: config.RunnerStateDir,
 		}, func() []state.SessionInfo { return registry.List(true) })
 		_ = server.backups.ReloadPeriodic()
+	}
+	// Projects live beside settings in the user state root; a daemon with only
+	// a state root (tests, isolated runs) keeps them there rather than in the
+	// working directory.
+	projectsRoot := config.UserStateRoot
+	if projectsRoot == "" {
+		projectsRoot = config.StateRoot
+	}
+	if projectsRoot != "" {
+		server.projects = project.NewStore(filepath.Join(projectsRoot, "projects.json"), nil)
 	}
 	return server
 }

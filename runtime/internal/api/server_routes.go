@@ -351,6 +351,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if s.handleWorktreesRoute(response, request, corsOrigin) {
 		return
 	}
+	if s.handleProjectsRoute(response, request, corsOrigin) {
+		return
+	}
 	if s.handleTeamRoute(response, request, corsOrigin) {
 		return
 	}

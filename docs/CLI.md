@@ -55,6 +55,7 @@ Daily workflows:
   list                     list agent sessions and headless lanes
   lanes                    list headless lanes
   team                     show the lanes a manager delegated and their state
+  projects                 list or name the projects sessions are grouped under
   send                     send text and Enter to a session
   send-status              inspect a durable message-delivery receipt
   ask                      send, wait, and print the reply
@@ -521,6 +522,25 @@ Examples:
   sessions team
   sessions team 0123abcd
   sessions --json team 0123abcd
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions projects`
+
+```text
+Usage:
+  sessions projects [name <folder> <name> | forget <project-id>]
+
+list or name the projects sessions are grouped under
+
+A project is the work a session belongs to: a folder, a git checkout together with every worktree of it, or a Somewhere project. Sessions find their project by working directory, so every folder shows up here on day one as an implicit project named after itself; `name` claims a folder under a name of your choosing (a GitHub origin suggests owner/repo), and `forget` drops a stored project so its sessions return to their folder's implicit one. The inbox groups sessions by these projects.
+
+Examples:
+  sessions projects
+  sessions projects name ~/Sessions Sessions
+  sessions --json projects
+  sessions projects forget p_0123
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
