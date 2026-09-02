@@ -2,20 +2,20 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { SessionTabs, type TabStatus } from './components/SessionTabs';
 import { SessionView } from './components/SessionView';
 import { EmptyState } from './components/EmptyState';
-import { NewSessionDialog } from './components/NewSessionDialog';
-// The Resume picker is large and opened on demand, so it loads on demand.
-const ResumeDialog = lazy(() => import('./components/ResumeDialog').then((module) => ({ default: module.ResumeDialog })));
+// These surfaces are only opened on demand, so keep them out of the entry bundle.
+const NewSessionDialog = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.NewSessionDialog })));
+const ResumeDialog = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.ResumeDialog })));
+const FleetView = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.FleetView })));
+const UsageDashboard = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.UsageDashboard })));
+const DailyView = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.DailyView })));
+const SettingsView = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.SettingsView })));
 import { MobileNav } from './components/MobileNav';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { GridView } from './components/GridView';
-import { FleetView } from './components/FleetView';
-import { UsageDashboard } from './components/UsageDashboard';
-import { DailyView } from './components/DailyView';
 import { SearchView } from './components/SearchView';
 import { ProductSidebar, type ProductView, type ThemeMode } from './components/ProductSidebar';
 import { SessionNavigator, focusTreeRow } from './components/SessionNavigator';
 import { HomeView } from './components/HomeView';
-import { SettingsView } from './components/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
 import { SessionsWorkspaceSkeleton } from './components/LoadingShell';
 import { OnboardingDialog } from './components/OnboardingDialog';
@@ -831,12 +831,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             onRetry={() => void refresh()}
           />
         ) : sessionWorkspace && dialogOpen === 'new' ? (
-          <NewSessionDialog
-            embedded
-            onClose={() => setDialogOpen(null)}
-            onStarted={openSession}
-            onOpenResume={(providerId) => setDialogOpen(providerId ? { resumeProviderId: providerId } : 'resume')}
-          />
+          <Suspense fallback={null}><NewSessionDialog
+              embedded
+              onClose={() => setDialogOpen(null)}
+              onStarted={openSession}
+              onOpenResume={(providerId) => setDialogOpen(providerId ? { resumeProviderId: providerId } : 'resume')}
+            /></Suspense>
         ) : sessionWorkspace && sessions.length === 0 && !sessionsHydrated ? (
           <SessionsWorkspaceSkeleton />
         ) : sessionWorkspace && isMobile && !mobileSessionDetail ? (
@@ -844,24 +844,24 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         ) : effectiveLayout === 'home' ? (
           <HomeView sessions={sessions} machine={machine} onOpen={openSession} onNew={openNewSession} onNavigate={(view) => setLayoutMode(view)} />
         ) : effectiveLayout === 'fleet' ? (
-          <FleetView onOpenSession={openFleetSession} onOpenMachine={openFleetMachine} />
+          <Suspense fallback={null}><FleetView onOpenSession={openFleetSession} onOpenMachine={openFleetMachine} /></Suspense>
         ) : effectiveLayout === 'today' ? (
-          <DailyView />
+          <Suspense fallback={null}><DailyView /></Suspense>
         ) : effectiveLayout === 'search' ? (
           <SearchView
             onResumeConversation={continueExactConversation}
             onOpenLiveSession={openFleetSession}
           />
         ) : effectiveLayout === 'usage' ? (
-          <UsageDashboard />
+          <Suspense fallback={null}><UsageDashboard /></Suspense>
         ) : effectiveLayout === 'settings' || effectiveLayout === 'feedback' || effectiveLayout === 'connections' ? (
-          <SettingsView
-            theme={theme}
-            onThemeChange={setTheme}
-            textSize={textSize}
-            onTextSizeChange={changeTextSize}
-            initialSection={effectiveLayout === 'feedback' ? 'support' : effectiveLayout === 'connections' ? 'network' : 'general'}
-          />
+          <Suspense fallback={null}><SettingsView
+              theme={theme}
+              onThemeChange={setTheme}
+              textSize={textSize}
+              onTextSizeChange={changeTextSize}
+              initialSection={effectiveLayout === 'feedback' ? 'support' : effectiveLayout === 'connections' ? 'network' : 'general'}
+            /></Suspense>
         ) : effectiveLayout === 'grid' ? (
           liveSessions.length > 0 ? (
             <GridView
@@ -970,11 +970,11 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         </Suspense>
       ) : null}
       {dialogOpen && typeof dialogOpen === 'object' && 'delegateFrom' in dialogOpen ? (
-        <NewSessionDialog
+        <Suspense fallback={null}><NewSessionDialog
           parentSession={sessions.find((session) => session.id === dialogOpen.delegateFrom) ?? null}
           onClose={() => setDialogOpen(null)}
           onStarted={openSession}
-        />
+        /></Suspense>
       ) : null}
       {onboarding && onboarding.supported !== false && !onboarding.complete ? (
         <OnboardingDialog

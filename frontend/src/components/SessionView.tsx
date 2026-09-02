@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTerminal } from '../hooks/useTerminal';
 import { useSessionSidebar } from '../hooks/useSessionSidebar';
 import { RemoteView } from './RemoteView';
@@ -11,7 +11,7 @@ import { SessionDetails } from './SessionDetails';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import { getActiveServer, serverDisplayName } from '../lib/servers';
 import { resolvedSessionLabel } from '../lib/tabLabels';
-import { SessionHistoryView } from './SessionHistoryView';
+const SessionHistoryView = lazy(() => import('./OnDemandViews').then((module) => ({ default: module.SessionHistoryView })));
 import { classifySession } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
@@ -784,7 +784,13 @@ function SessionViewRouter(props: Props): JSX.Element {
       </div>
     );
   }
-  if (session.exited) return <SessionHistoryView session={session} onResume={props.onResume} onFork={props.onFork} onCloseView={props.onCloseView} onOpenSession={props.onOpenSession} onBack={props.onBack} />;
+  if (session.exited) {
+    return (
+      <Suspense fallback={null}>
+        <SessionHistoryView session={session} onResume={props.onResume} onFork={props.onFork} onCloseView={props.onCloseView} onOpenSession={props.onOpenSession} onBack={props.onBack} />
+      </Suspense>
+    );
+  }
   return <SessionViewInner {...props} />;
 }
 
