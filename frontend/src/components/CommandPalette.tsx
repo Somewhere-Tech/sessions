@@ -80,6 +80,18 @@ export function CommandPalette({
         run: closeThen(onNewSession)
       },
       {
+        id: 'inbox',
+        label: 'Jump to inbox',
+        detail: 'Then ↑↓ or j/k move, ↵ opens · ⌘J',
+        group: 'Actions',
+        keywords: 'sessions list keyboard focus navigate',
+        run: closeThen(() => {
+          const tree = document.querySelector<HTMLElement>('.session-tree');
+          const row = tree?.querySelector<HTMLElement>('[role="treeitem"].is-active') ?? tree?.querySelector<HTMLElement>('[role="treeitem"]');
+          row?.focus();
+        })
+      },
+      {
         id: 'continue',
         label: 'Resume a conversation',
         detail: 'Search provider history and resume the exact conversation',

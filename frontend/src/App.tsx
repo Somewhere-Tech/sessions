@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SessionTabs, type TabStatus } from './components/SessionTabs';
 import { SessionView } from './components/SessionView';
 import { EmptyState } from './components/EmptyState';
 import { NewSessionDialog } from './components/NewSessionDialog';
-import { ResumeDialog } from './components/ResumeDialog';
+// The Resume picker is large and opened on demand, so it loads on demand.
+const ResumeDialog = lazy(() => import('./components/ResumeDialog').then((module) => ({ default: module.ResumeDialog })));
 import { MobileNav } from './components/MobileNav';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { GridView } from './components/GridView';
@@ -12,7 +13,7 @@ import { UsageDashboard } from './components/UsageDashboard';
 import { DailyView } from './components/DailyView';
 import { SearchView } from './components/SearchView';
 import { ProductSidebar, type ProductView, type ThemeMode } from './components/ProductSidebar';
-import { SessionNavigator } from './components/SessionNavigator';
+import { SessionNavigator, focusTreeRow } from './components/SessionNavigator';
 import { HomeView } from './components/HomeView';
 import { SettingsView } from './components/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
@@ -462,6 +463,20 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         event.stopPropagation();
         setCommandPaletteOpen(false);
         openNewSession();
+      } else if (event.key.toLowerCase() === 'j' && !event.shiftKey) {
+        // Jump to the inbox: the open session's row when it is listed,
+        // otherwise the first row, so arrows and Enter take over from there.
+        const tree = document.querySelector<HTMLElement>('.session-tree');
+        if (!tree) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const active = tree.querySelector<HTMLElement>('[role="treeitem"].is-active');
+        if (active) {
+          active.focus();
+          active.scrollIntoView({ block: 'nearest' });
+        } else {
+          focusTreeRow(tree, null, 'first');
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown, true);
@@ -931,26 +946,28 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       />
 
       {dialogOpen === 'resume' || (dialogOpen && typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen) ? (
-        <ResumeDialog
-          onClose={() => setDialogOpen(null)}
-          onResumed={(laneId) => openSession(laneId)}
-          onStartNew={openNewSession}
-          preferredProviderId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
-            ? dialogOpen.resumeProviderId
-            : undefined}
-          preferredSourceSessionId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
-            ? dialogOpen.sourceSessionId
-            : undefined}
-          preferredHistoryId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
-            ? dialogOpen.historyId
-            : undefined}
-          preferredDestinationProvider={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
-            ? dialogOpen.destinationProvider
-            : undefined}
-          preferredRuntimeMode={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
-            ? dialogOpen.runtimeMode
-            : undefined}
-        />
+        <Suspense fallback={null}>
+          <ResumeDialog
+            onClose={() => setDialogOpen(null)}
+            onResumed={(laneId) => openSession(laneId)}
+            onStartNew={openNewSession}
+            preferredProviderId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+              ? dialogOpen.resumeProviderId
+              : undefined}
+            preferredSourceSessionId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+              ? dialogOpen.sourceSessionId
+              : undefined}
+            preferredHistoryId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+              ? dialogOpen.historyId
+              : undefined}
+            preferredDestinationProvider={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+              ? dialogOpen.destinationProvider
+              : undefined}
+            preferredRuntimeMode={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+              ? dialogOpen.runtimeMode
+              : undefined}
+          />
+        </Suspense>
       ) : null}
       {dialogOpen && typeof dialogOpen === 'object' && 'delegateFrom' in dialogOpen ? (
         <NewSessionDialog

@@ -76,6 +76,32 @@ function writeMachineScope(scope: MachineScope): void {
   try { window.localStorage.setItem(MACHINE_SCOPE_KEY, scope); } catch { /* preference only */ }
 }
 
+// Rows in the inbox take arrow keys and j/k like a list: focus moves row to
+// row, Enter opens, and Home/End jump. Typing in the filter is left alone.
+export function focusTreeRow(tree: HTMLElement, from: Element | null, step: number | 'first' | 'last'): boolean {
+  const rows = Array.from(tree.querySelectorAll<HTMLElement>('[role="treeitem"], .session-fleet-row, .inbox-needs-row'))
+    .filter((row) => row.getClientRects().length > 0);
+  if (rows.length === 0) return false;
+  let index = step === 'first' ? 0 : step === 'last' ? rows.length - 1 : -1;
+  if (typeof step === 'number') {
+    const current = from ? rows.findIndex((row) => row === from || row.contains(from)) : -1;
+    index = current < 0 ? (step > 0 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, current + step));
+  }
+  rows[index]?.focus();
+  rows[index]?.scrollIntoView({ block: 'nearest' });
+  return true;
+}
+
+function treeKeyStep(key: string): number | 'first' | 'last' | null {
+  switch (key) {
+    case 'ArrowDown': case 'j': return 1;
+    case 'ArrowUp': case 'k': return -1;
+    case 'Home': return 'first';
+    case 'End': return 'last';
+    default: return null;
+  }
+}
+
 function orderedMachineRows(sessions: SessionInfo[]): Array<{ session: SessionInfo; depth: number }> {
   const ids = new Set(sessions.map((session) => session.id));
   const children = new Map<string, SessionInfo[]>();
@@ -779,7 +805,18 @@ export function SessionNavigator({
           </button>
         ))}
       </div>
-      <div className="session-nav-search"><span aria-hidden>⌕</span><input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Filter sessions" /></div>
+      <div className="session-nav-search"><span aria-hidden>⌕</span><input
+        value={query}
+        onChange={(event) => setQuery(event.currentTarget.value)}
+        placeholder="Filter sessions"
+        aria-label="Filter sessions"
+        onKeyDown={(event) => {
+          // Down from the filter lands on the first matching row.
+          if (event.key !== 'ArrowDown') return;
+          const tree = event.currentTarget.closest('.session-navigator')?.querySelector<HTMLElement>('.session-tree');
+          if (tree && focusTreeRow(tree, null, 'first')) event.preventDefault();
+        }}
+      /></div>
       <div className="session-filter-row" role="toolbar" aria-label="Session status filters">
         <FilterButton label="All" active={primary === 'all'} onClick={() => setPrimary('all')} />
         <FilterButton label={`Needs you${counts.needs ? ` ${counts.needs}` : ''}`} active={primary === 'needs'} onClick={() => setPrimary('needs')} />
@@ -795,7 +832,18 @@ export function SessionNavigator({
           </div>
         </details>
       </div>
-      <div className="session-tree" role="tree">
+      <div
+        className="session-tree"
+        role="tree"
+        onKeyDown={(event) => {
+          const target = event.target as HTMLElement;
+          if (target.matches('input, textarea, select, [contenteditable="true"]')) return;
+          if (event.metaKey || event.ctrlKey || event.altKey) return;
+          const step = treeKeyStep(event.key);
+          if (step === null) return;
+          if (focusTreeRow(event.currentTarget, target, step)) event.preventDefault();
+        }}
+      >
         {moveError ? <div className="session-move-error" role="alert">{moveError}</div> : null}
         {archiveError ? <div className="session-move-error" role="alert">{archiveError}</div> : null}
         {!showingAllMachines && selectingEnded ? (
