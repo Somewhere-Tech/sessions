@@ -20,6 +20,7 @@ func TestClassifyIdleReasonHeritageSnapshots(t *testing.T) {
 		{name: "error trace", snapshot: "Traceback (most recent call last):\n  at notify.ts:42\nFatal error: connection failed", want: IdleError},
 		{name: "resolved error", snapshot: "Error: first attempt failed\nRetrying with fallback\nAll checks passed", want: IdleDone},
 		{name: "codex mcp warning then answer", snapshot: "⚠ MCP client for `somewhere` failed to start: MCP startup failed: handshaking with MCP server failed\n⚠ MCP startup incomplete (failed: somewhere)\n› Reply with exactly AUDIT-FOXTROT.\n• AUDIT-FOXTROT.\n› Write tests for @filename", want: IdleDone},
+		{name: "codex answer then wrapped mcp warning", snapshot: "› reply with the single word PONG\n• PONG\n⚠ MCP client for `somewhere` failed to start: MCP startup failed: Send message error Transport\n  [codex_rmcp_client::event_notification_transport::EventNotificationTransport<rmcp::transport::worker::WorkerTransport>] error: Transport channel closed\n  when send initialized notification\n⚠ MCP startup incomplete (failed: somewhere)\n› Ask Codex to do anything", want: IdleDone},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
