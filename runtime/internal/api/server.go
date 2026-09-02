@@ -30,7 +30,7 @@ const (
 // Version is stamped into sessionsd at build time and reported by both health
 // endpoints. Keep the source fallback aligned with the current app version so
 // an un-stamped development build is still honest.
-var Version = "0.2.26"
+var Version = "0.2.27"
 
 type Server struct {
 	config               state.Config
