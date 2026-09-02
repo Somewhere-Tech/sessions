@@ -252,11 +252,14 @@ type CreateSessionRequest struct {
 	Profile     string            `json:"profile,omitempty"`
 	Worktree    bool              `json:"worktree,omitempty"`
 	Base        string            `json:"base,omitempty"`
-	Kind        string            `json:"kind,omitempty"`
-	SpecPath    string            `json:"specPath,omitempty"`
-	OnIdle      string            `json:"onIdle,omitempty"`
-	WaitReady   bool              `json:"waitReady,omitempty"`
-	Force       bool              `json:"force,omitempty"`
+	// NoWorktree declines the worktree an agent-created child would otherwise
+	// get by default, so a lane can deliberately share its manager's checkout.
+	NoWorktree bool   `json:"noWorktree,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	SpecPath   string `json:"specPath,omitempty"`
+	OnIdle     string `json:"onIdle,omitempty"`
+	WaitReady  bool   `json:"waitReady,omitempty"`
+	Force      bool   `json:"force,omitempty"`
 	// ProviderTerminal is a request-only escape hatch for an agent-created
 	// Claude child that genuinely needs the provider's interactive terminal.
 	// It is never persisted as a session kind: the normal PTY kind remains
@@ -280,14 +283,19 @@ type CreateSessionRequest struct {
 	Lifecycle string `json:"lifecycle,omitempty"`
 	// DisplayParentSessionID is copied only by trusted recovery code. It is
 	// never accepted from the public create-session JSON body.
-	DisplayParentSessionID *string              `json:"-"`
-	ConversationID         string               `json:"-"`
-	ConfigDir              string               `json:"-"`
-	WorktreePath           string               `json:"-"`
-	WorktreeBranch         string               `json:"-"`
-	WorktreeBase           string               `json:"-"`
-	SourceRepo             string               `json:"-"`
-	Continuation           *ContinuationContext `json:"-"`
+	DisplayParentSessionID *string `json:"-"`
+	ConversationID         string  `json:"-"`
+	ConfigDir              string  `json:"-"`
+	WorktreePath           string  `json:"-"`
+	WorktreeBranch         string  `json:"-"`
+	WorktreeBase           string  `json:"-"`
+	// WorktreeDefaulted marks a worktree the daemon chose for a delegated lane
+	// rather than one the caller asked for. A defaulted worktree that cannot be
+	// created (folder is not a usable Git checkout) degrades to the shared
+	// folder; an explicitly requested one still fails loudly.
+	WorktreeDefaulted bool                 `json:"-"`
+	SourceRepo        string               `json:"-"`
+	Continuation      *ContinuationContext `json:"-"`
 }
 
 // EndSessionRequest is durable audit context for an explicit termination.

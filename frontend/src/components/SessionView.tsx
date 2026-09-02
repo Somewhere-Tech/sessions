@@ -717,9 +717,10 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
                 : lane.lastSummary?.trim()
                   ? `reports: ${lane.lastSummary.trim().split('\n')[0]}`
                   : 'has nothing to report yet';
+              const where = lane.branch ? ` Its work is on branch ${lane.branch}${lane.worktreePath ? ` in ${lane.worktreePath}` : ''}.` : '';
               await submitAttributedMessage(
                 session.id,
-                `Lane "${resolvedSessionLabel(lane)}" ${line} (id ${lane.id.slice(0, 8)}; \`sessions cat ${lane.id.slice(0, 8)}\` for the full conversation).`,
+                `Lane "${resolvedSessionLabel(lane)}" ${line} (id ${lane.id.slice(0, 8)}; \`sessions cat ${lane.id.slice(0, 8)}\` for the full conversation).${where}`,
                 undefined,
                 lane.id
               );

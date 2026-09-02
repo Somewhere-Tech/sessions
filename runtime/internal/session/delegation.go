@@ -76,6 +76,15 @@ func (m *Manager) resolveDelegatedExecution(
 		request.Args = applyResolvedPermissions(tool, request.Args, request.Permissions)
 	}
 
+	// Delegated lanes work in their own Sessions-owned worktree unless the
+	// caller declines. Autonomous lanes edit files without asking; giving each
+	// one a branch of its own keeps a manager's checkout intact and makes the
+	// hand-back a branch the manager can diff or merge. The folder must be a
+	// usable Git checkout; otherwise the lane shares the folder as before.
+	if isChild && request.DelegationKind == "agent" && !request.Worktree && !request.NoWorktree {
+		request.Worktree = true
+		request.WorktreeDefaulted = true
+	}
 	if requestedLifecycle != "" {
 		request.Lifecycle = requestedLifecycle
 	} else {

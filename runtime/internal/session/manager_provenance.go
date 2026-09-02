@@ -408,6 +408,12 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 	}
 
 	var preparedWorktree *createdWorktree
+	if request.Worktree && request.WorktreeDefaulted && (m.boundaries == nil || m.ledgerReader == nil) {
+		// No ledger means no worktree bookkeeping; a defaulted lane simply
+		// shares its folder rather than failing to start.
+		request.Worktree = false
+		request.WorktreeDefaulted = false
+	}
 	if request.Worktree {
 		if m.boundaries == nil || m.ledgerReader == nil {
 			return state.SessionInfo{}, errors.New("--worktree requires the Sessions ledger, but ledger access is unavailable; restore the daemon ledger and retry")
@@ -417,15 +423,25 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 			sourceCwd = m.config.DefaultCwd
 		}
 		worktree, err := createGitWorktree(ctx, sourceCwd, request.Name, request.Base)
-		if err != nil {
+		if err != nil && request.WorktreeDefaulted {
+			// The lane was going to get a worktree by default, but this folder
+			// cannot host one (not a Git checkout, bare, shallow, or detached).
+			// Sharing the manager's folder is the pre-worktree behavior and is
+			// never a failure; the reason is logged so the choice is visible.
+			log.Printf("[worktree] lane %q shares %s instead of a worktree: %v", request.Name, sourceCwd, err)
+			request.Worktree = false
+			request.WorktreeDefaulted = false
+			request.Base = ""
+		} else if err != nil {
 			return state.SessionInfo{}, err
+		} else {
+			request.Cwd = worktree.Path
+			request.WorktreePath = worktree.Path
+			request.WorktreeBranch = worktree.Branch
+			request.WorktreeBase = worktree.Base
+			request.SourceRepo = worktree.SourceRepo
+			preparedWorktree = &worktree
 		}
-		request.Cwd = worktree.Path
-		request.WorktreePath = worktree.Path
-		request.WorktreeBranch = worktree.Branch
-		request.WorktreeBase = worktree.Base
-		request.SourceRepo = worktree.SourceRepo
-		preparedWorktree = &worktree
 	} else if strings.TrimSpace(request.Base) != "" {
 		return state.SessionInfo{}, errors.New("--base requires --worktree")
 	}

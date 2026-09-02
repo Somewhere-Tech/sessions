@@ -67,6 +67,7 @@ type createSessionRequest struct {
 	Tags             map[string]string `json:"tags,omitempty"`
 	Profile          string            `json:"profile,omitempty"`
 	Worktree         bool              `json:"worktree,omitempty"`
+	NoWorktree       bool              `json:"noWorktree,omitempty"`
 	Base             string            `json:"base,omitempty"`
 	OnIdle           string            `json:"onIdle,omitempty"`
 	WaitReady        bool              `json:"waitReady,omitempty"`
@@ -242,6 +243,10 @@ func (a *app) cmdNew(args []string) error {
 	body.Worktree, body.Base, err = pluckWorktreeOptions(&args)
 	if err != nil {
 		return err
+	}
+	body.NoWorktree = removeFirst(&args, "--no-worktree")
+	if body.NoWorktree && body.Worktree {
+		return fail(1, "--no-worktree and --worktree cannot be combined")
 	}
 	body.Force = removeFirst(&args, "--force")
 	forceStructuredClaude := removeFirst(&args, "--structured")
