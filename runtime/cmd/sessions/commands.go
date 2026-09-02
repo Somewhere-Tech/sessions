@@ -420,6 +420,16 @@ func (a *app) cmdNew(args []string) error {
 			return fail(1, "--profile is only for Claude or Codex sessions; remove it for shell sessions")
 		}
 	}
+	// A child starts from the folder where its manager invoked the CLI. The
+	// daemon cannot recover that process cwd from the creator header alone; an
+	// omitted cwd would fall back to HOME before the daemon applies the lane's
+	// default worktree policy, silently sharing the wrong folder instead.
+	if body.Cwd == "" && a.api.creatorSession != "" && a.api.ownerID == "" {
+		body.Cwd, err = os.Getwd()
+		if err != nil {
+			return fail(1, "resolve delegated session cwd: %s", err)
+		}
+	}
 	if body.Worktree {
 		if body.Cwd == "" {
 			body.Cwd, err = os.Getwd()
