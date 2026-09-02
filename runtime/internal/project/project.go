@@ -95,11 +95,11 @@ func (s *Store) load() error {
 	return nil
 }
 
-func (s *Store) save() error {
+func (s *Store) save(projects []Project) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("create projects directory: %w", err)
 	}
-	encoded, err := json.MarshalIndent(projectFile{Version: fileVersion, Projects: s.projects}, "", "  ")
+	encoded, err := json.MarshalIndent(projectFile{Version: fileVersion, Projects: projects}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode projects: %w", err)
 	}
@@ -195,13 +195,14 @@ func (s *Store) Upsert(input Project) (Project, error) {
 	}
 	input.Roots = roots
 	input.UpdatedAt = now
+	projects := append([]Project(nil), s.projects...)
 	replaced := false
-	for index, existing := range s.projects {
+	for index, existing := range projects {
 		if existing.ID == input.ID {
 			if input.CreatedAt == 0 {
 				input.CreatedAt = existing.CreatedAt
 			}
-			s.projects[index] = input
+			projects[index] = input
 			replaced = true
 			break
 		}
@@ -210,11 +211,12 @@ func (s *Store) Upsert(input Project) (Project, error) {
 		if input.CreatedAt == 0 {
 			input.CreatedAt = now
 		}
-		s.projects = append(s.projects, input)
+		projects = append(projects, input)
 	}
-	if err := s.save(); err != nil {
+	if err := s.save(projects); err != nil {
 		return Project{}, err
 	}
+	s.projects = projects
 	return input, nil
 }
 
@@ -226,7 +228,7 @@ func (s *Store) Delete(id string) error {
 	if err := s.load(); err != nil {
 		return err
 	}
-	kept := s.projects[:0]
+	kept := make([]Project, 0, len(s.projects))
 	found := false
 	for _, project := range s.projects {
 		if project.ID == id {
@@ -238,8 +240,11 @@ func (s *Store) Delete(id string) error {
 	if !found {
 		return fmt.Errorf("no project %s", id)
 	}
+	if err := s.save(kept); err != nil {
+		return err
+	}
 	s.projects = kept
-	return s.save()
+	return nil
 }
 
 // Resolve maps a working directory to its project. The top-level is the git
