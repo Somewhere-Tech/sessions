@@ -45,6 +45,10 @@ type teamMember struct {
 	Summary   string       `json:"summary,omitempty"`
 	Waiting   string       `json:"waiting,omitempty"`
 	UpdatedAt int64        `json:"updated_at,omitempty"`
+	// Branch and WorktreePath say where a lane's work is when it has its own
+	// worktree, so a manager knows what to diff or merge without opening it.
+	Branch       string `json:"branch,omitempty"`
+	WorktreePath string `json:"worktree_path,omitempty"`
 }
 
 // teamListing answers "what am I responsible for". Self is the caller; parent
@@ -90,6 +94,7 @@ func teamMemberFrom(info state.SessionInfo, relation teamRelation, depth int) te
 		Summary:   truncateBudget(info.LastSummary, teamSummaryBudget),
 		Waiting:   truncateBudget(info.IdleDetail, teamSummaryBudget),
 		UpdatedAt: updated,
+		Branch:    info.Branch, WorktreePath: info.WorktreePath,
 	}
 	return member
 }

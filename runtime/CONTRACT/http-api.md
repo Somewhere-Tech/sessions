@@ -478,7 +478,7 @@ parent preferred over creator lineage, depth capped at 8):
 
 Every member object carries `id`, optional `name`, `tool`, optional `cwd`,
 `relation` (`self`, `parent`, or `child`), `depth`, `state` (`ended`,
-`needs-you`, `working`, `failed`, `not-started`, or `idle`), `needs_you`,
+`needs-you`, `working`, `failed`, `not-started`, or `idle`), `needs_you`, `branch` and `worktree_path` when the lane works in its own worktree,
 `working`, `exited`, optional `summary`, optional `waiting`, and optional
 `updated_at`. `summary` and `waiting` are capped at 200 bytes; no transcript,
 args, or env is included. `parent` is omitted when the caller has none.

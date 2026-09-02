@@ -180,6 +180,12 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
                 {provider ? <ProviderMark provider={provider} size={24} /> : <span className="subagent-shell" title="Shell">⌘</span>}
               </div>
               <p>{purpose(session)}</p>
+              {session.branch ? (
+                <p className="subagent-branch" title={session.worktreePath ? `Worktree at ${session.worktreePath}` : undefined}>
+                  {session.exited ? 'Kept branch ' : 'On branch '}<code>{session.branch}</code>
+                  {session.exited ? ' · once merged, `sessions worktrees clean` removes its worktree' : ''}
+                </p>
+              ) : null}
               {lastLine(session) && lastLine(session) !== purpose(session) ? (
                 <p className={`subagent-last${status.needsYou ? ' is-attention' : ''}`}>{status.needsYou ? 'Waiting: ' : ''}{lastLine(session)}</p>
               ) : null}

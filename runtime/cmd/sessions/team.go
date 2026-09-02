@@ -25,6 +25,8 @@ type teamMember struct {
 	Exited   bool   `json:"exited"`
 	Summary  string `json:"summary,omitempty"`
 	Waiting  string `json:"waiting,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+	Worktree string `json:"worktree_path,omitempty"`
 }
 
 type teamListing struct {
@@ -75,7 +77,17 @@ func (a *app) writeTeam(listing teamListing) error {
 		_, err := io.WriteString(a.stdout, "no lanes delegated from this session\n")
 		return err
 	}
-	rows := [][]string{{"ID", "NAME", "TOOL", "CWD", "STATE", "LAST"}}
+	branches := false
+	for _, member := range listing.Members {
+		if member.Branch != "" {
+			branches = true
+		}
+	}
+	header := []string{"ID", "NAME", "TOOL", "CWD", "STATE", "LAST"}
+	if branches {
+		header = []string{"ID", "NAME", "TOOL", "CWD", "BRANCH", "STATE", "LAST"}
+	}
+	rows := [][]string{header}
 	for _, member := range listing.Members {
 		name := member.Name
 		if strings.TrimSpace(name) == "" {
@@ -89,10 +101,15 @@ func (a *app) writeTeam(listing teamListing) error {
 			last = "-"
 		}
 		indent := strings.Repeat("  ", maxInt(0, member.Depth-1))
-		rows = append(rows, []string{
-			shortID(member.ID), indent + name, member.Tool,
-			a.homeRelative(member.Cwd), member.State, oneLine(last),
-		})
+		row := []string{shortID(member.ID), indent + name, member.Tool, a.homeRelative(member.Cwd)}
+		if branches {
+			branch := member.Branch
+			if branch == "" {
+				branch = "-"
+			}
+			row = append(row, branch)
+		}
+		rows = append(rows, append(row, member.State, oneLine(last)))
 	}
 	if err := writePaddedRows(a.stdout, rows); err != nil {
 		return err
