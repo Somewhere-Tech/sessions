@@ -15,6 +15,8 @@ type messageTurn struct {
 	Timestamp any            `json:"timestamp"`
 	ToolCalls []string       `json:"toolCalls,omitempty"`
 	Author    *messageAuthor `json:"author,omitempty"`
+	Subtype   string         `json:"subtype,omitempty"`
+	Approval  map[string]any `json:"approval,omitempty"`
 	index     int
 }
 
@@ -63,6 +65,34 @@ func eventTimestamp(event map[string]any) any {
 		return value
 	}
 	return nil
+}
+
+func approvalAuditTurn(event map[string]any) (messageTurn, bool) {
+	if event["type"] != "system" {
+		return messageTurn{}, false
+	}
+	subtype, _ := event["subtype"].(string)
+	if subtype != "approval_requested" && subtype != "approval_resolved" {
+		return messageTurn{}, false
+	}
+	approval, _ := event["approval"].(map[string]any)
+	detail := ""
+	if subtype == "approval_requested" {
+		detail, _ = approval["summary"].(string)
+	} else {
+		detail, _ = approval["decision"].(string)
+		if by, _ := approval["by"].(string); by != "" {
+			detail += " by " + by
+		}
+	}
+	text := subtype
+	if detail != "" {
+		text += ": " + detail
+	}
+	return messageTurn{
+		Role: "system", Text: text, Timestamp: eventTimestamp(event),
+		Subtype: subtype, Approval: approval,
+	}, true
 }
 
 func (a *app) cmdLast(args []string) error {
@@ -191,6 +221,10 @@ func (a *app) writeSessionTranscript(id string) error {
 	}
 	turns := make([]messageTurn, 0)
 	for _, event := range response.Events {
+		if audit, ok := approvalAuditTurn(event); ok {
+			turns = append(turns, audit)
+			continue
+		}
 		role := eventRole(event)
 		if role == "" {
 			continue

@@ -1069,6 +1069,7 @@ func TestCodexNewSelectsStructuredKindWithRevertibleGate(t *testing.T) {
 		{name: "flag-off", args: []string{"--pty-codex"}, wantArg: "--sandbox"},
 		{name: "full-access-default-rich", args: []string{"--full-access"}, kind: "codex-app-server", wantArg: "--dangerously-bypass-approvals-and-sandbox"},
 		{name: "flag-on-overrides-environment", env: "0", args: []string{"--codex-appserver", "--full-access"}, kind: "codex-app-server", wantArg: "--dangerously-bypass-approvals-and-sandbox"},
+		{name: "constrained-flag-on-overrides-environment", env: "0", args: []string{"--codex-appserver", "--permissions", "constrained"}, kind: "codex-app-server", wantArg: "untrusted"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1169,15 +1170,54 @@ func TestCodexRichNewSendsPositionalRequestImmediately(t *testing.T) {
 	}
 }
 
-func TestCodexAppServerRequiresExplicitFullAccess(t *testing.T) {
+func TestCatIncludesApprovalAuditEvents(t *testing.T) {
+	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{"id": id}}})
+		case "/api/sessions/" + id + "/events":
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": []any{
+				map[string]any{
+					"type": "system", "subtype": "approval_requested", "timestamp": "2026-09-02T00:00:00Z",
+					"approval": map[string]any{"id": "approval-1", "summary": "Run `touch approved.txt`"},
+				},
+				map[string]any{
+					"type": "system", "subtype": "approval_resolved", "timestamp": "2026-09-02T00:00:01Z",
+					"approval": map[string]any{"id": "approval-1", "decision": "allow", "by": "manager-1"},
+				},
+			}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
 	t.Setenv("HOME", t.TempDir())
+
 	var stdout, stderr bytes.Buffer
-	code := run(
-		[]string{"--host", "http://127.0.0.1:1", "new", "--tool", "codex", "--codex-appserver"},
-		strings.NewReader(""), &stdout, &stderr,
-	)
-	if code != 1 || !strings.Contains(stderr.String(), "requires --full-access") {
-		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	if code := run([]string{"--host", server.URL, "--json", "cat", id}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("json cat exit=%d stderr=%q", code, stderr.String())
+	}
+	var turns []messageTurn
+	if err := json.Unmarshal(stdout.Bytes(), &turns); err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 2 || turns[0].Role != "system" || turns[0].Subtype != "approval_requested" ||
+		turns[0].Text != "approval_requested: Run `touch approved.txt`" || turns[0].Approval["id"] != "approval-1" ||
+		turns[1].Subtype != "approval_resolved" || turns[1].Text != "approval_resolved: allow by manager-1" {
+		t.Fatalf("approval turns = %#v", turns)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--host", server.URL, "cat", id}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("text cat exit=%d stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"[system]\napproval_requested: Run `touch approved.txt`", "[system]\napproval_resolved: allow by manager-1"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("cat output missing %q:\n%s", want, stdout.String())
+		}
 	}
 }
 
