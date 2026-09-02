@@ -206,7 +206,7 @@ func TestTerminalCodexConversationRebuildsAfterDaemonRestart(t *testing.T) {
 		prompt     = "help me understand these external drives"
 	)
 	created, err := manager.Create(context.Background(), state.CreateSessionRequest{
-		Cmd: "codex", Cwd: root, Profile: "restart-codex", Description: prompt,
+		Cmd: "codex", Cwd: root, Profile: "restart-codex", InitialInput: prompt,
 	})
 	if err != nil {
 		manager.Close()
@@ -249,6 +249,11 @@ func TestTerminalCodexConversationRebuildsAfterDaemonRestart(t *testing.T) {
 		current, ok := manager.Get(created.ID)
 		return ok && current.ClaudeEventCount() == 2 && current.Info().ConversationID == providerID
 	})
+	current, _ := manager.Get(created.ID)
+	if info := current.Info(); info.Description != prompt || info.DescriptionSource != state.DescriptionFirstMessage {
+		manager.Close()
+		t.Fatalf("initial request description = %q/%q, want %q/%q", info.Description, info.DescriptionSource, prompt, state.DescriptionFirstMessage)
+	}
 	metadata, err := state.ReadRunnerMetadata(filepath.Join(config.RunnerStateDir, created.ID+".json"))
 	if err != nil || metadata.Info.ConversationID != providerID {
 		manager.Close()
@@ -267,7 +272,7 @@ func TestTerminalCodexConversationRebuildsAfterDaemonRestart(t *testing.T) {
 		current, ok := restarted.Get(created.ID)
 		return ok && current.ClaudeEventCount() == 2
 	})
-	current, _ := restarted.Get(created.ID)
+	current, _ = restarted.Get(created.ID)
 	window := current.EventsWindow(nil, nil, nil)
 	encoded, _ := json.Marshal(window.Events)
 	if !strings.Contains(string(encoded), "external drives") || !strings.Contains(string(encoded), "APFS drive") {

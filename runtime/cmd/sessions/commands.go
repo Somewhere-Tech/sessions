@@ -69,6 +69,7 @@ var toolPresetOrder = []string{"claude", "codex", "shell"}
 type createSessionRequest struct {
 	Cmd              string            `json:"cmd,omitempty"`
 	Args             []string          `json:"args,omitempty"`
+	InitialInput     string            `json:"initialInput,omitempty"`
 	Cwd              string            `json:"cwd,omitempty"`
 	Name             string            `json:"name,omitempty"`
 	Description      string            `json:"description,omitempty"`
@@ -359,6 +360,12 @@ func (a *app) cmdNew(args []string) error {
 					initialInput = strings.Join(args, " ")
 					body.Args = append([]string(nil), chosen...)
 				}
+			} else if len(args) > 0 {
+				// A terminal Codex process consumes its first request from argv,
+				// before Sessions can observe terminal input. Carry the exact same
+				// authored text separately so the transcript watcher can bind to
+				// the one rollout which records it instead of guessing by time.
+				body.InitialInput = strings.Join(args, " ")
 			}
 		} else if forceAppServer || forcePTYCodex {
 			return fail(1, "--codex-appserver and --pty-codex are only valid with --tool codex")
