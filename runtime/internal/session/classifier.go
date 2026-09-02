@@ -43,7 +43,7 @@ var (
 	// incomplete (failed: name)" when an optional MCP server is down and then
 	// answers normally; treating that line as the outcome reported a completed
 	// turn as failed.
-	benignErrorRE = regexp.MustCompile(`(?i)\b(?:0\s+(?:errors?|fail(?:ed|ures?)?)|no\s+(?:errors?|failures?))\b|^\s*⚠|\bMCP (?:startup|client|server)\b`)
+	benignErrorRE = regexp.MustCompile(`(?i)\b(?:0\s+(?:errors?|fail(?:ed|ures?)?)|no\s+(?:errors?|failures?))\b|^\s*⚠|\bMCP (?:startup|client|server)\b|\bcodex_rmcp_client\b`)
 	resolutionRE  = regexp.MustCompile(`(?i)\b(?:resolved|recovered|fixed|succeeded|successful|passed|completed|all checks pass|done)\b`)
 
 	workingSpinnerRE = regexp.MustCompile(`(?:…|\.\.\.)\s*\(\s*\d+\s*[hms]`)

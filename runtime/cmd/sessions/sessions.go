@@ -205,7 +205,7 @@ func (a *app) cmdSessions(args []string) error {
 		}
 		row = append(
 			row,
-			strings.Replace(value.Cwd, a.home, "~", 1),
+			a.homeRelative(value.Cwd),
 			sessionState(value),
 			compactSummary(value.LastSummary),
 			a.ageOf(value.CreatedAt),

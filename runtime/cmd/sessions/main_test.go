@@ -1355,6 +1355,44 @@ func TestInheritedClaudeChildSendsItsPositionalRequestThroughStructuredInput(t *
 	}
 }
 
+func TestInheritedNewUsesTheManagersCurrentDirectory(t *testing.T) {
+	const parent = "11111111-2222-4333-8444-555555555555"
+	var request createSessionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, httpRequest *http.Request) {
+		if httpRequest.URL.Path != "/api/sessions" || httpRequest.Method != http.MethodPost {
+			http.NotFound(response, httpRequest)
+			return
+		}
+		if err := json.NewDecoder(httpRequest.Body).Decode(&request); err != nil {
+			t.Errorf("decode create request: %v", err)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusCreated)
+		_, _ = response.Write([]byte(`{"id":"session-1"}`))
+	}))
+	defer server.Close()
+	home := t.TempDir()
+	managerCwd := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SESSIONS_SESSION_ID", parent)
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Chdir(managerCwd)
+
+	var stdout, stderr bytes.Buffer
+	if code := run(
+		[]string{"--host", server.URL, "new", "--tool", "codex", "--name", "greeter", "say hello"},
+		strings.NewReader(""), &stdout, &stderr,
+	); code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if request.Cwd != managerCwd {
+		t.Fatalf("delegated cwd = %q, want manager cwd %q (HOME %q)", request.Cwd, managerCwd, home)
+	}
+	if request.Worktree {
+		t.Fatal("CLI forced a worktree; the daemon should apply the delegated default")
+	}
+}
+
 func TestCodexNewSurfacesCatalogValidationErrorClearly(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/sessions" || request.Method != http.MethodPost {

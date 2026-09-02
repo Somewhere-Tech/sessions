@@ -161,7 +161,7 @@ func (a *app) sessionLabel(value session) string {
 		parts = append(parts, value.Name)
 	}
 	if value.Cwd != "" {
-		parts = append(parts, strings.Replace(value.Cwd, a.home, "~", 1))
+		parts = append(parts, a.homeRelative(value.Cwd))
 	}
 	if value.Exited {
 		parts = append(parts, "exited")
@@ -317,7 +317,7 @@ func (a *app) cmdLS(args []string) error {
 		if showPin {
 			row = append(row, pinMark(value))
 		}
-		row = append(row, strings.Replace(value.Cwd, a.home, "~", 1), sessionState(value),
+		row = append(row, a.homeRelative(value.Cwd), sessionState(value),
 			compactSummary(value.LastSummary), a.ageOf(value.CreatedAt), lastUser)
 		if showLastHuman {
 			row = append(row, a.lastHumanAge(value))
