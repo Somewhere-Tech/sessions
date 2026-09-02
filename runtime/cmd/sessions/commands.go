@@ -56,6 +56,14 @@ var toolPresets = map[string]toolPreset{
 	"shell": {},
 }
 
+// Rich Codex uses the provider's untrusted policy for constrained sessions.
+// on-request lets ordinary workspace commands proceed without asking, which
+// contradicts the explicit Ask me contract once Sessions owns the approval UI.
+var constrainedCodexAppServerArgs = []string{
+	"-c", "check_for_update_on_startup=false",
+	"--sandbox", "workspace-write", "--ask-for-approval", "untrusted",
+}
+
 var toolPresetOrder = []string{"claude", "codex", "shell"}
 
 type createSessionRequest struct {
@@ -330,6 +338,8 @@ func (a *app) cmdNew(args []string) error {
 		chosen := preset.args
 		if fullAccess {
 			chosen = preset.fullArgs
+		} else if strings.EqualFold(tool, "codex") && forceAppServer {
+			chosen = constrainedCodexAppServerArgs
 		}
 		if chosen != nil {
 			body.Args = append([]string(nil), chosen...)
@@ -339,10 +349,7 @@ func (a *app) cmdNew(args []string) error {
 			if forceStructuredClaude || forcePTYClaude {
 				return fail(1, "--structured and --pty-claude are only valid with --tool claude")
 			}
-			if forceAppServer && !fullAccess {
-				return fail(1, "--codex-appserver currently requires --full-access because Sessions cannot yet present app-server approval prompts; use sandboxed --pty-codex otherwise")
-			}
-			if fullAccess && !forcePTYCodex && (forceAppServer || codexAppServerEnabled()) {
+			if !forcePTYCodex && (forceAppServer || (fullAccess && codexAppServerEnabled())) {
 				body.Kind = "codex-app-server"
 				// The app-server runtime does not consume positional CLI arguments.
 				// Treat them as the first user request and deliver them through the
