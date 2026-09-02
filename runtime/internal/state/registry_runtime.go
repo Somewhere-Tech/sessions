@@ -125,6 +125,20 @@ func (r *Registry) Input(ctx context.Context, id, data string) bool {
 	return ok && session.Input(ctx, data)
 }
 
+// Approve answers the approval a session is waiting on and returns the
+// session as it stands; the runner's approval_resolved event clears the
+// pending prompt a moment later.
+func (r *Registry) Approve(ctx context.Context, id string, control proto.ApprovalControl) (SessionInfo, error) {
+	session, ok := r.Get(id)
+	if !ok {
+		return SessionInfo{}, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	if err := session.Approve(ctx, control); err != nil {
+		return SessionInfo{}, err
+	}
+	return session.Info(), nil
+}
+
 func (r *Registry) ConfigureModel(ctx context.Context, id, model, effort string) (SessionInfo, error) {
 	session, ok := r.Get(id)
 	if !ok {

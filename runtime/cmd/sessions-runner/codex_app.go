@@ -52,6 +52,13 @@ type codexAppRunner struct {
 	composer strings.Builder
 	active   bool
 
+	// approvals holds the requests the app-server is waiting on, keyed by
+	// the id announced in the approval_requested event, until the daemon
+	// answers with an Approve frame.
+	approvalMu  sync.Mutex
+	approvals   map[string]chan proto.ApprovalControl
+	approvalSeq uint64
+
 	shutdownOnce sync.Once
 }
 
@@ -115,6 +122,11 @@ func (r *codexAppRunner) start() error {
 	r.client = client
 	r.turnClient = client
 	conversationOptions := codexConversationOptions(r.cfg)
+	// A lane that is not fully autonomous asks before acting. The request
+	// goes to the daemon as a structured event and waits here for the answer.
+	if conversationOptions.ApprovalPolicy != "" && conversationOptions.ApprovalPolicy != codexapp.ApprovalNever {
+		client.HandleApprovals(r.awaitApproval)
+	}
 	if r.continuation != nil {
 		conversationOptions.DeveloperInstructions = codexContinuationInstructions(*r.continuation)
 	}
@@ -347,6 +359,14 @@ func (r *codexAppRunner) handleFrame(c *client, frame proto.Frame) error {
 			return marshalErr
 		}
 		return c.write(proto.ModelRes, payload)
+	case proto.Approve:
+		control, err := proto.DecodeApprovalControl(frame.Payload)
+		if err == nil {
+			err = r.resolveApproval(control)
+		}
+		if err != nil {
+			r.logger.Printf("reject approval control: %v", err)
+		}
 	case proto.Resize:
 		return nil
 	case proto.SnapshotReq:
@@ -655,4 +675,51 @@ func (r *codexAppRunner) shutdownWithRestartPolicy(permanent bool, code int, pre
 		r.streamMu.Unlock()
 		r.done <- code
 	})
+}
+
+// awaitApproval announces one approval request on the structured stream and
+// blocks until the daemon answers it or the runner stops. The turn stays open
+// meanwhile; that is the point. An unanswered request is denied on shutdown
+// so Codex never proceeds on silence.
+func (r *codexAppRunner) awaitApproval(ctx context.Context, request codexapp.ApprovalRequest) codexapp.ApprovalDecision {
+	r.approvalMu.Lock()
+	r.approvalSeq++
+	id := fmt.Sprintf("approval-%d", r.approvalSeq)
+	decided := make(chan proto.ApprovalControl, 1)
+	if r.approvals == nil {
+		r.approvals = make(map[string]chan proto.ApprovalControl)
+	}
+	r.approvals[id] = decided
+	r.approvalMu.Unlock()
+	if raw, err := codexapp.ApprovalRequestedEvent(id, request, time.Now()); err == nil {
+		r.appendStructured(raw)
+	}
+	control := proto.ApprovalControl{ID: id, Decision: proto.ApprovalDeny}
+	select {
+	case control = <-decided:
+	case <-ctx.Done():
+	case <-r.ctx.Done():
+	}
+	r.approvalMu.Lock()
+	delete(r.approvals, id)
+	r.approvalMu.Unlock()
+	decision := codexapp.ApprovalDecision(control.Decision)
+	if raw, err := codexapp.ApprovalResolvedEvent(request.ConversationID, id, decision, control.By, time.Now()); err == nil {
+		r.appendStructured(raw)
+	}
+	return decision
+}
+
+func (r *codexAppRunner) resolveApproval(control proto.ApprovalControl) error {
+	r.approvalMu.Lock()
+	decided, ok := r.approvals[control.ID]
+	if ok {
+		delete(r.approvals, control.ID)
+	}
+	r.approvalMu.Unlock()
+	if !ok {
+		return fmt.Errorf("no approval %q is waiting", control.ID)
+	}
+	decided <- control
+	return nil
 }

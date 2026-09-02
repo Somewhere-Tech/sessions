@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -218,5 +220,88 @@ func TestRunnerMetadataWriteWithoutExistingDocumentSucceeds(t *testing.T) {
 	}
 	if metadata.Info.ID != "new-session" || len(metadata.Tags) != 0 {
 		t.Fatalf("first metadata write = %#v", metadata)
+	}
+}
+
+func codexHistorySubtype(r *codexAppRunner, subtype string) (map[string]any, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, raw := range r.history {
+		var value map[string]any
+		if json.Unmarshal(raw, &value) == nil && value["subtype"] == subtype {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func TestCodexRunnerHoldsAnApprovalUntilTheDaemonAnswers(t *testing.T) {
+	r := newCodexTestRunner(t)
+	decided := make(chan codexapp.ApprovalDecision, 1)
+	go func() {
+		decided <- r.awaitApproval(context.Background(), codexapp.ApprovalRequest{
+			Kind: codexapp.ApprovalCommand, ConversationID: "thread-1", TurnID: "turn-1", Command: "npm test",
+		})
+	}()
+	var requested map[string]any
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if value, ok := codexHistorySubtype(r, "approval_requested"); ok {
+			requested = value
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if requested == nil {
+		t.Fatal("runner never announced the approval")
+	}
+	approval := requested["approval"].(map[string]any)
+	id, _ := approval["id"].(string)
+	if id == "" || approval["summary"] != "Run `npm test`" {
+		t.Fatalf("announced approval = %#v", approval)
+	}
+	select {
+	case decision := <-decided:
+		t.Fatalf("runner decided %q without an answer", decision)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := r.resolveApproval(proto.ApprovalControl{ID: "not-waiting", Decision: proto.ApprovalAllow}); err == nil {
+		t.Fatal("an unknown approval id was accepted")
+	}
+	payload, err := proto.EncodeApprovalControl(proto.ApprovalControl{ID: id, Decision: proto.ApprovalAllow, By: "manager-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.handleFrame(nil, proto.Frame{Type: proto.Approve, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case decision := <-decided:
+		if decision != codexapp.ApprovalAllow {
+			t.Fatalf("decision = %q", decision)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the answer never reached the waiting approval")
+	}
+	resolved, ok := codexHistorySubtype(r, "approval_resolved")
+	if !ok {
+		t.Fatal("no approval_resolved event recorded")
+	}
+	if outcome := resolved["approval"].(map[string]any); outcome["id"] != id || outcome["decision"] != "allow" || outcome["by"] != "manager-1" {
+		t.Fatalf("resolved event = %#v", outcome)
+	}
+
+	// A request nobody answers before the turn is cancelled is denied.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		decided <- r.awaitApproval(ctx, codexapp.ApprovalRequest{Kind: codexapp.ApprovalFileChange, ConversationID: "thread-1"})
+	}()
+	cancel()
+	select {
+	case decision := <-decided:
+		if decision != codexapp.ApprovalDeny {
+			t.Fatalf("cancelled decision = %q", decision)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled approval never returned")
 	}
 }

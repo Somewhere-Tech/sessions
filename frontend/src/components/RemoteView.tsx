@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useDispatch } from '../hooks/useDispatch';
 import { renderContent } from '../lib/contentRender';
 import type { SessionSidebarState } from '../hooks/useSessionSidebar';
-import type { ClaudeSessionEvent, SessionTool } from '../types';
+import type { ClaudeSessionEvent, SessionTool, ApprovalDecision, PendingApproval } from '../types';
 import { InputBar } from './InputBar';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import StatusSidebar from './StatusSidebar';
@@ -71,6 +71,9 @@ interface Props {
   // Raw keystrokes for answering a provider control in place. Only the
   // banner uses it; conversation text still goes through sendConfirmed.
   sendRawInput?: (data: string) => void;
+  // The permission a Rich Codex lane is holding open, and how to answer it.
+  pendingApproval?: PendingApproval | null;
+  onApprove?: (decision: ApprovalDecision) => Promise<void>;
 }
 
 // Provider-neutral conversation view over the durable session transport.
@@ -110,7 +113,9 @@ export function RemoteView({
   forkMode = false,
   onExitForkMode,
   needsInputDetail = null,
-  sendRawInput
+  sendRawInput,
+  pendingApproval = null,
+  onApprove
 }: Props): JSX.Element {
   const providerName = provider === 'codex' ? 'Codex' : 'Claude';
   const providerIdentity: ProviderIdentity = provider === 'codex' ? 'codex' : 'claude';
@@ -441,6 +446,8 @@ export function RemoteView({
                 answer={sendRawInput ? answerControl : undefined}
                 onOpenTerminal={onOpenTerminal}
                 terminalAvailable={Boolean(terminalAvailable)}
+                approval={pendingApproval}
+                onApprove={onApprove}
               />
             ) : null}
           />
@@ -506,6 +513,8 @@ export function RemoteView({
             answer={sendRawInput ? answerControl : undefined}
             onOpenTerminal={onOpenTerminal}
             terminalAvailable={Boolean(terminalAvailable)}
+            approval={pendingApproval}
+            onApprove={onApprove}
           />
         ) : null}
         {/* Sticky-anchor: pins the down-arrow to the right edge of the

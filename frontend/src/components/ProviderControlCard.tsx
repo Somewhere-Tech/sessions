@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type { SnapshotComposerState, TrustChoice } from '../lib/detectMultiChoice';
+import type { ApprovalDecision, PendingApproval } from '../types';
 
 interface Props {
   // The daemon's durable needs-input line, when it has one.
@@ -12,6 +14,10 @@ interface Props {
   // Rich sessions have no terminal; a question from one is answered in the
   // composer, so the card must not point at a terminal that does not exist.
   terminalAvailable?: boolean;
+  // A permission a Rich Codex lane is holding open. It is decided, not
+  // replied to: the lane waits until one of these buttons is pressed.
+  approval?: PendingApproval | null;
+  onApprove?: (decision: ApprovalDecision) => Promise<void> | void;
 }
 
 // A provider control (Claude's folder-trust dialog, a picker, a confirmation)
@@ -19,8 +25,44 @@ interface Props {
 // showing. Typing a message into a control activates whichever option is
 // highlighted, so the daemon refuses sends while one is open and this card is
 // the way through.
-export function ProviderControlCard({ detail, blockingState, trustChoice, answer, onOpenTerminal, terminalAvailable = true }: Props) {
-  if (!detail && !blockingState) return null;
+export function ProviderControlCard({ detail, blockingState, trustChoice, answer, onOpenTerminal, terminalAvailable = true, approval = null, onApprove }: Props) {
+  const [deciding, setDeciding] = useState<ApprovalDecision | null>(null);
+  const [decideError, setDecideError] = useState<string | null>(null);
+  if (!detail && !blockingState && !approval) return null;
+  if (approval && onApprove) {
+    const decide = async (decision: ApprovalDecision): Promise<void> => {
+      setDeciding(decision);
+      setDecideError(null);
+      try {
+        await onApprove(decision);
+      } catch (reason) {
+        setDecideError(reason instanceof Error ? reason.message : 'The answer did not reach the lane.');
+      } finally {
+        setDeciding(null);
+      }
+    };
+    const what = approval.kind === 'command' ? 'wants to run a command' : approval.kind === 'permissions' ? 'is asking for more access' : 'wants to change files';
+    return (
+      <div className="provider-control-card is-approval" role="group" aria-label="Permission request">
+        <span className="provider-control-card-title">Needs you</span>
+        <p className="provider-control-card-text">The lane {what}{approval.reason ? `: ${approval.reason}` : '.'}</p>
+        {approval.command ? <pre className="provider-control-card-command">{approval.command}</pre> : null}
+        {approval.cwd ? <span className="provider-control-card-hint">in {approval.cwd}</span> : null}
+        <div className="provider-control-card-choices" role="toolbar" aria-label="Answer the permission request">
+          <button type="button" className="provider-control-card-action is-primary" disabled={deciding !== null} onClick={() => void decide('allow')}>
+            {deciding === 'allow' ? 'Allowing…' : 'Allow once'}
+          </button>
+          <button type="button" className="provider-control-card-action" disabled={deciding !== null} onClick={() => void decide('allow-session')}>
+            {deciding === 'allow-session' ? 'Allowing…' : 'Allow for this session'}
+          </button>
+          <button type="button" className="provider-control-card-action" disabled={deciding !== null} onClick={() => void decide('deny')}>
+            {deciding === 'deny' ? 'Declining…' : 'Decline'}
+          </button>
+        </div>
+        {decideError ? <span className="provider-control-card-hint" role="alert">{decideError}</span> : null}
+      </div>
+    );
+  }
   const text = detail ?? blockingState?.description ?? 'The provider is waiting for a choice.';
   // No terminal control was detected: the lane asked a question in prose.
   const isQuestion = !blockingState && !answer;

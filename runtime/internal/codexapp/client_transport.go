@@ -168,29 +168,7 @@ func (c *Client) handleResponse(message wireMessage) {
 }
 
 func (c *Client) handleServerRequest(message wireMessage) {
-	var result any
-	switch message.Method {
-	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
-		result = struct {
-			Decision string `json:"decision"`
-		}{Decision: "acceptForSession"}
-	case "item/permissions/requestApproval":
-		var params struct {
-			Permissions json.RawMessage `json:"permissions"`
-		}
-		_ = json.Unmarshal(message.Params, &params)
-		if len(params.Permissions) == 0 {
-			params.Permissions = json.RawMessage(`{}`)
-		}
-		result = struct {
-			Permissions json.RawMessage `json:"permissions"`
-			Scope       string          `json:"scope"`
-		}{Permissions: params.Permissions, Scope: "session"}
-	case "applyPatchApproval", "execCommandApproval":
-		result = struct {
-			Decision string `json:"decision"`
-		}{Decision: "approved_for_session"}
-	default:
+	if !isApprovalMethod(message.Method) {
 		_ = c.writeJSON(struct {
 			ID    json.RawMessage `json:"id"`
 			Error rpcError        `json:"error"`
@@ -203,10 +181,23 @@ func (c *Client) handleServerRequest(message wireMessage) {
 		})
 		return
 	}
-	_ = c.writeJSON(struct {
-		ID     json.RawMessage `json:"id"`
-		Result any             `json:"result"`
-	}{ID: message.ID, Result: result})
+	request := parseApprovalRequest(message.Method, message.Params)
+	c.mu.Lock()
+	handler := c.approvals
+	c.mu.Unlock()
+	reply := func(decision ApprovalDecision) {
+		_ = c.writeJSON(struct {
+			ID     json.RawMessage `json:"id"`
+			Result any             `json:"result"`
+		}{ID: message.ID, Result: approvalReply(message.Method, request, decision)})
+	}
+	if handler == nil {
+		reply(ApprovalAllowForSession)
+		return
+	}
+	// The decision can take as long as a person takes; it must not hold the
+	// read loop, which still has to deliver the turn's other events.
+	go reply(handler(context.Background(), request))
 }
 
 func (c *Client) handleNotification(method string, params json.RawMessage) {

@@ -84,6 +84,12 @@ func TestStructuredIdleClassificationUsesProviderOutcome(t *testing.T) {
 			detail: "Sandbox setup failed",
 		},
 		{
+			name: "codex waiting on an approval", kind: state.KindCodexAppServer,
+			event:  `{"source":"codex-app-server","type":"system","subtype":"approval_requested","approval":{"id":"approval-1","kind":"command","summary":"Run ` + "`npm test`" + `"}}`,
+			want:   IdleBlocked,
+			detail: "Allow? Run `npm test`",
+		},
+		{
 			name: "claude completed", kind: state.KindClaudeStructured,
 			event: `{"source":"claude-p-stream-json","type":"result","subtype":"success","is_error":false}`,
 			want:  IdleDone,

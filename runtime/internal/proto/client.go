@@ -156,6 +156,21 @@ func (r *SocketRunner) Input(_ context.Context, data string) error {
 	return r.write(Input, []byte(data))
 }
 
+// Approve forwards a decision for an approval the runner is holding open.
+// The runner answers with an approval_resolved event on the structured
+// stream, so no reply frame is needed.
+func (r *SocketRunner) Approve(_ context.Context, control ApprovalControl) error {
+	if r.Info().ProtocolVersion < 3 {
+		return fmt.Errorf("runner protocol v%d cannot route approvals; end and resume the session so it starts on the current runner", r.Info().ProtocolVersion)
+	}
+	payload, err := EncodeApprovalControl(control)
+	if err != nil {
+		return err
+	}
+	r.startReader()
+	return r.write(Approve, payload)
+}
+
 func (r *SocketRunner) ConfigureModel(ctx context.Context, control ModelControl) error {
 	r.modelMu.Lock()
 	defer r.modelMu.Unlock()

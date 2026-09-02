@@ -914,6 +914,29 @@ runner input may have happened is `unknown` or `text-delivered` with
 a new operation. This conservative boundary prevents a lost HTTP response from
 turning into a duplicate provider writer.
 
+### `POST /api/sessions/:id/approve`
+
+Auth required. Answers the permission a Rich Codex session is holding open.
+A lane that inherits the person's permissions instead of running autonomously
+asks before it runs a command, changes files, or takes more access; the runner
+holds the request, the session reads `needs-input` with `idleDetail` set to
+`Allow? <summary>`, and the session object carries `pendingApproval` with
+`id`, `kind` (`command`, `file-change`, `permissions`), `summary`, `command`,
+`cwd`, `reason`, and `at`. Body is `{"decision":"allow"|"allow-session"|"deny"}`
+with an optional `id` that must match the pending approval. `allow-session`
+lets the same kind of request through for the rest of the session; `deny`
+refuses it and the lane continues without it.
+
+The optional `X-Sessions-Creator-Session` header attributes the decision to a
+lane, and the runner records an `approval_resolved` event with that id in
+`by` (empty when a person decided). Responses:
+
+- `200 {"ok":true,"id":"<session>","decision":"<decision>","approval":{...}}`
+- `400` for an unknown decision or a session that is not Rich Codex
+- `404` for an unknown session
+- `409` when nothing is waiting, the id does not match, or the session ended
+- `501` when the daemon cannot route approvals
+
 ### `GET /api/message-deliveries/:operation-id`
 
 Auth required. Returns the latest durable receipt for a composer submission.

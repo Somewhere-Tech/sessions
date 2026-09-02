@@ -134,6 +134,10 @@ type SessionInfo struct {
 	IdleDetail         string `json:"idleDetail,omitempty"`
 	IdleSince          *int64 `json:"idleSince,omitempty"`
 	LastSummary        string `json:"lastSummary,omitempty"`
+	// PendingApproval is the permission a Rich lane is waiting on right now.
+	// It is derived from the lane's structured stream, so it survives a
+	// daemon restart as long as the runner is still holding the request.
+	PendingApproval *ApprovalPrompt `json:"pendingApproval,omitempty"`
 	// Exited means Sessions reaped a real status for this session's process:
 	// an exit code, a signal, or a user-requested end that completed. It is
 	// never set because the daemon lost contact. Losing a socket says nothing
@@ -225,6 +229,18 @@ type SessionInfo struct {
 	EndedByClient      string   `json:"ended_by_client,omitempty"`
 	EndReason          string   `json:"end_reason,omitempty"`
 	EndOperationID     string   `json:"end_operation_id,omitempty"`
+}
+
+// ApprovalPrompt is one permission request a structured provider is holding
+// open until Sessions answers it.
+type ApprovalPrompt struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Summary string `json:"summary"`
+	Command string `json:"command,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	At      int64  `json:"at"`
 }
 
 const (

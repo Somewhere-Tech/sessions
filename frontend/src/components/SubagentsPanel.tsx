@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { classifySession } from '../lib/sessionStatus';
 import { subagentNeedsReview } from '../lib/workingSet';
 import { resolvedSessionLabel } from '../lib/tabLabels';
-import type { SessionInfo } from '../types';
+import type { ApprovalDecision, SessionInfo } from '../types';
 import { normalizeProvider, ProviderMark } from './ProviderBadge';
 
 interface Props {
@@ -16,6 +16,8 @@ interface Props {
   // work into the manager's conversation, attributed to the lane. The lane
   // keeps running; this is a report, not an end.
   onHandBack?: (lane: SessionInfo) => Promise<void>;
+  // Answer the permission a lane is holding open without opening it.
+  onApprove?: (lane: SessionInfo, decision: ApprovalDecision) => Promise<void>;
 }
 
 function relativeTime(value: number): string {
@@ -48,7 +50,7 @@ function lastLine(session: SessionInfo): string {
   return session.lastSummary?.trim().split('\n')[0] ?? '';
 }
 
-export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain, onEnd, onHandBack }: Props): JSX.Element {
+export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain, onEnd, onHandBack, onApprove }: Props): JSX.Element {
   const [movingId, setMovingId] = useState<string | null>(null);
   const [handingBackId, setHandingBackId] = useState<string | null>(null);
   const [handedBackId, setHandedBackId] = useState<string | null>(null);
@@ -57,6 +59,7 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
   const [reviewInactive, setReviewInactive] = useState(false);
   const [copiedCleanupRequest, setCopiedCleanupRequest] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
   const ordered = [...subagents].sort((left, right) => {
     const leftStatus = classifySession(left);
     const rightStatus = classifySession(right);
@@ -107,6 +110,19 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
       setError(reason instanceof Error ? reason.message : 'Could not hand this lane back.');
     } finally {
       setHandingBackId(null);
+    }
+  };
+
+  const approve = async (session: SessionInfo, decision: ApprovalDecision): Promise<void> => {
+    if (!onApprove) return;
+    setApprovingId(session.id);
+    setError(null);
+    try {
+      await onApprove(session, decision);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The answer did not reach the lane.');
+    } finally {
+      setApprovingId(null);
     }
   };
 
@@ -166,6 +182,18 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
               <p>{purpose(session)}</p>
               {lastLine(session) && lastLine(session) !== purpose(session) ? (
                 <p className={`subagent-last${status.needsYou ? ' is-attention' : ''}`}>{status.needsYou ? 'Waiting: ' : ''}{lastLine(session)}</p>
+              ) : null}
+              {session.pendingApproval && onApprove ? (
+                <div className="subagent-approval" role="group" aria-label="Permission request">
+                  <span>Asks to {session.pendingApproval.summary.replace(/^Run /, 'run ').replace(/^Change /, 'change ').replace(/^Grant /, 'grant ')}</span>
+                  <span className="subagent-approval-actions">
+                    <button type="button" className="btn btn-secondary" disabled={approvingId !== null} onClick={() => void approve(session, 'allow')}>
+                      {approvingId === session.id ? 'Answering…' : 'Allow'}
+                    </button>
+                    <button type="button" className="btn btn-ghost" disabled={approvingId !== null} onClick={() => void approve(session, 'allow-session')}>Allow for session</button>
+                    <button type="button" className="btn btn-ghost" disabled={approvingId !== null} onClick={() => void approve(session, 'deny')}>Decline</button>
+                  </span>
+                </div>
               ) : null}
               <div className="subagent-card-actions">
                 <button type="button" className="btn btn-secondary" onClick={() => onOpen(session.id)}>Open</button>

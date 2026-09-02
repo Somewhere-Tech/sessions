@@ -24,7 +24,7 @@ const (
 	// ProtocolVersion is the current daemon/runner wire revision. Version zero
 	// means the legacy HELLO omitted protocolVersion; it remains supported while
 	// immutable pre-1 runners are still alive.
-	ProtocolVersion          = 2
+	ProtocolVersion          = 3
 	MinimumCompatibleVersion = 0
 	MaximumCompatibleVersion = ProtocolVersion
 )
@@ -50,6 +50,9 @@ const (
 	ReplayReq   Type = 0x13
 	Kill        Type = 0x14
 	ModelReq    Type = 0x15
+	// Approve answers an approval a structured runner announced with an
+	// approval_requested event. Protocol v3.
+	Approve Type = 0x16
 
 	Hello       Type = 0x20
 	Output      Type = 0x21

@@ -55,6 +55,7 @@ Daily workflows:
   list                     list agent sessions and headless lanes
   lanes                    list headless lanes
   team                     show the lanes a manager delegated and their state
+  approve                  answer the permission a Rich Codex lane is waiting on
   projects                 list or name the projects sessions are grouped under
   send                     send text and Enter to a session
   send-status              inspect a durable message-delivery receipt
@@ -522,6 +523,24 @@ Examples:
   sessions team
   sessions team 0123abcd
   sessions --json team 0123abcd
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions approve`
+
+```text
+Usage:
+  sessions approve <session-id> [--deny | --for-session]
+
+answer the permission a Rich Codex lane is waiting on
+
+A lane that inherits your permissions instead of running on its own asks before it runs a command, changes files, or takes more access. The request shows as the lane's needs-you line (`sessions ls`, `sessions team`, the app) and the lane waits until it is answered. `approve` allows it once; --for-session allows the same kind of request for the rest of the lane's session; --deny refuses and lets the lane continue without it. Run from inside a manager lane, the decision is attributed to that lane in the worker's transcript.
+
+Examples:
+  sessions approve 0123abcd
+  sessions approve 0123abcd --for-session
+  sessions approve 0123abcd --deny
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

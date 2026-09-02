@@ -133,6 +133,9 @@ type Client struct {
 	convs          map[string]conversationDefaults
 	remoteEndpoint string
 	closed         bool
+	// approvals, when set, decides server-side approval requests; nil
+	// accepts them for the session (a fully autonomous lane).
+	approvals ApprovalHandler
 }
 
 // NewClient starts (or reuses) the managed app-server daemon, launches the

@@ -501,6 +501,10 @@ func (c *rediscoveryConnection) Input(context.Context, string) error {
 	return nil
 }
 
+func (c *rediscoveryConnection) Approve(context.Context, proto.ApprovalControl) error {
+	return nil
+}
+
 func (c *rediscoveryConnection) ConfigureModel(context.Context, proto.ModelControl) error {
 	if !c.process.isAlive() {
 		return errors.New("scratch runner exited")

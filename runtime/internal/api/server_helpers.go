@@ -368,3 +368,29 @@ func readableRootFile(root *os.Root, name string) (*os.File, os.FileInfo) {
 	}
 	return nil, nil
 }
+
+func (s *Server) pendingRestore(id string) (state.RestorePending, bool) {
+	reporter, ok := s.registry.(pendingRestoreService)
+	if !ok {
+		return state.RestorePending{}, false
+	}
+	return reporter.PendingRestore(id)
+}
+
+func (s *Server) sendPendingRestore(response http.ResponseWriter, id, corsOrigin string) bool {
+	pending, ok := s.pendingRestore(id)
+	if !ok {
+		return false
+	}
+	reason := strings.TrimSpace(pending.Reason)
+	if reason == "" {
+		reason = "the runner stayed paused after reboot"
+	}
+	action := "sessions resume " + id
+	s.sendJSON(response, http.StatusConflict, map[string]any{
+		"code": "SESSION_NEEDS_RECREATE", "sessionId": id,
+		"error":  "session is paused after reboot and cannot be read or controlled until it is resumed: " + reason,
+		"action": action,
+	}, corsOrigin)
+	return true
+}

@@ -98,7 +98,7 @@ func (a *app) writeTeam(listing teamListing) error {
 		return err
 	}
 	if listing.NeedsInput > 0 {
-		if _, err := io.WriteString(a.stdout, "\n"+pluralLanes(listing.NeedsInput)+" waiting on you; answer with `sessions ask <id>` or open the lane\n"); err != nil {
+		if _, err := io.WriteString(a.stdout, "\n"+pluralLanes(listing.NeedsInput)+" waiting on you; answer with `sessions ask <id>`, allow with `sessions approve <id>`, or open the lane\n"); err != nil {
 			return err
 		}
 	}

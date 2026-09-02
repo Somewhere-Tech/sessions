@@ -64,6 +64,7 @@ type Runner struct {
 	outputs     []proto.OutputEvent
 	structured  []json.RawMessage
 	inputs      []string
+	approvals   []proto.ApprovalControl
 	models      []proto.ModelControl
 	cols        int
 	rows        int
@@ -129,6 +130,24 @@ func (r *Runner) ConfigureModel(_ context.Context, control proto.ModelControl) e
 	r.models = append(r.models, control)
 	r.signalChangeLocked()
 	return nil
+}
+
+func (r *Runner) Approve(_ context.Context, control proto.ApprovalControl) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.exited {
+		return errors.New("runner exited")
+	}
+	r.approvals = append(r.approvals, control)
+	r.signalChangeLocked()
+	return nil
+}
+
+// Approvals returns every approval decision the daemon sent, in order.
+func (r *Runner) Approvals() []proto.ApprovalControl {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]proto.ApprovalControl(nil), r.approvals...)
 }
 
 func (r *Runner) Resize(_ context.Context, cols, rows int) error {

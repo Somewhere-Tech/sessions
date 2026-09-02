@@ -798,3 +798,33 @@ export async function fetchProjects(signal?: AbortSignal): Promise<ProjectView[]
   const body = await json<{ projects: ProjectView[] }>(r);
   return body.projects ?? [];
 }
+
+// approveSession answers the permission a Rich Codex lane is waiting on.
+// fromSessionId attributes the decision to a lane, the way `sessions approve`
+// run inside a manager does; a person deciding passes nothing.
+export async function approveSession(
+  sessionId: string,
+  decision: 'allow' | 'allow-session' | 'deny',
+  serverId?: string,
+  fromSessionId?: string
+): Promise<void> {
+  const server = requestedServer(serverId);
+  const response = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/approve`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(fromSessionId ? { 'X-Sessions-Creator-Session': fromSessionId } : {})
+    },
+    body: JSON.stringify({ decision })
+  });
+  if (!response.ok) {
+    let message = `The lane did not take the answer (HTTP ${response.status}).`;
+    try {
+      const body = await response.json() as { error?: string };
+      if (body.error) message = body.error;
+    } catch {
+      // The status is the message.
+    }
+    throw new Error(message);
+  }
+}

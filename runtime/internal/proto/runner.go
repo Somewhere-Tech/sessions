@@ -82,6 +82,7 @@ type Runner interface {
 	Replay(context.Context, uint32) ReplayWindow
 	Input(context.Context, string) error
 	ConfigureModel(context.Context, ModelControl) error
+	Approve(context.Context, ApprovalControl) error
 	Resize(context.Context, int, int) error
 	Kill(context.Context) error
 	Subscribe() (<-chan Event, func())

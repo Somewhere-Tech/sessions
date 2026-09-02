@@ -518,6 +518,24 @@ func (s *Session) Input(ctx context.Context, data string) bool {
 	return !exited && s.runner.Input(ctx, data) == nil
 }
 
+// Approve answers the approval this session's runner is holding open.
+func (s *Session) Approve(ctx context.Context, control proto.ApprovalControl) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.info.Exited {
+		return ErrSessionEnded
+	}
+	if s.info.PendingApproval == nil {
+		return ErrNoPendingApproval
+	}
+	if control.ID == "" {
+		control.ID = s.info.PendingApproval.ID
+	} else if control.ID != s.info.PendingApproval.ID {
+		return fmt.Errorf("%w: %s is waiting, not %s", ErrNoPendingApproval, s.info.PendingApproval.ID, control.ID)
+	}
+	return s.runner.Approve(ctx, control)
+}
+
 // ConfigureModel updates the defaults used by the next structured-provider
 // turn. Holding the session write lock across the runner frame orders this
 // change before any later user input through Session.Input.

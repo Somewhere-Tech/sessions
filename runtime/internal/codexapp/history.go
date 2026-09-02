@@ -178,6 +178,12 @@ func HistoryLifecycle(raw json.RawMessage) (working bool, authoritative bool) {
 		return true, true
 	case "turn_completed":
 		return false, true
+	// A lane waiting on an approval is not working: nothing moves until
+	// someone answers, and the session must read as needing that answer.
+	case "approval_requested":
+		return false, true
+	case "approval_resolved":
+		return true, true
 	default:
 		return false, false
 	}

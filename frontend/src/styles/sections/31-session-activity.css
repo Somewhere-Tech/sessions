@@ -572,3 +572,30 @@
 .provider-control-card-hint { color: var(--fg-dim); font-size: 12px; }
 .subagent-last { margin: 4px 0 0; font-size: 12px; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .subagent-last.is-attention { color: var(--warn, #e9b44c); }
+
+/* A permission request from a Rich Codex lane, answered in place. */
+.provider-control-card-command {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 6px;
+  background: var(--bg-sunken, rgba(127, 127, 127, 0.12));
+  color: var(--fg);
+}
+.subagent-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--warn, #e9b44c);
+  font-size: 12px;
+  color: var(--fg);
+}
+.subagent-approval > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.subagent-approval-actions { display: flex; flex-wrap: wrap; gap: 6px; }

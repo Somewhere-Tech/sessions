@@ -4,7 +4,7 @@ import { useSessionSidebar } from '../hooks/useSessionSidebar';
 import { RemoteView } from './RemoteView';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import { useSessions } from '../store/sessions';
-import { fetchOnboardingState, fetchServerHistoryTranscript, submitMessage as submitAttributedMessage, wsMuxUrl } from '../api/sessionsd';
+import { approveSession, fetchOnboardingState, fetchServerHistoryTranscript, submitMessage as submitAttributedMessage, wsMuxUrl } from '../api/sessionsd';
 import { classifySnapshotComposerState } from '../lib/detectMultiChoice';
 import { requestSnapshot } from '../lib/wsMux';
 import { SessionDetails } from './SessionDetails';
@@ -693,6 +693,8 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               ? (session.idleDetail || 'The provider is waiting for a choice.')
               : null}
             sendRawInput={richSession ? undefined : sendInput}
+            pendingApproval={session?.pendingApproval ?? null}
+            onApprove={session ? (decision) => approveSession(session.id, decision) : undefined}
           />
         </div>
         <div className="session-details-pane">
@@ -711,6 +713,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             }}
             onMakeMain={(childId) => onReparent(childId, null)}
             onEnd={endSession}
+            onApprove={(lane, decision) => approveSession(lane.id, decision)}
             onHandBack={async (lane) => {
               const line = (lane.idleReason === 'needs-input' && lane.idleDetail)
                 ? `is waiting: ${lane.idleDetail}`

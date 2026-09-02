@@ -108,7 +108,15 @@ func structuredIdleClassification(kind string, events []json.RawMessage) (IdleCl
 		}
 		switch kind {
 		case state.KindCodexAppServer:
-			if event.Source != codexapp.HistorySource || event.Subtype != "turn_completed" {
+			if event.Source != codexapp.HistorySource {
+				continue
+			}
+			// An approval the runner is holding open is the reason the lane
+			// stopped; it is answered, not replied to.
+			if event.Subtype == "approval_requested" {
+				return IdleClassification{Outcome: IdleBlocked, Line: approvalLine(events[index])}, true
+			}
+			if event.Subtype != "turn_completed" {
 				continue
 			}
 			if strings.EqualFold(event.Status, "completed") {
@@ -312,4 +320,16 @@ func hookEnvironment(info state.SessionInfo, hook idleHookContext) []string {
 		result = append(result, key+"="+value)
 	}
 	return result
+}
+
+func approvalLine(raw json.RawMessage) string {
+	var event struct {
+		Approval struct {
+			Summary string `json:"summary"`
+		} `json:"approval"`
+	}
+	if json.Unmarshal(raw, &event) == nil && strings.TrimSpace(event.Approval.Summary) != "" {
+		return "Allow? " + strings.TrimSpace(event.Approval.Summary)
+	}
+	return "Allow? The lane asked for permission"
 }

@@ -144,6 +144,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions team", "sessions team 0123abcd", "sessions --json team 0123abcd"}, run: (*app).cmdTeam,
 	},
 	{
+		name: "approve", usage: "approve <session-id> [--deny | --for-session]",
+		summary: "answer the permission a Rich Codex lane is waiting on", group: dailyCommandGroup, localJSON: true,
+		longHelp: "A lane that inherits your permissions instead of running on its own asks before it runs a command, changes files, or takes more access. The request shows as the lane's needs-you line (`sessions ls`, `sessions team`, the app) and the lane waits until it is answered. `approve` allows it once; --for-session allows the same kind of request for the rest of the lane's session; --deny refuses and lets the lane continue without it. Run from inside a manager lane, the decision is attributed to that lane in the worker's transcript.",
+		examples: []string{"sessions approve 0123abcd", "sessions approve 0123abcd --for-session", "sessions approve 0123abcd --deny"}, run: (*app).cmdApprove,
+	},
+	{
 		name: "projects", usage: "projects [name <folder> <name> | forget <project-id>]",
 		summary: "list or name the projects sessions are grouped under", group: dailyCommandGroup, localJSON: true,
 		longHelp: "A project is the work a session belongs to: a folder, a git checkout together with every worktree of it, or a Somewhere project. Sessions find their project by working directory, so every folder shows up here on day one as an implicit project named after itself; `name` claims a folder under a name of your choosing (a GitHub origin suggests owner/repo), and `forget` drops a stored project so its sessions return to their folder's implicit one. The inbox groups sessions by these projects.",

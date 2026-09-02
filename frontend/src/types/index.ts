@@ -7,6 +7,18 @@ export const PROTOCOL_VERSION = 2;
 
 export type SessionTool = 'claude-code' | 'codex' | 'terminal';
 
+export type ApprovalDecision = 'allow' | 'allow-session' | 'deny';
+
+export interface PendingApproval {
+  id: string;
+  kind: 'command' | 'file-change' | 'permissions' | string;
+  summary: string;
+  command?: string;
+  cwd?: string;
+  reason?: string;
+  at?: number;
+}
+
 export interface SessionInfo {
   id: string;
   name?: string;
@@ -45,6 +57,9 @@ export interface SessionInfo {
   idleDetail?: string;
   idleSince?: number | null;
   lastSummary?: string;
+  // The permission a Rich Codex lane is holding open, when it is not
+  // autonomous. Answered with approveSession, never with a reply.
+  pendingApproval?: PendingApproval | null;
   exited: boolean;
   exitCode: number | null;
   exitSignal: string | null;

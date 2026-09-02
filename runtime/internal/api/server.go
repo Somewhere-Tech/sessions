@@ -11,6 +11,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/project"
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/recap"
 	sessionruntime "github.com/somewhere-tech/sessions/runtime/internal/session"
 	"github.com/somewhere-tech/sessions/runtime/internal/smartsearch"
@@ -99,6 +100,10 @@ type attributedInputService interface {
 
 type messageAttributionService interface {
 	MessageRelays(context.Context, string) ([]ledger.MessageRelayed, error)
+}
+
+type approvalService interface {
+	Approve(context.Context, string, proto.ApprovalControl) (state.SessionInfo, error)
 }
 
 type modelControlService interface {

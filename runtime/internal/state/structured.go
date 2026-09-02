@@ -40,6 +40,8 @@ func (s *Session) recordClaudeLocked(event *proto.Event) int64 {
 		}
 	}
 	switch value["type"] {
+	case "system":
+		s.trackApprovalLocked(value, providerActivityAt)
 	case "custom-title":
 		if title, ok := value["customTitle"].(string); ok && title != "" {
 			s.info.ClaudeCustomTitle = title
@@ -169,4 +171,32 @@ func structuredContentText(content any) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+// trackApprovalLocked keeps PendingApproval in step with the structured
+// stream: a requested approval is pending until the runner records its
+// resolution. Replayed history goes through the same path, so a daemon that
+// reconnects to a runner still holding a request shows it.
+func (s *Session) trackApprovalLocked(value map[string]any, at int64) {
+	approval, _ := value["approval"].(map[string]any)
+	text := func(key string) string {
+		if v, ok := approval[key].(string); ok {
+			return v
+		}
+		return ""
+	}
+	switch value["subtype"] {
+	case "approval_requested":
+		if text("id") == "" {
+			return
+		}
+		s.info.PendingApproval = &ApprovalPrompt{
+			ID: text("id"), Kind: text("kind"), Summary: text("summary"),
+			Command: text("command"), Cwd: text("cwd"), Reason: text("reason"), At: at,
+		}
+	case "approval_resolved":
+		if s.info.PendingApproval != nil && (text("id") == "" || s.info.PendingApproval.ID == text("id")) {
+			s.info.PendingApproval = nil
+		}
+	}
 }
