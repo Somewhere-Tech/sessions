@@ -65,7 +65,7 @@ mod tests {
     }
 
     #[test]
-    fn update_accepts_complete_baseline_while_unrelated_discovery_continues() {
+    fn update_accepts_ended_baseline_while_unrelated_discovery_continues() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -74,8 +74,8 @@ mod tests {
                 let mut request = [0_u8; 4096];
                 let count = stream.read(&mut request).unwrap_or_default();
                 let request = String::from_utf8_lossy(&request[..count]);
-                let body = if request.starts_with("GET /api/sessions ") {
-                    r#"{"sessions":[{"id":"alpha"},{"id":"beta"}]}"#
+                let body = if request.starts_with("GET /api/sessions?include_exited=1 ") {
+                    r#"{"sessions":[{"id":"alpha"},{"id":"beta","exited":true},{"id":"gamma","unreachable":true,"ended_by_kind":"user"}]}"#
                 } else {
                     r#"{"ok":true,"name":"sessionsd","discovering":true}"#
                 };
@@ -90,10 +90,37 @@ mod tests {
         let mut config = fixture_config(&root, "tech.somewhere.sessions.update-discovery", port);
         config.health_timeout = Duration::from_secs(1);
         config.poll_interval = Duration::from_millis(25);
-        let baseline = BTreeSet::from(["alpha".to_string(), "beta".to_string()]);
+        let baseline = BTreeSet::from([
+            "alpha".to_string(),
+            "beta".to_string(),
+            "gamma".to_string(),
+        ]);
 
         wait_until_ready(&config, &baseline).unwrap();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn readiness_only_rejects_unknown_or_unreachable_baseline_sessions() {
+        let baseline = BTreeSet::from([
+            "reachable".to_string(),
+            "ended".to_string(),
+            "unreachable".to_string(),
+            "unknown".to_string(),
+        ]);
+        let current = BTreeMap::from([
+            ("reachable".to_string(), SessionReadiness::Reachable),
+            ("ended".to_string(), SessionReadiness::Ended),
+            (
+                "unreachable".to_string(),
+                SessionReadiness::Unreachable,
+            ),
+        ]);
+
+        assert_eq!(
+            baseline_sessions_not_ready(&baseline, &current),
+            vec!["unknown".to_string(), "unreachable".to_string()]
+        );
     }
 
     #[test]
@@ -115,7 +142,7 @@ mod tests {
         let config = fixture_config(&root, "tech.somewhere.sessions.live-baseline", port);
 
         assert_eq!(
-            fetch_sessions(&config).unwrap(),
+            live_session_ids(fetch_sessions(&config, false).unwrap()),
             BTreeSet::from(["live".to_string(), "older-daemon".to_string()])
         );
         server.join().unwrap();
@@ -431,7 +458,9 @@ mod tests {
             let mut request = [0_u8; 4096];
             let count = stream.read(&mut request).unwrap_or_default();
             let request = String::from_utf8_lossy(&request[..count]);
-            let body = if request.starts_with("GET /api/sessions ") {
+            let body = if request.starts_with("GET /api/sessions ")
+                || request.starts_with("GET /api/sessions?include_exited=1 ")
+            {
                 let sessions = env::var("SESSIONS_LAUNCHD_TEST_SESSION_IDS")
                     .unwrap_or_default()
                     .split(',')
