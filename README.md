@@ -161,6 +161,7 @@ record whether the report came from an agent, direct use, or both.
 - [Lanes: delegated work, approvals, hand-back](docs/LANES.md)
 - [Native app package and lifetime contract](docs/NATIVE_APP.md)
 - [Android client, pairing, and development build](docs/ANDROID.md)
+- [iOS client, pairing, and simulator build](docs/IOS.md)
 - [Broad public roadmap](ROADMAP.md)
 
 ## Notifications and hooks
@@ -231,4 +232,5 @@ sessions lanes
 ```
 
 See [architecture](ARCHITECTURE.md), [Go port constraints](runtime/ARCHITECTURE.md),
-[Android development](docs/ANDROID.md), and [release instructions](docs/RELEASE.md).
+[Android development](docs/ANDROID.md), [iOS development](docs/IOS.md), and
+[release instructions](docs/RELEASE.md).
