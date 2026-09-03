@@ -26,8 +26,8 @@ import { ContinueElsewhereButton } from './ContinueElsewhereButton';
 import { serverDisplayName, useServers } from '../lib/servers';
 import { useFleetSessions, type FleetSessionSnapshot } from '../hooks/useFleetSessions';
 import { useProjects } from '../hooks/useProjects';
-import { buildInboxLayout } from '../lib/inboxSections';
-import { InboxSections } from './InboxSections';
+import { buildInboxLayout, buildProviderFaultNotices, type ProviderFaultNotice } from '../lib/inboxSections';
+import { InboxSections, ProviderFaultBanners } from './InboxSections';
 
 type PrimaryFilter = 'all' | 'needs' | 'working' | 'ended';
 type ProviderFilter = 'all' | 'claude' | 'codex' | 'shell';
@@ -58,6 +58,31 @@ function projectName(session: SessionInfo): string {
   if (tagged) return tagged;
   const path = session.sourceRepo || session.cwd;
   return path.split('/').filter(Boolean).pop() ?? path;
+}
+
+function useProviderFaultNotices(
+  snapshots: FleetSessionSnapshot[],
+  sessions: SessionInfo[],
+  activeMachineId: string | null,
+  fallbackServerId: string
+): ProviderFaultNotice[] {
+  return useMemo(() => {
+    const candidates = snapshots.flatMap((snapshot) => snapshot.server.id === activeMachineId
+      ? []
+      : snapshot.sessions.map((session) => ({ session, serverId: snapshot.server.id })));
+    candidates.push(...sessions.map((session) => ({ session, serverId: activeMachineId ?? fallbackServerId })));
+    return buildProviderFaultNotices(candidates);
+  }, [activeMachineId, fallbackServerId, sessions, snapshots]);
+}
+
+function openProviderFaultNotice(
+  notice: ProviderFaultNotice,
+  activeMachineId: string | null,
+  onOpen: (id: string) => void,
+  onOpenMachineSession: (serverId: string, sessionId: string) => void
+): void {
+  if (!notice.first.serverId || notice.first.serverId === activeMachineId) onOpen(notice.first.session.id);
+  else onOpenMachineSession(notice.first.serverId, notice.first.session.id);
 }
 
 // Status classification lives in lib/sessionStatus.ts. This file used to
@@ -219,13 +244,11 @@ export function SessionNavigator({
       return true;
     });
   }, [sessions]);
-
   const selectMachineScope = (scope: MachineScope): void => {
     setMachineScopeState(scope);
     writeMachineScope(scope);
     if (scope !== ALL_MACHINES_SCOPE) selectMachine(scope);
   };
-
   useEffect(() => {
     if (machineScope === ALL_MACHINES_SCOPE) return;
     const stillConfigured = configuredMachines.some((server) => server.id === machineScope);
@@ -236,7 +259,6 @@ export function SessionNavigator({
     setMachineScopeState(next);
     writeMachineScope(next);
   }, [activeMachineId, configuredMachines, machineScope]);
-
   const copyConversation = async (
     session: SessionInfo,
     destinationProvider: 'claude' | 'codex'
@@ -337,11 +359,12 @@ export function SessionNavigator({
     [liveSessions]
   );
   const pinnedSessions = sortRoots(navigatorSessions.filter((session) => pinnedIds.has(session.id)));
-
   const fleetSessions = useMemo(
     () => fleetSnapshots.flatMap((snapshot) => snapshot.sessions).filter((session) => !isAgentLedChild(session)),
     [fleetSnapshots]
   );
+  const providerFaultNotices = useProviderFaultNotices(fleetSnapshots, sessions, activeMachineId, configuredMachines[0]?.id ?? '');
+  const openProviderFault = (notice: ProviderFaultNotice): void => openProviderFaultNotice(notice, activeMachineId, onOpen, onOpenMachineSession);
   const scopedSessions = showingAllMachines ? fleetSessions : navigatorSessions;
   const projects = useMemo(() => [...new Set(scopedSessions.map(projectName).filter(Boolean))].sort(), [scopedSessions]);
   const counts = useMemo(() => ({
@@ -866,6 +889,7 @@ export function SessionNavigator({
             Drop here to make this a manager session
           </div>
         ) : null}
+        {showingAllMachines ? <ProviderFaultBanners notices={providerFaultNotices} onOpen={openProviderFault} /> : null}
         {showingAllMachines && primary !== 'ended' ? <div className="session-tree-group session-fleet-scope-group">
           <button type="button" className="session-tree-group-head" onClick={() => setRunningOpen((current) => !current)}>
             <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Your sessions</span><strong>{counts.live}</strong>
@@ -919,6 +943,7 @@ export function SessionNavigator({
             folderOf={projectName}
             relativeTime={relativeTime}
             lastActivity={lastActivity}
+            providerNotices={providerFaultNotices} onOpenProviderFault={openProviderFault}
           />
         ) : null}
         {!showingAllMachines && primary !== 'ended' && filteredLiveSessions.length === 0 && inboxLayout.sections.length === 0 && !inboxLayout.other

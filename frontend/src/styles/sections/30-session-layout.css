@@ -134,6 +134,15 @@
   min-width: 0;
   min-height: 0;
 }
+.terminal-provider-fault {
+  position: absolute;
+  z-index: 4;
+  top: 12px;
+  left: 50%;
+  width: min(560px, calc(100% - 32px));
+  transform: translateX(-50%);
+}
+.terminal-provider-fault .provider-control-card { margin: 0; }
 .rich-terminal-empty {
   display: grid;
   width: min(560px, calc(100% - 48px));

@@ -638,6 +638,8 @@ function FleetSessionRow({
 // is not re-derived here — only its display order.
 const FLEET_SORT_PRIORITY: Record<SessionStatusState, number> = {
   failed: 0,
+  'provider-down': 0,
+  'auth-needed': 0,
   'needs-recovery': 1,
   'needs-you': 2,
   reconnecting: 3,

@@ -72,7 +72,9 @@ button.session-parent-breadcrumb:hover, button.session-parent-breadcrumb:focus-v
 .session-live-pill.is-reconnecting { border-color: var(--accent-border-soft); color: var(--accent); }
 .session-live-pill.is-needs-you { border-color: color-mix(in srgb, var(--warn) 42%, transparent); color: var(--warn); }
 .session-live-pill.is-limited { border-color: color-mix(in srgb, var(--warn) 42%, transparent); color: var(--warn); }
-.session-live-pill.is-failed { border-color: color-mix(in srgb, var(--danger) 42%, transparent); color: var(--danger); }
+.session-live-pill.is-failed,
+.session-live-pill.is-provider-down { border-color: color-mix(in srgb, var(--danger) 42%, transparent); color: var(--danger); }
+.session-live-pill.is-auth-needed { border-color: color-mix(in srgb, var(--warn) 42%, transparent); color: var(--warn); }
 .session-live-pill.is-finished { color: var(--fg-dim); }
 .session-live-pill.is-completed { border-color: color-mix(in srgb, var(--ok) 38%, transparent); color: var(--ok); }
 .session-live-pill.is-ended,
@@ -358,6 +360,9 @@ button.session-parent-breadcrumb:hover, button.session-parent-breadcrumb:focus-v
 .details-row { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; align-items: baseline; }
 .details-row span { color: var(--fg-dim); font-size: 13px; }
 .details-row strong { overflow: hidden; color: var(--fg); font-size: 13px; font-weight: 550; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.details-row strong.is-provider-down,
+.details-row strong.is-failed { color: var(--danger); }
+.details-row strong.is-auth-needed { color: var(--warn); }
 .details-provider-row { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; align-items: center; }
 .details-provider-row > span { color: var(--fg-dim); font-size: 13px; }
 .details-provider-row > .provider-badge,
@@ -417,7 +422,9 @@ button.session-parent-breadcrumb:hover, button.session-parent-breadcrumb:focus-v
 .home-session-dot.is-reconnecting { border-color: var(--accent); background: transparent; box-shadow: 0 0 0 3px var(--accent-glow); animation: pulse 1.2s ease-in-out infinite; }
 .home-session-dot.is-needs-you { border-color: var(--warn); background: var(--warn); }
 .home-session-dot.is-limited { border-color: var(--warn); background: transparent; box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 14%, transparent); }
-.home-session-dot.is-failed { border-color: var(--danger); background: var(--danger); }
+.home-session-dot.is-failed,
+.home-session-dot.is-provider-down { border-color: var(--danger); background: var(--danger); }
+.home-session-dot.is-auth-needed { border-color: var(--warn); background: var(--warn); }
 .home-session-dot.is-finished,
 .home-session-dot.is-ended,
 .home-session-dot.is-unavailable { background: var(--fg-faint); opacity: .5; }

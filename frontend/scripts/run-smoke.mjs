@@ -61,6 +61,7 @@ const GATE = [
   'startup-recovery',
   'fork-conversation',
   'onboarding-consent',
+  'provider-fault',
   // Capability tests mount real product components against an in-process
   // contract-faithful daemon. Keep them last so a capability regression does
   // not hide the focused smoke-suite results above it.

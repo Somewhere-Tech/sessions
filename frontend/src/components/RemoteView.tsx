@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useDispatch } from '../hooks/useDispatch';
 import { renderContent } from '../lib/contentRender';
 import type { SessionSidebarState } from '../hooks/useSessionSidebar';
-import type { ClaudeSessionEvent, SessionTool, ApprovalDecision, PendingApproval } from '../types';
+import type { ClaudeSessionEvent, SessionTool, ApprovalDecision, PendingApproval, ProviderFailureKind, ProviderRetry } from '../types';
 import { InputBar } from './InputBar';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import StatusSidebar from './StatusSidebar';
@@ -14,6 +14,7 @@ import { CopyButton } from './CopyButton';
 import { linkifyFilePaths } from '../lib/filePaths';
 import { PlanPanel } from './RemotePlanPanel';
 import { ProviderControlCard } from './ProviderControlCard';
+import { ProviderFaultCard } from './ProviderFaultCard';
 import { RemoteEmptyState } from './RemoteEmptyState';
 import { useProviderControl } from '../hooks/useProviderControl';
 
@@ -24,6 +25,21 @@ function renderFileReference(path: string, cwd = ''): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
   return linkifyFilePaths(escaped, cwd);
+}
+
+export interface ProviderFaultView {
+  kind: ProviderFailureKind;
+  detail?: string;
+  retry?: ProviderRetry;
+}
+
+function FaultCard({ sessionId, fault, rich, onOpenTerminal }: {
+  sessionId: string;
+  fault: ProviderFaultView;
+  rich: boolean;
+  onOpenTerminal: () => void;
+}): JSX.Element {
+  return <ProviderFaultCard sessionId={sessionId} failureKind={fault.kind} detail={fault.detail} retry={fault.retry} rich={rich} onOpenTerminal={onOpenTerminal} />;
 }
 
 interface Props {
@@ -74,6 +90,7 @@ interface Props {
   // The permission a Rich Codex lane is holding open, and how to answer it.
   pendingApproval?: PendingApproval | null;
   onApprove?: (decision: ApprovalDecision) => Promise<void>;
+  providerFault?: ProviderFaultView;
 }
 
 // Provider-neutral conversation view over the durable session transport.
@@ -115,7 +132,8 @@ export function RemoteView({
   needsInputDetail = null,
   sendRawInput,
   pendingApproval = null,
-  onApprove
+  onApprove,
+  providerFault
 }: Props): JSX.Element {
   const providerName = provider === 'codex' ? 'Codex' : 'Claude';
   const providerIdentity: ProviderIdentity = provider === 'codex' ? 'codex' : 'claude';
@@ -137,7 +155,6 @@ export function RemoteView({
     }
     return counts;
   }, [eventMessages]);
-
   const { messages: dispatchMessages, recordSent, restoreDraft, remove, resetLog } = useDispatch({
     sessionId,
     eventUserContentCounts
@@ -145,7 +162,6 @@ export function RemoteView({
   const hasRecoverableLocalState = dispatchMessages.some(
     (message) => message.status === 'failed'
   );
-
   // JSONL events are the authoritative chat record. Merge in only the
   // dispatch log's acknowledged or legacy-failed user entries — sends that
   // haven't shown up in provider history yet. useDispatch flips an entry to
@@ -438,7 +454,7 @@ export function RemoteView({
             providerIdentity={providerIdentity}
             providerName={providerName}
             terminalAvailable={Boolean(terminalAvailable)}
-            control={controlPending ? (
+            control={providerFault ? <FaultCard sessionId={sessionId} fault={providerFault} rich={!terminalAvailable} onOpenTerminal={onOpenTerminal} /> : controlPending ? (
               <ProviderControlCard
                 detail={needsInputDetail}
                 blockingState={blockingState}
@@ -473,6 +489,7 @@ export function RemoteView({
             <small>The original conversation stays unchanged.</small>
           </div>
         ) : null}
+        {providerFault && messages.length > 0 ? <FaultCard sessionId={sessionId} fault={providerFault} rich={!terminalAvailable} onOpenTerminal={onOpenTerminal} /> : null}
         {visibleMessages.map((m, i) => (
           <RemoteMessage
             key={m.id}
@@ -610,7 +627,6 @@ function RemoteMessageInner({
   const cls = `remote-msg remote-msg-${m.role} is-${m.status}${isLatest ? ' is-latest' : ''}${m.interrupted ? ' is-interrupted' : ''}${m.queued ? ' is-queued' : ''}${!isUser && !showAgentHeader ? ' is-continuation' : ''}${toolOnly ? ' is-tool-only' : ''}${followedByToolActivity ? ' has-following-tool-activity' : ''}`;
   const timestamp = formatMessageTimestamp(m.createdAt);
   const timestampTitle = new Date(m.createdAt).toLocaleString();
-
   // CSS-level height ratchet for the latest bubble: the parser sometimes
   // reports a shorter snapshot mid-stream (1 line) before re-emitting
   // the full set (5 lines), causing the chat to bounce up and down.
@@ -631,8 +647,9 @@ function RemoteMessageInner({
     const h = el.offsetHeight;
     if (h > minHeight) setMinHeight(h);
   }, [isLatest, m.content, m.status, minHeight]);
-
   const lockStyle = isLatest && minHeight > 0 ? { minHeight: `${minHeight}px` } : undefined;
+
+  if (m.quietStatus) return <div className="remote-provider-retry" role="status">{m.quietStatus}</div>;
 
   return (
     <div className={cls}>
@@ -809,7 +826,7 @@ const RemoteMessage = memo(RemoteMessageInner, (a, b) => {
     ma.content === mb.content &&
     ma.status === mb.status &&
     ma.errorResponse === mb.errorResponse &&
-    ma.failureReason === mb.failureReason &&
+    ma.failureReason === mb.failureReason && ma.quietStatus === mb.quietStatus &&
     ma.queued === mb.queued &&
     ma.interrupted === mb.interrupted &&
     ma.hadThinking === mb.hadThinking &&

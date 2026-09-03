@@ -15,6 +15,8 @@ const STATE_DETAIL: Record<SessionStatusState, string> = {
   unavailable: 'Sessions cannot currently reach this agent; its saved conversation remains available',
   'needs-recovery': 'This agent stayed paused after restart; open it or send a message and Sessions wakes it',
   failed: 'The runtime stopped unexpectedly; saved history is still available',
+  'provider-down': 'The provider did not complete this turn; Sessions has preserved the conversation',
+  'auth-needed': 'The provider needs you to log in before this session can continue',
   ended: 'The runtime is no longer running',
   'needs-you': 'Waiting for your response',
   working: 'Agent is working',
@@ -86,13 +88,13 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
       setEnding(false);
     }
   };
-
   return (
     <div className="session-details-view">
       <section className="details-grid">
         <DetailsCard title="Session">
-          <Row label="Status" value={currentStatus} />
+          <Row label="Status" value={currentStatus} valueClassName={status.className} />
           <Row label="How this session runs" value={sessionModeName(session)} />
+          {session.failureDetail ? <Row label="Provider issue" value={session.failureDetail} valueClassName={status.className} /> : null}
           {degraded ? <Row label="Unavailable" value={(session.idleDetail || 'A provider integration did not start completely.').replace(/^⚠\s*/, '')} /> : null}
           <div className="details-provider-row"><span>Agent</span>{provider ? <ProviderBadge provider={provider} /> : <strong>Shell</strong>}</div>
           <Row label="Account" value={session.profile || 'Default account'} />
@@ -199,4 +201,4 @@ export function SessionDetails({ session, allSessions, onEnd, onResume }: Props)
 }
 
 function DetailsCard({ title, children }: { title: string; children: React.ReactNode }): JSX.Element { return <article className="details-card"><h2>{title}</h2><div>{children}</div></article>; }
-function Row({ label, value }: { label: string; value: string | number }): JSX.Element { return <div className="details-row"><span>{label}</span><strong title={String(value)}>{value}</strong></div>; }
+function Row({ label, value, valueClassName = '' }: { label: string; value: string | number; valueClassName?: string }): JSX.Element { return <div className="details-row"><span>{label}</span><strong className={valueClassName} title={String(value)}>{value}</strong></div>; }

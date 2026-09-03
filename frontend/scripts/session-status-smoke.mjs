@@ -194,6 +194,24 @@ try {
   assert.equal(sessionIsFinished(crashed), false);
   assert.equal(classifySession(runnerLost).state, 'failed');
 
+  const codexUnavailable = {
+    ...askingWhileBusy,
+    id: 'codex-unavailable',
+    failureKind: 'provider-unavailable',
+    failureProvider: 'codex',
+    idleReason: 'failed'
+  };
+  assert.equal(classifySession(codexUnavailable).state, 'provider-down');
+  assert.equal(classifySession(codexUnavailable).label, 'Codex unavailable');
+  assert.equal(classifySession(codexUnavailable).degraded, false);
+  assert.equal(classifySession({ ...codexUnavailable, failureProvider: 'claude' }).label, 'Claude unavailable');
+  assert.equal(classifySession({ ...codexUnavailable, failureKind: 'rate-limited' }).label, 'Rate limited');
+  assert.equal(classifySession({ ...codexUnavailable, failureKind: 'auth' }).state, 'auth-needed');
+  assert.equal(classifySession({ ...codexUnavailable, failureKind: 'auth' }).label, 'Needs login');
+  assert.equal(classifySession({ ...codexUnavailable, failureKind: 'other' }).state, 'failed');
+  assert.equal(sessionWantsAttention(codexUnavailable), true);
+  assert.equal(classifySession(codexUnavailable, { working: true }).state, 'provider-down');
+
   // A lost daemon-to-runner connection is not an exit. Even when an older
   // durable provenance record also says "lost", the current literal state is
   // recoverable and every surface must say so without offering Resume.
@@ -246,13 +264,13 @@ try {
 
   // Every state carries exactly one label and one `is-<state>` class token.
   const states = new Set();
-  for (const sample of [reconnecting, unavailable, needsRecovery, crashed, endedButAsking, askingWhileBusy, working, liveMcpWarning, ready]) {
+  for (const sample of [reconnecting, unavailable, needsRecovery, crashed, codexUnavailable, { ...codexUnavailable, failureKind: 'auth' }, endedButAsking, askingWhileBusy, working, liveMcpWarning, ready]) {
     const status = classifySession(sample);
     assert.equal(status.className, `is-${status.state}`);
     assert.ok(status.label.length > 0);
     states.add(status.state);
   }
-  assert.equal(states.size, 9, 'each sample must land in a distinct state');
+  assert.equal(states.size, 11, 'each sample must land in a distinct state');
 
   console.log('session status smoke: ok');
 } finally {

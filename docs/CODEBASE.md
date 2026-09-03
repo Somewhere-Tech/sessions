@@ -139,8 +139,15 @@ separate global Resume entry point owns the provider-neutral picker:
 and Sessions ledger records into one row per Claude/Codex conversation with a
 linked continuation chain. `ContinueElsewhereButton.tsx` runs the bundled CLI's
 saved-machine dry run and confirmed ended-only transfer through native commands;
-credentials and transcript bytes do not enter WebView state. `RemoteView.tsx` renders
-timestamped Codex-style user cards and full-width provider answers, while
+credentials and transcript bytes do not enter WebView state. `sessionStatus.ts`
+keeps provider outages, rate limits, and login failures distinct from working,
+waiting, and ended runtimes across the navigator, inbox, Grid, Fleet, and session
+details. Recent same-provider faults roll up into one fleet notice. `RemoteView.tsx`
+renders timestamped Codex-style user cards and full-width provider answers;
+`ProviderFaultCard.tsx` reports the daemon's concise failure detail, live Rich-turn
+retry schedule and recovery controls in both Conversation and Terminal. Structured
+`provider_fault` and `provider_retry` history stays system UI rather than assistant
+prose. Meanwhile,
 `InputBar.tsx` owns the single Attach composer action. Terminal quick keys are
 scoped to the mobile Terminal pane. Grid and mobile navigation receive only active
 sessions, while the full navigator retains lineage history. `CommandPalette.tsx`

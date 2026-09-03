@@ -314,7 +314,42 @@ interface CodexTurnProjection {
 }
 
 function isCodexAppServerHistory(events: ClaudeSessionEvent[]): boolean {
-  return events.some((event) => event.source === 'codex-app-server' || event.type === 'codex');
+  return events.some((event) => event.source === 'codex-app-server' || event.type === 'codex' || event.provider === 'codex');
+}
+
+function providerSystemMessage(event: ClaudeSessionEvent, index: number): DispatchMessage | null {
+  if (event.type !== 'system') return null;
+  const at = timestampMs(event.timestamp);
+  if (event.subtype === 'provider_fault') {
+    const detail = typeof event.detail === 'string' ? event.detail.trim() : '';
+    if (!detail) return null;
+    return {
+      id: event.uuid ?? `provider-fault-${index}`,
+      role: 'assistant',
+      content: '',
+      status: 'sent',
+      createdAt: at,
+      errorResponse: detail
+    };
+  }
+  if (event.subtype !== 'provider_retry') return null;
+  const attempt = typeof event.attempt === 'number' ? event.attempt : 0;
+  const max = typeof event.max === 'number' ? event.max : 0;
+  return {
+    id: event.uuid ?? `provider-retry-${index}`,
+    role: 'assistant',
+    content: '',
+    status: 'sent',
+    createdAt: at,
+    quietStatus: attempt > 0 && max > 0 ? `Retrying (${attempt} of ${max}) …` : 'Retrying …'
+  };
+}
+
+function appendProviderSystemMessage(event: ClaudeSessionEvent, out: DispatchMessage[]): boolean {
+  const message = providerSystemMessage(event, out.length);
+  if (!message) return false;
+  out.push(message);
+  return true;
 }
 
 function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] {
@@ -322,7 +357,6 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
   const turns = new Map<string, CodexTurnProjection>();
   const steeringByTurn = new Map<string, DispatchMessage[]>();
   let latestTurnID = '';
-
   const ensureTurn = (turnID: string, at: number): CodexTurnProjection | null => {
     if (!turnID) return null;
     const existing = turns.get(turnID);
@@ -380,6 +414,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
   for (const event of events) {
     const at = timestampMs(event.timestamp);
     const subtype = event.subtype ?? '';
+    if (appendProviderSystemMessage(event, out)) continue;
     if (event.source === 'sessions-continuation' && (event.type === 'user' || event.type === 'assistant')) {
       if (event.type === 'user' && event.message?.role === 'user') {
         const { text, hasImage } = extractUserContent(event.message.content);
@@ -537,7 +572,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
     if (message.role === 'user') return true;
     return !!(
       message.content || message.toolCalls?.length || message.updates?.length ||
-      message.reasoningSummary || message.plan?.length || message.streaming || message.errorResponse
+      message.reasoningSummary || message.plan?.length || message.streaming || message.errorResponse || message.quietStatus
     );
   });
 }
@@ -565,7 +600,6 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
       for (const [id, result] of indexToolResultsFromUser(ev)) toolResults.set(id, result);
     }
   }
-
   const out: DispatchMessage[] = [];
   // Track pending tool calls accumulated across consecutive tool-only
   // assistant events. Drains into the next text-bearing assistant
@@ -613,6 +647,7 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
   };
 
   for (const ev of events) {
+    if (providerSystemMessage(ev, out.length)) { flushPendingTools(); pendingHadThinking = false; appendProviderSystemMessage(ev, out); continue; }
     if (ev.type === 'user' && ev.message?.role === 'user') {
       const content = ev.message?.content;
       if (isUserToolResultOnly(content)) continue;

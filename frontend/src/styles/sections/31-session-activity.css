@@ -431,6 +431,19 @@
   font-weight: 600;
 }
 .provider-control-card-action.is-primary:hover { background: #f97316; }
+.provider-control-card.is-provider-fault {
+  border-color: color-mix(in srgb, var(--danger) 48%, transparent);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+}
+.provider-control-card.is-provider-fault .provider-control-card-title { color: var(--danger); }
+.provider-control-card-hint.is-error { color: var(--danger); }
+.remote-provider-retry {
+  width: fit-content;
+  margin: 8px auto;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
 .provider-control-card-terminal {
   border: 0;
   background: none;

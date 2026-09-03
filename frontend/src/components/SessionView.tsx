@@ -1,7 +1,8 @@
 import { Suspense, lazy, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTerminal } from '../hooks/useTerminal';
 import { useSessionSidebar } from '../hooks/useSessionSidebar';
-import { RemoteView } from './RemoteView';
+import { RemoteView, type ProviderFaultView } from './RemoteView';
+import type { SessionInfo } from '../types';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import { useSessions } from '../store/sessions';
 import { approveSession, fetchOnboardingState, fetchServerHistoryTranscript, submitMessage as submitAttributedMessage, wsMuxUrl } from '../api/sessionsd';
@@ -22,6 +23,7 @@ import { ConversationForkButton } from './ConversationForkButton';
 import { agentLedDescendants, isAgentLedChild } from '../lib/workingSet';
 import { handBackMessage } from '../lib/handBack';
 import { SubagentsPanel } from './SubagentsPanel';
+import { ProviderFaultCard } from './ProviderFaultCard';
 
 import type { ActiveStatus } from '../lib/activeStatus';
 
@@ -67,6 +69,17 @@ const TERMINAL_NOTICE_ACK_PREFIX = 'sessions:terminal-notice-ack:';
 // even when the user has several Terminal sessions open.
 let terminalNoticeShownThisLaunch = false;
 
+function providerFaultFor(session: SessionInfo | null): ProviderFaultView | undefined {
+  return session?.failureKind
+    ? { kind: session.failureKind, detail: session.failureDetail, retry: session.retry }
+    : undefined;
+}
+
+function TerminalProviderFault({ session, onOpenTerminal }: { session: SessionInfo; onOpenTerminal: () => void }): JSX.Element | null {
+  if (!session.failureKind) return null;
+  return <div className="terminal-provider-fault"><ProviderFaultCard sessionId={session.id} failureKind={session.failureKind} detail={session.failureDetail} retry={session.retry} rich={false} onOpenTerminal={onOpenTerminal} /></div>;
+}
+
 // Owns useTerminal for the active session and exposes a Terminal /
 // Sessions layout. The terminal stream stays the source of truth — its
 // xterm instance stays mounted across mode toggles so the raw terminal
@@ -109,7 +122,6 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     [allSessions, session]
   );
   const workingSubagents = subagents.filter((candidate) => !candidate.exited && candidate.working).length;
-
   // Claude and Codex both expose structured conversation history. Codex TUI
   // rollouts use the normalized event adapter; codex-app-server sessions add
   // live deltas, plans, commands, file diffs, reasoning summaries, and usage.
@@ -163,7 +175,6 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     }
   });
   const [terminalNoticeOpen, setTerminalNoticeOpen] = useState(false);
-
   // Sticky "have we ever needed xterm for this session?" Once true,
   // stays true so toggling Sessions↔Terminal doesn't tear down xterm.
   // Starts true if Terminal is the persisted view; otherwise false
@@ -669,6 +680,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               </div>
             </header>
           ) : null}
+          {session ? <TerminalProviderFault session={session} onOpenTerminal={focusTerminal} /> : null}
           {richSession ? (
             <div className="rich-terminal-empty">
               <span>Rich session</span>
@@ -728,6 +740,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             sendRawInput={richSession ? undefined : sendInput}
             pendingApproval={session?.pendingApproval ?? null}
             onApprove={session ? (decision) => approveSession(session.id, decision) : undefined}
+            providerFault={providerFaultFor(session)}
           />
         </div>
         <div className="session-details-pane">

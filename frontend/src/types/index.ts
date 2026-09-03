@@ -7,6 +7,15 @@ export type SessionTool = 'claude-code' | 'codex' | 'terminal';
 
 export type ApprovalDecision = 'allow' | 'allow-session' | 'deny';
 
+export type ProviderFailureKind = 'provider-unavailable' | 'rate-limited' | 'auth' | 'other';
+
+export interface ProviderRetry {
+  attempt: number;
+  max: number;
+  nextAt: number;
+  kind: ProviderFailureKind;
+}
+
 // Message projection types are shared by the provider-history parser and the
 // React dispatch hook. Keep them below the hook layer so lib never depends on
 // UI lifecycle code merely to describe a message.
@@ -51,6 +60,9 @@ export interface DispatchMessage {
   interrupted?: boolean;
   queued?: boolean;
   failureReason?: string;
+  // A Sessions-authored timeline event. This is deliberately separate from
+  // content so provider retry state can never be rendered as assistant prose.
+  quietStatus?: string;
   // Number of identical provider-history turns that existed when sessionsd
   // accepted this submission. A later occurrence replaces the local copy.
   confirmBaseline?: number;
@@ -104,6 +116,14 @@ export interface SessionInfo {
   idleDetail?: string;
   idleSince?: number | null;
   lastSummary?: string;
+  // Provider-turn failure state. These fields are absent once the fault
+  // clears; retry is present only while Sessions owns an automatic Rich-turn
+  // retry schedule.
+  failureKind?: ProviderFailureKind;
+  failureDetail?: string;
+  failureProvider?: 'claude' | 'codex';
+  failureAt?: number;
+  retry?: ProviderRetry;
   // The permission a Rich Codex lane is holding open, when it is not
   // autonomous. Answered with approveSession, never with a reply.
   pendingApproval?: PendingApproval | null;

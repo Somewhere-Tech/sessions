@@ -780,3 +780,27 @@ export async function approveSession(
     throw new Error(message);
   }
 }
+
+async function postProviderRetryAction(sessionId: string, tail: string): Promise<void> {
+  const response = await apiFetch(
+    `${httpBase()}/api/sessions/${encodeURIComponent(sessionId)}/retry${tail}`,
+    { method: 'POST' }
+  );
+  if (response.ok) return;
+  let message = `Sessions could not change this retry (HTTP ${response.status}).`;
+  try {
+    const body = await response.json() as { error?: string };
+    if (body.error?.trim()) message = body.error;
+  } catch {
+    // The status-based message remains actionable when the body is not JSON.
+  }
+  throw new Error(message);
+}
+
+export async function retryProviderSession(sessionId: string): Promise<void> {
+  await postProviderRetryAction(sessionId, '');
+}
+
+export async function stopProviderRetry(sessionId: string): Promise<void> {
+  await postProviderRetryAction(sessionId, '/stop');
+}

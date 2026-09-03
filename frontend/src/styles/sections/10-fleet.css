@@ -281,7 +281,9 @@
 .fleet-session-state.is-reconnecting .fleet-session-state-dot { animation: pulse 1.2s ease-in-out infinite; }
 .fleet-session-state.is-needs-you { color: var(--warn); }
 .fleet-session-state.is-limited { color: var(--warn); }
-.fleet-session-state.is-failed { color: var(--danger); }
+.fleet-session-state.is-failed,
+.fleet-session-state.is-provider-down { color: var(--danger); }
+.fleet-session-state.is-auth-needed { color: var(--warn); }
 .fleet-session-state.is-finished,
 .fleet-session-state.is-ended,
 .fleet-session-state.is-unavailable { color: var(--fg-dim); }

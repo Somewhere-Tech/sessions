@@ -338,6 +338,33 @@ try {
     'a rejection with no turn of its own must still render'
   );
 
+  const providerFaults = eventsToMessages([
+    {
+      ...codexBase,
+      type: 'system',
+      subtype: 'provider_fault',
+      timestamp: '2026-07-20T10:00:04Z',
+      provider: 'codex',
+      kind: 'provider-unavailable',
+      detail: 'Codex API unavailable (503, overloaded)',
+      status: 503
+    },
+    {
+      ...codexBase,
+      type: 'system',
+      subtype: 'provider_retry',
+      timestamp: '2026-07-20T10:00:05Z',
+      provider: 'codex',
+      attempt: 2,
+      max: 5,
+      nextAt: Date.now() + 42_000
+    }
+  ]);
+  assert.equal(providerFaults[0].errorResponse, 'Codex API unavailable (503, overloaded)');
+  assert.equal(providerFaults[0].content, '', 'provider faults must not become assistant prose');
+  assert.equal(providerFaults[1].quietStatus, 'Retrying (2 of 5) …');
+  assert.equal(providerFaults[1].content, '', 'provider retries must stay a quiet system line');
+
   process.stdout.write('structured-events smoke passed\n');
 } finally {
   await rm(work, { recursive: true, force: true });

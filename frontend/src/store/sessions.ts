@@ -39,6 +39,14 @@ function reconcileSessions(prev: SessionInfo[], fresh: SessionInfo[]): SessionIn
       old.idleDetail === f.idleDetail &&
       old.idleSince === f.idleSince &&
       old.lastSummary === f.lastSummary &&
+      old.failureKind === f.failureKind &&
+      old.failureDetail === f.failureDetail &&
+      old.failureProvider === f.failureProvider &&
+      old.failureAt === f.failureAt &&
+      old.retry?.attempt === f.retry?.attempt &&
+      old.retry?.max === f.retry?.max &&
+      old.retry?.nextAt === f.retry?.nextAt &&
+      old.retry?.kind === f.retry?.kind &&
       old.cwd === f.cwd &&
       old.cmd === f.cmd &&
       old.tool === f.tool &&

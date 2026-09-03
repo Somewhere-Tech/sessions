@@ -19,7 +19,7 @@
 // empty `unhandled` is telling you about the product.
 import { useServers, type ServerConfig } from '../../src/lib/servers';
 import { useSessions } from '../../src/store/sessions';
-import type { DirectoryCandidate, SessionInfo } from '../../src/types';
+import type { DirectoryCandidate, SessionInfo, StructuredSessionEvent } from '../../src/types';
 import type {
   HistoryMessage,
   HistorySession,
@@ -44,6 +44,8 @@ export interface FakeMachine {
   sessions: SessionInfo[];
   history?: HistorySession[];
   transcripts?: Record<string, HistoryMessage[]>;
+  /** Structured provider history returned by /api/sessions/:id/events. */
+  events?: Record<string, StructuredSessionEvent[]>;
   resumable?: ResumableSession[];
   /** Message corpus the fake's /api/search scans. */
   searchCorpus?: Array<{
@@ -83,6 +85,10 @@ export interface FakeDaemon {
   created: SessionInfo[];
   /** Sessions ended through DELETE /api/sessions/:id. */
   ended: string[];
+  /** Sessions whose failed provider turn was retried immediately. */
+  retried: string[];
+  /** Sessions whose automatic provider retry schedule was stopped. */
+  retryStopped: string[];
   /** ids passed to POST /api/retention/archive, and what the fake answered. */
   archived: string[];
   /** Conversations adopted through POST /api/recovery/adopt. */
@@ -220,6 +226,8 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     delivered: {},
     created: [],
     ended: [],
+    retried: [],
+    retryStopped: [],
     archived: [],
     adopted: [],
     machineFor: (origin) => byOrigin.get(origin),
@@ -352,8 +360,20 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     if (sessionRoute && sessionTail === '/snapshot') {
       return new Response('', { status: 200, headers: { 'X-Sessions-Seq': '0' } });
     }
+    if (sessionRoute && sessionTail === '/retry' && method === 'POST') {
+      if (!target) return jsonResponse({ error: 'session not found' }, 404);
+      daemon.retried.push(sessionId);
+      return jsonResponse({ ok: true });
+    }
+    if (sessionRoute && sessionTail === '/retry/stop' && method === 'POST') {
+      if (!target) return jsonResponse({ error: 'session not found' }, 404);
+      daemon.retryStopped.push(sessionId);
+      target.retry = undefined;
+      return jsonResponse({ ok: true });
+    }
     if (sessionRoute && sessionTail === '/events') {
-      return jsonResponse({ events: [], nextIndex: 0, totalCount: 0, startIndex: 0, endIndex: 0 });
+      const events = machine.events?.[sessionId] ?? [];
+      return jsonResponse({ events, nextIndex: events.length, totalCount: events.length, startIndex: 0, endIndex: events.length });
     }
     if (sessionRoute && sessionTail === '/model-options') return jsonResponse({ models: [] });
 

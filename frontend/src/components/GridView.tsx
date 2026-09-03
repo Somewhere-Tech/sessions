@@ -294,7 +294,7 @@ function GridCell({ session, status, icon, onPopOut, onExpand, onEnd }: CellProp
 
   return (
     <div
-      className={`grid-cell${focused ? ' is-focused' : ''}${status === 'working' && !session.exited ? ' is-working' : ''}${session.exited ? ' is-exited' : ''}${sendFailed ? ' is-send-failed' : ''}`}
+      className={`grid-cell ${sessionStatus.className}${focused ? ' is-focused' : ''}${session.exited ? ' is-exited' : ''}${sendFailed ? ' is-send-failed' : ''}`}
       ref={cellRef}
       tabIndex={0}
       onClick={focusCell}
@@ -307,8 +307,8 @@ function GridCell({ session, status, icon, onPopOut, onExpand, onEnd }: CellProp
       <div className="grid-cell-head">
         <span className="grid-cell-icon" aria-hidden><ParserIcon icon={icon} size={18} /></span>
         <span className="grid-cell-name">{label}</span>
-        <span className={`grid-cell-status${status === 'working' ? ' is-working' : ''}${session.exited ? ' is-exited' : ''}`}>
-          {status === 'working' ? <span className="grid-cell-dot" aria-hidden /> : null}
+        <span className={`grid-cell-status ${sessionStatus.className}${session.exited ? ' is-exited' : ''}`}>
+          {sessionStatus.state === 'working' ? <span className="grid-cell-dot" aria-hidden /> : null}
           {statusText}
         </span>
         {onExpand ? (
