@@ -40,7 +40,6 @@ internal/api internal/ledger
 internal/api internal/migrate
 internal/api internal/project
 internal/api internal/proto
-internal/api internal/recap
 internal/api internal/recovery
 internal/api internal/search
 internal/api internal/session
@@ -70,10 +69,6 @@ internal/mirror/cmd/harness internal/mirror
 internal/mirror/cmd/record internal/mirror
 internal/proto internal/ipc
 internal/proto/prototest internal/proto
-internal/recap internal/agentcall
-internal/recap internal/session
-internal/recap internal/state
-internal/recap internal/usage
 internal/recovery internal/ipc
 internal/recovery internal/ledger
 internal/recovery internal/liveness
