@@ -19,6 +19,7 @@
     "test:search-conversations": "node scripts/search-conversation-smoke.mjs",
     "test:terminal-renderer": "node scripts/terminal-renderer-smoke.mjs",
     "test:terminal-viewport": "node scripts/terminal-viewport-smoke.mjs",
+    "test:android-mobile": "node scripts/android-mobile-smoke.mjs",
     "test:external-links": "node scripts/external-links-smoke.mjs",
     "test:lifecycle-clarity": "node scripts/lifecycle-clarity-smoke.mjs",
     "test:workspace-ux": "node scripts/workspace-ux-smoke.mjs",

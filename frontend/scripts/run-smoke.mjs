@@ -41,6 +41,7 @@ const GATE = [
   'search-conversations',
   'terminal-renderer',
   'terminal-viewport',
+  'android-mobile',
   'external-links',
   'lifecycle-clarity',
   'workspace-ux',

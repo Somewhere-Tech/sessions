@@ -11,6 +11,31 @@ export const isTauri = (): boolean =>
   typeof window !== 'undefined' &&
   (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== undefined;
 
+type AndroidBackHandler = () => boolean;
+
+interface AndroidBackWindow extends Window {
+  __SESSIONS_ANDROID_BACK__?: () => boolean;
+}
+
+// Tauri's Android activity owns the system Back callback and evaluates this
+// synchronous bridge before allowing Android to finish the activity.
+// Returning false means the UI is at its root and native double-Back-to-exit
+// handling should take over.
+export function registerAndroidBackHandler(handler: AndroidBackHandler): () => void {
+  if (!isTauri() || typeof navigator === 'undefined' || !/Android/i.test(navigator.userAgent)) {
+    return () => {};
+  }
+
+  const nativeWindow = window as AndroidBackWindow;
+  nativeWindow.__SESSIONS_ANDROID_BACK__ = handler;
+
+  return () => {
+    if (nativeWindow.__SESSIONS_ANDROID_BACK__ === handler) {
+      delete nativeWindow.__SESSIONS_ANDROID_BACK__;
+    }
+  };
+}
+
 // Tauri 2: invoke() comes from @tauri-apps/api/core. We dynamic-import so
 // the package is only loaded when actually running inside Tauri (avoids
 // shipping the module to the phone PWA where it'd be dead weight).

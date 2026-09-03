@@ -49,6 +49,23 @@ export function ConnectScreen({
   );
   const isMobileClient = isNativeMobileRuntime();
   const discoveryStarted = useRef(false);
+  const pairingLinkInput = useRef<HTMLInputElement>(null);
+
+  const keepPairingLinkVisible = useCallback((): void => {
+    pairingLinkInput.current?.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }, []);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return undefined;
+    const onViewportChange = (): void => {
+      if (document.activeElement === pairingLinkInput.current) keepPairingLinkVisible();
+    };
+    viewport.addEventListener('resize', onViewportChange);
+    return () => {
+      viewport.removeEventListener('resize', onViewportChange);
+    };
+  }, [keepPairingLinkVisible]);
 
   const claimPairingLink = async (): Promise<void> => {
     if (!clientOnly || connectionDisabled || !pairingLink.trim()) return;
@@ -228,7 +245,7 @@ export function ConnectScreen({
                 {discoveredPeers.map((peer) => {
                   const waiting = accessRequest?.endpoint === peer.endpoint;
                   return (
-                    <article key={peer.endpoint} className="connect-peer">
+                    <article key={`${peer.transport}:${peer.endpoint}`} className="connect-peer">
                       <span className="connect-peer-icon" aria-hidden>
                         {peer.os ? (peer.os.toLowerCase().includes('windows') ? '⊞' : '⌘') : '⌁'}
                       </span>
@@ -253,12 +270,14 @@ export function ConnectScreen({
             </div>
             <form onSubmit={(event) => { event.preventDefault(); void claimPairingLink(); }}>
               <input
+                ref={pairingLinkInput}
                 type="url"
                 inputMode="url"
                 autoComplete="off"
                 placeholder="Paste the Sessions connection link"
                 value={pairingLink}
                 onChange={(event) => setPairingLink(event.currentTarget.value)}
+                onFocus={keepPairingLinkVisible}
               />
               <button type="submit" className="connect-submit" disabled={connectionDisabled || !pairingLink.trim()}>
                 {checkingId === 'pairing-link' ? 'Connecting…' : 'Connect this device'}

@@ -538,6 +538,18 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         beforeTerminalMutation();
         try {
           fit.fit();
+          // Android WebView applies the shell's CSS zoom to ordinary DOM but
+          // not to xterm's canvas bitmap. Fit therefore sees the inverse-scale
+          // layout width and leaves about 10% of a default-size phone unused.
+          // Add the columns represented by the shell scale; rows are already
+          // correct, and desktop/iOS never enter this compensation.
+          if (isTauri() && /Android/i.test(navigator.userAgent)) {
+            const container = containerElRef.current;
+            const scale = container
+              ? Number.parseFloat(getComputedStyle(container).getPropertyValue('--interface-scale'))
+              : 1;
+            if (scale > 1) term.resize(Math.floor(term.cols * scale), term.rows);
+          }
         } catch {
           // Fit can throw if the container has zero dims (eg the pane is
           // display:none on an inactive tab). Ignore — when the pane is
@@ -760,6 +772,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           return true;
         });
         window.addEventListener('resize', onResize);
+        window.visualViewport?.addEventListener('resize', onResize);
         ro = new ResizeObserver(onResize);
         const c = containerElRef.current;
         if (c) ro.observe(c);
@@ -868,6 +881,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       // outer-effect cleanup invokes this if it's set.
       runCleanup = () => {
         window.removeEventListener('resize', onResize);
+        window.visualViewport?.removeEventListener('resize', onResize);
         ro?.disconnect();
         if (resizeSendTimer !== null) window.clearTimeout(resizeSendTimer);
         clearRunnerReconnect();

@@ -27,6 +27,7 @@ import { SettingsMenu } from './components/SettingsMenu';
 import { TailnetAccessInbox } from './components/TailnetAccessInbox';
 import { MachineRecoveryNotice } from './components/MachineRecoveryNotice';
 import { useIsMobile } from './hooks/useMediaQuery';
+import { useAndroidBackNavigation } from './hooks/useAndroidBackNavigation';
 import { ConnectScreen } from './components/ConnectScreen';
 import { readTabOrder, writeTabOrder, applyOrder, moveBefore } from './lib/tabOrder';
 import { getNativeConnectionSettings, getNativeRuntimeStatus, isTauri, notify, recoverNativeRuntime, syncTrayServers } from './lib/tauriBridge';
@@ -69,7 +70,6 @@ function readSingleModeParams(): { sessionId: string } | null {
   const sessionId = params.get('session');
   return sessionId ? { sessionId } : null;
 }
-
 // Layout mode: tabs (default), fleet (all configured machines), or grid
 // (active-machine monitor tiles).
 // Persisted per-window in localStorage so each window remembers its
@@ -80,7 +80,6 @@ type LayoutMode = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'se
 // which made every memo, callback, and effect derived from the session list
 // re-run continuously while the scope was mismatched.
 const NO_SESSIONS: SessionInfo[] = [];
-
 const LAYOUT_KEY = 'sessions:layout-mode';
 const OPEN_TABS_KEY = 'sessions:open-tabs:v1';
 const THEME_KEY = 'sessions:theme:v1';
@@ -485,6 +484,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   useEffect(() => {
     try { window.localStorage.setItem(LAYOUT_KEY, layoutMode); } catch { /* ignore */ }
   }, [layoutMode]);
+  useAndroidBackNavigation(() => commandPaletteOpen ? (setCommandPaletteOpen(false), true) : dialogOpen !== null ? (setDialogOpen(null), true) : mobileSessionDetail ? (setMobileSessionDetail(false), true) : effectiveLayout !== 'home' ? (setLayoutMode('home'), true) : false);
   useEffect(() => {
     try { window.localStorage.setItem(THEME_KEY, theme); } catch { /* ignore */ }
   }, [theme]);
