@@ -71,8 +71,11 @@ inherently visual or an OS-owned prompt.
 
 Runtime binaries are staged as immutable versioned bytes with a manifest. The
 managed daemon may advance while compatible existing runners keep their
-original runtime until they exit. A package update must preserve the exact live
-session baseline or refuse/roll back.
+original runtime until they exit. A package update must re-adopt every baseline
+session that remains live. A session that exits during the readiness check, or
+whose user-end boundary is already recorded, satisfies that baseline; one that
+disappears or remains unreachable without either fact makes the update refuse
+or roll back.
 
 macOS releases require Developer ID signatures for the app and nested
 binaries, notarization, stapling, Gatekeeper acceptance, a pinned updater
@@ -126,11 +129,12 @@ rules.
 
 ## Mobile clients
 
-Android and future iOS builds are paired clients, not mobile daemon hosts. They
-reuse the authenticated daemon contract, store revocable device credentials in
+Android and iOS builds are paired clients, not mobile daemon hosts. They reuse
+the authenticated daemon contract, store revocable device credentials in
 platform secure storage, and adapt the shared interface to phone and tablet
-layouts. Mobile notifications use the explicit encrypted notification path and
-do not grant broader host authority.
+layouts. A phone does not run host onboarding or change host-owned runtime
+choices; it reads those settings from the connected computer and presents them
+read-only while keeping device-local choices editable.
 
 ## Release gate
 

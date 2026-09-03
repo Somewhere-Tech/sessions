@@ -8,9 +8,10 @@ each claim when behavior changes. Protocol compatibility requirements live in
 
 ## Native application
 
-`src-tauri/` is the native shell for macOS, Windows, and the Android paired
-client. It uses Tauri 2 around the shared React build. Android's generated
-Gradle/Kotlin project lives in `src-tauri/gen/android`; mobile builds are
+`src-tauri/` is the native shell for macOS, Windows, and the Android and iOS
+paired clients. It uses Tauri 2 around the shared React build. Android's
+generated Gradle/Kotlin project lives in `src-tauri/gen/android`, and iOS's
+generated Xcode project lives in `src-tauri/gen/apple`; mobile builds are
 client-only and never bundle or start the Go daemon or runners.
 `src-tauri/src/lib.rs` owns native window and
 tray behavior on desktop: scoped server/tool/session windows, persisted window geometry,
@@ -20,8 +21,11 @@ to the frontend. The Somewhere command is read-only; its card only copies
 explicit install/update/docs commands (`frontend/src/components/SomewhereCard.tsx`).
 `scripts/build-app-runtime.sh` builds and signs the three arm64 Go binaries,
 while `src-tauri/src/lifecycle.rs` verifies their manifest, stages immutable
-runtime versions, installs `tech.somewhere.sessions.daemon`, waits for health
-and discovery, verifies the live-session baseline, and rolls back on failure.
+runtime versions, installs `tech.somewhere.sessions.daemon`, waits for daemon
+health, and verifies that every baseline session is reachable, exited, or has
+a recorded user-end boundary. A missing or still-unreachable baseline session
+without either end fact rolls the update back; unrelated runner discovery may
+continue.
 It also maintains a non-destructive `sessions` symlink in the first writable
 standard command directory, updating only links that already point into a
 Sessions-managed runtime and leaving unrelated executables untouched.
@@ -44,7 +48,7 @@ same-origin while routing a pasted native link through the Tauri command in
 machine entry. The native shell also synchronizes that approved identity into
 the CLI registry through standard input, never argv. Unix keeps the device
 credential in a private file; Windows applies signed-in-user DPAPI protection.
-Native onboarding probes `/api/health` before consuming the
+The one-time-link pairing fallback probes `/api/health` before consuming its
 single-use ticket. The claim returns the daemon identity persisted in
 `~/.local/state/sessions/machine-id`; `frontend/src/lib/hostedBootstrap.ts`
 uses that identity to update an existing machine even when its access endpoint
@@ -161,8 +165,8 @@ Somewhere backup surface.
 The native process is a management plane, not the owner of session work. Its
 installer writes and kickstarts the per-user daemon service, but launchd owns
 that service afterward and independently supervised runners stay alive through
-app quits, daemon reloads, and app upgrades. Android follows the
-macOS release as a paired client and does not host the Go runtime.
+app quits, daemon reloads, and app upgrades. Android and iOS are paired clients
+and do not host the Go runtime.
 
 ## Process model
 
@@ -261,7 +265,7 @@ tokens remain bearer credentials in this release; narrower scopes, protected
 native at-rest storage, and short-lived WebSocket tickets remain required
 hardening before adding less-trusted ingress.
 
-The normal Tailscale onboarding path is request/accept, implemented in
+The normal Tailscale pairing path is request/accept, implemented in
 `runtime/internal/api/tailnet_access.go`. The native Rust layer reads the local
 Tailscale peer list, accepts only `.ts.net` HTTPS endpoints, concurrently
 health-probes bounded candidates, sends the request, and polls its in-memory

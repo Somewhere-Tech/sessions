@@ -409,7 +409,7 @@ provider's structured runtime; `providerTerminal: true` deliberately keeps a
 child on the interactive terminal and never enables Remote Control by itself.
 The daemon rejects self-escalation. A machine-level autonomous
 delegation choice can make new agent-created children full-access; only the
-explicit user-facing onboarding/Settings route can grant that choice. Success
+explicit host onboarding/Settings route can grant that choice. Success
 is 201 with a bare `SessionInfo` object, not an envelope. A create failure is
 `400 {"error":"<message>"}`, with one exception: when the request resumes a
 provider conversation that is already live in another session
@@ -1441,7 +1441,7 @@ when the immediate connection came through local Tailscale Serve with a
 verified Tailscale identity. It rejects any request carrying an `Origin` header
 and requires `Content-Type: application/json`, so browser JavaScript—including
 the allowed Somewhere origins and daemon-served same-origin UI—cannot
-participate in native onboarding or read its credential. It accepts:
+participate in native pairing or read its credential. It accepts:
 
 ```json
 {"client_id":"<lowercase v4 UUID>","name":"MacBook Pro"}
@@ -1487,8 +1487,9 @@ purged when the device store is next loaded. Pending request state itself
 disappears on daemon restart or after its current deadline; the client can
 safely request again.
 
-`sessions pair` remains the explicit same-LAN fallback for devices without
-Tailscale. It no longer creates Tailscale QR links.
+`sessions pair` remains the explicit same-LAN fallback when native discovery
+and request/accept pairing are unavailable. It no longer creates Tailscale QR
+links.
 
 Several routes in this section are **local-principal only**
 (`requireLocalPrincipal` in `server_routes.go`): only a direct loopback peer
@@ -1671,7 +1672,7 @@ runtime.
 
 ### `PUT /api/onboarding`
 
-The user-facing app submits both choices, for example
+The user-facing app on the daemon host submits both choices, for example
 `{"remoteControl":"enabled","delegatedAccess":"inherit"}`, with
 `X-Sessions-User-Consent: onboarding`. A v1 client that omits
 `delegatedAccess` receives the conservative `inherit` behavior. The daemon
@@ -1684,6 +1685,10 @@ delegation consent. The CLI exposes `sessions onboarding` as read-only status
 so an agent can inspect and explain either choice but cannot silently make it.
 All routes still require the normal daemon authorization. The extra header is a
 product-surface guard, not a second authentication factor.
+
+Client-only phone apps read this machine-level state but do not present the
+host onboarding flow or call `PUT /api/onboarding`; their host-owned settings
+controls are read-only.
 
 ### `GET /api/claude/settings`
 

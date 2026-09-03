@@ -22,6 +22,12 @@ computer and the iOS app talks directly to that host.
   from `sessions pair` remains available when Bonjour cannot find the host
   ([`frontend/src/components/ConnectScreen.tsx`](../frontend/src/components/ConnectScreen.tsx),
   [`frontend/src/lib/hostedBootstrap.ts`](../frontend/src/lib/hostedBootstrap.ts)).
+- **Host-owned setup:** the phone does not present the host's first-run
+  onboarding. It inherits the connected computer's machine-level choices and
+  shows host runtime, connection, provider, delegated-access, AI, and recap
+  settings as read-only; appearance and other device-local choices remain
+  editable ([`frontend/src/App.tsx`](../frontend/src/App.tsx),
+  [`frontend/src/components/SettingsView.tsx`](../frontend/src/components/SettingsView.tsx)).
 - **Transport:** direct LAN or Tailscale connectivity only. There is no Sessions
   relay, hosted terminal stream, analytics connection, or model API call
   ([`docs/NETWORK_SECURITY.md`](NETWORK_SECURITY.md)).

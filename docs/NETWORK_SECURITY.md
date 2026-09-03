@@ -33,13 +33,18 @@ available on claude.ai and the Claude mobile app, using the user's existing
 Claude subscription. The connection goes directly from Claude Code to
 Anthropic; Somewhere is not a transcript relay.
 
-Sessions recommends the feature during first-run onboarding but does not enable
-it until the user explicitly chooses **Enable Remote Control**. Choosing
+Sessions recommends the feature during first-run onboarding on a daemon host
+but does not enable it until the user explicitly chooses **Enable Remote
+Control**. Choosing
 **Keep sessions local** is equally complete onboarding. The choice is stored per
 Sessions machine and can be changed later in Settings. Fresh installs, upgraded
 installs, missing state, old `inherit` values, and old `on` values all remain
 local until this current consent record exists. Sessions also passes
 `remoteControlAtStartup: false` for a local-only managed launch.
+
+A client-only phone inherits this machine-level choice from its connected host.
+It does not present host onboarding or write the setting; host-owned controls
+are labelled and read-only on the phone.
 
 The daemon enforces this below the UI: general Claude settings, per-session
 overrides, continuations, delegates, and direct `--remote-control` launch
@@ -55,8 +60,8 @@ does not restart, terminate, or alter existing sessions.
 
 ## Delegated task access
 
-The same user-facing onboarding/Settings surface asks whether agent-created
-children should receive autonomous full access or inherit a manager's exact
+The same host onboarding/Settings surface asks whether agent-created children
+should receive autonomous full access or inherit a manager's exact
 permission mode. Autonomous access is the default; inheritance is the explicit
 narrower choice. The daemon resolves the choice below
 the UI and CLI, rejects child self-escalation, and applies it only to newly

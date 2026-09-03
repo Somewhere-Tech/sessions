@@ -24,6 +24,12 @@ computer and the Android app talks directly to that host.
   find the host
   ([`frontend/src/components/ConnectScreen.tsx`](../frontend/src/components/ConnectScreen.tsx),
   [`frontend/src/lib/hostedBootstrap.ts`](../frontend/src/lib/hostedBootstrap.ts)).
+- **Host-owned setup:** the phone does not present the host's first-run
+  onboarding. It inherits the connected computer's machine-level choices and
+  shows host runtime, connection, provider, delegated-access, AI, and recap
+  settings as read-only; appearance and other device-local choices remain
+  editable ([`frontend/src/App.tsx`](../frontend/src/App.tsx),
+  [`frontend/src/components/SettingsView.tsx`](../frontend/src/components/SettingsView.tsx)).
 - **Transport:** direct LAN or Tailscale connectivity only. There is no Sessions
   relay, hosted terminal stream, analytics connection, or model API call
   ([`docs/NETWORK_SECURITY.md`](NETWORK_SECURITY.md)).
@@ -39,8 +45,8 @@ entered endpoint
 
 Android performs multicast DNS discovery only while the connect screen is in
 the foreground; it does not scan addresses or provide automatic Tailscale
-discovery. Request/accept onboarding and foreground session control work
-without FCM, while background FCM delivery is not represented as shipped
+discovery. Request/accept pairing and foreground session control work without
+FCM, while background FCM delivery is not represented as shipped
 ([`frontend/src/components/ConnectScreen.tsx`](../frontend/src/components/ConnectScreen.tsx)).
 
 ## Build a sideloadable test APK
