@@ -44,8 +44,11 @@ var (
 	// incomplete (failed: name)" when an optional MCP server is down and then
 	// answers normally; treating that line as the outcome reported a completed
 	// turn as failed.
-	benignErrorRE             = regexp.MustCompile(`(?i)\b(?:0\s+(?:errors?|fail(?:ed|ures?)?)|no\s+(?:errors?|failures?))\b|^\s*⚠|\bMCP (?:startup|client|server)\b|\bcodex_rmcp_client\b`)
-	resolutionRE              = regexp.MustCompile(`(?i)\b(?:resolved|recovered|fixed|succeeded|successful|passed|completed|all checks pass|done)\b`)
+	benignErrorRE = regexp.MustCompile(`(?i)\b(?:0\s+(?:errors?|fail(?:ed|ures?)?)|no\s+(?:errors?|failures?))\b|^\s*⚠|\bMCP (?:startup|client|server)\b|\bcodex_rmcp_client\b`)
+	resolutionRE  = regexp.MustCompile(`(?i)\b(?:resolved|recovered|fixed|succeeded|successful|passed|completed|all checks pass|done)\b`)
+	// Claude closes every turn with an activity footer ("✻ Sautéed for 1s ·
+	// done 11:25 AM"); its "done" is about the turn, not the fault above it.
+	claudeTurnFooterRE        = regexp.MustCompile(`^\s*[✻✽✶✳*]\s+\S+ for \d+(?:\.\d+)?[smh]\b`)
 	claudeProviderFaultLineRE = regexp.MustCompile(`(?i)^⏺\s*(?:API Error\b|Request timed out\b|fetch failed\b)`)
 	codexProviderFaultLineRE  = regexp.MustCompile(`(?i)^(?:■\s*|ERROR:\s*|Reconnecting\.\.\.\s+\d+/\d+\b|stream disconnected\b)`)
 
@@ -194,6 +197,9 @@ func providerFaultClassification(lines []string) (IdleClassification, bool) {
 			continue
 		}
 		for _, following := range lines[index+1:] {
+			if claudeTurnFooterRE.MatchString(following) {
+				continue
+			}
 			if resolutionRE.MatchString(following) {
 				return IdleClassification{Outcome: IdleDone}, true
 			}

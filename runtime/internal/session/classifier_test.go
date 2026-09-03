@@ -43,6 +43,7 @@ func TestClassifyProviderFaultTerminalLines(t *testing.T) {
 		{name: "claude connection", snapshot: "⏺ API Error: connection refused\n❯ ", detail: "Claude API connection failed (connection refused)"},
 		{name: "claude fetch", snapshot: "⏺ fetch failed\n❯ ", detail: "Claude network unavailable"},
 		{name: "codex error prefix", snapshot: "ERROR: authentication failed\n", detail: "Codex authentication failed"},
+		{name: "claude footer after fault", snapshot: "⏺ API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary.\n✻ Sautéed for 1s · done 11:25 AM\n──────\n❯  Claude Code\n──────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n", detail: "Claude API overloaded (529)"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
