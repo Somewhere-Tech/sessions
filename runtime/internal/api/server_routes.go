@@ -173,14 +173,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": detail}, corsOrigin)
 			return
 		}
-		name, err := os.Hostname()
-		name = truncateMachineName(name)
-		if err != nil || name == "" {
-			name = s.identity.Name
-		}
 		s.sendJSON(response, http.StatusOK, map[string]any{
 			"machine_id": s.identity.ID,
-			"name":       name,
+			"name":       s.identity.Name,
 		}, corsOrigin)
 		return
 	}

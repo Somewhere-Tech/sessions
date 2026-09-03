@@ -170,29 +170,40 @@ func hasTXT(fields []string, key, value string) bool {
 }
 
 func serviceInstance(machineName, machineID string) string {
-	name := strings.TrimSpace(machineName)
+	name := sanitizeServiceName(machineName)
 	if name == "" {
 		name = "Sessions machine"
 	}
-	var cleaned strings.Builder
-	for _, character := range name {
-		if character >= 0x20 && character != 0x7f && character != '.' && character != '\\' {
-			cleaned.WriteRune(character)
-		}
-	}
-	value := strings.TrimSpace(cleaned.String())
-	if value == "" {
-		value = "Sessions machine"
-	}
 	suffix := " · " + machineIDSuffix(machineID)
-	for len([]byte(value+suffix)) > 63 && len(value) > 0 {
-		runes := []rune(value)
-		value = strings.TrimSpace(string(runes[:len(runes)-1]))
+	for len([]byte(name+suffix)) > 63 && len(name) > 0 {
+		runes := []rune(name)
+		name = strings.TrimSpace(string(runes[:len(runes)-1]))
 	}
-	if value == "" {
-		value = "Sessions"
+	if name == "" {
+		name = "Sessions"
 	}
-	return value + suffix
+	return name + suffix
+}
+
+func sanitizeServiceName(value string) string {
+	value = strings.TrimSpace(value)
+	var cleaned strings.Builder
+	separator := false
+	previousSpace := false
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f || character == '.' || character == '\\' {
+			separator = cleaned.Len() > 0
+			continue
+		}
+		currentSpace := character == ' '
+		if separator && !previousSpace && !currentSpace {
+			cleaned.WriteByte(' ')
+		}
+		cleaned.WriteRune(character)
+		separator = false
+		previousSpace = currentSpace
+	}
+	return strings.TrimSpace(cleaned.String())
 }
 
 func unescapeDNSPresentation(value string) string {

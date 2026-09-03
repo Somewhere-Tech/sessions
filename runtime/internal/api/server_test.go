@@ -738,8 +738,9 @@ func (r *recordingSessionInput) Input(ctx context.Context, id, data string) bool
 	return r.sessionService.Input(ctx, id, data)
 }
 
-func TestAuthenticatedMachineIdentityUsesStableIDAndCurrentName(t *testing.T) {
+func TestAuthenticatedMachineIdentityUsesStableIDAndLoadedName(t *testing.T) {
 	daemon := newTestDaemon(t)
+	daemon.handler.identity.Name = "Friendly computer name"
 	unauthorized := serve(t, daemon.handler, http.MethodGet, "/api/machine", nil, "198.51.100.25:5555", nil)
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("remote machine identity status = %d, body = %s", unauthorized.Code, unauthorized.Body.String())
@@ -756,8 +757,8 @@ func TestAuthenticatedMachineIdentityUsesStableIDAndCurrentName(t *testing.T) {
 	if body.MachineID != daemon.handler.identity.ID {
 		t.Fatalf("machine id = %q, want %q", body.MachineID, daemon.handler.identity.ID)
 	}
-	if body.Name == "" {
-		t.Fatal("machine name is empty")
+	if body.Name != daemon.handler.identity.Name {
+		t.Fatalf("machine name = %q, want loaded identity name %q", body.Name, daemon.handler.identity.Name)
 	}
 }
 
