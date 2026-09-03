@@ -325,6 +325,34 @@ func TestKillSingleForwardsAgentAttributionReasonAndForce(t *testing.T) {
 	}
 }
 
+func TestKillSinglePrintsInstructionalEndConflict(t *testing.T) {
+	target := "23000000-0000-4000-8000-000000000004"
+	t.Setenv("SESSIONS_SESSION_ID", "23000000-0000-4000-8000-000000000099")
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	message := "Sessions could not safely end session " + target +
+		". Check the sessionsd log, then run `sessions status " + target + "` before retrying."
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/lanes":
+			_, _ = response.Write([]byte(`{"lanes":[],"user_creator_id":"uid:424242"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_, _ = response.Write([]byte(`{"sessions":[{"id":"` + target + `","cmd":"/bin/sh"}]}`))
+		case request.Method == http.MethodDelete && request.URL.Path == "/api/sessions/"+target:
+			response.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": false, "error": message})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "kill", target)
+	if code != 2 || stdout != "" || !strings.Contains(stderr, message) || strings.Contains(stderr, "→ 409") {
+		t.Fatalf("single conflict exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestLSMineJSONFiltersTypesWithoutRewritingRawFieldCasing(t *testing.T) {
 	t.Setenv("SESSIONS_OWNER_ID", "team:json")
 	t.Setenv("SESSIONS_SESSION_ID", "")

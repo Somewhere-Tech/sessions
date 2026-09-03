@@ -226,6 +226,15 @@ func (r *SocketRunner) Kill(context.Context) error {
 	return r.write(Kill, nil)
 }
 
+// HasExited distinguishes a clean runner exit from a dead control socket.
+// Session shutdown uses it to make an explicit End idempotent without
+// mistaking a lost runner for one that has actually finished.
+func (r *SocketRunner) HasExited() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.exited
+}
+
 func (r *SocketRunner) Subscribe() (<-chan Event, func()) {
 	r.mu.Lock()
 	id := r.nextSub

@@ -302,12 +302,10 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			return
 		}
 		if err := batch.KillManyAttributed(request.Context(), body.IDs, body.Force, end); err != nil {
-			status := http.StatusInternalServerError
-			var guard *sessionruntime.MassKillError
-			if errors.As(err, &guard) {
-				status = http.StatusConflict
-			}
-			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
+			s.sendSessionEndFailure(
+				response, "every requested session",
+				"run `sessions status <id>` for each session before retrying.", err, corsOrigin,
+			)
 			return
 		}
 		s.sendJSON(response, http.StatusOK, map[string]any{"ok": true, "ids": body.IDs}, corsOrigin)
@@ -799,7 +797,10 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			err = s.registry.RequestKill(request.Context(), id, request.URL.Query().Get("force") == "1")
 		}
 		if err != nil {
-			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()}, corsOrigin)
+			s.sendSessionEndFailure(
+				response, "session "+id,
+				"run `sessions status "+id+"` before retrying.", err, corsOrigin,
+			)
 			return
 		}
 		s.sendJSON(response, http.StatusOK, map[string]any{"ok": true}, corsOrigin)

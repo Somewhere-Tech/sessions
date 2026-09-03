@@ -104,6 +104,12 @@ func (m *Manager) resolveEndInitiator(ctx context.Context, end state.EndSessionR
 }
 
 func (m *Manager) killOne(ctx context.Context, id string, end state.EndSessionRequest) error {
+	// Exited sessions remain in the registry briefly so their final output is
+	// readable. Ending one again is an idempotent success, not a new user-kill
+	// fact appended after the runner's natural exit.
+	if existing, ok := m.registry.Get(id); ok && existing.HasExited() {
+		return nil
+	}
 	closeLostRecord := m.lostWithoutRunner(ctx, id)
 	if m.boundaries != nil {
 		if err := m.boundaries.RecordUserKill(ctx, ledger.UserKill{

@@ -319,6 +319,12 @@ func (a *app) delete(path string, body any) (bool, error) {
 		return false, err
 	}
 	if response.status >= 400 && response.status != http.StatusNotFound {
+		var payload struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(response.body, &payload) == nil && payload.Error != "" {
+			return false, fail(2, "%s", payload.Error)
+		}
 		return false, fail(2, "%s → %d", path, response.status)
 	}
 	return response.status == http.StatusOK, nil
