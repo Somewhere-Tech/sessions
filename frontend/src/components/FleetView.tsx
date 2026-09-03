@@ -19,6 +19,7 @@ import {
   useMachineAccessPairing,
   type PendingMachineAccess as SharedPendingMachineAccess
 } from '../hooks/useMachineAccessPairing';
+import { MachinePlatformIcon } from './MachineMark';
 
 const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 5_000;
@@ -210,7 +211,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
                   const peerPlatform = platformFromReportedOS(peer.os) ?? 'server';
                   return (
                     <article key={peer.endpoint}>
-                      <span className={`fleet-platform-mark is-${peerPlatform}`} aria-hidden><PlatformIcon platform={peerPlatform} /></span>
+                      <span className={`fleet-platform-mark is-${peerPlatform}`} aria-hidden><MachinePlatformIcon platform={peerPlatform} /></span>
                       <div>
                         <strong>{peer.name}</strong>
                         <small>{peer.transport === 'tailnet' ? 'Tailscale · encrypted' : 'Nearby · unencrypted'} · {peer.endpoint.replace(/^https?:\/\//, '')}</small>
@@ -442,7 +443,7 @@ function FleetServerGroup({
   return (
     <section className={cardClasses}>
       <header className="fleet-machine-header">
-        <span className={`fleet-platform-mark is-${platform}`} aria-hidden><PlatformIcon platform={platform} /></span>
+        <span className={`fleet-platform-mark is-${platform}`} aria-hidden><MachinePlatformIcon platform={platform} /></span>
         <div className="fleet-server-identity">
           <div className="fleet-machine-title">
             {renaming ? (
@@ -591,19 +592,6 @@ function shortVersion(version: string | undefined): string {
   if (!version) return '';
   const match = version.trim().match(/^v?(\d+\.\d+\.\d+)/);
   return match ? match[1] : version;
-}
-
-function PlatformIcon({ platform }: { platform: Platform }): JSX.Element {
-  if (platform === 'macos') {
-    return <svg viewBox="0 0 384 512" role="img" aria-label="macOS"><path d="M279.6 258.9c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-72.6-19.7C34.4 131.2 0 170.9 0 252.9c0 24.3 4.4 49.4 13.3 75.8 11.9 34.7 54.7 119.8 99.4 118.4 23.4-.6 40-16.6 70.5-16.6 29.6 0 45 16.6 71.1 16.6 45.1-.6 83.8-78.2 95.1-112.9-60.4-28.5-57.3-73.7-69.8-75.3ZM256.4 94.7c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3Z" /></svg>;
-  }
-  if (platform === 'windows') {
-    return <svg viewBox="0 0 24 24" role="img" aria-label="Windows"><path d="m3 4.6 7.5-1v7.8H3V4.6Zm8.6-1.2L21 2v9.4h-9.4v-8ZM3 12.5h7.5v7.8l-7.5-1v-6.8Zm8.6 0H21V22l-9.4-1.4v-8.1Z" /></svg>;
-  }
-  if (platform === 'linux') {
-    return <svg viewBox="0 0 24 24" role="img" aria-label="Linux"><path d="M12 2c-3.1 0-5 2.8-5 6.8 0 1.4-.5 2.8-1.4 4.2-1.3 2-1.3 4.3-.2 5.8.8 1 2 1.1 3.3.4.9.6 2 1 3.3 1s2.4-.4 3.3-1c1.3.7 2.5.6 3.3-.4 1.2-1.5 1.1-3.8-.2-5.8-.9-1.4-1.4-2.8-1.4-4.2C17 4.8 15.1 2 12 2Zm-2 5.2c-.6 0-1-.6-1-1.3s.4-1.3 1-1.3 1 .6 1 1.3-.4 1.3-1 1.3Zm4 0c-.6 0-1-.6-1-1.3s.4-1.3 1-1.3 1 .6 1 1.3-.4 1.3-1 1.3Zm-2 4.2-2.2-1.6L12 8.6l2.2 1.2L12 11.4Z" /></svg>;
-  }
-  return <svg viewBox="0 0 24 24" role="img" aria-label="Server"><path d="M4 4h16v6H4V4Zm0 10h16v6H4v-6Z" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M7 7h.01M7 17h.01" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" /></svg>;
 }
 
 function FleetSessionRow({
