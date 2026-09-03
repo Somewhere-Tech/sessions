@@ -150,13 +150,17 @@ node scripts/check-doc-links.mjs
 ```
 
 `check:structure` parses handwritten production functions and the import graph.
-Go functions may be at most 221 lines and TypeScript/TSX functions at most 678
-lines. The five measured legacy exceptions for each language are named in
-`scripts/function-length-exceptions.txt`; their recorded lengths are ceilings,
-not exemptions from future growth. `scripts/import-boundaries.txt` is the exact
-direct Go product-package graph across Darwin, Linux, and Windows. New or stale
-edges require an explicit review of that file. Frontend modules below `src/lib`
-and `src/api` may not import from `src/components` or `src/hooks`.
+Go functions may be at most 80 lines and TypeScript/TSX functions at most 120
+lines. `scripts/function-length-exceptions.txt` is the complete ratchet for
+larger functions present when the rule was introduced: every recorded length is
+a ceiling that may shrink but may not grow, and an entry must be removed once
+its function reaches the normal limit. Anonymous nested callbacks are counted
+inside their outer named function rather than duplicated; an independently
+named nested function is measured on its own. `scripts/import-boundaries.txt`
+is the exact direct Go product-package graph across Darwin, Linux, and Windows.
+New or stale edges require an explicit review of that file. Frontend modules
+below `src/lib` and `src/api` may not import from `src/components` or
+`src/hooks`.
 
 `scripts/check-source-size.sh` remains an informational report of the largest
 handwritten files. It does not enforce a file-length cap; function length and

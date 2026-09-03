@@ -818,14 +818,18 @@ while `embedui` builds embed the built SPA and provide guarded route fallback
 
 The structural gate is `npm run check:structure` from the repository root. It
 measures physical source spans from the Go AST and TypeScript compiler API,
-including nested function literals, and reports violations as
-`file:line:function:length`. The initial distribution does not support an
-80-line limit without turning the exception list into a second baseline: its
-sixth-largest functions are 221 lines in Go and 678 lines in TypeScript/TSX.
-Those are therefore the enforced limits. The five larger functions in each
-language are named with their measured ceilings in
-`scripts/function-length-exceptions.txt`; they may shrink but may not grow, and
-the checker rejects stale or additional exceptions.
+and reports violations as `file:line:function:length`. Go has an 80-line limit;
+TypeScript and TSX have a 120-line limit. Anonymous nested callbacks and IIFEs
+remain part of their outer named function's span instead of producing duplicate
+ratchet entries. A nested function with its own stable declaration or binding
+is measured independently.
+
+`scripts/function-length-exceptions.txt` is the complete baseline of named
+functions that exceeded those limits when the ratchet was introduced. Each
+entry records its current length as a frozen ceiling: a function may shrink but
+not grow, a new over-limit function fails, and an entry becomes an error once
+its function reaches the normal limit so the baseline cannot retain obsolete
+allowances. The checker also rejects missing or renamed exception targets.
 
 Go package direction is an exact direct-edge declaration in
 `scripts/import-boundaries.txt`, generated from `go list -deps` for Darwin,

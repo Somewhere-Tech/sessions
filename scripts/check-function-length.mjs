@@ -73,7 +73,7 @@ if (!options.report && (go.status !== 0 || violations > 0)) {
 }
 
 function parseOptions(args) {
-  const options = { maxGo: 221, maxTypescript: 678, report: false };
+  const options = { maxGo: 80, maxTypescript: 120, report: false };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--report") {
@@ -117,7 +117,6 @@ function readExceptions(path, language) {
       exceptions.set(key, currentLines);
     }
   }
-  if (exceptions.size > 5) throw new Error(`${path}: ${language} has ${exceptions.size} exceptions; at most 5 are allowed`);
   return exceptions;
 }
 
@@ -170,7 +169,8 @@ function visit(node, source, path, functions) {
   if (isFunctionWithBody(node)) {
     const start = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
     const end = source.getLineAndCharacterOfPosition(node.end - 1).line + 1;
-    functions.push({ path, line: start, name: functionName(node, source, start), length: end - start + 1 });
+    const name = functionName(node, source);
+    if (name) functions.push({ path, line: start, name, length: end - start + 1 });
   }
   ts.forEachChild(node, (child) => visit(child, source, path, functions));
 }
@@ -187,7 +187,7 @@ function isFunctionWithBody(node) {
   );
 }
 
-function functionName(node, source, line) {
+function functionName(node, source) {
   if (ts.isConstructorDeclaration(node)) return `${className(node.parent, source)}.constructor`;
   if (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
     return `${className(node.parent, source)}.${node.name.getText(source)}`;
@@ -201,31 +201,20 @@ function functionName(node, source, line) {
   if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
     return parent.left.getText(source).replace(/\s+/g, "");
   }
-  return anonymousName(node, source, line);
-}
 
-function anonymousName(node, source, line) {
+  let callName = null;
   let child = node;
-  let parent = node.parent;
-  while (parent && (ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent))) {
-    child = parent;
-    parent = parent.parent;
-  }
-
-  let localName = `<anonymous@${line}>`;
-  if (parent && ts.isCallExpression(parent)) {
-    localName = parent.expression === child
-      ? "<iife>"
-      : parent.expression.getText(source).replace(/\s+/g, "");
-  }
-
-  for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
-    if (isFunctionWithBody(ancestor)) {
-      const ancestorLine = source.getLineAndCharacterOfPosition(ancestor.getStart(source)).line + 1;
-      return `${functionName(ancestor, source, ancestorLine)}/${localName}`;
+  for (let ancestor = parent; ancestor; child = ancestor, ancestor = ancestor.parent) {
+    if (isFunctionWithBody(ancestor)) return null;
+    if (ts.isVariableDeclaration(ancestor) || ts.isPropertyDeclaration(ancestor) || ts.isPropertyAssignment(ancestor)) {
+      return ancestor.name.getText(source);
+    }
+    if (ts.isExportAssignment(ancestor)) return "<default-export>";
+    if (ts.isCallExpression(ancestor) && ancestor.expression !== child && callName === null) {
+      callName = ancestor.expression.getText(source).replace(/\s+/g, "");
     }
   }
-  return localName;
+  return callName;
 }
 
 function className(node, source) {

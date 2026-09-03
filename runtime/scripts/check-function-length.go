@@ -121,9 +121,6 @@ func readExceptions(path, language string) (map[string]int, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	if len(exceptions) > 5 {
-		return nil, fmt.Errorf("%s: %s has %d exceptions; at most 5 are allowed", path, language, len(exceptions))
-	}
 	return exceptions, nil
 }
 
@@ -192,18 +189,15 @@ func functionsInFile(root, path string) ([]function, error) {
 			stack = stack[:len(stack)-1]
 			return true
 		}
-		var parent ast.Node
-		if len(stack) > 0 {
-			parent = stack[len(stack)-1]
-		}
 		stack = append(stack, node)
 
 		switch fn := node.(type) {
 		case *ast.FuncDecl:
 			functions = append(functions, makeFunction(fileSet, relative, functionName(fn), fn.Pos(), fn.End()))
 		case *ast.FuncLit:
-			line := fileSet.Position(fn.Pos()).Line
-			functions = append(functions, makeFunction(fileSet, relative, literalName(parent, line), fn.Pos(), fn.End()))
+			if name, named := literalName(stack[:len(stack)-1]); named {
+				functions = append(functions, makeFunction(fileSet, relative, name, fn.Pos(), fn.End()))
+			}
 		}
 		return true
 	})
@@ -240,20 +234,26 @@ func functionName(fn *ast.FuncDecl) string {
 	return expressionName(fn.Recv.List[0].Type) + "." + fn.Name.Name
 }
 
-func literalName(parent ast.Node, line int) string {
-	switch node := parent.(type) {
-	case *ast.ValueSpec:
-		if len(node.Names) > 0 {
-			return node.Names[0].Name
+func literalName(ancestors []ast.Node) (string, bool) {
+	for index := len(ancestors) - 1; index >= 0; index-- {
+		switch node := ancestors[index].(type) {
+		case *ast.FuncDecl, *ast.FuncLit:
+			return "", false
+		case *ast.ValueSpec:
+			if len(node.Names) > 0 {
+				return node.Names[0].Name, true
+			}
+		case *ast.AssignStmt:
+			if len(node.Lhs) > 0 {
+				name := expressionName(node.Lhs[0])
+				return name, name != "<expression>"
+			}
+		case *ast.KeyValueExpr:
+			name := expressionName(node.Key)
+			return name, name != "<expression>"
 		}
-	case *ast.AssignStmt:
-		if len(node.Lhs) > 0 {
-			return expressionName(node.Lhs[0])
-		}
-	case *ast.KeyValueExpr:
-		return expressionName(node.Key)
 	}
-	return fmt.Sprintf("<literal@%d>", line)
+	return "", false
 }
 
 func expressionName(expression ast.Expr) string {
