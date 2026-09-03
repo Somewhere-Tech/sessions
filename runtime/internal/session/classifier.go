@@ -44,8 +44,10 @@ var (
 	// incomplete (failed: name)" when an optional MCP server is down and then
 	// answers normally; treating that line as the outcome reported a completed
 	// turn as failed.
-	benignErrorRE = regexp.MustCompile(`(?i)\b(?:0\s+(?:errors?|fail(?:ed|ures?)?)|no\s+(?:errors?|failures?))\b|^\s*⚠|\bMCP (?:startup|client|server)\b|\bcodex_rmcp_client\b`)
-	resolutionRE  = regexp.MustCompile(`(?i)\b(?:resolved|recovered|fixed|succeeded|successful|passed|completed|all checks pass|done)\b`)
+	benignErrorRE             = regexp.MustCompile(`(?i)\b(?:0\s+(?:errors?|fail(?:ed|ures?)?)|no\s+(?:errors?|failures?))\b|^\s*⚠|\bMCP (?:startup|client|server)\b|\bcodex_rmcp_client\b`)
+	resolutionRE              = regexp.MustCompile(`(?i)\b(?:resolved|recovered|fixed|succeeded|successful|passed|completed|all checks pass|done)\b`)
+	claudeProviderFaultLineRE = regexp.MustCompile(`(?i)^⏺\s*(?:API Error\b|Request timed out\b|fetch failed\b)`)
+	codexProviderFaultLineRE  = regexp.MustCompile(`(?i)^(?:■\s*|ERROR:\s*|Reconnecting\.\.\.\s+\d+/\d+\b|stream disconnected\b)`)
 
 	workingSpinnerRE = regexp.MustCompile(`(?:…|\.\.\.)\s*\(\s*\d+\s*[hms]`)
 	workingFooterRE  = regexp.MustCompile(`(?i)[·•∙]\s*esc\s+to\s+interrupt`)
@@ -183,7 +185,11 @@ func providerFaultClassification(lines []string) (IdleClassification, bool) {
 		if benignErrorRE.MatchString(line) {
 			continue
 		}
-		fault, matched := providerfault.Detect(providerFromFaultLine(line), line, 0)
+		provider, candidate := terminalProviderFaultLine(line)
+		if !candidate {
+			continue
+		}
+		fault, matched := providerfault.Detect(provider, line, 0)
 		if !matched {
 			continue
 		}
@@ -197,16 +203,14 @@ func providerFaultClassification(lines []string) (IdleClassification, bool) {
 	return IdleClassification{}, false
 }
 
-func providerFromFaultLine(line string) string {
-	lower := strings.ToLower(line)
-	if strings.Contains(line, "⏺") || strings.Contains(lower, "api error") || strings.Contains(lower, "claude") {
-		return "claude"
+func terminalProviderFaultLine(line string) (string, bool) {
+	if claudeProviderFaultLineRE.MatchString(line) {
+		return "claude", true
 	}
-	if strings.Contains(line, "■") || strings.Contains(lower, "codex") ||
-		strings.Contains(lower, "reconnecting") || strings.Contains(lower, "stream disconnected") {
-		return "codex"
+	if codexProviderFaultLineRE.MatchString(line) {
+		return "codex", true
 	}
-	return ""
+	return "", false
 }
 
 func snapshotLines(snapshot string) []string {

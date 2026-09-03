@@ -40,13 +40,35 @@ func TestClassifyProviderFaultTerminalLines(t *testing.T) {
 		{name: "codex stream", snapshot: "stream disconnected before completion\n", detail: "Codex stream disconnected"},
 		{name: "claude overloaded", snapshot: "❯ Reply with the single word ok.\n⏺ API Error: Repeated 529 Overloaded errors.\n❯ Claude Code", detail: "Claude API overloaded (529)"},
 		{name: "claude timeout", snapshot: "⏺ Request timed out\n❯ ", detail: "Claude API request timed out"},
-		{name: "connection", snapshot: "⏺ connection refused\n❯ ", detail: "Claude API connection failed (connection refused)"},
+		{name: "claude connection", snapshot: "⏺ API Error: connection refused\n❯ ", detail: "Claude API connection failed (connection refused)"},
+		{name: "claude fetch", snapshot: "⏺ fetch failed\n❯ ", detail: "Claude network unavailable"},
+		{name: "codex error prefix", snapshot: "ERROR: authentication failed\n", detail: "Codex authentication failed"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got := ClassifySnapshot(test.snapshot)
 			if got.Outcome != IdleError || got.Line != test.detail {
 				t.Fatalf("ClassifySnapshot() = %#v, want error %q", got, test.detail)
+			}
+		})
+	}
+}
+
+func TestProviderFaultClassifierIgnoresOrdinaryAssistantProse(t *testing.T) {
+	tests := []struct {
+		name, snapshot string
+	}{
+		{name: "404", snapshot: "⏺ I fixed the 404 handling.\n❯ "},
+		{name: "timed out", snapshot: "⏺ The test timed out before I raised its limit.\n❯ "},
+		{name: "quota", snapshot: "⏺ Added quota checks for the billing path.\n❯ "},
+		{name: "authentication", snapshot: "• Added authentication handling.\n› Ask Codex"},
+		{name: "unauthorized", snapshot: "• Handled unauthorized responses.\n› Ask Codex"},
+		{name: "network", snapshot: "• Improved the network fallback.\n› Ask Codex"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ClassifySnapshot(test.snapshot); got.Outcome != IdleDone {
+				t.Fatalf("ClassifySnapshot() = %#v, want ordinary prose to be done", got)
 			}
 		})
 	}
