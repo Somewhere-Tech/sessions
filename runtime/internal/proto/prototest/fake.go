@@ -83,6 +83,8 @@ type Runner struct {
 	inputs      []string
 	approvals   []proto.ApprovalControl
 	models      []proto.ModelControl
+	retries     int
+	retryStops  int
 	cols        int
 	rows        int
 	exited      bool
@@ -160,6 +162,28 @@ func (r *Runner) Approve(_ context.Context, control proto.ApprovalControl) error
 	return nil
 }
 
+func (r *Runner) Retry(context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.exited {
+		return errors.New("runner exited")
+	}
+	r.retries++
+	r.signalChangeLocked()
+	return nil
+}
+
+func (r *Runner) StopRetry(context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.exited {
+		return errors.New("runner exited")
+	}
+	r.retryStops++
+	r.signalChangeLocked()
+	return nil
+}
+
 // Approvals returns every approval decision the daemon sent, in order.
 func (r *Runner) Approvals() []proto.ApprovalControl {
 	r.mu.Lock()
@@ -230,6 +254,10 @@ func (r *Runner) AddCodexEvent(value any) {
 	r.Emit(proto.Event{Kind: proto.EventCodex, CodexEvent: encoded})
 }
 
+func (r *Runner) SetRetry(value *proto.ProviderRetry) {
+	r.Emit(proto.Event{Kind: proto.EventRetry, Retry: value})
+}
+
 func (r *Runner) Emit(event proto.Event) {
 	r.mu.Lock()
 	if event.Kind == proto.EventOutput {
@@ -285,6 +313,12 @@ func (r *Runner) ModelControls() []proto.ModelControl {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]proto.ModelControl(nil), r.models...)
+}
+
+func (r *Runner) RetryControls() (run, stop int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.retries, r.retryStops
 }
 
 func (r *Runner) Size() (int, int) {

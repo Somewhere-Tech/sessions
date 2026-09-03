@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto/prototest"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
@@ -107,5 +108,52 @@ func TestProviderFaultNotificationIsOncePerEpisode(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("new fault episode was not notified")
+	}
+}
+
+func TestProviderRetryNotifiesOnlyAfterExhaustion(t *testing.T) {
+	root := t.TempDir()
+	notifications := make(chan PushPayload, 2)
+	launcher := prototest.NewLauncher()
+	manager := NewManager(testConfig(root), launcher, ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour, NotifyCooldown: time.Millisecond,
+		Notify: func(payload PushPayload) { notifications <- payload },
+	})
+	t.Cleanup(manager.Close)
+	created, err := manager.Create(t.Context(), state.CreateSessionRequest{
+		Cmd: "codex", Cwd: root, Name: "review", Kind: state.KindCodexAppServer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _ := manager.Get(created.ID)
+	current.SetProviderFault("codex", providerfault.Fault{
+		Kind: providerfault.KindUnavailable, Detail: "Codex API unavailable (503, overloaded)", Status: 503,
+	}, time.Now().UnixMilli())
+	runner := launcher.Runner(created.ID)
+	runner.SetRetry(&proto.ProviderRetry{Attempt: 1, Max: 5, NextAt: time.Now().Add(30 * time.Second).UnixMilli(), Kind: providerfault.KindUnavailable})
+	awaitCondition(t, func() bool { return current.Info().Retry != nil })
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.notifyDone()
+	select {
+	case payload := <-notifications:
+		t.Fatalf("scheduled retry notified early: %#v", payload)
+	case <-time.After(20 * time.Millisecond):
+	}
+	runner.AddCodexEvent(map[string]any{
+		"type": "system", "subtype": "provider_retry", "attempt": 5, "max": 5,
+	})
+	runner.SetRetry(nil)
+	awaitCondition(t, func() bool { return current.Info().Retry == nil })
+	runtime.notifyDone()
+	select {
+	case payload := <-notifications:
+		if payload.Title != "🔴 review — Codex stayed unavailable for 13 minutes" {
+			t.Fatalf("exhaustion notification = %#v", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retry exhaustion did not notify")
 	}
 }

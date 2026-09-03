@@ -348,7 +348,7 @@ func TestHealthShapeAndStaticUI(t *testing.T) {
 	if apiCompatibility["minimumClient"] != float64(1) || apiCompatibility["maximumClient"] != float64(1) {
 		t.Fatalf("unexpected API compatibility: %#v", apiCompatibility)
 	}
-	if runnerCompatibility["minimum"] != float64(0) || runnerCompatibility["maximum"] != float64(3) {
+	if runnerCompatibility["minimum"] != float64(0) || runnerCompatibility["maximum"] != float64(4) {
 		t.Fatalf("unexpected runner compatibility: %#v", runnerCompatibility)
 	}
 	restore := body["restore"].(map[string]any)

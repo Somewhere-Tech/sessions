@@ -147,7 +147,9 @@ renders timestamped Codex-style user cards and full-width provider answers;
 `ProviderFaultCard.tsx` reports the daemon's concise failure detail, live Rich-turn
 retry schedule and recovery controls in both Conversation and Terminal. Structured
 `provider_fault` and `provider_retry` history stays system UI rather than assistant
-prose. Meanwhile,
+prose. Rich runners retain one failed outage turn, own its bounded retry timer,
+and publish the live schedule to the daemon; new input replaces that retained
+turn instead of creating a second queue. Meanwhile,
 `InputBar.tsx` owns the single Attach composer action. Terminal quick keys are
 scoped to the mobile Terminal pane. Grid and mobile navigation receive only active
 sessions, while the full navigator retains lineage history. `CommandPalette.tsx`
@@ -494,7 +496,9 @@ by this package rather than by API clients.
 
 `proto` defines the framed runner protocol and the daemon-side socket client
 (`runtime/internal/proto/proto.go`, `runtime/internal/proto/client.go`). The
-current revision is protocol 2, which added the model request/response frames;
+current revision is protocol 4: protocol 2 added model control, protocol 3 added
+Rich approval control, and protocol 4 adds acknowledged provider retry controls
+plus runner-owned retry state;
 every revision requires server-first HELLO, bounds frame size, and distinguishes
 replay from live traffic. The daemon accepts protocol 0 for immutable legacy
 runners whose HELLO omitted the field, accepts every revision through the
@@ -502,7 +506,9 @@ current one, and rejects an unknown future version before replay or control
 frames (`MinimumCompatibleVersion`, `MaximumCompatibleVersion`). HELLO also reports the runner's
 runtime release when known; semantic runner capabilities are exposed through
 `runtime/internal/proto/runner.go`. Structured provider events use the protocol's
-extension frame instead of masquerading as terminal output.
+extension frame instead of masquerading as terminal output. Retry state is a
+separate frame because cancelling a live schedule must not fabricate or delete
+append-only history.
 
 ### `recovery`
 

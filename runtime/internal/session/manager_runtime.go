@@ -16,6 +16,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
@@ -323,6 +324,13 @@ func (r *runtimeSession) publishObservedProviderFault() {
 	if !ok {
 		return
 	}
+	if (fault.Kind == providerfault.KindUnavailable || fault.Kind == providerfault.KindRateLimited) &&
+		supportsStructuredRetry(info) {
+		// The runner publishes its schedule immediately after this fault event.
+		// Let the provider's terminal event decide between scheduled and exhausted
+		// so no notification races ahead of retry state.
+		return
+	}
 	classification := IdleClassification{Outcome: IdleError, Line: fault.Detail}
 	r.manager.publishIdle(r.session, 0, classification, fault.Detail)
 	r.notifyProviderFault(r.session.Info(), fault)
@@ -443,7 +451,10 @@ func (r *runtimeSession) setWorking(next bool) {
 	}
 	if classification.Outcome == IdleError {
 		if fault, ok := r.session.ProviderFault(); ok {
-			r.notifyProviderFault(r.session.Info(), fault)
+			info := r.session.Info()
+			if info.Retry == nil {
+				r.notifyProviderFault(info, fault)
+			}
 		} else if !suppressWaiting {
 			r.scheduleWaiting()
 		}

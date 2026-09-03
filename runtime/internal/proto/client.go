@@ -24,6 +24,7 @@ type SocketRunner struct {
 	writeMu  sync.Mutex
 	replayMu sync.Mutex
 	modelMu  sync.Mutex
+	retryMu  sync.Mutex
 	mu       sync.Mutex
 	info     RunnerInfo
 	exited   bool
@@ -32,6 +33,7 @@ type SocketRunner struct {
 	nextSub  uint64
 	replay   *replayRequest
 	model    *modelRequest
+	retry    *modelRequest
 	terminal *Event
 }
 
@@ -171,6 +173,48 @@ func (r *SocketRunner) Approve(_ context.Context, control ApprovalControl) error
 	return r.write(Approve, payload)
 }
 
+func (r *SocketRunner) Retry(ctx context.Context) error {
+	return r.retryControl(ctx, RetryReq)
+}
+
+func (r *SocketRunner) StopRetry(ctx context.Context) error {
+	return r.retryControl(ctx, RetryStop)
+}
+
+func (r *SocketRunner) retryControl(ctx context.Context, typ Type) error {
+	r.retryMu.Lock()
+	defer r.retryMu.Unlock()
+	if r.Info().ProtocolVersion < 4 {
+		return fmt.Errorf("runner protocol v%d cannot control provider retries; update Sessions and start or resume this conversation with the current runtime", r.Info().ProtocolVersion)
+	}
+	r.startReader()
+	request := &modelRequest{done: make(chan struct{})}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return net.ErrClosed
+	}
+	r.retry = request
+	r.mu.Unlock()
+	if err := r.write(typ, nil); err != nil {
+		r.finishRetry(request, err)
+	}
+	select {
+	case <-request.done:
+	case <-ctx.Done():
+		r.finishRetry(request, ctx.Err())
+	case <-time.After(5 * time.Second):
+		r.finishRetry(request, errors.New("runner retry control timed out"))
+	}
+	r.mu.Lock()
+	if r.retry == request {
+		r.retry = nil
+	}
+	err := request.err
+	r.mu.Unlock()
+	return err
+}
+
 func (r *SocketRunner) ConfigureModel(ctx context.Context, control ModelControl) error {
 	r.modelMu.Lock()
 	defer r.modelMu.Unlock()
@@ -290,69 +334,103 @@ func (r *SocketRunner) readLoop() {
 			r.closeWithLoss(cleanExit)
 			return
 		}
-		switch frame.Type {
-		case Output:
-			seq, data, err := DecodeOutput(frame.Payload)
-			if err != nil {
-				_ = r.conn.Close()
-				continue
-			}
-			event := Event{Kind: EventOutput, Output: OutputEvent{Seq: seq, Data: string(data), At: time.Now().UnixMilli()}}
-			r.mu.Lock()
-			r.info.CurrentSeq = seq
-			if r.replay != nil {
-				r.replay.events = append(r.replay.events, event.Output)
-			}
-			r.broadcastLocked(event, false)
-			r.mu.Unlock()
-		case Exit:
-			var exit ExitEvent
-			if err := json.Unmarshal(frame.Payload, &exit); err != nil {
-				_ = r.conn.Close()
-				continue
-			}
-			r.mu.Lock()
-			r.exited = true
-			r.info.CurrentSeq = exit.Seq
-			event := Event{Kind: EventExit, Exit: exit}
-			r.terminal = &event
-			r.broadcastLocked(event, true)
-			r.mu.Unlock()
-			cleanExit = true
+		cleanExit = r.handleFrame(frame) || cleanExit
+	}
+}
+
+func (r *SocketRunner) handleFrame(frame Frame) bool {
+	switch frame.Type {
+	case Output:
+		seq, data, err := DecodeOutput(frame.Payload)
+		if err != nil {
 			_ = r.conn.Close()
-		case ReplayDone:
-			r.mu.Lock()
-			request := r.replay
-			r.mu.Unlock()
-			if request != nil {
-				r.finishReplay(request)
-			}
-		case Structured:
-			raw := append(json.RawMessage(nil), frame.Payload...)
-			r.mu.Lock()
-			if r.replay != nil {
-				r.replay.appendStructured(raw)
-			} else {
-				r.broadcastLocked(Event{Kind: EventCodex, CodexEvent: raw}, false)
-			}
-			r.mu.Unlock()
-		case ModelRes:
-			var result ModelControlResult
-			err := json.Unmarshal(frame.Payload, &result)
-			if err == nil && result.Error != "" {
-				err = errors.New(result.Error)
-			}
-			r.mu.Lock()
-			request := r.model
-			r.mu.Unlock()
-			if request != nil {
-				r.finishModel(request, err)
-			}
-		case Hello, SnapshotRes:
-			// HELLO is consumed during DialRunner. Extra HELLO and legacy
-			// snapshot replies are harmless forward-compatible traffic.
-		default:
+			return false
 		}
+		event := Event{Kind: EventOutput, Output: OutputEvent{Seq: seq, Data: string(data), At: time.Now().UnixMilli()}}
+		r.mu.Lock()
+		r.info.CurrentSeq = seq
+		if r.replay != nil {
+			r.replay.events = append(r.replay.events, event.Output)
+		}
+		r.broadcastLocked(event, false)
+		r.mu.Unlock()
+	case Exit:
+		var exit ExitEvent
+		if err := json.Unmarshal(frame.Payload, &exit); err != nil {
+			_ = r.conn.Close()
+			return false
+		}
+		r.mu.Lock()
+		r.exited = true
+		r.info.CurrentSeq = exit.Seq
+		event := Event{Kind: EventExit, Exit: exit}
+		r.terminal = &event
+		r.broadcastLocked(event, true)
+		r.mu.Unlock()
+		_ = r.conn.Close()
+		return true
+	case ReplayDone:
+		r.mu.Lock()
+		request := r.replay
+		r.mu.Unlock()
+		if request != nil {
+			r.finishReplay(request)
+		}
+	case Structured:
+		raw := append(json.RawMessage(nil), frame.Payload...)
+		r.mu.Lock()
+		if r.replay != nil {
+			r.replay.appendStructured(raw)
+		} else {
+			r.broadcastLocked(Event{Kind: EventCodex, CodexEvent: raw}, false)
+		}
+		r.mu.Unlock()
+	case ModelRes:
+		r.handleModelResponse(frame.Payload)
+	case RetryState:
+		var status ProviderRetryState
+		if json.Unmarshal(frame.Payload, &status) != nil {
+			_ = r.conn.Close()
+			return false
+		}
+		r.mu.Lock()
+		r.broadcastLocked(Event{Kind: EventRetry, Retry: cloneProviderRetry(status.Retry)}, false)
+		r.mu.Unlock()
+	case RetryRes:
+		r.handleRetryResponse(frame.Payload)
+	case Hello, SnapshotRes:
+		// HELLO is consumed during DialRunner. Extra HELLO and legacy
+		// snapshot replies are harmless forward-compatible traffic.
+	default:
+	}
+	return false
+}
+
+func (r *SocketRunner) handleModelResponse(payload []byte) {
+	var result ModelControlResult
+	err := json.Unmarshal(payload, &result)
+	if err == nil && result.Error != "" {
+		err = errors.New(result.Error)
+	}
+	r.mu.Lock()
+	request := r.model
+	r.mu.Unlock()
+	if request != nil {
+		r.finishModel(request, err)
+	}
+}
+
+func (r *SocketRunner) handleRetryResponse(payload []byte) {
+	var result RetryControlResult
+	err := json.Unmarshal(payload, &result)
+	if err == nil && result.Error != "" {
+		err = errors.New(result.Error)
+	}
+	r.mu.Lock()
+	request := r.retry
+	r.mu.Unlock()
+	if request != nil {
+		r.finishRetry(request, err)
 	}
 }
 
@@ -388,6 +466,28 @@ func (r *SocketRunner) finishModel(request *modelRequest, err error) {
 	}
 }
 
+func (r *SocketRunner) finishRetry(request *modelRequest, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.retry != request {
+		return
+	}
+	request.err = err
+	select {
+	case <-request.done:
+	default:
+		close(request.done)
+	}
+}
+
+func cloneProviderRetry(value *ProviderRetry) *ProviderRetry {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 func (r *SocketRunner) finishReplay(request *replayRequest) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -421,6 +521,14 @@ func (r *SocketRunner) closeWithLoss(cleanExit bool) {
 		case <-r.model.done:
 		default:
 			close(r.model.done)
+		}
+	}
+	if r.retry != nil {
+		r.retry.err = net.ErrClosed
+		select {
+		case <-r.retry.done:
+		default:
+			close(r.retry.done)
 		}
 	}
 	if !cleanExit && !r.exited {

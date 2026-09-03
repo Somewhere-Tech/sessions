@@ -1,6 +1,10 @@
 package state
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+)
 
 func cloneStringPointer(value *string) *string {
 	if value == nil {
@@ -128,16 +132,17 @@ type SessionInfo struct {
 	// session arrives through the same routes carrying one. Unattributed is
 	// therefore a person, attributed is another session, and a transcript-only
 	// user record is neither.
-	LastHumanMessageAt *int64 `json:"lastHumanMessageAt"`
-	LastAgentMessageAt *int64 `json:"lastAgentMessageAt"`
-	IdleReason         string `json:"idleReason,omitempty"`
-	IdleDetail         string `json:"idleDetail,omitempty"`
-	IdleSince          *int64 `json:"idleSince,omitempty"`
-	LastSummary        string `json:"lastSummary,omitempty"`
-	FailureKind        string `json:"failureKind,omitempty"`
-	FailureDetail      string `json:"failureDetail,omitempty"`
-	FailureProvider    string `json:"failureProvider,omitempty"`
-	FailureAt          int64  `json:"failureAt,omitempty"`
+	LastHumanMessageAt *int64               `json:"lastHumanMessageAt"`
+	LastAgentMessageAt *int64               `json:"lastAgentMessageAt"`
+	IdleReason         string               `json:"idleReason,omitempty"`
+	IdleDetail         string               `json:"idleDetail,omitempty"`
+	IdleSince          *int64               `json:"idleSince,omitempty"`
+	LastSummary        string               `json:"lastSummary,omitempty"`
+	FailureKind        string               `json:"failureKind,omitempty"`
+	FailureDetail      string               `json:"failureDetail,omitempty"`
+	FailureProvider    string               `json:"failureProvider,omitempty"`
+	FailureAt          int64                `json:"failureAt,omitempty"`
+	Retry              *proto.ProviderRetry `json:"retry,omitempty"`
 	// PendingApproval is the permission a Rich lane is waiting on right now.
 	// It is derived from the lane's structured stream, so it survives a
 	// daemon restart as long as the runner is still holding the request.

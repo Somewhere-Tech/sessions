@@ -418,7 +418,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 
 	id, suffix, matched := sessionRoute(path)
 	if matched {
-		if s.handleVerdictRoute(response, request, id, suffix, corsOrigin) {
+		if s.handleRichControlRoute(response, request, id, suffix, corsOrigin) {
 			return
 		}
 		if s.handleWaitRoute(response, request, id, suffix, corsOrigin) {
@@ -977,7 +977,7 @@ func sessionRuntimeRoute(method, suffix string) bool {
 	switch suffix {
 	case "/snapshot", "/events", "/model-options":
 		return method == http.MethodGet
-	case "/input", "/submit", "/approve":
+	case "/input", "/submit", "/approve", "/retry", "/retry/stop":
 		return method == http.MethodPost
 	case "/model":
 		return method == http.MethodPut

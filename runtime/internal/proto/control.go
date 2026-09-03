@@ -19,6 +19,10 @@ type ModelControlResult struct {
 	Error string `json:"error,omitempty"`
 }
 
+type RetryControlResult struct {
+	Error string `json:"error,omitempty"`
+}
+
 func EncodeModelControl(control ModelControl) ([]byte, error) {
 	return json.Marshal(control)
 }

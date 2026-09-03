@@ -82,6 +82,7 @@ func newSession(ctx context.Context, info proto.RunnerInfo, runner proto.Runner,
 			IdleReason: IdleReasonNeverStarted, IdleSince: &now,
 			Model: model, Effort: effort, Fast: fast,
 			ConversationID: info.ConversationID, RemoteEndpoint: info.RemoteEndpoint,
+			Retry:                  cloneRetry(info.Retry),
 			ClaudeSessionID:        info.ClaudeSessionID,
 			ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
 			ContinuedFromProvider:  metadata.ContinuedFromProvider,
@@ -150,6 +151,8 @@ func (s *Session) applyEvent(event proto.Event) bool {
 		if event.ClaudeActivityAt > s.info.LastDataAt {
 			s.info.LastDataAt = event.ClaudeActivityAt
 		}
+	case proto.EventRetry:
+		s.info.Retry = cloneRetry(event.Retry)
 	case proto.EventRunnerLost:
 		// A lost socket is not an exit. proto.SocketRunner raises this for any
 		// read error at all -- EOF, the 10s deadline, a daemon restart -- and
@@ -203,6 +206,18 @@ func (s *Session) applyEvent(event proto.Event) bool {
 		s.exit = exit
 		terminal = true
 	}
+	s.broadcastEventLocked(event, terminal)
+	if terminal {
+		for id, subscriber := range s.subs {
+			close(subscriber)
+			delete(s.subs, id)
+		}
+	}
+	s.mu.Unlock()
+	return terminal
+}
+
+func (s *Session) broadcastEventLocked(event proto.Event, terminal bool) {
 	for _, subscriber := range s.subs {
 		select {
 		case subscriber <- event:
@@ -224,14 +239,6 @@ func (s *Session) applyEvent(event proto.Event) bool {
 			}
 		}
 	}
-	if terminal {
-		for id, subscriber := range s.subs {
-			close(subscriber)
-			delete(s.subs, id)
-		}
-	}
-	s.mu.Unlock()
-	return terminal
 }
 
 func (s *Session) appendOutputLocked(event proto.OutputEvent) {
@@ -262,7 +269,16 @@ func (s *Session) Info() SessionInfo {
 	info.CPUPercent = cloneFloat64Pointer(s.info.CPUPercent)
 	info.ResourceProcesses = cloneIntPointer(s.info.ResourceProcesses)
 	info.ResourceSampledAt = cloneInt64Pointer(s.info.ResourceSampledAt)
+	info.Retry = cloneRetry(s.info.Retry)
 	return info
+}
+
+func cloneRetry(value *proto.ProviderRetry) *proto.ProviderRetry {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 // ResourceSample is one measurement of what this session costs the machine.
@@ -533,6 +549,61 @@ func (s *Session) Approve(ctx context.Context, control proto.ApprovalControl) er
 		return fmt.Errorf("%w: %s is waiting, not %s", ErrNoPendingApproval, s.info.PendingApproval.ID, control.ID)
 	}
 	return s.runner.Approve(ctx, control)
+}
+
+func (s *Session) RetryProvider(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.retryEligibilityLocked(false); err != nil {
+		return err
+	}
+	controller := s.runner.(interface{ Retry(context.Context) error })
+	if err := controller.Retry(ctx); err != nil {
+		return fmt.Errorf("retry failed provider turn: %w", err)
+	}
+	return nil
+}
+
+func (s *Session) StopProviderRetry(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.retryEligibilityLocked(true); err != nil {
+		return err
+	}
+	controller := s.runner.(interface{ StopRetry(context.Context) error })
+	if err := controller.StopRetry(ctx); err != nil {
+		return fmt.Errorf("stop provider retry: %w", err)
+	}
+	s.info.Retry = nil
+	return nil
+}
+
+func (s *Session) retryEligibilityLocked(stop bool) error {
+	if s.info.Kind != KindCodexAppServer && s.info.Kind != KindClaudeStructured {
+		return fmt.Errorf("%w: PTY sessions do not retain a failed Rich turn to retry", ErrRetryUnsupported)
+	}
+	if s.info.Exited {
+		return ErrSessionEnded
+	}
+	if s.info.RunnerProtocol < 4 {
+		return fmt.Errorf("%w: runner protocol v%d cannot control provider retries", ErrRunnerProtocol, s.info.RunnerProtocol)
+	}
+	if _, ok := s.runner.(interface {
+		Retry(context.Context) error
+		StopRetry(context.Context) error
+	}); !ok {
+		return ErrRetryUnsupported
+	}
+	if stop && s.info.Retry == nil {
+		return ErrNoRetryScheduled
+	}
+	if !stop && s.info.FailureKind == "" {
+		return ErrNoFailedTurn
+	}
+	if !stop && s.info.Working {
+		return fmt.Errorf("%w; wait for the active turn to finish", ErrSessionWorking)
+	}
+	return nil
 }
 
 // ConfigureModel updates the defaults used by the next structured-provider

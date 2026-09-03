@@ -334,6 +334,10 @@ func providerForSession(info state.SessionInfo) string {
 	return ""
 }
 
+func supportsStructuredRetry(info state.SessionInfo) bool {
+	return info.Kind == state.KindCodexAppServer || info.Kind == state.KindClaudeStructured
+}
+
 func (m *Manager) runHook(script string, info state.SessionInfo, hook idleHookContext, timeout bool) {
 	if script == "" {
 		return

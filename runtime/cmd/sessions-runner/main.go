@@ -65,20 +65,21 @@ type config struct {
 }
 
 type hello struct {
-	ID              string   `json:"id"`
-	Cmd             string   `json:"cmd"`
-	Args            []string `json:"args"`
-	Cwd             string   `json:"cwd"`
-	Cols            int      `json:"cols"`
-	Rows            int      `json:"rows"`
-	CreatedAt       int64    `json:"createdAt"`
-	PID             int      `json:"pid"`
-	CurrentSeq      uint32   `json:"currentSeq"`
-	ProtocolVersion int      `json:"protocolVersion"`
-	RuntimeVersion  string   `json:"runtimeVersion,omitempty"`
-	ConversationID  string   `json:"conversationId,omitempty"`
-	RemoteEndpoint  string   `json:"remoteEndpoint,omitempty"`
-	ClaudeSessionID string   `json:"claudeSessionId,omitempty"`
+	ID              string               `json:"id"`
+	Cmd             string               `json:"cmd"`
+	Args            []string             `json:"args"`
+	Cwd             string               `json:"cwd"`
+	Cols            int                  `json:"cols"`
+	Rows            int                  `json:"rows"`
+	CreatedAt       int64                `json:"createdAt"`
+	PID             int                  `json:"pid"`
+	CurrentSeq      uint32               `json:"currentSeq"`
+	ProtocolVersion int                  `json:"protocolVersion"`
+	RuntimeVersion  string               `json:"runtimeVersion,omitempty"`
+	ConversationID  string               `json:"conversationId,omitempty"`
+	RemoteEndpoint  string               `json:"remoteEndpoint,omitempty"`
+	ClaudeSessionID string               `json:"claudeSessionId,omitempty"`
+	Retry           *proto.ProviderRetry `json:"retry,omitempty"`
 }
 
 type exitInfo struct {

@@ -30,6 +30,7 @@ var (
 	rateRE        = regexp.MustCompile(`(?i)\b(?:rate limit|too many requests|usage limit|quota)\b`)
 	authRE        = regexp.MustCompile(`(?i)\b(?:not logged in|please run /login|invalid api key|unauthorized|authentication|auth error)\b`)
 	unavailableRE = regexp.MustCompile(`(?i)\b(?:overloaded|service unavailable|server error|stream disconnected|reconnecting|connection (?:refused|reset|closed)|timed? out|timeout|ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|fetch failed|network)\b`)
+	retryAfterRE  = regexp.MustCompile(`(?i)\b(?:try again in|retry after)\s+(\d+)\s*(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?)\b`)
 )
 
 // Classify returns a stable fault for any failed provider turn. Detect is the
@@ -74,6 +75,38 @@ func HistoryEvent(provider string, fault Fault, at time.Time) (json.RawMessage, 
 	}
 	encoded, err := json.Marshal(value)
 	return json.RawMessage(encoded), err
+}
+
+func RetryHistoryEvent(attempt, maximum int, nextAt time.Time) (json.RawMessage, error) {
+	value := map[string]any{
+		"type": "system", "subtype": "provider_retry", "attempt": attempt,
+		"max": maximum, "nextAt": nextAt.UnixMilli(), "timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	encoded, err := json.Marshal(value)
+	return json.RawMessage(encoded), err
+}
+
+// RetryAfter extracts the provider's requested delay from compact outage
+// prose such as "try again in 42s". Policy decides whether to use it.
+func RetryAfter(text string) time.Duration {
+	match := retryAfterRE.FindStringSubmatch(text)
+	if len(match) != 3 {
+		return 0
+	}
+	var count int64
+	if _, err := fmt.Sscanf(match[1], "%d", &count); err != nil || count <= 0 {
+		return 0
+	}
+	unit := strings.ToLower(match[2])
+	switch unit[0] {
+	case 'm':
+		if strings.HasPrefix(unit, "ms") || strings.HasPrefix(unit, "millisecond") {
+			return time.Duration(count) * time.Millisecond
+		}
+		return time.Duration(count) * time.Minute
+	default:
+		return time.Duration(count) * time.Second
+	}
 }
 
 func unavailableDetail(name, lower string, status int) string {

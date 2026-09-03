@@ -51,3 +51,30 @@ func TestHistoryEventUsesContractShape(t *testing.T) {
 		}
 	}
 }
+
+func TestRetryAfterHint(t *testing.T) {
+	for _, test := range []struct {
+		text string
+		want time.Duration
+	}{
+		{text: "rate limited; try again in 42s", want: 42 * time.Second},
+		{text: "Retry after 2 minutes", want: 2 * time.Minute},
+		{text: "try later", want: 0},
+	} {
+		if got := RetryAfter(test.text); got != test.want {
+			t.Errorf("RetryAfter(%q) = %s, want %s", test.text, got, test.want)
+		}
+	}
+}
+
+func TestRetryHistoryEventUsesContractShape(t *testing.T) {
+	raw, err := RetryHistoryEvent(2, 5, time.Unix(42, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"type":"system"`, `"subtype":"provider_retry"`, `"attempt":2`, `"max":5`, `"nextAt":42000`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("retry history event %s does not contain %s", raw, want)
+		}
+	}
+}

@@ -1,5 +1,6 @@
 # Sessions 0.2.27
 
+- Automatically retries a failed Rich Claude or Codex turn when the provider is unavailable or rate-limited, with a bounded five-attempt backoff, one exhaustion notification, visible countdown state, `sessions retry <id> [--stop]`, and no hidden second prompt when new input arrives.
 - Recognizes a provider control that a session stops at before its first turn — Claude Code's folder-trust dialog, a login prompt — as a needs-you state instead of a not-started one, so sending a message no longer presses Enter on the highlighted choice and ends the session.
 - Answers those controls from the conversation view: the exact choices the terminal is showing appear as buttons, without switching to the raw terminal.
 - Opens the Resume picker quickly on a large history by dropping message-count work it never displayed, lists your own conversations ahead of work started by other lanes, and closes on Escape.

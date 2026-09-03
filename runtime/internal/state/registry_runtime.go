@@ -143,6 +143,25 @@ func (r *Registry) Input(ctx context.Context, id, data string) bool {
 	return ok && session.Input(ctx, data)
 }
 
+func (r *Registry) RetryProvider(ctx context.Context, id string) (SessionInfo, error) {
+	session, ok := r.Get(id)
+	if !ok {
+		return SessionInfo{}, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	if err := session.RetryProvider(ctx); err != nil {
+		return SessionInfo{}, err
+	}
+	return session.Info(), nil
+}
+
+func (r *Registry) StopProviderRetry(ctx context.Context, id string) error {
+	session, ok := r.Get(id)
+	if !ok {
+		return fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	return session.StopProviderRetry(ctx)
+}
+
 // Approve answers the approval a session is waiting on and returns the
 // session as it stands; the runner's approval_resolved event clears the
 // pending prompt a moment later.

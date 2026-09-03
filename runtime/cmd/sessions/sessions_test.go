@@ -164,6 +164,16 @@ func TestSessionStateNamesProviderFaultKinds(t *testing.T) {
 	}
 }
 
+func TestSessionStateShowsScheduledRetry(t *testing.T) {
+	now := time.Unix(100, 0)
+	value := session{FailureKind: "provider-unavailable", Retry: &providerRetry{
+		Attempt: 2, Max: 5, NextAt: now.Add(time.Minute).UnixMilli(), Kind: "provider-unavailable",
+	}}
+	if got := sessionStateAt(value, now); got != "retrying (2/5, 60s)" {
+		t.Fatalf("retry state = %q", got)
+	}
+}
+
 func TestSessionTablesDoNotAbbreviateHomeInsideAnotherPathComponent(t *testing.T) {
 	home := "/__sessions_home_for_test__"
 	cwd := "/prefix/__sessions_home_for_test__/project"

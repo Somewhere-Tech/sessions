@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 )
@@ -472,6 +473,10 @@ func compactSummary(summary string) string {
 }
 
 func sessionState(value session) string {
+	return sessionStateAt(value, time.Now())
+}
+
+func sessionStateAt(value session, now time.Time) string {
 	if value.Exited {
 		code := "∅"
 		if value.ExitCode != nil {
@@ -493,6 +498,11 @@ func sessionState(value session) string {
 	}
 	if value.SetAsideAt != nil {
 		return "set-aside"
+	}
+	if value.Retry != nil {
+		remaining := time.UnixMilli(value.Retry.NextAt).Sub(now)
+		seconds := max(0, int((remaining+time.Second-1)/time.Second))
+		return fmt.Sprintf("retrying (%d/%d, %ds)", value.Retry.Attempt, value.Retry.Max, seconds)
 	}
 	if value.Kind == "lane" {
 		return "running"

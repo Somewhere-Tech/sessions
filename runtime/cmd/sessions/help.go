@@ -156,6 +156,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions approve 0123abcd", "sessions approve 0123abcd --for-session", "sessions approve 0123abcd --deny"}, run: (*app).cmdApprove,
 	},
 	{
+		name: "retry", usage: "retry <session-id> [--stop]",
+		summary: "retry or stop retrying a failed Rich provider turn", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Run a failed Rich Claude or Codex turn again immediately. While Sessions is waiting through the automatic outage backoff, this uses the pending attempt now; after retries are exhausted, it retries the retained failed turn. During that schedule `sessions ls` shows the attempt and countdown, and `sessions wait` keeps treating the session as working. --stop cancels only the automatic schedule and leaves the provider fault visible. PTY sessions cannot retain a structured failed turn and are refused with the reason.",
+		examples: []string{"sessions retry 0123abcd", "sessions retry 0123abcd --stop", "sessions --json retry 0123abcd"}, run: (*app).cmdRetry,
+	},
+	{
 		name: "projects", usage: "projects [name <folder> <name> | forget <project-id>]",
 		summary: "list or name the projects sessions are grouped under", group: dailyCommandGroup, localJSON: true,
 		longHelp: "A project is the work a session belongs to: a folder, a git checkout together with every worktree of it, or a Somewhere project. Sessions find their project by working directory, so every folder shows up here on day one as an implicit project named after itself; `name` claims a folder under a name of your choosing (a GitHub origin suggests owner/repo), and `forget` drops a stored project so its sessions return to their folder's implicit one. The inbox groups sessions by these projects.",

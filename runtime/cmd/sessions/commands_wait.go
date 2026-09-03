@@ -261,8 +261,9 @@ func (a *app) probeSessionWait(tracker *waitTracker, sessions []session, idle ti
 		return *stopped
 	}
 	idleFor := time.Duration(0)
+	working := current.Working || current.Retry != nil
 	if isConfirmableTool(toolOfSession(*current)) {
-		if current.Working {
+		if working {
 			tracker.notWorkingSince = time.Time{}
 		} else if tracker.notWorkingSince.IsZero() {
 			tracker.notWorkingSince = a.now()
@@ -277,7 +278,7 @@ func (a *app) probeSessionWait(tracker *waitTracker, sessions []session, idle ti
 		}
 		idleFor = a.now().Sub(time.UnixMilli(base))
 	}
-	probe := waitProbe{working: current.Working, idleMS: idleFor.Milliseconds()}
+	probe := waitProbe{working: working, idleMS: idleFor.Milliseconds()}
 	if idleFor < idle {
 		return probe
 	}
@@ -312,7 +313,7 @@ func (a *app) probeSessionWait(tracker *waitTracker, sessions []session, idle ti
 }
 
 func stoppedSessionWait(current session) *waitProbe {
-	if current.Working || (current.IdleReason != state.IdleReasonNeedsInput && current.IdleReason != state.IdleReasonFailed) {
+	if current.Working || current.Retry != nil || (current.IdleReason != state.IdleReasonNeedsInput && current.IdleReason != state.IdleReasonFailed) {
 		return nil
 	}
 	reason := waitReasonNeedsInput

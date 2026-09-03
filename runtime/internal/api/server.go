@@ -112,6 +112,11 @@ type modelControlService interface {
 	ConfigureModel(context.Context, string, string, string) (state.SessionInfo, error)
 }
 
+type providerRetryService interface {
+	RetryProvider(context.Context, string) (state.SessionInfo, error)
+	StopProviderRetry(context.Context, string) error
+}
+
 type modelCatalogService interface {
 	ModelOptions(context.Context, string) ([]codexapp.Model, error)
 }

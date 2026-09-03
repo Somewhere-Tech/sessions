@@ -68,6 +68,9 @@ func (r *runtimeSession) markTerminalTurnDone() {
 
 func (r *runtimeSession) notifyDone() {
 	info := r.session.Info()
+	if info.Retry != nil {
+		return
+	}
 	if fault, ok := r.session.ProviderFault(); ok {
 		r.notifyProviderFault(info, fault)
 		return
@@ -102,6 +105,9 @@ func (r *runtimeSession) notifyProviderFault(info state.SessionInfo, fault provi
 		provider = providerDisplayName(providerForSession(info))
 	}
 	title := "🟠 " + sessionDisplayLabel(info) + " — " + provider + faultTitleSuffix(fault.Kind)
+	if providerRetriesExhausted(r.session.ClaudeEventLog()) {
+		title = "🔴 " + sessionDisplayLabel(info) + " — " + provider + " stayed unavailable for 13 minutes"
+	}
 	r.manager.queueSessionNotification(info.ID, state.NotifyWaiting, PushPayload{
 		Title: title, Body: fault.Detail,
 		Data: map[string]any{
@@ -109,6 +115,22 @@ func (r *runtimeSession) notifyProviderFault(info state.SessionInfo, fault provi
 			"failureKind": fault.Kind, "failureProvider": info.FailureProvider,
 		},
 	})
+}
+
+func providerRetriesExhausted(events []json.RawMessage) bool {
+	for index := len(events) - 1; index >= 0; index-- {
+		var event struct {
+			Type    string `json:"type"`
+			Subtype string `json:"subtype"`
+			Attempt int    `json:"attempt"`
+			Max     int    `json:"max"`
+		}
+		if json.Unmarshal(events[index], &event) != nil || event.Type != "system" || event.Subtype != "provider_retry" {
+			continue
+		}
+		return event.Max > 0 && event.Attempt >= event.Max
+	}
+	return false
 }
 
 func providerDisplayName(provider string) string {

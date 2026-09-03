@@ -206,3 +206,18 @@ func TestWaitCarriesProviderFailureKindAsReason(t *testing.T) {
 		t.Fatalf("provider wait exit=%d outcome=%+v stderr=%q", code, outcome, stderr.String())
 	}
 }
+
+func TestWaitTreatsScheduledRetryAsWorking(t *testing.T) {
+	id := "23000000-0000-4000-8000-000000000014"
+	body := `{"sessions":[{"id":"` + id + `","cmd":"codex","cwd":"/tmp","createdAt":1,"pid":1,` +
+		`"tool":"codex","working":false,"idleReason":"failed","failureKind":"provider-unavailable",` +
+		`"retry":{"attempt":2,"max":5,"nextAt":9999999999999,"kind":"provider-unavailable"}}]}`
+	server := waitTestServer(t, body)
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--host", server.URL, "--json", "wait", id, "--timeout", "1ms"}, strings.NewReader(""), &stdout, &stderr)
+	outcome := decodeWaitOutcome(t, stdout.String())
+	if code != exitWaitTimeout || outcome.Reason != waitReasonTimeout || !outcome.Working {
+		t.Fatalf("retry wait exit=%d outcome=%+v stderr=%q", code, outcome, stderr.String())
+	}
+}

@@ -57,6 +57,7 @@ Daily workflows:
   team                     show the lanes a manager delegated and their state
   fanout                   give one request to a lane per provider and join them
   approve                  answer the permission a Rich lane is waiting on
+  retry                    retry or stop retrying a failed Rich provider turn
   projects                 list or name the projects sessions are grouped under
   send                     send text and Enter to a session
   send-status              inspect a durable message-delivery receipt
@@ -565,6 +566,24 @@ Examples:
   sessions approve 0123abcd
   sessions approve 0123abcd --for-session
   sessions approve 0123abcd --deny
+
+--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions retry`
+
+```text
+Usage:
+  sessions retry <session-id> [--stop]
+
+retry or stop retrying a failed Rich provider turn
+
+Run a failed Rich Claude or Codex turn again immediately. While Sessions is waiting through the automatic outage backoff, this uses the pending attempt now; after retries are exhausted, it retries the retained failed turn. During that schedule `sessions ls` shows the attempt and countdown, and `sessions wait` keeps treating the session as working. --stop cancels only the automatic schedule and leaves the provider fault visible. PTY sessions cannot retain a structured failed turn and are refused with the reason.
+
+Examples:
+  sessions retry 0123abcd
+  sessions retry 0123abcd --stop
+  sessions --json retry 0123abcd
 
 --json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

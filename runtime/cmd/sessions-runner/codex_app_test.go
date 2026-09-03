@@ -169,7 +169,7 @@ func TestCodexBlankInputDuringActiveTurnStaysSilent(t *testing.T) {
 
 func TestCodexTurnFailureAppendsClassifiedFaultBeforeLifecycleClose(t *testing.T) {
 	r := newCodexTestRunner(t)
-	r.recordTurnFailure(errors.New("unexpected status 503 Service Unavailable: The server is currently overloaded."))
+	r.recordTurnFailure("keep this prompt", 0, errors.New("unexpected status 503 Service Unavailable: The server is currently overloaded."))
 	if len(r.history) != 2 {
 		t.Fatalf("failure history = %d events, want fault and turn completion", len(r.history))
 	}

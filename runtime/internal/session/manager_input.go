@@ -407,6 +407,14 @@ func (m *Manager) ConfigureModel(ctx context.Context, id, model, effort string) 
 	return m.registry.ConfigureModel(ctx, id, model, effort)
 }
 
+func (m *Manager) RetryProvider(ctx context.Context, id string) (state.SessionInfo, error) {
+	return m.registry.RetryProvider(ctx, id)
+}
+
+func (m *Manager) StopProviderRetry(ctx context.Context, id string) error {
+	return m.registry.StopProviderRetry(ctx, id)
+}
+
 func (m *Manager) ModelOptions(ctx context.Context, id string) ([]codexapp.Model, error) {
 	current, ok := m.registry.Get(id)
 	if !ok {

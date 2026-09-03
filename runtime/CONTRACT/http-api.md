@@ -33,7 +33,7 @@ This document records the behavior of the normative Go daemon in
   `/api/directories`, `/api/fs/list`, `/api/claude-sessions`,
   `/api/resumable-conversations`, `/api/models/codex`, the push routes) and
   the per-session suffixes served by `handleSessionRoute` (`/snapshot`,
-  `/events`, `/model-options`, `/model`, `/input`, `/submit`, `/approve`, `/name`,
+  `/events`, `/model-options`, `/model`, `/input`, `/submit`, `/approve`, `/retry`, `/retry/stop`, `/name`,
   `/tags`, `/upload`, `/display-parent`, `/set-aside`, the bare `DELETE`)
   still fall through to the 404 body. `/pin`, `/wait`, `/wait-state`, and
   `/verdict` return 405. Either way the request is authenticated before the
@@ -148,6 +148,7 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `failureDetail` | string, optional | concise provider fault in Sessions' words; also becomes `lastSummary` for the failed turn |
 | `failureProvider` | `"claude" \| "codex"`, optional | provider that produced the current fault |
 | `failureAt` | number, optional | Unix epoch milliseconds when the current provider fault was observed |
+| `retry` | object, optional | runner-owned automatic Rich-turn retry schedule: `attempt` (the next retry, 1–5), `max` (5), `nextAt` (Unix epoch milliseconds), and `kind` (the current `failureKind`). Present while a retry is scheduled or running; omitted after success, cancellation, or exhaustion |
 | `pendingApproval` | object, optional | permission a Rich session is waiting on, with `id`, `kind` (`command`, `file-change`, or `permissions`), `summary`, `command`, `cwd`, `reason`, and `at`; absent when no approval is pending |
 | `exited` | boolean | whether Sessions reaped a real status for the session's process: an EXIT frame, a signal, or a completed user-requested end. It is never set because the daemon lost contact with a runner |
 | `exitCode` | number or null | PTY exit code |
@@ -915,6 +916,21 @@ from assistant prose and is rendered by transcript clients as an error. A later
 successful turn clears the session's `failureKind`, `failureDetail`,
 `failureProvider`, and `failureAt`; it does not delete append-only fault history.
 
+For `provider-unavailable` and `rate-limited`, the Rich runner retains that
+turn's exact input and schedules five attempts after 30 seconds, 1 minute,
+2 minutes, 5 minutes, and 5 minutes. A rate-limit message such as
+`try again in 42s` raises the applicable delay to that hint, capped at 5 minutes.
+Each scheduled attempt appends:
+
+```json
+{"type":"system","subtype":"provider_retry","attempt":2,"max":5,"nextAt":1788465600000}
+```
+
+New user input replaces the retained failed turn and cancels its schedule;
+interrupt, End, and the stop route also cancel it. Authentication and other
+failures remain failed without automatic retries. No per-attempt notification
+is sent; exhausting the schedule sends one provider-unavailable notification.
+
 All indices are absolute. Let `base` be the number evicted from the front and
 `len` the retained count; `total = base + len`.
 
@@ -1035,6 +1051,23 @@ lane, and the runner records an `approval_resolved` event with that id in
 - `404` for an unknown session
 - `409` when nothing is waiting, the id does not match, or the session ended
 - `501` when the daemon cannot route approvals
+
+### `POST /api/sessions/:id/retry`
+
+Auth required. Runs the pending automatic retry immediately, or runs the last
+retained failed Rich Claude/Codex turn after its automatic schedule exhausted.
+Success is 200 with the current bare `SessionInfo`. A PTY session, a session
+with no failed turn, an active or ended session, or an older runner that cannot
+accept retry controls returns `409 {"error":"<sentence explaining why>"}`.
+Unknown session is 404. Other runner-control failures are 502.
+
+### `POST /api/sessions/:id/retry/stop`
+
+Auth required. Cancels the runner-owned automatic retry schedule without
+clearing the provider fault or its retained failed input. Success is 204 with no
+body. Nothing scheduled, a PTY or ended session, and an older runner return 409
+with an instructional error; unknown session is 404 and other control failures
+are 502.
 
 ### `GET /api/message-deliveries/:operation-id`
 

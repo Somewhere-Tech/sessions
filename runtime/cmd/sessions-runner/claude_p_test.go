@@ -30,7 +30,7 @@ func TestClaudeResultFaultUsesAPIStatusAndRunnerPersistsStreamFailures(t *testin
 	event := claudep.Event{Type: "result", Message: "API Error", Raw: json.RawMessage(
 		`{"type":"result","is_error":true,"api_error_status":529,"result":"API Error: Repeated 529 Overloaded errors."}`,
 	)}
-	fault, failed := claudeResultProviderFault(event)
+	fault, _, failed := claudeResultProviderFault(event)
 	if !failed || fault.Kind != "provider-unavailable" || fault.Status != 529 || fault.Detail != "Claude API overloaded (529)" {
 		t.Fatalf("Claude result fault = %#v, failed=%v", fault, failed)
 	}
@@ -44,7 +44,7 @@ func TestClaudeResultFaultUsesAPIStatusAndRunnerPersistsStreamFailures(t *testin
 		paths: paths, sessionID: "claude-uuid", historyFile: file,
 		logger: log.New(io.Discard, "", 0), clients: make(map[*client]struct{}), ctx: context.Background(),
 	}
-	r.recordTurnFailure(errors.New("connection refused"))
+	r.recordTurnFailure("keep this prompt", 0, errors.New("connection refused"))
 	if len(r.history) != 2 || !strings.Contains(string(r.history[0]), `"subtype":"provider_fault"`) ||
 		!strings.Contains(string(r.history[0]), "Claude API connection failed") ||
 		!strings.Contains(string(r.history[1]), `"type":"result"`) {

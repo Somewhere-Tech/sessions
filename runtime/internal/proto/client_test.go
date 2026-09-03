@@ -88,6 +88,57 @@ func TestSocketRunnerConfigureModelRejectsOldProtocol(t *testing.T) {
 	}
 }
 
+func TestSocketRunnerRetryControlsWaitForAcknowledgement(t *testing.T) {
+	for _, control := range []struct {
+		name string
+		typ  Type
+		run  func(context.Context, *SocketRunner) error
+	}{
+		{name: "run", typ: RetryReq, run: func(ctx context.Context, runner *SocketRunner) error { return runner.Retry(ctx) }},
+		{name: "stop", typ: RetryStop, run: func(ctx context.Context, runner *SocketRunner) error { return runner.StopRetry(ctx) }},
+	} {
+		t.Run(control.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+			runner := &SocketRunner{conn: client, info: RunnerInfo{ProtocolVersion: 4}, subs: make(map[uint64]chan Event)}
+			go func() {
+				frame, err := Read(server)
+				if err != nil || frame.Type != control.typ {
+					return
+				}
+				payload, _ := json.Marshal(RetryControlResult{})
+				_ = Write(server, RetryRes, payload)
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := control.run(ctx, runner); err != nil {
+				t.Fatalf("retry control: %v", err)
+			}
+		})
+	}
+}
+
+func TestSocketRunnerPublishesRetryState(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	runner := &SocketRunner{conn: client, info: RunnerInfo{ProtocolVersion: 4}, subs: make(map[uint64]chan Event)}
+	events, cancel := runner.Subscribe()
+	defer cancel()
+	want := &ProviderRetry{Attempt: 2, Max: 5, NextAt: 42000, Kind: "provider-unavailable"}
+	payload, _ := json.Marshal(ProviderRetryState{Retry: want})
+	go func() { _ = Write(server, RetryState, payload) }()
+	select {
+	case event := <-events:
+		if event.Kind != EventRetry || event.Retry == nil || *event.Retry != *want {
+			t.Fatalf("retry event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retry event timed out")
+	}
+}
+
 func TestSocketRunnerReplayBoundsStructuredEventsFromOlderRunner(t *testing.T) {
 	client, server := net.Pipe()
 	t.Cleanup(func() {

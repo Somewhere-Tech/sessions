@@ -54,6 +54,9 @@ both current receivers for forward compatibility.
 | daemon -> runner | REPLAY_REQ | `0x13` | 4-byte BE `afterSeq` |
 | daemon -> runner | KILL | `0x14` | empty |
 | daemon -> runner | MODEL_REQ | `0x15` | JSON `{"model":string,"effort":string}` |
+| daemon -> runner | APPROVE | `0x16` | approval decision JSON |
+| daemon -> runner | RETRY_REQ | `0x17` | empty |
+| daemon -> runner | RETRY_STOP | `0x18` | empty |
 | runner -> daemon | HELLO | `0x20` | JSON `RunnerHello` |
 | runner -> daemon | OUTPUT | `0x21` | 4-byte BE `seq`, then UTF-8 chunk |
 | runner -> daemon | EXIT | `0x22` | JSON `{"code":number|null,"signal":string|null,"seq":number}` |
@@ -61,6 +64,8 @@ both current receivers for forward compatibility.
 | runner -> daemon | REPLAY_DONE | `0x24` | empty |
 | runner -> daemon | STRUCTURED | `0x25` | one normalized provider event as JSON |
 | runner -> daemon | MODEL_RES | `0x26` | `{}` or JSON `{"error":string}` |
+| runner -> daemon | RETRY_STATE | `0x27` | JSON `{"retry":object|null}` |
+| runner -> daemon | RETRY_RES | `0x28` | `{}` or JSON `{"error":string}` |
 
 ## Runner to daemon frames
 
@@ -79,7 +84,7 @@ Sent immediately on every accepted socket connection:
   "createdAt":1750000000123,
   "pid":43210,
   "currentSeq":42,
-  "protocolVersion":2,
+  "protocolVersion":4,
   "runtimeVersion":"0.2.3"
 }
 ```
@@ -89,11 +94,13 @@ Fields and types are exact:
 - `id`, `cmd`, and `cwd`: strings
 - `args`: string array; this is the configured/original argument array
 - `cols`, `rows`, `createdAt`, `pid`, and `currentSeq`: numbers
-- `protocolVersion`: optional number for compatibility; current runners send 2
+- `protocolVersion`: optional number for compatibility; current runners send 4
 - `runtimeVersion`: optional Sessions release string; legacy runners omit it
+- `retry`: optional live Rich-turn schedule with numeric `attempt`, `max`, and
+  `nextAt`, plus string `kind`; omitted when no automatic retry is pending
 
-Current protocol version is 2. The daemon treats a missing version as 0 and
-accepts versions 0 through 2. It rejects an explicitly unsupported version
+Current protocol version is 4. The daemon treats a missing version as 0 and
+accepts versions 0 through 4. It rejects an explicitly unsupported version
 immediately after HELLO, before replay, input, resize, snapshot, or kill frames.
 This preserves immutable pre-versioned runners without guessing that unknown
 future frame semantics are safe. `createdAt` is the current runner process's
@@ -166,6 +173,20 @@ durable metadata. `{"error":"..."}` rejects the change; the daemon leaves its
 exposed model and arguments unchanged. A disconnect or five-second timeout also
 fails the request rather than guessing that it succeeded.
 
+### RETRY_STATE (`0x27`)
+
+Protocol-4 Rich runners publish `{"retry":{"attempt":1,"max":5,
+"nextAt":1788465600000,"kind":"provider-unavailable"}}` when they schedule or
+start a retained failed turn. `{"retry":null}` clears only the schedule; the
+provider fault remains until a successful turn. The current value is also in
+HELLO so a daemon restart cannot lose runner-owned retry state.
+
+### RETRY_RES (`0x28`)
+
+Protocol-4 Rich runners send exactly one response to RETRY_REQ and RETRY_STOP.
+`{}` confirms the control; `{"error":"..."}` explains why it was refused. A
+disconnect or five-second timeout fails the request.
+
 ## Daemon to runner frames
 
 ### INPUT (`0x10`)
@@ -184,6 +205,19 @@ HELLO; a Codex runner also updates its app-server conversation defaults, while
 a Claude runner applies the arguments to its next `claude -p` turn. Protocol
 0/1 and terminal runners never receive model requests. Ordinary terminal input
 behavior is unchanged.
+
+### APPROVE (`0x16`)
+
+Protocol-3 Rich runners accept one approval decision object for the pending
+provider request. The structured history stream publishes the resolved result;
+there is no separate response frame.
+
+### RETRY_REQ (`0x17`) and RETRY_STOP (`0x18`)
+
+Protocol-4 Rich runners retain the exact input from their latest failed turn.
+RETRY_REQ runs the pending attempt now, or starts a fresh manual attempt after
+automatic retries exhausted. RETRY_STOP cancels only a live automatic schedule.
+Both are acknowledged with RETRY_RES. PTY runners never accept these controls.
 
 ### RESIZE (`0x11`)
 
@@ -226,7 +260,7 @@ delayed cleanup path; KILL does not directly close the socket or send an ack.
 For both a newly created runner and startup discovery, sessionsd:
 
 1. connects to the Unix socket and waits up to two seconds for HELLO;
-2. accepts protocol versions 0 through 2 and rejects values outside that range;
+2. accepts protocol versions 0 through 4 and rejects values outside that range;
 3. creates a local 4 MiB EventLog and 5,000-row xterm mirror sized from HELLO;
 4. installs OUTPUT/EXIT/disconnect listeners;
 5. sends REPLAY_REQ with `afterSeq=0`;

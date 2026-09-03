@@ -9,21 +9,35 @@ import (
 // daemon. Sequence numbers deliberately stay uint32 because that is the
 // canonical wire width.
 type RunnerInfo struct {
-	ID              string   `json:"id"`
-	Cmd             string   `json:"cmd"`
-	Args            []string `json:"args"`
-	Cwd             string   `json:"cwd"`
-	Cols            int      `json:"cols"`
-	Rows            int      `json:"rows"`
-	CreatedAt       int64    `json:"createdAt"`
-	PID             int      `json:"pid"`
-	SocketPath      string   `json:"sockPath"`
-	CurrentSeq      uint32   `json:"currentSeq,omitempty"`
-	ProtocolVersion int      `json:"protocolVersion,omitempty"`
-	RuntimeVersion  string   `json:"runtimeVersion,omitempty"`
-	ConversationID  string   `json:"conversationId,omitempty"`
-	RemoteEndpoint  string   `json:"remoteEndpoint,omitempty"`
-	ClaudeSessionID string   `json:"claudeSessionId,omitempty"`
+	ID              string         `json:"id"`
+	Cmd             string         `json:"cmd"`
+	Args            []string       `json:"args"`
+	Cwd             string         `json:"cwd"`
+	Cols            int            `json:"cols"`
+	Rows            int            `json:"rows"`
+	CreatedAt       int64          `json:"createdAt"`
+	PID             int            `json:"pid"`
+	SocketPath      string         `json:"sockPath"`
+	CurrentSeq      uint32         `json:"currentSeq,omitempty"`
+	ProtocolVersion int            `json:"protocolVersion,omitempty"`
+	RuntimeVersion  string         `json:"runtimeVersion,omitempty"`
+	ConversationID  string         `json:"conversationId,omitempty"`
+	RemoteEndpoint  string         `json:"remoteEndpoint,omitempty"`
+	ClaudeSessionID string         `json:"claudeSessionId,omitempty"`
+	Retry           *ProviderRetry `json:"retry,omitempty"`
+}
+
+// ProviderRetry is the live runner-owned schedule for one retained failed
+// Rich turn. Attempt is the next retry that will run, not the original turn.
+type ProviderRetry struct {
+	Attempt int    `json:"attempt"`
+	Max     int    `json:"max"`
+	NextAt  int64  `json:"nextAt"`
+	Kind    string `json:"kind"`
+}
+
+type ProviderRetryState struct {
+	Retry *ProviderRetry `json:"retry"`
 }
 
 type LaunchRequest struct {
@@ -60,6 +74,7 @@ const (
 	EventClaude
 	EventCodex
 	EventRunnerLost
+	EventRetry
 )
 
 type Event struct {
@@ -72,6 +87,7 @@ type Event struct {
 	// ClaudeActivityAt is derived by state.recordClaudeLocked and carried to
 	// the session manager so provider activity is ledgered without reparsing.
 	ClaudeActivityAt int64
+	Retry            *ProviderRetry
 }
 
 // Runner is a daemon-side connection to one canonical runner socket. The
