@@ -473,6 +473,15 @@ func transcriptMessageID(message TranscriptMessage) string {
 }
 
 func transcriptMessages(event map[string]any, relayCalls map[string]string) []TranscriptMessage {
+	if event["type"] == "system" && event["subtype"] == "provider_fault" {
+		detail, _ := event["detail"].(string)
+		if strings.TrimSpace(detail) != "" {
+			return []TranscriptMessage{{
+				Role: "error", Kind: "provider_fault", Text: detail,
+				Timestamp: normalizedTimestamp(event["timestamp"]),
+			}}
+		}
+	}
 	message, ok := event["message"].(map[string]any)
 	if !ok {
 		return nil

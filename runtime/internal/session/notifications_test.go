@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/proto/prototest"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -58,5 +59,53 @@ func TestStructuredTurnCompletionRecognizesBothProviders(t *testing.T) {
 	}
 	if structuredTurnCompleted(state.KindCodexAppServer, []byte(`{"type":"assistant","source":"codex-app-server"}`)) {
 		t.Fatal("assistant content was mistaken for a turn completion")
+	}
+}
+
+func TestProviderFaultNotificationIsOncePerEpisode(t *testing.T) {
+	root := t.TempDir()
+	notifications := make(chan PushPayload, 4)
+	manager := NewManager(testConfig(root), prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour, NotifyCooldown: time.Millisecond,
+		Notify: func(payload PushPayload) { notifications <- payload },
+	})
+	t.Cleanup(manager.Close)
+	created, err := manager.Create(t.Context(), state.CreateSessionRequest{Cmd: "codex", Cwd: root, Name: "review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _ := manager.Get(created.ID)
+	fault := providerfault.Fault{Kind: providerfault.KindUnavailable, Detail: "Codex API unavailable (503, overloaded)", Status: 503}
+	current.SetProviderFault("codex", fault, time.Now().UnixMilli())
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.notifyDone()
+	runtime.notifyDone()
+	first := <-notifications
+	if first.Title != "🟠 review — Codex is unavailable" || first.Body != fault.Detail {
+		t.Fatalf("fault notification = %#v", first)
+	}
+	select {
+	case duplicate := <-notifications:
+		t.Fatalf("same fault episode notified twice: %#v", duplicate)
+	case <-time.After(20 * time.Millisecond):
+	}
+	current.ClearProviderFault()
+	runtime.notifyDone()
+	select {
+	case <-notifications:
+	case <-time.After(time.Second):
+		t.Fatal("successful turn did not reset the notification episode")
+	}
+	current.SetProviderFault("codex", fault, time.Now().UnixMilli())
+	runtime.notifyDone()
+	select {
+	case next := <-notifications:
+		if next.Title != first.Title {
+			t.Fatalf("new episode notification = %#v", next)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("new fault episode was not notified")
 	}
 }

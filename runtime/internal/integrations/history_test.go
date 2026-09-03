@@ -29,6 +29,17 @@ func TestTranscriptNormalizationStopsWhenSearchIsCanceled(t *testing.T) {
 	}
 }
 
+func TestTranscriptNormalizesProviderFaultSystemEvent(t *testing.T) {
+	messages := transcriptMessages(map[string]any{
+		"type": "system", "subtype": "provider_fault", "detail": "Codex API unavailable (503, overloaded)",
+		"timestamp": "2026-09-03T12:00:00Z",
+	}, map[string]string{})
+	if len(messages) != 1 || messages[0].Role != "error" || messages[0].Kind != "provider_fault" ||
+		messages[0].Text != "Codex API unavailable (503, overloaded)" {
+		t.Fatalf("provider fault messages = %#v", messages)
+	}
+}
+
 func TestHistoryNormalizesCodexRolloutThroughWatchContract(t *testing.T) {
 	root := t.TempDir()
 	runnerDir := filepath.Join(root, "runners")

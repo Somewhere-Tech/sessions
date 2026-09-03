@@ -31,6 +31,34 @@ func TestClassifyIdleReasonHeritageSnapshots(t *testing.T) {
 	}
 }
 
+func TestClassifyProviderFaultTerminalLines(t *testing.T) {
+	tests := []struct {
+		name, snapshot, detail string
+	}{
+		{name: "codex unavailable", snapshot: "■ unexpected status 503 Service Unavailable: The server is currently overloaded.\n› Ask Codex", detail: "Codex API unavailable (503, overloaded)"},
+		{name: "codex reconnecting", snapshot: "Reconnecting... 1/5\n", detail: "Codex connection interrupted (reconnecting)"},
+		{name: "codex stream", snapshot: "stream disconnected before completion\n", detail: "Codex stream disconnected"},
+		{name: "claude overloaded", snapshot: "❯ Reply with the single word ok.\n⏺ API Error: Repeated 529 Overloaded errors.\n❯ Claude Code", detail: "Claude API overloaded (529)"},
+		{name: "claude timeout", snapshot: "⏺ Request timed out\n❯ ", detail: "Claude API request timed out"},
+		{name: "connection", snapshot: "⏺ connection refused\n❯ ", detail: "Claude API connection failed (connection refused)"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ClassifySnapshot(test.snapshot)
+			if got.Outcome != IdleError || got.Line != test.detail {
+				t.Fatalf("ClassifySnapshot() = %#v, want error %q", got, test.detail)
+			}
+		})
+	}
+}
+
+func TestProviderFaultClassifierKeepsBenignWarnings(t *testing.T) {
+	snapshot := "■ unexpected status 503 Service Unavailable\n✔ recovered\n⚠ MCP startup incomplete (failed: somewhere)\n"
+	if got := ClassifySnapshot(snapshot); got.Outcome != IdleDone {
+		t.Fatalf("resolved provider fault with benign MCP warning = %#v", got)
+	}
+}
+
 func TestClassifySnapshotUsesCodexApprovalReason(t *testing.T) {
 	got := ClassifySnapshot("Reason: Allow the focused regression test to open tsx's local IPC socket?\nPress enter to confirm or esc to cancel")
 	if got.Outcome != IdleBlocked || got.Line != "Allow the focused regression test to open tsx's local IPC socket?" {

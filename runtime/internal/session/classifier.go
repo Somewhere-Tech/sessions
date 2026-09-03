@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ansi"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 )
 
 type IdleOutcome string
@@ -86,13 +87,11 @@ func ClaudeWorkingFromSnapshot(snapshot string) bool {
 // ClassifyIdleReason applies the terminal-tail completion rules.
 func ClassifyIdleReason(snapshot string) IdleOutcome { return ClassifySnapshot(snapshot).Outcome }
 
+// Claude's first-run trust dialog spans more lines than the terminal-tail
+// window. Recognize it before trailing controls so semantic input cannot
+// activate its selected "No, exit" choice.
 func ClassifySnapshot(snapshot string) IdleClassification {
 	lines := snapshotLines(snapshot)
-	// Claude's first-run folder trust dialog is a provider control, not an
-	// ordinary assistant question. It can span more lines than the generic
-	// terminal-tail window, so recognize the complete dialog before looking at
-	// only the trailing controls. Sending a semantic message to this screen can
-	// otherwise activate the selected "No, exit" choice and kill the session.
 	joined := strings.Join(lines, "\n")
 	if claudeTrustQuestionRE.MatchString(joined) && claudeTrustChoiceRE.MatchString(joined) {
 		return IdleClassification{
@@ -103,6 +102,9 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 	trailing := lines
 	if len(trailing) > 12 {
 		trailing = trailing[len(trailing)-12:]
+	}
+	if classified, ok := providerFaultClassification(trailing); ok {
+		return classified
 	}
 	for i := len(trailing) - 1; i >= 0; i-- {
 		line := trailing[i]
@@ -173,6 +175,38 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 		return IdleClassification{Outcome: IdleError, Line: displayLine(line)}
 	}
 	return IdleClassification{Outcome: IdleDone}
+}
+
+func providerFaultClassification(lines []string) (IdleClassification, bool) {
+	for index := len(lines) - 1; index >= 0; index-- {
+		line := lines[index]
+		if benignErrorRE.MatchString(line) {
+			continue
+		}
+		fault, matched := providerfault.Detect(providerFromFaultLine(line), line, 0)
+		if !matched {
+			continue
+		}
+		for _, following := range lines[index+1:] {
+			if resolutionRE.MatchString(following) {
+				return IdleClassification{Outcome: IdleDone}, true
+			}
+		}
+		return IdleClassification{Outcome: IdleError, Line: fault.Detail}, true
+	}
+	return IdleClassification{}, false
+}
+
+func providerFromFaultLine(line string) string {
+	lower := strings.ToLower(line)
+	if strings.Contains(line, "⏺") || strings.Contains(lower, "api error") || strings.Contains(lower, "claude") {
+		return "claude"
+	}
+	if strings.Contains(line, "■") || strings.Contains(lower, "codex") ||
+		strings.Contains(lower, "reconnecting") || strings.Contains(lower, "stream disconnected") {
+		return "codex"
+	}
+	return ""
 }
 
 func snapshotLines(snapshot string) []string {

@@ -97,6 +97,17 @@ func approvalAuditTurn(event map[string]any) (messageTurn, bool) {
 	}, true
 }
 
+func providerFaultTurn(event map[string]any) (messageTurn, bool) {
+	if event["type"] != "system" || event["subtype"] != "provider_fault" {
+		return messageTurn{}, false
+	}
+	detail, _ := event["detail"].(string)
+	if strings.TrimSpace(detail) == "" {
+		return messageTurn{}, false
+	}
+	return messageTurn{Role: "error", Text: detail, Timestamp: eventTimestamp(event), Subtype: "provider_fault"}, true
+}
+
 func (a *app) cmdLast(args []string) error {
 	if len(args) == 0 || args[0] == "" {
 		return fail(1, "usage: sessions last <id> [--role user|assistant] [-n N]")
@@ -223,6 +234,10 @@ func (a *app) writeSessionTranscript(id string) error {
 	}
 	turns := make([]messageTurn, 0)
 	for _, event := range response.Events {
+		if fault, ok := providerFaultTurn(event); ok {
+			turns = append(turns, fault)
+			continue
+		}
 		if audit, ok := approvalAuditTurn(event); ok {
 			turns = append(turns, audit)
 			continue
@@ -243,6 +258,10 @@ func (a *app) writeSessionTranscript(id string) error {
 			Role: role, Text: text, Timestamp: eventTimestamp(event),
 			ToolCalls: calls, Author: eventAuthor(event),
 		})
+	}
+	turns, err := a.appendSessionFault(turns, id)
+	if err != nil {
+		return err
 	}
 	if a.wantJSON {
 		return writeJSON(a.stdout, turns, true)
@@ -285,6 +304,29 @@ func (a *app) writeSessionTranscript(id string) error {
 		}
 	}
 	return nil
+}
+
+func (a *app) appendSessionFault(turns []messageTurn, id string) ([]messageTurn, error) {
+	for _, turn := range turns {
+		if turn.Subtype == "provider_fault" {
+			return turns, nil
+		}
+	}
+	sessions, err := a.listSessions(true)
+	if err != nil {
+		return nil, err
+	}
+	for _, current := range sessions {
+		if current.ID == id && current.FailureDetail != "" {
+			turns = append(turns, messageTurn{
+				Role: "error", Text: current.FailureDetail,
+				Timestamp: time.UnixMilli(current.FailureAt).UTC().Format(time.RFC3339Nano),
+				Subtype:   "provider_fault",
+			})
+			break
+		}
+	}
+	return turns, nil
 }
 
 // askJSONResult is what ask returns once the message has been delivered and

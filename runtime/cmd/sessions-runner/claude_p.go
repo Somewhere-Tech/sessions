@@ -18,6 +18,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -472,6 +473,9 @@ func (r *claudeStructuredRunner) runTurn(text string) {
 		if event.Type == "result" {
 			completed = true
 		}
+		if fault, failed := claudeResultProviderFault(event); failed {
+			r.appendProviderFault(fault)
+		}
 		r.appendStructured(event.Raw)
 	}
 	_, err = stream.Result(r.ctx)
@@ -488,10 +492,41 @@ func structuredProfileLoginHint(err error, profile string) error {
 }
 
 func (r *claudeStructuredRunner) recordTurnFailure(err error) {
+	r.appendProviderFault(providerfault.Classify("claude", err.Error(), 0))
 	raw, encodeErr := claudep.FailureHistoryEvent(r.sessionID, err, time.Now())
 	if encodeErr == nil {
 		r.appendStructured(raw)
 	}
+}
+
+func (r *claudeStructuredRunner) appendProviderFault(fault providerfault.Fault) {
+	raw, err := providerfault.HistoryEvent("claude", fault, time.Now())
+	if err == nil {
+		r.appendStructured(raw)
+	}
+}
+
+func claudeResultProviderFault(event claudep.Event) (providerfault.Fault, bool) {
+	if event.Type != "result" {
+		return providerfault.Fault{}, false
+	}
+	var result struct {
+		IsError        bool   `json:"is_error"`
+		APIErrorStatus int    `json:"api_error_status"`
+		Result         string `json:"result"`
+		Error          string `json:"error"`
+	}
+	if json.Unmarshal(event.Raw, &result) != nil || !result.IsError {
+		return providerfault.Fault{}, false
+	}
+	text := result.Result
+	if strings.TrimSpace(text) == "" {
+		text = result.Error
+	}
+	if strings.TrimSpace(text) == "" {
+		text = event.Message
+	}
+	return providerfault.Classify("claude", text, result.APIErrorStatus), true
 }
 
 func (r *claudeStructuredRunner) appendStructured(raw json.RawMessage) {

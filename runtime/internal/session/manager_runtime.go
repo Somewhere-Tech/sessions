@@ -74,6 +74,7 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 	if !session.Info().Working && (len(attachment.Replay.Events) > 0 || len(attachment.ClaudeEvents) > 0) {
 		if supportsTurnLifecycle(session.Info()) {
 			classification, summary := inspectIdle(session)
+			classification, summary = applyProviderOutcome(session, classification, summary, session.Info().LastDataAt)
 			session.SetIdleResult(
 				idleReason(classification.Outcome),
 				classification.Line,
@@ -261,6 +262,7 @@ func (r *runtimeSession) observe() {
 			}
 			r.manager.recordStructuredUsage(r.session.Info(), event.ClaudeEvent)
 			r.followProviderTitle()
+			r.publishObservedProviderFault()
 			select {
 			case r.structuredEventArrived <- struct{}{}:
 			default:
@@ -291,6 +293,7 @@ func (r *runtimeSession) observe() {
 			// title parsing. A Codex conversation has no title, so for Codex
 			// this costs one comparison and stops.
 			r.followProviderTitle()
+			r.publishObservedProviderFault()
 			select {
 			case r.structuredEventArrived <- struct{}{}:
 			default:
@@ -309,6 +312,20 @@ func (r *runtimeSession) observe() {
 			return
 		}
 	}
+}
+
+func (r *runtimeSession) publishObservedProviderFault() {
+	info := r.session.Info()
+	if info.Working || (info.IdleReason == state.IdleReasonFailed && info.IdleDetail == info.FailureDetail) {
+		return
+	}
+	fault, ok := r.session.ProviderFault()
+	if !ok {
+		return
+	}
+	classification := IdleClassification{Outcome: IdleError, Line: fault.Detail}
+	r.manager.publishIdle(r.session, 0, classification, fault.Detail)
+	r.notifyProviderFault(r.session.Info(), fault)
 }
 
 func (m *Manager) recordStructuredUsage(info state.SessionInfo, raw json.RawMessage) {
@@ -377,6 +394,7 @@ func (r *runtimeSession) setWorking(next bool) {
 	r.mu.Lock()
 	if !previous && next {
 		r.workingStartedAt = now
+		r.faultAtTurnStart = r.session.Info().FailureAt
 		r.structuredDone = false
 		r.terminalTurnDone = false
 		r.preTurnBlocked = false
@@ -394,6 +412,8 @@ func (r *runtimeSession) setWorking(next bool) {
 	}
 	started := r.workingStartedAt
 	r.workingStartedAt = time.Time{}
+	faultAtStart := r.faultAtTurnStart
+	r.faultAtTurnStart = 0
 	suppressWaiting := r.structuredDone
 	r.structuredDone = false
 	authoritativeDone := r.terminalTurnDone
@@ -412,7 +432,7 @@ func (r *runtimeSession) setWorking(next bool) {
 	}
 	classification := IdleClassification{Outcome: IdleDone}
 	if authoritativeDone {
-		classification = r.manager.handleCompletedTurn(r.session, duration)
+		classification = r.manager.handleCompletedTurn(r.session, duration, faultAtStart)
 	} else {
 		classification = r.manager.handleIdle(r.session, duration)
 	}
@@ -421,7 +441,13 @@ func (r *runtimeSession) setWorking(next bool) {
 		// alive at a prompt is not a completed session lifecycle state.
 		r.session.ClearIdleResult()
 	}
-	if !suppressWaiting && classification.Outcome == IdleDone {
+	if classification.Outcome == IdleError {
+		if fault, ok := r.session.ProviderFault(); ok {
+			r.notifyProviderFault(r.session.Info(), fault)
+		} else if !suppressWaiting {
+			r.scheduleWaiting()
+		}
+	} else if !suppressWaiting && classification.Outcome == IdleDone {
 		r.notifyDone()
 	} else if !suppressWaiting {
 		r.scheduleWaiting()

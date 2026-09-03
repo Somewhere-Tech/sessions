@@ -190,3 +190,19 @@ func TestWaitSeparatesActionableStopsFromFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestWaitCarriesProviderFailureKindAsReason(t *testing.T) {
+	id := "23000000-0000-4000-8000-000000000013"
+	body := `{"sessions":[{"id":"` + id + `","cmd":"codex","cwd":"/tmp","createdAt":1,"pid":1,` +
+		`"tool":"codex","working":false,"idleReason":"failed","idleDetail":"Codex API unavailable (503, overloaded)",` +
+		`"lastSummary":"Codex API unavailable (503, overloaded)","failureKind":"provider-unavailable"}]}`
+	server := waitTestServer(t, body)
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--host", server.URL, "--json", "wait", id, "--timeout", "1h"}, strings.NewReader(""), &stdout, &stderr)
+	outcome := decodeWaitOutcome(t, stdout.String())
+	if code != exitTargetUnavailable || outcome.OK || outcome.Reason != "provider-unavailable" ||
+		outcome.Detail != "Codex API unavailable (503, overloaded)" {
+		t.Fatalf("provider wait exit=%d outcome=%+v stderr=%q", code, outcome, stderr.String())
+	}
+}

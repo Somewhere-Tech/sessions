@@ -19,6 +19,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto/prototest"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -100,6 +101,60 @@ func TestTerminalCodexTaskCompleteOverridesStaleScreenError(t *testing.T) {
 	info, _ := manager.Get(created.ID)
 	if got := info.Info().IdleReason; got != state.IdleReasonCompleted {
 		t.Fatalf("Codex task_complete idle reason = %q, want %q", got, state.IdleReasonCompleted)
+	}
+}
+
+func TestTerminalTaskCompleteDoesNotOverrideProviderFault(t *testing.T) {
+	root := t.TempDir()
+	launcher := prototest.NewLauncher()
+	manager := NewManager(testConfig(root), launcher, ManagerOptions{
+		DisableWatchers: true, Notify: func(PushPayload) {},
+	})
+	t.Cleanup(manager.Close)
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{Cmd: "codex", Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.setWorking(true)
+	launcher.Runner(created.ID).AddOutput("■ unexpected status 503 Service Unavailable: The server is currently overloaded.\n")
+	awaitCondition(t, func() bool {
+		snapshot, _, snapshotErr := runtime.session.Snapshot(context.Background(), 0)
+		return snapshotErr == nil && strings.Contains(snapshot, "unexpected status 503")
+	})
+	runtime.markTerminalTurnDone()
+	runtime.setWorking(false)
+	info, _ := manager.Get(created.ID)
+	if got := info.Info(); got.IdleReason != state.IdleReasonFailed || got.FailureKind != "provider-unavailable" ||
+		got.LastSummary != "Codex API unavailable (503, overloaded)" {
+		t.Fatalf("Codex provider fault outcome = %#v", got)
+	}
+}
+
+func TestLaterSuccessfulTerminalTurnClearsPriorProviderFault(t *testing.T) {
+	root := t.TempDir()
+	launcher := prototest.NewLauncher()
+	manager := NewManager(testConfig(root), launcher, ManagerOptions{DisableWatchers: true, Notify: func(PushPayload) {}})
+	t.Cleanup(manager.Close)
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{Cmd: "codex", Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _ := manager.Get(created.ID)
+	current.SetProviderFault("codex", providerfault.Fault{
+		Kind: providerfault.KindUnavailable, Detail: "Codex API unavailable (503, overloaded)", Status: 503,
+	}, time.Now().UnixMilli())
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.setWorking(true)
+	launcher.Runner(created.ID).AddOutput("Completed successfully.\n")
+	runtime.markTerminalTurnDone()
+	runtime.setWorking(false)
+	if got := current.Info(); got.IdleReason != state.IdleReasonCompleted || got.FailureKind != "" {
+		t.Fatalf("successful later turn retained provider fault = %#v", got)
 	}
 }
 

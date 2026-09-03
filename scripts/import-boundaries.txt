@@ -22,6 +22,7 @@ cmd/sessions-runner internal/codexapp
 cmd/sessions-runner internal/ipc
 cmd/sessions-runner internal/proto
 cmd/sessions-runner internal/providerargs
+cmd/sessions-runner internal/providerfault
 cmd/sessions-runner internal/state
 cmd/sessions-runner internal/winconpty
 cmd/sessionsd internal/api
@@ -85,6 +86,7 @@ internal/session internal/ledger
 internal/session internal/liveness
 internal/session internal/proto
 internal/session internal/providerargs
+internal/session internal/providerfault
 internal/session internal/resource
 internal/session internal/state
 internal/session internal/watch
@@ -96,6 +98,7 @@ internal/state internal/ipc
 internal/state internal/mirror
 internal/state internal/proto
 internal/state internal/providerargs
+internal/state internal/providerfault
 internal/state internal/winprocess
 internal/usage internal/providerargs
 internal/usage internal/state

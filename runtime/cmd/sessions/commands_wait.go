@@ -130,7 +130,7 @@ func waitExitStatus(reason string) error {
 	switch reason {
 	case waitReasonTimeout:
 		return status(exitWaitTimeout)
-	case waitReasonGone, waitReasonFailed:
+	case waitReasonGone, waitReasonFailed, "provider-unavailable", "rate-limited", "auth", "other":
 		return status(exitTargetUnavailable)
 	default:
 		return nil
@@ -143,7 +143,7 @@ func waitReasonSeverity(reason string) int {
 	switch reason {
 	case waitReasonGone:
 		return 4
-	case waitReasonFailed:
+	case waitReasonFailed, "provider-unavailable", "rate-limited", "auth", "other":
 		return 3
 	case waitReasonTimeout:
 		return 2
@@ -257,28 +257,8 @@ func (a *app) probeSessionWait(tracker *waitTracker, sessions []session, idle ti
 			Session: tracker.ref.id,
 		}, human: "gone"}
 	}
-	if !current.Working && (current.IdleReason == state.IdleReasonNeedsInput || current.IdleReason == state.IdleReasonFailed) {
-		reason := waitReasonNeedsInput
-		if current.IdleReason == state.IdleReasonFailed {
-			reason = waitReasonFailed
-		}
-		message := current.LastSummary
-		if current.IdleReason == state.IdleReasonNeedsInput && current.IdleDetail != "" {
-			message = current.IdleDetail
-		}
-		if message == "" {
-			message = current.IdleReason
-		}
-		return waitProbe{outcome: &waitOutcome{
-			OK:         reason == waitReasonNeedsInput,
-			Kind:       waitKindSession,
-			Reason:     reason,
-			Session:    current.ID,
-			Working:    false,
-			IdleReason: current.IdleReason,
-			Detail:     current.IdleDetail,
-			Summary:    current.LastSummary,
-		}, human: fmt.Sprintf("%s — %s", current.IdleReason, message), humanToStderr: reason == waitReasonFailed}
+	if stopped := stoppedSessionWait(*current); stopped != nil {
+		return *stopped
 	}
 	idleFor := time.Duration(0)
 	if isConfirmableTool(toolOfSession(*current)) {
@@ -329,6 +309,31 @@ func (a *app) probeSessionWait(tracker *waitTracker, sessions []session, idle ti
 	}
 	probe.outcome = &outcome
 	return probe
+}
+
+func stoppedSessionWait(current session) *waitProbe {
+	if current.Working || (current.IdleReason != state.IdleReasonNeedsInput && current.IdleReason != state.IdleReasonFailed) {
+		return nil
+	}
+	reason := waitReasonNeedsInput
+	if current.IdleReason == state.IdleReasonFailed {
+		reason = waitReasonFailed
+		if current.FailureKind != "" {
+			reason = current.FailureKind
+		}
+	}
+	message := current.LastSummary
+	if current.IdleReason == state.IdleReasonNeedsInput && current.IdleDetail != "" {
+		message = current.IdleDetail
+	}
+	if message == "" {
+		message = current.IdleReason
+	}
+	return &waitProbe{outcome: &waitOutcome{
+		OK: reason == waitReasonNeedsInput, Kind: waitKindSession, Reason: reason,
+		Session: current.ID, Working: false, IdleReason: current.IdleReason,
+		Detail: current.IdleDetail, Summary: current.LastSummary,
+	}, human: fmt.Sprintf("%s — %s", reason, message), humanToStderr: reason != waitReasonNeedsInput}
 }
 
 func positiveInt(raw, label string) (int, error) {

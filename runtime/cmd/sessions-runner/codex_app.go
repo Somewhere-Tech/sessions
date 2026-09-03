@@ -18,6 +18,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -514,6 +515,9 @@ func (r *codexAppRunner) runTurn(text string) {
 		r.appendStructured(user)
 	}
 	for event := range stream.Events {
+		if completed, ok := event.(codexapp.TurnComplete); ok && !strings.EqualFold(completed.Status, "completed") {
+			r.appendProviderFault(codexTurnFailureText(completed), 0)
+		}
 		raw, encodeErr := codexapp.HistoryEvent(event, time.Now())
 		if encodeErr == nil {
 			r.appendStructured(raw)
@@ -525,6 +529,7 @@ func (r *codexAppRunner) runTurn(text string) {
 }
 
 func (r *codexAppRunner) recordTurnFailure(err error) {
+	r.appendProviderFault(err.Error(), 0)
 	raw, encodeErr := codexapp.HistoryEvent(codexapp.TurnComplete{
 		ConversationID: r.conversationID, Status: "failed",
 		Error: &codexapp.TurnError{Message: err.Error()},
@@ -532,6 +537,24 @@ func (r *codexAppRunner) recordTurnFailure(err error) {
 	if encodeErr == nil {
 		r.appendStructured(raw)
 	}
+}
+
+func (r *codexAppRunner) appendProviderFault(text string, status int) {
+	fault := providerfault.Classify("codex", text, status)
+	raw, err := providerfault.HistoryEvent("codex", fault, time.Now())
+	if err == nil {
+		r.appendStructured(raw)
+	}
+}
+
+func codexTurnFailureText(event codexapp.TurnComplete) string {
+	if event.Error != nil && strings.TrimSpace(event.Error.Message) != "" {
+		return event.Error.Message
+	}
+	if strings.TrimSpace(event.Status) != "" {
+		return event.Status
+	}
+	return "Codex turn failed"
 }
 
 func (r *codexAppRunner) appendStructured(raw json.RawMessage) {

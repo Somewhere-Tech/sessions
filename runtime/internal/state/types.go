@@ -134,6 +134,10 @@ type SessionInfo struct {
 	IdleDetail         string `json:"idleDetail,omitempty"`
 	IdleSince          *int64 `json:"idleSince,omitempty"`
 	LastSummary        string `json:"lastSummary,omitempty"`
+	FailureKind        string `json:"failureKind,omitempty"`
+	FailureDetail      string `json:"failureDetail,omitempty"`
+	FailureProvider    string `json:"failureProvider,omitempty"`
+	FailureAt          int64  `json:"failureAt,omitempty"`
 	// PendingApproval is the permission a Rich lane is waiting on right now.
 	// It is derived from the lane's structured stream, so it survives a
 	// daemon restart as long as the runner is still holding the request.

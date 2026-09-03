@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 )
 
 func (s *Session) recordCodexLocked(event *proto.Event) int64 {
@@ -39,6 +40,7 @@ func (s *Session) recordClaudeLocked(event *proto.Event) int64 {
 			providerActivityAt = parsed.UnixMilli()
 		}
 	}
+	s.trackProviderFaultLocked(value, providerActivityAt)
 	switch value["type"] {
 	case "system":
 		s.trackApprovalLocked(value, providerActivityAt)
@@ -67,6 +69,109 @@ func (s *Session) recordClaudeLocked(event *proto.Event) int64 {
 		s.info.LastUserMessageAt = &millis
 	}
 	return providerActivityAt
+}
+
+func (s *Session) trackProviderFaultLocked(value map[string]any, at int64) {
+	if value["type"] == "system" && value["subtype"] == "provider_fault" {
+		fault := providerfault.Fault{}
+		fault.Kind, _ = value["kind"].(string)
+		fault.Detail, _ = value["detail"].(string)
+		provider, _ := value["provider"].(string)
+		s.setProviderFaultLocked(provider, fault, at)
+		return
+	}
+	if fault, ok := nativeClaudeProviderFault(value); ok {
+		s.setProviderFaultLocked("claude", fault, at)
+		return
+	}
+	if successfulProviderTurn(value) {
+		s.clearProviderFaultLocked()
+	}
+}
+
+func nativeClaudeProviderFault(value map[string]any) (providerfault.Fault, bool) {
+	isError, _ := value["isApiErrorMessage"].(bool)
+	if !isError {
+		isError, _ = value["is_api_error_message"].(bool)
+	}
+	if !isError || value["type"] != "assistant" {
+		return providerfault.Fault{}, false
+	}
+	message, _ := value["message"].(map[string]any)
+	text := structuredContentText(message["content"])
+	status := numericStatus(value["apiErrorStatus"])
+	if status == 0 {
+		status = numericStatus(value["api_error_status"])
+	}
+	return providerfault.Classify("claude", text, status), true
+}
+
+func numericStatus(value any) int {
+	switch number := value.(type) {
+	case float64:
+		return int(number)
+	case json.Number:
+		status, _ := number.Int64()
+		return int(status)
+	default:
+		return 0
+	}
+}
+
+func (s *Session) setProviderFaultLocked(provider string, fault providerfault.Fault, at int64) {
+	s.info.FailureKind = fault.Kind
+	s.info.FailureDetail = fault.Detail
+	s.info.FailureProvider = provider
+	s.info.FailureAt = at
+	if fault.Detail != "" {
+		s.info.LastSummary = fault.Detail
+	}
+}
+
+func successfulProviderTurn(value map[string]any) bool {
+	source, _ := value["source"].(string)
+	if source == "codex-app-server" && value["subtype"] == "turn_completed" {
+		status, _ := value["status"].(string)
+		return strings.EqualFold(status, "completed")
+	}
+	if source != "claude-p-stream-json" || value["type"] != "result" {
+		return false
+	}
+	isError, _ := value["is_error"].(bool)
+	return !isError
+}
+
+func (s *Session) clearProviderFaultLocked() {
+	s.info.FailureKind = ""
+	s.info.FailureDetail = ""
+	s.info.FailureProvider = ""
+	s.info.FailureAt = 0
+}
+
+// ProviderFault is the policy seam for a future retry controller. It returns
+// only classified provider state and does not decide whether or when to retry.
+func (s *Session) ProviderFault() (providerfault.Fault, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.info.FailureKind == "" || s.info.FailureDetail == "" {
+		return providerfault.Fault{}, false
+	}
+	fault := providerfault.Classify(s.info.FailureProvider, s.info.FailureDetail, 0)
+	fault.Kind = s.info.FailureKind
+	fault.Detail = s.info.FailureDetail
+	return fault, true
+}
+
+func (s *Session) SetProviderFault(provider string, fault providerfault.Fault, at int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setProviderFaultLocked(provider, fault, at)
+}
+
+func (s *Session) ClearProviderFault() {
+	s.mu.Lock()
+	s.clearProviderFaultLocked()
+	s.mu.Unlock()
 }
 
 func realUserMessage(event map[string]any) bool {

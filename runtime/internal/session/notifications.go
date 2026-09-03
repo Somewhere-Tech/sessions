@@ -8,6 +8,7 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/claudep"
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -67,6 +68,13 @@ func (r *runtimeSession) markTerminalTurnDone() {
 
 func (r *runtimeSession) notifyDone() {
 	info := r.session.Info()
+	if fault, ok := r.session.ProviderFault(); ok {
+		r.notifyProviderFault(info, fault)
+		return
+	}
+	r.mu.Lock()
+	r.faultNotified = false
+	r.mu.Unlock()
 	body := info.LastSummary
 	if body == "" {
 		body = FinalAssistantSummary(r.session.ClaudeEventLog())
@@ -79,6 +87,51 @@ func (r *runtimeSession) notifyDone() {
 		Body:  body,
 		Data:  map[string]any{"sessionId": info.ID, "notification": state.NotifyDone},
 	})
+}
+
+func (r *runtimeSession) notifyProviderFault(info state.SessionInfo, fault providerfault.Fault) {
+	r.mu.Lock()
+	if r.faultNotified {
+		r.mu.Unlock()
+		return
+	}
+	r.faultNotified = true
+	r.mu.Unlock()
+	provider := providerDisplayName(info.FailureProvider)
+	if provider == "Provider" {
+		provider = providerDisplayName(providerForSession(info))
+	}
+	title := "🟠 " + sessionDisplayLabel(info) + " — " + provider + faultTitleSuffix(fault.Kind)
+	r.manager.queueSessionNotification(info.ID, state.NotifyWaiting, PushPayload{
+		Title: title, Body: fault.Detail,
+		Data: map[string]any{
+			"sessionId": info.ID, "notification": state.NotifyWaiting,
+			"failureKind": fault.Kind, "failureProvider": info.FailureProvider,
+		},
+	})
+}
+
+func providerDisplayName(provider string) string {
+	if provider == "claude" {
+		return "Claude"
+	}
+	if provider == "codex" {
+		return "Codex"
+	}
+	return "Provider"
+}
+
+func faultTitleSuffix(kind string) string {
+	switch kind {
+	case providerfault.KindUnavailable:
+		return " is unavailable"
+	case providerfault.KindRateLimited:
+		return " is rate-limited"
+	case providerfault.KindAuth:
+		return " needs login"
+	default:
+		return " failed"
+	}
 }
 
 func (r *runtimeSession) cancelWaiting() {

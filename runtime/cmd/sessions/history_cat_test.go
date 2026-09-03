@@ -74,6 +74,56 @@ func TestCatAcceptsLiveSessionsIDLikeTranscript(t *testing.T) {
 	}
 }
 
+func TestCatPrintsProviderFaultAsError(t *testing.T) {
+	const id = "9cd94e86-2222-4333-8444-555555555556"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{{
+				"id": id, "tool": "codex", "cwd": "/work", "failureKind": "provider-unavailable",
+				"failureDetail": "Codex API unavailable (503, overloaded)", "failureAt": int64(1),
+			}}})
+		case "/api/sessions/" + id + "/events":
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": []map[string]any{{
+				"type": "system", "subtype": "provider_fault", "detail": "Codex API unavailable (503, overloaded)",
+			}}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "cat", id}, strings.NewReader(""), &stdout, &stderr); code != 0 ||
+		stdout.String() != "[error]\nCodex API unavailable (503, overloaded)\n" || stderr.Len() != 0 {
+		t.Fatalf("cat exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestTerminalCatFallsBackToSessionProviderFault(t *testing.T) {
+	const id = "9cd94e86-2222-4333-8444-555555555557"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{{
+				"id": id, "tool": "claude-code", "cwd": "/work", "failureKind": "provider-unavailable",
+				"failureDetail": "Claude API overloaded (529)", "failureAt": int64(1),
+			}}})
+		case "/api/sessions/" + id + "/events":
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": []any{}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "transcript", id}, strings.NewReader(""), &stdout, &stderr); code != 0 ||
+		stdout.String() != "[error]\nClaude API overloaded (529)\n" || stderr.Len() != 0 {
+		t.Fatalf("transcript exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestCatExplainsThatATerminalCodexTranscriptIsStillPending(t *testing.T) {
 	const id = "9cd94e86-2222-4333-8444-555555555555"
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

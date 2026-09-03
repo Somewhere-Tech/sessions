@@ -144,6 +144,10 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `idleDetail` | string, optional | useful prompt or error line from idle classification |
 | `idleSince` | number, optional | Unix epoch milliseconds when the current idle outcome began |
 | `lastSummary` | string, optional | last useful structured assistant or terminal-tail summary |
+| `failureKind` | `"provider-unavailable" \| "rate-limited" \| "auth" \| "other"`, optional | classified provider-turn failure; absent after a later turn succeeds |
+| `failureDetail` | string, optional | concise provider fault in Sessions' words; also becomes `lastSummary` for the failed turn |
+| `failureProvider` | `"claude" \| "codex"`, optional | provider that produced the current fault |
+| `failureAt` | number, optional | Unix epoch milliseconds when the current provider fault was observed |
 | `pendingApproval` | object, optional | permission a Rich session is waiting on, with `id`, `kind` (`command`, `file-change`, or `permissions`), `summary`, `command`, `cwd`, `reason`, and `at`; absent when no approval is pending |
 | `exited` | boolean | whether Sessions reaped a real status for the session's process: an EXIT frame, a signal, or a completed user-requested end. It is never set because the daemon lost contact with a runner |
 | `exitCode` | number or null | PTY exit code |
@@ -898,6 +902,18 @@ normalized Codex records) represented as arbitrary JSON objects. Returns 200:
   "endIndex": 0
 }
 ```
+
+A failed Rich provider turn appends a normalized system record after its
+provider-specific failure is observed:
+
+```json
+{"type":"system","subtype":"provider_fault","kind":"provider-unavailable","detail":"Codex API unavailable (503, overloaded)","status":503,"provider":"codex"}
+```
+
+`status` is omitted when no HTTP status was available. This record is separate
+from assistant prose and is rendered by transcript clients as an error. A later
+successful turn clears the session's `failureKind`, `failureDetail`,
+`failureProvider`, and `failureAt`; it does not delete append-only fault history.
 
 All indices are absolute. Let `base` be the number evicted from the front and
 `len` the retained count; `total = base + len`.

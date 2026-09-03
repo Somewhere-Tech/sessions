@@ -12,6 +12,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/claudep"
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -257,9 +258,32 @@ func (m *Manager) handleIdle(session *state.Session, duration time.Duration) Idl
 	return m.publishIdle(session, duration, classification, summary)
 }
 
-func (m *Manager) handleCompletedTurn(session *state.Session, duration time.Duration) IdleClassification {
+func (m *Manager) handleCompletedTurn(session *state.Session, duration time.Duration, faultAtStart int64) IdleClassification {
+	if classification, failed := terminalProviderFault(session, faultAtStart); failed {
+		return m.publishIdle(session, duration, classification, classification.Line)
+	}
 	summary := FinalAssistantSummary(session.ClaudeEventLog())
 	return m.publishIdle(session, duration, IdleClassification{Outcome: IdleDone}, summary)
+}
+
+func terminalProviderFault(session *state.Session, faultAtStart int64) (IdleClassification, bool) {
+	info := session.Info()
+	if fault, ok := session.ProviderFault(); ok {
+		if info.FailureAt != faultAtStart {
+			return IdleClassification{Outcome: IdleError, Line: fault.Detail}, true
+		}
+		return IdleClassification{}, false
+	}
+	snapshot, _, err := session.Snapshot(context.Background(), 0)
+	if err != nil {
+		return IdleClassification{}, false
+	}
+	classification := ClassifySnapshot(snapshot)
+	if classification.Outcome != IdleError {
+		return IdleClassification{}, false
+	}
+	_, matched := providerfault.Detect(providerForSession(info), classification.Line, 0)
+	return classification, matched
 }
 
 func (m *Manager) publishIdle(session *state.Session, duration time.Duration, classification IdleClassification, summary string) IdleClassification {
@@ -267,13 +291,47 @@ func (m *Manager) publishIdle(session *state.Session, duration time.Duration, cl
 	m.observe(context.Background(), "idle", func(writer ledger.ObservationWriter) error {
 		return writer.RecordIdle(context.Background(), ledger.Observation{Meta: ledger.Meta{LaneID: info.ID}})
 	})
-	session.SetIdleResult(idleReason(classification.Outcome), classification.Line, summary, time.Now().UnixMilli())
+	now := time.Now().UnixMilli()
+	classification, summary = applyProviderOutcome(session, classification, summary, now)
+	session.SetIdleResult(idleReason(classification.Outcome), classification.Line, summary, now)
 	info = session.Info()
 	hookContext := idleHookContext{Summary: summary, Outcome: classification.Outcome, DurationMS: duration.Milliseconds()}
 	m.writeIdleSentinel(info)
 	m.runHook(info.OnIdle, info, hookContext, false)
 	m.runHook(m.hooks.OnIdle, info, hookContext, true)
 	return classification
+}
+
+func applyProviderOutcome(session *state.Session, classification IdleClassification, summary string, at int64) (IdleClassification, string) {
+	if classification.Outcome == IdleDone {
+		session.ClearProviderFault()
+		return classification, summary
+	}
+	if classification.Outcome != IdleError {
+		return classification, summary
+	}
+	fault, ok := session.ProviderFault()
+	if !ok {
+		provider := providerForSession(session.Info())
+		var matched bool
+		fault, matched = providerfault.Detect(provider, classification.Line, 0)
+		if !matched {
+			return classification, summary
+		}
+		session.SetProviderFault(provider, fault, at)
+	}
+	classification.Line = fault.Detail
+	return classification, fault.Detail
+}
+
+func providerForSession(info state.SessionInfo) string {
+	if info.Tool == state.ToolClaude {
+		return "claude"
+	}
+	if info.Tool == state.ToolCodex {
+		return "codex"
+	}
+	return ""
 }
 
 func (m *Manager) runHook(script string, info state.SessionInfo, hook idleHookContext, timeout bool) {

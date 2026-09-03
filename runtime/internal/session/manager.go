@@ -230,8 +230,10 @@ type runtimeSession struct {
 	structuredLifecycleWorking *bool
 	pushWorkingObserved        bool
 	workingStartedAt           time.Time
+	faultAtTurnStart           int64
 	structuredDone             bool
 	terminalTurnDone           bool
+	faultNotified              bool
 	waitingTimer               *time.Timer
 	waitingGeneration          uint64
 	stopped                    bool

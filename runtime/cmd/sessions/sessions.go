@@ -500,6 +500,16 @@ func sessionState(value session) string {
 	if value.Working {
 		return "working"
 	}
+	switch value.FailureKind {
+	case "provider-unavailable":
+		return "provider-down"
+	case "rate-limited":
+		return "rate-limited"
+	case "auth":
+		return "auth-needed"
+	case "other":
+		return "failed"
+	}
 	switch value.IdleReason {
 	case "needs-input":
 		return "needs-you"

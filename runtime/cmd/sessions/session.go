@@ -49,6 +49,10 @@ type session struct {
 	IdleDetail             string  `json:"idleDetail,omitempty"`
 	IdleSince              *int64  `json:"idleSince,omitempty"`
 	LastSummary            string  `json:"lastSummary,omitempty"`
+	FailureKind            string  `json:"failureKind,omitempty"`
+	FailureDetail          string  `json:"failureDetail,omitempty"`
+	FailureProvider        string  `json:"failureProvider,omitempty"`
+	FailureAt              int64   `json:"failureAt,omitempty"`
 	Model                  string  `json:"model,omitempty"`
 	Effort                 string  `json:"effort,omitempty"`
 	Exited                 bool    `json:"exited"`

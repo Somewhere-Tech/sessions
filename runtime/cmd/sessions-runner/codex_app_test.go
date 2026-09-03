@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,6 +164,21 @@ func TestCodexBlankInputDuringActiveTurnStaysSilent(t *testing.T) {
 
 	if len(r.history) != 0 {
 		t.Fatalf("blank input produced %d events, want none", len(r.history))
+	}
+}
+
+func TestCodexTurnFailureAppendsClassifiedFaultBeforeLifecycleClose(t *testing.T) {
+	r := newCodexTestRunner(t)
+	r.recordTurnFailure(errors.New("unexpected status 503 Service Unavailable: The server is currently overloaded."))
+	if len(r.history) != 2 {
+		t.Fatalf("failure history = %d events, want fault and turn completion", len(r.history))
+	}
+	joined := string(r.history[0]) + "\n" + string(r.history[1])
+	if !strings.Contains(string(r.history[0]), `"subtype":"provider_fault"`) ||
+		!strings.Contains(string(r.history[0]), `"kind":"provider-unavailable"`) ||
+		!strings.Contains(joined, "Codex API unavailable (503, overloaded)") ||
+		!strings.Contains(string(r.history[1]), `"subtype":"turn_completed"`) {
+		t.Fatalf("failure history = %s", joined)
 	}
 }
 

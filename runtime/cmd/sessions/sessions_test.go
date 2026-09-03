@@ -150,6 +150,20 @@ func TestSessionTablesAddProfileColumnOnlyWhenNeeded(t *testing.T) {
 	}
 }
 
+func TestSessionStateNamesProviderFaultKinds(t *testing.T) {
+	tests := map[string]string{
+		"provider-unavailable": "provider-down",
+		"rate-limited":         "rate-limited",
+		"auth":                 "auth-needed",
+		"other":                "failed",
+	}
+	for kind, want := range tests {
+		if got := sessionState(session{FailureKind: kind}); got != want {
+			t.Fatalf("sessionState(failureKind=%q) = %q, want %q", kind, got, want)
+		}
+	}
+}
+
 func TestSessionTablesDoNotAbbreviateHomeInsideAnotherPathComponent(t *testing.T) {
 	home := "/__sessions_home_for_test__"
 	cwd := "/prefix/__sessions_home_for_test__/project"
