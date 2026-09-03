@@ -1,0 +1,13 @@
+# language path function current-lines
+# These legacy functions may shrink but may not grow. Remove an entry once its
+# function reaches the normal language limit.
+go runtime/internal/api/recovery_handlers.go Server.handleRecovery 598
+go runtime/internal/api/server_routes.go Server.handleSessionRoute 432
+go runtime/internal/api/server_routes.go Server.ServeHTTP 410
+go runtime/internal/state/registry.go Registry.CreateWithLifecycle 265
+go runtime/cmd/sessions/commands.go app.cmdNew 244
+typescript frontend/src/hooks/useTerminal.ts useTerminal 851
+typescript frontend/src/components/SessionNavigator.tsx SessionNavigator 831
+typescript frontend/src/App.tsx ConnectedApp 799
+typescript frontend/src/hooks/useTerminal.ts useTerminal/useEffect#1 771
+typescript frontend/src/hooks/useTerminal.ts useTerminal/useEffect/<iife> 751

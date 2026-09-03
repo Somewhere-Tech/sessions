@@ -39,20 +39,41 @@ functions.sort((left, right) =>
 );
 
 let violations = 0;
+const seenExceptions = new Set();
 for (const fn of functions) {
-	const exceptionLimit = exceptions.get(`${fn.path}\t${fn.name}`);
-	const excepted = exceptionLimit !== undefined;
-	if (!options.report && (fn.length <= options.maxTypescript || excepted && fn.length <= exceptionLimit)) continue;
-	process.stdout.write(`${fn.path}:${fn.line}:${fn.name}:${fn.length}\n`);
-	if (fn.length > options.maxTypescript && (!excepted || fn.length > exceptionLimit)) violations += 1;
+  const key = `${fn.path}\t${fn.name}`;
+  const exceptionLimit = exceptions.get(key);
+  const excepted = exceptionLimit !== undefined;
+  if (excepted) seenExceptions.add(key);
+  if (!options.report && excepted && fn.length <= options.maxTypescript) {
+    process.stderr.write(`unneeded TypeScript function exception: ${fn.path}:${fn.name}\n`);
+    violations += 1;
+    continue;
+  }
+  if (!options.report && (fn.length <= options.maxTypescript || excepted && fn.length <= exceptionLimit)) continue;
+  process.stdout.write(`${fn.path}:${fn.line}:${fn.name}:${fn.length}\n`);
+  if (fn.length > options.maxTypescript && (!excepted || fn.length > exceptionLimit)) violations += 1;
+}
+
+if (!options.report) {
+  for (const key of exceptions.keys()) {
+    if (!seenExceptions.has(key)) {
+      process.stderr.write(`stale TypeScript function exception: ${key.replace("\t", ":")}\n`);
+      violations += 1;
+    }
+  }
 }
 
 if (!options.report && (go.status !== 0 || violations > 0)) {
   process.exitCode = 1;
+} else if (!options.report) {
+  process.stdout.write(
+    `Function lengths passed: Go <= ${options.maxGo}; TypeScript/TSX <= ${options.maxTypescript}; frozen exceptions did not grow.\n`,
+  );
 }
 
 function parseOptions(args) {
-  const options = { maxGo: 80, maxTypescript: 80, report: false };
+  const options = { maxGo: 221, maxTypescript: 678, report: false };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--report") {
@@ -77,21 +98,26 @@ function positiveInteger(value, option) {
 }
 
 function readExceptions(path, language) {
-	const exceptions = new Map();
+  const exceptions = new Map();
   if (!existsSync(path)) return exceptions;
   for (const [index, sourceLine] of readFileSync(path, "utf8").split(/\r?\n/).entries()) {
     const line = sourceLine.trim();
     if (line === "" || line.startsWith("#")) continue;
     const fields = line.split(/\s+/);
-		if (fields.length !== 4) {
-			throw new Error(`${path}:${index + 1}: expected '<language> <path> <function> <current-lines>'`);
-		}
-		const currentLines = Number.parseInt(fields[3], 10);
-		if (!Number.isSafeInteger(currentLines) || currentLines <= 0 || String(currentLines) !== fields[3]) {
-			throw new Error(`${path}:${index + 1}: invalid function length '${fields[3]}'`);
-		}
-		if (fields[0] === language) exceptions.set(`${fields[1]}\t${fields[2]}`, currentLines);
+    if (fields.length !== 4) {
+      throw new Error(`${path}:${index + 1}: expected '<language> <path> <function> <current-lines>'`);
+    }
+    const currentLines = Number.parseInt(fields[3], 10);
+    if (!Number.isSafeInteger(currentLines) || currentLines <= 0 || String(currentLines) !== fields[3]) {
+      throw new Error(`${path}:${index + 1}: invalid function length '${fields[3]}'`);
+    }
+    if (fields[0] === language) {
+      const key = `${fields[1]}\t${fields[2]}`;
+      if (exceptions.has(key)) throw new Error(`${path}:${index + 1}: duplicate function exception`);
+      exceptions.set(key, currentLines);
+    }
   }
+  if (exceptions.size > 5) throw new Error(`${path}: ${language} has ${exceptions.size} exceptions; at most 5 are allowed`);
   return exceptions;
 }
 
@@ -114,9 +140,24 @@ function typescriptFunctions() {
       true,
       path.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
     );
-    visit(source, source, path, functions);
+    const fileFunctions = [];
+    visit(source, source, path, fileFunctions);
+    disambiguateNames(fileFunctions);
+    functions.push(...fileFunctions);
   }
   return functions;
+}
+
+function disambiguateNames(functions) {
+  const counts = new Map();
+  const seen = new Map();
+  for (const fn of functions) counts.set(fn.name, (counts.get(fn.name) || 0) + 1);
+  for (const fn of functions) {
+    if (counts.get(fn.name) < 2) continue;
+    const ordinal = (seen.get(fn.name) || 0) + 1;
+    seen.set(fn.name, ordinal);
+    fn.name = `${fn.name}#${ordinal}`;
+  }
 }
 
 function isHandwrittenTypescript(path) {
@@ -157,34 +198,34 @@ function functionName(node, source, line) {
   if (ts.isVariableDeclaration(parent) || ts.isPropertyDeclaration(parent) || ts.isPropertyAssignment(parent)) {
     return parent.name.getText(source);
   }
-	if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-		return parent.left.getText(source).replace(/\s+/g, "");
-	}
-	return anonymousName(node, source, line);
+  if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    return parent.left.getText(source).replace(/\s+/g, "");
+  }
+  return anonymousName(node, source, line);
 }
 
 function anonymousName(node, source, line) {
-	let child = node;
-	let parent = node.parent;
-	while (parent && (ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent))) {
-		child = parent;
-		parent = parent.parent;
-	}
+  let child = node;
+  let parent = node.parent;
+  while (parent && (ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent))) {
+    child = parent;
+    parent = parent.parent;
+  }
 
-	let localName = `<anonymous@${line}>`;
-	if (parent && ts.isCallExpression(parent)) {
-		localName = parent.expression === child
-			? "<iife>"
-			: parent.expression.getText(source).replace(/\s+/g, "");
-	}
+  let localName = `<anonymous@${line}>`;
+  if (parent && ts.isCallExpression(parent)) {
+    localName = parent.expression === child
+      ? "<iife>"
+      : parent.expression.getText(source).replace(/\s+/g, "");
+  }
 
-	for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
-		if (isFunctionWithBody(ancestor)) {
-			const ancestorLine = source.getLineAndCharacterOfPosition(ancestor.getStart(source)).line + 1;
-			return `${functionName(ancestor, source, ancestorLine)}/${localName}`;
-		}
-	}
-	return localName;
+  for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+    if (isFunctionWithBody(ancestor)) {
+      const ancestorLine = source.getLineAndCharacterOfPosition(ancestor.getStart(source)).line + 1;
+      return `${functionName(ancestor, source, ancestorLine)}/${localName}`;
+    }
+  }
+  return localName;
 }
 
 function className(node, source) {

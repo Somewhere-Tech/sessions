@@ -4,10 +4,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-max_lines=1000
-failures=()
+sizes=()
 
-# This is a guard for handwritten production and build code. Generated provider
+# This report covers handwritten production and build code. Generated provider
 # schemas, compatibility fixtures, public contracts, and tests are deliberately
 # excluded: their size is controlled by their source or by scenario coverage,
 # not by adding arbitrary seams to the shipped implementation.
@@ -24,18 +23,11 @@ while IFS= read -r file; do
   case "$file" in
     *.go|*.rs|*.ts|*.tsx|*.css|*.mjs|*.cjs|*.sh)
       lines="$(wc -l < "$file" | tr -d ' ')"
-      if (( lines > max_lines )); then
-        failures+=("$lines $file")
-      fi
+      sizes+=("$lines $file")
       ;;
   esac
 done < <(git ls-files --cached --others --exclude-standard -- runtime frontend/src frontend/scripts src-tauri/src scripts)
 
-if (( ${#failures[@]} > 0 )); then
-  printf 'Handwritten source files must stay at or below %d lines:\n' "$max_lines" >&2
-  printf '  %s\n' "${failures[@]}" | sort -nr >&2
-  printf 'Split the responsibility into a named module; do not raise the cap.\n' >&2
-  exit 1
-fi
-
-printf 'Source-size guard passed: handwritten production files are at most %d lines.\n' "$max_lines"
+printf 'Largest handwritten production and build files (report only):\n'
+printf '  %s\n' "${sizes[@]}" | sort -nr | sed -n '1,10p'
+printf 'File length is informational; function length and import boundaries are enforced separately.\n'

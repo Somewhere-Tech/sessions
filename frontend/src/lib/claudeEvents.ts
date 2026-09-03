@@ -24,8 +24,7 @@
 //   - 'tool_result'  Claude's loop feedback (skip — not user content)
 //   - 'image'        user pasted/attached an image
 
-import type { ClaudeSessionEvent } from '../types';
-import type { DispatchMessage, ToolCall } from '../hooks/useDispatch';
+import type { ClaudeSessionEvent, DispatchMessage, ToolCall } from '../types';
 import { previewToolInput } from './toolPreview';
 
 interface AnthropicContentBlock {
@@ -571,7 +570,7 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
   // Track pending tool calls accumulated across consecutive tool-only
   // assistant events. Drains into the next text-bearing assistant
   // event OR a synthetic "in progress" message at end-of-stream.
-  let pendingTools: import('../hooks/useDispatch').ToolCall[] = [];
+  let pendingTools: ToolCall[] = [];
   let pendingHadThinking = false;
   // Track the earliest timestamp/uuid of the pending batch so the ordered
   // activity entry keeps the time at which the commands actually started.
@@ -582,8 +581,8 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
   const queuedContents = new Set<string>();
 
   const enrichToolCalls = (
-    calls: import('../hooks/useDispatch').ToolCall[]
-  ): import('../hooks/useDispatch').ToolCall[] => {
+    calls: ToolCall[]
+  ): ToolCall[] => {
     return calls.map((t) => {
       const result = toolResults.get(t.id);
       if (!result) return t;

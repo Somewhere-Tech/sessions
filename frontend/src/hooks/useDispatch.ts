@@ -1,53 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useServers } from '../lib/servers';
+import type { DispatchMessage } from '../types';
 
-// Tool invocation surfaced beneath an assistant turn. These fields are shared
-// by Claude's structured history and Codex app-server history.
-export interface ToolCall {
-  id: string;
-  name: string;
-  inputPreview: string;
-  inputFull?: string;
-  resultPreview?: string;
-  resultFull?: string;
-  kind?: string;
-  status?: string;
-  durationMs?: number;
-}
-
-export interface MessagePlanStep {
-  step: string;
-  status: string;
-}
-
-export interface DispatchMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  // accepted means sessionsd acknowledged the complete composer submission.
-  // sent means the provider's own history also contains the turn. Failed is
-  // retained only for old local records written before receipt-backed sends.
-  status: 'accepted' | 'queued' | 'sent' | 'failed';
-  createdAt: number;
-  author?: import('../types').MessageAuthor;
-  confirmedAt?: number;
-  blockId?: string;
-  errorResponse?: string;
-  toolCalls?: ToolCall[];
-  hadThinking?: boolean;
-  reasoningSummary?: string;
-  updates?: string[];
-  plan?: MessagePlanStep[];
-  planExplanation?: string;
-  streaming?: boolean;
-  turnStatus?: string;
-  interrupted?: boolean;
-  queued?: boolean;
-  failureReason?: string;
-  // Number of identical provider-history turns that existed when sessionsd
-  // accepted this submission. A later occurrence replaces the local copy.
-  confirmBaseline?: number;
-}
+export type { DispatchMessage, MessagePlanStep, ToolCall } from '../types';
 
 const STORAGE_PREFIX = 'sessions:dispatch:';
 const MAX_PER_SESSION = 200;

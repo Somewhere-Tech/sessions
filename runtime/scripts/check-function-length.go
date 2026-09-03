@@ -49,14 +49,32 @@ func main() {
 	})
 
 	violations := 0
+	seenExceptions := make(map[string]bool)
 	for _, fn := range functions {
-		exceptionLimit, excepted := exceptions[fn.path+"\t"+fn.name]
+		key := fn.path + "\t" + fn.name
+		exceptionLimit, excepted := exceptions[key]
+		if excepted {
+			seenExceptions[key] = true
+		}
+		if !*report && excepted && fn.length <= *maxLines {
+			fmt.Fprintf(os.Stderr, "unneeded Go function exception: %s:%s\n", fn.path, fn.name)
+			violations++
+			continue
+		}
 		if !*report && (fn.length <= *maxLines || excepted && fn.length <= exceptionLimit) {
 			continue
 		}
 		fmt.Printf("%s:%d:%s:%d\n", fn.path, fn.line, fn.name, fn.length)
 		if fn.length > *maxLines && (!excepted || fn.length > exceptionLimit) {
 			violations++
+		}
+	}
+	if !*report {
+		for key := range exceptions {
+			if !seenExceptions[key] {
+				fmt.Fprintf(os.Stderr, "stale Go function exception: %s\n", strings.ReplaceAll(key, "\t", ":"))
+				violations++
+			}
 		}
 	}
 	if !*report && violations > 0 {
@@ -93,10 +111,20 @@ func readExceptions(path, language string) (map[string]int, error) {
 			if err != nil || currentLines <= 0 {
 				return nil, fmt.Errorf("%s: invalid function length %q", path, fields[3])
 			}
-			exceptions[fields[1]+"\t"+fields[2]] = currentLines
+			key := fields[1] + "\t" + fields[2]
+			if _, exists := exceptions[key]; exists {
+				return nil, fmt.Errorf("%s: duplicate function exception %s:%s", path, fields[1], fields[2])
+			}
+			exceptions[key] = currentLines
 		}
 	}
-	return exceptions, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if len(exceptions) > 5 {
+		return nil, fmt.Errorf("%s: %s has %d exceptions; at most 5 are allowed", path, language, len(exceptions))
+	}
+	return exceptions, nil
 }
 
 func findFunctions(root string) ([]function, error) {
@@ -179,7 +207,24 @@ func functionsInFile(root, path string) ([]function, error) {
 		}
 		return true
 	})
+	disambiguateNames(functions)
 	return functions, nil
+}
+
+func disambiguateNames(functions []function) {
+	counts := make(map[string]int)
+	for _, fn := range functions {
+		counts[fn.name]++
+	}
+	seen := make(map[string]int)
+	for index := range functions {
+		name := functions[index].name
+		if counts[name] < 2 {
+			continue
+		}
+		seen[name]++
+		functions[index].name = fmt.Sprintf("%s#%d", name, seen[name])
+	}
 }
 
 func makeFunction(fileSet *token.FileSet, path, name string, start, end token.Pos) function {
