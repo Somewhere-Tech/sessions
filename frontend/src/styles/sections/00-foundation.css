@@ -610,6 +610,7 @@ button:active:not(:disabled),
   .connect-peer { grid-template-columns: auto minmax(0, 1fr); }
   .connect-peer > .btn { grid-column: 1 / -1; }
   .connect-pair-link { grid-template-columns: 1fr; }
+
 }
 
 /* App shell — top header / main / mobile-nav stack.

@@ -179,14 +179,14 @@ export function ConnectScreen({
   };
 
   return (
-    <main className="connect-screen" data-testid="connect-screen">
+    <main className={`connect-screen${clientOnly ? ' connect-screen-client' : ''}`} data-testid="connect-screen">
       <section className="connect-panel" aria-labelledby="connect-title">
         <div className="connect-brand">Sessions</div>
         <p className="connect-kicker">
           {clientOnly ? 'this device → your Sessions machines' : 'native window → your daemon'}
         </p>
         <h1 id="connect-title">
-          {clientOnly ? 'Find the computers running your sessions.' : 'Open your sessions from here.'}
+          {clientOnly ? 'Find your Sessions machines.' : 'Open your sessions from here.'}
         </h1>
         <p className="connect-lede">
           {clientOnly
