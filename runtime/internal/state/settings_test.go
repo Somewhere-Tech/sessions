@@ -60,19 +60,18 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 }
 
-func TestNormalizeRecapSettings(t *testing.T) {
-	settings, err := NormalizeRecapSettings(RecapSettings{Provider: " CODEX "})
-	if err != nil {
+func TestLoadSettingsIgnoresLegacyRecapAndUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	encoded := []byte(`{"lan":true,"recap":{"provider":"codex","schedule":"daily"},"future":{"enabled":true}}`)
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if settings.Provider != RecapProviderCodex {
-		t.Fatalf("settings = %#v", settings)
+	settings, err := LoadSettings(path)
+	if err != nil {
+		t.Fatalf("LoadSettings() rejected legacy or unknown keys: %v", err)
 	}
-	if _, err := NormalizeRecapSettings(RecapSettings{Provider: "hosted"}); err == nil {
-		t.Fatal("unknown provider was accepted")
-	}
-	if got := (Settings{}).EffectiveRecap(); got.Provider != RecapProviderOff {
-		t.Fatalf("default recap = %#v", got)
+	if !settings.LAN {
+		t.Fatalf("LoadSettings() lost known settings: %#v", settings)
 	}
 }
 

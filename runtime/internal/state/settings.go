@@ -15,10 +15,6 @@ const (
 	NotifyWaiting = "waiting"
 	NotifyLost    = "lost"
 
-	RecapProviderOff    = "off"
-	RecapProviderCodex  = "codex"
-	RecapProviderClaude = "claude"
-
 	AIProviderCodex  = "codex"
 	AIProviderClaude = "claude"
 
@@ -47,13 +43,6 @@ type NotifySettings struct {
 	Done    bool `json:"done"`
 	Waiting bool `json:"waiting"`
 	Lost    bool `json:"lost"`
-}
-
-// RecapSettings is deliberately opt-in. Provider "off" means Sessions never
-// launches a model for daily synthesis. The selected CLI chooses its own
-// default model; Sessions only requests the provider's lowest reasoning effort.
-type RecapSettings struct {
-	Provider string `json:"provider"`
 }
 
 // AISettings selects the pre-authenticated CLI used for explicit smart
@@ -237,21 +226,6 @@ func NormalizeAISettings(settings AISettings) (AISettings, error) {
 	return settings, nil
 }
 
-func DefaultRecapSettings() RecapSettings {
-	return RecapSettings{Provider: RecapProviderOff}
-}
-
-func NormalizeRecapSettings(settings RecapSettings) (RecapSettings, error) {
-	settings.Provider = strings.ToLower(strings.TrimSpace(settings.Provider))
-	if settings.Provider == "" {
-		settings.Provider = RecapProviderOff
-	}
-	if settings.Provider != RecapProviderOff && settings.Provider != RecapProviderCodex && settings.Provider != RecapProviderClaude {
-		return RecapSettings{}, fmt.Errorf("unknown recap provider %q; choose off, codex, or claude", settings.Provider)
-	}
-	return settings, nil
-}
-
 func DefaultNotifySettings() NotifySettings {
 	return NotifySettings{Done: true, Waiting: true, Lost: true}
 }
@@ -293,7 +267,6 @@ func (n *NotifySettings) Set(kind string, enabled bool) error {
 type Settings struct {
 	LAN        bool                `json:"lan"`
 	Notify     *NotifySettings     `json:"notify,omitempty"`
-	Recap      *RecapSettings      `json:"recap,omitempty"`
 	AI         *AISettings         `json:"ai,omitempty"`
 	Claude     *ClaudeSettings     `json:"claude,omitempty"`
 	Delegation *DelegationSettings `json:"delegation,omitempty"`
@@ -305,13 +278,6 @@ func (s Settings) EffectiveNotify() NotifySettings {
 		return DefaultNotifySettings()
 	}
 	return *s.Notify
-}
-
-func (s Settings) EffectiveRecap() RecapSettings {
-	if s.Recap == nil {
-		return DefaultRecapSettings()
-	}
-	return *s.Recap
 }
 
 func (s Settings) EffectiveAI() AISettings {

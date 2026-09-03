@@ -22,11 +22,12 @@
 - Makes terminal Codex conversations readable through `sessions cat` by binding the session to the rollout that contains its initial request, and says when Codex has not published that transcript yet instead of reporting an empty conversation.
 - Keeps inherited `sessions send` attribution local to the daemon that owns the source session, so targeting a scratch or remote daemon does not attach a foreign session identity or block a valid delivery.
 - Gives Android and iOS a compact phone connection screen that discovers nearby hosts through Bonjour, requests a revocable credential, and waits for approval on the host — no link is needed. The host can make the same decision with `sessions access requests` and `sessions access accept <request-id>`; the one-time link remains as a fallback when discovery is unavailable.
-- Makes phones inherit the connected host's machine-level choices instead of presenting host onboarding: runtime, connection, provider, delegated-access, AI, and recap settings are labelled as host-owned and read-only, while device-local choices remain editable.
+- Makes phones inherit the connected host's machine-level choices instead of presenting host onboarding: runtime, connection, provider, delegated-access, and AI settings are labelled as host-owned and read-only, while device-local choices remain editable.
 - Introduces each daemon with the operating system's user-facing computer name while preserving its stable machine identity and any explicit Fleet nickname.
 - Adds the client-only iOS simulator application, including Bonjour/local-network declarations, generated Xcode project, and the build and pairing guide in `docs/IOS.md`.
 - Keeps an app update installed when a session ends during its readiness check; rollback remains reserved for a baseline session that disappears or is still unreachable without a recorded user-end boundary.
 - Removes the retired `sessions deploy` notice-only stub and no-action Coming soon cards, so the CLI and app show only operations that exist.
+- Removes the opt-in generated recap; the local Daily activity journal and usage facts stay available without a model call.
 - Loads secondary app views only when opened, reducing the initial JavaScript bundle from 701,455 bytes to about 584,000 bytes while keeping the total bundle within its existing budget.
 
 Existing sessions keep running across the update. No session is ended or re-adopted to install it.

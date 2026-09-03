@@ -77,9 +77,8 @@ func Run(ctx context.Context, provider, purpose, prompt string) (string, error) 
 }
 
 // boundedContext defends the daemon against a caller that never bounds its own
-// call. Both callers serialize on a single slot — daily recap holds a generate
-// mutex and smart search a one-deep busy channel — so an unbounded hung CLI
-// would take the feature down until the daemon restarts.
+// call. Smart search serializes on a one-deep busy channel, so an unbounded hung
+// CLI would take the feature down until the daemon restarts.
 func boundedContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return context.WithCancel(ctx)

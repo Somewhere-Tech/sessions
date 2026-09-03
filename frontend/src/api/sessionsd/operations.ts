@@ -220,13 +220,7 @@ export async function fetchUsageForServer(
 	return featureJSON<UsageReport>(r, 'Usage');
 }
 
-export type RecapProvider = 'off' | 'codex' | 'claude';
-
-export interface RecapSettings {
-  provider: RecapProvider;
-}
-
-export interface RecapActivity {
+export interface DailyActivity {
   id: string;
   name: string;
   description?: string;
@@ -248,59 +242,17 @@ export interface RecapActivity {
   providerSessionId?: string;
 }
 
-export interface RecapDocument {
-  date: string;
-  provider: Exclude<RecapProvider, 'off'>;
-  generatedAt: string;
-  inputDigest: string;
-  markdown: string;
-}
-
-export interface RecapDay {
+export interface DailyDay {
   date: string;
   timezone: string;
-  settings: RecapSettings;
-  activities: RecapActivity[];
+  activities: DailyActivity[];
   usage: UsageRow;
-  document: RecapDocument | null;
-  documentStale: boolean;
 }
 
-export async function fetchRecapSettings(signal?: AbortSignal): Promise<RecapSettings> {
-  const r = await apiFetch(`${httpBase()}/api/recap/settings`, { signal });
-  return featureJSON<RecapSettings>(r, 'Daily');
-}
-
-export async function updateRecapSettings(settings: RecapSettings): Promise<RecapSettings> {
-  const r = await apiFetch(`${httpBase()}/api/recap/settings`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(settings)
-  });
-  return featureJSON<RecapSettings>(r, 'Daily');
-}
-
-export async function fetchRecap(date: string, signal?: AbortSignal): Promise<RecapDay> {
+export async function fetchDaily(date: string, signal?: AbortSignal): Promise<DailyDay> {
   const query = new URLSearchParams({ date });
-  const r = await apiFetch(`${httpBase()}/api/recap?${query.toString()}`, { signal });
-  return featureJSON<RecapDay>(r, 'Daily');
-}
-
-export async function fetchRecapDates(signal?: AbortSignal): Promise<string[]> {
-  const r = await apiFetch(`${httpBase()}/api/recap/dates`, { signal });
-  const payload = await featureJSON<{ dates?: unknown }>(r, 'Daily');
-  return Array.isArray(payload.dates)
-    ? payload.dates.filter((date): date is string => typeof date === 'string')
-    : [];
-}
-
-export async function generateRecap(date: string, force = false): Promise<RecapDay> {
-  const r = await apiFetch(`${httpBase()}/api/recap/generate`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ date, force })
-  });
-  return featureJSON<RecapDay>(r, 'Daily');
+  const r = await apiFetch(`${httpBase()}/api/daily?${query.toString()}`, { signal });
+  return featureJSON<DailyDay>(r, 'Daily');
 }
 
 export interface Snapshot {

@@ -28,7 +28,7 @@ interface PaletteAction {
 const VIEW_ACTIONS: Array<{ view: ProductView; label: string; detail: string; keywords: string }> = [
   { view: 'home', label: 'Home', detail: 'Agent operations overview', keywords: 'dashboard overview' },
   { view: 'tabs', label: 'Sessions', detail: 'Running and recently ended work', keywords: 'agents conversations lanes' },
-  { view: 'today', label: 'Daily', detail: 'Today’s work and saved recaps', keywords: 'journal recap today' },
+  { view: 'today', label: 'Daily', detail: 'Today’s local work journal', keywords: 'journal activity today' },
   { view: 'search', label: 'Conversation history', detail: 'Browse or search every Claude and Codex conversation', keywords: 'resume recall history search find codex claude' },
   { view: 'fleet', label: 'Fleet', detail: 'Machines and sessions across your network', keywords: 'computers mac windows linux' },
   { view: 'usage', label: 'Usage', detail: 'Tokens, cost, projects, and tags', keywords: 'budget tokens cost' },

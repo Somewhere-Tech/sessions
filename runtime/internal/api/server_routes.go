@@ -329,7 +329,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if s.handleUsageRoute(response, request, corsOrigin) {
 		return
 	}
-	if s.handleRecapRoute(response, request, corsOrigin) {
+	if s.handleDailyRoute(response, request, corsOrigin) {
 		return
 	}
 	if s.handleOnboardingRoute(response, request, corsOrigin) {

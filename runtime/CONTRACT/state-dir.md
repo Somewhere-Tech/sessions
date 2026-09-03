@@ -51,11 +51,11 @@ daemon never reads the installed daemon's credentials or ledgers
 override:
 
 - `token` and `open`;
-- `uploads/` (`runtime/internal/api/files.go` `uploadsDir`), matching how recap,
-  usage, and integration-error state already resolve;
+- `uploads/` (`runtime/internal/api/files.go` `uploadsDir`), matching how usage
+  and integration-error state already resolve;
 - `delivery-operations/`, the content-free idempotency receipts for composer
   submissions;
-- `recaps/`, `usage.sqlite3`, and `errors.jsonl`.
+- `usage.sqlite3` and `errors.jsonl`.
 
 These do **not** follow it, and resolve from the user state root, which is
 always derived from the home directory: `settings.json`, `machine-id`,

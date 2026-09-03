@@ -1433,49 +1433,20 @@ Auth required. Re-reads the backup configuration and restarts the periodic
 push schedule, returning `200 {"ok":true}`. A configuration error is 400. Any
 other method on the three backup paths returns 405.
 
-### `GET /api/recap`
+### `GET /api/daily`
 
 Auth required. Query `date` is a local `YYYY-MM-DD` day and defaults to today;
 any other value is `400 {"error":"date must use YYYY-MM-DD"}`. Returns 200:
 
 ```json
-{"date":"2026-09-01","timezone":"<local zone name>","settings":{"provider":"off"},"activities":[/* DailyActivity */],"usage":{/* usage ReportRow totals for the day */},"document":null,"documentStale":false}
+{"date":"2026-09-01","timezone":"<local zone name>","activities":[/* DailyActivity */],"usage":{/* usage ReportRow totals for the day */}}
 ```
 
 `activities` combines Sessions-managed lanes with provider conversations
 observed outside Sessions (`"source":"provider"`, `"provenanceStatus":"Outside
-Sessions"`), sorted by `lastActivityAt` then `id`. `document` is the stored
-recap (`date`, `provider`, `generatedAt`, `inputDigest`, `markdown`) or `null`;
-`documentStale` is true when a stored recap no longer matches the day's input
-or the configured provider. Usage, settings, or recap-store failures are 500;
-other methods return 405.
-
-### `GET /api/recap/dates`
-
-Auth required. Returns `{"dates":["YYYY-MM-DD", ...]}` for every stored recap
-document; an absent recap directory yields an empty list. Read failures are
-500; other methods return 405.
-
-### `POST /api/recap/generate`
-
-Auth required. Body `{"date":"YYYY-MM-DD","force":false}`; an empty or absent
-`date` means today. Builds the day's input, runs the configured provider CLI
-under a five-minute deadline, stores the document, and returns the same body
-as `GET /api/recap` with `document` filled and `documentStale` false. `force`
-regenerates even when the stored document is current. When the recap provider
-is `off` the request is
-`400 {"error":"daily recap is off; choose Codex or Claude in Settings first"}`;
-a bad date is 400; invalid JSON is 400; generation and store failures are 500;
-other methods return 405.
-
-### `GET /api/recap/settings` and `PUT /api/recap/settings`
-
-Auth required. `GET` returns `{"provider":"off"}`, `{"provider":"codex"}`, or
-`{"provider":"claude"}`; recap is opt-in and `off` means Sessions never
-launches a model for daily synthesis. `PUT` accepts the same shape, lowercases
-and trims the value, treats an empty provider as `off`, persists it in daemon
-settings, and returns the normalized value. An unknown provider or invalid JSON
-is 400; persistence failures are 500; other methods return 405.
+Sessions"`), sorted by `lastActivityAt` then `id`. Usage or provider-log scan
+failures are 500; other methods return 405. This route makes no model call and
+does not write a narrative document.
 
 ## Go runtime extension: tailnet discovery approval
 

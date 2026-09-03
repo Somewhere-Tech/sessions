@@ -26,7 +26,7 @@ the Android app talks to its paired host, which can relay the host's approved fl
   [`frontend/src/lib/hostedBootstrap.ts`](../frontend/src/lib/hostedBootstrap.ts)).
 - **Host-owned setup:** the phone does not present the host's first-run
   onboarding. It inherits the connected computer's machine-level choices and
-  shows host runtime, connection, provider, delegated-access, AI, and recap
+  shows host runtime, connection, provider, delegated-access, and AI
   settings as read-only; appearance and other device-local choices remain
   editable ([`frontend/src/App.tsx`](../frontend/src/App.tsx),
   [`frontend/src/components/SettingsView.tsx`](../frontend/src/components/SettingsView.tsx)).

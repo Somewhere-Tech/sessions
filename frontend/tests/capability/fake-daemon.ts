@@ -463,8 +463,23 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       return jsonResponse({ remoteControl: 'inherit', permissionMode: 'inherit', model: '', somewhereMCP: 'inherit' });
     }
     if (path === '/api/ai/settings') return jsonResponse({ provider: 'claude' });
-    if (path === '/api/recap/settings') return jsonResponse({ provider: 'off' });
-    if (path === '/api/recap/dates') return jsonResponse({ dates: [] });
+    if (path === '/api/daily') {
+      return jsonResponse({
+        date: url.searchParams.get('date') ?? '2026-09-02',
+        timezone: 'UTC',
+        activities: [],
+        usage: {
+          key: 'total',
+          models: [],
+          tokens: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 },
+          costUSD: 0,
+          recordedCostUSD: 0,
+          calculatedCostUSD: 0,
+          entries: 0,
+          missingPricingEntries: 0
+        }
+      });
+    }
     if (path === '/api/access/requests') return jsonResponse({ requests: [] });
     if (path === '/api/usage') {
       return jsonResponse({

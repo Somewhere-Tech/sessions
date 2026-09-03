@@ -33,8 +33,8 @@ The signed app-bundle updater is configured in `src-tauri/tauri.conf.json` and
 exposed through the native-only settings flow in
 `frontend/src/lib/tauriBridge.ts`; the bridge serializes update discovery and
 delivers once-per-version native notifications. `frontend/src/components/DailyView.tsx`
-renders the preloaded local work journal, saved-day history, and opt-in recap,
-while `frontend/src/lib/dailyCache.ts` warms the current day and adopts it
+renders the preloaded local work journal, while `frontend/src/lib/dailyCache.ts`
+warms the current day and adopts it
 without a blank navigation state. `frontend/src/components/ProductSidebar.tsx`
 owns the always-visible signed-update action, while
 `frontend/src/components/ConnectionsView.tsx` presents loopback, LAN, Tailscale,
@@ -157,7 +157,7 @@ uses wait-ready plus the composer's bracketed-paste/separate-Enter input contrac
 for an optional initial task. Profiles inherit only while the child keeps the
 same provider; switching providers visibly resets to that provider's default login.
 A newly created profile never receives task input during its provider login flow.
-`SettingsView.tsx` provides native light/dark appearance, working agent/recap
+`SettingsView.tsx` provides native light/dark appearance and smart-feature
 preferences with rollback and stale-request protection, profile visibility,
 signed update checks/install, Connections, and the existing encrypted
 Somewhere backup surface.
@@ -232,7 +232,7 @@ command table rather than a copied list.
 
 ## Internal packages
 
-There are 27 production packages under `runtime/internal/`.
+There are 26 production packages under `runtime/internal/`.
 
 The sections below describe the packages that carry product behavior. Five
 supporting packages have no section of their own: `discovery` (Bonjour
@@ -245,8 +245,8 @@ covers the Windows side.
 
 ### `api`
 
-`api` serves health, authenticated API/WebSocket routes, LAN controls, daily
-recap settings/generation, and the
+`api` serves health, authenticated API/WebSocket routes, LAN controls, the
+factual Daily journal, and the
 SPA (`runtime/internal/api/server.go`, `runtime/internal/api/ws.go`). Loopback
 peers bypass token authentication unless a forwarding header makes the peer
 ambiguous; non-loopback clients use the configured bearer or query token unless
@@ -293,12 +293,11 @@ are accepted only through that listener, reject browser Origins, require a
 private IPv4 peer, and bind claim polling to its observed source address.
 The approval view states that its device name is self-reported and that LAN
 HTTP is unencrypted. Both transports mint the same revocable device records.
-Daily recap routes combine local usage totals with compact factual activity
+The Daily route combines local usage totals with compact factual activity
 from both managed lanes and locally observed, still-outside Claude/Codex
 conversations. The latter are streamed only from provider logs that contributed
-usage in the selected day; child-agent context snapshots are excluded. Only
-optional narrative generation is delegated to `internal/recap`
-(`runtime/internal/api/recap_handlers.go`).
+usage in the selected day; child-agent context snapshots are excluded
+(`runtime/internal/api/daily_handlers.go`).
 Smart-feature settings and natural-language search planning live at
 `GET/PUT /api/ai/settings` and `POST /api/search/plan`; the planner receives
 only the user's bounded query, while the existing `/api/search` route applies
@@ -498,22 +497,6 @@ runtime release when known; semantic runner capabilities are exposed through
 `runtime/internal/proto/runner.go`. Structured provider events use the protocol's
 extension frame instead of masquerading as terminal output.
 
-### `recap`
-
-`recap` owns the explicitly opt-in daily narrative call and its private local
-cache (`runtime/internal/recap/service.go`). It accepts already-aggregated usage
-and compact `session.DailyActivity` facts, aliases durable session IDs, bounds
-activity count and text size, avoids full transcripts, and runs either the
-pre-authenticated Codex CLI in an ephemeral read-only sandbox with user
-configuration and rules ignored, or Claude with tools and session persistence
-disabled through the shared `internal/agentcall` boundary. Sessions does not
-supply a model override; each CLI chooses its default while the service requests
-its lowest supported reasoning effort. The
-provider-safe JSON is passed over stdin, hard-capped at 32 KiB, and never placed
-in a visible composer. Documents are keyed by date and cached by the factual
-input digest plus provider; this package never calculates usage totals or owns
-provider credentials.
-
 ### `recovery`
 
 `recovery` reconciles ledger state with live runners and provider files without
@@ -667,7 +650,7 @@ an operator-facing reason/detail/time and last useful summary, which powers GUI
 health, CLI status/list output, and summary-returning waits. Creation and user-kill intent are
 recorded before the corresponding process action. Its daily activity projection
 selects sessions and lanes active in a local day, carries hierarchy/tags/outcome,
-and uses only final structured assistant summaries for optional recap input
+and uses only final structured assistant summaries for the local journal
 (`runtime/internal/session/daily_activity.go`).
 
 `MassKillGuard` refuses more than `DefaultMassKillLimit` (3) runner removals in
@@ -688,7 +671,7 @@ Runner artifacts have defined suffixes in `runtime/internal/state/paths.go`,
 and the in-memory replay plus persisted event log are bounded. Attached state
 also exposes runner protocol/release and the additive idle outcome without
 changing runner ownership. Additive daemon
-settings persist notification, LAN, recap, smart-feature provider choices, and
+settings persist notification, LAN, smart-feature provider choices, and
 typed Claude launch defaults
 without coupling them to runner state (`runtime/internal/state/settings.go`). This is
 low-level runtime state; product lifecycle policy stays in `internal/session`.
@@ -904,7 +887,7 @@ own configuration root is `~/.config/sessions` on Unix and
 `%LOCALAPPDATA%\Sessions\config` on Windows. Derive both from
 `state.UserStateRootFor`/`state.UserConfigRootFor` rather than rebuilding either
 layout by hand (`runtime/internal/state/config.go`). `SESSIONS_STATE_DIR` relocates runner,
-token, open-sentinel, uploads, recap, usage, and integration-error state for a
+token, open-sentinel, uploads, usage, and integration-error state for a
 scratch daemon, while the user state root — settings, machine identity, approved
 machines, search index, idle sentinels — stays where `HOME` puts it. The
 override is necessary but not sufficient for scratch work: a scratch daemon also
@@ -922,7 +905,7 @@ daily driver's ledger and sweep the daily driver's runner plists (`docs/DEV.md`)
 | Durable machine identity | `~/.local/state/sessions/machine-id` | `runtime/internal/api/identity.go` |
 | Search index | `~/.local/state/sessions/search-index.db` | `runtime/internal/api/search_handlers.go` |
 | Integration errors | `~/.local/state/sessions/errors.jsonl`; follows an explicit `SESSIONS_STATE_DIR` | `runtime/internal/integrations/errors.go` |
-| Daily recaps and local usage rollup | `~/.local/state/sessions/recaps/` and `usage.sqlite3`; both follow an explicit `SESSIONS_STATE_DIR` | `runtime/internal/recap/service.go`, `runtime/internal/usage/config.go` |
+| Local usage rollup | `~/.local/state/sessions/usage.sqlite3`; follows an explicit `SESSIONS_STATE_DIR` | `runtime/internal/usage/config.go` |
 | Browser push keys and subscriptions | `~/.local/state/sessions/{vapid.json,push-subscriptions.json}` | `runtime/internal/session/push.go` |
 | Idle completion sentinels | `~/.local/state/sessions/idle/<session-id>` | `runtime/internal/session/idle.go` |
 | Saved provider profiles | `~/.local/state/sessions/profiles/<tool>/<name>` | `runtime/internal/session/profiles.go` |

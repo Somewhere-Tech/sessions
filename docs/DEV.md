@@ -10,7 +10,7 @@
 3. **Isolate every test daemon.** All four of `HOME`, `SESSIONS_STATE_DIR`,
    `SESSIONS_LEDGER_PATH`, and `SESSIONS_PORT` are required, not optional
    extras. `SESSIONS_STATE_DIR` relocates the runner artifact directory, the
-   `token`/`open` sentinels beside it, and the uploads, recap, usage, and
+   `token`/`open` sentinels beside it, and the uploads, usage, and
    integration-error state derived from the same root
    (`runtime/internal/state/config.go` `stateRootsFromEnv`) — but not the user
    state root, which keeps settings, machine identity, approved machines, the

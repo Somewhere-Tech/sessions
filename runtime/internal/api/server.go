@@ -12,7 +12,6 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/project"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
-	"github.com/somewhere-tech/sessions/runtime/internal/recap"
 	sessionruntime "github.com/somewhere-tech/sessions/runtime/internal/session"
 	"github.com/somewhere-tech/sessions/runtime/internal/smartsearch"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
@@ -47,7 +46,6 @@ type Server struct {
 	backups              *backup.Service
 	integrationEndpoints *integrations.Service
 	usage                *usage.Service
-	recaps               *recap.Service
 	smartSearch          *smartsearch.Service
 	deliveries           *delivery.Store
 	identity             machineIdentity
@@ -164,11 +162,6 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 		localUsage = usage.NewLocalService(config)
 	}
 	server.usage = localUsage
-	recapRoot := config.StateRoot
-	if recapRoot == "" {
-		recapRoot = config.UserStateRoot
-	}
-	server.recaps = recap.NewService(recapRoot)
 	server.smartSearch = smartsearch.NewService()
 	server.lan = newLANListener(config, server, identity)
 	// Create the token while the daemon is starting, including when the open

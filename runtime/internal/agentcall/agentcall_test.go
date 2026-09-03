@@ -136,8 +136,8 @@ func TestRunIsolatedKeepsOutputWhenOnlyAHelperOutlivesACleanExit(t *testing.T) {
 
 func TestRunIsolatedReportsCLIFailureDetail(t *testing.T) {
 	executable := fakeProviderCLI(t, "echo 'not signed in' >&2\nexit 1\n")
-	_, err := runIsolated(context.Background(), ProviderCodex, "daily recap", executable, nil, t.TempDir(), "prompt")
-	if err == nil || !strings.Contains(err.Error(), "codex daily recap call failed: not signed in") {
+	_, err := runIsolated(context.Background(), ProviderCodex, "smart search", executable, nil, t.TempDir(), "prompt")
+	if err == nil || !strings.Contains(err.Error(), "codex smart search call failed: not signed in") {
 		t.Fatalf("err = %v, want the CLI's own stderr detail", err)
 	}
 }

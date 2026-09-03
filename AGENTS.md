@@ -57,7 +57,7 @@ private hosted-service designs do not belong in this repository.
 2. **Isolate development.** Use a worktree and branch. `SESSIONS_STATE_DIR` plus
    `SESSIONS_PORT` is **not** isolation. `SESSIONS_STATE_DIR` moves the runner
    artifact directory, the `token`/`open` sentinels beside it, and the state
-   that follows the derived root -- uploads, recap, usage, integration errors
+   that follows the derived root -- uploads, usage, integration errors
    (`runtime/internal/state/config.go` `stateRootsFromEnv`, and the callers
    that prefer `StateRoot` in `runtime/internal/api/server.go`); the lane ledger
    (`runtime/internal/ledger/store.go` `ResolvePath`), the user state root, and

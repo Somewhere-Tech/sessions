@@ -5,15 +5,12 @@ import {
   fetchOnboardingState,
   fetchProfiles,
   fetchProviderStatuses,
-  fetchRecapSettings,
   updateAISettings,
   updateClaudeSettings,
   updateOnboardingPreference,
-  updateRecapSettings,
   updateProvider,
   type AIProvider,
   type AccountProfile,
-  type RecapProvider,
   type ProviderStatus
 } from '../api/sessionsd';
 import type { ClaudeSettings } from '../types';
@@ -71,10 +68,6 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
   const [aiBusy, setAIBusy] = useState(false);
   const [aiAvailable, setAIAvailable] = useState(true);
   const [aiMessage, setAIMessage] = useState<string | null>(null);
-  const [recapProvider, setRecapProvider] = useState<RecapProvider>('off');
-  const [recapBusy, setRecapBusy] = useState(false);
-  const [recapAvailable, setRecapAvailable] = useState(true);
-  const [recapMessage, setRecapMessage] = useState<string | null>(null);
   const [claudeSettings, setClaudeSettings] = useState<ClaudeSettings>({
     remoteControl: 'off', permissionMode: 'inherit', model: '', effort: 'inherit',
     chrome: 'inherit', somewhereMcp: 'inherit', remoteControlNamePrefix: ''
@@ -95,7 +88,6 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
   const [providerBusy, setProviderBusy] = useState<ProviderStatus['id'] | null>(null);
   const [providerMessage, setProviderMessage] = useState<string | null>(null);
   const aiGeneration = useRef(0);
-  const recapGeneration = useRef(0);
   const claudeGeneration = useRef(0);
 
   useEffect(() => {
@@ -143,15 +135,10 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
     if (!native) return () => controller.abort();
 
     const nextAI = aiGeneration.current + 1;
-    const nextRecap = recapGeneration.current + 1;
     aiGeneration.current = nextAI;
-    recapGeneration.current = nextRecap;
     setAIBusy(false);
-    setRecapBusy(false);
     setAIAvailable(true);
-    setRecapAvailable(true);
     setAIMessage(null);
-    setRecapMessage(null);
     void fetchAISettings(controller.signal)
       .then((settings) => {
         if (aiGeneration.current === nextAI) setAIProvider(settings.provider);
@@ -160,16 +147,6 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
         if (!controller.signal.aborted && aiGeneration.current === nextAI) {
           setAIAvailable(false);
           setAIMessage('AI search requires a current Sessions runtime.');
-        }
-      });
-    void fetchRecapSettings(controller.signal)
-      .then((settings) => {
-        if (recapGeneration.current === nextRecap) setRecapProvider(settings.provider);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted && recapGeneration.current === nextRecap) {
-          setRecapAvailable(false);
-          setRecapMessage('Daily recaps require a current Sessions runtime.');
         }
       });
     return () => controller.abort();
@@ -195,29 +172,6 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
       }
     } finally {
       if (aiGeneration.current === generation) setAIBusy(false);
-    }
-  };
-
-  const saveRecapProvider = async (provider: RecapProvider): Promise<void> => {
-    if (clientOnly || !native || recapBusy || !recapAvailable) return;
-    const previous = recapProvider;
-    const generation = recapGeneration.current + 1;
-    recapGeneration.current = generation;
-    setRecapBusy(true);
-    setRecapProvider(provider);
-    setRecapMessage(null);
-    try {
-      const saved = await updateRecapSettings({ provider });
-      if (recapGeneration.current !== generation) return;
-      setRecapProvider(saved.provider);
-      setRecapMessage(saved.provider === 'off' ? 'Daily model calls are off.' : 'Daily recap provider saved.');
-    } catch (error) {
-      if (recapGeneration.current === generation) {
-        setRecapProvider(previous);
-        setRecapMessage(error instanceof Error ? error.message : 'Could not save recap settings.');
-      }
-    } finally {
-      if (recapGeneration.current === generation) setRecapBusy(false);
     }
   };
 
@@ -376,10 +330,6 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
             aiBusy={aiBusy}
             aiAvailable={aiAvailable}
             aiMessage={aiMessage}
-            recapProvider={recapProvider}
-            recapBusy={recapBusy}
-            recapAvailable={recapAvailable}
-            recapMessage={recapMessage}
             claudeSettings={claudeSettings}
             claudeBusy={claudeBusy}
             claudeAvailable={claudeAvailable}
@@ -389,7 +339,6 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
             delegationAvailable={delegationAvailable}
             delegationMessage={delegationMessage}
             onAIProvider={saveAIProvider}
-            onRecapProvider={saveRecapProvider}
             onClaudeSettings={saveClaudeSettings}
             onRemoteControl={saveRemoteControlPreference}
             onDelegatedAccess={saveDelegatedAccess}
@@ -492,12 +441,7 @@ interface AgentSettingsProps {
   aiBusy: boolean;
   aiAvailable: boolean;
   aiMessage: string | null;
-  recapProvider: RecapProvider;
-  recapBusy: boolean;
-  recapAvailable: boolean;
-  recapMessage: string | null;
   onAIProvider: (provider: AIProvider) => Promise<void>;
-  onRecapProvider: (provider: RecapProvider) => Promise<void>;
   claudeSettings: ClaudeSettings;
   claudeBusy: boolean;
   claudeAvailable: boolean;
@@ -521,7 +465,7 @@ function AgentSettings(props: AgentSettingsProps): JSX.Element {
     <section className="settings-page">
       <span className="settings-kicker">Local, explicit calls</span>
       <h1>Agents & models</h1>
-      <p>Choose which already-authenticated local agent powers smart search and opt-in daily recaps.</p>
+      <p>Choose which already-authenticated local agent powers smart search.</p>
       {!props.native ? <div className="settings-message">These controls are available only in the signed Sessions app.</div> : null}
       <div className="settings-card">
         <h2>Claude session defaults</h2>
@@ -556,19 +500,6 @@ function AgentSettings(props: AgentSettingsProps): JSX.Element {
           ><option value="codex">Codex</option><option value="claude">Claude</option></select>
         </label>
         {props.aiMessage ? <div className="settings-message">{props.aiMessage}</div> : null}
-      </div>
-      <div className="settings-card">
-        <h2>Daily recap</h2>
-        {props.clientOnly ? <HostChoice hostName={props.hostName} /> : null}
-        <label className="settings-select-row">
-          <span><strong>Summary provider</strong><small>Opt in. A call happens only when you request a recap.</small></span>
-          <select
-            value={props.recapProvider}
-            disabled={props.clientOnly || !props.native || props.recapBusy || !props.recapAvailable}
-            onChange={(event) => void props.onRecapProvider(event.currentTarget.value as RecapProvider)}
-          ><option value="off">Off</option><option value="codex">Codex</option><option value="claude">Claude</option></select>
-        </label>
-        {props.recapMessage ? <div className="settings-message">{props.recapMessage}</div> : null}
       </div>
     </section>
   );
