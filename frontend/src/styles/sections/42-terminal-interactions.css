@@ -13,6 +13,7 @@
 .settings-select-row select,
 .settings-select-row input { min-width: 160px; height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-base); color: var(--fg); font-size: 12px; }
 .settings-message { padding: 10px 12px; border: 1px solid var(--accent-border-soft); border-radius: 8px; background: var(--accent-bg-soft); color: var(--accent); font-size: 12px; }
+.settings-host-choice { width: fit-content; padding: 5px 8px; border-radius: 999px; background: var(--bg-elev-2); color: var(--fg-dim); font-size: 12px; font-weight: 650; }
 .settings-profile-list { display: grid; }
 .settings-profile-list > div { display: grid; grid-template-columns: 70px 1fr auto; align-items: center; gap: 10px; min-height: 46px; border-top: 1px solid var(--border); }
 .settings-profile-list > div:first-child { border-top: 0; }
@@ -294,6 +295,8 @@
 }
 
 @media (max-width: 720px) {
+  .client-onboarding-note { margin-top: calc(env(safe-area-inset-top, 0px) + 8px); }
+  .operations-content:has(> .client-onboarding-note) .session-navigator-head { padding-top: 12px; }
   .subagents-panel-trigger { min-height: 34px; }
   .subagents-panel-slot { width: 100%; border-left: 0; }
   .subagents-panel > header { padding-top: calc(env(safe-area-inset-top, 0px) + 16px); }
@@ -371,7 +374,8 @@
   .home-hero { align-items: flex-start; flex-direction: column; }
   .home-stat-grid { grid-template-columns: 1fr; }
   .settings-view { grid-template-columns: 1fr; padding-bottom: 70px; overflow-y: auto; }
-  .settings-sections { min-height: auto; padding: 16px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .settings-sections { min-height: auto; padding: calc(16px + env(safe-area-inset-top, 0px)) 16px 16px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .operations-content:has(> .client-onboarding-note) .settings-sections { padding-top: 16px; }
   .settings-sections { display: grid; grid-template-columns: repeat(2, 1fr); }
   .settings-sections header { grid-column: 1 / -1; }
   .settings-page { width: calc(100% - 28px); padding: 28px 0; }

@@ -17,7 +17,7 @@ function lastBackupLabel(value?: string): string {
   return Number.isNaN(date.getTime()) ? value : `Last backup ${date.toLocaleString()}`;
 }
 
-export function SomewhereCard(): JSX.Element {
+export function SomewhereCard({ clientOnly = false, hostName = 'this computer' }: { clientOnly?: boolean; hostName?: string }): JSX.Element {
   const [cli, setCLI] = useState<SomewhereCLIStatus | null>(null);
   const [backup, setBackup] = useState<BackupStatus | null>(null);
   const [project, setProject] = useState('');
@@ -27,6 +27,10 @@ export function SomewhereCard(): JSX.Element {
   const [recoveryPhrase, setRecoveryPhrase] = useState<string | null>(null);
 
   const refresh = useCallback(async (): Promise<void> => {
+    if (clientOnly) {
+      setChecking(false);
+      return;
+    }
     if (!isTauri()) return;
     setChecking(true);
     setMessage(null);
@@ -43,7 +47,7 @@ export function SomewhereCard(): JSX.Element {
       setMessage((current) => current ?? (backupResult.reason instanceof Error ? backupResult.reason.message : 'Could not inspect backup status'));
     }
     setChecking(false);
-  }, []);
+  }, [clientOnly]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -72,7 +76,7 @@ export function SomewhereCard(): JSX.Element {
   };
 
   const enableBackup = async (): Promise<void> => {
-    if (busy || !project.trim()) return;
+    if (clientOnly || busy || !project.trim()) return;
     setBusy('enable');
     setMessage(null);
     try {
@@ -91,7 +95,7 @@ export function SomewhereCard(): JSX.Element {
   };
 
   const backupNow = async (): Promise<void> => {
-    if (busy) return;
+    if (clientOnly || busy) return;
     setBusy('now');
     setMessage(null);
     try {
@@ -120,7 +124,14 @@ export function SomewhereCard(): JSX.Element {
         <span className="somewhere-live-badge">Backup available now</span>
       </header>
 
-      <div className="somewhere-live-grid">
+      {clientOnly ? (
+        <div className="somewhere-live-grid">
+          <section className="somewhere-backup">
+            <header><div><span>Host-managed backup</span><strong>Chosen on {hostName}</strong></div><span className="somewhere-status-dot" aria-hidden /></header>
+            <p>Backup and Somewhere CLI settings stay on {hostName}. Open Sessions on that computer to view or change them.</p>
+          </section>
+        </div>
+      ) : <div className="somewhere-live-grid">
         <section className={`somewhere-backup${backup?.enabled ? ' is-enabled' : ''}`}>
           <header>
             <div><span>Encrypted backup</span><strong>{backup?.enabled ? 'On' : 'Not configured'}</strong></div>
@@ -163,7 +174,7 @@ export function SomewhereCard(): JSX.Element {
           </div>
           <small>{cli?.detail ?? 'Install the Somewhere CLI, then run somewhere login once.'}</small>
         </section>
-      </div>
+      </div>}
 
       {recoveryPhrase ? (
         <section className="somewhere-recovery" role="status">
