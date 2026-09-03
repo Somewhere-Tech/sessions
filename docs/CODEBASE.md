@@ -814,6 +814,37 @@ while `embedui` builds embed the built SPA and provide guarded route fallback
 (`runtime/internal/webassets/assets.go`,
 `runtime/internal/webassets/assets_embedui.go`).
 
+## Source structure
+
+The structural gate is `npm run check:structure` from the repository root. It
+measures physical source spans from the Go AST and TypeScript compiler API,
+including nested function literals, and reports violations as
+`file:line:function:length`. The initial distribution does not support an
+80-line limit without turning the exception list into a second baseline: its
+sixth-largest functions are 221 lines in Go and 678 lines in TypeScript/TSX.
+Those are therefore the enforced limits. The five larger functions in each
+language are named with their measured ceilings in
+`scripts/function-length-exceptions.txt`; they may shrink but may not grow, and
+the checker rejects stale or additional exceptions.
+
+Go package direction is an exact direct-edge declaration in
+`scripts/import-boundaries.txt`, generated from `go list -deps` for Darwin,
+Linux, and Windows. The checker rejects both an undeclared edge and an allowed
+edge no longer present, so dependency changes require a deliberate review of
+the graph. Command packages remain assembly points over `internal/*`.
+`internal/state` does not point back into `internal/api` or `internal/session`;
+`internal/discovery`, `internal/ipc`, and `internal/tokenstore` have no product
+dependencies; and `internal/proto` retains only its existing dependency on
+`internal/ipc`.
+
+The frontend follows the same inward direction. Files under `frontend/src/lib`
+and `frontend/src/api` may depend on shared types and lower-level helpers, but
+never on React components or hooks. Shared provider-message types therefore
+live in `frontend/src/types/index.ts`, below both the history parser and its
+React hook. `scripts/check-source-size.sh` still prints the largest handwritten
+production and build files for orientation, but file length is informational;
+function responsibility and import direction are enforced.
+
 ## Session lifecycle
 
 1. An API create request reaches `session.Manager.Create`, which validates the

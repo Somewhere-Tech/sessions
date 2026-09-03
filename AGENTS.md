@@ -135,8 +135,32 @@ For the shared frontend:
 cd frontend
 npm ci
 npm run typecheck
+npm run lint
 npm run build
+npm run test:smoke
 ```
+
+From the repository root, verify the source structure and public tree:
+
+```sh
+npm run check:structure
+scripts/check-source-size.sh
+scripts/check-public-tree.sh
+node scripts/check-doc-links.mjs
+```
+
+`check:structure` parses handwritten production functions and the import graph.
+Go functions may be at most 221 lines and TypeScript/TSX functions at most 678
+lines. The five measured legacy exceptions for each language are named in
+`scripts/function-length-exceptions.txt`; their recorded lengths are ceilings,
+not exemptions from future growth. `scripts/import-boundaries.txt` is the exact
+direct Go product-package graph across Darwin, Linux, and Windows. New or stale
+edges require an explicit review of that file. Frontend modules below `src/lib`
+and `src/api` may not import from `src/components` or `src/hooks`.
+
+`scripts/check-source-size.sh` remains an informational report of the largest
+handwritten files. It does not enforce a file-length cap; function length and
+dependency direction are the structural gates.
 
 When the CLI surface changes, run `runtime/scripts/gen-cli-docs.sh` and commit
 the generated reference unchanged.
