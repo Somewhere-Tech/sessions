@@ -36,6 +36,8 @@ import {
 import { useSessions } from '../store/sessions';
 
 interface Props {
+  clientOnly?: boolean;
+  hostName?: string;
   textSize: TextSize;
   onTextSizeChange: (size: TextSize) => void;
   onNewSession?: () => void;
@@ -86,7 +88,7 @@ async function getPushRegistration(): Promise<ServiceWorkerRegistration> {
 }
 
 // Settings popover anchored to a header button.
-export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenConnections }: Props): JSX.Element {
+export function SettingsMenu({ clientOnly = false, hostName = 'this computer', textSize, onTextSizeChange, onNewSession, onOpenConnections }: Props): JSX.Element {
   const activeServerId = useServers((state) => state.activeId);
   const activeServerIsLocal = useServers((state) =>
     state.servers.find((server) => server.id === state.activeId)?.isDefault === true
@@ -176,7 +178,7 @@ export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenC
   };
 
   const saveRecapSettings = async (next: RecapSettings): Promise<void> => {
-    if (recapBusy || !recapAvailable) return;
+    if (clientOnly || recapBusy || !recapAvailable) return;
     const previous = recapSettings;
     const generation = recapGeneration.current + 1;
     recapGeneration.current = generation;
@@ -199,7 +201,7 @@ export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenC
   };
 
   const saveAISettings = async (next: AISettings): Promise<void> => {
-    if (aiBusy || !aiAvailable) return;
+    if (clientOnly || aiBusy || !aiAvailable) return;
     const previous = aiSettings;
     const generation = aiGeneration.current + 1;
     aiGeneration.current = generation;
@@ -480,12 +482,13 @@ export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenC
               <div className="settings-menu-divider" />
               <div className="settings-menu-section" aria-label="Smart features">
                 <div className="settings-menu-section-title">Smart features</div>
+                {clientOnly ? <div className="settings-menu-status">Chosen on {hostName}</div> : null}
                 <label className="settings-menu-field">
                   <span>Provider</span>
                   <select
                     className="settings-menu-input"
                     value={aiSettings.provider}
-                    disabled={aiBusy || !aiAvailable}
+                    disabled={clientOnly || aiBusy || !aiAvailable}
                     onChange={(event) => void saveAISettings({ provider: event.currentTarget.value as AIProvider })}
                   >
                     <option value="codex">Codex · recommended</option>
@@ -498,12 +501,13 @@ export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenC
               <div className="settings-menu-divider" />
               <div className="settings-menu-section" aria-label="Daily recap">
                 <div className="settings-menu-section-title">Daily recap</div>
+                {clientOnly ? <div className="settings-menu-status">Chosen on {hostName}</div> : null}
                 <label className="settings-menu-field">
                   <span>Writer</span>
                   <select
                     className="settings-menu-input"
                     value={recapSettings.provider}
-                    disabled={recapBusy || !recapAvailable}
+                    disabled={clientOnly || recapBusy || !recapAvailable}
                     onChange={(event) => void saveRecapSettings({ ...recapSettings, provider: event.currentTarget.value as RecapProvider })}
                   >
                     <option value="off">Off · no model calls</option>

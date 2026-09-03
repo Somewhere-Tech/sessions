@@ -609,10 +609,10 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     return () => controller.abort();
   }, [activeServerId, single]);
   useEffect(() => {
-    if (!onboardingPending) return;
+    if (!onboardingPending || nativeClientOnly) return;
     setDialogOpen(null);
     setCommandPaletteOpen(false);
-  }, [onboardingPending]);
+  }, [nativeClientOnly, onboardingPending]);
   const chooseOnboardingPreference = useCallback(async (
     remoteControl: 'enabled' | 'local-only',
     delegatedAccess: 'inherit' | 'autonomous'
@@ -781,6 +781,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         {sessionWorkspace && !isMobile ? sessionNavigator : null}
         <section className="operations-content">
           <TailnetAccessInbox />
+          {nativeClientOnly && onboardingPending ? <section className="client-onboarding-note" role="status" aria-live="polite"><strong>Finish setup on {machine}:</strong><span>Open Sessions on that computer once.</span></section> : null}
           {adoptionNotice ? (
             <section className="adoption-notice" role="status" aria-live="polite">
               <div>
@@ -820,7 +821,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
               />
               {!isMobile ? <div className="session-layout-switch"><button type="button" className={effectiveLayout === 'tabs' ? 'is-active' : ''} onClick={() => setLayoutMode('tabs')}>Tabs</button><button type="button" className={effectiveLayout === 'grid' ? 'is-active' : ''} onClick={() => setLayoutMode('grid')}>Grid</button></div> : null}
               <ConnectionStatus machine={machine} hydrated={sessionsHydrated} error={sessionsError} />
-              <SettingsMenu textSize={textSize} onTextSizeChange={changeTextSize} onNewSession={openNewSession} onOpenConnections={() => setLayoutMode('settings')} />
+              <SettingsMenu clientOnly={nativeClientOnly} hostName={machine} textSize={textSize} onTextSizeChange={changeTextSize} onNewSession={openNewSession} onOpenConnections={() => setLayoutMode('settings')} />
             </header>
           ) : null}
 
@@ -855,8 +856,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         ) : effectiveLayout === 'usage' ? (
           <Suspense fallback={null}><UsageDashboard /></Suspense>
         ) : effectiveLayout === 'settings' || effectiveLayout === 'feedback' || effectiveLayout === 'connections' ? (
-          <Suspense fallback={null}><SettingsView
-              theme={theme}
+          <Suspense fallback={null}><SettingsView clientOnly={nativeClientOnly} hostName={machine} theme={theme}
               onThemeChange={setTheme}
               textSize={textSize}
               onTextSizeChange={changeTextSize}
@@ -976,7 +976,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
           onStarted={openSession}
         /></Suspense>
       ) : null}
-      {onboarding && onboarding.supported !== false && !onboarding.complete ? (
+      {!nativeClientOnly && onboarding && onboarding.supported !== false && !onboarding.complete ? (
         <OnboardingDialog
           machine={machine}
           busy={onboardingBusy}
