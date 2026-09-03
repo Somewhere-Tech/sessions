@@ -34,7 +34,7 @@ func (m *Manager) RequestKillAttributed(ctx context.Context, id string, force bo
 	if err := m.guard.Check(1, force); err != nil {
 		return err
 	}
-	if _, ok := m.registry.Get(id); !ok {
+	if _, ok := m.registry.Get(id); !ok && !m.lostWithoutRunner(ctx, id) {
 		return fmt.Errorf("session %s not found", id)
 	}
 	return m.killOne(ctx, id, end)
@@ -53,6 +53,8 @@ func (m *Manager) KillManyAttributed(ctx context.Context, ids []string, force bo
 	unique := make(map[string]struct{})
 	for _, id := range ids {
 		if _, ok := m.registry.Get(id); ok {
+			unique[id] = struct{}{}
+		} else if m.lostWithoutRunner(ctx, id) {
 			unique[id] = struct{}{}
 		}
 	}
@@ -102,6 +104,7 @@ func (m *Manager) resolveEndInitiator(ctx context.Context, end state.EndSessionR
 }
 
 func (m *Manager) killOne(ctx context.Context, id string, end state.EndSessionRequest) error {
+	closeLostRecord := m.lostWithoutRunner(ctx, id)
 	if m.boundaries != nil {
 		if err := m.boundaries.RecordUserKill(ctx, ledger.UserKill{
 			Meta:          ledger.Meta{LaneID: id},
@@ -115,7 +118,39 @@ func (m *Manager) killOne(ctx context.Context, id string, end state.EndSessionRe
 			return fmt.Errorf("record user kill before runner kill: %w", err)
 		}
 	}
+	if closeLostRecord {
+		// There is no process to signal. Drop a stale unreachable connection if
+		// one remains in memory; if discovery reattached it in the meantime,
+		// fall through and deliver the normal kill control instead.
+		if m.registry.RemoveUnreachable(id) {
+			return nil
+		}
+		if _, live := m.registry.Get(id); !live {
+			return nil
+		}
+	}
 	return m.registry.RequestKill(ctx, id, true)
+}
+
+// lostWithoutRunner is the only case where an explicit end can close a record
+// without sending runner control. The append-only ledger says contact was
+// lost, and the same identity-aware process probe used by discovery confirms
+// that this session's runner is not alive. A socket error alone is never
+// enough: healthy runners can outlive a daemon connection.
+func (m *Manager) lostWithoutRunner(ctx context.Context, id string) bool {
+	if m.ledgerReader == nil || m.boundaries == nil || m.runtimeStillLive(id) {
+		return false
+	}
+	lanes, err := m.ledgerStates(ctx)
+	if err != nil {
+		return false
+	}
+	for _, lane := range lanes {
+		if lane.LaneID == id {
+			return lane.Created && lane.RunnerLost && !lane.Archived && !durablyClosed(lane)
+		}
+	}
+	return false
 }
 
 func (m *Manager) Input(ctx context.Context, id, data string) bool {

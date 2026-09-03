@@ -68,6 +68,23 @@ func TestTeamForCountsNeedsInputAndUsesDisplayParent(t *testing.T) {
 	}
 }
 
+func TestTeamForNamesLostRunnerAndItsRecoveryCommand(t *testing.T) {
+	const id = "worker"
+	lost := lane(id, "manager", string(state.ToolLane))
+	lost.Unreachable = true
+	lost.UnreachableReason = "runner-lost"
+	lost.RunnerGone = true
+	listing, ok := teamFor([]state.SessionInfo{lane("manager", "", "shell"), lost}, "manager")
+	if !ok || len(listing.Members) != 1 {
+		t.Fatalf("lost team listing = %#v, ok=%v", listing, ok)
+	}
+	member := listing.Members[0]
+	if member.State != "lost" || member.Reason != "runner process is gone" ||
+		member.Recovery != "sessions kill "+id || member.Working {
+		t.Fatalf("lost team member = %#v", member)
+	}
+}
+
 func TestTeamForUnknownCallerIsEmptyNotWhole(t *testing.T) {
 	sessions := []state.SessionInfo{lane("a", "", "shell"), lane("b", "a", "shell")}
 	listing, ok := teamFor(sessions, "nobody")

@@ -104,6 +104,24 @@ func (r *Registry) Get(id string) (*Session, bool) {
 	return session, ok
 }
 
+// RemoveUnreachable forgets only a dead connection after the session manager
+// has durably closed its record. It never removes an attached runner: if
+// discovery won the race and reconnected the session, the caller must send the
+// ordinary kill control to that live runner instead.
+func (r *Registry) RemoveUnreachable(id string) bool {
+	r.mu.Lock()
+	session, ok := r.sessions[id]
+	if !ok || !session.Info().Unreachable {
+		r.mu.Unlock()
+		return false
+	}
+	delete(r.sessions, id)
+	r.removeOrderLocked(id)
+	r.mu.Unlock()
+	_ = session.Close()
+	return true
+}
+
 // Kill sends one runner KILL frame. The higher-level session manager applies
 // the mass-kill policy before calling this low-level operation.
 func (r *Registry) Kill(ctx context.Context, id string, _ bool) bool {

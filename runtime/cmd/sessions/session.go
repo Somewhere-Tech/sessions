@@ -55,6 +55,7 @@ type session struct {
 	Unreachable            bool    `json:"unreachable,omitempty"`
 	UnreachableReason      string  `json:"unreachableReason,omitempty"`
 	UnreachableSince       *int64  `json:"unreachableSince,omitempty"`
+	RunnerGone             bool    `json:"runnerGone,omitempty"`
 	ExitCode               *int    `json:"exitCode"`
 	ExitSignal             *string `json:"exitSignal"`
 	ExitedAt               *int64  `json:"exitedAt"`

@@ -476,7 +476,7 @@ list agent sessions and headless lanes
 
 List agent sessions and headless lanes together. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Pinned sessions come first here too, with a PIN column when any row carries the mark.
 
-State: ended sessions and exited lanes are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's records and changes nothing about which states are shown.
+State: ended sessions and exited lanes are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's records and changes nothing about which states are shown. A runtime whose process is proven gone reads as lost and carries its recovery action: resume a provider conversation that can continue, or kill a headless lane to close its retained record.
 
 `sessions list -a` is the one command that answers "show me every session Sessions created": every agent session and every retained lane, live or ended, in a single table with a TYPE column. It does not reach conversations Sessions did not create — for those, and for reopening any past conversation, use `sessions history`. Use it when a lane you dispatched with `sessions run` is not where you expected to find it — ls never lists lanes, and a lane drops out of the default list view as soon as it exits.
 
@@ -500,6 +500,8 @@ list headless lanes
 
 List retained headless lanes, including the ones `sessions run` created that `sessions ls` never shows. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. --subtree selects session ancestry; --direct limits ancestry to immediate children. --all-owners (alias --all) returns every owner's lanes; like everywhere else it selects owners, not states.
 
+A lane with no completion manifest is not necessarily running. When the daemon's process probe proves its runner is gone, the lane reads as lost with the reason and exact `sessions kill <id>` command that closes the retained record. JSON carries the same answer in lane_status without changing exited: a vanished runner supplies no exit status.
+
 Lanes are retained after they exit and are always listed here, so -a (--include-exited, --include-closed) is accepted for spelling parity with ls and list and changes nothing.
 
 Examples:
@@ -518,9 +520,9 @@ Usage:
 
 show the lanes a manager delegated and their state
 
-Show the lanes one manager is responsible for: its own parent, if any, and its delegated descendants, each with a compact state and the last line of work. Visibility follows responsibility — a lane sees only its parent and its own descendants, never other projects — and every row carries a short summary rather than a transcript, so a manager can watch its workers without pulling their conversations into context. The calling lane is SESSIONS_SESSION_ID; pass a lane id to inspect any lane's team. Rows waiting on a decision are called out so a blocked worker is visible without opening it.
+Show the lanes one manager is responsible for: its own parent, if any, and its delegated descendants, each with a compact state and the last line of work. Visibility follows responsibility — a lane sees only its parent and its own descendants, never other projects — and every row carries a short summary rather than a transcript, so a manager can watch its workers without pulling their conversations into context. The calling lane is SESSIONS_SESSION_ID; pass a lane id to inspect any lane's team. Rows waiting on a decision and lanes whose runners are lost are called out with the command that resolves them.
 
---all is the view from the top: every session that has delegated lanes, with how many are working and which ones wait on you, so a person sees across all their managers without opening any of them.
+--all is the view from the top: every session that has delegated lanes, with how many are working, lost, or waiting on you, so a person sees across all their managers without opening any of them.
 
 Examples:
   sessions team
@@ -847,9 +849,9 @@ Usage:
 
 terminate sessions or lanes
 
-Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one, and it refuses to swallow a following flag as the explanation, so `--reason --force` is a usage error rather than a recorded reason of '--force' with the force silently dropped. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit.
+Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one, and it refuses to swallow a following flag as the explanation, so `--reason --force` is a usage error rather than a recorded reason of '--force' with the force silently dropped. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit. A retained runner-gone record has no process to signal; kill closes that record with a durable user-end boundary instead.
 
-Results are reported per target from what the daemon confirmed, never assumed. Each target is killed, already-exited for a lane that had already finished, failed when the daemon refused or did not confirm it, or unconfirmed when the daemon accepted the request without saying which sessions ended. The command exits 1 when any target failed and 2 when any target could not be confirmed, so a partially refused batch is never reported as success. --json prints {"items":[{"id","status","reason"}],"operation_id"} on stdout with the same statuses, matching the per-target shape used by archive and aside.
+Results are reported per target from what the daemon confirmed, never assumed. Each target is killed, closed-lost when a proven-gone runner's retained record was closed, already-exited for a lane that had already finished, failed when the daemon refused or did not confirm it, or unconfirmed when the daemon accepted the request without saying which sessions ended. The command exits 1 when any target failed and 2 when any target could not be confirmed, so a partially refused batch is never reported as success. --json prints {"items":[{"id","status","reason"}],"operation_id"} on stdout with the same statuses, matching the per-target shape used by archive and aside.
 
 Examples:
   sessions kill 0123abcd

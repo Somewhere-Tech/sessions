@@ -288,6 +288,7 @@ func TestLiveStatusNeverLooksTerminalBecauseOfLastTurn(t *testing.T) {
 		{name: "approval is actionable", session: session{IdleReason: "needs-input"}, want: "needs-you"},
 		{name: "reboot pause needs recovery", session: session{Unreachable: true, UnreachableReason: "restart-restore-pending"}, want: "needs-recovery"},
 		{name: "lost runner is unreachable", session: session{Unreachable: true, UnreachableReason: "runner-lost"}, want: "unreachable"},
+		{name: "runner proven gone is lost", session: session{Unreachable: true, UnreachableReason: "runner-lost", RunnerGone: true}, want: "lost"},
 		{name: "working wins over last turn", session: session{Working: true, IdleReason: "completed"}, want: "working"},
 		{name: "set aside is organizational", session: session{SetAsideAt: &setAsideAt}, want: "set-aside"},
 		{name: "only exited is terminal", session: session{Exited: true, IdleReason: "completed"}, want: "exited"},

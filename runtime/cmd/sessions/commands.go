@@ -518,6 +518,7 @@ func (a *app) cmdModel(args []string) error {
 
 const (
 	killStatusKilled        = "killed"
+	killStatusClosedLost    = "closed-lost"
 	killStatusAlreadyExited = "already-exited"
 	killStatusFailed        = "failed"
 	killStatusUnconfirmed   = "unconfirmed"
@@ -611,6 +612,8 @@ func (a *app) reportKill(result killResult) error {
 			switch item.Status {
 			case killStatusKilled:
 				fmt.Fprintf(a.stdout, "killed %s\n", item.ID)
+			case killStatusClosedLost:
+				fmt.Fprintf(a.stdout, "closed lost record %s\n", item.ID)
 			case killStatusAlreadyExited:
 				fmt.Fprintf(a.stdout, "lane %s already exited; nothing to kill\n", item.ID)
 			default:
@@ -682,6 +685,7 @@ func (a *app) cmdKill(ids []string) error {
 	}
 	result := killResult{Items: make([]killItem, 0, len(ids)), OperationID: operationID}
 	resolved := make([]string, 0, len(ids))
+	lost := make(map[string]struct{})
 	for _, idArg := range ids {
 		laneID, isLane, err := a.resolveLaneID(idArg)
 		if err != nil {
@@ -710,8 +714,13 @@ func (a *app) cmdKill(ids []string) error {
 		}
 		alreadyExitedLane := false
 		for _, candidate := range listed {
-			if candidate.ID == id && candidate.Kind == "lane" && candidate.Exited {
-				alreadyExitedLane = true
+			if candidate.ID == id {
+				if candidate.Kind == "lane" && candidate.Exited {
+					alreadyExitedLane = true
+				}
+				if candidate.RunnerGone {
+					lost[id] = struct{}{}
+				}
 				break
 			}
 		}
@@ -734,7 +743,13 @@ func (a *app) cmdKill(ids []string) error {
 		if err != nil {
 			return err
 		}
-		result.Items = append(result.Items, response.classify(resolved)...)
+		items := response.classify(resolved)
+		for index := range items {
+			if _, wasLost := lost[items[index].ID]; wasLost && items[index].Status == killStatusKilled {
+				items[index].Status = killStatusClosedLost
+			}
+		}
+		result.Items = append(result.Items, items...)
 		return a.reportKill(result)
 	}
 	path := "/api/sessions/" + escapeID(resolved[0])
@@ -753,7 +768,11 @@ func (a *app) cmdKill(ids []string) error {
 		})
 		return a.reportKill(result)
 	}
-	result.Items = append(result.Items, killItem{ID: resolved[0], Status: killStatusKilled})
+	status := killStatusKilled
+	if _, wasLost := lost[resolved[0]]; wasLost {
+		status = killStatusClosedLost
+	}
+	result.Items = append(result.Items, killItem{ID: resolved[0], Status: status})
 	return a.reportKill(result)
 }
 

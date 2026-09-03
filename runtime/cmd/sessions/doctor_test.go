@@ -114,6 +114,33 @@ func TestRemoteDoctorNeverAppliesLocalProcessOrLaunchAgentEvidence(t *testing.T)
 	}
 }
 
+func TestRemoteDoctorTrustsDaemonRunnerGoneEvidence(t *testing.T) {
+	const id = "11111111-2222-4333-8444-555555555557"
+	a := &app{home: t.TempDir()}
+	pattern := regexp.MustCompile(`<key>ProcessType</key>\s*<string>([^<]+)</string>`)
+	row := a.doctorRunnerRow(session{
+		ID: id, Kind: "lane", Tool: "lane", Unreachable: true,
+		UnreachableReason: "runner-lost", RunnerGone: true,
+	}, false, pattern)
+	if !row.Lost || row.OK || row.Action != "sessions kill "+id ||
+		row.QoS != probeNotApplicable || row.Spawn != probeNotApplicable {
+		t.Fatalf("remote lost runner row = %+v", row)
+	}
+}
+
+func TestDoctorCallsGoneHeadlessRunnerLostAndOffersDurableClose(t *testing.T) {
+	const id = "11111111-2222-4333-8444-555555555556"
+	a := &app{home: t.TempDir()}
+	pattern := regexp.MustCompile(`<key>ProcessType</key>\s*<string>([^<]+)</string>`)
+	row := a.doctorRunnerRow(session{
+		ID: id, Kind: "lane", Tool: "lane", Unreachable: true,
+		UnreachableReason: "runner-lost", Cols: 300, Rows: 50,
+	}, true, pattern)
+	if !row.Lost || row.OK || row.Action != "sessions kill "+id || row.Spawn != "dead?" {
+		t.Fatalf("lost runner doctor row = %+v", row)
+	}
+}
+
 func TestDoctorReadsRemoteRestoreCountFromHealth(t *testing.T) {
 	deep := map[string]any{"restore": map[string]any{"pending": float64(57)}}
 	if got := restorePendingFromHealth(deep); got != 57 {

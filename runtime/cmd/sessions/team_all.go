@@ -10,22 +10,31 @@ import (
 // teamRollup is one manager as a person sees it from the top: how many lanes
 // it delegated, how many are working, and which ones wait on someone.
 type teamRollup struct {
-	ID       string        `json:"id"`
-	Name     string        `json:"name,omitempty"`
-	Tool     string        `json:"tool"`
-	Cwd      string        `json:"cwd,omitempty"`
-	State    string        `json:"state"`
-	Lanes    int           `json:"lanes"`
-	Working  int           `json:"working"`
-	NeedsYou int           `json:"needs_you"`
-	Waiting  []teamWaiting `json:"waiting,omitempty"`
-	Summary  string        `json:"summary,omitempty"`
+	ID        string        `json:"id"`
+	Name      string        `json:"name,omitempty"`
+	Tool      string        `json:"tool"`
+	Cwd       string        `json:"cwd,omitempty"`
+	State     string        `json:"state"`
+	Lanes     int           `json:"lanes"`
+	Working   int           `json:"working"`
+	NeedsYou  int           `json:"needs_you"`
+	Lost      int           `json:"lost"`
+	Waiting   []teamWaiting `json:"waiting,omitempty"`
+	LostLanes []teamLost    `json:"lost_lanes,omitempty"`
+	Summary   string        `json:"summary,omitempty"`
 }
 
 type teamWaiting struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitempty"`
 	Line string `json:"line,omitempty"`
+}
+
+type teamLost struct {
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Reason  string `json:"reason"`
+	Command string `json:"command"`
 }
 
 func sessionEffectiveParent(s session) string {
@@ -39,6 +48,12 @@ func sessionTeamState(s session) string {
 	switch {
 	case s.Exited:
 		return "ended"
+	case s.UnreachableReason == "restart-restore-pending":
+		return "needs-recovery"
+	case s.RunnerGone:
+		return "lost"
+	case s.Unreachable:
+		return "unreachable"
 	case s.IdleReason == "needs-input":
 		return "needs-you"
 	case s.Working:
@@ -94,6 +109,12 @@ func teamRollups(sessions []session) []teamRollup {
 		switch sessionTeamState(s) {
 		case "working":
 			rollup.Working++
+		case "lost":
+			rollup.Lost++
+			rollup.LostLanes = append(rollup.LostLanes, teamLost{
+				ID: s.ID, Name: s.Name, Reason: "runner process is gone",
+				Command: sessionRecoveryCommand(s),
+			})
 		case "needs-you":
 			rollup.NeedsYou++
 			line := s.IdleDetail
@@ -110,6 +131,9 @@ func teamRollups(sessions []session) []teamRollup {
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].NeedsYou != result[j].NeedsYou {
 			return result[i].NeedsYou > result[j].NeedsYou
+		}
+		if result[i].Lost != result[j].Lost {
+			return result[i].Lost > result[j].Lost
 		}
 		if result[i].Working != result[j].Working {
 			return result[i].Working > result[j].Working
@@ -132,7 +156,7 @@ func (a *app) cmdTeamAll() error {
 		_, err := io.WriteString(a.stdout, "no session has delegated lanes right now\n")
 		return err
 	}
-	rows := [][]string{{"ID", "MANAGER", "TOOL", "CWD", "LANES", "WORKING", "NEEDS YOU"}}
+	rows := [][]string{{"ID", "MANAGER", "TOOL", "CWD", "LANES", "WORKING", "LOST", "NEEDS YOU"}}
 	for _, rollup := range rollups {
 		name := rollup.Name
 		if strings.TrimSpace(name) == "" {
@@ -140,7 +164,7 @@ func (a *app) cmdTeamAll() error {
 		}
 		rows = append(rows, []string{
 			shortID(rollup.ID), name, rollup.Tool, a.homeRelative(rollup.Cwd),
-			fmt.Sprint(rollup.Lanes), fmt.Sprint(rollup.Working), fmt.Sprint(rollup.NeedsYou),
+			fmt.Sprint(rollup.Lanes), fmt.Sprint(rollup.Working), fmt.Sprint(rollup.Lost), fmt.Sprint(rollup.NeedsYou),
 		})
 	}
 	if err := writePaddedRows(a.stdout, rows); err != nil {
@@ -165,8 +189,28 @@ func (a *app) cmdTeamAll() error {
 		}
 	}
 	if waiting > 0 {
-		_, err := io.WriteString(a.stdout, "answer with `sessions ask <id>`, allow with `sessions approve <id>`, or `sessions team <manager-id>` for one team\n")
-		return err
+		if _, err := io.WriteString(a.stdout, "answer with `sessions ask <id>`, allow with `sessions approve <id>`, or `sessions team <manager-id>` for one team\n"); err != nil {
+			return err
+		}
+	}
+	lost := 0
+	for _, rollup := range rollups {
+		for _, lane := range rollup.LostLanes {
+			if lost == 0 {
+				if _, err := io.WriteString(a.stdout, "\nlost lanes:\n"); err != nil {
+					return err
+				}
+			}
+			lost++
+			name := lane.Name
+			if strings.TrimSpace(name) == "" {
+				name = shortID(lane.ID)
+			}
+			if _, err := fmt.Fprintf(a.stdout, "  %s  %s — %s; %s  (under %s)\n",
+				shortID(lane.ID), name, lane.Reason, lane.Command, rollup.Name); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

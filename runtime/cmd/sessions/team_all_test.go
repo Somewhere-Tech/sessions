@@ -22,6 +22,7 @@ func TestTeamAllRollsLanesUpUnderTheirManagers(t *testing.T) {
 			{"id": "lane-1a", "name": "tests", "tool": "codex", "cwd": "/w/sessions", "working": true, "parent_session_id": "manager-1"},
 			{"id": "lane-1b", "name": "docs", "tool": "claude", "cwd": "/w/sessions", "working": false, "idleReason": "needs-input", "idleDetail": "Allow? Run `npm test`", "parent_session_id": "manager-1"},
 			{"id": "lane-1c", "name": "grandchild", "tool": "claude", "cwd": "/w/sessions", "working": true, "parent_session_id": "lane-1a"},
+			{"id": "lane-1d", "name": "orphaned", "kind": "lane", "tool": "lane", "cwd": "/w/sessions", "unreachable": true, "unreachableReason": "runner-lost", "runnerGone": true, "parent_session_id": "manager-1"},
 			{"id": "manager-2", "name": "Somewhere", "tool": "codex", "cwd": "/w/somewhere", "working": true},
 			{"id": "lane-2a", "name": "api", "tool": "codex", "cwd": "/w/somewhere", "working": false, "idleReason": "completed", "display_parent_session_id": grouped},
 			{"id": "solo", "name": "notes", "tool": "terminal", "cwd": "/w/notes", "working": false},
@@ -44,7 +45,9 @@ func TestTeamAllRollsLanesUpUnderTheirManagers(t *testing.T) {
 		t.Fatalf("managers = %+v", report.Managers)
 	}
 	first := report.Managers[0]
-	if first.Lanes != 3 || first.Working != 2 || first.NeedsYou != 1 || len(first.Waiting) != 1 || first.Waiting[0].ID != "lane-1b" || !strings.Contains(first.Waiting[0].Line, "npm test") {
+	if first.Lanes != 4 || first.Working != 2 || first.Lost != 1 || first.NeedsYou != 1 ||
+		len(first.LostLanes) != 1 || first.LostLanes[0].Command != "sessions kill lane-1d" ||
+		len(first.Waiting) != 1 || first.Waiting[0].ID != "lane-1b" || !strings.Contains(first.Waiting[0].Line, "npm test") {
 		t.Fatalf("manager-1 rollup = %+v", first)
 	}
 	if second := report.Managers[1]; second.ID != "manager-2" || second.Lanes != 1 || second.NeedsYou != 0 {
@@ -56,7 +59,8 @@ func TestTeamAllRollsLanesUpUnderTheirManagers(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
 	text := stdout.String()
-	if !strings.Contains(text, "Sessions") || !strings.Contains(text, "waiting on you") || !strings.Contains(text, "docs") || strings.Contains(text, "notes") {
+	if !strings.Contains(text, "Sessions") || !strings.Contains(text, "waiting on you") || !strings.Contains(text, "docs") ||
+		!strings.Contains(text, "lost lanes") || !strings.Contains(text, "sessions kill lane-1d") || strings.Contains(text, "notes") {
 		t.Fatalf("human output = %q", text)
 	}
 }

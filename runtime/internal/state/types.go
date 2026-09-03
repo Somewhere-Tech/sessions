@@ -153,9 +153,14 @@ type SessionInfo struct {
 	// connection, not about the work. An unreachable session is still a
 	// session: it is listed, readable, and attachable, and reconnect or the
 	// next discovery pass may reattach it. It is never presented as ended.
-	Unreachable            bool   `json:"unreachable,omitempty"`
-	UnreachableReason      string `json:"unreachableReason,omitempty"`
-	UnreachableSince       *int64 `json:"unreachableSince,omitempty"`
+	Unreachable       bool   `json:"unreachable,omitempty"`
+	UnreachableReason string `json:"unreachableReason,omitempty"`
+	UnreachableSince  *int64 `json:"unreachableSince,omitempty"`
+	// RunnerGone is stronger than Unreachable: the daemon's identity-aware
+	// process probe found no process belonging to this session. It is derived
+	// for listings and never turns Exited true, because a missing process still
+	// supplies no exit status.
+	RunnerGone             bool   `json:"runnerGone,omitempty"`
 	ClaudeCustomTitle      string `json:"claudeCustomTitle,omitempty"`
 	ClaudeAITitle          string `json:"claudeAiTitle,omitempty"`
 	OnIdle                 string `json:"onIdle,omitempty"`

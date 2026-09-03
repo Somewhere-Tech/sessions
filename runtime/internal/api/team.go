@@ -44,6 +44,8 @@ type teamMember struct {
 	Exited    bool         `json:"exited"`
 	Summary   string       `json:"summary,omitempty"`
 	Waiting   string       `json:"waiting,omitempty"`
+	Reason    string       `json:"reason,omitempty"`
+	Recovery  string       `json:"recovery_command,omitempty"`
 	UpdatedAt int64        `json:"updated_at,omitempty"`
 	// Branch and WorktreePath say where a lane's work is when it has its own
 	// worktree, so a manager knows what to diff or merge without opening it.
@@ -68,6 +70,12 @@ func teamState(info state.SessionInfo) string {
 	switch {
 	case info.Exited:
 		return "ended"
+	case info.UnreachableReason == "restart-restore-pending":
+		return "needs-recovery"
+	case info.RunnerGone:
+		return "lost"
+	case info.Unreachable:
+		return "unreachable"
 	case info.IdleReason == state.IdleReasonNeedsInput:
 		return "needs-you"
 	case info.Working:
@@ -81,18 +89,38 @@ func teamState(info state.SessionInfo) string {
 	}
 }
 
+func teamRecovery(info state.SessionInfo) (reason, command string) {
+	switch {
+	case info.UnreachableReason == "restart-restore-pending":
+		return "runner was paused after reboot", "sessions resume " + info.ID
+	case !info.RunnerGone:
+		return "", ""
+	case teamConversationCanContinue(info):
+		return "runner process is gone", "sessions resume " + info.ID
+	default:
+		return "runner process is gone", "sessions kill " + info.ID
+	}
+}
+
+func teamConversationCanContinue(info state.SessionInfo) bool {
+	provider := info.Tool == state.ToolClaude || info.Tool == state.ToolCodex
+	return provider && (info.ConversationID != "" || info.ClaudeSessionID != "")
+}
+
 func teamMemberFrom(info state.SessionInfo, relation teamRelation, depth int) teamMember {
 	updated := info.LastDataAt
 	if info.LastAgentMessageAt != nil && *info.LastAgentMessageAt > updated {
 		updated = *info.LastAgentMessageAt
 	}
+	reason, recovery := teamRecovery(info)
 	member := teamMember{
 		ID: info.ID, Name: info.Name, Tool: string(info.Tool), Cwd: info.Cwd,
 		Relation: relation, Depth: depth, State: teamState(info),
 		NeedsYou: info.IdleReason == state.IdleReasonNeedsInput,
 		Working:  info.Working, Exited: info.Exited,
-		Summary:   truncateBudget(info.LastSummary, teamSummaryBudget),
-		Waiting:   truncateBudget(info.IdleDetail, teamSummaryBudget),
+		Summary: truncateBudget(info.LastSummary, teamSummaryBudget),
+		Waiting: truncateBudget(info.IdleDetail, teamSummaryBudget),
+		Reason:  reason, Recovery: recovery,
 		UpdatedAt: updated,
 		Branch:    info.Branch, WorktreePath: info.WorktreePath,
 	}

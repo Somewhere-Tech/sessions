@@ -27,6 +27,8 @@ type doctorRow struct {
 	QoS      string `json:"qos"`
 	Spawn    string `json:"spawn"`
 	Recovery bool   `json:"needs_recovery,omitempty"`
+	Lost     bool   `json:"lost,omitempty"`
+	Action   string `json:"action,omitempty"`
 	OK       bool   `json:"ok"`
 }
 
@@ -85,11 +87,15 @@ func (a *app) cmdDoctor() error {
 		fixedWidth("ID", 10), fixedWidth("TOOL", 8), fixedWidth("SIZE", 10), fixedWidth("QoS", 13), fixedWidth("SPAWN", 10))
 	runnerFaults := 0
 	recoveryRows := 0
+	lostRows := 0
 	for _, row := range rows {
 		statusText := "ok"
 		if row.Recovery {
 			statusText = "⚠ resume required"
 			recoveryRows++
+		} else if row.Lost {
+			statusText = "⚠ lost — " + row.Action
+			lostRows++
 		} else if !row.OK {
 			statusText = "⚠ needs recreate"
 			runnerFaults++
@@ -99,15 +105,21 @@ func (a *app) cmdDoctor() error {
 			fixedWidth(row.Size, 10), fixedWidth(row.QoS, 13), fixedWidth(row.Spawn, 10), statusText)
 	}
 	recovery := max(recoveryRows, restorePendingFromHealth(deep))
-	attention := recovery + runnerFaults
+	attention := recovery + lostRows + runnerFaults
 	fmt.Fprintf(a.stdout, "\n%d session(s) need attention", attention)
 	if attention > 0 {
 		io.WriteString(a.stdout, ": ")
 		if recovery > 0 {
 			fmt.Fprintf(a.stdout, "%d paused after reboot — resume only the sessions you want with `sessions resume <id>`", recovery)
 		}
-		if runnerFaults > 0 {
+		if lostRows > 0 {
 			if recovery > 0 {
+				io.WriteString(a.stdout, "; ")
+			}
+			fmt.Fprintf(a.stdout, "%d lost runner(s) — use each row's action to close or continue it", lostRows)
+		}
+		if runnerFaults > 0 {
+			if recovery > 0 || lostRows > 0 {
 				io.WriteString(a.stdout, "; ")
 			}
 			fmt.Fprintf(a.stdout, "%d runner fault(s) %s", runnerFaults, doctorUnhealthyAdvice())
@@ -136,6 +148,11 @@ func (a *app) doctorRunnerRow(value session, localRuntime bool, processTypePatte
 		return row
 	}
 	if !localRuntime {
+		if value.RunnerGone {
+			row.Lost = true
+			row.Action = sessionRecoveryCommand(value)
+			return row
+		}
 		row.OK = true
 		return row
 	}
@@ -154,6 +171,12 @@ func (a *app) doctorRunnerRow(value session, localRuntime bool, processTypePatte
 		}
 	}
 	row.OK = doctorRowOK(row.QoS, row.Spawn)
+	if value.Unreachable && value.UnreachableReason == "runner-lost" && row.Spawn != "native" {
+		row.Lost = true
+		value.RunnerGone = true
+		row.Action = sessionRecoveryCommand(value)
+		row.OK = false
+	}
 	return row
 }
 
