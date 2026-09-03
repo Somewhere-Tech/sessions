@@ -136,6 +136,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, principal))
+	if s.handleFleetRelay(response, request, corsOrigin) {
+		return
+	}
 	// Deep health is dispatched after authorization, unlike plain /api/health.
 	// It reports live session UUIDs and host PIDs, so an unauthenticated peer
 	// on the LAN listener or the Tailscale Serve frontend could otherwise

@@ -505,8 +505,8 @@ func validateMachineEndpoint(raw string) (string, string, error) {
 	if parsed.Scheme == "http" {
 		ip := net.ParseIP(parsed.Hostname()).To4()
 		port, portErr := strconv.Atoi(parsed.Port())
-		if ip == nil || !ip.IsPrivate() || ip.IsLoopback() || portErr != nil || port < 1024 || port > 65535 {
-			return "", "", fmt.Errorf("nearby HTTP endpoints require a private IPv4 literal and explicit port")
+		if ip == nil || (!ip.IsPrivate() && !ip.IsLoopback()) || portErr != nil || port < 1024 || port > 65535 {
+			return "", "", fmt.Errorf("nearby HTTP endpoints require a private or loopback IPv4 literal and explicit port")
 		}
 		return strings.TrimSuffix(parsed.String(), "/"), "nearby", nil
 	}
