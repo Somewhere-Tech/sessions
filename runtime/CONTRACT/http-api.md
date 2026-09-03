@@ -307,6 +307,48 @@ stable machine UUID. When the identity file could not be created or read, the
 route returns `500 {"error":"<message>"}`. Other methods fall through to the
 404 body.
 
+### `GET /api/fleet/machines`
+
+Auth required, with an additional caller restriction: only a loopback-local
+caller or a paired-device credential may use the fleet relay. The daemon master
+token and anonymous `open` access receive 403. The route reads the same saved
+machine registry and separate per-machine credential files used by `sessions
+machines`; it does not list discovery candidates or machines that this host has
+not itself been approved on.
+
+```json
+{"machines":[{"id":"<machine id>","name":"Mac mini","endpoint":"https://mini.example.ts.net","transport":"tailnet","reachable":true}]}
+```
+
+`transport` is `lan` for a saved nearby HTTP endpoint and `tailnet` for a saved
+HTTPS endpoint. To compute `reachable`, the host makes a two-second authenticated
+`GET /api/machine` probe using its saved credential and requires the returned
+stable identity to match `id`. Offline machines remain in the array with
+`reachable:false`. The response never contains a credential or paired-device
+ID. An unreadable, malformed, or unsupported saved-machine registry is 500.
+
+### `/api/fleet/:machine-id/api/*` and `/api/fleet/:machine-id/ws`
+
+These are the authenticated host-relay prefixes for ordinary HTTP routes and
+the `/ws` WebSocket mux. They have the same local-or-paired-device caller
+restriction as the fleet listing. The daemon resolves `machine-id` only against
+its current saved registry and requires the separate credential file to exist;
+an unknown, forgotten, malformed, or credential-less ID is 404 before any
+outbound request. Consequently even otherwise public remote routes such as
+`/api/health`, and authenticated identity at `/api/machine`, cannot be reached
+through an unsaved machine ID.
+
+The suffix is forwarded unchanged to the saved endpoint. Request and response
+bodies are streamed, and Go's reverse proxy carries WebSocket upgrades, so the
+existing `/ws?mux=1` protocol works through the relay. The phone's
+`Authorization` and `Proxy-Authorization` headers and `token` query parameter
+are removed. The host then supplies its own saved per-machine bearer credential;
+the destination therefore sees and can revoke the host's normal paired-device
+identity. Other headers, including `X-Sessions-Creator-Session` and
+`X-Sessions-Owner-ID`, retain their values. A transport failure is 502. Every
+relayed request is logged at info level with method, destination path, machine
+ID, and calling device ID (or `local`), but never with a request body or token.
+
 ### `GET /api/push/vapid`
 
 Auth required. Returns `200 {"publicKey":"<base64url string>"}`. It lazily

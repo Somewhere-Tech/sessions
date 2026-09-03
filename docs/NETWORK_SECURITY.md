@@ -89,6 +89,49 @@ machine connection's responsibility: prefer Tailscale Serve HTTPS for remote or
 untrusted networks, and use plain LAN HTTP only on a private network the user
 trusts.
 
+## Paired-client fleet relay
+
+A phone is a viewer that inherits the approved fleet of the machine it pairs
+with. After that phone authenticates to host A with its own revocable device
+credential, A may list only the machines in A's saved `sessions machines`
+registry and relay an `/api/*` or `/ws` request to one of those exact endpoints.
+A removes the phone credential and supplies A's separate saved credential for
+host B. B therefore authorizes and audits A as the paired device it already
+approved, and revoking A on B immediately ends the relay path. Forgetting B on
+A removes it from the relay allowlist; revoking the phone on A ends all of that
+phone's inherited access. No machine accepts a new machine or device because of
+the relay.
+
+The destination and payload are visible and attributable: a relay request is
+triggered only by a local or paired-device call naming a saved machine; it may
+carry the same API body, event response, or WebSocket frames as a direct client.
+A logs the method, path, destination machine, and calling device ID, never the
+body or either credential. The fleet-list reachability check sends only an
+authenticated machine-identity probe, waits at most two seconds per endpoint,
+and keeps offline machines visible. Relayed streams have no background retry
+queue; the phone's existing reconnect behavior starts a new request. Transport
+security remains the saved endpoint's responsibility: use Tailscale Serve HTTPS
+outside a trusted LAN.
+
+This is a user's own machine relaying to that same user's independently
+approved machines. Somewhere operates no relay, broker, tunnel, or credential
+exchange. A Somewhere-hosted machine reached through an approved Tailscale or
+HTTPS endpoint is just another saved destination and receives no special trust
+or bypass. This preserves the roadmap non-goal: no hosted relay silently creates
+reachability into a user's local machine.
+
+**What we borrowed from T3 Code, and what we deliberately did not.** T3 Code's
+public remote model keeps each environment as one intact server/runtime behind
+an HTTP/WebSocket connection, while LAN, Tailscale, HTTPS, and desktop-managed
+SSH forwarding are connection choices. Sessions uses the same useful UI
+property: a relayed machine is still an ordinary server base, so the existing
+Fleet, inbox, and conversation paths do not split the runtime. We did not adopt
+client-owned SSH launch, direct per-environment credentials, or a hosted relay:
+the phone learns no credential for B and gets no new tunnel authority; A stays
+the only ingress and may reach B only with B's prior approval. See T3 Code's
+[remote architecture](https://github.com/pingdotgg/t3code/blob/main/docs/internals/remote.md)
+and [remote-access guide](https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md).
+
 ## Review checklist for an outbound feature
 
 1. Is the destination allowlisted and is TLS/authentication fail-closed?
@@ -144,7 +187,7 @@ Bonjour failure does not disable the listener; disabling LAN access also stops
 the advertisement.
 
 The agent surface has the same boundary. `sessions machines connect` accepts
-only private IPv4 HTTP origins or `.ts.net` HTTPS origins, follows no redirects,
+only private or loopback IPv4 HTTP origins or `.ts.net` HTTPS origins, follows no redirects,
 never sends the local daemon token to a candidate, and stores an issued token
 in a separate mode-0600 file. The metadata registry contains no credential.
 `sessions --machine` reads that file internally, while `sessions access`
