@@ -29,6 +29,7 @@ export class AuthError extends Error {
 // must keep that exact target; substituting window.location would send API
 // calls to sessions.somewhere.tech instead of the user's daemon.
 function isSameOriginDaemon(s: ServerConfig): boolean {
+  if (s.relayMachineId) return false;
   if (isTauri()) return false;
   const pageScheme = window.location.protocol === 'https:' ? 'https' : 'http';
   const pagePort = window.location.port
@@ -50,7 +51,10 @@ export function httpBaseForServer(s: ServerConfig): string {
   // Honour the selected endpoint exactly. Falling back to HTTP keeps older
   // stored configs (which predate the scheme field) compatible.
   const scheme = s.scheme ?? 'http';
-  return `${scheme}://${hostForUrl(s.host)}:${s.port}`;
+  const origin = `${scheme}://${hostForUrl(s.host)}:${s.port}`;
+  return s.relayMachineId
+    ? `${origin}/api/fleet/${encodeURIComponent(s.relayMachineId)}`
+    : origin;
 }
 
 export function httpBase(): string {
@@ -69,7 +73,10 @@ export function wsBase(): string {
   }
   // Mirror the http→https / ws→wss mapping so TLS connections work end-to-end.
   const scheme = s.scheme === 'https' ? 'wss' : 'ws';
-  return `${scheme}://${hostForUrl(s.host)}:${s.port}`;
+  const origin = `${scheme}://${hostForUrl(s.host)}:${s.port}`;
+  return s.relayMachineId
+    ? `${origin}/api/fleet/${encodeURIComponent(s.relayMachineId)}`
+    : origin;
 }
 
 // Returns `{ Authorization: 'Bearer <token>' }` when the supplied server has

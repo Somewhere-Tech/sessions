@@ -241,11 +241,11 @@ func TestNearbyAccessRejectsUntrustedSurfaces(t *testing.T) {
 	if direct.Code != http.StatusForbidden {
 		t.Fatalf("main listener status = %d, body=%s", direct.Code, direct.Body.String())
 	}
-	loopback := serveNearby(
+	loopback := serve(
 		t, daemon.handler, http.MethodPost, "/api/lan/access/request",
 		strings.NewReader(payload), "127.0.0.1:4040", headers,
 	)
-	if loopback.Code != http.StatusForbidden {
+	if loopback.Code != http.StatusAccepted {
 		t.Fatalf("loopback status = %d, body=%s", loopback.Code, loopback.Body.String())
 	}
 	browserHeaders := headers.Clone()

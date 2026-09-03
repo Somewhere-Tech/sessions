@@ -41,6 +41,11 @@ export interface ServerConfig {
   // Transport scheme.  Defaults to 'http' so existing stored configs
   // (which have no scheme field) continue to work without migration.
   scheme?: 'http' | 'https';
+  // Client-only viewers reach inherited fleet machines through the one host
+  // they paired with. These runtime-only fields are never persisted: the host
+  // remains the credential owner and refreshes the inherited set.
+  relayParentId?: string;
+  relayMachineId?: string;
 }
 
 function friendlyReportedMachineName(value: string): string {
@@ -133,11 +138,16 @@ function withoutTokens(servers: ServerConfig[]): ServerConfig[] {
   return servers.map(({ token: _token, ...server }) => server);
 }
 
+function persistentServers(servers: ServerConfig[]): ServerConfig[] {
+  return servers.filter((server) => !server.relayMachineId);
+}
+
 function writeServerMetadata(servers: ServerConfig[]): boolean {
   try {
+    const persistent = persistentServers(servers);
     window.localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify(nativeCredentialStoreEnabled ? withoutTokens(servers) : servers)
+      JSON.stringify(nativeCredentialStoreEnabled ? withoutTokens(persistent) : persistent)
     );
     return true;
   } catch {
@@ -146,7 +156,7 @@ function writeServerMetadata(servers: ServerConfig[]): boolean {
 }
 
 function machineCredentials(servers: ServerConfig[]): NativeMachineCredential[] {
-  return servers.flatMap((server) => server.token
+  return servers.flatMap((server) => !server.relayMachineId && server.token
     ? [{ serverId: server.id, token: server.token }]
     : []);
 }
@@ -353,7 +363,7 @@ export const useServers = create<ServersStore>((set, get) => ({
     // removing the final one returns the user to the connection screen.
     const target = state.servers.find((server) => server.id === id);
     if (!target || target.isDefault) return;
-    const servers = state.servers.filter((server) => server.id !== id);
+    const servers = state.servers.filter((server) => server.id !== id && server.relayParentId !== id);
     const activeId = state.activeId === id
       ? (servers.find((server) => server.isDefault) ?? servers[0])?.id ?? null
       : state.activeId;
@@ -611,7 +621,7 @@ export function blockNativeMachineCredentialPersistence(detail: string): void {
 export async function syncNativeAgentMachineAccess(): Promise<void> {
   if (!isTauri()) return;
   const machines = useServers.getState().servers.flatMap((server) => {
-    if (server.isDefault || !server.machineId || !server.token) return [];
+    if (server.isDefault || server.relayMachineId || !server.machineId || !server.token) return [];
     return [{
       machineId: server.machineId,
       name: serverDisplayName(server),

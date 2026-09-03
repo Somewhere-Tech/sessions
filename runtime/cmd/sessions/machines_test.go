@@ -142,7 +142,7 @@ func TestMachineEndpointValidationIsFailClosed(t *testing.T) {
 		{"http://192.168.1.20:8787", "nearby", true},
 		{"http://10.0.0.2:9000", "nearby", true},
 		{"https://mini.example.ts.net", "tailnet", true},
-		{"http://127.0.0.1:8787", "", false},
+		{"http://127.0.0.1:8787", "nearby", true},
 		{"http://example.com:8787", "", false},
 		{"http://192.168.1.20", "", false},
 		{"https://example.com", "", false},

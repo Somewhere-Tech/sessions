@@ -18,7 +18,9 @@ const assets = files.map((name) => {
 const limits = {
   entryJavaScript: { raw: 715_000, gzip: 210_000 },
   entryCSS: { raw: 270_000, gzip: 45_000 },
-  totalJavaScript: 1_225_000,
+  // The client-only fleet relay adds a measured 1.43 KB of total JavaScript.
+  // Keep only a narrow 2 KB allowance for that authenticated routing surface.
+  totalJavaScript: 1_227_000,
 };
 
 const entryJavaScript = assets.find((asset) => /^index-[^.]+\.js$/.test(asset.name));

@@ -1,0 +1,326 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
+)
+
+const (
+	fleetRegistryVersion = 1
+	fleetProbeTimeout    = 2 * time.Second
+	fleetRegistryLimit   = 256 * 1024
+)
+
+type fleetSavedMachine struct {
+	MachineID string `json:"machine_id"`
+	Name      string `json:"name"`
+	Endpoint  string `json:"endpoint"`
+	Transport string `json:"transport"`
+}
+
+type fleetMachineRegistry struct {
+	Version  int                 `json:"version"`
+	Machines []fleetSavedMachine `json:"machines"`
+}
+
+type fleetMachineView struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Endpoint  string `json:"endpoint"`
+	Transport string `json:"transport"`
+	Reachable bool   `json:"reachable"`
+}
+
+var fleetRelayTransport = &http.Transport{
+	Proxy:                 nil,
+	DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          32,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   5 * time.Second,
+	ResponseHeaderTimeout: 30 * time.Second,
+}
+
+// handleFleetRelay lets this user's paired phone inherit the approved-machine
+// set of the host it paired with. It is deliberately a user-owned host relay,
+// never a Somewhere-hosted relay: every destination is a machine for which
+// this host already holds that machine's independently revocable credential.
+func (s *Server) handleFleetRelay(
+	response http.ResponseWriter,
+	request *http.Request,
+	corsOrigin string,
+) bool {
+	if request.URL.Path != "/api/fleet/machines" &&
+		!strings.HasPrefix(request.URL.Path, "/api/fleet/") {
+		return false
+	}
+	principal, _ := request.Context().Value(authPrincipalContextKey{}).(authPrincipal)
+	deviceID, allowed := fleetRelayCaller(principal)
+	if !allowed {
+		s.sendJSON(response, http.StatusForbidden, map[string]any{
+			"error": "fleet relay requires a local caller or paired device credential",
+		}, corsOrigin)
+		return true
+	}
+	if request.URL.Path == "/api/fleet/machines" {
+		if request.Method != http.MethodGet {
+			s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+			return true
+		}
+		s.serveFleetMachines(response, request, corsOrigin)
+		return true
+	}
+
+	machineID, remotePath, ok := parseFleetRelayPath(request.URL.Path)
+	if !ok {
+		s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": request.URL.Path}, corsOrigin)
+		return true
+	}
+	machine, credential, err := s.approvedFleetMachine(machineID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, errFleetMachineNotApproved) {
+			status = http.StatusNotFound
+		}
+		s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
+		return true
+	}
+	target, err := validatedFleetEndpoint(machine)
+	if err != nil {
+		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
+		return true
+	}
+
+	log.Printf("sessionsd: fleet relay method=%s path=%s machine=%s device_id=%s", request.Method, remotePath, machine.MachineID, deviceID)
+	proxy := &httputil.ReverseProxy{
+		Transport:     fleetRelayTransport,
+		FlushInterval: -1,
+		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
+			proxyRequest.SetURL(target)
+			proxyRequest.Out.URL.Path = remotePath
+			proxyRequest.Out.URL.RawPath = ""
+			query := proxyRequest.Out.URL.Query()
+			query.Del("token")
+			proxyRequest.Out.URL.RawQuery = query.Encode()
+			proxyRequest.Out.Header.Del("Authorization")
+			proxyRequest.Out.Header.Del("Proxy-Authorization")
+			proxyRequest.Out.Header.Set("Authorization", "Bearer "+credential)
+			// SetXForwarded first removes caller-supplied forwarding claims, then
+			// records the phone as the peer. This also keeps a second scratch
+			// daemon on loopback from mistaking the relay for ambient local trust.
+			proxyRequest.SetXForwarded()
+		},
+		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
+			log.Printf("sessionsd: fleet relay failed machine=%s device_id=%s: %v", machine.MachineID, deviceID, proxyErr)
+			s.sendJSON(writer, http.StatusBadGateway, map[string]any{"error": "approved machine is unreachable"}, corsOrigin)
+		},
+	}
+	proxy.ServeHTTP(response, request)
+	return true
+}
+
+func fleetRelayCaller(principal authPrincipal) (string, bool) {
+	if principal.Local {
+		return "local", true
+	}
+	const prefix = "device:"
+	if strings.HasPrefix(principal.ID, prefix) && strings.TrimPrefix(principal.ID, prefix) != "" {
+		return strings.TrimPrefix(principal.ID, prefix), true
+	}
+	return "", false
+}
+
+func parseFleetRelayPath(path string) (string, string, bool) {
+	remainder := strings.TrimPrefix(path, "/api/fleet/")
+	parts := strings.SplitN(remainder, "/", 2)
+	if len(parts) != 2 || !validFleetMachineID(parts[0]) {
+		return "", "", false
+	}
+	remotePath := "/" + parts[1]
+	if !strings.HasPrefix(remotePath, "/api/") && remotePath != "/ws" {
+		return "", "", false
+	}
+	return parts[0], remotePath, true
+}
+
+func (s *Server) serveFleetMachines(response http.ResponseWriter, request *http.Request, corsOrigin string) {
+	machines, err := s.readFleetMachines()
+	if err != nil {
+		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": "read approved machines: " + err.Error()}, corsOrigin)
+		return
+	}
+	views := make([]fleetMachineView, len(machines))
+	done := make(chan struct{}, len(machines))
+	for index, machine := range machines {
+		index, machine := index, machine
+		views[index] = fleetMachineView{
+			ID: machine.MachineID, Name: machine.Name, Endpoint: machine.Endpoint,
+			Transport: fleetTransportName(machine.Transport),
+		}
+		go func() {
+			views[index].Reachable = s.fleetMachineReachable(request.Context(), machine)
+			done <- struct{}{}
+		}()
+	}
+	for range machines {
+		<-done
+	}
+	s.sendJSON(response, http.StatusOK, map[string]any{"machines": views}, corsOrigin)
+}
+
+func (s *Server) fleetMachineReachable(parent context.Context, machine fleetSavedMachine) bool {
+	target, err := validatedFleetEndpoint(machine)
+	if err != nil {
+		return false
+	}
+	credential, err := s.fleetMachineCredential(machine.MachineID)
+	if err != nil || credential == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(parent, fleetProbeTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String()+"/api/machine", nil)
+	if err != nil {
+		return false
+	}
+	request.Header.Set("Authorization", "Bearer "+credential)
+	request.Header.Set("X-Forwarded-For", "127.0.0.1")
+	response, err := fleetRelayTransport.RoundTrip(request)
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return false
+	}
+	var identity struct {
+		MachineID string `json:"machine_id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&identity); err != nil {
+		return false
+	}
+	return identity.MachineID == machine.MachineID
+}
+
+var errFleetMachineNotApproved = errors.New("machine is not approved on this host")
+
+func (s *Server) approvedFleetMachine(machineID string) (fleetSavedMachine, string, error) {
+	if !validFleetMachineID(machineID) {
+		return fleetSavedMachine{}, "", errFleetMachineNotApproved
+	}
+	machines, err := s.readFleetMachines()
+	if err != nil {
+		return fleetSavedMachine{}, "", fmt.Errorf("read approved machines: %w", err)
+	}
+	for _, machine := range machines {
+		if machine.MachineID != machineID {
+			continue
+		}
+		credential, err := s.fleetMachineCredential(machineID)
+		if err != nil {
+			return fleetSavedMachine{}, "", fmt.Errorf("read approved machine credential: %w", err)
+		}
+		if credential == "" {
+			return fleetSavedMachine{}, "", errFleetMachineNotApproved
+		}
+		return machine, credential, nil
+	}
+	return fleetSavedMachine{}, "", errFleetMachineNotApproved
+}
+
+func (s *Server) readFleetMachines() ([]fleetSavedMachine, error) {
+	path := filepath.Join(s.fleetStateRoot(), "clients.json")
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return []fleetSavedMachine{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	var registry fleetMachineRegistry
+	decoder := json.NewDecoder(io.LimitReader(file, fleetRegistryLimit))
+	if err := decoder.Decode(&registry); err != nil {
+		return nil, err
+	}
+	if registry.Version != fleetRegistryVersion {
+		return nil, fmt.Errorf("unsupported saved-machine registry version %d", registry.Version)
+	}
+	for _, machine := range registry.Machines {
+		if !validFleetMachineID(machine.MachineID) {
+			return nil, fmt.Errorf("saved machine has invalid id %q", machine.MachineID)
+		}
+		if _, err := validatedFleetEndpoint(machine); err != nil {
+			return nil, err
+		}
+	}
+	return registry.Machines, nil
+}
+
+func (s *Server) fleetStateRoot() string {
+	if s.config.UserStateRoot != "" {
+		return s.config.UserStateRoot
+	}
+	return s.config.StateRoot
+}
+
+func (s *Server) fleetMachineCredential(machineID string) (string, error) {
+	if !validFleetMachineID(machineID) {
+		return "", errFleetMachineNotApproved
+	}
+	return tokenstore.ReadSecret(filepath.Join(s.fleetStateRoot(), "clients", machineID+".token"))
+}
+
+func validatedFleetEndpoint(machine fleetSavedMachine) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(machine.Endpoint))
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
+		parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return nil, fmt.Errorf("saved machine %q has an invalid endpoint", machine.MachineID)
+	}
+	transport := fleetTransportName(machine.Transport)
+	if (transport == "lan" && parsed.Scheme != "http") ||
+		(transport == "tailnet" && parsed.Scheme != "https") ||
+		(transport != "lan" && transport != "tailnet") {
+		return nil, fmt.Errorf("saved machine %q has an invalid transport", machine.MachineID)
+	}
+	parsed.Path = ""
+	return parsed, nil
+}
+
+func fleetTransportName(value string) string {
+	if value == "nearby" {
+		return "lan"
+	}
+	return value
+}
+
+func validFleetMachineID(value string) bool {
+	if value == "" || len(value) > 128 || value == "." || value == ".." ||
+		strings.Contains(value, "..") || strings.HasPrefix(value, ".") {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '-' || character == '_' || character == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}

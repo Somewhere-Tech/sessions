@@ -2,8 +2,8 @@
 
 Sessions for iOS is a client-only Tauri 2 application. It uses the same React
 application as macOS, Windows, and Android, but it does not install `sessionsd`,
-start agent CLIs, or host runners on the phone. Work stays on a paired Sessions
-computer and the iOS app talks directly to that host.
+start agent CLIs, or host runners on the phone. Work stays on Sessions computers;
+the iOS app talks to its paired host, which can relay the host's approved fleet.
 
 ## Product shape
 
@@ -28,8 +28,9 @@ computer and the iOS app talks directly to that host.
   settings as read-only; appearance and other device-local choices remain
   editable ([`frontend/src/App.tsx`](../frontend/src/App.tsx),
   [`frontend/src/components/SettingsView.tsx`](../frontend/src/components/SettingsView.tsx)).
-- **Transport:** direct LAN or Tailscale connectivity only. There is no Sessions
-  relay, hosted terminal stream, analytics connection, or model API call
+- **Transport:** direct LAN or Tailscale connectivity to the paired host. That
+  user-owned host can relay to machines it already has approval for; there is no
+  Somewhere-hosted relay, hosted terminal stream, analytics connection, or model API call
   ([`docs/NETWORK_SECURITY.md`](NETWORK_SECURITY.md)).
 
 The iOS app declares `_sessions._tcp` Bonjour browsing and local-network access,
@@ -113,3 +114,10 @@ link is consumed once; generate another if it expires. Revoke the phone later
 with `sessions devices`
 ([`runtime/cmd/sessions/pair.go`](../runtime/cmd/sessions/pair.go),
 [`runtime/cmd/sessions/devices.go`](../runtime/cmd/sessions/devices.go)).
+
+Pair with one Mac and the phone also sees that Mac's approved Sessions fleet.
+The paired Mac stays first, and its other saved machines appear in Fleet and the
+all-machines inbox; opening or acting on one is relayed through the Mac with the
+Mac's own independently revocable credential. An unreachable machine stays
+visible as offline. The phone never receives the other machine's credential,
+and each other machine can revoke the Mac exactly as before.
