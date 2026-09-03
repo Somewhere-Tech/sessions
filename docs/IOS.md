@@ -15,17 +15,19 @@ computer and the iOS app talks directly to that host.
 - **iPad:** the same layout progressively becomes the desktop rail + session
   navigator + active-session workspace. There is no separate tablet codebase
   ([`frontend/src/styles/globals.css`](../frontend/src/styles/globals.css)).
-- **Pairing now:** enable trusted-network access with `sessions lan enable`,
-  then run `sessions pair` on a host and paste its one-time link in the iOS app.
-  The ticket is consumed once and the device receives its own revocable
-  credential
+- **Pairing now:** enable trusted-network access with `sessions lan enable`.
+  While the connect screen is open, the iOS app browses `_sessions._tcp` on the
+  local network and lists compatible hosts. Choose one, approve the request on
+  that host, and the phone claims its own revocable credential. A one-time link
+  from `sessions pair` remains available when Bonjour cannot find the host
   ([`frontend/src/components/ConnectScreen.tsx`](../frontend/src/components/ConnectScreen.tsx),
   [`frontend/src/lib/hostedBootstrap.ts`](../frontend/src/lib/hostedBootstrap.ts)).
 - **Transport:** direct LAN or Tailscale connectivity only. There is no Sessions
   relay, hosted terminal stream, analytics connection, or model API call
   ([`docs/NETWORK_SECURITY.md`](NETWORK_SECURITY.md)).
 
-The iOS app declares local-network access and permits local resources through
+The iOS app declares `_sessions._tcp` Bonjour browsing and local-network access,
+and permits local resources through
 App Transport Security because a user-approved LAN or Tailscale host can
 intentionally use an `http://` daemon endpoint. The exception is scoped to
 local networking; ATS remains enabled for public hosts. Tailscale still
@@ -87,12 +89,21 @@ trusted network as the phone:
 
 ```sh
 sessions lan enable
-sessions pair
 ```
 
-Keep the phone on a network that can reach the endpoint printed in that link.
-Open Sessions on iOS, paste the full link under **Connect with a one-time
-link**, and tap **Connect this device**. If the link expires or was already
-consumed, generate a new one. Revoke the phone later with `sessions devices`
+Keep the app in the foreground while it searches. Accept the iOS local-network
+permission when asked, tap the host under **Your Sessions machines**, then
+approve **This phone** in Sessions.app on the host. The equivalent host CLI is:
+
+```sh
+sessions access requests
+sessions access accept <request-id>
+```
+
+The phone polls the approval, claims its credential, and opens that host. If
+Bonjour is blocked by the network, run `sessions pair` on the host, paste the
+full link under **One-time-link fallback**, and tap **Connect this device**. A
+link is consumed once; generate another if it expires. Revoke the phone later
+with `sessions devices`
 ([`runtime/cmd/sessions/pair.go`](../runtime/cmd/sessions/pair.go),
 [`runtime/cmd/sessions/devices.go`](../runtime/cmd/sessions/devices.go)).

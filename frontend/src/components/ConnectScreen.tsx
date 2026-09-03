@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { fetchServerHealth } from '../api/sessionsd';
 import { claimNativeMachinePairing, rememberServerEndpoint } from '../lib/hostedBootstrap';
 import { formatServerEndpoint } from '../lib/serverEndpoint';
@@ -6,6 +6,7 @@ import { useServers, type ServerConfig } from '../lib/servers';
 import { tailnetClientID } from '../lib/tailnetClient';
 import {
   discoverNativeMachines,
+  isNativeMobileRuntime,
   requestNativeMachineAccess,
   type NativeMachinePeer,
   type NativeTailnetRequest
@@ -37,7 +38,7 @@ export function ConnectScreen({
   const [checkingId, setCheckingId] = useState<string | null>(null);
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [discoveredPeers, setDiscoveredPeers] = useState<NativeMachinePeer[] | null>(null);
-  const [accessRequest, setAccessRequest] = useState<(NativeTailnetRequest & { transport: NativeMachinePeer['transport'] }) | null>(null);
+  const [accessRequest, setAccessRequest] = useState<(NativeTailnetRequest & { transport: NativeMachinePeer['transport']; machineName: string }) | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const busy = checkingId !== null || discoveryBusy || accessRequest !== null;
@@ -46,7 +47,8 @@ export function ConnectScreen({
     () => servers.filter((server) => !server.isDefault),
     [servers]
   );
-  const isAndroidClient = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+  const isMobileClient = isNativeMobileRuntime();
+  const discoveryStarted = useRef(false);
 
   const claimPairingLink = async (): Promise<void> => {
     if (!clientOnly || connectionDisabled || !pairingLink.trim()) return;
@@ -66,17 +68,21 @@ export function ConnectScreen({
     }
   };
 
-  const findMachines = async (): Promise<void> => {
+  const findMachines = useCallback(async (): Promise<void> => {
     if (!clientOnly || connectionDisabled) return;
     setDiscoveryBusy(true);
-    setMessage('Looking for Sessions machines through Tailscale and nearby Bonjour…');
+    setMessage(isMobileClient
+      ? 'Looking for Sessions machines nearby…'
+      : 'Looking for Sessions machines through Tailscale and nearby Bonjour…');
     setError(null);
     try {
       const result = await discoverNativeMachines();
       setDiscoveredPeers(result.peers);
       setMessage(result.peers.length > 0
         ? `Found ${result.peers.length} ${result.peers.length === 1 ? 'machine' : 'machines'}.`
-        : result.errors[0] ?? 'No Sessions machines answered. Enable Tailscale remote access or trusted-network LAN access on the host.');
+        : result.errors[0] ?? (isMobileClient
+          ? 'No nearby Sessions machines answered. Enable trusted-network LAN access on the host, then search again.'
+          : 'No Sessions machines answered. Enable Tailscale remote access or trusted-network LAN access on the host.'));
     } catch (reason) {
       setDiscoveredPeers([]);
       setMessage(null);
@@ -84,16 +90,22 @@ export function ConnectScreen({
     } finally {
       setDiscoveryBusy(false);
     }
-  };
+  }, [clientOnly, connectionDisabled, isMobileClient]);
+
+  useEffect(() => {
+    if (!clientOnly || !isMobileClient || discoveryStarted.current) return;
+    discoveryStarted.current = true;
+    void findMachines();
+  }, [clientOnly, findMachines, isMobileClient]);
 
   const requestAccess = async (peer: NativeMachinePeer): Promise<void> => {
     if (!clientOnly || connectionDisabled) return;
     setDiscoveryBusy(true);
     setError(null);
     try {
-      const request = await requestNativeMachineAccess(peer, tailnetClientID(), '');
-      setAccessRequest({ ...request, transport: peer.transport });
-      setMessage(`Request sent to ${peer.name}. Accept it in Sessions on that machine.`);
+      const request = await requestNativeMachineAccess(peer, tailnetClientID(), 'This phone');
+      setAccessRequest({ ...request, transport: peer.transport, machineName: peer.name });
+      setMessage(`Waiting for ${peer.name} to approve this phone.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -112,6 +124,7 @@ export function ConnectScreen({
     onAccepted: (server) => {
       setAccessRequest(null);
       setMessage(`${server.name} approved this device. Connecting…`);
+      onRetry?.();
     },
     onSettled: (_outcome, text) => {
       setAccessRequest(null);
@@ -179,14 +192,14 @@ export function ConnectScreen({
   };
 
   return (
-    <main className="connect-screen" data-testid="connect-screen">
+    <main className={`connect-screen${clientOnly ? ' connect-screen-client' : ''}`} data-testid="connect-screen">
       <section className="connect-panel" aria-labelledby="connect-title">
         <div className="connect-brand">Sessions</div>
         <p className="connect-kicker">
           {clientOnly ? 'this device → your Sessions machines' : 'native window → your daemon'}
         </p>
         <h1 id="connect-title">
-          {clientOnly ? 'Find the computers running your sessions.' : 'Open your sessions from here.'}
+          {clientOnly ? 'Find your Sessions machines.' : 'Open your sessions from here.'}
         </h1>
         <p className="connect-lede">
           {clientOnly
@@ -196,11 +209,47 @@ export function ConnectScreen({
 
         {clientOnly ? (
           <>
+          <section className="connect-discovery" aria-labelledby="discovery-title" aria-live="polite">
+            <div className="connect-discovery-heading">
+              <div>
+                <span>Nearby on your network</span>
+                <h2 id="discovery-title">Your Sessions machines</h2>
+                <p>Choose a computer, then approve this phone there.</p>
+              </div>
+              <button type="button" className="connect-submit connect-find" disabled={connectionDisabled} onClick={() => void findMachines()}>
+                {discoveryBusy ? 'Searching…' : discoveredPeers === null ? 'Find machines' : 'Search again'}
+              </button>
+            </div>
+            {accessRequest ? (
+              <p className="connect-waiting">Waiting for {accessRequest.machineName} to approve this phone.</p>
+            ) : null}
+            {discoveredPeers !== null && discoveredPeers.length > 0 ? (
+              <div className="connect-peer-list">
+                {discoveredPeers.map((peer) => {
+                  const waiting = accessRequest?.endpoint === peer.endpoint;
+                  return (
+                    <article key={peer.endpoint} className="connect-peer">
+                      <span className="connect-peer-icon" aria-hidden>
+                        {peer.os ? (peer.os.toLowerCase().includes('windows') ? '⊞' : '⌘') : '⌁'}
+                      </span>
+                      <div>
+                        <strong>{peer.name}</strong>
+                        <small>{peer.hostname}</small>
+                      </div>
+                      <button type="button" className="btn" disabled={connectionDisabled} onClick={() => void requestAccess(peer)}>
+                        {waiting ? 'Waiting…' : 'Connect'}
+                      </button>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : null}
+          </section>
           <section className="connect-pair-link" aria-labelledby="pair-link-title">
             <div>
-              <span>Fastest setup</span>
-              <h2 id="pair-link-title">Connect with a one-time link</h2>
-              <p>On the computer running Sessions, enable trusted-network access with <code>sessions lan enable</code>, then ask your agent to run <code>sessions pair</code>. Paste the link here; its ticket is consumed once and this device receives its own revocable credential.</p>
+              <span>One-time-link fallback</span>
+              <h2 id="pair-link-title">Paste a connection link</h2>
+              <p>If this computer does not appear, run <code>sessions pair</code> there and paste its one-time link.</p>
             </div>
             <form onSubmit={(event) => { event.preventDefault(); void claimPairingLink(); }}>
               <input
@@ -216,37 +265,6 @@ export function ConnectScreen({
               </button>
             </form>
           </section>
-          {!isAndroidClient ? <section className="connect-discovery" aria-labelledby="discovery-title">
-            <div className="connect-discovery-heading">
-              <div>
-                <span>Private machine discovery</span>
-                <h2 id="discovery-title">Find your machines</h2>
-                <p>Sessions checks encrypted Tailscale and nearby Bonjour independently, then shows only verified Sessions runtimes.</p>
-              </div>
-              <button type="button" className="connect-submit connect-find" disabled={connectionDisabled} onClick={() => void findMachines()}>
-                {discoveryBusy ? 'Searching…' : discoveredPeers === null ? 'Find machines' : 'Search again'}
-              </button>
-            </div>
-            {discoveredPeers !== null && discoveredPeers.length > 0 ? (
-              <div className="connect-peer-list">
-                {discoveredPeers.map((peer) => {
-                  const waiting = accessRequest?.endpoint === peer.endpoint;
-                  return (
-                    <article key={peer.endpoint} className="connect-peer">
-                      <span className="connect-peer-icon" aria-hidden>{peer.os.toLowerCase().includes('windows') ? '⊞' : peer.os.toLowerCase().includes('mac') ? '⌘' : '◇'}</span>
-                      <div>
-                        <strong>{peer.name}</strong>
-                        <small>{peer.transport === 'tailnet' ? 'Tailscale · encrypted' : 'Nearby · unencrypted'} · {peer.endpoint.replace(/^https?:\/\//, '')}</small>
-                      </div>
-                      <button type="button" className="btn" disabled={connectionDisabled} onClick={() => void requestAccess(peer)}>
-                        {waiting ? 'Waiting for approval…' : 'Request access'}
-                      </button>
-                    </article>
-                  );
-                })}
-              </div>
-            ) : null}
-          </section> : null}
           </>
         ) : null}
 
@@ -360,15 +378,15 @@ export function ConnectScreen({
               <code>brew install somewhere-tech/tap/sessions &amp;&amp; sessions install</code>
             </li>
             <li>
-              <span>{isAndroidClient
+              <span>{isMobileClient
                 ? 'Enable direct access on the trusted Wi-Fi or Ethernet network shared with your phone.'
                 : 'Enable direct HTTPS access over your own Tailscale network.'}</span>
-              <code>{isAndroidClient ? 'sessions lan enable && sessions pair' : 'sessions remote enable'}</code>
+              <code>{isMobileClient ? 'sessions lan enable' : 'sessions remote enable'}</code>
             </li>
             <li>
               <span>
-                {isAndroidClient
-                  ? 'Paste the printed one-time link above. Tailscale discovery and request/accept onboarding are next.'
+                {isMobileClient
+                  ? 'Choose a nearby Sessions machine above and approve this phone there, or paste a one-time link.'
                   : clientOnly
                     ? 'Paste the one-time link above. On desktop clients, you can also discover and request access from the app.'
                   : 'Scan the printed QR code, or paste its endpoint and token above.'}

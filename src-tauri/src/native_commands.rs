@@ -193,6 +193,17 @@ async fn native_nearby_discover(app: AppHandle) -> Result<Vec<NativeNearbyPeer>,
 }
 
 #[tauri::command]
+async fn native_mobile_bonjour_discover() -> Result<Vec<NativeMobileBonjourPeer>, String> {
+    #[cfg(desktop)]
+    return Err("Phone Bonjour discovery is available only on iOS and Android.".to_string());
+
+    #[cfg(mobile)]
+    tauri::async_runtime::spawn_blocking(mobile_discovery::browse_sessions)
+        .await
+        .map_err(|error| format!("Bonjour discovery worker failed: {error}"))?
+}
+
+#[tauri::command]
 async fn native_nearby_request(
     endpoint: String,
     client_id: String,

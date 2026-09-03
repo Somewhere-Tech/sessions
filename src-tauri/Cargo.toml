@@ -41,3 +41,6 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.55"
+
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+mdns-sd = "0.21.1"

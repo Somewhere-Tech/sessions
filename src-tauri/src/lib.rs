@@ -4,6 +4,8 @@
 // durable session.
 
 mod lifecycle;
+#[cfg(mobile)]
+mod mobile_discovery;
 #[cfg(any(target_os = "windows", test))]
 mod windows_cli_path;
 mod windows_credentials;
@@ -192,6 +194,15 @@ struct NativeNearbyPeer {
     reachable: bool,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeMobileBonjourPeer {
+    name: String,
+    host: String,
+    port: u16,
+    txt: HashMap<String, String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct TailscalePeer {
@@ -352,6 +363,7 @@ pub fn run() {
             native_tailnet_request,
             native_tailnet_claim,
             native_nearby_discover,
+            native_mobile_bonjour_discover,
             native_nearby_request,
             native_nearby_claim,
             native_backup_action,

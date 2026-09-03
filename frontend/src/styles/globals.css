@@ -1,4 +1,5 @@
 @import './sections/00-foundation.css';
+@import './sections/01-connect-mobile.css';
 @import './sections/10-fleet.css';
 @import './sections/11-usage.css';
 @import './sections/12-search.css';

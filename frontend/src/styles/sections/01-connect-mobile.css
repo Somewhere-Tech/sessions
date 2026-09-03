@@ -1,0 +1,60 @@
+/* The client-only connect view is the whole first-run experience on a phone.
+ * Keep its first action above the fold without changing the hosted and desktop
+ * connect layouts that share these components. */
+@media (max-width: 620px) {
+  .connect-screen-client {
+    padding: calc(12px + env(safe-area-inset-top, 0px)) 12px
+      calc(20px + env(safe-area-inset-bottom, 0px));
+  }
+  .connect-screen-client .connect-brand {
+    font-size: 12px;
+    letter-spacing: .11em;
+  }
+  .connect-screen-client .connect-kicker {
+    margin: 10px 0 5px;
+    font-size: 12px;
+    letter-spacing: .04em;
+  }
+  .connect-screen-client .connect-panel > h1 {
+    max-width: none;
+    font-size: clamp(22px, 6.5vw, 28px);
+    letter-spacing: -.035em;
+    line-height: 1.08;
+    white-space: nowrap;
+  }
+  .connect-screen-client .connect-lede {
+    margin: 8px 0 12px;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .connect-screen-client .connect-pair-link,
+  .connect-screen-client .connect-discovery {
+    gap: 10px;
+    margin-bottom: 10px;
+    padding: 12px;
+    border-radius: 11px;
+  }
+  .connect-screen-client .connect-pair-link > div > span,
+  .connect-screen-client .connect-discovery-heading span {
+    font-size: 12px;
+  }
+  .connect-screen-client .connect-pair-link h2,
+  .connect-screen-client .connect-discovery-heading h2 {
+    margin: 3px 0 4px;
+    font-size: 15px;
+  }
+  .connect-screen-client .connect-pair-link p,
+  .connect-screen-client .connect-discovery-heading p {
+    font-size: 12px;
+    line-height: 1.35;
+  }
+  .connect-screen-client .connect-pair-link form { gap: 6px; }
+  .connect-screen-client .connect-pair-link input { height: 38px; }
+  .connect-screen-client .connect-pair-link .connect-submit { min-height: 38px; }
+  .connect-screen-client .connect-waiting {
+    margin: 10px 0 0;
+    color: var(--fg);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+}
