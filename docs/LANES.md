@@ -73,8 +73,9 @@ projects. `sessions team` lists a manager's parent and its delegated
 descendants with a compact state and the last line of work, under a hard
 size budget per row, so a manager can watch its workers without pulling their
 conversations into context. `sessions team --all` is the view from the top:
-every session that has delegated lanes with its lane, working, and needs-you
-counts, and the waiting lanes named.
+every session that has delegated lanes with its lane, working, lost, and
+needs-you counts, and the waiting or lost lanes named. A lost row includes the
+command that resolves it.
 
 A lane's full conversation is an explicit read (`sessions cat <id>`), never
 something a listing carries.
@@ -101,8 +102,11 @@ the daemon restarts at most eight sessions on its own, pinned ones first and
 then the ones you spoke to in the last day. The rest stay paused, listed
 under "Not connected" with the reason, and wake on first contact: opening one,
 sending it a message, or reading it live restarts its runner in place with
-the same id, conversation, and folder. A session whose runner is gone for
-good is resumed from its conversation with `sessions resume`.
+the same id, conversation, and folder. A session whose runner is gone for good
+reads as **lost**, never running. A Claude or Codex conversation that can
+continue is resumed with `sessions resume <id>`; a headless lane has no
+conversation to resume, so `sessions kill <id>` closes its retained record.
+Neither case is mislabeled as an observed process exit.
 
 ## Commands in one place
 

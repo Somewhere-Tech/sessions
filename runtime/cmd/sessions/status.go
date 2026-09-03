@@ -61,6 +61,7 @@ type statusOutput struct {
 	Unreachable       bool                     `json:"unreachable,omitempty"`
 	UnreachableReason string                   `json:"unreachable_reason,omitempty"`
 	UnreachableSince  *int64                   `json:"unreachable_since_ms,omitempty"`
+	RunnerGone        bool                     `json:"runner_gone,omitempty"`
 }
 
 func (a *app) cmdStatus(args []string) error {
@@ -120,7 +121,7 @@ func (a *app) cmdStatus(args []string) error {
 		SetAsideAtMS:   current.SetAsideAt,
 		Permissions:    current.Permissions, Lifecycle: current.Lifecycle,
 		Unreachable: current.Unreachable, UnreachableReason: current.UnreachableReason,
-		UnreachableSince: current.UnreachableSince,
+		UnreachableSince: current.UnreachableSince, RunnerGone: current.RunnerGone,
 	}
 	if current.Exited {
 		output.ExitCode = current.ExitCode
@@ -137,6 +138,9 @@ func (a *app) cmdStatus(args []string) error {
 func liveStatusState(current session) string {
 	if current.Exited {
 		return "exited"
+	}
+	if current.RunnerGone {
+		return "lost"
 	}
 	if current.Unreachable {
 		if current.UnreachableReason == "restart-restore-pending" {

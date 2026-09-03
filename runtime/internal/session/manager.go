@@ -361,7 +361,18 @@ func (m *Manager) List(includeExited bool) []state.SessionInfo {
 	// for.
 	infos = m.withDurableClosed(ctx, infos, includeExited)
 	infos = m.withPendingRestores(infos)
+	infos = m.withRunnerReality(infos)
 	return m.withProvenance(ctx, infos)
+}
+
+func (m *Manager) withRunnerReality(infos []state.SessionInfo) []state.SessionInfo {
+	for index := range infos {
+		if infos[index].Unreachable && infos[index].UnreachableReason == "runner-lost" &&
+			!m.runtimeStillLive(infos[index].ID) {
+			infos[index].RunnerGone = true
+		}
+	}
+	return infos
 }
 func (m *Manager) Get(id string) (*state.Session, bool) { return m.registry.Get(id) }
 func (m *Manager) DeepDiagnostics() []map[string]any    { return m.registry.DeepDiagnostics() }

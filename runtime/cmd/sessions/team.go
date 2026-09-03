@@ -25,6 +25,8 @@ type teamMember struct {
 	Exited   bool   `json:"exited"`
 	Summary  string `json:"summary,omitempty"`
 	Waiting  string `json:"waiting,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Recovery string `json:"recovery_command,omitempty"`
 	Branch   string `json:"branch,omitempty"`
 	Worktree string `json:"worktree_path,omitempty"`
 }
@@ -102,6 +104,11 @@ func (a *app) writeTeam(listing teamListing) error {
 		last := member.Summary
 		if member.NeedsYou && member.Waiting != "" {
 			last = member.Waiting
+		} else if member.Recovery != "" {
+			last = member.Recovery
+			if member.Reason != "" {
+				last = member.Reason + "; " + member.Recovery
+			}
 		}
 		if strings.TrimSpace(last) == "" {
 			last = "-"

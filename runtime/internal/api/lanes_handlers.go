@@ -13,7 +13,39 @@ import (
 
 type laneView struct {
 	state.SessionInfo
-	Manifest *state.CompletionManifest `json:"manifest,omitempty"`
+	Manifest   *state.CompletionManifest `json:"manifest,omitempty"`
+	LaneStatus laneStatus                `json:"lane_status"`
+}
+
+// laneStatus is the lane-specific lifecycle answer clients otherwise have to
+// infer from three independent facts. In particular, a missing completion
+// manifest does not mean running: a runner can disappear without ever writing
+// one, and Exited deliberately remains false unless Sessions observed an exit.
+type laneStatus struct {
+	State   string `json:"state"`
+	Reason  string `json:"reason,omitempty"`
+	Command string `json:"command,omitempty"`
+}
+
+func laneStatusFrom(info state.SessionInfo, completed bool) laneStatus {
+	switch {
+	case completed || info.Exited:
+		return laneStatus{State: "exited"}
+	case info.UnreachableReason == "restart-restore-pending":
+		return laneStatus{
+			State: "needs-recovery", Reason: "runner was paused after reboot",
+			Command: "sessions resume " + info.ID,
+		}
+	case info.RunnerGone:
+		return laneStatus{
+			State: "lost", Reason: "runner process is gone",
+			Command: "sessions kill " + info.ID,
+		}
+	case info.Unreachable:
+		return laneStatus{State: "unreachable", Reason: "runner is not connected"}
+	default:
+		return laneStatus{State: "running"}
+	}
 }
 
 func (s *Server) handleLanesRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
@@ -30,6 +62,7 @@ func (s *Server) handleLanesRoute(response http.ResponseWriter, request *http.Re
 				if manifest, err := state.ReadCompletionManifest(state.For(s.config.RunnerStateDir, info.ID).Manifest); err == nil {
 					view.Manifest = &manifest
 				}
+				view.LaneStatus = laneStatusFrom(info, view.Manifest != nil)
 				lanes = append(lanes, view)
 			}
 			userCreatorID, err := ledger.LocalUserCreatorID()

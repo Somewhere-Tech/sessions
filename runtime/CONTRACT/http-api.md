@@ -155,6 +155,7 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `unreachable` | boolean, optional | present as `true` when the daemon cannot currently talk to the session's runner (socket read error, read deadline, daemon restart). This is a statement about the connection, not the work: the session is still listed, readable, and attachable, and reconnect or the next discovery pass may reattach it. It is never presented as ended, and `exited` stays `false` |
 | `unreachableReason` | string, optional | why contact was lost; `"runner-lost"` for a socket read failure |
 | `unreachableSince` | number, optional | Unix epoch milliseconds when contact was lost |
+| `runnerGone` | boolean, optional | present as `true` only when the daemon's identity-aware process probe found no process belonging to this session. This is stronger than `unreachable`: the runtime cannot reconnect by itself. It still does not invent an exit status, so `exited` remains `false` |
 | `claudeCustomTitle` | string, optional | latest Claude `custom-title` value |
 | `claudeAiTitle` | string, optional | latest Claude `ai-title` value |
 | `onIdle` | string, optional | trimmed per-session idle hook command |
@@ -436,16 +437,27 @@ same root for watcher, transcript, search, backup, and recovery resolution
 ### `GET /api/lanes`
 
 Auth required. Lists every session whose `kind` is `lane`, exited or not, in
-daemon map order. Each element is a `SessionInfo` plus an additive `manifest`
-object when the lane's completion manifest is readable:
+daemon map order. Each element is a `SessionInfo` plus an additive
+`lane_status` object and a `manifest` object when the lane's completion
+manifest is readable:
 
 ```json
-{"lanes":[{/* SessionInfo fields */,"manifest":{"exit_code":0,"signal":null,"duration_ms":1234,"last_output_tail":"...","spec_path":"...","files_changed":3}}],"user_creator_id":"<local user creator id>"}
+{"lanes":[{/* SessionInfo fields */,"lane_status":{"state":"exited"},"manifest":{"exit_code":0,"signal":null,"duration_ms":1234,"last_output_tail":"...","spec_path":"...","files_changed":3}}],"user_creator_id":"<local user creator id>"}
 ```
 
-`manifest` is omitted while a lane is still running or has no manifest;
-`files_changed` is omitted when unknown. A failure to resolve the local user
-creator ID is 500; other methods return 405.
+`lane_status.state` is `running`, `exited`, `unreachable`, `lost`, or
+`needs-recovery`. A lost headless lane carries the short reason and the exact
+command that closes its retained record without pretending an exit was
+observed:
+
+```json
+{"lane_status":{"state":"lost","reason":"runner process is gone","command":"sessions kill <id>"}}
+```
+
+`manifest` is omitted while a lane has no readable completion manifest; that
+absence alone does not mean the lane is running. `files_changed` is omitted
+when unknown. A failure to resolve the local user creator ID is 500; other
+methods return 405.
 
 ### `POST /api/lanes`
 
@@ -483,10 +495,15 @@ parent preferred over creator lineage, depth capped at 8):
 
 Every member object carries `id`, optional `name`, `tool`, optional `cwd`,
 `relation` (`self`, `parent`, or `child`), `depth`, `state` (`ended`,
-`needs-you`, `working`, `failed`, `not-started`, or `idle`), `needs_you`, `branch` and `worktree_path` when the lane works in its own worktree,
-`working`, `exited`, optional `summary`, optional `waiting`, and optional
-`updated_at`. `summary` and `waiting` are capped at 200 bytes; no transcript,
-args, or env is included. `parent` is omitted when the caller has none.
+`needs-recovery`, `lost`, `unreachable`, `needs-you`, `working`, `failed`,
+`not-started`, or `idle`), `needs_you`, `branch` and `worktree_path` when the
+lane works in its own worktree, `working`, `exited`, optional `summary`,
+optional `waiting`, and optional `updated_at`. A lost or paused member also
+carries `reason` and `recovery_command`; the command is
+`sessions resume <id>` when a provider conversation can continue and
+`sessions kill <id>` when only a headless record can be closed. `summary` and
+`waiting` are capped at 200 bytes; no transcript, args, or env is included.
+`parent` is omitted when the caller has none.
 `members` sorts by `depth`, then `updated_at` descending; `needs_input` counts
 live members waiting on a decision.
 
@@ -654,9 +671,12 @@ Auth required. An optional JSON body carries
 remains valid for older clients. `?force=1` bypasses the normal graceful end
 request. The daemon captures the authenticated initiator plus the optional
 session/external-owner attribution headers before it sends the runner KILL
-frame, and leaves removal to the runner EXIT path. Responses:
+frame, and leaves removal to the runner EXIT path. A retained record with
+`runnerGone:true` has no process to signal: the same request appends the
+user-close boundary and removes any stale unreachable map entry instead.
+Responses:
 
-- known map entry: `200 {"ok":true}`
+- known live entry or retained `runnerGone:true` record: `200 {"ok":true}`
 - unknown entry: `404 {"ok":false}`
 
 ### `POST /api/sessions/end-batch`
@@ -667,10 +687,11 @@ Auth required. Body is:
 {"ids":["<session id>","<session id>"],"reason":"<operator text>","operationId":"<correlation id>","force":false}
 ```
 
-At least two non-empty live session IDs are required. The request is rejected
-before mutation if a target is missing or the manager's mass-end safety guard
-requires explicit `force:true`. On success the daemon records one attributed
-operation for the batch and returns `{"ok":true,"ids":[...]}`.
+At least two non-empty live session IDs or retained `runnerGone:true` IDs are
+required. The request is rejected before mutation if a target is missing or
+the manager's mass-end safety guard requires explicit `force:true`. On success
+the daemon records one attributed operation for the batch and returns
+`{"ok":true,"ids":[...]}`.
 
 ### `PUT /api/sessions/:id/display-parent`
 

@@ -31,9 +31,16 @@ type laneManifest struct {
 
 type laneView struct {
 	session
-	Kind     string        `json:"kind"`
-	SpecPath string        `json:"specPath,omitempty"`
-	Manifest *laneManifest `json:"manifest,omitempty"`
+	Kind       string        `json:"kind"`
+	SpecPath   string        `json:"specPath,omitempty"`
+	Manifest   *laneManifest `json:"manifest,omitempty"`
+	LaneStatus *laneStatus   `json:"lane_status,omitempty"`
+}
+
+type laneStatus struct {
+	State   string `json:"state"`
+	Reason  string `json:"reason,omitempty"`
+	Command string `json:"command,omitempty"`
 }
 
 type lanesResponse struct {
@@ -82,24 +89,47 @@ func (a *app) cmdLanes(args []string) error {
 		_, err := io.WriteString(a.stdout, "(no lanes)\n")
 		return err
 	}
-	rows := [][]string{{"ID", "NAME", "DESC", "TOOL", "CWD", "STATE", "EXIT", "DURATION", "PROVENANCE"}}
+	showRecovery := false
+	for _, lane := range response.Lanes {
+		if lane.LaneStatus != nil && (lane.LaneStatus.Reason != "" || lane.LaneStatus.Command != "") {
+			showRecovery = true
+			break
+		}
+	}
+	header := []string{"ID", "NAME", "DESC", "TOOL", "CWD", "STATE", "EXIT", "DURATION", "PROVENANCE"}
+	if showRecovery {
+		header = append(header, "REASON", "ACTION")
+	}
+	rows := [][]string{header}
 	for _, lane := range response.Lanes {
 		name := "-"
 		if strings.TrimSpace(lane.Name) != "" {
 			name = strings.Join(strings.Fields(lane.Name), " ")
 		}
-		state := "running"
+		laneState := "running"
 		exit := "-"
 		duration := "-"
+		if lane.LaneStatus != nil && lane.LaneStatus.State != "" {
+			laneState = lane.LaneStatus.State
+		} else if lane.Manifest != nil {
+			laneState = "exited"
+		} else if lane.UnreachableReason == "restart-restore-pending" {
+			laneState = "needs-recovery"
+		} else if lane.RunnerGone {
+			// Compatibility with a daemon which reports the established
+			// SessionInfo reachability fields but predates lane_status.
+			laneState = "lost"
+		} else if lane.Unreachable {
+			laneState = "unreachable"
+		}
 		if lane.Manifest != nil {
-			state = "exited"
 			exit = strconv.Itoa(lane.Manifest.ExitCode)
 			if lane.Manifest.Signal != nil && *lane.Manifest.Signal != "" {
 				exit += "/" + *lane.Manifest.Signal
 			}
 			duration = formatLaneDuration(lane.Manifest.DurationMS)
 		} else if lane.Exited {
-			state = "exited"
+			laneState = "exited"
 			if lane.ExitCode != nil {
 				exit = strconv.Itoa(*lane.ExitCode)
 			}
@@ -107,10 +137,26 @@ func (a *app) cmdLanes(args []string) error {
 				exit += "/" + *lane.ExitSignal
 			}
 		}
-		rows = append(rows, []string{
+		row := []string{
 			prefixString(lane.ID, 8), name, compactDescription(lane.Description), toolOfSession(lane.session),
-			a.homeRelative(lane.Cwd), state, exit, duration, laneProvenanceLabel(lane),
-		})
+			a.homeRelative(lane.Cwd), laneState, exit, duration, laneProvenanceLabel(lane),
+		}
+		if showRecovery {
+			reason, command := "-", "-"
+			if lane.LaneStatus != nil {
+				if lane.LaneStatus.Reason != "" {
+					reason = lane.LaneStatus.Reason
+				}
+				if lane.LaneStatus.Command != "" {
+					command = lane.LaneStatus.Command
+				}
+			} else if laneState == "lost" {
+				reason = "runner process is gone"
+				command = "sessions kill " + lane.ID
+			}
+			row = append(row, reason, command)
+		}
+		rows = append(rows, row)
 	}
 	return writePaddedRows(a.stdout, rows)
 }

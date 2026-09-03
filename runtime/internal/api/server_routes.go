@@ -288,7 +288,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 				s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "session ids must not be empty"}, corsOrigin)
 				return
 			}
-			if _, ok := s.registry.Get(id); !ok {
+			if !sessionCanBeEnded(s.registry, id) {
 				s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "session not found", "id": id}, corsOrigin)
 				return
 			}
@@ -778,7 +778,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		return
 	}
 	if suffix == "" && request.Method == http.MethodDelete {
-		if !ok {
+		if !ok && !sessionCanBeEnded(s.registry, id) {
 			s.sendJSON(response, http.StatusNotFound, map[string]any{"ok": false}, corsOrigin)
 			return
 		}
