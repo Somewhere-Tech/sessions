@@ -244,7 +244,7 @@ function validateServerHealth(health: ServerHealth): ServerHealth {
 
 export async function fetchActiveServerHealth(signal?: AbortSignal): Promise<ServerHealth> {
   const server = getActiveServer();
-  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/health`, { signal }, false);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/health`, { signal }, Boolean(server.relayMachineId));
   return validateServerHealth(await json<ServerHealth>(r));
 }
 
@@ -283,7 +283,7 @@ export async function fetchServerHealth(
     server,
     `${httpBaseForServer(server)}/api/health`,
     { signal },
-    false
+    Boolean(server.relayMachineId)
   );
   return validateServerHealth(await json<ServerHealth>(r));
 }

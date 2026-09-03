@@ -22,6 +22,7 @@ import { OnboardingDialog } from './components/OnboardingDialog';
 import { DaemonBanner, SinglePopOut } from './AppAuxiliaryViews';
 import { useSessions } from './store/sessions';
 import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer, isLocalServer, serverDisplayName } from './lib/servers';
+import { useFleetRelayServers } from './lib/fleetRelay';
 import { SettingsMenu } from './components/SettingsMenu';
 import { TailnetAccessInbox } from './components/TailnetAccessInbox';
 import { MachineRecoveryNotice } from './components/MachineRecoveryNotice';
@@ -48,13 +49,11 @@ import {
 import { adoptConversationWithRepair, adoptionWarning } from './lib/adoptConversation';
 import { resumeExactSession } from './lib/resumeExactSession';
 import type { SessionInfo, SessionTool } from './types';
-
 const TOOL_ICONS: Record<SessionTool, string> = {
   'claude-code': '🟠',
   'codex': '🟢',
   'terminal': '⬛'
 };
-
 // Status of the currently-attached session, lifted out of SessionView so
 // the tab strip and mobile nav can reflect it. Only the *active* session
 // has live data here — inactive tabs stay 'idle' until we add background
@@ -150,6 +149,7 @@ export function App(): JSX.Element {
       .finally(() => { if (active) setNativeHydrated(true); });
     return () => { active = false; };
   }, []);
+  useFleetRelayServers(nativeHydrated && nativeClientOnly);
   useEffect(() => {
     void syncTrayServers(servers);
   }, [servers]);
