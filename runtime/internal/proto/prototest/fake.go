@@ -184,6 +184,12 @@ func (r *Runner) Kill(context.Context) error {
 	return nil
 }
 
+func (r *Runner) HasExited() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.exited
+}
+
 func (r *Runner) Subscribe() (<-chan proto.Event, func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

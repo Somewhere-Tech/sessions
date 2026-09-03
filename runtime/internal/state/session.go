@@ -3,7 +3,6 @@ package state
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -590,14 +589,31 @@ func (s *Session) Kill(ctx context.Context) bool {
 	return s.RequestKill(ctx) == nil
 }
 
-func (s *Session) RequestKill(ctx context.Context) error {
+// HasExited includes the runner's clean terminal observation, which can arrive
+// just before the Session event pump publishes the same fact in SessionInfo.
+// A closed socket without an EXIT frame remains false.
+func (s *Session) HasExited() bool {
 	s.mu.RLock()
 	exited := s.info.Exited
 	s.mu.RUnlock()
 	if exited {
-		return errors.New("session already exited")
+		return true
+	}
+	runner, ok := s.runner.(interface{ HasExited() bool })
+	return ok && runner.HasExited()
+}
+
+func (s *Session) RequestKill(ctx context.Context) error {
+	if s.HasExited() {
+		return nil
 	}
 	if err := s.runner.Kill(ctx); err != nil {
+		// The runner can publish EXIT and close its socket between the check
+		// above and the control write. That is the requested end state, not a
+		// failed kill.
+		if s.HasExited() {
+			return nil
+		}
 		return fmt.Errorf("kill runner: %w", err)
 	}
 	return nil

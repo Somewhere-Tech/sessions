@@ -719,8 +719,14 @@ frame, and leaves removal to the runner EXIT path. A retained record with
 user-close boundary and removes any stale unreachable map entry instead.
 Responses:
 
-- known live entry or retained `runnerGone:true` record: `200 {"ok":true}`
+- known live entry, already-exited retained entry, or retained
+  `runnerGone:true` record: `200 {"ok":true}`. Re-ending an already-exited
+  entry is idempotent and does not append a user-kill boundary after its exit.
 - unknown entry: `404 {"ok":false}`
+- a known entry whose attribution, durable boundary, or runner control cannot
+  be completed safely: `409 {"ok":false,"error":"<instructional message>"}`.
+  The daemon log retains the underlying error; the response directs the caller
+  to establish current session status before retrying.
 
 ### `POST /api/sessions/end-batch`
 
@@ -730,11 +736,14 @@ Auth required. Body is:
 {"ids":["<session id>","<session id>"],"reason":"<operator text>","operationId":"<correlation id>","force":false}
 ```
 
-At least two non-empty live session IDs or retained `runnerGone:true` IDs are
-required. The request is rejected before mutation if a target is missing or
-the manager's mass-end safety guard requires explicit `force:true`. On success
-the daemon records one attributed operation for the batch and returns
-`{"ok":true,"ids":[...]}`.
+At least two non-empty live, already-exited retained, or retained
+`runnerGone:true` session IDs are required. The request is rejected before
+mutation if a target is missing or the manager's mass-end safety guard requires
+explicit `force:true`. On success the daemon records one attributed operation
+for the batch and returns
+`{"ok":true,"ids":[...]}`. A safety-guard refusal or another failure to
+complete the requested end operation returns `409` with `ok:false` and an
+instructional error; the exact underlying error is retained in the daemon log.
 
 ### `PUT /api/sessions/:id/display-parent`
 

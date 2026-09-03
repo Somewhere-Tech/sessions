@@ -1180,6 +1180,105 @@ func TestBatchEndAppliesAggregateMassKillGuardBeforeAnyTombstone(t *testing.T) {
 	}
 }
 
+func TestDeleteExitedShellIsIdempotentWithoutUserKillBoundary(t *testing.T) {
+	daemon := newTestDaemon(t)
+	store, err := ledger.Open(context.Background(), ledger.Options{
+		Path: filepath.Join(daemon.root, "ledger", "lanes.sqlite3"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	manager := sessionruntime.NewManager(daemon.config, daemon.launcher, sessionruntime.ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour,
+		Boundaries: store.Boundaries(), Observations: store.Observations(), LedgerReader: store,
+	})
+	t.Cleanup(manager.Close)
+	daemon.handler = New(daemon.config, manager)
+
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/sh", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := daemon.launcher.Runner(created.ID)
+	if runner == nil {
+		t.Fatal("created shell has no runner")
+	}
+	if err := runner.Kill(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	response := serve(
+		t, daemon.handler, http.MethodDelete, "/api/sessions/"+created.ID,
+		strings.NewReader(`{}`), "127.0.0.1:1", nil,
+	)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ok":true`) {
+		t.Fatalf("end exited shell status=%d body=%s", response.Code, response.Body.String())
+	}
+	events, err := store.Events(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == ledger.EventUserKillRequested {
+			t.Fatalf("idempotent end appended a user-kill boundary after shell exit: %#v", events)
+		}
+	}
+}
+
+func TestDeleteKnownSessionReturnsConflictForUnverifiableInitiator(t *testing.T) {
+	daemon := newTestDaemon(t)
+	store, err := ledger.Open(context.Background(), ledger.Options{
+		Path: filepath.Join(daemon.root, "ledger", "lanes.sqlite3"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	manager := sessionruntime.NewManager(daemon.config, daemon.launcher, sessionruntime.ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour,
+		Boundaries: store.Boundaries(), Observations: store.Observations(), LedgerReader: store,
+	})
+	t.Cleanup(manager.Close)
+	daemon.handler = New(daemon.config, manager)
+
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "/bin/sh", Cwd: daemon.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serve(
+		t, daemon.handler, http.MethodDelete, "/api/sessions/"+created.ID,
+		strings.NewReader(`{}`), "127.0.0.1:1", http.Header{
+			creatorSessionHeader: {"11111111-1111-4111-8111-111111111111"},
+		},
+	)
+	if response.Code != http.StatusConflict ||
+		!strings.Contains(response.Body.String(), "could not safely end session") ||
+		!strings.Contains(response.Body.String(), "before retrying") {
+		t.Fatalf("unverifiable initiator status=%d body=%s", response.Code, response.Body.String())
+	}
+	shell, ok := manager.Get(created.ID)
+	if !ok {
+		t.Fatal("conflict removed the target session")
+	}
+	if info := shell.Info(); info.Exited {
+		t.Fatalf("conflict ended the target session: info=%#v", info)
+	}
+	events, err := store.Events(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == ledger.EventUserKillRequested {
+			t.Fatalf("rejected attribution appended a user-kill boundary: %#v", events)
+		}
+	}
+}
+
 func TestSessionsLifecycleAndRouteShapes(t *testing.T) {
 	daemon := newTestDaemon(t)
 
