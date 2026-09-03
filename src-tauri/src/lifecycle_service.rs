@@ -193,7 +193,16 @@ fn prepare_service_directories(config: &RuntimeConfig) -> LifecycleResult<()> {
 
 fn capture_baseline(config: &RuntimeConfig) -> LifecycleResult<BTreeSet<String>> {
     wait_until_ready(config, &BTreeSet::new())?;
-    fetch_sessions(config)
+    Ok(live_session_ids(fetch_sessions(config, false)?))
+}
+
+fn live_session_ids(sessions: Vec<SessionIdentity>) -> BTreeSet<String> {
+    sessions
+        .into_iter()
+        .filter(|session| !session.exited && session.pid != Some(0))
+        .map(|session| session.id)
+        .filter(|id| !id.is_empty())
+        .collect()
 }
 
 fn wait_until_listening(config: &RuntimeConfig) -> LifecycleResult<()> {
@@ -225,20 +234,27 @@ fn wait_until_ready(config: &RuntimeConfig, baseline: &BTreeSet<String>) -> Life
     let mut last_error = "no response".to_string();
     while Instant::now() < deadline {
         match health_once(config) {
-            Ok(health) if health.ok && health.name == "sessionsd" => match fetch_sessions(config) {
-                Ok(current) => {
-                    let missing = baseline.difference(&current).cloned().collect::<Vec<_>>();
-                    if missing.is_empty() {
-                        return Ok(());
+            Ok(health) if health.ok && health.name == "sessionsd" => {
+                match fetch_sessions(config, true) {
+                    Ok(sessions) => {
+                        let current = sessions
+                            .into_iter()
+                            .filter(|session| !session.id.is_empty())
+                            .map(|session| (session.id.clone(), session_readiness(&session)))
+                            .collect::<BTreeMap<_, _>>();
+                        let missing = baseline_sessions_not_ready(baseline, &current);
+                        if missing.is_empty() {
+                            return Ok(());
+                        }
+                        last_error = format!(
+                            "{} live sessions were not re-adopted: {}",
+                            missing.len(),
+                            missing.join(", ")
+                        );
                     }
-                    last_error = format!(
-                        "{} live sessions were not re-adopted: {}",
-                        missing.len(),
-                        missing.join(", ")
-                    );
+                    Err(error) => last_error = error,
                 }
-                Err(error) => last_error = error,
-            },
+            }
             Ok(health) => {
                 last_error = format!("unexpected health response from {:?}", health.name);
             }
@@ -253,6 +269,36 @@ fn wait_until_ready(config: &RuntimeConfig, baseline: &BTreeSet<String>) -> Life
         last_error,
         config.log_path.display()
     ))
+}
+
+fn session_readiness(session: &SessionIdentity) -> SessionReadiness {
+    // The user-close boundary is written before Sessions asks the runner to
+    // stop, so it may be visible before the runner supplies its exit status.
+    // Either fact proves this baseline session was deliberately ended rather
+    // than lost by the daemon swap.
+    if session.exited || session.ended_by_kind == "user" {
+        SessionReadiness::Ended
+    } else if session.unreachable {
+        SessionReadiness::Unreachable
+    } else {
+        SessionReadiness::Reachable
+    }
+}
+
+fn baseline_sessions_not_ready(
+    baseline: &BTreeSet<String>,
+    current: &BTreeMap<String, SessionReadiness>,
+) -> Vec<String> {
+    baseline
+        .iter()
+        .filter(|id| {
+            matches!(
+                current.get(*id),
+                None | Some(SessionReadiness::Unreachable)
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 fn readiness_timeout(config: &RuntimeConfig, baseline_count: usize) -> Duration {
@@ -274,20 +320,21 @@ fn health_once(config: &RuntimeConfig) -> LifecycleResult<HealthResponse> {
         .map_err(|error| format!("health probe failed: {error}"))
 }
 
-fn fetch_sessions(config: &RuntimeConfig) -> LifecycleResult<BTreeSet<String>> {
+fn fetch_sessions(
+    config: &RuntimeConfig,
+    include_exited: bool,
+) -> LifecycleResult<Vec<SessionIdentity>> {
+    let mut url = config.sessions_url();
+    if include_exited {
+        url.push_str("?include_exited=1");
+    }
     let response = http_client(session_probe_timeout(config))?
-        .get(config.sessions_url())
+        .get(url)
         .send()
         .and_then(|response| response.error_for_status())
         .and_then(|response| response.json::<SessionEnvelope>())
-        .map_err(|error| format!("session-baseline probe failed: {error}"))?;
-    Ok(response
-        .sessions
-        .into_iter()
-        .filter(|session| !session.exited && session.pid != Some(0))
-        .map(|session| session.id)
-        .filter(|id| !id.is_empty())
-        .collect())
+        .map_err(|error| format!("session readiness probe failed: {error}"))?;
+    Ok(response.sessions)
 }
 
 fn health_probe_timeout(config: &RuntimeConfig) -> Duration {
