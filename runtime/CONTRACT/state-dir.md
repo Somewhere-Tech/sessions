@@ -1,8 +1,7 @@
 # sessionsd state and discovery contract
 
-This records the paths and lifecycle actually used by the TypeScript source,
-with the shipped Go runtime's deliberate divergences called out where they
-exist. The current layout is split: runner artifacts live in a `runners/`
+This records the paths and lifecycle used by the shipped Go runtime. The
+current layout is split: runner artifacts live in a `runners/`
 subdirectory by default, while auth, push, uploads, and idle state live at the
 root.
 
@@ -45,10 +44,9 @@ than rebuilding either layout by hand.
 `<id>.json/.sock/.events/.log` directly in `/tmp/ct-state`, not
 `/tmp/ct-state/runners`.
 
-The Go runtime deliberately diverges from the Node fixture on what else follows
-it. Setting it also derives a separate *state root* — the parent when the
-configured directory is named `runners`, otherwise the directory itself — so a
-scratch daemon never reads the installed daemon's credentials or ledgers
+Setting it also derives a separate *state root* — the parent when the configured
+directory is named `runners`, otherwise the directory itself — so a scratch
+daemon never reads the installed daemon's credentials or ledgers
 (`runtime/internal/state/config.go` `stateRootsFromEnv`). These follow the
 override:
 
@@ -130,8 +128,7 @@ Subscribe replaces by endpoint; unsubscribe filters by endpoint. Push responses
 Uploaded raw request bodies for known sessions. The uploads directory is created
 recursively with requested mode 0700 and files are written mode 0600. Names and
 the 25 MiB limit are specified in `http-api.md`. There is no automatic cleanup.
-In the Go runtime this directory follows an explicit `SESSIONS_STATE_DIR` as
-described above; in the Node fixture it is fixed under `os.homedir()`.
+This directory follows an explicit `SESSIONS_STATE_DIR` as described above.
 
 ### `delivery-operations/<operation-id>.json`
 
@@ -276,8 +273,8 @@ infer recovery failure from an empty live-session list.
 
 ### `runners/<id>.transcript.jsonl` and `.transcript.meta.json`
 
-Go runtime only; the Node fixture has no equivalent. The transcript file is
-Sessions' own append-only copy of a Claude conversation, written by the daemon's
+The transcript file is Sessions' own append-only copy of a Claude conversation,
+written by the daemon's
 PTY-backed Claude watcher rather than by the runner
 (`runtime/internal/watch/transcript_mirror.go`). Provider lines are stored
 verbatim and in observed order, deduplicated by each record's own `uuid`, so the
@@ -388,9 +385,9 @@ success. Bootout invokes `launchctl bootout
 gui/<uid>/tech.somewhere.sessions.runner.<id>` and then unlinks the plist regardless of
 the command result.
 
-Current production runner argv prefers `/usr/bin/env node <runner.js>`. A fresh
-source/development tree may use a fresh `dist/runner.js` or
-`/usr/bin/env node <local tsx> <runner.ts>`.
+New plists run the configured native `sessions-runner` executable directly.
+An adopted pre-native plist may retain its earlier argv until the session exits
+and the compatibility registration is reaped.
 
 ## Runner lifecycle and restoration
 

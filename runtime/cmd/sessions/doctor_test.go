@@ -172,7 +172,7 @@ func TestDoctorProbesAreGuardedByHost(t *testing.T) {
 	}
 	if strings.Contains(doctorHealthySummary(), "dist") ||
 		strings.Contains(doctorUnhealthyAdvice(), "tsx") {
-		t.Fatal("doctor still advertises the retired Node runtime")
+		t.Fatal("doctor advertises an obsolete runner command")
 	}
 }
 

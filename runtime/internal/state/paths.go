@@ -106,8 +106,8 @@ func EnsureDir(dir string) error {
 	return os.MkdirAll(dir, 0o700)
 }
 
-// Metadata mirrors runtime/testdata/node-runtime/src/runner.ts SessionMeta. Field order is kept the
-// same so the human-readable JSON also matches the normative implementation.
+// Metadata implements the stable SessionMeta shape. Field order is kept stable
+// so human-readable on-disk diffs stay boring.
 type Metadata struct {
 	ID                     string            `json:"id"`
 	Name                   string            `json:"name,omitempty"`

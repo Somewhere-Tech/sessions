@@ -18,12 +18,11 @@ import (
 )
 
 const (
-	// DefaultCols and DefaultRows are the canonical PTY dimensions pinned by
-	// the TypeScript daemon.
+	// DefaultCols and DefaultRows are the canonical PTY dimensions.
 	DefaultCols = 300
 	DefaultRows = 50
 
-	// The TypeScript mirrors retain 5000 rows. Snapshot deliberately exposes
+	// Mirrors retain 5000 rows. Snapshot deliberately exposes
 	// only the active viewport, but keeping the same history makes terminal
 	// behavior (notably ED and normal-buffer restoration) match xterm-headless.
 	defaultScrollback = 5000
@@ -760,8 +759,8 @@ func (m *Mirror) SerializeANSIWithScrollback() string {
 	return out.String()
 }
 
-// ReflowTo serializes the active screen and applies the exact server-side
-// reflow semantics preserved in runtime/testdata/node-runtime/src/reflow.ts.
+// ReflowTo serializes the active screen and applies the server-side reflow
+// semantics used by the terminal snapshot path.
 func (m *Mirror) ReflowTo(width int) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()

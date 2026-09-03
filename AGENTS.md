@@ -74,7 +74,8 @@ private hosted-service designs do not belong in this repository.
    The runner socket is `<SESSIONS_STATE_DIR>/<uuid>.sock` and macOS `sun_path`
    accepts at most 103 bytes, so a long scratch root fails every session with
    `runner did not create socket within 60s: ...: connect: invalid argument`
-   after a full 60-second wait (`runtime/internal/state/launcher.go`).
+   after a full 60-second wait (`runtime/internal/state/launcher.go`). Use the
+   same complete isolation for integration and install tests.
 
    On Windows set `USERPROFILE` instead of `HOME`: `os.UserHomeDir` reads
    `USERPROFILE` there, so `HOME` alone leaves the scratch daemon pointed at the

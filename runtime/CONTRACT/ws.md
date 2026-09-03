@@ -1,7 +1,6 @@
 # sessionsd WebSocket contract
 
-This is the protocol preserved in `runtime/testdata/node-runtime/src/ws.ts`, with message shapes
-from `runtime/testdata/node-runtime/src/types.ts` and actual browser consumption from
+This protocol is implemented by `runtime/internal/api` and consumed by
 `frontend/src/lib/wsMux.ts` and `frontend/src/hooks/useTerminal.ts`.
 
 All application messages described below are UTF-8 JSON objects. Protocol

@@ -48,20 +48,16 @@ commitment from the presence of the embedded assets.
 
 ## Compatibility boundary
 
-The shipped Go implementation owns all current product behavior. The retired
-TypeScript implementation in `runtime/testdata/node-runtime/` is an inert test
-fixture retained only to prove compatibility with sessions created before the
-native-runtime cutover. It is not bundled, installed, or run in production. The
-stable external contracts are documented in [`runtime/CONTRACT/`](runtime/CONTRACT/):
+The shipped Go implementation owns all current product behavior. Its stable
+external contracts are documented in [`runtime/CONTRACT/`](runtime/CONTRACT/):
 
 - [`http-api.md`](runtime/CONTRACT/http-api.md)
 - [`ws.md`](runtime/CONTRACT/ws.md)
 - [`runner-protocol.md`](runtime/CONTRACT/runner-protocol.md)
 - [`state-dir.md`](runtime/CONTRACT/state-dir.md)
 
-The frontend targets the stable contract exposed by the Go daemon. New product
-work belongs in the Go runtime, React frontend, or Tauri client—not in the
-retired TypeScript fixture.
+The frontend and native clients target the stable contract exposed by the Go
+daemon.
 
 ## Session lifecycle
 
@@ -131,8 +127,8 @@ file: the new path is preferred when it exists, otherwise the legacy file is
 adopted if present, and the legacy path is never created
 (`runtime/internal/ledger/store.go`).
 
-`SESSIONS_STATE_DIR` relocates runner and daemon state for interoperability and
-tests, but not the user state root; isolated work also needs a scratch `HOME`
+`SESSIONS_STATE_DIR` relocates runner and daemon state for integration and
+install tests, but not the user state root; isolated work also needs a scratch `HOME`
 and `SESSIONS_LEDGER_PATH`, which separately relocates the append-only lane
 ledger. See [`AGENTS.md`](AGENTS.md) rule 2 for the complete scratch recipe.
 
@@ -170,7 +166,7 @@ explicit mutation.
 3. Revisit the production mini only in a later joint maintenance window.
 
 Standalone Go archives and Homebrew remain secondary developer/headless
-channels. The retired Node deployment path is non-mutating.
+channels.
 
 See [installation](docs/INSTALL.md), [release procedure](docs/RELEASE.md), and
 the [codebase guide](docs/CODEBASE.md).
@@ -188,5 +184,5 @@ npm --prefix frontend run build
 npm run tauri:build
 ```
 
-Use scratch state for interoperability or install tests. None of these gates
+Use scratch state for integration or install tests. None of these gates
 requires touching the production mini.

@@ -1,7 +1,5 @@
-// Mirror of the legacy contract in runtime/testdata/node-runtime/src/types.ts.
-// Kept duplicated for now to avoid
-// bundling backend code into the browser; Phase 4 will move shared
-// protocol types into a shared/ package once the daemon goes prod.
+// Mirror of the sessionsd HTTP and WebSocket contract. Kept duplicated to avoid
+// bundling backend code into the browser.
 
 export const PROTOCOL_VERSION = 2;
 

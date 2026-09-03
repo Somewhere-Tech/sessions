@@ -50,23 +50,6 @@
    frontend/Tauri checks, and focused acceptance tests. Skipped tests are not
    passes.
 
-## Legacy runner compatibility tests
-
-The normal Go gate remains self-contained. On macOS, the tests under
-`runtime/internal/interop` additionally exercise the retired Node runner used
-by the supported upgrade boundary. They skip with an explicit reason when the
-locked fixture dependencies are absent. Install those dependencies before a
-release or compatibility change so the suite actually runs:
-
-```sh
-npm --prefix runtime/testdata/node-runtime ci
-cd runtime
-GOFLAGS=-buildvcs=false go test ./internal/interop
-```
-
-CI installs the same lockfile and runs this suite. A local skip is therefore
-not compatibility evidence; report it as a skip rather than a pass.
-
 The repository's active package direction is documented in
 [`NATIVE_APP.md`](NATIVE_APP.md), and the public source topology and protocol
 boundaries are documented in [`CODEBASE.md`](CODEBASE.md). Historical cutover

@@ -29,8 +29,8 @@ func plistPath(launchAgentsDir, id string) string {
 // RunnerPlistPath returns the canonical per-session launchd plist path.
 func RunnerPlistPath(launchAgentsDir, id string) string { return plistPath(launchAgentsDir, id) }
 
-// LegacyRunnerPlistPath returns the Node runtime's per-session launchd path.
-// Adopted Node runners retain this registration until they exit.
+// LegacyRunnerPlistPath returns the pre-native runtime's per-session launchd
+// path. Adopted legacy runners retain this registration until they exit.
 func LegacyRunnerPlistPath(launchAgentsDir, id string) string {
 	return filepath.Join(launchAgentsDir, legacyLaunchdLabelPrefix+id+".plist")
 }

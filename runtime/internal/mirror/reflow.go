@@ -20,7 +20,7 @@ type reflowGlyph struct {
 	w   int
 }
 
-// ReflowANSI is the Go port of runtime/testdata/node-runtime/src/reflow.ts. It wraps prose at width,
+// ReflowANSI wraps prose at width,
 // preserves hard newlines and structural box/table rows, expands serialized
 // cursor-forward gaps, and carries SGR state over inserted line breaks.
 func ReflowANSI(text string, width int) string {

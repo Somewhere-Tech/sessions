@@ -214,9 +214,7 @@ authenticate, run `sessions token`. See
 
 ## Development
 
-The Go runtime is in `runtime/`; Sessions.app is in `src-tauri/`. The frozen
-TypeScript daemon under `runtime/testdata/node-runtime/` remains only as
-compatibility and mini-cutover evidence.
+The Go runtime is in `runtime/`; Sessions.app is in `src-tauri/`.
 
 ```sh
 make -C runtime binaries

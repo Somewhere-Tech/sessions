@@ -363,11 +363,8 @@ func runnerPlistPaths(home, id string) []string {
 }
 
 // classifyRunnerSpawn names what is actually running as the session's runner.
-// The retired Node runtime's "dist"/"tsx-SLOW" classifications are gone: a
-// shipped Go install cannot spawn dist/runner.js or tsx, so those buckets could
-// only mislabel some unrelated process as a healthy or a slow Sessions runner.
-// Anything that is not the shipped sessions-runner is now reported as "other",
-// which is what it is.
+// Only the shipped sessions-runner is native; every other command is reported
+// as "other" so an unrelated process cannot be mislabeled as healthy.
 func classifyRunnerSpawn(runnerCommand string) string {
 	switch {
 	case strings.Contains(runnerCommand, "sessions-runner"):

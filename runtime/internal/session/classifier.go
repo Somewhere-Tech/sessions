@@ -60,8 +60,8 @@ var (
 	ignoredMirrorSummaryRE = regexp.MustCompile(`(?i)\b(?:esc to interrupt|shift\+tab|for shortcuts|context left|bypass permissions|accept edits)\b`)
 )
 
-// ClaudeWorkingFromSnapshot ports the spinner/footer activity detector used by
-// the TypeScript daemon. The snapshot should represent the current viewport.
+// ClaudeWorkingFromSnapshot applies the spinner/footer activity detector. The
+// snapshot should represent the current viewport.
 func ClaudeWorkingFromSnapshot(snapshot string) bool {
 	if snapshot == "" {
 		return false

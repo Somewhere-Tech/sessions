@@ -1,6 +1,5 @@
 // Package proto implements the binary protocol spoken between sessionsd and a
-// per-session runner. The TypeScript implementation in
-// runtime/testdata/node-runtime/src/runnerProtocol.ts preserves the original wire-format authority.
+// per-session runner. CONTRACT/runner-protocol.md is the wire-format authority.
 package proto
 
 import (

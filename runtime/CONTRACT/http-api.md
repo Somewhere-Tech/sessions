@@ -1,9 +1,7 @@
 # sessionsd HTTP API contract
 
 This document records the behavior of the normative Go daemon in
-`runtime/internal/api`. The frozen TypeScript implementation under
-`runtime/testdata/node-runtime` is a compatibility fixture for the supported
-runner cutover boundary, not the product server.
+`runtime/internal/api`.
 
 ## Listener and common behavior
 
@@ -14,8 +12,7 @@ runner cutover boundary, not the product server.
   `Content-Type: application/json`. Except for static-file replies and the
   plain-text snapshot success response, every reply also sets:
   - `Vary: Origin`
-  - `Access-Control-Allow-Methods: GET,POST,PUT,DELETE,OPTIONS` in the Go runtime
-    (`GET,POST,DELETE,OPTIONS` in the retained Node compatibility fixture)
+  - `Access-Control-Allow-Methods: GET,POST,PUT,DELETE,OPTIONS`
   - `Access-Control-Allow-Headers: content-type, authorization,
     x-sessions-creator-session, x-sessions-owner-id, x-sessions-client,
     x-sessions-filename, x-sessions-user-consent`
@@ -1041,10 +1038,9 @@ characters outside `[A-Za-z0-9_. -]` become `_`, and the result is limited to
 
 The destination is the `uploads/` directory under the daemon's state root —
 `~/.local/state/sessions/uploads/` on Unix and the same child of
-`%LOCALAPPDATA%\Sessions\state` on Windows. In the Go runtime an explicitly set
+`%LOCALAPPDATA%\Sessions\state` on Windows. An explicitly set
 `SESSIONS_STATE_DIR` moves it, so a scratch daemon does not write into the
-installed daemon's uploads; see `state-dir.md`. The Node fixture keeps it fixed
-under `os.homedir()`. Responses:
+installed daemon's uploads; see `state-dir.md`. Responses:
 
 - `200 {"path":"<absolute path>","size":<byte count>}`
 - `404 {"error":"unknown session","id":"<id>"}` before reading the body

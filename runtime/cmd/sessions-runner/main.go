@@ -1,6 +1,6 @@
 // Command runner is the long-lived per-session PTY owner used by sessionsd.
-// Its environment variables, state files, and socket protocol intentionally
-// match runtime/testdata/node-runtime/src/runner.ts so either implementation can be swapped alone.
+// Its environment variables, state files, and socket protocol preserve the
+// stable runner contract across daemon and runner releases.
 package main
 
 import (

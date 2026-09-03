@@ -5,9 +5,9 @@ const path = require('node:path');
 const { createRequire } = require('node:module');
 
 const repoRoot = path.resolve(__dirname, '../../../..');
-const requireFromLegacyRuntime = createRequire(path.join(repoRoot, 'runtime/testdata/node-runtime/package.json'));
-const { Terminal } = requireFromLegacyRuntime('@xterm/headless');
-const { SerializeAddon } = requireFromLegacyRuntime('@xterm/addon-serialize');
+const requireFromFrontend = createRequire(path.join(repoRoot, 'frontend/package.json'));
+const { Terminal } = requireFromFrontend('@xterm/headless');
+const { SerializeAddon } = requireFromFrontend('@xterm/addon-serialize');
 
 function plainViewport(term) {
   const lines = [];

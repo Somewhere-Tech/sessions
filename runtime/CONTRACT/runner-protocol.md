@@ -1,8 +1,7 @@
 # daemon to runner protocol
 
-This contract was implemented by `runtime/testdata/node-runtime/src/runnerProtocol.ts`,
-`runtime/testdata/node-runtime/src/runner.ts`, `runtime/testdata/node-runtime/src/runnerClient.ts`, and the daemon-side
-registration logic in `runtime/testdata/node-runtime/src/sessions.ts`.
+This contract is implemented by `runtime/internal/proto`, the runner, and the
+daemon-side registration logic.
 
 ## Transport and socket ownership
 
@@ -152,7 +151,7 @@ arrival order. An unsolicited response emits a `snapshot` event. Disconnect
 resolves every outstanding waiter with the empty string.
 
 The current HTTP/WS snapshot API normally serializes the daemon-side mirror
-instead; this runner frame remains part of the interop protocol.
+instead; this runner frame remains part of the stable protocol.
 
 ### REPLAY_DONE (`0x24`)
 

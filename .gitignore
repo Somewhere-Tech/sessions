@@ -4,16 +4,9 @@
 .env.local
 *.log
 *.tsbuildinfo
-/runtime/testdata/node-runtime/*.tgz
-/runtime/testdata/node-runtime/data/
-/runtime/testdata/node-runtime/LICENSE
-/runtime/testdata/node-runtime/run/
-/runtime/testdata/node-runtime/web/
-# Generated only when exercising the frozen Node compatibility fixture.
-# tsc -b composite-project emits these next to the referenced source
-dist/
 frontend/vite.config.d.ts
 frontend/vite.config.js
+/frontend/dist/
 node_modules
 node_modules/
 runtime/dist-go/

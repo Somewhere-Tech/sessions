@@ -232,9 +232,7 @@ command table rather than a copied list.
 
 ## Internal packages
 
-There are 27 production packages under `runtime/internal/`. The neighboring
-`runtime/internal/interop/` directory is a compatibility test fixture, not a
-production package (`runtime/internal/interop/cutover_test.go`).
+There are 27 production packages under `runtime/internal/`.
 
 The sections below describe the packages that carry product behavior. Five
 supporting packages have no section of their own: `discovery` (Bonjour
@@ -873,8 +871,8 @@ sessions from resuming the same provider conversation. The runner keeps exited
 state available briefly for reconnecting clients before removing its transient
 socket and metadata (`runtime/cmd/sessions-runner/main.go`).
 During the Mini compatibility window, doctor and clean-exit reaping recognize
-both the Sessions runner LaunchAgent and the retained legacy Node runner
-LaunchAgent; new sessions always use the Sessions label
+both the Sessions runner LaunchAgent and the retained legacy runner LaunchAgent;
+new sessions always use the Sessions label
 (`runtime/cmd/sessions/doctor.go`, `runtime/internal/state/launcher.go`).
 
 ## Lane lifecycle
