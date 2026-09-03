@@ -51,4 +51,10 @@
   .connect-screen-client .connect-pair-link form { gap: 6px; }
   .connect-screen-client .connect-pair-link input { height: 38px; }
   .connect-screen-client .connect-pair-link .connect-submit { min-height: 38px; }
+  .connect-screen-client .connect-waiting {
+    margin: 10px 0 0;
+    color: var(--fg);
+    font-size: 12px;
+    line-height: 1.4;
+  }
 }
