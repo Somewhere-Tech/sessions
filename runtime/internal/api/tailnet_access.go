@@ -363,9 +363,10 @@ func (s *Server) handleNearbyAccessPublicRoute(response http.ResponseWriter, req
 		request.URL.Path != "/api/lan/access/claim" {
 		return false
 	}
-	if !isLANRequest(request) {
+	loopback := isLoopbackPeer(request)
+	if !isLANRequest(request) && !loopback {
 		s.sendJSON(response, http.StatusForbidden, map[string]any{
-			"error": "nearby access is available only on this machine's trusted LAN listener",
+			"error": "nearby access is available only on this machine's trusted LAN listener or local loopback",
 		}, "")
 		return true
 	}
@@ -386,6 +387,9 @@ func (s *Server) handleNearbyAccessPublicRoute(response http.ResponseWriter, req
 		return true
 	}
 	address, ok := privateRemoteIPv4(request.RemoteAddr)
+	if loopback {
+		address, ok = "127.0.0.1", true
+	}
 	if !ok {
 		s.sendJSON(response, http.StatusForbidden, map[string]any{
 			"error": "nearby access requires a private IPv4 network peer",

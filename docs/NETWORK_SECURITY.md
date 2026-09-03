@@ -163,8 +163,9 @@ Native clients and `sessions machines discover` therefore verify `/api/health`
 before presenting a candidate, then require a separate request/accept/claim
 flow. Nearby bootstrap routes:
 
-- exist only on the dedicated LAN listener, never the main loopback listener;
-- require a private IPv4 network peer and `application/json`;
+- exist on the dedicated LAN listener, plus the main listener only for a true
+  loopback peer that already has local-user authority;
+- require a private IPv4 network peer or local loopback and `application/json`;
 - reject every browser `Origin`;
 - bind the short-lived request secret to the observed source address;
 - are bounded by the shared pending-request limits; and

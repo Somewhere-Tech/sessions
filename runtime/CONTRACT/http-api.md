@@ -1544,7 +1544,10 @@ authenticated.
 The nearby (same-LAN) counterpart of `POST /api/tailnet/access/request`. It is
 dispatched before bearer authentication but answers only on the user-enabled
 LAN listener (`POST /api/lan`); on the loopback listener it is
-`403 {"error":"nearby access is available only on this machine's trusted LAN listener"}`.
+The route exists on the dedicated LAN listener and on the main listener for a
+true loopback peer, which permits isolated same-machine pairing tests without
+opening bootstrap to the network-facing main listener. Other main-listener
+peers receive `403 {"error":"nearby access is available only on this machine's trusted LAN listener or local loopback"}`.
 The peer must be a private, non-loopback IPv4 address (403 otherwise), the
 request must carry no `Origin` header (403) and exactly one
 `Content-Type: application/json` (415). Body
