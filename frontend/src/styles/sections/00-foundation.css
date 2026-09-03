@@ -593,7 +593,10 @@ button:active:not(:disabled),
 }
 
 @media (max-width: 620px) {
-  .connect-screen { padding: 24px 14px 44px; }
+  .connect-screen {
+    padding: calc(24px + env(safe-area-inset-top, 0px)) 14px
+      calc(44px + env(safe-area-inset-bottom, 0px));
+  }
   .connect-kicker { margin-top: 44px; }
   .connect-panel > h1 { font-size: clamp(38px, 13vw, 54px); }
   .connect-form { grid-template-columns: 1fr; padding: 16px; }
