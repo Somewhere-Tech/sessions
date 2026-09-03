@@ -55,3 +55,6 @@ runtime/dist-go/
 /SCAN_SPEC.md
 /SPEC.md
 /frontend/CONNECT_NOTES.md
+
+# Frontend build output embedded into sessionsd; produced by `npm run build`.
+/runtime/internal/webassets/dist/
