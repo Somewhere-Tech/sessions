@@ -58,6 +58,21 @@ func TestServiceInstanceIsBoundedAndDoesNotExposeMachineID(t *testing.T) {
 	}
 }
 
+func TestSanitizeServiceNamePreservesWords(t *testing.T) {
+	for input, want := range map[string]string{
+		"Uzair's MacBook Pro":       "Uzair's MacBook Pro",
+		"MacBook-Pro":               "MacBook-Pro",
+		"MacBook.Pro":               "MacBook Pro",
+		`Studio.\\Mac`:              "Studio Mac",
+		"workstation\x00downstairs": "workstation downstairs",
+		"Studio. Mac":               "Studio Mac",
+	} {
+		if got := sanitizeServiceName(input); got != want {
+			t.Fatalf("sanitizeServiceName(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestUnescapeDNSPresentation(t *testing.T) {
 	for input, want := range map[string]string{
 		`Studio\ Mac`:         "Studio Mac",

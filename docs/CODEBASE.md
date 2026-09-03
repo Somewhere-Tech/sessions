@@ -962,9 +962,10 @@ compatibility bypass, and static UI/health routing is distinct from
 authenticated API routes (`runtime/internal/api/server.go`).
 
 After authentication, `GET /api/machine` returns the daemon's durable machine
-ID and its current operating-system hostname. The ID survives a computer
-rename, while clients refresh the hostname and keep any explicit Fleet nickname
-as a separate override. Local UI labels use the real current name followed by
+ID and the operating system's user-facing computer name. The ID survives a
+computer rename, while its DNS-derived legacy display name is upgraded without
+changing that identity and clients keep any explicit Fleet nickname as a
+separate override. Local UI labels use the real current name followed by
 `(this machine)`; they do not use that phrase as the machine's identity
 (`runtime/internal/api/server.go`, `frontend/src/lib/servers.ts`).
 

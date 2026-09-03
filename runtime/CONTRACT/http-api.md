@@ -298,13 +298,14 @@ Auth required. Returns the daemon's stable machine identity, the same
 `machine_id` a paired device receives from `POST /api/pair/claim`:
 
 ```json
-{"machine_id":"<stable machine UUID>","name":"<hostname>"}
+{"machine_id":"<stable machine UUID>","name":"<computer name>"}
 ```
 
-`name` is the current OS hostname, truncated to the machine-name limit; the
-stored identity name is used when the hostname is unavailable or empty. When
-the identity file could not be created or read, the route returns
-`500 {"error":"<message>"}`. Other methods fall through to the 404 body.
+`name` is the operating system's user-facing computer name, truncated to the
+machine-name limit. A legacy DNS-derived name is upgraded without changing the
+stable machine UUID. When the identity file could not be created or read, the
+route returns `500 {"error":"<message>"}`. Other methods fall through to the
+404 body.
 
 ### `GET /api/push/vapid`
 
