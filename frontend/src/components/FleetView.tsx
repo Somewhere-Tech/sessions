@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { fetchLANState, fetchServerHealth, listServerProfiles, listServerSessions, type AccountProfile, type ServerHealth } from '../api/sessionsd';
 import { formatServerEndpoint } from '../lib/serverEndpoint';
 import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
@@ -6,6 +6,7 @@ import { tailnetClientID } from '../lib/tailnetClient';
 import {
   discoverNativeNearbyPeers,
   discoverNativeTailnetPeers,
+	isNativeMobileRuntime,
   isTauri,
   requestNativeNearbyAccess,
   requestNativeTailnetAccess,
@@ -20,6 +21,7 @@ import {
   type PendingMachineAccess as SharedPendingMachineAccess
 } from '../hooks/useMachineAccessPairing';
 import { MachinePlatformIcon } from './MachineMark';
+import { refreshDaemonAccountFleet } from '../lib/accountFleet';
 
 const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 5_000;
@@ -77,13 +79,14 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [discoveredPeers, setDiscoveredPeers] = useState<DiscoveredPeer[] | null>(null);
   const [accessRequest, setAccessRequest] = useState<PendingMachineAccess | null>(null);
-  const [discoveryMessage, setDiscoveryMessage] = useState<string | null>(null);
+	const [discoveryMessage, setDiscoveryMessage] = useState<string | null>(null);
+	const directoryMessage = useAccountFleetDirectory();
   const localNetworkDenied = useLocalNetworkDenied();
-  const localServer = servers.find((server) => server.isDefault) ?? servers[0];
+	const localServer = servers.find((server) => server.isDefault) ?? servers[0];
+	const fleetServers = useFleetMachineSources(servers, discoveredPeers);
   const localVersion = localServer ? machineVersions[localServer.id] : undefined;
 
-  const rememberVersion = useRememberMachineVersion(setMachineVersions);
-
+	const rememberVersion = useRememberMachineVersion(setMachineVersions);
   const findMachines = async (): Promise<void> => {
     if (!isTauri() || discoveryBusy || accessRequest) return;
     setDiscoveryOpen(true);
@@ -125,6 +128,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
       setDiscoveryBusy(false);
     }
   };
+	useEffect(() => { void findMachines(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const requestAccess = async (peer: DiscoveredPeer): Promise<void> => {
     if (!isTauri() || discoveryBusy || accessRequest) return;
@@ -227,9 +231,10 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
           {discoveryMessage ? <div className="fleet-discovery-message">{discoveryMessage}</div> : null}
         </section>
       ) : null}
-      <div className="fleet-section-label"><span>Your machines</span><strong>{servers.length} configured</strong></div>
+		<div className="fleet-section-label"><span>Your machines</span><strong>{fleetServers.length} visible</strong></div>
+		{directoryMessage ? <div className="fleet-discovery-message" role="status">Account directory: {directoryMessage}</div> : null}
       <div className="fleet-machine-grid">
-        {servers.map((server) => (
+		{fleetServers.map((server) => (
           <FleetServerGroup
             key={server.id}
             server={server}
@@ -250,6 +255,29 @@ function useRememberMachineVersion(setVersions: Dispatch<SetStateAction<Record<s
     if (!version) return;
     setVersions((current) => current[serverId] === version ? current : { ...current, [serverId]: version });
   }, [setVersions]);
+}
+
+function useAccountFleetDirectory(): string | null {
+	const [message, setMessage] = useState<string | null>(null);
+	useEffect(() => {
+		let stopped = false;
+		const refresh = (): void => {
+			const operation = isNativeMobileRuntime()
+				? import('../lib/clientFleetAccount').then((client) => client.syncClientAccountFleet())
+				: refreshDaemonAccountFleet();
+			void operation
+				.then((errors) => { if (!stopped) setMessage(errors.length > 0 ? errors.join(' · ') : null); })
+				.catch((reason) => { if (!stopped) setMessage(reason instanceof Error ? reason.message : String(reason)); });
+		};
+		refresh();
+		const interval = window.setInterval(refresh, 30_000);
+		return () => { stopped = true; window.clearInterval(interval); };
+	}, []);
+	return message;
+}
+
+function useFleetMachineSources(servers: ServerConfig[], peers: DiscoveredPeer[] | null): ServerConfig[] {
+	return useMemo(() => mergeFleetMachineSources(servers, peers ?? []), [servers, peers]);
 }
 
 function useLocalNetworkDenied(): boolean {
@@ -285,10 +313,41 @@ function mergeDiscoveredPeers(peers: DiscoveredPeer[]): DiscoveredPeer[] {
 
 function serverMatchesPeer(server: ServerConfig, endpoint: string): boolean {
   try {
-    return new URL(endpoint).hostname.toLowerCase() === server.host.replace(/^\[|\]$/g, '').toLowerCase();
+		const host = new URL(endpoint).hostname.toLowerCase();
+		const known = [server.host, ...(server.transportCandidates ?? []).map((candidate) => {
+			try { return new URL(candidate.endpoint).hostname; } catch { return ''; }
+		})];
+		return known.some((candidate) => candidate.replace(/^\[|\]$/g, '').toLowerCase() === host);
   } catch {
     return false;
   }
+}
+
+function mergeFleetMachineSources(servers: ServerConfig[], peers: DiscoveredPeer[]): ServerConfig[] {
+	const merged = servers.map((server) => ({
+		...server,
+		sources: server.sources ?? ['saved' as const],
+		transportCandidates: server.transportCandidates ?? serverTransportCandidates(server)
+	}));
+	for (const peer of peers) {
+		const transport = peer.transport === 'nearby' ? 'lan' as const : 'tailnet' as const;
+		const existing = merged.find((server) => serverMatchesPeer(server, peer.endpoint));
+		if (existing) {
+			existing.sources = Array.from(new Set([...(existing.sources ?? []), 'bonjour' as const]));
+			if (!existing.transportCandidates?.some((candidate) => candidate.endpoint === peer.endpoint)) {
+				existing.transportCandidates = [...(existing.transportCandidates ?? []), { endpoint: peer.endpoint, transport }];
+			}
+			continue;
+		}
+		const endpoint = new URL(peer.endpoint);
+		merged.push({
+			id: `bonjour:${peer.endpoint}`, name: peer.name, systemName: peer.name,
+			host: endpoint.hostname, port: Number(endpoint.port), scheme: endpoint.protocol === 'https:' ? 'https' : 'http',
+			isDefault: false, transport, transportCandidates: [{ endpoint: peer.endpoint, transport }],
+			sources: ['bonjour'], directoryOnly: true
+		});
+	}
+	return merged;
 }
 
 function FleetServerGroup({
@@ -415,11 +474,7 @@ function FleetServerGroup({
   const candidateSessions = snapshot.sessions.filter((session) => includeExited || !session.exited);
   const visibleSessions = sortFleetSessions(candidateSessions);
   const activeCount = snapshot.sessions.filter((session) => !session.exited).length;
-  const reachabilityLabel = snapshot.reachability === 'reachable'
-    ? 'reachable'
-    : snapshot.reachability === 'unreachable'
-    ? 'unreachable'
-    : 'checking';
+	const reachabilityLabel = fleetReachabilityLabel(server, snapshot.reachability);
   const profileSummary = snapshot.profiles.reduce<Record<'claude' | 'codex', string[]>>(
     (summary, profile) => {
       summary[profile.tool].push(profile.name);
@@ -447,7 +502,7 @@ function FleetServerGroup({
     server.isDefault ? 'is-local' : '',
     unavailable ? 'is-unreachable' : ''
   ].filter(Boolean).join(' ');
-  const displayMachineName = serverDisplayName(server, true);
+	const displayMachineName = serverDisplayName(server, true);
   const saveMachineName = async (): Promise<void> => {
     const name = machineName.trim().replace(/\s+/g, ' ').slice(0, 48);
     if (!name) {
@@ -490,7 +545,7 @@ function FleetServerGroup({
         <span className="fleet-machine-count"><strong>{activeCount} live</strong><span>{snapshot.sessions.length} total</span></span>
       </header>
       <div className="fleet-machine-meta" title={`Connected at ${formatServerEndpoint(server)}${fullVersion ? ` · Sessions ${fullVersion}` : ''}`}>
-        <span>{platformText}{server.transport ? ` · ${server.transport === 'lan' ? 'LAN' : server.transport === 'tailnet' ? 'Tailscale HTTPS' : 'Tailscale IP'}` : ''}</span>
+		<FleetTransportSummary server={server} platformText={platformText} />
         {snapshot.health?.system?.arch ? <span>{snapshot.health.system.arch}</span> : null}
         <span className="is-version">{version ? `Sessions ${version}` : 'Version unavailable'}</span>
         {profileLabels.length > 0 ? <span title={profileLabels.join(' · ')}>{snapshot.profiles.length} {snapshot.profiles.length === 1 ? 'account' : 'accounts'}</span> : null}
@@ -528,13 +583,45 @@ function FleetServerGroup({
           <div className="fleet-session-error">Latest session refresh failed: {snapshot.sessionsError}</div>
         ) : null}
       </div>
-      {!unavailable ? (
+		{!unavailable && !server.directoryOnly ? (
         <button type="button" className="fleet-open-machine" onClick={onOpenMachine}>
           Open all sessions on {displayMachineName} <span aria-hidden>→</span>
         </button>
       ) : null}
     </section>
   );
+}
+
+function transportLabel(transport: 'lan' | 'tailnet' | 'tailnet-ip' | 'relay'): string {
+	if (transport === 'lan') return 'LAN';
+	if (transport === 'tailnet') return 'Tailscale HTTPS';
+	if (transport === 'tailnet-ip') return 'Tailscale IP';
+	return 'Relay';
+}
+
+function fleetReachabilityLabel(server: ServerConfig, reachability: Reachability): string {
+	if (server.directoryOnly) return 'needs access';
+	if (reachability === 'reachable') return 'reachable';
+	if (reachability === 'unreachable') return 'unreachable';
+	return 'checking';
+}
+
+function FleetTransportSummary({ server, platformText }: { server: ServerConfig; platformText: string }): JSX.Element {
+	const candidates = server.transportCandidates ?? serverTransportCandidates(server);
+	return <>
+		<span>{platformText}</span>
+		<span title={candidates.map((candidate) => `${transportLabel(candidate.transport)}: ${candidate.endpoint}`).join('\n')}>Routes: {candidates.length > 0 ? candidates.map((candidate) => transportLabel(candidate.transport)).join(', ') : 'none'}</span>
+		<span>Sources: {(server.sources ?? ['saved']).join(', ')}</span>
+		<span>Using: {server.directoryOnly ? 'none' : server.transport ? transportLabel(server.transport) : 'local'}</span>
+	</>;
+}
+
+function serverTransportCandidates(server: ServerConfig): NonNullable<ServerConfig['transportCandidates']> {
+	return [
+		{ endpoint: server.lanEndpoint ?? '', transport: 'lan' as const },
+		{ endpoint: server.tailnetEndpoint ?? '', transport: 'tailnet' as const },
+		{ endpoint: server.tailnetIpEndpoint ?? '', transport: 'tailnet-ip' as const }
+	].filter((candidate) => candidate.endpoint !== '');
 }
 
 function machineVersionState(

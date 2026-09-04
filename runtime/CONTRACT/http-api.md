@@ -347,6 +347,17 @@ key therefore remain daemon-owned on their host.
   platform failure leaves local state intact so the operation can be retried.
 - `GET /api/account/key` creates the machine key when missing and returns only
   `{"public_key":"<unpadded-base64url-Ed25519-key>"}`.
+- `GET /api/account/machines` returns
+  `{"signed_in":<boolean>,"machine_id":"<local id>","machines":[...]}`.
+  Signed-out machines return an empty list. Signed-in rows are the
+  owner-scoped Somewhere directory objects with `id`, `name`,
+  `machine_public_key`, `endpoints_json`, `daemon_version`, and
+  `last_seen_at`.
+- `POST /api/account/machines/claim` with `{"machine_id":"<directory id>"}`
+  probes that row's LAN, Tailscale HTTPS, then Tailscale-IP candidates, signs
+  an account challenge with this daemon's registered machine key, verifies the
+  returned credential, and returns the normal local connection shape:
+  `{"claim":{...},"endpoint":"<origin>","transport":"lan|tailnet|tailnet-ip"}`.
 
 Wrong methods return 405. Invalid request bodies return 400; an unavailable
 Somewhere auth or directory request returns 502. Account storage failures and
@@ -1689,6 +1700,33 @@ clients without `Origin` and from the daemon's own same-origin `/pair/<ticket>`
 page. Any other browser origin is 403. An invalid, used, expired, or revoked
 ticket returns 410 with the sentence “Pairing ticket is invalid, expired, or
 already used. Run `sessions pair` to create a new one.”
+
+### `POST /api/lan/access/account-claim`
+
+Public bootstrap for a signed-in device; bearer authentication is not yet
+available because this route issues that device's credential. The JSON body is
+`{"machine_id","device_id","timestamp","nonce","signature"}`. The signature
+is unpadded base64url Ed25519 over this concatenation:
+
+```text
+machine_id + device_id + timestamp + nonce + "POST" +
+"/api/lan/access/account-claim" + hex(sha256(unsigned_claim_json))
+```
+
+`unsigned_claim_json` is compact JSON with the first four body fields in the
+order shown. The target host fetches `device_id` with its own Somewhere token;
+the owner-scoped result, never a caller-supplied key, supplies the public key.
+The target ID must be this daemon, the timestamp must be within five minutes,
+and a `(device_id, nonce)` pair can succeed only once during that window.
+Invalid signatures, stale claims, replay, and devices absent from this host's
+account all return 403 without issuing a credential. A directory failure is
+502; a host without fleet account support is 503; non-JSON is 415; other
+methods return 405.
+
+Success creates the same two-minute-pending device record as an accepted
+request, writes `access granted to <device> via account` to the daemon log, and
+returns the normal 201 pairing-claim shape. The caller must make one
+authenticated request before the acknowledgement deadline.
 
 ### `GET /api/access/requests`
 

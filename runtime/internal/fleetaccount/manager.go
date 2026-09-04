@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,6 +35,8 @@ type Manager struct {
 	version     string
 	endpoints   func() Endpoints
 	now         func() time.Time
+	claimsMu    sync.Mutex
+	claims      map[string]time.Time
 }
 
 func New(options Options) (*Manager, error) {
@@ -60,6 +63,7 @@ func New(options Options) (*Manager, error) {
 		state: state, keys: &keyStore{path: options.KeyPath}, cloud: cloud,
 		machineID: options.MachineID, machineName: options.MachineName,
 		version: options.DaemonVersion, endpoints: options.Endpoints, now: now,
+		claims: make(map[string]time.Time),
 	}, nil
 }
 
@@ -126,6 +130,8 @@ func (m *Manager) PublicKey() (string, error) {
 	_, public, err := m.keys.loadOrCreate()
 	return public, err
 }
+
+func (m *Manager) MachineID() string { return m.machineID }
 
 func (m *Manager) Status() (Status, error) {
 	state, err := m.state.load()

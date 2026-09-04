@@ -7,6 +7,7 @@ import {
   isNativeMobileRuntime,
   scanPairingCode
 } from '../lib/tauriBridge';
+import type { ClientFleetStatus } from '../lib/clientFleetAccount';
 
 const LOCAL_ENDPOINT = 'http://localhost:8787';
 const HEALTH_TIMEOUT_MS = 8_000;
@@ -148,6 +149,7 @@ export function ConnectScreen({
 
         {clientOnly ? (
           <>
+		  <ClientFleetSignIn onConnected={() => onRetry?.()} />
           <PairingLinkPanel
             link={pairingLink} busy={connectionDisabled} checkingId={checkingId}
             mobile={isMobileClient} onChange={setPairingLink}
@@ -292,6 +294,74 @@ export function ConnectScreen({
       </section>
     </main>
   );
+}
+
+function ClientFleetSignIn({ onConnected }: { onConnected: () => void }): JSX.Element {
+	const [status, setStatus] = useState<ClientFleetStatus>({ signedIn: false });
+	const [email, setEmail] = useState('');
+	const [code, setCode] = useState('');
+	const [sent, setSent] = useState(false);
+	const [busy, setBusy] = useState(false);
+	const [message, setMessage] = useState<string | null>(null);
+	const sync = async (): Promise<void> => {
+		setBusy(true); setMessage('Loading your fleet…');
+		try {
+			const { syncClientAccountFleet } = await import('../lib/clientFleetAccount');
+			const errors = await syncClientAccountFleet();
+			setMessage(errors.length > 0 ? `Fleet loaded. ${errors.join(' · ')}` : 'Your fleet is ready without pairing.');
+			onConnected();
+		} catch (reason) {
+			setMessage(reason instanceof Error ? reason.message : String(reason));
+		} finally { setBusy(false); }
+	};
+	useEffect(() => {
+		void import('../lib/clientFleetAccount').then((client) => {
+			const current = client.clientFleetStatus();
+			setStatus(current);
+			if (current.signedIn) void sync();
+		});
+	}, []); // eslint-disable-line react-hooks/exhaustive-deps
+	const submit = async (): Promise<void> => {
+		setBusy(true); setMessage(null);
+		try {
+			const client = await import('../lib/clientFleetAccount');
+			if (!sent) {
+				await client.requestClientFleetMagicLink(email);
+				setSent(true); setMessage(`Somewhere sent a single-use code or link to ${email.trim()}.`);
+			} else {
+				setStatus(await client.verifyClientFleetMagicLink(code));
+				setSent(false); setCode('');
+				await sync();
+			}
+		} catch (reason) {
+			setMessage(reason instanceof Error ? reason.message : String(reason));
+		} finally { setBusy(false); }
+	};
+	const signOut = async (): Promise<void> => {
+		setBusy(true); setMessage(null);
+		try {
+			const { logoutClientFleetAccount } = await import('../lib/clientFleetAccount');
+			await logoutClientFleetAccount();
+			setStatus({ signedIn: false }); setMessage('Signed out. Saved pairings stay on this phone.');
+		} catch (reason) {
+			setMessage(reason instanceof Error ? reason.message : String(reason));
+		} finally { setBusy(false); }
+	};
+	return (
+		<section className="connect-account" aria-label="Somewhere fleet sign in">
+			<div><strong>{status.signedIn ? status.user?.email ?? 'Signed in to Somewhere' : 'See every machine'}</strong><small>{status.signedIn ? 'Same-account machines connect automatically.' : 'Sign in, or scan/enter an address below.'}</small></div>
+			{status.signedIn ? (
+				<div className="connect-account-actions"><button type="button" className="btn" disabled={busy} onClick={() => void sync()}>{busy ? 'Loading…' : 'Refresh fleet'}</button><button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void signOut()}>Sign out</button></div>
+			) : (
+				<div className="connect-account-form">
+					<input type="email" value={email} disabled={busy || sent} placeholder="you@example.com" autoComplete="email" onChange={(event) => setEmail(event.currentTarget.value)} />
+					{sent ? <input value={code} disabled={busy} placeholder="Six-digit code or link token" autoComplete="one-time-code" onChange={(event) => setCode(event.currentTarget.value)} /> : null}
+					<button type="button" className="btn" disabled={busy || (sent ? !code.trim() : !email.trim())} onClick={() => void submit()}>{busy ? 'Waiting…' : sent ? 'Verify' : 'Sign in'}</button>
+				</div>
+			)}
+			{message ? <small className="connect-status" role="status">{message}</small> : null}
+		</section>
+	);
 }
 
 function PairingLinkPanel({ link, busy, checkingId, mobile, onChange, onScan, onConnect }: {

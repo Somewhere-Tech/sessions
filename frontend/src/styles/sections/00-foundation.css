@@ -270,6 +270,7 @@ button:active:not(:disabled),
   line-height: 1.65;
 }
 .connect-actions,
+.connect-account,
 .connect-pair-link,
 .connect-discovery,
 .connect-remembered,
@@ -280,6 +281,31 @@ button:active:not(:disabled),
   background: rgba(20, 20, 20, 0.88);
   box-shadow: var(--shadow-2);
 }
+.connect-account {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 20px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 18px;
+  border-color: var(--accent-border-soft);
+}
+.connect-account strong,
+.connect-account small { display: block; }
+.connect-account strong { color: var(--fg); font-size: 16px; }
+.connect-account small { margin-top: 4px; color: var(--fg-dim); line-height: 1.4; }
+.connect-account-form,
+.connect-account-actions { display: flex; gap: 8px; align-items: center; }
+.connect-account-form input {
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-base);
+  color: var(--fg);
+}
+.connect-account > .connect-status { grid-column: 1 / -1; margin: 0; color: var(--accent); }
 .connect-discovery {
   margin-bottom: 16px;
   padding: 18px;

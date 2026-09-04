@@ -51,6 +51,9 @@ interface RememberServerOptions {
   tailnetEndpoint?: string;
   tailnetIpEndpoint?: string;
   transport?: 'lan' | 'tailnet' | 'tailnet-ip';
+	transportCandidates?: ServerConfig['transportCandidates'];
+	sources?: ServerConfig['sources'];
+	directoryOnly?: boolean;
 }
 
 function pairingClaimTransport(claim: NativePairingClaim): 'lan' | 'tailnet' | 'tailnet-ip' {
@@ -59,11 +62,11 @@ function pairingClaimTransport(claim: NativePairingClaim): 'lan' | 'tailnet' | '
   return 'lan';
 }
 
-type ConnectionFields = Pick<RememberServerOptions, 'lanEndpoint' | 'tailnetEndpoint' | 'tailnetIpEndpoint' | 'transport'>;
+type ConnectionFields = Pick<RememberServerOptions, 'lanEndpoint' | 'tailnetEndpoint' | 'tailnetIpEndpoint' | 'transport' | 'transportCandidates' | 'sources' | 'directoryOnly'>;
 
 function connectionFields(source: RememberServerOptions): Partial<ConnectionFields> {
   return Object.fromEntries(
-    ['lanEndpoint', 'tailnetEndpoint', 'tailnetIpEndpoint', 'transport']
+		['lanEndpoint', 'tailnetEndpoint', 'tailnetIpEndpoint', 'transport', 'transportCandidates', 'sources', 'directoryOnly']
       .map((key) => [key, source[key as keyof RememberServerOptions]])
       .filter((entry) => entry[1] !== undefined)
   );

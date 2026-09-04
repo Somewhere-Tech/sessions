@@ -4,6 +4,7 @@ cmd/sessions internal/ansi
 cmd/sessions internal/backup
 cmd/sessions internal/codexapp
 cmd/sessions internal/discovery
+cmd/sessions internal/fleetaccount
 cmd/sessions internal/fleetendpoint
 cmd/sessions internal/integrations
 cmd/sessions internal/lan

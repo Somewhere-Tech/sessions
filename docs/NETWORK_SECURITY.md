@@ -67,8 +67,24 @@ SHA-256 of the exact request body. The platform rejects timestamps outside five
 minutes, stores accepted nonces in an owner-scoped replay table, and rate-limits
 heartbeat retries. The registration public key may establish a new row; once a
 row exists, updates must verify with its stored key. These requests update
-directory presence only. They do not grant a client a Sessions device
-credential or create a tunnel to sessionsd.
+directory presence only. A same-account connection is a separate direct
+exchange: the requesting device signs the target machine ID, its registered
+device ID, timestamp, nonce, method/path, and SHA-256 of the unsigned claim.
+The host uses its own Somewhere token to fetch the requester from the same
+owner-scoped directory, rejects signatures from absent or different-account
+keys, timestamps outside five minutes, and replayed nonces, then issues the
+same two-minute-pending, independently revocable device credential as an
+accepted access request. The daemon audit line names the device and `via
+account`. Somewhere sees the directory lookup but never the issued credential
+or later session traffic.
+
+Client-only iOS and Android builds have no local daemon state directory. Their
+optional account token pair and Ed25519 key live in the application's private
+WebView storage; the phone registers an endpoint-free directory identity so a
+host can verify its key, and endpoint-free client rows are not presented as
+host machines. Signing out removes that identity. The per-host credentials
+minted afterward remain in the existing native client machine registry and can
+be revoked separately.
 
 ## Claude Remote Control consent
 

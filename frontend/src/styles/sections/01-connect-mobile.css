@@ -28,12 +28,17 @@
     line-height: 1.4;
   }
   .connect-screen-client .connect-pair-link,
+  .connect-screen-client .connect-account,
   .connect-screen-client .connect-discovery {
     gap: 10px;
     margin-bottom: 10px;
     padding: 12px;
     border-radius: 11px;
   }
+  .connect-screen-client .connect-account { grid-template-columns: 1fr; }
+  .connect-screen-client .connect-account-form { display: grid; grid-template-columns: 1fr auto; }
+  .connect-screen-client .connect-account-form input:nth-of-type(2) { grid-column: 1; }
+  .connect-screen-client .connect-account-form .btn { grid-column: 2; grid-row: 1 / span 2; }
   .connect-screen-client .connect-pair-link > div > span,
   .connect-screen-client .connect-discovery-heading span {
     font-size: 12px;

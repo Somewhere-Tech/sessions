@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/discovery"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetaccount"
 	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
@@ -28,6 +29,7 @@ import (
 
 const machineRegistryVersion = 1
 const nativeAppMachineSource = "native-app"
+const accountMachineSource = "account"
 
 type savedMachine struct {
 	Alias             string    `json:"alias"`
@@ -122,6 +124,17 @@ type discoveredMachine struct {
 	Arch           string `json:"arch"`
 	SessionsLoaded int    `json:"sessions_loaded"`
 	Reachable      bool   `json:"reachable"`
+}
+
+type fleetMachineView struct {
+	Alias      string                    `json:"alias,omitempty"`
+	MachineID  string                    `json:"machine_id,omitempty"`
+	Name       string                    `json:"name"`
+	Sources    []string                  `json:"sources"`
+	Candidates []fleetendpoint.Candidate `json:"candidates"`
+	InUse      *fleetendpoint.Candidate  `json:"in_use,omitempty"`
+	Credential bool                      `json:"credential"`
+	LastSeenAt string                    `json:"last_seen_at,omitempty"`
 }
 
 func (a *app) cmdMachines(args []string) error {
@@ -682,23 +695,237 @@ func (a *app) listSavedMachines() error {
 	if err != nil {
 		return fail(2, "read saved machines: %s", err)
 	}
+	nearby, account, warnings := a.machineDirectorySources()
+	registry, claimWarnings := a.claimAccountMachines(registry, account)
+	warnings = append(warnings, claimWarnings...)
+	machines := mergeMachineSources(registry.Machines, nearby, account)
 	if a.wantJSON {
-		return writeJSON(a.stdout, registry, true)
+		return writeJSON(a.stdout, struct {
+			Machines []fleetMachineView `json:"machines"`
+			Warnings []string           `json:"warnings,omitempty"`
+		}{machines, warnings}, true)
 	}
-	if len(registry.Machines) == 0 {
-		_, err := fmt.Fprintln(a.stdout, "No saved machines. Run `sessions machines discover`, then `sessions machines connect <endpoint>`.")
+	if len(machines) == 0 {
+		_, err := fmt.Fprintln(a.stdout, "No Sessions machines found. Sign in to Somewhere, scan a pairing code, or enable LAN discovery on another machine.")
 		return err
 	}
 	writer := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(writer, "ALIAS\tNAME\tTRANSPORT\tENDPOINT"); err != nil {
+	if _, err := fmt.Fprintln(writer, "ALIAS\tNAME\tSOURCES\tCANDIDATES\tIN USE"); err != nil {
 		return err
 	}
-	for _, machine := range registry.Machines {
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", machine.Alias, machine.Name, machine.Transport, machine.Endpoint); err != nil {
+	for _, machine := range machines {
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
+			machine.Alias, machine.Name, strings.Join(machine.Sources, ","),
+			formatMachineCandidates(machine.Candidates), formatMachineInUse(machine.InUse)); err != nil {
 			return err
 		}
 	}
-	return writer.Flush()
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+	for _, warning := range warnings {
+		fmt.Fprintln(a.stderr, "warning:", warning)
+	}
+	return nil
+}
+
+func (a *app) machineDirectorySources() ([]discoveredMachine, []fleetaccount.Machine, []string) {
+	warnings := make([]string, 0, 2)
+	nearby := []discoveredMachine{}
+	if a.direct {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		candidates, err := discovery.Browse(ctx, time.Second)
+		if err != nil {
+			warnings = append(warnings, "Bonjour discovery: "+err.Error())
+		} else {
+			for _, candidate := range candidates {
+				nearby = append(nearby, discoveredMachine{Candidate: candidate, Reachable: true})
+			}
+		}
+	} else {
+		var response struct {
+			Machines []discoveredMachine `json:"machines"`
+		}
+		if err := a.getJSON("/api/lan/discover?timeout=1s", &response); err != nil {
+			warnings = append(warnings, "Bonjour discovery: "+err.Error())
+		} else {
+			nearby = response.Machines
+		}
+	}
+	account := []fleetaccount.Machine{}
+	if !a.direct {
+		var response struct {
+			Machines []fleetaccount.Machine `json:"machines"`
+			SignedIn bool                   `json:"signed_in"`
+		}
+		if err := a.getJSON("/api/account/machines", &response); err != nil {
+			warnings = append(warnings, "account directory: "+err.Error())
+		} else if response.SignedIn {
+			account = response.Machines
+		}
+	}
+	return nearby, account, warnings
+}
+
+func (a *app) claimAccountMachines(registry machineRegistry, machines []fleetaccount.Machine) (machineRegistry, []string) {
+	if a.direct || len(machines) == 0 {
+		return registry, nil
+	}
+	var local struct {
+		MachineID string `json:"machine_id"`
+	}
+	_ = a.getJSON("/api/machine", &local)
+	saved := make(map[string]bool, len(registry.Machines))
+	for _, machine := range registry.Machines {
+		saved[machine.MachineID] = true
+	}
+	warnings := []string{}
+	for _, machine := range machines {
+		if machine.ID == "" || machine.ID == local.MachineID || saved[machine.ID] ||
+			len(fleetendpoint.Ordered(machine.EndpointsJSON.LAN, machine.EndpointsJSON.Tailnet, machine.EndpointsJSON.TailnetIP)) == 0 {
+			continue
+		}
+		var response struct {
+			Claim     accessClaim `json:"claim"`
+			Endpoint  string      `json:"endpoint"`
+			Transport string      `json:"transport"`
+		}
+		if err := a.postJSON("/api/account/machines/claim", map[string]string{"machine_id": machine.ID}, &response, 2); err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s account credential: %v", machine.Name, err))
+			continue
+		}
+		record, err := saveMachine(a.home, savedMachine{
+			MachineID: machine.ID, Name: machine.Name, Endpoint: response.Endpoint,
+			Transport: response.Transport, DeviceID: response.Claim.DeviceID,
+			ConnectedAt: a.now().UTC(), Source: accountMachineSource,
+			LANEndpoint: machine.EndpointsJSON.LAN, TailnetEndpoint: machine.EndpointsJSON.Tailnet,
+			TailnetIPEndpoint: machine.EndpointsJSON.TailnetIP,
+		}, response.Claim.Token)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("save %s account credential: %v", machine.Name, err))
+			continue
+		}
+		registry.Machines = append(registry.Machines, record)
+		saved[machine.ID] = true
+	}
+	return registry, warnings
+}
+
+func mergeMachineSources(saved []savedMachine, nearby []discoveredMachine, account []fleetaccount.Machine) []fleetMachineView {
+	views := make([]fleetMachineView, 0, len(saved)+len(nearby)+len(account))
+	for _, machine := range saved {
+		candidates := fleetendpoint.Ordered(machine.LANEndpoint, machine.TailnetEndpoint, machine.TailnetIPEndpoint)
+		if machine.Endpoint != "" && endpointForTransport(candidates, machine.Transport) == "" {
+			candidates = append(candidates, fleetendpoint.Candidate{Endpoint: machine.Endpoint, Transport: listedMachineTransport(machine.Transport)})
+		}
+		inUse := fleetendpoint.Candidate{Endpoint: machine.Endpoint, Transport: listedMachineTransport(machine.Transport)}
+		views = append(views, fleetMachineView{
+			Alias: machine.Alias, MachineID: machine.MachineID, Name: machine.Name,
+			Sources: []string{"saved"}, Candidates: candidates, InUse: &inUse, Credential: true,
+		})
+	}
+	for _, machine := range account {
+		index := machineViewIndex(views, machine.ID, accountMachineCandidates(machine))
+		if index < 0 {
+			views = append(views, fleetMachineView{MachineID: machine.ID, Name: machine.Name})
+			index = len(views) - 1
+		}
+		views[index].Sources = appendMachineSource(views[index].Sources, "account")
+		views[index].Candidates = mergeMachineCandidates(views[index].Candidates, accountMachineCandidates(machine))
+		views[index].LastSeenAt = machine.LastSeenAt
+		if views[index].Name == "" {
+			views[index].Name = machine.Name
+		}
+	}
+	for _, machine := range nearby {
+		candidates := fleetendpoint.Ordered(machine.LANEndpoint, machine.TailnetEndpoint, machine.TailnetIPEndpoint)
+		index := machineViewIndex(views, "", candidates)
+		if index < 0 {
+			views = append(views, fleetMachineView{Name: machine.Name})
+			index = len(views) - 1
+		}
+		views[index].Sources = appendMachineSource(views[index].Sources, "bonjour")
+		views[index].Candidates = mergeMachineCandidates(views[index].Candidates, candidates)
+		if views[index].Name == "" {
+			views[index].Name = machine.Name
+		}
+	}
+	for index := range views {
+		sort.Strings(views[index].Sources)
+	}
+	sort.Slice(views, func(i, j int) bool {
+		return strings.ToLower(views[i].Name) < strings.ToLower(views[j].Name)
+	})
+	return views
+}
+
+func accountMachineCandidates(machine fleetaccount.Machine) []fleetendpoint.Candidate {
+	result := fleetendpoint.Ordered(machine.EndpointsJSON.LAN, machine.EndpointsJSON.Tailnet, machine.EndpointsJSON.TailnetIP)
+	if relay := strings.TrimSuffix(strings.TrimSpace(machine.EndpointsJSON.Relay), "/"); relay != "" {
+		result = append(result, fleetendpoint.Candidate{Endpoint: relay, Transport: "relay"})
+	}
+	return result
+}
+
+func machineViewIndex(views []fleetMachineView, machineID string, candidates []fleetendpoint.Candidate) int {
+	for index, view := range views {
+		if machineID != "" && view.MachineID == machineID {
+			return index
+		}
+		for _, existing := range view.Candidates {
+			for _, candidate := range candidates {
+				if existing.Endpoint == candidate.Endpoint {
+					return index
+				}
+			}
+		}
+	}
+	return -1
+}
+
+func mergeMachineCandidates(current, added []fleetendpoint.Candidate) []fleetendpoint.Candidate {
+	for _, candidate := range added {
+		found := false
+		for _, existing := range current {
+			found = found || existing.Endpoint == candidate.Endpoint
+		}
+		if !found {
+			current = append(current, candidate)
+		}
+	}
+	return current
+}
+
+func appendMachineSource(sources []string, source string) []string {
+	for _, existing := range sources {
+		if existing == source {
+			return sources
+		}
+	}
+	return append(sources, source)
+}
+
+func listedMachineTransport(value string) string {
+	if value == "nearby" {
+		return "lan"
+	}
+	return value
+}
+
+func formatMachineCandidates(candidates []fleetendpoint.Candidate) string {
+	parts := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		parts = append(parts, candidate.Transport+"="+candidate.Endpoint)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatMachineInUse(candidate *fleetendpoint.Candidate) string {
+	if candidate == nil {
+		return "—"
+	}
+	return candidate.Transport + "=" + candidate.Endpoint
 }
 
 func (a *app) forgetMachine(args []string) error {

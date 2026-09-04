@@ -42,6 +42,12 @@ export interface ServerConfig {
   // (which have no scheme field) continue to work without migration.
   scheme?: 'http' | 'https';
   transport?: 'lan' | 'tailnet' | 'tailnet-ip';
+  transportCandidates?: Array<{
+		endpoint: string;
+		transport: 'lan' | 'tailnet' | 'tailnet-ip' | 'relay';
+  }>;
+	sources?: Array<'saved' | 'bonjour' | 'account'>;
+	directoryOnly?: boolean;
   lanEndpoint?: string;
   tailnetEndpoint?: string;
   tailnetIpEndpoint?: string;

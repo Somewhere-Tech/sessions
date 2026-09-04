@@ -81,6 +81,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if s.handlePairClaimRoute(response, request, corsOrigin) {
 		return
 	}
+	if s.handleFleetAccountClaimRoute(response, request, corsOrigin) {
+		return
+	}
 	if s.handleTailnetAccessPublicRoute(response, request, corsOrigin) {
 		return
 	}

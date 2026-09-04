@@ -11,10 +11,41 @@ import (
 	"testing"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/discovery"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetaccount"
 	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
+
+func TestMergeMachinesCombinesSavedBonjourAndAccountTransports(t *testing.T) {
+	saved := []savedMachine{{
+		Alias: "mini", MachineID: "machine-mini", Name: "Mac mini",
+		Endpoint: "https://mini.example.ts.net", Transport: "tailnet",
+		LANEndpoint: "http://192.168.1.20:8787", TailnetEndpoint: "https://mini.example.ts.net",
+	}}
+	nearby := []discoveredMachine{{Candidate: discovery.Candidate{
+		Name: "Mac mini", Endpoint: "http://192.168.1.20:8787",
+		LANEndpoint: "http://192.168.1.20:8787", Transport: "nearby",
+	}}}
+	account := []fleetaccount.Machine{{
+		ID: "machine-mini", Name: "Mac mini", LastSeenAt: "2026-09-03T22:00:00Z",
+		EndpointsJSON: fleetaccount.Endpoints{
+			LAN: "http://192.168.1.20:8787", Tailnet: "https://mini.example.ts.net",
+			TailnetIP: "http://100.100.20.30:8787", Relay: "https://relay.example/m/machine-mini",
+		},
+	}}
+
+	merged := mergeMachineSources(saved, nearby, account)
+	if len(merged) != 1 {
+		t.Fatalf("merged machines = %#v", merged)
+	}
+	machine := merged[0]
+	if strings.Join(machine.Sources, ",") != "account,bonjour,saved" || !machine.Credential ||
+		machine.InUse == nil || machine.InUse.Transport != "tailnet" || len(machine.Candidates) != 4 {
+		t.Fatalf("merged machine = %#v", machine)
+	}
+}
 
 func TestMachineCommandUsesDaemonFleetRelayPath(t *testing.T) {
 	var path string

@@ -259,6 +259,56 @@ export async function logoutFleetAccount(): Promise<void> {
   await featureJSON<{ ok: boolean }>(r, 'Somewhere sign-out');
 }
 
+export interface FleetDirectoryMachine {
+	id: string;
+	name: string;
+	machine_public_key: string;
+	endpoints_json: {
+		lan?: string;
+		tailnet?: string;
+		tailnet_ip?: string;
+		relay?: string;
+	};
+	daemon_version: string;
+	last_seen_at: string;
+}
+
+export interface FleetDirectoryResponse {
+	signed_in: boolean;
+	machine_id: string;
+	machines: FleetDirectoryMachine[];
+}
+
+export interface FleetAccountClaim {
+	device_id: string;
+	token: string;
+	name: string;
+	machine_id: string;
+	machine_name: string;
+	lan_endpoint?: string;
+	tailnet_endpoint?: string;
+	tailnet_ip_endpoint?: string;
+}
+
+export interface FleetAccountClaimResponse {
+	claim: FleetAccountClaim;
+	endpoint: string;
+	transport: 'lan' | 'tailnet' | 'tailnet-ip';
+}
+
+export async function fetchFleetDirectory(signal?: AbortSignal): Promise<FleetDirectoryResponse> {
+	const response = await apiFetch(`${httpBase()}/api/account/machines`, { signal });
+	return featureJSON<FleetDirectoryResponse>(response, 'Somewhere fleet directory');
+}
+
+export async function claimFleetDirectoryMachine(machineId: string): Promise<FleetAccountClaimResponse> {
+	const response = await apiFetch(`${httpBase()}/api/account/machines/claim`, {
+		method: 'POST', headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ machine_id: machineId })
+	});
+	return featureJSON<FleetAccountClaimResponse>(response, 'Somewhere account credential');
+}
+
 export interface RemoteState {
   auto: boolean;
   present: boolean;

@@ -29,6 +29,23 @@ type Registration struct {
 	DaemonVersion    string    `json:"daemon_version"`
 }
 
+type Machine struct {
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	MachinePublicKey string    `json:"machine_public_key"`
+	EndpointsJSON    Endpoints `json:"endpoints_json"`
+	DaemonVersion    string    `json:"daemon_version"`
+	LastSeenAt       string    `json:"last_seen_at"`
+}
+
+type AccountClaim struct {
+	MachineID string `json:"machine_id"`
+	DeviceID  string `json:"device_id"`
+	Timestamp string `json:"timestamp"`
+	Nonce     string `json:"nonce"`
+	Signature string `json:"signature"`
+}
+
 type Status struct {
 	SignedIn              bool   `json:"signed_in"`
 	User                  *User  `json:"user,omitempty"`

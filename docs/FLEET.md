@@ -34,10 +34,26 @@ five minutes. `sessions doctor` and `/api/health` report whether the daemon is
 signed in and its last registration result.
 
 Somewhere hosts sign-in and this owner-scoped directory. It does not receive
-session content and does not become a terminal or transcript relay. The
-directory alone does not grant a device authority to control another machine;
-the no-account pairing and approval rules below remain the trust boundary in
-this release.
+session content and does not become a terminal or transcript relay. A signed-in
+device lists the directory, signs a short-lived challenge with its registered
+key, and presents it directly to the selected machine. That host fetches the
+requester's public key with its own account token; only a key in the same
+owner-scoped directory can receive a normal, independently revocable device
+credential. A signature from another account never bypasses pairing.
+
+`sessions machines` merges saved pairings, live Bonjour results, and account
+directory rows by stable machine identity and endpoint. Each row includes all
+known `lan`, `tailnet`, `tailnet-ip`, and future `relay` candidates plus the
+transport currently in use. The Fleet view uses the same shape: an offline
+directory machine stays visible, while a reachable same-account machine is
+credentialed automatically without an accept prompt.
+
+On iOS and Android, **Sign in** appears beside **Scan a pairing code** and the
+manual address path. The phone stores its account token pair and signing key in
+its app-private WebView storage, registers only a client identity (no session
+metadata), and then loads the fleet without pairing each host. Signing out
+removes that directory identity; already saved device credentials remain
+individually revocable on their hosts.
 
 ## No-account tier
 

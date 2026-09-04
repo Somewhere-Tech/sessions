@@ -16,10 +16,10 @@ the Android app talks to its paired host, which can relay the host's approved fl
   rail + session navigator + active-session workspace. There is no separate
   tablet codebase
   ([`frontend/src/styles/globals.css`](../frontend/src/styles/globals.css)).
-- **Pairing now:** run `sessions pair` on a host with LAN or Tailscale
-  reachability, then use **Scan a pairing code**. The QR carries every endpoint
-  kind and grants the phone its own revocable credential immediately; pasting
-  the link is the non-camera fallback
+- **Account or pairing:** **Sign in** loads every reachable machine in the same
+  Somewhere account and obtains a separate revocable credential from each host
+  without an accept prompt. Without an account, run `sessions pair` on a host
+  and use **Scan a pairing code**; pasting the link is the non-camera fallback
   ([`frontend/src/components/ConnectScreen.tsx`](../frontend/src/components/ConnectScreen.tsx),
   [`frontend/src/lib/hostedBootstrap.ts`](../frontend/src/lib/hostedBootstrap.ts)).
 - **Host-owned setup:** the phone does not present the host's first-run
@@ -106,7 +106,13 @@ devices`
 ([`runtime/cmd/sessions/pair.go`](../runtime/cmd/sessions/pair.go),
 [`runtime/cmd/sessions/devices.go`](../runtime/cmd/sessions/devices.go)).
 
-Pair with one Mac and the phone also sees that Mac's approved Sessions fleet.
+Alternatively, tap **Sign in**, enter the emailed Somewhere code, and choose a
+machine from the account fleet. The phone registers an endpoint-free signing
+identity and each same-account host verifies that identity through its own
+owner-scoped directory token before issuing the phone a device credential.
+Other accounts still require a pairing code or an accepted access request.
+
+Without account sign-in, pair with one Mac and the phone also sees that Mac's approved Sessions fleet.
 The paired Mac stays first, and its other saved machines appear in Fleet and the
 all-machines inbox; opening or acting on one is relayed through the Mac with the
 Mac's own independently revocable credential. An unreachable machine stays
