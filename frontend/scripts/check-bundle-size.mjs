@@ -18,7 +18,7 @@ const assets = files.map((name) => {
 const limits = {
   // Baseline measured 2026-09-03. These two assets are what the browser must
   // fetch before it can draw the first screen, so keep their headroom strict.
-  entryJavaScript: 558_974,
+  entryJavaScript: 489_814,
   entryCSS: 279_911,
   // Deferred code may grow as the product gains secondary surfaces, but no
   // one interaction should have to download an oversized lazy chunk.
