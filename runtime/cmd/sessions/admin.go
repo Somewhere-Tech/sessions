@@ -43,6 +43,10 @@ func daemonPlist(options daemonPlistOptions) string {
 <dict>
   <key>Label</key>
   <string>%s</string>
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>tech.somewhere.sessions</string>
+  </array>
   <key>ProgramArguments</key>
   <array>
 %s

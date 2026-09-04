@@ -958,6 +958,7 @@ func TestDaemonInstallConfigAndPlistWithoutLaunchctl(t *testing.T) {
 		"<string>" + daemonPath + "</string>",
 		"<key>RunAtLoad</key>\n  <true/>",
 		"<key>KeepAlive</key>\n  <true/>",
+		"<key>AssociatedBundleIdentifiers</key>\n  <array>\n    <string>tech.somewhere.sessions</string>",
 		"<key>SESSIONS_HOST</key>\n    <string>127.0.0.1</string>",
 		"<key>SESSIONS_PORT</key>\n    <string>18787</string>",
 		"<key>SESSIONS_RUNNER</key>\n    <string>" + runnerPath + "</string>",

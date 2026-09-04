@@ -265,12 +265,13 @@ func (n *NotifySettings) Set(kind string, enabled bool) error {
 // state. Additive fields keep this file easy to extend without changing its
 // location or format.
 type Settings struct {
-	LAN        bool                `json:"lan"`
-	Notify     *NotifySettings     `json:"notify,omitempty"`
-	AI         *AISettings         `json:"ai,omitempty"`
-	Claude     *ClaudeSettings     `json:"claude,omitempty"`
-	Delegation *DelegationSettings `json:"delegation,omitempty"`
-	Onboarding *OnboardingSettings `json:"onboarding,omitempty"`
+	LAN                    bool                `json:"lan"`
+	LocalNetworkPermission string              `json:"localNetworkPermission,omitempty"`
+	Notify                 *NotifySettings     `json:"notify,omitempty"`
+	AI                     *AISettings         `json:"ai,omitempty"`
+	Claude                 *ClaudeSettings     `json:"claude,omitempty"`
+	Delegation             *DelegationSettings `json:"delegation,omitempty"`
+	Onboarding             *OnboardingSettings `json:"onboarding,omitempty"`
 }
 
 func (s Settings) EffectiveNotify() NotifySettings {

@@ -390,6 +390,8 @@ mod tests {
             "/tmp/Sessions &amp; tests/Application Support/Sessions/runtime/sessions-runner"
         ));
         assert!(plist.contains("<key>KeepAlive</key>"));
+        assert!(plist.contains("<key>AssociatedBundleIdentifiers</key>"));
+        assert!(plist.contains("<string>tech.somewhere.sessions</string>"));
     }
 
     #[cfg(target_os = "macos")]

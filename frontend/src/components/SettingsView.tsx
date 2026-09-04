@@ -33,7 +33,7 @@ import type { ThemeMode } from './ProductSidebar';
 import { SomewhereCard } from './SomewhereCard';
 import { useSessions } from '../store/sessions';
 
-type Section = 'general' | 'agents' | 'accounts' | 'network' | 'cloud' | 'notifications' | 'support';
+type Section = 'general' | 'agents' | 'accounts' | 'fleet' | 'cloud' | 'notifications' | 'support';
 
 interface Props {
   clientOnly?: boolean;
@@ -304,7 +304,7 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
           ['general', 'General'],
           ['agents', 'Agents & models'],
           ['accounts', 'Accounts & profiles'],
-          ['network', 'Access & networking'],
+          ['fleet', 'Fleet'],
           ['cloud', 'Cloud & backup'],
           ['notifications', 'Notifications & updates'],
           ['support', 'Help & feedback']
@@ -346,7 +346,7 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
           />
         ) : section === 'accounts' ? (
           <AccountSettings profiles={profiles} />
-        ) : section === 'network' ? (
+        ) : section === 'fleet' ? (
           <ConnectionsView clientOnly={clientOnly} hostName={machineName} />
         ) : section === 'cloud' ? (
           <section className="settings-page settings-cloud-page">

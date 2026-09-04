@@ -43,6 +43,7 @@ import {
   fetchServerHealth,
   fetchOnboardingState,
   forkConversation,
+  requestLocalNetworkAccess,
   updateOnboardingPreference,
   type OnboardingState,
   type ServerHealth
@@ -860,7 +861,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
               onThemeChange={setTheme}
               textSize={textSize}
               onTextSizeChange={changeTextSize}
-              initialSection={effectiveLayout === 'feedback' ? 'support' : effectiveLayout === 'connections' ? 'network' : 'general'}
+              initialSection={effectiveLayout === 'feedback' ? 'support' : effectiveLayout === 'connections' ? 'fleet' : 'general'}
             /></Suspense>
         ) : effectiveLayout === 'grid' ? (
           liveSessions.length > 0 ? (
@@ -980,7 +981,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         <OnboardingDialog
           machine={machine}
           busy={onboardingBusy}
-          error={onboardingError}
+          error={onboardingError} onAllowLocalNetwork={requestLocalNetworkAccess}
           onChoose={chooseOnboardingPreference}
         />
       ) : null}

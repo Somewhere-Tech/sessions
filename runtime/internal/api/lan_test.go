@@ -27,6 +27,36 @@ func (registration *fakeBonjourRegistration) Shutdown() error {
 	return nil
 }
 
+func TestLocalNetworkPermissionObservationPersistsOnDarwin(t *testing.T) {
+	if initialLocalNetworkPermission() == "not-required" {
+		t.Skip("local-network privacy is macOS-specific")
+	}
+	config := state.Config{StateRoot: t.TempDir()}
+	config.UserStateRoot = config.StateRoot
+	config.SettingsPath = config.StateRoot + "/settings.json"
+	identity := machineIdentity{Name: "Permission fixture", ID: "permission-fixture"}
+	listener := newLANListener(config, http.NotFoundHandler(), identity)
+	if got := listener.state().Permission.Status; got != "not-yet-asked" {
+		t.Fatalf("initial permission = %q, want not-yet-asked", got)
+	}
+
+	listener.markPermission("denied")
+	settings, err := state.LoadSettings(config.SettingsPath)
+	if err != nil || settings.LocalNetworkPermission != "denied" {
+		t.Fatalf("saved permission = %q, err=%v", settings.LocalNetworkPermission, err)
+	}
+	restored := newLANListener(config, http.NotFoundHandler(), identity)
+	if got := restored.state().Permission; got.Status != "denied" || got.Reason != localNetworkPermissionReason {
+		t.Fatalf("restored permission = %#v", got)
+	}
+
+	restored.markPermission("granted")
+	again := newLANListener(config, http.NotFoundHandler(), identity)
+	if got := again.state().Permission.Status; got != "granted" {
+		t.Fatalf("permission after successful retry = %q, want granted", got)
+	}
+}
+
 func TestLANListenerLifecycleAndAuth(t *testing.T) {
 	daemon := newTestDaemon(t)
 	daemon.config.UserStateRoot = daemon.config.StateRoot

@@ -68,11 +68,18 @@ func newLANListener(config state.Config, handler http.Handler, identity machineI
 		}
 		settingsPath = filepath.Join(root, "settings.json")
 	}
+	permission := initialLocalNetworkPermission()
+	if permission != "not-required" {
+		if settings, err := state.LoadSettings(settingsPath); err == nil &&
+			(settings.LocalNetworkPermission == "granted" || settings.LocalNetworkPermission == "denied") {
+			permission = settings.LocalNetworkPermission
+		}
+	}
 	return &lanListener{
 		config: config, handler: handler, pickIP: lanutil.PrimaryIPv4,
 		listen: net.Listen, advertise: discovery.Advertise, browse: discovery.Browse, settingsPath: settingsPath,
 		machineName: identity.Name, machineID: identity.ID,
-		permission: initialLocalNetworkPermission(),
+		permission: permission,
 	}
 }
 
@@ -108,9 +115,25 @@ func (l *lanListener) permissionLocked() LocalNetworkPermission {
 }
 
 func (l *lanListener) markPermission(status string) {
+	if initialLocalNetworkPermission() == "not-required" {
+		return
+	}
 	l.mu.Lock()
+	if l.permission == status {
+		l.mu.Unlock()
+		return
+	}
 	l.permission = status
 	l.mu.Unlock()
+	if status == "not-required" || status == "not-yet-asked" {
+		return
+	}
+	if err := state.UpdateSettings(l.settingsPath, func(settings *state.Settings) error {
+		settings.LocalNetworkPermission = status
+		return nil
+	}); err != nil {
+		log.Printf("sessionsd: could not persist local-network permission observation: %v", err)
+	}
 }
 
 func (l *lanListener) activeHost() string {

@@ -38,6 +38,10 @@ fn daemon_plist(config: &RuntimeConfig, runtime_dir: &Path) -> String {
 <dict>
   <key>Label</key>
   <string>{label}</string>
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>tech.somewhere.sessions</string>
+  </array>
   <key>ProgramArguments</key>
   <array>
 {arguments}

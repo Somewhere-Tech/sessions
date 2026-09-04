@@ -277,6 +277,17 @@ export async function setLANEnabled(enabled: boolean): Promise<LANState> {
   return json<LANState>(r);
 }
 
+// Starting a Bonjour browse is the supported way to make macOS ask for Local
+// Network access. The daemon owns the browse so app and agent clients never
+// need the permission themselves.
+export async function requestLocalNetworkAccess(): Promise<void> {
+  const r = await apiFetch(`${httpBase()}/api/lan/discover?timeout=3s`);
+  if (!r.ok) {
+    const payload = await r.json().catch(() => null) as { error?: string } | null;
+    throw new Error(payload?.error || `sessionsd ${r.status}: ${r.statusText}`);
+  }
+}
+
 // Fleet probes never mutate the active-server store. Every request is
 // resolved from the supplied config so all configured daemons can be polled
 // concurrently by the browser without proxying through another sessionsd.

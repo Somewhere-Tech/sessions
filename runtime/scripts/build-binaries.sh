@@ -72,19 +72,32 @@ build_binary() {
   local tags="$4"
   local output="$out_dir/${command_name}-${goos}-${goarch}"
   local binary_ldflags="$ldflags -buildid=sessions/$version/$command_name/$goos/$goarch"
+  local cgo_enabled=0
+  local info_plist=""
+  if [[ "$goos" == "darwin" ]]; then
+    cgo_enabled=1
+    info_plist="$out_dir/$command_name-$goos-$goarch-Info.plist"
+    sed -e "s|@EXECUTABLE@|$command_name|g" \
+      -e "s|@BUNDLE_IDENTIFIER@|tech.somewhere.sessions.$command_name|g" \
+      "$repo_root/scripts/runtime-info.plist.in" >"$info_plist"
+    binary_ldflags="$binary_ldflags -linkmode=external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,$info_plist"
+  fi
   echo "> building ${command_name}-${goos}-${goarch} (version $version)"
   if [[ -n "$tags" ]]; then
     (
       cd "$go_root"
-      CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+      CGO_ENABLED="$cgo_enabled" GOOS="$goos" GOARCH="$goarch" \
         go build -trimpath -tags "$tags" -ldflags "$binary_ldflags" -o "$output" "./cmd/$command_name"
     )
   else
     (
       cd "$go_root"
-      CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+      CGO_ENABLED="$cgo_enabled" GOOS="$goos" GOARCH="$goarch" \
         go build -trimpath -ldflags "$binary_ldflags" -o "$output" "./cmd/$command_name"
     )
+  fi
+  if [[ -n "$info_plist" ]]; then
+    find "$info_plist" -maxdepth 0 -type f -delete
   fi
 }
 

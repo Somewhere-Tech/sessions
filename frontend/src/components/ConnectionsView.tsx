@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { fetchLANState, setLANEnabled, type LANState } from '../api/sessionsd';
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { fetchLANState, requestLocalNetworkAccess, setLANEnabled, type LANState } from '../api/sessionsd';
 import {
   discoverNativeMachines,
   getNativeConnectionSettings,
@@ -240,7 +240,7 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
           </ConnectionCard>
 
           <ConnectionCard step="02" title="Same Wi-Fi" state={lan?.enabled ? 'On' : 'Off'} active={lan?.enabled === true}>
-            <p>Connect another native Sessions client on a private network you trust. Bonjour discovery starts with LAN access; browser terminal access is intentionally not a product surface.</p>
+            <p>Connect another native Sessions client on a private network you trust. Bonjour discovery starts with LAN access; browser terminal access is intentionally not a product surface.</p><LocalNetworkPermissionPrompt visible={!clientOnly && lan?.permission?.status !== 'granted'} disabled={busy !== null} onMessage={setMessage} onState={setLAN} />
             {lan?.url ? <div className="connection-endpoint">{lan.url}</div> : null}
             {lan?.enabled ? (
               <div className="connection-privacy-note">
@@ -334,6 +334,37 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
 
         <SomewhereCard clientOnly={clientOnly} hostName={machineName} />
       </div>
+    </div>
+  );
+}
+
+interface LocalNetworkPermissionPromptProps {
+  visible: boolean;
+  disabled: boolean;
+  onMessage: Dispatch<SetStateAction<string | null>>;
+  onState: Dispatch<SetStateAction<LANState | null>>;
+}
+
+function LocalNetworkPermissionPrompt({ visible, disabled, onMessage, onState }: LocalNetworkPermissionPromptProps): JSX.Element | null {
+  const [waiting, setWaiting] = useState(false);
+  if (!visible) return null;
+  const allow = async (): Promise<void> => {
+    setWaiting(true); onMessage(null);
+    try {
+      await requestLocalNetworkAccess();
+      onMessage('Sessions can use the local network.');
+      onState(await fetchLANState());
+    } catch (reason) {
+      onMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setWaiting(false);
+    }
+  };
+  return (
+    <div className="connection-privacy-note">
+      <strong>macOS Local Network permission</strong>
+      <span>Ask macOS while this page is open.</span>
+      <button type="button" className="btn" disabled={disabled || waiting} onClick={() => void allow()}>{waiting ? 'Waiting for macOS…' : 'Allow local network'}</button>
     </div>
   );
 }
