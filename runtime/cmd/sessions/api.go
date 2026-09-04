@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
@@ -226,7 +227,7 @@ func (c *apiClient) requestWithHeaders(
 	}
 	response, err := c.client.Do(request)
 	if err != nil {
-		return apiResponse{}, err
+		return apiResponse{}, localnetwork.Explain(c.host, err)
 	}
 	defer response.Body.Close()
 	encoded, err := io.ReadAll(response.Body)

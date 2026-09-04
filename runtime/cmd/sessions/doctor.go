@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
@@ -54,6 +55,7 @@ func (a *app) cmdDoctor() error {
 	if err != nil {
 		return err
 	}
+	lan := a.doctorLocalNetwork()
 	var deep any
 	if response, requestErr := a.api.request(context.Background(), "GET", "/api/health/deep", nil, 0); requestErr == nil && response.status < 400 {
 		_ = json.Unmarshal(response.body, &deep)
@@ -68,11 +70,7 @@ func (a *app) cmdDoctor() error {
 		damagedMirrors = damagedTranscriptMirrors()
 	}
 	if a.wantJSON {
-		return writeJSON(a.stdout, struct {
-			Daemon         any               `json:"daemon"`
-			Sessions       []doctorRow       `json:"sessions"`
-			DamagedMirrors []doctorMirrorRow `json:"damaged_conversations,omitempty"`
-		}{deep, rows, damagedMirrors}, true)
+		return a.writeDoctorJSON(deep, lan, rows, damagedMirrors)
 	}
 	if deepMap, ok := deep.(map[string]any); ok {
 		fmt.Fprintf(a.stdout, "daemon: %s sessions, discovering=%s, uptime=%ss\n\n",
@@ -83,6 +81,7 @@ func (a *app) cmdDoctor() error {
 			}
 		}
 	}
+	writeDoctorLocalNetwork(a.stdout, lan)
 	fmt.Fprintf(a.stdout, "%s%s%s%s%sSTATUS\n",
 		fixedWidth("ID", 10), fixedWidth("TOOL", 8), fixedWidth("SIZE", 10), fixedWidth("QoS", 13), fixedWidth("SPAWN", 10))
 	runnerFaults := 0
@@ -131,6 +130,44 @@ func (a *app) cmdDoctor() error {
 	}
 	a.writeDoctorMirrorHealth(damagedMirrors)
 	return nil
+}
+
+func (a *app) doctorLocalNetwork() any {
+	var lan any
+	response, err := a.api.request(context.Background(), "GET", "/api/lan", nil, 0)
+	if err == nil && response.status < 400 {
+		_ = json.Unmarshal(response.body, &lan)
+	}
+	return lan
+}
+
+func (a *app) writeDoctorJSON(deep, lan any, rows []doctorRow, mirrors []doctorMirrorRow) error {
+	return writeJSON(a.stdout, struct {
+		Daemon         any               `json:"daemon"`
+		LocalNetwork   any               `json:"local_network"`
+		Sessions       []doctorRow       `json:"sessions"`
+		DamagedMirrors []doctorMirrorRow `json:"damaged_conversations,omitempty"`
+	}{deep, lan, rows, mirrors}, true)
+}
+
+func writeDoctorLocalNetwork(writer io.Writer, state any) {
+	lan, ok := state.(map[string]any)
+	if !ok {
+		return
+	}
+	permission, ok := lan["permission"].(map[string]any)
+	if !ok {
+		return
+	}
+	status, _ := permission["status"].(string)
+	switch status {
+	case "denied":
+		fmt.Fprintf(writer, "local network: denied — %s\n\n", localnetwork.Message)
+	case "granted":
+		fmt.Fprint(writer, "local network: granted\n\n")
+	case "not-yet-asked":
+		fmt.Fprint(writer, "local network: not yet asked; open Fleet in Sessions to choose when macOS asks\n\n")
+	}
 }
 
 // doctorRunnerRow inspects process and launch-service state only when the CLI

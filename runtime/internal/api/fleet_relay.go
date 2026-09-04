@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
@@ -43,6 +44,8 @@ type fleetMachineView struct {
 	Endpoint  string `json:"endpoint"`
 	Transport string `json:"transport"`
 	Reachable bool   `json:"reachable"`
+	Reason    string `json:"reason,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 var fleetRelayTransport = &http.Transport{
@@ -126,7 +129,11 @@ func (s *Server) handleFleetRelay(
 		},
 		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
 			log.Printf("sessionsd: fleet relay failed machine=%s device_id=%s: %v", machine.MachineID, deviceID, proxyErr)
-			s.sendJSON(writer, http.StatusBadGateway, map[string]any{"error": "approved machine is unreachable"}, corsOrigin)
+			explained := localnetwork.Explain(machine.Endpoint, proxyErr)
+			if localnetwork.IsPermissionError(explained) {
+				s.lan.markPermission("denied")
+			}
+			s.sendJSON(writer, http.StatusBadGateway, map[string]any{"error": explained.Error()}, corsOrigin)
 		},
 	}
 	proxy.ServeHTTP(response, request)
@@ -172,7 +179,8 @@ func (s *Server) serveFleetMachines(response http.ResponseWriter, request *http.
 			Transport: fleetTransportName(machine.Transport),
 		}
 		go func() {
-			views[index].Reachable = s.fleetMachineReachable(request.Context(), machine)
+			views[index].Reachable, views[index].Reason, views[index].Message =
+				s.fleetMachineReachability(request.Context(), machine)
 			done <- struct{}{}
 		}()
 	}
@@ -182,38 +190,43 @@ func (s *Server) serveFleetMachines(response http.ResponseWriter, request *http.
 	s.sendJSON(response, http.StatusOK, map[string]any{"machines": views}, corsOrigin)
 }
 
-func (s *Server) fleetMachineReachable(parent context.Context, machine fleetSavedMachine) bool {
+func (s *Server) fleetMachineReachability(parent context.Context, machine fleetSavedMachine) (bool, string, string) {
 	target, err := validatedFleetEndpoint(machine)
 	if err != nil {
-		return false
+		return false, "", ""
 	}
 	credential, err := s.fleetMachineCredential(machine.MachineID)
 	if err != nil || credential == "" {
-		return false
+		return false, "", ""
 	}
 	ctx, cancel := context.WithTimeout(parent, fleetProbeTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String()+"/api/machine", nil)
 	if err != nil {
-		return false
+		return false, "", ""
 	}
 	request.Header.Set("Authorization", "Bearer "+credential)
 	request.Header.Set("X-Forwarded-For", "127.0.0.1")
 	response, err := fleetRelayTransport.RoundTrip(request)
 	if err != nil {
-		return false
+		explained := localnetwork.Explain(machine.Endpoint, err)
+		if localnetwork.IsPermissionError(explained) {
+			s.lan.markPermission("denied")
+			return false, localnetwork.Reason, localnetwork.Message
+		}
+		return false, "", ""
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return false
+		return false, "", ""
 	}
 	var identity struct {
 		MachineID string `json:"machine_id"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&identity); err != nil {
-		return false
+		return false, "", ""
 	}
-	return identity.MachineID == machine.MachineID
+	return identity.MachineID == machine.MachineID, "", ""
 }
 
 var errFleetMachineNotApproved = errors.New("machine is not approved on this host")

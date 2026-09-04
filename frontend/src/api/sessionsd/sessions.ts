@@ -256,6 +256,11 @@ export interface LANState {
     service: string;
     error?: string;
   };
+  permission?: {
+    status: 'granted' | 'denied' | 'not-yet-asked' | 'not-required';
+    reason?: 'local-network-permission';
+    message?: string;
+  };
 }
 
 export async function fetchLANState(signal?: AbortSignal): Promise<LANState> {

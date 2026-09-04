@@ -7,6 +7,7 @@ cmd/sessions internal/discovery
 cmd/sessions internal/integrations
 cmd/sessions internal/lan
 cmd/sessions internal/ledger
+cmd/sessions internal/localnetwork
 cmd/sessions internal/migrate
 cmd/sessions internal/providerargs
 cmd/sessions internal/recovery
@@ -38,6 +39,7 @@ internal/api internal/discovery
 internal/api internal/integrations
 internal/api internal/lan
 internal/api internal/ledger
+internal/api internal/localnetwork
 internal/api internal/migrate
 internal/api internal/project
 internal/api internal/proto

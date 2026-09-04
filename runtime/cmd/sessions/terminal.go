@@ -73,7 +73,7 @@ func (a *app) cmdTail(args []string) error {
 	ctx := context.Background()
 	connection, _, err := websocket.Dial(ctx, target.String(), nil)
 	if err != nil {
-		return err
+		return explainAPIClientNetworkError(a.api, err)
 	}
 	defer connection.CloseNow()
 	for {
@@ -167,7 +167,7 @@ func (a *app) cmdAttach(args []string) error {
 	defer cancel()
 	connection, _, err := websocket.Dial(ctx, target.String(), nil)
 	if err != nil {
-		return err
+		return explainAPIClientNetworkError(a.api, err)
 	}
 	defer connection.CloseNow()
 	oldState, err := term.MakeRaw(input.Fd())
@@ -275,7 +275,7 @@ func (a *app) cmdResize(args []string) error {
 	defer cancel()
 	connection, _, err := websocket.Dial(ctx, target.String(), nil)
 	if err != nil {
-		return err
+		return explainAPIClientNetworkError(a.api, err)
 	}
 	encoded, err := compactJSON(map[string]any{"type": "resize", "cols": columns, "rows": rows})
 	if err == nil {

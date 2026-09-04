@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 	"github.com/somewhere-tech/sessions/runtime/internal/migrate"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
@@ -120,11 +121,11 @@ func (a *app) cmdMove(args []string) error {
 	}
 	received, err := client.Receive(ctx, request)
 	if err != nil {
-		return fail(2, "%s", err)
+		return fail(2, "%s", localnetwork.Explain(target, err))
 	}
 	created, err := client.Create(ctx, request)
 	if err != nil {
-		return fail(2, "conversation received but target resume failed: %s", err)
+		return fail(2, "conversation received but target resume failed: %s", localnetwork.Explain(target, err))
 	}
 	result.TargetID = created.Session.ID
 	result.Receive = received
@@ -194,11 +195,11 @@ func (a *app) moveRemoteSource(
 	}
 	received, err := client.Receive(ctx, exported.Request)
 	if err != nil {
-		return fail(2, "%s", err)
+		return fail(2, "%s", localnetwork.Explain(client.Endpoint(), err))
 	}
 	created, err := client.Create(ctx, exported.Request)
 	if err != nil {
-		return fail(2, "conversation received but target resume failed: %s", err)
+		return fail(2, "conversation received but target resume failed: %s", localnetwork.Explain(client.Endpoint(), err))
 	}
 	result.TargetID = created.Session.ID
 	result.Receive = received

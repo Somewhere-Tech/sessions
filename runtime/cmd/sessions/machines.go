@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/discovery"
+	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
@@ -235,6 +236,9 @@ func (a *app) discoverMachines(args []string) error {
 	defer cancel()
 	candidates, err := discovery.Browse(ctx, timeout)
 	if err != nil {
+		if a.localDaemonIsAdvertising() {
+			return fail(2, "%s", localnetwork.Message)
+		}
 		return fail(2, "nearby discovery failed: %s", err)
 	}
 	machines := make([]discoveredMachine, 0, len(candidates))
@@ -263,6 +267,9 @@ func (a *app) discoverMachines(args []string) error {
 		}, true)
 	}
 	if len(machines) == 0 {
+		if a.localDaemonIsAdvertising() {
+			return fail(2, "%s", localnetwork.Message)
+		}
 		_, err := fmt.Fprintln(a.stdout, "No nearby Sessions machines found. Make sure LAN access is enabled on the other machine.")
 		return err
 	}
@@ -316,7 +323,7 @@ func (a *app) connectMachine(args []string) error {
 		map[string]string{"client_id": clientID, "name": deviceName}, &created,
 	)
 	if err != nil {
-		return fail(2, "request access from %s: %s", endpoint, err)
+		return fail(2, "request access from %s: %s", endpoint, localnetwork.Explain(endpoint, err))
 	}
 	if statusCode != http.StatusAccepted || created.RequestID == "" || created.RequestSecret == "" {
 		return fail(2, "access request failed with HTTP %d", statusCode)
@@ -337,7 +344,7 @@ func (a *app) connectMachine(args []string) error {
 		switch statusCode {
 		case http.StatusCreated:
 			if err != nil {
-				return fail(2, "claim approved access: %s", err)
+				return fail(2, "claim approved access: %s", localnetwork.Explain(endpoint, err))
 			}
 			goto connected
 		case http.StatusAccepted:
@@ -349,7 +356,7 @@ func (a *app) connectMachine(args []string) error {
 			return fail(2, "the access request expired; run the command again")
 		default:
 			if err != nil {
-				return fail(2, "check access request: %s", err)
+				return fail(2, "check access request: %s", localnetwork.Explain(endpoint, err))
 			}
 			return fail(2, "access claim failed with HTTP %d", statusCode)
 		}
@@ -364,7 +371,7 @@ connected:
 	}
 	health, err := verifyMachineCredential(endpoint, claim.Token)
 	if err != nil {
-		return fail(2, "verify the issued machine credential: %s", err)
+		return fail(2, "verify the issued machine credential: %s", localnetwork.Explain(endpoint, err))
 	}
 	if health.Name != "sessionsd" {
 		return fail(2, "the approved endpoint is not sessionsd")
@@ -385,6 +392,15 @@ connected:
 	}
 	_, err = fmt.Fprintf(a.stdout, "Connected to %s as %q. Agents can use it with:\n  sessions --machine %s ls\n", record.Name, record.Alias, record.Alias)
 	return err
+}
+
+func (a *app) localDaemonIsAdvertising() bool {
+	var state struct {
+		Bonjour struct {
+			Advertised bool `json:"advertised"`
+		} `json:"bonjour"`
+	}
+	return a.getJSON("/api/lan", &state) == nil && state.Bonjour.Advertised
 }
 
 func (a *app) listSavedMachines() error {

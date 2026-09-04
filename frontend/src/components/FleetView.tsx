@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchServerHealth, listServerProfiles, listServerSessions, type AccountProfile, type ServerHealth } from '../api/sessionsd';
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { fetchLANState, fetchServerHealth, listServerProfiles, listServerSessions, type AccountProfile, type ServerHealth } from '../api/sessionsd';
 import { formatServerEndpoint } from '../lib/serverEndpoint';
 import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { tailnetClientID } from '../lib/tailnetClient';
@@ -78,15 +78,11 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
   const [discoveredPeers, setDiscoveredPeers] = useState<DiscoveredPeer[] | null>(null);
   const [accessRequest, setAccessRequest] = useState<PendingMachineAccess | null>(null);
   const [discoveryMessage, setDiscoveryMessage] = useState<string | null>(null);
+  const localNetworkDenied = useLocalNetworkDenied();
   const localServer = servers.find((server) => server.isDefault) ?? servers[0];
   const localVersion = localServer ? machineVersions[localServer.id] : undefined;
 
-  const rememberVersion = useCallback((serverId: string, version: string): void => {
-    if (!version) return;
-    setMachineVersions((current) => current[serverId] === version
-      ? current
-      : { ...current, [serverId]: version });
-  }, []);
+  const rememberVersion = useRememberMachineVersion(setMachineVersions);
 
   const findMachines = async (): Promise<void> => {
     if (!isTauri() || discoveryBusy || accessRequest) return;
@@ -185,6 +181,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
           </button>
         </div>
       </div>
+      <FleetPermissionBanner visible={localNetworkDenied} />
       {discoveryOpen ? (
         <section className="fleet-discovery" aria-live="polite">
           <header>
@@ -246,6 +243,32 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
       </div>
     </div>
   );
+}
+
+function useRememberMachineVersion(setVersions: Dispatch<SetStateAction<Record<string, string>>>) {
+  return useCallback((serverId: string, version: string): void => {
+    if (!version) return;
+    setVersions((current) => current[serverId] === version ? current : { ...current, [serverId]: version });
+  }, [setVersions]);
+}
+
+function useLocalNetworkDenied(): boolean {
+  const [denied, setDenied] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchLANState(controller.signal)
+      .then((state) => setDenied(state.permission?.status === 'denied'))
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
+  return denied;
+}
+
+function FleetPermissionBanner({ visible }: { visible: boolean }): JSX.Element | null {
+  if (!visible) return null;
+  return <div className="fleet-permission-banner" role="alert">
+    macOS has not allowed Sessions to use the local network. System Settings › Privacy &amp; Security › Local Network › turn on Sessions.
+  </div>;
 }
 
 function mergeDiscoveredPeers(peers: DiscoveredPeer[]): DiscoveredPeer[] {

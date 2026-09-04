@@ -25,9 +25,16 @@ type BonjourState struct {
 }
 
 type LANState struct {
-	Enabled bool         `json:"enabled"`
-	URL     *string      `json:"url"`
-	Bonjour BonjourState `json:"bonjour"`
+	Enabled    bool                   `json:"enabled"`
+	URL        *string                `json:"url"`
+	Bonjour    BonjourState           `json:"bonjour"`
+	Permission LocalNetworkPermission `json:"permission"`
+}
+
+type LocalNetworkPermission struct {
+	Status  string `json:"status"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type lanListener struct {
@@ -46,6 +53,7 @@ type lanListener struct {
 	machineID    string
 	host         string
 	url          string
+	permission   string
 }
 
 type lanRequestContextKey struct{}
@@ -63,6 +71,7 @@ func newLANListener(config state.Config, handler http.Handler, identity machineI
 		config: config, handler: handler, pickIP: lanutil.PrimaryIPv4,
 		listen: net.Listen, advertise: discovery.Advertise, settingsPath: settingsPath,
 		machineName: identity.Name, machineID: identity.ID,
+		permission: initialLocalNetworkPermission(),
 	}
 }
 
@@ -74,7 +83,7 @@ func (l *lanListener) state() LANState {
 
 func (l *lanListener) stateLocked() LANState {
 	if l.server == nil || l.url == "" {
-		return LANState{Bonjour: BonjourState{Service: discovery.ServiceType}}
+		return LANState{Bonjour: BonjourState{Service: discovery.ServiceType}, Permission: l.permissionLocked()}
 	}
 	url := l.url
 	return LANState{
@@ -84,7 +93,23 @@ func (l *lanListener) stateLocked() LANState {
 			Service:    discovery.ServiceType,
 			Error:      l.bonjourError,
 		},
+		Permission: l.permissionLocked(),
 	}
+}
+
+func (l *lanListener) permissionLocked() LocalNetworkPermission {
+	permission := LocalNetworkPermission{Status: l.permission}
+	if l.permission == "denied" {
+		permission.Reason = localNetworkPermissionReason
+		permission.Message = localNetworkPermissionMessage
+	}
+	return permission
+}
+
+func (l *lanListener) markPermission(status string) {
+	l.mu.Lock()
+	l.permission = status
+	l.mu.Unlock()
 }
 
 func (l *lanListener) activeHost() string {
@@ -205,7 +230,7 @@ func (l *lanListener) disable(persist bool) (LANState, error) {
 			return LANState{}, fmt.Errorf("stop Bonjour advertisement: %w", err)
 		}
 	}
-	return LANState{Bonjour: BonjourState{Service: discovery.ServiceType}}, nil
+	return LANState{Bonjour: BonjourState{Service: discovery.ServiceType}, Permission: l.permissionLocked()}, nil
 }
 
 func (l *lanListener) ensureBonjour(ip net.IP, port int) {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
+	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -149,6 +150,13 @@ type app struct {
 	cliIsCurrent   func(string) bool
 	attachSupport  func(context.Context, supportAttachmentRequest) (supportAttachmentReceipt, error)
 	commands       []commandSpec
+}
+
+func explainAPIClientNetworkError(client *apiClient, err error) error {
+	if client == nil {
+		return err
+	}
+	return localnetwork.Explain(client.host, err)
 }
 
 func newApp(arguments []string, stdin io.Reader, stdout, stderr io.Writer) (*app, error) {

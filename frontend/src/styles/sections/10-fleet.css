@@ -7,6 +7,17 @@
   padding: 22px clamp(14px, 4vw, 48px) 48px;
   background: var(--bg-base);
 }
+
+.fleet-permission-banner {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-elev-1));
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.45;
+}
 .fleet-view-heading {
   display: flex;
   align-items: end;
