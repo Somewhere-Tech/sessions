@@ -152,7 +152,6 @@ assert.doesNotMatch(app, /console\.warn\(['"`]Sessions resumed/,
 
 assert.match(pairingHook, /denied: 'The other machine denied this request\.'/);
 for (const [name, surface] of [
-  ['ConnectScreen.tsx', connectScreen],
   ['FleetView.tsx', fleetView],
   ['ConnectionsView.tsx', connectionsView]
 ]) {
@@ -164,5 +163,9 @@ for (const [name, surface] of [
   // pairing copy is not what this checks.
   assert.doesNotMatch(surface, /at the other Mac/, `${name} must not carry its own expiry wording`);
 }
+assert.match(connectScreen, /scanPairingCode/,
+  'ConnectScreen.tsx must use consent-by-possession pairing');
+assert.doesNotMatch(connectScreen, /claimNative(Machine|Tailnet|Nearby)Access/,
+  'ConnectScreen.tsx must not reintroduce a request/accept poll');
 
 console.log('shared contracts smoke: ok');

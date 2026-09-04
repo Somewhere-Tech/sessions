@@ -3,7 +3,12 @@ fn pairing_http_host_is_private(host: &str) -> bool {
         return true;
     }
     host.parse::<IpAddr>().is_ok_and(|address| match address {
-        IpAddr::V4(address) => address.is_loopback() || address.is_private(),
+        IpAddr::V4(address) => {
+            let octets = address.octets();
+            address.is_loopback()
+                || address.is_private()
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        }
         IpAddr::V6(address) => address.is_loopback() || address.segments()[0] & 0xfe00 == 0xfc00,
     })
 }
@@ -497,66 +502,142 @@ fn parse_native_pairing_link(value: &str) -> Result<ParsedPairingLink, String> {
         return Err("pairing link is too long".to_string());
     }
 
-    let mut parsed = url::Url::parse(value)
-        .map_err(|_| "paste the full pairing link, including https://".to_string())?;
-    if parsed.host_str().is_none() {
-        return Err("pairing link is missing a machine address".to_string());
+    let parsed = url::Url::parse(value)
+        .map_err(|_| "paste the full pairing link, including sessions:// or https://".to_string())?;
+    if parsed.scheme() == "sessions" {
+        return parse_application_pairing_link(&parsed);
     }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err("pairing links cannot contain a username or password".to_string());
-    }
-    match parsed.scheme() {
-        "https" => {}
-        "http" if pairing_http_host_is_private(parsed.host_str().unwrap_or_default()) => {}
-        "http" => {
-            return Err("unencrypted pairing is allowed only to a private LAN address".to_string())
-        }
-        _ => return Err("pairing links must use HTTPS or private-LAN HTTP".to_string()),
-    }
-    if !matches!(parsed.path(), "" | "/") || parsed.query().is_some() {
-        return Err("pairing link has an unexpected path or query".to_string());
-    }
+    parse_web_pairing_link(parsed)
+}
 
-    let fragment = parsed
-        .fragment()
-        .ok_or_else(|| "pairing link is missing its one-time ticket".to_string())?;
-    let mut ticket: Option<String> = None;
-    for (key, value) in url::form_urlencoded::parse(fragment.as_bytes()) {
-        if key != "pair" || ticket.is_some() {
-            return Err("pairing link has an invalid one-time ticket".to_string());
-        }
-        let value = value.trim();
-        if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
-            return Err("pairing link has an invalid one-time ticket".to_string());
-        }
-        ticket = Some(value.to_string());
+fn parse_application_pairing_link(parsed: &url::Url) -> Result<ParsedPairingLink, String> {
+    if parsed.host_str() != Some("pair")
+        || !matches!(parsed.path(), "" | "/")
+        || parsed.fragment().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("pairing link has unexpected fields".to_string());
     }
-    let ticket = ticket.ok_or_else(|| "pairing link is missing its one-time ticket".to_string())?;
-
-    parsed.set_fragment(None);
-    parsed.set_path("");
-    let endpoint = parsed.as_str().trim_end_matches('/').to_string();
-    let claim_url = format!("{endpoint}/api/pair/claim");
+    let mut endpoints = Vec::new();
+    let mut ticket = None;
+    for (key, value) in parsed.query_pairs() {
+        match key.as_ref() {
+            "host" => {
+                let endpoint = validate_pairing_endpoint(&value)?;
+                if !endpoints.contains(&endpoint) {
+                    endpoints.push(endpoint);
+                }
+            }
+            "t" if ticket.is_none() => ticket = Some(validate_pairing_ticket(&value)?),
+            _ => return Err("pairing link has invalid endpoints or ticket".to_string()),
+        }
+    }
+    if endpoints.is_empty() {
+        return Err("pairing link has no machine endpoint".to_string());
+    }
     Ok(ParsedPairingLink {
-        endpoint,
-        claim_url,
+        endpoints,
+        ticket: ticket.ok_or_else(|| "pairing link is missing its one-time ticket".to_string())?,
+    })
+}
+
+fn parse_web_pairing_link(mut parsed: url::Url) -> Result<ParsedPairingLink, String> {
+    if parsed.query().is_some() {
+        return Err("pairing link has an unexpected query".to_string());
+    }
+    let ticket = if let Some(value) = parsed.path().strip_prefix("/pair/") {
+        if value.contains('/') {
+            return Err("pairing link has an invalid one-time ticket".to_string());
+        }
+        validate_pairing_ticket(value)?
+    } else {
+        if !matches!(parsed.path(), "" | "/") {
+            return Err("pairing link has an unexpected path".to_string());
+        }
+        let fragment = parsed
+            .fragment()
+            .ok_or_else(|| "pairing link is missing its one-time ticket".to_string())?;
+        let values: Vec<_> = url::form_urlencoded::parse(fragment.as_bytes()).collect();
+        if values.len() != 1 || values[0].0 != "pair" {
+            return Err("pairing link has an invalid one-time ticket".to_string());
+        }
+        validate_pairing_ticket(&values[0].1)?
+    };
+    parsed.set_path("");
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    let endpoint = validate_pairing_endpoint(parsed.as_str())?;
+    Ok(ParsedPairingLink {
+        endpoints: vec![endpoint],
         ticket,
     })
 }
 
+fn validate_pairing_ticket(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
+        return Err("pairing link has an invalid one-time ticket".to_string());
+    }
+    Ok(value.to_string())
+}
+
+fn validate_pairing_endpoint(value: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(value.trim())
+        .map_err(|_| "pairing link contains an invalid machine address".to_string())?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "pairing link is missing a machine address".to_string())?;
+    let valid_scheme = (parsed.scheme() == "http" && pairing_http_host_is_private(host))
+        || (parsed.scheme() == "https" && host.to_ascii_lowercase().ends_with(".ts.net"));
+    let valid_port = if parsed.scheme() == "http" {
+        parsed.port().is_some_and(|port| port >= 1024)
+    } else {
+        parsed.port().is_none()
+    };
+    if !valid_scheme
+        || !valid_port
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || !matches!(parsed.path(), "" | "/")
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("pairing link contains an unsafe machine address".to_string());
+    }
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
+}
+
 fn claim_native_pairing_link(value: &str) -> Result<NativePairingClaim, String> {
     let link = parse_native_pairing_link(value)?;
-    let client = reqwest::blocking::Client::builder()
+    let client = pairing_http_client()?;
+    let mut last_error = "none of the pairing endpoints answered".to_string();
+    for endpoint in link.endpoints {
+        match claim_pairing_endpoint(&client, &endpoint, &link.ticket) {
+            Ok(claim) => return Ok(claim),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+fn pairing_http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(12))
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|error| format!("prepare secure pairing request: {error}"))?;
+        .map_err(|error| format!("prepare secure pairing request: {error}"))
+}
 
-    // Match the stronger remote-environment onboarding pattern: identify the
-    // endpoint before consuming its one-time credential. A typo or unrelated
-    // HTTPS service therefore cannot burn a valid pairing link.
-    let health_url = format!("{}/api/health", link.endpoint);
+fn claim_pairing_endpoint(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    ticket: &str,
+) -> Result<NativePairingClaim, String> {
+    // Identify the endpoint before consuming its one-time credential. A typo
+    // or unrelated service therefore cannot burn a valid pairing link.
+    let health_url = format!("{endpoint}/api/health");
     let health_response = client
         .get(&health_url)
         .header("accept", "application/json")
@@ -577,9 +658,9 @@ fn claim_native_pairing_link(value: &str) -> Result<NativePairingClaim, String> 
     }
 
     let response = client
-        .post(&link.claim_url)
+        .post(format!("{endpoint}/api/lan/access/claim"))
         .header("accept", "application/json")
-        .json(&serde_json::json!({ "ticket": link.ticket }))
+        .json(&serde_json::json!({ "ticket": ticket, "name": local_device_name() }))
         .send()
         .map_err(|error| format!("could not reach the other Sessions machine: {error}"))?;
     let status = response.status();
@@ -596,7 +677,7 @@ fn claim_native_pairing_link(value: &str) -> Result<NativePairingClaim, String> 
     }
     let claimed: PairingClaimResponse = serde_json::from_slice(&body)
         .map_err(|_| "the other machine returned an invalid device credential".to_string())?;
-    validate_native_claim(link.endpoint, claimed).map_err(|error| {
+    validate_native_claim(endpoint.to_string(), claimed).map_err(|error| {
         if error == "the other Mac is running an older Sessions daemon" {
             format!("{error}; update Sessions there and create a new pairing link")
         } else {

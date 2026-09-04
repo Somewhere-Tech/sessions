@@ -303,8 +303,7 @@ impl SessionsHealthResponse {
 
 #[derive(Debug, PartialEq, Eq)]
 struct ParsedPairingLink {
-    endpoint: String,
-    claim_url: String,
+    endpoints: Vec<String>,
     ticket: String,
 }
 
@@ -393,6 +392,9 @@ pub fn run() {
             somewhere_cli_status
         ])
         .setup(|app| {
+            #[cfg(mobile)]
+            app.handle().plugin(tauri_plugin_barcode_scanner::init())?;
+
             // One answer to a corrupt connections.json, shared with every
             // reconcile path: fall back to the default port so the management
             // plane keeps working, and carry the reason into the status the

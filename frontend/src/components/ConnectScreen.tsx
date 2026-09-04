@@ -3,15 +3,10 @@ import { fetchServerHealth } from '../api/sessionsd';
 import { claimNativeMachinePairing, rememberServerEndpoint } from '../lib/hostedBootstrap';
 import { formatServerEndpoint } from '../lib/serverEndpoint';
 import { useServers, type ServerConfig } from '../lib/servers';
-import { tailnetClientID } from '../lib/tailnetClient';
 import {
-  discoverNativeMachines,
   isNativeMobileRuntime,
-  requestNativeMachineAccess,
-  type NativeMachinePeer,
-  type NativeTailnetRequest
+  scanPairingCode
 } from '../lib/tauriBridge';
-import { useMachineAccessPairing } from '../hooks/useMachineAccessPairing';
 
 const LOCAL_ENDPOINT = 'http://localhost:8787';
 const HEALTH_TIMEOUT_MS = 8_000;
@@ -36,46 +31,25 @@ export function ConnectScreen({
   const [token, setToken] = useState('');
   const [pairingLink, setPairingLink] = useState('');
   const [checkingId, setCheckingId] = useState<string | null>(null);
-  const [discoveryBusy, setDiscoveryBusy] = useState(false);
-  const [discoveredPeers, setDiscoveredPeers] = useState<NativeMachinePeer[] | null>(null);
-  const [accessRequest, setAccessRequest] = useState<(NativeTailnetRequest & { transport: NativeMachinePeer['transport']; machineName: string }) | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const busy = checkingId !== null || discoveryBusy || accessRequest !== null;
+  const busy = checkingId !== null;
   const connectionDisabled = credentialError !== null || busy;
   const remembered = useMemo(
     () => servers.filter((server) => !server.isDefault),
     [servers]
   );
   const isMobileClient = isNativeMobileRuntime();
-  const discoveryStarted = useRef(false);
-  const pairingLinkInput = useRef<HTMLInputElement>(null);
 
-  const keepPairingLinkVisible = useCallback((): void => {
-    pairingLinkInput.current?.scrollIntoView({ block: 'center', inline: 'nearest' });
-  }, []);
-
-  useEffect(() => {
-    const viewport = window.visualViewport;
-    if (!viewport) return undefined;
-    const onViewportChange = (): void => {
-      if (document.activeElement === pairingLinkInput.current) keepPairingLinkVisible();
-    };
-    viewport.addEventListener('resize', onViewportChange);
-    return () => {
-      viewport.removeEventListener('resize', onViewportChange);
-    };
-  }, [keepPairingLinkVisible]);
-
-  const claimPairingLink = async (): Promise<void> => {
-    if (!clientOnly || connectionDisabled || !pairingLink.trim()) return;
-    setCheckingId('pairing-link');
+  const connectPairingLink = async (link: string, source: 'pairing-link' | 'pairing-code'): Promise<void> => {
+    if (!clientOnly || connectionDisabled || !link.trim()) return;
+    setCheckingId(source);
     setMessage('Claiming this one-time connection link…');
     setError(null);
     try {
-      const { server } = await claimNativeMachinePairing(pairingLink.trim());
+      const { server } = await claimNativeMachinePairing(link.trim());
       setPairingLink('');
-      setMessage(`${server.name} approved this device. Connecting…`);
+      setMessage(`Paired with ${server.name}. Connecting…`);
       onRetry?.();
     } catch (reason) {
       setMessage(null);
@@ -85,71 +59,19 @@ export function ConnectScreen({
     }
   };
 
-  const findMachines = useCallback(async (): Promise<void> => {
+  const scanAndConnect = async (): Promise<void> => {
     if (!clientOnly || connectionDisabled) return;
-    setDiscoveryBusy(true);
-    setMessage(isMobileClient
-      ? 'Looking for Sessions machines nearby…'
-      : 'Looking for Sessions machines through Tailscale and nearby Bonjour…');
-    setError(null);
+    setCheckingId('pairing-code'); setMessage('Opening the camera…'); setError(null);
     try {
-      const result = await discoverNativeMachines();
-      setDiscoveredPeers(result.peers);
-      setMessage(result.peers.length > 0
-        ? `Found ${result.peers.length} ${result.peers.length === 1 ? 'machine' : 'machines'}.`
-        : result.errors[0] ?? (isMobileClient
-          ? 'No nearby Sessions machines answered. Enable trusted-network LAN access on the host, then search again.'
-          : 'No Sessions machines answered. Enable Tailscale remote access or trusted-network LAN access on the host.'));
+      const link = await scanPairingCode();
+      setCheckingId(null);
+      await connectPairingLink(link, 'pairing-code');
     } catch (reason) {
-      setDiscoveredPeers([]);
       setMessage(null);
       setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setDiscoveryBusy(false);
-    }
-  }, [clientOnly, connectionDisabled, isMobileClient]);
-
-  useEffect(() => {
-    if (!clientOnly || !isMobileClient || discoveryStarted.current) return;
-    discoveryStarted.current = true;
-    void findMachines();
-  }, [clientOnly, findMachines, isMobileClient]);
-
-  const requestAccess = async (peer: NativeMachinePeer): Promise<void> => {
-    if (!clientOnly || connectionDisabled) return;
-    setDiscoveryBusy(true);
-    setError(null);
-    try {
-      const request = await requestNativeMachineAccess(peer, tailnetClientID(), 'This phone');
-      setAccessRequest({ ...request, transport: peer.transport, machineName: peer.name });
-      setMessage(`Waiting for ${peer.name} to approve this phone.`);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setDiscoveryBusy(false);
+      setCheckingId(null);
     }
   };
-
-  // One shared implementation of the approval poll (hooks/useMachineAccessPairing.ts).
-  // This was one of three hand-rolled copies whose wording had already drifted.
-  const pendingAccess = useMemo(
-    () => accessRequest ? { transport: accessRequest.transport, request: accessRequest } : null,
-    [accessRequest]
-  );
-  useMachineAccessPairing({
-    pending: pendingAccess,
-    onAccepted: (server) => {
-      setAccessRequest(null);
-      setMessage(`${server.name} approved this device. Connecting…`);
-      onRetry?.();
-    },
-    onSettled: (_outcome, text) => {
-      setAccessRequest(null);
-      setMessage(null);
-      setError(text);
-    },
-    onError: setError
-  });
 
   const probe = async (server: ServerConfig): Promise<void> => {
     if (credentialError) {
@@ -220,70 +142,18 @@ export function ConnectScreen({
         </h1>
         <p className="connect-lede">
           {clientOnly
-            ? 'Sessions connects directly over your private network. The computer running each agent stays in control, and approves this device before anything opens.'
+            ? 'Scan a host pairing code to connect directly over your private network.'
             : 'This is the complete Sessions app. Pick a daemon and this client talks straight to it — no relay, proxy, hosted terminal data, or analytics.'}
         </p>
 
         {clientOnly ? (
           <>
-          <section className="connect-discovery" aria-labelledby="discovery-title" aria-live="polite">
-            <div className="connect-discovery-heading">
-              <div>
-                <span>Nearby on your network</span>
-                <h2 id="discovery-title">Your Sessions machines</h2>
-                <p>Choose a computer, then approve this phone there.</p>
-              </div>
-              <button type="button" className="connect-submit connect-find" disabled={connectionDisabled} onClick={() => void findMachines()}>
-                {discoveryBusy ? 'Searching…' : discoveredPeers === null ? 'Find machines' : 'Search again'}
-              </button>
-            </div>
-            {accessRequest ? (
-              <p className="connect-waiting">Waiting for {accessRequest.machineName} to approve this phone.</p>
-            ) : null}
-            {discoveredPeers !== null && discoveredPeers.length > 0 ? (
-              <div className="connect-peer-list">
-                {discoveredPeers.map((peer) => {
-                  const waiting = accessRequest?.endpoint === peer.endpoint;
-                  return (
-                    <article key={`${peer.transport}:${peer.endpoint}`} className="connect-peer">
-                      <span className="connect-peer-icon" aria-hidden>
-                        {peer.os ? (peer.os.toLowerCase().includes('windows') ? '⊞' : '⌘') : '⌁'}
-                      </span>
-                      <div>
-                        <strong>{peer.name}</strong>
-                        <small>{peer.hostname}</small>
-                      </div>
-                      <button type="button" className="btn" disabled={connectionDisabled} onClick={() => void requestAccess(peer)}>
-                        {waiting ? 'Waiting…' : 'Connect'}
-                      </button>
-                    </article>
-                  );
-                })}
-              </div>
-            ) : null}
-          </section>
-          <section className="connect-pair-link" aria-labelledby="pair-link-title">
-            <div>
-              <span>One-time-link fallback</span>
-              <h2 id="pair-link-title">Paste a connection link</h2>
-              <p>If this computer does not appear, run <code>sessions pair</code> there and paste its one-time link.</p>
-            </div>
-            <form onSubmit={(event) => { event.preventDefault(); void claimPairingLink(); }}>
-              <input
-                ref={pairingLinkInput}
-                type="url"
-                inputMode="url"
-                autoComplete="off"
-                placeholder="Paste the Sessions connection link"
-                value={pairingLink}
-                onChange={(event) => setPairingLink(event.currentTarget.value)}
-                onFocus={keepPairingLinkVisible}
-              />
-              <button type="submit" className="connect-submit" disabled={connectionDisabled || !pairingLink.trim()}>
-                {checkingId === 'pairing-link' ? 'Connecting…' : 'Connect this device'}
-              </button>
-            </form>
-          </section>
+          <PairingLinkPanel
+            link={pairingLink} busy={connectionDisabled} checkingId={checkingId}
+            mobile={isMobileClient} onChange={setPairingLink}
+            onScan={() => void scanAndConnect()}
+            onConnect={() => void connectPairingLink(pairingLink, 'pairing-link')}
+          />
           </>
         ) : null}
 
@@ -421,5 +291,34 @@ export function ConnectScreen({
         </p>
       </section>
     </main>
+  );
+}
+
+function PairingLinkPanel({ link, busy, checkingId, mobile, onChange, onScan, onConnect }: {
+  link: string; busy: boolean; checkingId: string | null; mobile: boolean;
+  onChange: (value: string) => void; onScan: () => void; onConnect: () => void;
+}): JSX.Element {
+  const input = useRef<HTMLInputElement>(null);
+  const keepVisible = useCallback((): void => {
+    input.current?.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }, []);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return undefined;
+    const onViewportChange = (): void => {
+      if (document.activeElement === input.current) keepVisible();
+    };
+    viewport.addEventListener('resize', onViewportChange);
+    return () => viewport.removeEventListener('resize', onViewportChange);
+  }, [keepVisible]);
+  return (
+    <section className="connect-pair-link" aria-labelledby="pair-link-title">
+      <div><span>One-time consent</span><h2 id="pair-link-title">Pair with a code</h2><p>Run <code>sessions pair</code> on the host, then scan or paste.</p></div>
+      {mobile ? <button type="button" className="connect-submit connect-scan" disabled={busy} onClick={onScan}>{checkingId === 'pairing-code' ? 'Scanning…' : 'Scan a pairing code'}</button> : null}
+      <form onSubmit={(event) => { event.preventDefault(); onConnect(); }}>
+        <input ref={input} type="url" inputMode="url" autoComplete="off" placeholder="Paste the Sessions pairing link" value={link} onChange={(event) => onChange(event.currentTarget.value)} onFocus={keepVisible} />
+        <button type="submit" className="connect-submit" disabled={busy || !link.trim()}>{checkingId === 'pairing-link' ? 'Connecting…' : 'Connect this device'}</button>
+      </form>
+    </section>
   );
 }

@@ -357,7 +357,13 @@ func (a *app) connectMachine(args []string) error {
 	tailnetEndpoint, hasTailnet := pluck(&args, "--tailnet")
 	tailnetIPEndpoint, hasTailnetIP := pluck(&args, "--tailnet-ip")
 	if len(args) != 1 {
-		return fail(1, "usage: sessions machines connect <endpoint> [--lan URL] [--tailnet URL] [--tailnet-ip URL] [--name ALIAS] [--timeout D]")
+		return fail(1, "usage: sessions machines connect <endpoint-or-pairing-link> [--lan URL] [--tailnet URL] [--tailnet-ip URL] [--name ALIAS] [--timeout D]")
+	}
+	if looksLikePairingLink(args[0]) {
+		if hasLAN || hasTailnet || hasTailnetIP || hasTimeout {
+			return fail(1, "a pairing link cannot be combined with endpoint or timeout flags")
+		}
+		return a.connectMachinePairingLink(args[0], alias)
 	}
 	endpoint, transport, err := validateMachineEndpoint(args[0])
 	if err != nil {
@@ -397,6 +403,72 @@ func (a *app) connectMachine(args []string) error {
 		return err
 	}
 	return a.finishMachineConnect(used.Endpoint, used.Transport, alias, claim)
+}
+
+func looksLikePairingLink(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(lower, "sessions://") || strings.Contains(lower, "/pair/") || strings.Contains(lower, "#pair=")
+}
+
+func (a *app) connectMachinePairingLink(value, alias string) error {
+	endpoints, ticket, err := fleetendpoint.ParsePairingLink(value)
+	if err != nil {
+		return fail(1, "%s", err)
+	}
+	candidates := make([]fleetendpoint.Candidate, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		validated, transport, validateErr := validateMachineEndpoint(endpoint)
+		if validateErr != nil {
+			return fail(1, "pairing link endpoint %q: %s", endpoint, validateErr)
+		}
+		if transport == "nearby" {
+			transport = "lan"
+		}
+		candidates = append(candidates, fleetendpoint.Candidate{Endpoint: validated, Transport: transport})
+	}
+	if a.direct {
+		claim, used, claimErr := claimMachinePairingTicket(candidates, ticket)
+		if claimErr != nil {
+			return claimErr
+		}
+		return a.finishMachineConnect(used.Endpoint, used.Transport, alias, claim)
+	}
+	deviceName, _ := os.Hostname()
+	var response struct {
+		Claim     accessClaim `json:"claim"`
+		Endpoint  string      `json:"endpoint"`
+		Transport string      `json:"transport"`
+	}
+	if err := a.postJSON("/api/lan/connect", map[string]string{
+		"lan_endpoint":        endpointForTransport(candidates, "lan"),
+		"tailnet_endpoint":    endpointForTransport(candidates, "tailnet"),
+		"tailnet_ip_endpoint": endpointForTransport(candidates, "tailnet-ip"),
+		"ticket":              ticket, "name": deviceName,
+	}, &response, 2); err != nil {
+		return err
+	}
+	return a.finishMachineConnect(response.Endpoint, response.Transport, alias, response.Claim)
+}
+
+func claimMachinePairingTicket(candidates []fleetendpoint.Candidate, ticket string) (accessClaim, fleetendpoint.Candidate, error) {
+	selected, err := selectDirectMachineEndpoint(candidates)
+	if err != nil {
+		return accessClaim{}, fleetendpoint.Candidate{}, err
+	}
+	deviceName, _ := os.Hostname()
+	var claim accessClaim
+	status, err := postBootstrapJSON(context.Background(), bootstrapHTTPClient(),
+		selected.Endpoint+"/api/lan/access/claim", map[string]string{"ticket": ticket, "name": deviceName}, &claim)
+	if err != nil {
+		return accessClaim{}, fleetendpoint.Candidate{}, fail(2, "claim pairing ticket: %s", localnetwork.Explain(selected.Endpoint, err))
+	}
+	if status != http.StatusCreated {
+		return accessClaim{}, fleetendpoint.Candidate{}, fail(2, "pairing ticket claim failed with HTTP %d", status)
+	}
+	if _, err := verifyMachineCredential(selected.Endpoint, claim.Token); err != nil {
+		return accessClaim{}, fleetendpoint.Candidate{}, fail(2, "verify the issued machine credential: %s", err)
+	}
+	return claim, selected, nil
 }
 
 func (a *app) connectMachineDirect(candidates []fleetendpoint.Candidate, timeout time.Duration) (accessClaim, fleetendpoint.Candidate, error) {

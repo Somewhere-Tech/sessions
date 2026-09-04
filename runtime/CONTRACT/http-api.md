@@ -333,7 +333,7 @@ need not be installed to turn the setting off. Other methods return 405.
 ### `GET /api/machine`
 
 Auth required. Returns the daemon's stable machine identity, the same
-`machine_id` a paired device receives from `POST /api/pair/claim`:
+`machine_id` a paired device receives from `POST /api/lan/access/claim`:
 
 ```json
 {"machine_id":"<stable machine UUID>","name":"<computer name>"}
@@ -1589,7 +1589,7 @@ Pending claims return 202, denied claims 403, and expired or mismatched claims
 410. An accepted claim creates a two-minute pending per-device bearer
 credential plus the daemon's stable machine ID/name and its currently available
 `lan_endpoint`, `tailnet_endpoint`, and `tailnet_ip_endpoint`, using the same
-response shape as `POST /api/pair/claim`. Repeated claims return the same device
+response shape as `POST /api/lan/access/claim`. Repeated claims return the same device
 ID and token, so a lost 201 response is safe. The first authenticated API request with
 that token durably acknowledges it; until then it is hidden from the device
 list and cannot authorize after its deadline. Issuance starts its own two-minute
@@ -1600,9 +1600,10 @@ purged when the device store is next loaded. Pending request state itself
 disappears on daemon restart or after its current deadline; the client can
 safely request again.
 
-`sessions pair` remains the explicit same-LAN fallback when native discovery
-and request/accept pairing are unavailable. It no longer creates Tailscale QR
-links.
+`sessions pair` is the consent-by-possession path when both devices are in
+front of the user. Its application link includes every currently available
+LAN, Tailscale HTTPS, and direct Tailscale-IP endpoint; claiming it needs no
+request/accept decision.
 
 Several routes in this section are **local-principal only**
 (`requireLocalPrincipal` in `server_routes.go`): only a direct loopback peer
@@ -1632,15 +1633,24 @@ methods return 405.
 
 ### `POST /api/lan/access/claim`
 
-Same listener, peer, origin, and content-type gates as
-`POST /api/lan/access/request`. Body
-`{"request_id":"<UUID>","request_secret":"<secret>"}`. A pending request is
+Same listener, peer, and content-type gates as
+`POST /api/lan/access/request`. The request/accept body is
+`{"request_id":"<UUID>","request_secret":"<secret>"}` and rejects every
+browser `Origin`. A pending request is
 `202 {"status":"pending"}`, a denied one
 `403 {"status":"denied","error":"<message>"}`, and an expired or mismatched one
 `410 {"status":"expired","error":"<message>"}`. Acceptance returns 201 with
 `{"device_id","token","name","machine_id","machine_name","lan_endpoint","tailnet_endpoint","tailnet_ip_endpoint"}`, the
-`POST /api/pair/claim` shape, under the same two-minute acknowledgement rule
+pairing-claim shape, under the same two-minute acknowledgement rule
 described above. An unavailable machine identity is 503.
+
+Alternatively, `{"ticket":"<id>.<secret>","name":"<device name>"}` claims a
+one-time pairing ticket and immediately returns the same 201 credential shape;
+these credentials are durable immediately. This form is allowed from native
+clients without `Origin` and from the daemon's own same-origin `/pair/<ticket>`
+page. Any other browser origin is 403. An invalid, used, expired, or revoked
+ticket returns 410 with the sentence “Pairing ticket is invalid, expired, or
+already used. Run `sessions pair` to create a new one.”
 
 ### `GET /api/access/requests`
 
@@ -1741,19 +1751,54 @@ input is 400. A peer denial or expired request is 502. A Darwin Local Network
 denial is the same 403 error and reason as `GET /api/lan/discover`. Other
 methods return 405.
 
+When `ticket` is present, the daemon skips the request/accept exchange, probes
+the endpoint fields in the same order, posts the ticket to the first reachable
+peer's `/api/lan/access/claim`, verifies the issued credential against
+`/api/machine`, and returns the normal 201 response. This is the local-daemon
+path used by `sessions machines connect <pairing-link>`.
+
 ### `POST /api/pair/ticket`
 
-Auth required, local-principal only. Body `{"name":"<device name>"}`, trimmed
-and truncated to the device-name limit. Mints a single-use pairing ticket
-valid for five minutes and returns 201:
+Auth required, local-principal only. Body
+`{"name":"<device name>","ttl":"<Go duration>"}`, with the name trimmed and
+truncated to the device-name limit. `ttl` defaults to ten minutes, must be
+positive, and cannot exceed ten minutes. Mints a single-use pairing ticket and
+returns 201:
 
 ```json
-{"ticket":"<id>.<secret>","expires_at":"<RFC3339>"}
+{"ticket":"<id>.<32-byte-base64url-secret>","ticket_id":"<id>","expires_at":"<RFC3339>","link":"sessions://pair?host=<encoded-origin>&host=<encoded-origin>&t=<encoded-ticket>","fallback":"https://<machine>.ts.net/pair/<ticket>","endpoints":[{"endpoint":"<origin>","transport":"lan|tailnet|tailnet-ip"}]}
 ```
 
-This is the ticket `sessions pair` displays and the device presents to
-`POST /api/pair/claim`. A random-source failure is 500; other methods return
-405.
+Endpoint rows and repeated `host` parameters preserve LAN, Tailscale HTTPS,
+then direct Tailscale-IP order and omit unavailable kinds. `fallback` uses the
+Tailscale HTTPS origin when present and the trusted-LAN HTTP origin otherwise.
+The ticket exists only in daemon memory; it is removed after one successful
+claim, explicit revocation, expiry discovery, or daemon restart. A missing
+endpoint is 409, invalid TTL is 400, a random-source failure is 500, and other
+methods return 405.
+
+### `DELETE /api/pair/tickets/:id`
+
+Auth required, local-principal only. Revokes one outstanding ticket and returns
+`200 {"ok":true,"ticket_id":"<id>"}`. An empty, nested, unknown, used,
+expired, or already-revoked ID returns the same instructional 410 pairing
+sentence as a failed claim. Other methods return 405.
+
+### `GET /pair/:ticket`
+
+Public browser fallback for a ticket minted by the same daemon. It validates
+that the ticket is one path segment, then returns 303 to `/#pair=<ticket>` so
+the root-relative application assets load normally and the ticket moves into a
+fragment that is not sent with asset requests. The application scrubs the
+fragment before claiming it against that same origin. An invalid path is 404;
+other methods return 405.
+
+### `POST /api/pair/claim`
+
+Deprecated compatibility alias for native clients shipped with the original
+LAN-only pairing feature. Body `{"ticket":"<id>.<secret>","name":"<device
+name>"}` and credential/error responses match the ticket form of
+`POST /api/lan/access/claim`. New clients use the latter route.
 
 ### `GET /api/devices`
 

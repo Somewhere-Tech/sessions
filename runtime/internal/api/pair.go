@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,12 +21,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 const (
-	pairTicketTTL     = 5 * time.Minute
-	pairFailureWindow = time.Minute
+	pairTicketTTL        = 10 * time.Minute
+	maximumPairTicketTTL = 10 * time.Minute
+	pairFailureWindow    = time.Minute
 	// pairFailureLimit is per source address. A single global counter let any
 	// peer that can reach /api/pair/claim spend the whole budget on bad
 	// tickets and lock the user out of their own QR claim, which denies the
@@ -67,8 +71,12 @@ type pairService struct {
 }
 
 type pairingTicketResponse struct {
-	Ticket    string    `json:"ticket"`
-	ExpiresAt time.Time `json:"expires_at"`
+	Ticket    string                    `json:"ticket"`
+	TicketID  string                    `json:"ticket_id"`
+	ExpiresAt time.Time                 `json:"expires_at"`
+	Link      string                    `json:"link,omitempty"`
+	Fallback  string                    `json:"fallback,omitempty"`
+	Endpoints []fleetendpoint.Candidate `json:"endpoints,omitempty"`
 }
 
 type pairingClaimResponse struct {
@@ -141,7 +149,10 @@ func (p *pairService) setNow(now func() time.Time) {
 	p.devices.mu.Unlock()
 }
 
-func (p *pairService) mint(name string) (pairingTicketResponse, error) {
+func (p *pairService) mint(name string, ttl time.Duration) (pairingTicketResponse, error) {
+	if ttl <= 0 || ttl > maximumPairTicketTTL {
+		return pairingTicketResponse{}, fmt.Errorf("pairing ticket ttl must be between 1ns and %s", maximumPairTicketTTL)
+	}
 	id, err := randomBase64URL(16)
 	if err != nil {
 		return pairingTicketResponse{}, fmt.Errorf("generate pairing ticket id: %w", err)
@@ -154,9 +165,26 @@ func (p *pairService) mint(name string) (pairingTicketResponse, error) {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	expiresAt := p.now().UTC().Add(pairTicketTTL)
+	expiresAt := p.now().UTC().Add(ttl)
 	p.tickets[id] = pairTicket{ID: id, Secret: secret, Name: name, ExpiresAt: expiresAt}
-	return pairingTicketResponse{Ticket: id + "." + secret, ExpiresAt: expiresAt}, nil
+	return pairingTicketResponse{Ticket: id + "." + secret, TicketID: id, ExpiresAt: expiresAt}, nil
+}
+
+func (p *pairService) revoke(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	if parsed, _, ok := strings.Cut(id, "."); ok {
+		id = parsed
+	}
+	if _, exists := p.tickets[id]; !exists {
+		return false
+	}
+	delete(p.tickets, id)
+	return true
 }
 
 func (p *pairService) claim(encoded, name, userAgent, remoteAddress string) (pairingClaimResponse, error) {
@@ -206,7 +234,15 @@ func (p *pairService) claim(encoded, name, userAgent, remoteAddress string) (pai
 	// single-use link available for a retry instead of burning it.
 	delete(p.tickets, id)
 	p.mu.Unlock()
+	log.Printf("sessionsd: paired via ticket %s from %s", shortPairTicketID(id), record.Name)
 	return pairingClaimResponse{DeviceID: record.DeviceID, Token: token, Name: record.Name}, nil
+}
+
+func shortPairTicketID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 func (p *pairService) recordFailedClaim(peer string) bool {
@@ -578,52 +614,60 @@ func (s *Server) handlePairClaimRoute(response http.ResponseWriter, request *htt
 		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
 		return true
 	}
-	claimed, err := s.pair.claim(body.Ticket, body.Name, request.UserAgent(), request.RemoteAddr)
+	s.servePairTicketClaim(response, request, corsOrigin, body.Ticket, body.Name)
+	return true
+}
+
+func (s *Server) handlePairingFallback(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
+	encoded, ok := strings.CutPrefix(request.URL.EscapedPath(), "/pair/")
+	if !ok {
+		return false
+	}
+	if request.Method != http.MethodGet {
+		s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+		return true
+	}
+	ticket, err := url.PathUnescape(encoded)
+	if err != nil || ticket == "" || strings.Contains(ticket, "/") {
+		s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "pairing link is invalid"}, corsOrigin)
+		return true
+	}
+	http.Redirect(response, request, "/#pair="+url.QueryEscape(ticket), http.StatusSeeOther)
+	return true
+}
+
+func (s *Server) servePairTicketClaim(
+	response http.ResponseWriter,
+	request *http.Request,
+	corsOrigin, ticket, name string,
+) {
+	claimed, err := s.pair.claim(ticket, name, request.UserAgent(), request.RemoteAddr)
 	if errors.Is(err, errPairRateLimit) {
 		response.Header().Set("Retry-After", "60")
 		s.sendJSON(response, http.StatusTooManyRequests, map[string]any{
 			"error": "Too many failed pairing attempts from this address. Wait one minute, then run `sessions pair` to create a fresh ticket and claim it again.",
 		}, corsOrigin)
-		return true
+		return
 	}
 	if errors.Is(err, errPairTicketGone) {
 		s.sendJSON(response, http.StatusGone, map[string]any{"error": pairTicketGoneMessage}, corsOrigin)
-		return true
+		return
 	}
 	if err != nil {
 		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
-		return true
+		return
 	}
-	claimed.MachineID = s.identity.ID
-	claimed.MachineName = s.identity.Name
-	s.addMachineEndpoints(&claimed)
+	s.completeAccessClaim(&claimed)
 	s.sendJSON(response, http.StatusCreated, claimed, corsOrigin)
-	return true
 }
 
 func (s *Server) handlePairRoutes(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
 	switch {
 	case request.URL.Path == "/api/pair/ticket":
-		if request.Method != http.MethodPost {
-			s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
-			return true
-		}
-		if !s.requireLocalPrincipal(response, request, corsOrigin, "Pairing ticket creation") {
-			return true
-		}
-		var body struct {
-			Name string `json:"name"`
-		}
-		if err := readJSON(request, &body); err != nil {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-			return true
-		}
-		ticket, err := s.pair.mint(body.Name)
-		if err != nil {
-			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
-			return true
-		}
-		s.sendJSON(response, http.StatusCreated, ticket, corsOrigin)
+		s.servePairTicketRoute(response, request, corsOrigin)
+		return true
+	case strings.HasPrefix(request.URL.Path, "/api/pair/tickets/"):
+		s.servePairTicketRevokeRoute(response, request, corsOrigin)
 		return true
 	case request.URL.Path == "/api/devices":
 		if request.Method != http.MethodGet {
@@ -667,6 +711,109 @@ func (s *Server) handlePairRoutes(response http.ResponseWriter, request *http.Re
 	default:
 		return false
 	}
+}
+
+func (s *Server) servePairTicketRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) {
+	if request.Method != http.MethodPost {
+		s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+		return
+	}
+	if !s.requireLocalPrincipal(response, request, corsOrigin, "Pairing ticket creation") {
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+		TTL  string `json:"ttl"`
+	}
+	if err := readJSON(request, &body); err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	endpoints := s.pairingEndpoints()
+	if len(endpoints) == 0 {
+		s.sendJSON(response, http.StatusConflict, map[string]any{
+			"error": "pairing needs a LAN or Tailscale endpoint; enable one in Settings > Fleet, then try again",
+		}, corsOrigin)
+		return
+	}
+	ttl, err := parsePairingTicketTTL(body.TTL)
+	if err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	ticket, err := s.pair.mint(body.Name, ttl)
+	if err == nil {
+		ticket.Endpoints = endpoints
+		ticket.Link, err = fleetendpoint.PairingLink(endpoints, ticket.Ticket)
+		ticket.Fallback = pairingFallback(endpoints, ticket.Ticket)
+	}
+	if err != nil {
+		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	s.sendJSON(response, http.StatusCreated, ticket, corsOrigin)
+}
+
+func parsePairingTicketTTL(value string) (time.Duration, error) {
+	if strings.TrimSpace(value) == "" {
+		return pairTicketTTL, nil
+	}
+	ttl, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil || ttl <= 0 || ttl > maximumPairTicketTTL {
+		return 0, errors.New("ttl must be a positive duration no longer than 10m")
+	}
+	return ttl, nil
+}
+
+func (s *Server) servePairTicketRevokeRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) {
+	if request.Method != http.MethodDelete {
+		s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
+		return
+	}
+	if !s.requireLocalPrincipal(response, request, corsOrigin, "Pairing ticket revocation") {
+		return
+	}
+	id := strings.TrimPrefix(request.URL.Path, "/api/pair/tickets/")
+	if id == "" || strings.Contains(id, "/") || !s.pair.revoke(id) {
+		s.sendJSON(response, http.StatusGone, map[string]any{"error": pairTicketGoneMessage}, corsOrigin)
+		return
+	}
+	s.sendJSON(response, http.StatusOK, map[string]any{"ok": true, "ticket_id": id}, corsOrigin)
+}
+
+func (s *Server) pairingEndpoints() []fleetendpoint.Candidate {
+	lan := s.lan.state()
+	lanEndpoint := ""
+	if lan.URL != nil {
+		lanEndpoint = *lan.URL
+	}
+	remote := s.remote.state()
+	return fleetendpoint.Ordered(lanEndpoint, remote.Endpoint, remote.TailnetIPEndpoint)
+}
+
+func pairingFallback(endpoints []fleetendpoint.Candidate, ticket string) string {
+	selected := ""
+	for _, endpoint := range endpoints {
+		if endpoint.Transport == "tailnet" {
+			selected = endpoint.Endpoint
+			break
+		}
+	}
+	if selected == "" && len(endpoints) > 0 {
+		selected = endpoints[0].Endpoint
+	}
+	return strings.TrimSuffix(selected, "/") + "/pair/" + url.PathEscape(ticket)
+}
+
+func sameOriginPairingClaimRequest(request *http.Request) bool {
+	if request.URL.Path != "/api/lan/access/claim" && request.URL.Path != "/api/pair/claim" {
+		return false
+	}
+	origin, err := url.Parse(request.Header.Get("Origin"))
+	if err != nil || origin.User != nil || origin.Host == "" || origin.Host != request.Host {
+		return false
+	}
+	return origin.Scheme == "http" || origin.Scheme == "https"
 }
 
 func randomBase64URL(size int) (string, error) {

@@ -46,6 +46,7 @@ targets:
         NSBonjourServices:
           - _sessions._tcp
         NSLocalNetworkUsageDescription: Sessions discovers and connects to Sessions machines on private networks you trust.
+        NSCameraUsageDescription: Sessions scans one-time pairing codes from a Sessions machine you trust.
         UIRequiredDeviceCapabilities: [arm64, metal]
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

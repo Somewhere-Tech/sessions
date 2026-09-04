@@ -324,6 +324,44 @@ export function isNativeMobileRuntime(): boolean {
     || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 }
 
+export function pairingCodeContent(result: unknown): string {
+  if (typeof result !== 'object' || result === null) {
+    throw new Error('That code is not a Sessions pairing link.');
+  }
+  const content = (result as { content?: unknown }).content;
+  if (typeof content !== 'string' || !content.trim() || content.length > 4096) {
+    throw new Error('That code is not a Sessions pairing link.');
+  }
+  const link = content.trim();
+  if (/^sessions:\/\/pair(?:\?|$)/i.test(link)) return link;
+  try {
+    const parsed = new URL(link);
+    const isHTTP = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    const isPairPath = /^\/pair\/[^/]+$/.test(parsed.pathname);
+    if (isHTTP && isPairPath) return link;
+  } catch {
+    // Fall through to one stable scanner error.
+  }
+  throw new Error('That code is not a Sessions pairing link.');
+}
+
+export async function scanPairingCode(): Promise<string> {
+  if (!isNativeMobileRuntime()) {
+    throw new Error('Pairing-code scanning is available in Sessions for iOS and Android');
+  }
+  const core = await import('@tauri-apps/api/core');
+  let permission = (await core.checkPermissions('barcode-scanner') as { camera?: string }).camera;
+  if (permission !== 'granted') {
+    permission = (await core.requestPermissions('barcode-scanner') as { camera?: string }).camera;
+  }
+  if (permission !== 'granted') {
+    throw new Error('Allow camera access, then scan again.');
+  }
+  return pairingCodeContent(await core.invoke('plugin:barcode-scanner|scan', {
+    formats: ['QR_CODE']
+  }));
+}
+
 export async function discoverNativeMobileBonjourPeers(): Promise<NativeMobileBonjourPeer[]> {
   if (!isNativeMobileRuntime()) {
     throw new Error('Phone Bonjour discovery is available in Sessions for iOS and Android');

@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"log"
 	"mime"
 	"net"
 	"net/http"
@@ -376,7 +377,7 @@ func (s *Server) handleNearbyAccessPublicRoute(response http.ResponseWriter, req
 		s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
 		return true
 	}
-	if len(request.Header.Values("Origin")) > 0 {
+	if request.URL.Path == "/api/lan/access/request" && len(request.Header.Values("Origin")) > 0 {
 		s.sendJSON(response, http.StatusForbidden, map[string]any{
 			"error": "nearby access requests are available only in Sessions native clients and the sessions CLI",
 		}, "")
@@ -396,40 +397,72 @@ func (s *Server) handleNearbyAccessPublicRoute(response http.ResponseWriter, req
 		return true
 	}
 	if request.URL.Path == "/api/lan/access/request" {
-		var body struct {
-			ClientID string `json:"client_id"`
-			Name     string `json:"name"`
-		}
-		if err := readJSON(request, &body); err != nil {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-			return true
-		}
-		created, err := s.tailnetAccess.requestForTransport(identity, body.ClientID, body.Name, transport, address)
-		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, errTailnetAccessFull) {
-				status = http.StatusTooManyRequests
-			}
-			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
-			return true
-		}
-		s.sendJSON(response, http.StatusAccepted, created, corsOrigin)
+		s.serveNearbyAccessRequest(response, request, corsOrigin, identity, transport, address)
 		return true
 	}
+	s.serveNearbyAccessClaim(response, request, corsOrigin, identity, transport)
+	return true
+}
 
+func (s *Server) serveNearbyAccessRequest(response http.ResponseWriter, request *http.Request, corsOrigin string, identity tailnetIdentity, transport, address string) {
 	var body struct {
-		RequestID     string `json:"request_id"`
-		RequestSecret string `json:"request_secret"`
+		ClientID string `json:"client_id"`
+		Name     string `json:"name"`
 	}
 	if err := readJSON(request, &body); err != nil {
 		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-		return true
+		return
+	}
+	created, err := s.tailnetAccess.requestForTransport(identity, body.ClientID, body.Name, transport, address)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errTailnetAccessFull) {
+			status = http.StatusTooManyRequests
+		}
+		s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	s.sendJSON(response, http.StatusAccepted, created, corsOrigin)
+}
+
+func (s *Server) serveNearbyAccessClaim(response http.ResponseWriter, request *http.Request, corsOrigin string, identity tailnetIdentity, transport string) {
+	var body struct {
+		RequestID     string `json:"request_id"`
+		RequestSecret string `json:"request_secret"`
+		Ticket        string `json:"ticket"`
+		Name          string `json:"name"`
+	}
+	if err := readJSON(request, &body); err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	if body.Ticket != "" {
+		if len(request.Header.Values("Origin")) > 0 && !sameOriginPairingClaimRequest(request) {
+			s.sendJSON(response, http.StatusForbidden, map[string]any{
+				"error": "pairing links may be claimed only by Sessions clients or the machine's own pairing page",
+			}, "")
+			return
+		}
+		if s.identityError != nil || s.identity.ID == "" {
+			s.sendJSON(response, http.StatusServiceUnavailable, map[string]any{
+				"error": "pairing is temporarily unavailable on this machine",
+			}, corsOrigin)
+			return
+		}
+		s.servePairTicketClaim(response, request, corsOrigin, body.Ticket, body.Name)
+		return
+	}
+	if len(request.Header.Values("Origin")) > 0 {
+		s.sendJSON(response, http.StatusForbidden, map[string]any{
+			"error": "nearby access requests are available only in Sessions native clients and the sessions CLI",
+		}, "")
+		return
 	}
 	if s.identityError != nil || s.identity.ID == "" {
 		s.sendJSON(response, http.StatusServiceUnavailable, map[string]any{
 			"error": "access approval is temporarily unavailable on this machine",
 		}, corsOrigin)
-		return true
+		return
 	}
 	claimed, err := s.tailnetAccess.claimForTransport(identity, transport, body.RequestID, body.RequestSecret, s.pair.devices)
 	switch {
@@ -445,7 +478,6 @@ func (s *Server) handleNearbyAccessPublicRoute(response http.ResponseWriter, req
 		s.completeAccessClaim(&claimed)
 		s.sendJSON(response, http.StatusCreated, claimed, corsOrigin)
 	}
-	return true
 }
 
 func nearbyAccessIdentity(request *http.Request, loopback, tailnetIP bool) (tailnetIdentity, string, string, bool) {
@@ -549,6 +581,7 @@ func (s *Server) handleTailnetAccessAdminRoute(response http.ResponseWriter, req
 		s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
 		return true
 	}
+	log.Printf("sessionsd: %s access request %s from %s", body.Decision, shortPairTicketID(decided.RequestID), decided.Name)
 	s.sendJSON(response, http.StatusOK, decided, corsOrigin)
 	return true
 }

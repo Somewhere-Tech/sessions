@@ -165,7 +165,7 @@
             <div class="command">sessions remote enable</div>
             <p>Keep Tailscale connected on both devices. The endpoint link carries the verified address here in the fragment; the current flow does not put the master token in it.</p>
             <div class="command">sessions pair --name "my phone"</div>
-            <p>That newer QR opens the daemon-served app directly and exchanges a five-minute, single-use ticket for a revocable device credential.</p>
+            <p>That QR records every LAN and Tailscale endpoint, and exchanges a ten-minute, single-use ticket for a revocable device credential without another approval step.</p>
           </div>
           <p class="safe">Saved only in this browser under <code>sessions:hosted-connect</code>. The handoff fragment is scrubbed before fonts or other resources load. A legacy optional <code>token</code> field is still forwarded for compatibility, but new QR pairing never shares the master token. No analytics. No terminal relay. Flow source: <code>runtime/cmd/sessions/remote.go</code> and <code>frontend/src/lib/hostedBootstrap.ts</code>.</p>
           <noscript><p class="status-copy">JavaScript is required to read and immediately scrub the endpoint fragment.</p></noscript>

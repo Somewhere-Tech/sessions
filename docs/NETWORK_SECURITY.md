@@ -169,8 +169,8 @@ whose MagicDNS resolver is not applied. Plain HTTP is acceptable on that exact
 interface because Tailscale authenticates the peer and encrypts packets before
 they traverse the physical network. Sessions additionally requires the same
 revocable device credential for protected API and WebSocket routes. Bootstrap
-still requires explicit approval and binds its short-lived secret to the
-observed tailnet address.
+still requires either explicit request approval or possession of a one-time
+pairing ticket.
 
 The direct listener is never wildcard-bound and never listens on Wi-Fi,
 Ethernet, public, or arbitrary private addresses: both Tailscale status parsing
@@ -179,6 +179,34 @@ publishes LAN, Tailscale HTTPS, and direct Tailscale-IP origins as distinct
 endpoint kinds. Clients and the fleet relay try `lan`, `tailnet`, then
 `tailnet-ip`; a macOS Local Network denial falls through silently and is logged
 once with the transport that was selected.
+
+## One-time pairing tickets
+
+Settings › Fleet › **Pair a device** and `sessions pair [--ttl 10m]` mint the
+same daemon-owned ticket. Its secret is 32 random bytes encoded as base64url,
+exists only in memory, is single use, and expires after ten minutes by default.
+The caller may shorten but not extend that lifetime. An unused ticket can be
+revoked locally, and every daemon restart revokes all outstanding tickets.
+Used, expired, revoked, malformed, and unknown values deliberately produce the
+same `410 Gone` sentence.
+
+The QR and `sessions://pair` link record all enabled `lan`, `tailnet`, and
+`tailnet-ip` endpoints in that order. The plain `/pair/<ticket>` fallback uses
+Tailscale HTTPS when available and otherwise the trusted-LAN HTTP origin. A
+native claimant validates every origin, probes endpoints in recorded order,
+follows no redirect, and posts the ticket in a JSON body to
+`/api/lan/access/claim`; it never puts the daemon master token on the wire. The
+daemon-served browser fallback may make that one same-origin claim. Other
+browser origins and ordinary request/accept claim secrets remain rejected.
+
+Possession is explicit host consent and immediately mints a separate
+host-administrator device credential—there is no second accept action. Failed
+ticket guesses are rate-limited per source with a bounded global backstop.
+Successful claims log `paired via ticket <short> from <device name>` in the
+same audit stream as accepted or denied discovery requests, without logging the
+ticket, device token, or request body. Durable device storage contains only a
+SHA-256 token hash. Settings › Fleet **Forget** and `sessions devices revoke`
+invalidate that credential immediately.
 
 ## Nearby Bonjour discovery and LAN access
 
@@ -196,8 +224,9 @@ Bonjour can observe or spoof such a record, even when the selected target
 address is unreachable from that link.
 
 The host app and CLI ask their loopback `sessionsd` to browse and verify
-`/api/health` before presenting a candidate, then require a separate
-request/accept/claim flow. The daemon also owns the outbound peer connection
+`/api/health` before presenting a candidate. Selecting a discovery result uses
+the separate request/accept/claim flow; a pairing link instead uses the
+possession flow above. The daemon also owns the outbound peer connection
 for `sessions machines connect`, `sessions --machine`, cross-machine grep, and
 conversation moves. A lane therefore talks only to its local daemon and needs
 no local-network permission. The global `--direct` flag is an explicit
@@ -207,7 +236,7 @@ Nearby bootstrap routes:
 - exist on the dedicated LAN listener, plus the main listener only for a true
   loopback peer that already has local-user authority;
 - require a private IPv4 network peer or local loopback and `application/json`;
-- reject every browser `Origin`;
+- reject every browser `Origin`, except the same-origin one-time ticket claim;
 - bind the short-lived request secret to the observed source address;
 - are bounded by the shared pending-request limits; and
 - issue only a per-device revocable token after authenticated local host

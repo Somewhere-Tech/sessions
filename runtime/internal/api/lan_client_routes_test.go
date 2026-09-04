@@ -87,6 +87,40 @@ func TestLANConnectOwnsPeerDialAndReturnsIssuedCredential(t *testing.T) {
 	}
 }
 
+func TestLANConnectClaimsPairingTicketWithoutApproval(t *testing.T) {
+	paths := make([]string, 0, 3)
+	peer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		paths = append(paths, request.URL.Path)
+		switch request.URL.Path {
+		case "/api/health":
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true, "name": "sessionsd"})
+		case "/api/lan/access/claim":
+			var body map[string]string
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			if body["ticket"] != "ticket-id.ticket-secret" {
+				t.Errorf("claim body = %#v", body)
+			}
+			response.WriteHeader(http.StatusCreated)
+			_, _ = response.Write([]byte(`{"device_id":"device-id","token":"device-token","machine_id":"machine-mini","machine_name":"Mini"}`))
+		case "/api/machine":
+			_ = json.NewEncoder(response).Encode(map[string]string{"machine_id": "machine-mini"})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer peer.Close()
+	d := newTestDaemon(t)
+	body := `{"endpoint":"` + peer.URL + `","ticket":"ticket-id.ticket-secret","name":"MacBook"}`
+	response := serve(t, d.handler, http.MethodPost, "/api/lan/connect", strings.NewReader(body), "127.0.0.1:1", nil)
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"device-token"`) {
+		t.Fatalf("status=%d body=%s paths=%v", response.Code, response.Body.String(), paths)
+	}
+	want := []string{"/api/health", "/api/lan/access/claim", "/api/machine"}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Fatalf("paths = %v, want %v", paths, want)
+	}
+}
+
 func TestLANConnectSelectionStopsAtFirstReachableEndpoint(t *testing.T) {
 	failedCalls, httpsCalls, ipCalls := 0, 0, 0
 	server := func(calls *int, healthy bool) *httptest.Server {

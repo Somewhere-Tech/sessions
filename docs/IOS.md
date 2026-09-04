@@ -15,11 +15,10 @@ the iOS app talks to its paired host, which can relay the host's approved fleet.
 - **iPad:** the same layout progressively becomes the desktop rail + session
   navigator + active-session workspace. There is no separate tablet codebase
   ([`frontend/src/styles/globals.css`](../frontend/src/styles/globals.css)).
-- **Pairing now:** enable trusted-network access with `sessions lan enable`.
-  While the connect screen is open, the iOS app browses `_sessions._tcp` on the
-  local network and lists compatible hosts. Choose one, approve the request on
-  that host, and the phone claims its own revocable credential. A one-time link
-  from `sessions pair` remains available when Bonjour cannot find the host
+- **Pairing now:** run `sessions pair` on a host with LAN or Tailscale
+  reachability, then use **Scan a pairing code**. The QR carries every endpoint
+  kind and grants the phone its own revocable credential immediately; pasting
+  the link is the non-camera fallback
   ([`frontend/src/components/ConnectScreen.tsx`](../frontend/src/components/ConnectScreen.tsx),
   [`frontend/src/lib/hostedBootstrap.ts`](../frontend/src/lib/hostedBootstrap.ts)).
 - **Host-owned setup:** the phone does not present the host's first-run
@@ -94,24 +93,13 @@ repository.
 On a Mac that already runs the current Sessions runtime and is on the same
 trusted network as the phone:
 
-```sh
-sessions lan enable
-```
-
-Keep the app in the foreground while it searches. Accept the iOS local-network
-permission when asked, tap the host under **Your Sessions machines**, then
-approve **This phone** in Sessions.app on the host. The equivalent host CLI is:
-
-```sh
-sessions access requests
-sessions access accept <request-id>
-```
-
-The phone polls the approval, claims its credential, and opens that host. If
-Bonjour is blocked by the network, run `sessions pair` on the host, paste the
-full link under **One-time-link fallback**, and tap **Connect this device**. A
-link is consumed once; generate another if it expires. Revoke the phone later
-with `sessions devices`
+Enable LAN access or sign into Tailscale on the host, run `sessions pair`, tap
+**Scan a pairing code**, and scan the QR. The camera permission is requested
+only by that action. The paste-link field is the fallback when scanning is
+inconvenient. A code is consumed once and expires in ten minutes by default;
+the phone claims its credential and opens the host without another approval.
+Revoke the phone later in Settings › Fleet with **Forget**, or with `sessions
+devices`
 ([`runtime/cmd/sessions/pair.go`](../runtime/cmd/sessions/pair.go),
 [`runtime/cmd/sessions/devices.go`](../runtime/cmd/sessions/devices.go)).
 

@@ -28,6 +28,11 @@ const contentTypes = new Map([
 
 const server = http.createServer((request, response) => {
   const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://localhost').pathname);
+  const pairMatch = pathname.match(/^\/pair\/([^/]+)$/);
+  if (pairMatch) {
+    response.writeHead(303, { location: `/#pair=${encodeURIComponent(pairMatch[1])}` }).end();
+    return;
+  }
   const relativePath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
   const filePath = path.resolve(distDir, relativePath);
   if (!filePath.startsWith(`${distDir}${path.sep}`) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
@@ -69,7 +74,7 @@ async function openCase(health, pairClaim = null) {
     const url = request.url();
     const requestUrl = new URL(url);
     const pathname = requestUrl.pathname;
-    if (url === `${origin}/api/pair/claim`) {
+    if (url === `${origin}/api/lan/access/claim`) {
       pairClaimRequests += 1;
       try {
         pairClaimTickets.push(JSON.parse(request.postData() ?? '{}').ticket ?? '');
@@ -254,9 +259,9 @@ try {
   assert.deepEqual(fragment.pageErrors, []);
   await fragment.page.close();
 
-  t.scenario('a #pair=… ticket is claimed once, stored, and scrubbed from the URL');
+  t.scenario('a /pair/… ticket is claimed once, stored, and scrubbed from the URL');
   const paired = await openCase('healthy', 'success');
-  await paired.page.goto(`${origin}/#pair=one-time-smoke-ticket`, {
+  await paired.page.goto(`${origin}/pair/one-time-smoke-ticket`, {
     waitUntil: 'domcontentloaded', timeout: 15_000
   });
   await t.waitForSelector(paired.page, '.app-shell', 'the app shell to mount after the pairing ticket was claimed', { timeout: 10_000 });
@@ -266,6 +271,7 @@ try {
   }, 'the claimed pairing token to be stored as the one server\'s credential');
   const pairedState = await paired.page.evaluate(() => ({
     hash: window.location.hash,
+    pathname: window.location.pathname,
     servers: JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]'),
     activeId: window.localStorage.getItem('sessions:active-server')
   }));
@@ -273,6 +279,7 @@ try {
   assert.equal(paired.pairClaimRequests, 1);
   assert.deepEqual(paired.pairClaimTickets, ['one-time-smoke-ticket']);
   assert.equal(pairedState.hash, '');
+  assert.equal(pairedState.pathname, '/');
   assert.equal(pairedState.servers[0].token, 'paired-device-token');
   assert.equal(pairedState.servers[0].isDefault, true);
   assert.equal(pairedState.activeId, pairedState.servers[0].id);

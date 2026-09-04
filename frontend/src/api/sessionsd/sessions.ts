@@ -321,6 +321,32 @@ export async function requestLocalNetworkAccess(): Promise<void> {
   }
 }
 
+export interface PairedDevice {
+  device_id: string;
+  name: string;
+  created_at: string;
+  last_used_at: string;
+}
+
+export async function listPairedDevices(): Promise<PairedDevice[]> {
+  const r = await apiFetch(`${httpBase()}/api/devices`);
+  return (await json<{ devices: PairedDevice[] }>(r)).devices;
+}
+
+export async function revokePairingTicket(ticketId: string): Promise<void> {
+  const r = await apiFetch(`${httpBase()}/api/pair/tickets/${encodeURIComponent(ticketId)}`, {
+    method: 'DELETE'
+  });
+  await json<{ revoked: boolean }>(r);
+}
+
+export async function forgetPairedDevice(deviceId: string): Promise<void> {
+  const r = await apiFetch(`${httpBase()}/api/devices/${encodeURIComponent(deviceId)}`, {
+    method: 'DELETE'
+  });
+  if (!r.ok) await json<unknown>(r);
+}
+
 // Fleet probes never mutate the active-server store. Every request is
 // resolved from the supplied config so all configured daemons can be polled
 // concurrently by the browser without proxying through another sessionsd.

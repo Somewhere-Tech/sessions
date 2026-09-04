@@ -124,6 +124,7 @@ type lanConnectRequest struct {
 	ClientID          string `json:"client_id"`
 	Name              string `json:"name"`
 	Timeout           string `json:"timeout"`
+	Ticket            string `json:"ticket"`
 }
 
 func (s *Server) serveLANConnect(response http.ResponseWriter, request *http.Request, corsOrigin string) {
@@ -145,7 +146,13 @@ func (s *Server) serveLANConnect(response http.ResponseWriter, request *http.Req
 			return
 		}
 	}
-	claim, used, err := s.connectLANMachineCandidates(request.Context(), candidates, body.ClientID, body.Name, timeout)
+	var claim pairingClaimResponse
+	var used fleetendpoint.Candidate
+	if strings.TrimSpace(body.Ticket) != "" {
+		claim, used, err = s.claimPairingTicketCandidates(request.Context(), candidates, body.Ticket, body.Name)
+	} else {
+		claim, used, err = s.connectLANMachineCandidates(request.Context(), candidates, body.ClientID, body.Name, timeout)
+	}
 	if err != nil {
 		s.sendLANClientError(response, err, corsOrigin)
 		return
@@ -156,6 +163,28 @@ func (s *Server) serveLANConnect(response http.ResponseWriter, request *http.Req
 	s.sendJSON(response, http.StatusCreated, map[string]any{
 		"claim": claim, "endpoint": used.Endpoint, "transport": used.Transport,
 	}, corsOrigin)
+}
+
+func (s *Server) claimPairingTicketCandidates(
+	ctx context.Context,
+	candidates []fleetendpoint.Candidate,
+	ticket, name string,
+) (pairingClaimResponse, fleetendpoint.Candidate, error) {
+	selected, err := s.selectLANConnectCandidate(ctx, candidates)
+	if err != nil {
+		return pairingClaimResponse{}, fleetendpoint.Candidate{}, err
+	}
+	var claim pairingClaimResponse
+	status, err := postLANClientJSON(ctx, selected.Endpoint+"/api/lan/access/claim", map[string]string{
+		"ticket": ticket, "name": name,
+	}, &claim)
+	if err != nil || status != http.StatusCreated || claim.Token == "" || !validFleetMachineID(claim.MachineID) {
+		return pairingClaimResponse{}, fleetendpoint.Candidate{}, firstLANConnectError(err, status, "pairing ticket claim")
+	}
+	if err := verifyLANCredential(ctx, selected.Endpoint, claim.Token, claim.MachineID); err != nil {
+		return pairingClaimResponse{}, fleetendpoint.Candidate{}, fmt.Errorf("verify machine credential: %w", err)
+	}
+	return claim, selected, nil
 }
 
 func lanConnectCandidates(body lanConnectRequest) ([]fleetendpoint.Candidate, error) {

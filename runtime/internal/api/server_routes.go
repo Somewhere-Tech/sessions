@@ -46,7 +46,8 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	// dispatch. Credential-bearing remote clients remain valid, but the
 	// credential must verify: header presence alone is ambient browser input.
 	if isStateChangingMethod(request.Method) && origin != "" &&
-		!trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost(), s.tailnetIP.activeHost()) {
+		!trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost(), s.tailnetIP.activeHost()) &&
+		!sameOriginPairingClaimRequest(request) {
 		verified, err := s.presentedCredential(request)
 		if err != nil {
 			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": "verify request credential: " + err.Error()}, "")
@@ -60,6 +61,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 
 	if request.Method == http.MethodOptions {
 		s.sendJSON(response, http.StatusNoContent, map[string]any{}, corsOrigin)
+		return
+	}
+	if s.handlePairingFallback(response, request, corsOrigin) {
 		return
 	}
 	if isStaticRequest(path, request.Method) {

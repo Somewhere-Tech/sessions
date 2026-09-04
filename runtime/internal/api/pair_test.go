@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -53,10 +54,85 @@ func TestPairTicketSingleUseExpiryAndUnknown(t *testing.T) {
 	})
 }
 
+func TestPairTicketCustomTTLRevokeAndLANClaimRoute(t *testing.T) {
+	d := newTestDaemon(t)
+	d.handler.remote.mu.Lock()
+	d.handler.remote.current = RemoteState{Endpoint: "https://mini.example.ts.net"}
+	d.handler.remote.mu.Unlock()
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	d.handler.pair.setNow(func() time.Time { return now })
+
+	created := serve(t, d.handler, http.MethodPost, "/api/pair/ticket",
+		strings.NewReader(`{"name":"Phone","ttl":"2m"}`), "127.0.0.1:1234", nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("mint status = %d, body=%s", created.Code, created.Body.String())
+	}
+	var ticket pairingTicketResponse
+	decodeBody(t, created, &ticket)
+	if got := ticket.ExpiresAt.Sub(now); got != 2*time.Minute {
+		t.Fatalf("ticket ttl = %s, want 2m", got)
+	}
+	_, secret, ok := strings.Cut(ticket.Ticket, ".")
+	decodedSecret, decodeErr := base64.RawURLEncoding.DecodeString(secret)
+	if !ok || decodeErr != nil || len(decodedSecret) != 32 {
+		t.Fatalf("ticket secret is not 32 random bytes: %q, %v", ticket.Ticket, decodeErr)
+	}
+	if !strings.HasPrefix(ticket.Link, "sessions://pair?") ||
+		ticket.Fallback != "https://mini.example.ts.net/pair/"+url.PathEscape(ticket.Ticket) {
+		t.Fatalf("ticket links = %#v", ticket)
+	}
+
+	claimBody, _ := json.Marshal(map[string]string{"ticket": ticket.Ticket, "name": "Pocket phone"})
+	claimed := serve(t, d.handler, http.MethodPost, "/api/lan/access/claim",
+		bytes.NewReader(claimBody), "127.0.0.1:1234", nil)
+	if claimed.Code != http.StatusCreated {
+		t.Fatalf("claim status = %d, body=%s", claimed.Code, claimed.Body.String())
+	}
+
+	revocable := mintPairingTicket(t, d.handler, "Tablet")
+	revoked := serve(t, d.handler, http.MethodDelete, "/api/pair/tickets/"+url.PathEscape(revocable.TicketID),
+		nil, "127.0.0.1:1234", nil)
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("revoke status = %d, body=%s", revoked.Code, revoked.Body.String())
+	}
+	response := claimPairingTicketResponse(t, d.handler, revocable.Ticket, "", http.StatusGone)
+	if !strings.Contains(response.Body.String(), "expired") {
+		t.Fatalf("revoked claim body = %s", response.Body.String())
+	}
+}
+
+func TestSameOriginBrowserMayClaimOnlyWithTicket(t *testing.T) {
+	d := newTestDaemon(t)
+	ticket := mintPairingTicket(t, d.handler, "Browser phone")
+	body, _ := json.Marshal(map[string]string{"ticket": ticket.Ticket, "name": "Browser phone"})
+	headers := http.Header{"Origin": {"http://127.0.0.1:8787"}}
+	claimed := serve(t, d.handler, http.MethodPost, "/api/lan/access/claim",
+		bytes.NewReader(body), "127.0.0.1:1234", headers)
+	if claimed.Code != http.StatusCreated {
+		t.Fatalf("ticket claim status = %d, body=%s", claimed.Code, claimed.Body.String())
+	}
+
+	legacy := serve(t, d.handler, http.MethodPost, "/api/lan/access/claim",
+		strings.NewReader(`{"request_id":"id","request_secret":"secret"}`),
+		"127.0.0.1:1234", headers)
+	if legacy.Code != http.StatusForbidden || !strings.Contains(legacy.Body.String(), "Sessions native clients") {
+		t.Fatalf("ordinary browser claim status = %d, body=%s", legacy.Code, legacy.Body.String())
+	}
+}
+
+func TestPairingFallbackRedirectsBeforeServingTheSPA(t *testing.T) {
+	d := newTestDaemon(t)
+	response := serve(t, d.handler, http.MethodGet, "/pair/id.ticket", nil, externalPairingPeer, nil)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/#pair=id.ticket" {
+		t.Fatalf("fallback response = %d location=%q body=%s",
+			response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+}
+
 func TestPairTicketSurvivesDevicePersistenceFailure(t *testing.T) {
 	root := t.TempDir()
 	service := newPairService(state.Config{StateRoot: root, UserStateRoot: root})
-	ticket, err := service.mint("MacBook")
+	ticket, err := service.mint("MacBook", pairTicketTTL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +277,11 @@ func TestPairClaimRateLimiter(t *testing.T) {
 
 func mintPairingTicket(t *testing.T, handler *Server, name string) pairingTicketResponse {
 	t.Helper()
+	if len(handler.pairingEndpoints()) == 0 {
+		handler.remote.mu.Lock()
+		handler.remote.current = RemoteState{Endpoint: "https://test-machine.example.ts.net"}
+		handler.remote.mu.Unlock()
+	}
 	encoded, err := json.Marshal(map[string]string{"name": name})
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +292,7 @@ func mintPairingTicket(t *testing.T, handler *Server, name string) pairingTicket
 	}
 	var ticket pairingTicketResponse
 	decodeBody(t, response, &ticket)
-	if ticket.Ticket == "" || ticket.ExpiresAt.IsZero() {
+	if ticket.Ticket == "" || ticket.TicketID == "" || ticket.ExpiresAt.IsZero() {
 		t.Fatalf("mint response = %#v", ticket)
 	}
 	return ticket

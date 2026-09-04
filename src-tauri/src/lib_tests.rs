@@ -333,22 +333,25 @@ mod tests {
     }
 
     #[test]
-    fn native_pairing_links_keep_tickets_out_of_the_request_url() {
+    fn native_pairing_links_preserve_endpoint_order() {
         let parsed = parse_native_pairing_link(
-            "https://mac-mini.example.ts.net/#pair=ticket-id.ticket-secret",
+            "sessions://pair?host=http%3A%2F%2F192.168.1.25%3A8787&host=https%3A%2F%2Fmac-mini.example.ts.net&host=http%3A%2F%2F100.100.20.30%3A8787&t=ticket-id.ticket-secret",
         )
         .unwrap();
         assert_eq!(
             parsed,
             ParsedPairingLink {
-                endpoint: "https://mac-mini.example.ts.net".to_string(),
-                claim_url: "https://mac-mini.example.ts.net/api/pair/claim".to_string(),
+                endpoints: vec![
+                    "http://192.168.1.25:8787".to_string(),
+                    "https://mac-mini.example.ts.net".to_string(),
+                    "http://100.100.20.30:8787".to_string(),
+                ],
                 ticket: "ticket-id.ticket-secret".to_string(),
             }
         );
 
-        let lan = parse_native_pairing_link("http://192.168.1.25:8787/#pair=one%2Etwo").unwrap();
-        assert_eq!(lan.endpoint, "http://192.168.1.25:8787");
+        let lan = parse_native_pairing_link("http://192.168.1.25:8787/pair/one.two").unwrap();
+        assert_eq!(lan.endpoints, vec!["http://192.168.1.25:8787"]);
         assert_eq!(lan.ticket, "one.two");
     }
 
@@ -356,6 +359,7 @@ mod tests {
     fn native_pairing_rejects_unsafe_or_ambiguous_links() {
         for invalid in [
             "ticket-only",
+            "sessions://pair?host=https%3A%2F%2Fexample.com&t=secret",
             "http://example.com/#pair=secret",
             "ftp://192.168.1.25/#pair=secret",
             "https://user:password@example.com/#pair=secret",
@@ -505,7 +509,7 @@ mod tests {
 
             let (mut claim, _) = listener.accept().unwrap();
             let claim_request = read_test_http_request(&mut claim);
-            assert!(claim_request.starts_with("POST /api/pair/claim HTTP/1.1"));
+            assert!(claim_request.starts_with("POST /api/lan/access/claim HTTP/1.1"));
             assert!(claim_request.contains(r#""ticket":"ticket-id.ticket-secret""#));
             write_test_http_json(
                 &mut claim,
@@ -514,9 +518,12 @@ mod tests {
             );
         });
 
-        let paired =
-            claim_native_pairing_link(&format!("http://{address}/#pair=ticket-id.ticket-secret"))
-                .unwrap();
+        let endpoint = format!("http://{address}");
+        let link = format!(
+            "sessions://pair?host={}&t=ticket-id.ticket-secret",
+            url::form_urlencoded::byte_serialize(endpoint.as_bytes()).collect::<String>()
+        );
+        let paired = claim_native_pairing_link(&link).unwrap();
         assert_eq!(paired.machine_name, "Studio Mac");
         assert_eq!(paired.name, "MacBook");
         assert_eq!(paired.endpoint, format!("http://{address}"));

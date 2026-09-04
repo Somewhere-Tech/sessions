@@ -28,6 +28,17 @@ function scrubFragment(): void {
   );
 }
 
+function scrubPairingLocation(): void {
+  const pathname = /^\/pair\/[^/]+$/.test(window.location.pathname)
+    ? '/'
+    : window.location.pathname;
+  window.history.replaceState(
+    window.history.state,
+    '',
+    `${pathname}${window.location.search}`
+  );
+}
+
 interface RememberServerOptions {
   name?: string;
   systemName?: string;
@@ -244,10 +255,17 @@ interface PairClaimResponse {
 function pairingTicket(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return '';
+  if (!trimmed.includes('/') && !trimmed.startsWith('#')) return trimmed;
   try {
     const parsed = new URL(trimmed, window.location.origin);
+    if (parsed.protocol === 'sessions:' && parsed.hostname === 'pair') {
+      return parsed.searchParams.get('t')?.trim() ?? '';
+    }
+    const pathMatch = parsed.pathname.match(/^\/pair\/([^/]+)$/);
+    if (pathMatch) return decodeURIComponent(pathMatch[1]).trim();
     const fromFragment = new URLSearchParams(parsed.hash.slice(1)).get('pair');
     if (fromFragment) return fromFragment.trim();
+    return '';
   } catch {
     // A bare ticket is the normal Settings input; return it unchanged.
   }
@@ -281,7 +299,7 @@ export async function claimCurrentOriginPairing(
   // AuthError that drives the "enter your daemon token" banner. The API-range
   // check does not apply to a pairing claim either — it is validated against
   // /api/health by adoptCurrentOriginServer's caller path immediately after.
-  const response = await fetch(`${window.location.origin}/api/pair/claim`, {
+  const response = await fetch(`${window.location.origin}/api/lan/access/claim`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ ticket, ...(name?.trim() ? { name: name.trim() } : {}) })
@@ -308,12 +326,10 @@ export async function claimCurrentOriginPairing(
 // Run before every other bootstrap. The fragment is scrubbed before the
 // network request so even an expired or malformed ticket never stays visible.
 export async function bootstrapPairingConnection(): Promise<boolean> {
-  if (typeof window === 'undefined' || !window.location.hash) return false;
-  const params = new URLSearchParams(window.location.hash.slice(1));
-  if (!params.has('pair')) return false;
-
-  const ticket = params.get('pair') ?? '';
-  scrubFragment();
+  if (typeof window === 'undefined') return false;
+  const ticket = pairingTicket(window.location.href);
+  if (!ticket) return false;
+  scrubPairingLocation();
   try {
     await claimCurrentOriginPairing(ticket);
   } catch (error) {

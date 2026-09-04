@@ -4,6 +4,8 @@
 <dict>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Sessions discovers and connects to Sessions machines on private networks you trust.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Sessions scans one-time pairing codes from a Sessions machine you trust.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_sessions._tcp</string>

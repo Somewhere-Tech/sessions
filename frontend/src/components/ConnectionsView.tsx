@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { fetchLANState, fetchRemoteState, requestLocalNetworkAccess, setLANEnabled, setRemoteAuto, type LANState, type RemoteState } from '../api/sessionsd';
+import { fetchLANState, fetchRemoteState, forgetPairedDevice, listPairedDevices, requestLocalNetworkAccess, revokePairingTicket, setLANEnabled, setRemoteAuto, type LANState, type PairedDevice, type RemoteState } from '../api/sessionsd';
 import {
   discoverNativeMachines,
   getNativeConnectionSettings,
@@ -20,9 +20,13 @@ import { ServerSelector } from './ServerSelector';
 
 interface PairState {
   url: string;
-  endpoint: string;
+  link: string;
+  fallback: string;
+  qr_data_url: string;
+  ticket_id: string;
   ticket: string;
   expires_at: string;
+  endpoints: Array<{ endpoint: string; transport: string }>;
 }
 
 async function updateRemoteAuto(
@@ -51,6 +55,7 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
   const [lan, setLAN] = useState<LANState | null>(null);
   const [remote, setRemote] = useState<RemoteState | null>(null);
   const [pair, setPair] = useState<PairState | null>(null);
+  const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
   const [pairName, setPairName] = useState('My other device');
   const [incomingPairLink, setIncomingPairLink] = useState('');
   const [incomingPairMessage, setIncomingPairMessage] = useState<string | null>(null);
@@ -64,13 +69,15 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
     const lanRequest = isTauri() && !clientOnly
       ? runNativeConnectionAction<LANState>('lan', 'status').then((result) => result.data)
       : fetchLANState();
-    const [nativeResult, lanResult] = await Promise.all([
+    const [nativeResult, lanResult, devicesResult] = await Promise.all([
       getNativeConnectionSettings().catch(() => null),
-      lanRequest.catch(() => null)
+      lanRequest.catch(() => null),
+      clientOnly ? Promise.resolve([]) : listPairedDevices().catch(() => [])
     ]);
     setNative(nativeResult);
     if (nativeResult) setPort(String(nativeResult.port));
     setLAN(lanResult);
+    setPairedDevices(devicesResult);
     if (clientOnly) {
       setRemote(null);
       return;
@@ -83,6 +90,14 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
   }, [clientOnly]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  useEffect(() => {
+    if (clientOnly || !pair) return undefined;
+    const poll = window.setInterval(() => {
+      void listPairedDevices().then(setPairedDevices).catch(() => { /* Refresh remains available. */ });
+    }, 2_000);
+    return () => window.clearInterval(poll);
+  }, [clientOnly, pair]);
 
   // Shared approval poll — see hooks/useMachineAccessPairing.ts. The
   // Mac-specific denial/expiry wording that used to live here was one of the
@@ -127,6 +142,34 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
     try {
       const result = await runNativeConnectionAction<PairState>('pair', 'create', pairName);
       setPair(result.data);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const revokePair = async (): Promise<void> => {
+    if (!pair || busy) return;
+    setBusy('revoke-pair'); setMessage(null);
+    try {
+      await revokePairingTicket(pair.ticket_id);
+      setPair(null);
+      setMessage('Pairing link revoked.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const forgetDevice = async (device: PairedDevice): Promise<void> => {
+    if (busy) return;
+    setBusy(`forget:${device.device_id}`); setMessage(null);
+    try {
+      await forgetPairedDevice(device.device_id);
+      setPairedDevices((current) => current.filter((item) => item.device_id !== device.device_id));
+      setMessage(`Forgot ${device.name}.`);
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -275,37 +318,18 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
         </section>
 
         {!clientOnly ? (
-          <section className="pair-device-card">
-          <div><span className="connections-section-kicker">Local fallback · five minutes</span><h2>Pair without Tailscale</h2><p>For a device on the same Wi-Fi, create a single-use link. The other device gets its own revocable credential; your master daemon token is never shared.</p></div>
-          <div className="pair-device-controls">
-            <input value={pairName} maxLength={80} onChange={(event) => setPairName(event.currentTarget.value)} placeholder="Device name" />
-            <button type="button" className="btn" disabled={!isTauri() || busy !== null || !lan?.enabled} onClick={() => void createPair()}>{busy === 'pair' ? 'Creating…' : 'Create LAN pairing link'}</button>
-          </div>
-          {!lan?.enabled ? <small>Enable Same Wi-Fi above before creating a LAN pairing link.</small> : null}
-          {pair ? (
-            <div className="pair-result">
-              <div><strong>LAN pairing link ready</strong><span>Expires {new Date(pair.expires_at).toLocaleTimeString()}</span></div>
-              <code>{pair.url}</code>
-              <div className="connection-actions">
-                <button type="button" className="btn" onClick={() => void navigator.clipboard.writeText(pair.url).then(() => setMessage('Pairing link copied.'))}>Copy link</button>
-              </div>
-            </div>
-          ) : null}
-          <details className="connection-advanced">
-            <summary>Enter a LAN pairing link from another Mac</summary>
-            <div className="pair-device-controls">
-              <input value={incomingPairLink} onChange={(event) => setIncomingPairLink(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === 'Enter') void addMachine(); }} placeholder="http://192.168.…/#pair=…" autoComplete="off" spellCheck={false} />
-              <button type="button" className="btn" disabled={!isTauri() || busy !== null || !incomingPairLink.trim()} onClick={() => void addMachine()}>{busy === 'incoming-pair' ? 'Adding…' : 'Pair over LAN'}</button>
-            </div>
-            {incomingPairMessage ? <div className="connections-message" role="status">{incomingPairMessage}</div> : null}
-          </details>
-          </section>
+          <HostPairingCard pairName={pairName} onPairName={setPairName} pair={pair}
+            pairedDevices={pairedDevices} busy={busy} incomingLink={incomingPairLink}
+            incomingMessage={incomingPairMessage} onIncomingLink={setIncomingPairLink}
+            onCreate={() => void createPair()} onRevoke={() => void revokePair()}
+            onAdd={() => void addMachine()} onForget={(device) => void forgetDevice(device)}
+            onCopy={() => pair && void navigator.clipboard.writeText(pair.link).then(() => setMessage('Pairing link copied.'))} />
         ) : (
           <section className="pair-device-card">
             <div><span className="connections-section-kicker">Saved on this device</span><h2>Paired machines</h2><p>Switch, add, or forget the Sessions hosts this device can view.</p></div>
             <ServerSelector />
             <div className="pair-device-controls">
-              <input value={incomingPairLink} onChange={(event) => setIncomingPairLink(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === 'Enter') void addMachine(); }} placeholder="http://192.168.…/#pair=…" autoComplete="off" spellCheck={false} />
+              <input value={incomingPairLink} onChange={(event) => setIncomingPairLink(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === 'Enter') void addMachine(); }} placeholder="sessions://pair?host=…&t=…" autoComplete="off" spellCheck={false} />
               <button type="button" className="btn" disabled={!isTauri() || busy !== null || !incomingPairLink.trim()} onClick={() => void addMachine()}>{busy === 'incoming-pair' ? 'Adding…' : 'Add with pairing link'}</button>
             </div>
             {incomingPairMessage ? <div className="connections-message" role="status">{incomingPairMessage}</div> : null}
@@ -313,6 +337,57 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
         )}
 
         <SomewhereCard clientOnly={clientOnly} hostName={machineName} />
+      </div>
+    </div>
+  );
+}
+
+function HostPairingCard({ pairName, onPairName, pair, pairedDevices, busy, incomingLink, incomingMessage, onIncomingLink, onCreate, onRevoke, onAdd, onForget, onCopy }: {
+  pairName: string; onPairName: (name: string) => void; pair: PairState | null;
+  pairedDevices: PairedDevice[]; busy: string | null; incomingLink: string;
+  incomingMessage: string | null; onIncomingLink: (link: string) => void;
+  onCreate: () => void; onRevoke: () => void; onAdd: () => void;
+  onForget: (device: PairedDevice) => void; onCopy: () => void;
+}): JSX.Element {
+  return (
+    <section className="pair-device-card">
+      <div><span className="connections-section-kicker">One-time consent · ten minutes</span><h2>Pair a device</h2><p>Create a single-use code containing every enabled LAN and Tailscale route. Possession of the code grants one independently revocable device credential.</p></div>
+      <div className="pair-device-controls"><input value={pairName} maxLength={80} onChange={(event) => onPairName(event.currentTarget.value)} placeholder="Device name" /><button type="button" className="btn" disabled={!isTauri() || busy !== null} onClick={onCreate}>{busy === 'pair' ? 'Creating…' : 'Show pairing code'}</button></div>
+      {pair ? <PairingTicketCard pair={pair} revoking={busy === 'revoke-pair'} onRevoke={onRevoke} onCopy={onCopy} /> : null}
+      <div className="paired-device-list"><h3>Paired devices</h3>
+        {pairedDevices.length === 0 ? <small>No devices have paired yet.</small> : pairedDevices.map((device) => (
+          <div key={device.device_id} className="paired-device-row"><strong>{device.name}</strong><button type="button" className="btn btn-ghost" disabled={busy !== null} onClick={() => onForget(device)}>{busy === `forget:${device.device_id}` ? 'Forgetting…' : 'Forget'}</button></div>
+        ))}
+      </div>
+      <details className="connection-advanced"><summary>Enter a pairing link from another machine</summary>
+        <div className="pair-device-controls"><input value={incomingLink} onChange={(event) => onIncomingLink(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === 'Enter') onAdd(); }} placeholder="sessions://pair?host=…&t=…" autoComplete="off" spellCheck={false} /><button type="button" className="btn" disabled={!isTauri() || busy !== null || !incomingLink.trim()} onClick={onAdd}>{busy === 'incoming-pair' ? 'Adding…' : 'Pair this Mac'}</button></div>
+        {incomingMessage ? <div className="connections-message" role="status">{incomingMessage}</div> : null}
+      </details>
+    </section>
+  );
+}
+
+function PairingTicketCard({ pair, revoking, onRevoke, onCopy }: { pair: PairState; revoking: boolean; onRevoke: () => void; onCopy: () => void }): JSX.Element {
+  const expires = new Date(pair.expires_at).getTime();
+  const [remaining, setRemaining] = useState(() => Math.max(0, Math.ceil((expires - Date.now()) / 1000)));
+  useEffect(() => {
+    const tick = (): void => setRemaining(Math.max(0, Math.ceil((expires - Date.now()) / 1000)));
+    tick();
+    const timer = window.setInterval(tick, 1_000);
+    return () => window.clearInterval(timer);
+  }, [expires]);
+  const countdown = remaining === 0
+    ? 'Expired'
+    : `${String(Math.floor(remaining / 60)).padStart(2, '0')}:${String(remaining % 60).padStart(2, '0')}`;
+  return (
+    <div className="pair-result">
+      <div><strong>Pairing code ready</strong><span>{countdown}</span></div>
+      <img className="pair-qr" src={pair.qr_data_url} alt="One-time Sessions pairing QR code" />
+      <code>{pair.link}</code>
+      <a href={pair.fallback} target="_blank" rel="noreferrer">Open plain HTTPS or LAN fallback</a>
+      <div className="connection-actions">
+        <button type="button" className="btn" onClick={onCopy}>Copy link</button>
+        <button type="button" className="btn btn-ghost" disabled={revoking} onClick={onRevoke}>{revoking ? 'Revoking…' : 'Revoke'}</button>
       </div>
     </div>
   );

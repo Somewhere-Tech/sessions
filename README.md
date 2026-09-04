@@ -160,6 +160,7 @@ record whether the report came from an agent, direct use, or both.
 - [Product principles](docs/PRINCIPLES.md)
 - [Lanes: delegated work, approvals, hand-back](docs/LANES.md)
 - [Native app package and lifetime contract](docs/NATIVE_APP.md)
+- [Fleet discovery, pairing, and trust without an account](docs/FLEET.md)
 - [Android client, pairing, and development build](docs/ANDROID.md)
 - [iOS client, pairing, and simulator build](docs/IOS.md)
 - [Broad public roadmap](ROADMAP.md)

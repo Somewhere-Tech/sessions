@@ -261,13 +261,17 @@ peers bypass token authentication unless a forwarding header makes the peer
 ambiguous; non-loopback clients use the configured bearer or query token unless
 the explicit `open` sentinel enables the compatibility escape hatch
 (`runtime/internal/api/auth.go`, `runtime/internal/api/server.go`).
-QR pairing lives here too: single-use five-minute tickets are claimed by an
-unauthenticated, rate-limited `POST /api/pair/claim`, which mints per-device
+QR pairing lives here too: single-use tickets with a ten-minute maximum carry
+every current LAN and Tailscale endpoint and are claimed by the unauthenticated,
+rate-limited `POST /api/lan/access/claim`, which mints per-device
 tokens stored as SHA-256 hashes with list/revoke management
 (`runtime/internal/api/pair.go`); device tokens authorize anywhere the master
-token does. The native claimant validates the link transport and shape, refuses
-redirects, sends the ticket in the POST body rather than the URL, bounds the
-response, and never exposes the master token (`src-tauri/src/lib.rs`). Device
+token does. The native claimant validates every link transport and shape,
+probes the recorded order, refuses redirects, sends the 32-byte random ticket
+secret in the POST body rather than the URL, bounds the response, and never
+exposes the master token (`src-tauri/src/lib.rs`). The daemon-served
+`/pair/<ticket>` fallback may claim from its own browser origin; unrelated
+browser origins remain forbidden. Device
 tokens remain bearer credentials in this release; narrower scopes, protected
 native at-rest storage, and short-lived WebSocket tickets remain required
 hardening before adding less-trusted ingress.

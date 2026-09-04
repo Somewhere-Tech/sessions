@@ -21,7 +21,6 @@ import {
 } from '../lib/newSessionDefaults';
 import { ServerSelector } from './ServerSelector';
 import { TagEditor } from './TagEditor';
-import { claimCurrentOriginPairing, claimNativeMachinePairing } from '../lib/hostedBootstrap';
 import {
   checkForNativeUpdate,
   installNativeUpdate,
@@ -97,9 +96,6 @@ export function SettingsMenu({ clientOnly = false, hostName = 'this computer', t
   const [pushEnabled, setPushEnabled] = useState(readPushEnabled);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushMessage, setPushMessage] = useState<string | null>(null);
-  const [pairTicket, setPairTicket] = useState('');
-  const [pairBusy, setPairBusy] = useState(false);
-  const [pairMessage, setPairMessage] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<NativeUpdateInfo | null>(null);
   const [updateProgress, setUpdateProgress] = useState<NativeUpdateProgress | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -250,27 +246,6 @@ export function SettingsMenu({ clientOnly = false, hostName = 'this computer', t
       setPushMessage((err as Error).message);
     } finally {
       setPushBusy(false);
-    }
-  };
-
-  const claimPairTicket = async (): Promise<void> => {
-    if (pairBusy || !pairTicket.trim()) return;
-    setPairBusy(true);
-    setPairMessage(null);
-    try {
-      if (isTauri()) {
-        const { claim, server } = await claimNativeMachinePairing(pairTicket);
-        setPairTicket('');
-        setPairMessage(`Paired with ${server.name} as ${claim.name}`);
-        return;
-      }
-      const claimed = await claimCurrentOriginPairing(pairTicket);
-      setPairTicket('');
-      setPairMessage(`Paired as ${claimed.name}`);
-    } catch (error) {
-      setPairMessage(error instanceof Error ? error.message : 'Pairing failed. Run `sessions pair` again.');
-    } finally {
-      setPairBusy(false);
     }
   };
 
@@ -530,44 +505,8 @@ export function SettingsMenu({ clientOnly = false, hostName = 'this computer', t
           {/* Server selector — "this machine" + IP picker. Tucked into
               Settings because the user doesn't need to see the host:port
               in the chrome all the time; it only matters when switching
-              between machines. */}
-          <div className="settings-menu-divider" />
-          <div className="settings-menu-section" aria-label="Pair">
-            <div className="settings-menu-section-title">{isTauri() ? 'LAN pairing fallback' : 'Pair this browser'}</div>
-            <div className="settings-menu-status">
-              {isTauri()
-                ? 'Normally use Connections → Find Sessions Macs. Paste a one-time link here only when both devices share a LAN without Tailscale.'
-                : 'Paste the one-time ticket created by `sessions pair` on this machine.'}
-            </div>
-            <div className="settings-menu-field-row">
-              <label className="settings-menu-field">
-                <span>{isTauri() ? 'Pairing link' : 'Ticket'}</span>
-                <input
-                  className="settings-menu-input"
-                  type="text"
-                  value={pairTicket}
-                  onChange={(event) => setPairTicket(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') void claimPairTicket();
-                  }}
-                  placeholder={isTauri() ? 'http://192.168.…/#pair=…' : 'From sessions pair'}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-              <button
-                type="button"
-                className="btn settings-menu-clickable"
-                disabled={pairBusy || !pairTicket.trim()}
-                onClick={() => void claimPairTicket()}
-              >
-                {pairBusy ? 'Pairing…' : isTauri() ? 'Add' : 'Pair'}
-              </button>
-            </div>
-            {pairMessage ? (
-              <div className="settings-menu-status" role="status">{pairMessage}</div>
-            ) : null}
-          </div>
+              between machines. Pairing lives in the Fleet screen and the
+              client-only Connect screen. */}
           <div className="settings-menu-divider" />
           <div className="settings-menu-row settings-menu-server">
             <span className="settings-menu-icon">🖥</span>

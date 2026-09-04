@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
@@ -36,6 +37,53 @@ func TestMachineCommandUsesDaemonFleetRelayPath(t *testing.T) {
 	}
 	if path != "/api/fleet/machine-mini/api/sessions" {
 		t.Fatalf("request path = %q", path)
+	}
+}
+
+func TestMachinesConnectAcceptsPairingLink(t *testing.T) {
+	var posted map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/lan/connect" {
+			http.NotFound(response, request)
+			return
+		}
+		if err := json.NewDecoder(request.Body).Decode(&posted); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"endpoint": serverURL(request), "transport": "lan",
+			"claim": map[string]string{
+				"device_id":    "22222222-2222-4222-8222-222222222222",
+				"token":        "device-token",
+				"name":         "Laptop",
+				"machine_id":   "11111111-1111-4111-8111-111111111111",
+				"machine_name": "Studio",
+				"lan_endpoint": serverURL(request),
+			},
+		})
+	}))
+	defer server.Close()
+	link, err := fleetendpoint.PairingLink(
+		[]fleetendpoint.Candidate{{Endpoint: server.URL, Transport: "lan"}},
+		"ticket-id.ticket-secret",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--host", server.URL, "machines", "connect", link, "--name", "studio"},
+		strings.NewReader(""), &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("connect exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if posted["ticket"] != "ticket-id.ticket-secret" || posted["lan_endpoint"] != server.URL {
+		t.Fatalf("pairing request = %#v", posted)
+	}
+	registry, err := readMachineRegistry(home)
+	if err != nil || len(registry.Machines) != 1 || registry.Machines[0].Alias != "studio" {
+		t.Fatalf("saved registry = %#v, err=%v", registry, err)
 	}
 }
 

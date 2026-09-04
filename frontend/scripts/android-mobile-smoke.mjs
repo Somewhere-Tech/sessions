@@ -25,7 +25,7 @@ try {
     value: { userAgent: 'Mozilla/5.0 (Linux; Android 15) Mobile' },
     configurable: true
   });
-  const { registerAndroidBackHandler } = await import(
+  const { pairingCodeContent, registerAndroidBackHandler } = await import(
     `${pathToFileURL(bridgeOutput).href}?v=${Date.now()}`
   );
   const calls = [];
@@ -34,6 +34,11 @@ try {
   assert.deepEqual(calls, ['route']);
   removeRoute();
   assert.equal(window.__SESSIONS_ANDROID_BACK__, undefined);
+  assert.equal(
+    pairingCodeContent({ content: 'sessions://pair?host=http%3A%2F%2F192.168.1.2%3A8787&t=ticket' }),
+    'sessions://pair?host=http%3A%2F%2F192.168.1.2%3A8787&t=ticket'
+  );
+  assert.throws(() => pairingCodeContent({ content: 'https://example.com/not-pairing' }), /not a Sessions pairing link/);
 
   const [activity, manifest, app, appBack, mobileNav, connect, machineMark, terminalHook, terminalStyles] = await Promise.all([
     source('../src-tauri/gen/android/app/src/main/java/tech/somewhere/sessions/MainActivity.kt'),
@@ -59,9 +64,9 @@ try {
   assert.match(appBack, /mobile-more-heading button/);
   assert.match(mobileNav, /mobile-more-heading/);
   assert.match(connect, /visualViewport/);
-  assert.match(connect, /key=\{`\$\{peer\.transport\}:\$\{peer\.endpoint\}`\}/,
-    'discovery refresh must retain one stable card key per transport endpoint');
   assert.match(connect, /scrollIntoView\(\{ block: 'center'/);
+  assert.match(connect, /Scan a pairing code/);
+  assert.match(connect, /scanPairingCode/);
   assert.doesNotMatch(machineMark, /\uF8FF|/);
   assert.match(machineMark, /platform === 'darwin' \|\| platform === 'macos'/);
   assert.match(terminalHook, /visualViewport\?\.addEventListener\('resize', onResize\)/);
