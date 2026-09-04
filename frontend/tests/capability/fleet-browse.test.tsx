@@ -48,6 +48,9 @@ describe('capability: browse the fleet', () => {
 
     render(<FleetView onOpenSession={() => {}} onOpenMachine={() => {}} />);
 
+    expect(screen.getByRole('button', { name: /Find machines in Sessions\.app/ })).toBeDisabled();
+    expect(screen.getByText(/Open Sessions\.app › Settings › Fleet/)).toBeVisible();
+
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Alpha', level: 2 })).toBeInTheDocument());
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Beta', level: 2 })).toBeInTheDocument());
 

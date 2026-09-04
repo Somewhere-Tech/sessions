@@ -82,9 +82,8 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
 	const [discoveryMessage, setDiscoveryMessage] = useState<string | null>(null);
 	const directoryMessage = useAccountFleetDirectory();
   const localNetworkDenied = useLocalNetworkDenied();
-	const localServer = servers.find((server) => server.isDefault) ?? servers[0];
-	const fleetServers = useFleetMachineSources(servers, discoveredPeers);
-  const localVersion = localServer ? machineVersions[localServer.id] : undefined;
+	const localServer = servers.find((server) => server.isDefault) ?? servers[0]; const fleetServers = useFleetMachineSources(servers, discoveredPeers);
+	const discoveryBlocked = !isTauri() ? 'Open Sessions.app › Settings › Fleet for discovery, pairing, and moves.' : accessRequest ? `Waiting for ${accessRequest.label} to approve.` : '';
 
 	const rememberVersion = useRememberMachineVersion(setMachineVersions);
   const findMachines = async (): Promise<void> => {
@@ -139,7 +138,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
         ? await requestNativeNearbyAccess(peer.endpoint, tailnetClientID(), '')
         : await requestNativeTailnetAccess(peer.endpoint, tailnetClientID(), '');
       setAccessRequest({ request, transport: peer.transport, label: peer.name });
-      setDiscoveryMessage(`Request sent to ${peer.name}. Accept it in Sessions on that machine.`);
+      setDiscoveryMessage(`${peer.name} must approve this request.`);
     } catch (reason) {
       setDiscoveryMessage(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -168,7 +167,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
       <div className="fleet-view-heading">
         <div>
           <h1>Fleet</h1>
-          <p>Every configured machine stays visible here, including when it is offline.</p>
+          <p>Configured machines stay visible, even offline.</p>
         </div>
         <div className="fleet-heading-actions">
           <label className="fleet-history-toggle">
@@ -178,13 +177,14 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
           <button
             type="button"
             className="btn fleet-find-machines"
-            disabled={!isTauri() || discoveryBusy || accessRequest !== null}
+            disabled={discoveryBusy || Boolean(discoveryBlocked)}
             onClick={() => void findMachines()}
           >
-            <span aria-hidden>＋</span>{discoveryBusy ? 'Searching…' : 'Find machines'}
+            <span aria-hidden>＋</span>{!isTauri() ? 'Find machines in Sessions.app' : discoveryBusy ? 'Searching…' : 'Find machines'}
           </button>
         </div>
       </div>
+      {discoveryBlocked ? <div className="fleet-permission-banner" role="status">{discoveryBlocked}</div> : null}
       <FleetPermissionBanner visible={localNetworkDenied} />
       {discoveryOpen ? (
         <section className="fleet-discovery" aria-live="polite">
@@ -192,7 +192,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
             <div>
               <span>Private device discovery</span>
               <h2>Machines you can connect to</h2>
-              <p>Sessions checks both Tailscale and your nearby network, then shows only computers it can verify.</p>
+              <p>Sessions checks Tailscale and nearby networks, then verifies each computer.</p>
             </div>
             <div className="fleet-discovery-actions">
               <button type="button" className="btn btn-ghost" disabled={discoveryBusy || accessRequest !== null} onClick={() => void findMachines()}>Search again</button>
@@ -225,7 +225,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
                 })}
               </div>
             ) : !discoveryBusy ? (
-              <div className="fleet-discovery-empty">No other Sessions machines answered. Enable Tailscale remote access or trusted-network LAN access on the host, then search again.</div>
+              <div className="fleet-discovery-empty">No machines answered. Enable Tailscale or trusted-network LAN on the host, then search again.</div>
             ) : null
           ) : null}
           {discoveryMessage ? <div className="fleet-discovery-message">{discoveryMessage}</div> : null}
@@ -239,7 +239,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
             key={server.id}
             server={server}
             includeExited={includeExited}
-            localVersion={localVersion}
+            localVersion={localServer ? machineVersions[localServer.id] : undefined}
             onVersion={rememberVersion}
             onOpenSession={(sessionId) => onOpenSession(server.id, sessionId)}
             onOpenMachine={() => onOpenMachine(server.id)}

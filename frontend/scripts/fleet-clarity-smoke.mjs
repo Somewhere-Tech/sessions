@@ -33,6 +33,10 @@ assert.match(fleet, /Sessions \$\{version\}/);
 assert.match(fleet, /Name this machine/);
 assert.match(fleet, /updateServer\(server\.id, \{ name, customName: name \}\)/);
 assert.match(fleet, /serverDisplayName\(server, true\)/);
+assert.match(fleet, /Find machines in Sessions\.app/);
+assert.match(fleet, /Open Sessions\.app › Settings › Fleet for discovery, pairing, and moves/);
+assert.match(fleet, /macOS has not allowed Sessions to use the local network/);
+assert.match(fleet, /disabled=\{discoveryBusy \|\| Boolean\(discoveryBlocked\)\}/);
 assert.match(servers, /if \(custom\) return custom;/,
   'a custom Fleet label must override a renamed system hostname');
 assert.match(servers, /return 'This Mac';/,
