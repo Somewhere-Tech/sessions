@@ -1,12 +1,13 @@
 import { gzipSync } from 'node:zlib';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
-const assetsDirectory = new URL('../dist/assets/', import.meta.url);
+const assetsDirectory = fileURLToPath(new URL('../dist/assets/', import.meta.url));
 const files = readdirSync(assetsDirectory).filter((name) => !name.endsWith('.map'));
 
 const assets = files.map((name) => {
-  const path = join(assetsDirectory.pathname, name);
+  const path = join(assetsDirectory, name);
   const contents = readFileSync(path);
   return {
     name,
