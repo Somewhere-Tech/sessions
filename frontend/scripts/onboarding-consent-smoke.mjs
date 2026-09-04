@@ -34,8 +34,12 @@ assert.match(onboarding, /Sessions does not relay that conversation through Some
 assert.match(onboarding, /cannot grant it for you/);
 // Autonomous delegated work is the default and the primary choice; inheriting
 // the manager's permissions is the explicit narrower option.
-assert.match(onboarding, /onChoose\(remoteControl, 'autonomous'\)\}>\s*\{busy \? 'Saving…' : 'Let delegated work run on its own'\}/);
+assert.match(onboarding, /Autonomous by default/);
+assert.match(onboarding, /Agent-created children may run commands without asking/);
+assert.match(onboarding, /onChoose\(remoteControl, 'autonomous'\)\}>\s*\{busy \? 'Saving…' : 'Default — let delegated work run on its own'\}/);
 assert.match(onboarding, /Make them inherit my permissions/);
+assert.match(onboarding, /Inherited access is the safer alternative/);
+assert.doesNotMatch(onboarding, /Inherited access is the safe default|Autonomous access is opt-in/);
 assert.match(onboarding, /an agent cannot widen this for itself/);
 assert.doesNotMatch(onboarding, /onClick=\{onClose\}|launcher-close|dialog-head-link/);
 

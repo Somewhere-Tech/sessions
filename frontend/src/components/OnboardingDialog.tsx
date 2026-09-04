@@ -93,20 +93,20 @@ export function OnboardingDialog({ machine, busy, error, onAllowLocalNetwork, on
             <h1 id="onboarding-title">How independently should child agents work?</h1>
             <p className="onboarding-lede">A manager session can start short-lived task workers. Sessions can give those workers the manager’s existing permissions, or let them work without approval prompts.</p>
             <div className="onboarding-privacy-note">
-              <strong>No silent escalation</strong>
-              <span>Inherited access is the safe default. Autonomous access is opt-in, applies only to agent-created children, and does not change sessions already running.</span>
+              <strong>Autonomous by default</strong>
+              <span>Agent-created children may run commands without asking. This does not change sessions already running.</span>
             </div>
             {error ? <div className="onboarding-error" role="alert">{error}</div> : null}
             <div className="onboarding-actions">
               <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void onChoose(remoteControl, 'autonomous')}>
-                {busy ? 'Saving…' : 'Let delegated work run on its own'}
+                {busy ? 'Saving…' : 'Default — let delegated work run on its own'}
               </button>
               <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void onChoose(remoteControl, 'inherit')}>
                 Make them inherit my permissions
               </button>
             </div>
             <button type="button" className="onboarding-back" disabled={busy} onClick={() => setStep(4)}>Back</button>
-            <small className="onboarding-footnote">Autonomous is the default so background work finishes without you. You can change this later in Settings; an agent cannot widen this for itself.</small>
+            <small className="onboarding-footnote">Inherited access is the safer alternative. You can change this later in Settings; an agent cannot widen this for itself.</small>
           </>
         )}
       </div>
