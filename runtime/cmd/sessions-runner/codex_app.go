@@ -329,12 +329,7 @@ func (r *codexAppRunner) serveClient(conn net.Conn) {
 	if err != nil {
 		c.close()
 	}
-	defer func() {
-		c.close()
-		r.mu.Lock()
-		delete(r.clients, c)
-		r.mu.Unlock()
-	}()
+	defer r.detachClient(c)
 	for {
 		frame, err := proto.Read(conn)
 		if err != nil {
@@ -344,6 +339,16 @@ func (r *codexAppRunner) serveClient(conn net.Conn) {
 			return
 		}
 	}
+}
+
+// detachClient ends only one daemon transport. Provider turns, retries, and
+// approvals belong to the runner lifetime and must survive sessionsd going
+// away or replacing this socket connection.
+func (r *codexAppRunner) detachClient(c *client) {
+	c.close()
+	r.mu.Lock()
+	delete(r.clients, c)
+	r.mu.Unlock()
 }
 
 func (r *codexAppRunner) handleFrame(c *client, frame proto.Frame) error {

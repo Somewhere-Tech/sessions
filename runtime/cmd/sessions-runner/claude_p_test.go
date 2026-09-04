@@ -55,6 +55,38 @@ func TestClaudeHelloReportsCurrentTurnState(t *testing.T) {
 	<-done
 }
 
+func TestClaudeDaemonDisconnectDoesNotCancelActiveTurn(t *testing.T) {
+	turnCtx, turnCancel := context.WithCancel(context.Background())
+	defer turnCancel()
+	server, daemon := net.Pipe()
+	r := &claudeStructuredRunner{
+		cfg: config{id: "claude-session", cmd: "claude", cwd: "/tmp"}, ctx: context.Background(),
+		logger: log.New(io.Discard, "", 0), clients: make(map[*client]struct{}), active: true,
+		turnCancel: turnCancel, retry: &structuredRetryController{},
+	}
+	detached := make(chan struct{})
+	go func() {
+		r.serveClient(server)
+		close(detached)
+	}()
+	if _, err := proto.Read(daemon); err != nil {
+		t.Fatal(err)
+	}
+	_ = daemon.Close()
+	<-detached
+	r.mu.Lock()
+	active := r.active
+	r.mu.Unlock()
+	if !active {
+		t.Fatal("daemon disconnect ended the runner-owned Claude turn")
+	}
+	select {
+	case <-turnCtx.Done():
+		t.Fatal("daemon disconnect canceled the Claude process context")
+	default:
+	}
+}
+
 func TestClaudeResultFaultUsesAPIStatusAndRunnerPersistsStreamFailures(t *testing.T) {
 	event := claudep.Event{Type: "result", Message: "API Error", Raw: json.RawMessage(
 		`{"type":"result","is_error":true,"api_error_status":529,"result":"API Error: Repeated 529 Overloaded errors."}`,

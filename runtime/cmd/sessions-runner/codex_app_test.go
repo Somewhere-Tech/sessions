@@ -19,12 +19,25 @@ import (
 )
 
 type fakeCodexTurnClient struct {
-	steered  []string
-	steerErr error
+	steered      []string
+	steerErr     error
+	turnStarted  chan struct{}
+	turnRelease  chan struct{}
+	turnCanceled chan struct{}
 }
 
-func (*fakeCodexTurnClient) SendUserTurn(context.Context, string, string) (*codexapp.TurnStream, error) {
-	return nil, errors.New("not implemented in this test")
+func (f *fakeCodexTurnClient) SendUserTurn(ctx context.Context, _, _ string) (*codexapp.TurnStream, error) {
+	if f.turnStarted == nil {
+		return nil, errors.New("not implemented in this test")
+	}
+	close(f.turnStarted)
+	select {
+	case <-f.turnRelease:
+		return nil, errors.New("test turn released")
+	case <-ctx.Done():
+		close(f.turnCanceled)
+		return nil, ctx.Err()
+	}
 }
 
 func (f *fakeCodexTurnClient) SteerTurn(_ context.Context, conversationID, text string) (string, error) {
@@ -160,6 +173,56 @@ func TestCodexHelloReportsCurrentTurnState(t *testing.T) {
 	}
 	_ = daemon.Close()
 	<-done
+}
+
+func TestCodexDaemonDisconnectDoesNotCancelActiveTurn(t *testing.T) {
+	r := newCodexTestRunner(t)
+	r.retry = newStructuredRetryController(r.startRetryTurn, r.appendStructured, r.publishRetryState)
+	fake := r.turnClient.(*fakeCodexTurnClient)
+	fake.turnStarted = make(chan struct{})
+	fake.turnRelease = make(chan struct{})
+	fake.turnCanceled = make(chan struct{})
+	r.handleInput("long-running work\r")
+	<-fake.turnStarted
+
+	server, daemon := net.Pipe()
+	detached := make(chan struct{})
+	go func() {
+		r.serveClient(server)
+		close(detached)
+	}()
+	if _, err := proto.Read(daemon); err != nil {
+		t.Fatal(err)
+	}
+	_ = daemon.Close()
+	<-detached
+
+	r.mu.Lock()
+	active := r.active
+	r.mu.Unlock()
+	if !active {
+		t.Fatal("daemon disconnect ended the runner-owned provider turn")
+	}
+	select {
+	case <-fake.turnCanceled:
+		t.Fatal("daemon disconnect canceled the provider context")
+	default:
+	}
+	close(fake.turnRelease)
+	deadline := time.After(time.Second)
+	for {
+		r.mu.Lock()
+		active = r.active
+		r.mu.Unlock()
+		if !active {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("released test turn stayed active")
+		case <-time.After(time.Millisecond):
+		}
+	}
 }
 
 func TestCodexRejectedSteeringIsExplicit(t *testing.T) {

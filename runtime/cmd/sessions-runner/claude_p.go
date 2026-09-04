@@ -293,12 +293,7 @@ func (r *claudeStructuredRunner) serveClient(connection net.Conn) {
 	if err != nil {
 		c.close()
 	}
-	defer func() {
-		c.close()
-		r.mu.Lock()
-		delete(r.clients, c)
-		r.mu.Unlock()
-	}()
+	defer r.detachClient(c)
 	for {
 		frame, err := proto.Read(connection)
 		if err != nil {
@@ -308,6 +303,15 @@ func (r *claudeStructuredRunner) serveClient(connection net.Conn) {
 			return
 		}
 	}
+}
+
+// detachClient ends only one daemon transport. The active claude -p process,
+// retry schedule, and approval desk remain owned by the runner lifetime.
+func (r *claudeStructuredRunner) detachClient(c *client) {
+	c.close()
+	r.mu.Lock()
+	delete(r.clients, c)
+	r.mu.Unlock()
 }
 
 func (r *claudeStructuredRunner) handleFrame(c *client, frame proto.Frame) error {
