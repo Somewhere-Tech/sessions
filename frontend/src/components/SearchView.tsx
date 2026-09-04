@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   fetchServerHistory,
   fetchServerHistoryTranscript,
@@ -30,9 +30,11 @@ import { serverDisplayName, useServers } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
 import { ConversationBrowser } from './ConversationBrowser';
 import { ProviderBadge, normalizeProvider, type Provider } from './ProviderBadge';
-import { ConversationReader, normalizeTranscriptIndexes } from './SearchConversationReader';
+import { normalizeTranscriptIndexes } from '../lib/searchTranscript';
 import { SearchConversationCard, SearchRollupCard } from './SearchResultCards';
 import type { SessionInfo } from '../types';
+
+const ConversationReader = lazy(() => import('./SearchConversationReader').then((module) => ({ default: module.ConversationReader })));
 
 type SearchMode = 'ai' | 'ranked';
 type Speaker = 'user' | '' | 'assistant' | 'tool';
@@ -527,25 +529,25 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
   };
 
   if (selected) {
-    return (
-      <ConversationReader
-        selected={selected}
-        server={servers.find((candidate) => candidate.id === selected.serverId)}
-        continuing={continuingKey === selected.key}
-        continuationError={continuationError}
-        onResumeConversation={(serverId, providerSessionId, sourceSessionId, historyId) => continueConversation(
-          selected.key,
-          serverId,
-          providerSessionId,
-          sourceSessionId,
-          historyId
-        )}
-        onBack={() => {
-          transcriptAbort.current?.abort();
-          setSelected(null);
-        }}
-      />
-    );
+    return <Suspense fallback={null}>
+        <ConversationReader
+          selected={selected}
+          server={servers.find((candidate) => candidate.id === selected.serverId)}
+          continuing={continuingKey === selected.key}
+          continuationError={continuationError}
+          onResumeConversation={(serverId, providerSessionId, sourceSessionId, historyId) => continueConversation(
+            selected.key,
+            serverId,
+            providerSessionId,
+            sourceSessionId,
+            historyId
+          )}
+          onBack={() => {
+            transcriptAbort.current?.abort();
+            setSelected(null);
+          }}
+        />
+      </Suspense>;
   }
 
   const hasSearch = mode === 'ai' ? Boolean(plan) : Boolean(submittedQuery);

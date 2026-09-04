@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { fetchServerHistoryTranscript, type HistoryTranscript } from '../api/sessionsd';
+import { fetchServerHistoryTranscript } from '../api/sessionsd';
 import {
   compactMachineName,
   compactPath,
@@ -10,6 +10,7 @@ import {
 } from '../lib/conversationBrowser';
 import type { ServerConfig } from '../lib/servers';
 import { operationLabel } from '../lib/searchFormatting';
+import { normalizeTranscriptIndexes } from '../lib/searchTranscript';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import type { SelectedConversation } from './SearchView';
 
@@ -293,15 +294,4 @@ function ReaderButton({
   children: ReactNode;
 }): JSX.Element {
   return <button type="button" disabled={disabled} className={active ? 'is-active' : ''} onClick={onClick}>{children}</button>;
-}
-
-export function normalizeTranscriptIndexes(transcript: HistoryTranscript): HistoryTranscript {
-  return {
-    ...transcript,
-    messages: transcript.messages.map((message, index) => ({
-      ...message,
-      index: Number.isFinite(message.index) ? message.index : index,
-      id: message.id || `legacy:${Number.isFinite(message.index) ? message.index : index}`
-    }))
-  };
 }

@@ -2,10 +2,6 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './App';
 import {
-  bootstrapHostedConnection,
-  bootstrapPairingConnection
-} from './lib/hostedBootstrap';
-import {
   blockNativeMachineCredentialPersistence,
   hydrateNativeMachineCredentials,
   syncNativeAgentMachineAccess,
@@ -111,14 +107,19 @@ async function bootstrap(): Promise<void> {
   if (!credentialHydrationFailed) {
     // Pairing is same-origin and authoritative. Claim (and scrub) it before a
     // hosted endpoint fragment or the current-origin health probe can run.
-    const pairFragmentPresent = await bootstrapPairingConnection();
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    const pairingLocation = /^\/pair\/[^/]+$/.test(window.location.pathname)
+      || fragment.has('pair');
+    const pairFragmentPresent = pairingLocation
+      ? await import('./lib/hostedBootstrap').then(({ bootstrapPairingConnection }) => bootstrapPairingConnection())
+      : false;
     // Fragment connections are authoritative and must be applied (and
     // scrubbed) before considering whether this page is a daemon's own
     // non-8787 UI.
-    const endpointFragmentPresent = new URLSearchParams(
-      window.location.hash.slice(1)
-    ).has('endpoint');
-    if (!pairFragmentPresent) await bootstrapHostedConnection();
+    const endpointFragmentPresent = fragment.has('endpoint');
+    if (!pairFragmentPresent && endpointFragmentPresent) {
+      await import('./lib/hostedBootstrap').then(({ bootstrapHostedConnection }) => bootstrapHostedConnection());
+    }
     if (!pairFragmentPresent && !endpointFragmentPresent) {
       await bootstrapCurrentOriginServer();
     }

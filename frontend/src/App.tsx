@@ -10,10 +10,12 @@ const FleetView = lazy(() => import('./components/FleetView').then((module) => (
 const UsageDashboard = lazy(() => import('./components/UsageDashboard').then((module) => ({ default: module.UsageDashboard })));
 const DailyView = lazy(() => import('./components/DailyView').then((module) => ({ default: module.DailyView })));
 const SettingsView = lazy(() => import('./components/SettingsView').then((module) => ({ default: module.SettingsView })));
+const SearchView = lazy(() => import('./components/SearchView').then((module) => ({ default: module.SearchView })));
+const ConnectScreen = lazy(() => import('./components/ConnectScreen').then((module) => ({ default: module.ConnectScreen })));
+const FleetRelaySync = lazy(() => import('./components/FleetRelaySync').then((module) => ({ default: module.FleetRelaySync })));
 import { MobileNav } from './components/MobileNav';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { GridView } from './components/GridView';
-import { SearchView } from './components/SearchView';
 import { ProductSidebar, type ProductView, type ThemeMode } from './components/ProductSidebar';
 import { SessionNavigator, focusTreeRow } from './components/SessionNavigator';
 import { HomeView } from './components/HomeView';
@@ -23,18 +25,14 @@ import { OnboardingDialog } from './components/OnboardingDialog';
 import { DaemonBanner, SinglePopOut } from './AppAuxiliaryViews';
 import { useSessions } from './store/sessions';
 import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer, isLocalServer, serverDisplayName } from './lib/servers';
-import { useFleetRelayServers } from './lib/fleetRelay';
-import { SettingsMenu } from './components/SettingsMenu';
+import { OnDemandSettingsMenu } from './components/OnDemandSettingsMenu';
 import { TailnetAccessInbox } from './components/TailnetAccessInbox';
 import { MachineRecoveryNotice } from './components/MachineRecoveryNotice';
 import { useIsMobile } from './hooks/useMediaQuery';
 import { useAndroidBackNavigation } from './hooks/useAndroidBackNavigation';
-import { ConnectScreen } from './components/ConnectScreen';
 import { readTabOrder, writeTabOrder, applyOrder, moveBefore } from './lib/tabOrder';
 import { getNativeConnectionSettings, getNativeRuntimeStatus, isTauri, notify, recoverNativeRuntime, syncTrayServers } from './lib/tauriBridge';
 import { readTextSize, writeTextSize, type TextSize } from './lib/textSize';
-import { preloadUsage } from './lib/usageCache';
-import { preloadDaily } from './lib/dailyCache';
 import { INITIAL_STATUS, type ActiveStatus } from './lib/activeStatus';
 import { effectiveParentId } from './lib/workingSet';
 import { providerConversationId } from './lib/sessionStatus';
@@ -147,7 +145,6 @@ export function App(): JSX.Element {
       .finally(() => { if (active) setNativeHydrated(true); });
     return () => { active = false; };
   }, []);
-  useFleetRelayServers(nativeHydrated && nativeClientOnly);
   useEffect(() => {
     void syncTrayServers(servers);
   }, [servers]);
@@ -183,8 +180,13 @@ export function App(): JSX.Element {
   }, [identityRefreshKey, nativeHydrated, updateServer]);
   if (!nativeHydrated) return <div className="native-hydration">Connecting to the Sessions runtime…</div>;
   return activeServerId && !pairingError && !credentialError
-    ? <ConnectedApp nativeClientOnly={nativeClientOnly} />
-    : <ConnectScreen clientOnly={nativeClientOnly} />;
+    ? <>
+        {nativeClientOnly ? <Suspense fallback={null}><FleetRelaySync /></Suspense> : null}
+        <ConnectedApp nativeClientOnly={nativeClientOnly} />
+      </>
+    : <Suspense fallback={<div className="native-hydration">Opening connection options…</div>}>
+        <ConnectScreen clientOnly={nativeClientOnly} />
+      </Suspense>;
 }
 
 function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean }): JSX.Element {
@@ -610,22 +612,13 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   useEffect(() => {
     if (!activeServerId) return;
     const id = window.setTimeout(() => {
-      void preloadUsage(activeServerId).catch(() => {
-        // UsageDashboard owns the visible, actionable error state. Startup
-        // warming must never block the sessions inbox.
-      });
+      void import('./lib/usageCache')
+        .then(({ preloadUsage }) => preloadUsage(activeServerId))
+        .catch(() => {
+          // UsageDashboard owns the visible, actionable error state. Startup
+          // warming must never block the sessions inbox.
+        });
     }, 350);
-    return () => window.clearTimeout(id);
-  }, [activeServerId]);
-
-  // Daily is part of startup hydration rather than a cold, on-navigation
-  // request. The view adopts this cached result immediately and still renders
-  // its complete skeleton if the local index has not finished yet.
-  useEffect(() => {
-    if (!activeServerId) return;
-    const id = window.setTimeout(() => {
-      void preloadDaily(activeServerId);
-    }, 450);
     return () => window.clearTimeout(id);
   }, [activeServerId]);
 
@@ -787,7 +780,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
               />
               {!isMobile ? <div className="session-layout-switch"><button type="button" className={effectiveLayout === 'tabs' ? 'is-active' : ''} onClick={() => setLayoutMode('tabs')}>Tabs</button><button type="button" className={effectiveLayout === 'grid' ? 'is-active' : ''} onClick={() => setLayoutMode('grid')}>Grid</button></div> : null}
               <ConnectionStatus machine={machine} hydrated={sessionsHydrated} error={sessionsError} />
-              <SettingsMenu clientOnly={nativeClientOnly} hostName={machine} textSize={textSize} onTextSizeChange={changeTextSize} onNewSession={openNewSession} onOpenConnections={() => setLayoutMode('settings')} />
+              <OnDemandSettingsMenu clientOnly={nativeClientOnly} hostName={machine} textSize={textSize} onTextSizeChange={changeTextSize} onNewSession={openNewSession} onOpenConnections={() => setLayoutMode('settings')} />
             </header>
           ) : null}
 
@@ -815,10 +808,10 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         ) : effectiveLayout === 'today' ? (
           <Suspense fallback={null}><DailyView /></Suspense>
         ) : effectiveLayout === 'search' ? (
-          <SearchView
-            onResumeConversation={continueExactConversation}
-            onOpenLiveSession={openFleetSession}
-          />
+          <Suspense fallback={null}><SearchView
+              onResumeConversation={continueExactConversation}
+              onOpenLiveSession={openFleetSession}
+            /></Suspense>
         ) : effectiveLayout === 'usage' ? (
           <Suspense fallback={null}><UsageDashboard /></Suspense>
         ) : effectiveLayout === 'settings' || effectiveLayout === 'feedback' || effectiveLayout === 'connections' ? (

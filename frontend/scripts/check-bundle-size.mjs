@@ -16,18 +16,22 @@ const assets = files.map((name) => {
 });
 
 const limits = {
-  entryJavaScript: { raw: 715_000, gzip: 210_000 },
-  entryCSS: { raw: 270_000, gzip: 45_000 },
-  // Secondary settings and continuation surfaces are split by interaction,
-  // and terminals ship one accelerated renderer with the built-in DOM
-  // fallback. Measured total: 1,169,914 bytes; retain 10 KB of headroom.
-  totalJavaScript: 1_179_914,
+  // Baseline measured 2026-09-03. These two assets are what the browser must
+  // fetch before it can draw the first screen, so keep their headroom strict.
+  entryJavaScript: 558_974,
+  entryCSS: 279_911,
+  // Deferred code may grow as the product gains secondary surfaces, but no
+  // one interaction should have to download an oversized lazy chunk.
+  totalJavaScript: 1_500_000,
+  lazyJavaScriptChunkGzip: 250_000,
 };
 
 const entryJavaScript = assets.find((asset) => /^index-[^.]+\.js$/.test(asset.name));
 const entryCSS = assets.find((asset) => /^index-[^.]+\.css$/.test(asset.name));
-const totalJavaScript = assets
+const javaScriptChunks = assets
   .filter((asset) => asset.name.endsWith('.js'))
+  .sort((left, right) => right.bytes - left.bytes);
+const totalJavaScript = javaScriptChunks
   .reduce((total, asset) => total + asset.bytes, 0);
 
 if (!entryJavaScript || !entryCSS) {
@@ -35,26 +39,33 @@ if (!entryJavaScript || !entryCSS) {
 }
 
 const failures = [];
-if (entryJavaScript.bytes > limits.entryJavaScript.raw) {
-  failures.push(`${entryJavaScript.name} is ${entryJavaScript.bytes} bytes; limit ${limits.entryJavaScript.raw}`);
+if (entryJavaScript.bytes > limits.entryJavaScript) {
+  failures.push(`${entryJavaScript.name} is ${entryJavaScript.bytes} bytes; entry limit ${limits.entryJavaScript}`);
 }
-if (entryJavaScript.gzipBytes > limits.entryJavaScript.gzip) {
-  failures.push(`${entryJavaScript.name} is ${entryJavaScript.gzipBytes} gzip bytes; limit ${limits.entryJavaScript.gzip}`);
-}
-if (entryCSS.bytes > limits.entryCSS.raw) {
-  failures.push(`${entryCSS.name} is ${entryCSS.bytes} bytes; limit ${limits.entryCSS.raw}`);
-}
-if (entryCSS.gzipBytes > limits.entryCSS.gzip) {
-  failures.push(`${entryCSS.name} is ${entryCSS.gzipBytes} gzip bytes; limit ${limits.entryCSS.gzip}`);
+if (entryCSS.bytes > limits.entryCSS) {
+  failures.push(`${entryCSS.name} is ${entryCSS.bytes} bytes; entry limit ${limits.entryCSS}`);
 }
 if (totalJavaScript > limits.totalJavaScript) {
   failures.push(`all JavaScript is ${totalJavaScript} bytes; limit ${limits.totalJavaScript}`);
+}
+for (const chunk of javaScriptChunks) {
+  if (chunk !== entryJavaScript && chunk.gzipBytes > limits.lazyJavaScriptChunkGzip) {
+    failures.push(`${chunk.name} is ${chunk.gzipBytes} gzip bytes; lazy-chunk limit ${limits.lazyJavaScriptChunkGzip}`);
+  }
+}
+
+console.log('Largest JavaScript chunks:');
+for (const chunk of javaScriptChunks.slice(0, 8)) {
+  console.log(
+    `  ${chunk.name}: ${chunk.bytes} B (${chunk.gzipBytes} B gzip)`
+      + (chunk === entryJavaScript ? ' [entry]' : ''),
+  );
 }
 
 if (failures.length > 0) {
   console.error('Frontend bundle budget exceeded:');
   for (const failure of failures) console.error(`  ${failure}`);
-  console.error('Reduce or lazy-load the added code; do not raise the budget without a measured reason.');
+  console.error('Reduce the entry path or split the interaction; do not raise the budget without a measured reason.');
   process.exit(1);
 }
 

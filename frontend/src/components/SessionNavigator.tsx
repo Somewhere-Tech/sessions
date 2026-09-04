@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type DragEvent } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { SessionInfo } from '../types';
 import { resolvedSessionLabel } from '../lib/tabLabels';
@@ -22,12 +22,13 @@ import {
 } from '../lib/workingSet';
 import { useSessions } from '../store/sessions';
 import { MachineMark } from './MachineMark';
-import { ContinueElsewhereButton } from './ContinueElsewhereButton';
 import { serverDisplayName, useServers } from '../lib/servers';
 import { useFleetSessions, type FleetSessionSnapshot } from '../hooks/useFleetSessions';
 import { useProjects } from '../hooks/useProjects';
 import { buildInboxLayout, buildProviderFaultNotices, type ProviderFaultNotice } from '../lib/inboxSections';
 import { InboxSections, ProviderFaultBanners } from './InboxSections';
+
+const ContinueElsewhereButton = lazy(() => import('./ContinueElsewhereButton').then((module) => ({ default: module.ContinueElsewhereButton })));
 
 type PrimaryFilter = 'all' | 'needs' | 'working' | 'ended';
 type ProviderFilter = 'all' | 'claude' | 'codex' | 'shell';
@@ -717,7 +718,7 @@ export function SessionNavigator({
                   <div>
                     <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); setMovePickerId(session.id); }}>Under another session…</button>
                     {currentParentID ? <button type="button" role="menuitem" onClick={() => void moveSession(session.id, null)}>Make top-level</button> : null}
-                    <ContinueElsewhereButton sessionId={session.id} label={label} appearance="menuitem" onOpen={() => setActionMenuId(null)} />
+                    <Suspense fallback={null}><ContinueElsewhereButton sessionId={session.id} label={label} appearance="menuitem" onOpen={() => setActionMenuId(null)} /></Suspense>
                   </div>
                 </details>
                 {session.exited ? (

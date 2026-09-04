@@ -30,13 +30,14 @@ import {
 } from '../lib/tauriBridge';
 import { useSessions } from '../store/sessions';
 
-interface Props {
+export interface SettingsMenuProps {
   clientOnly?: boolean;
   hostName?: string;
   textSize: TextSize;
   onTextSizeChange: (size: TextSize) => void;
   onNewSession?: () => void;
   onOpenConnections?: () => void;
+  initiallyOpen?: boolean;
 }
 
 const PUSH_ENABLED_KEY = 'sessions:push-enabled';
@@ -83,7 +84,7 @@ async function getPushRegistration(): Promise<ServiceWorkerRegistration> {
 }
 
 // Settings popover anchored to a header button.
-export function SettingsMenu({ clientOnly = false, hostName = 'this computer', textSize, onTextSizeChange, onNewSession, onOpenConnections }: Props): JSX.Element {
+export function SettingsMenu({ clientOnly = false, hostName = 'this computer', textSize, onTextSizeChange, onNewSession, onOpenConnections, initiallyOpen = false }: SettingsMenuProps): JSX.Element {
   const activeServerId = useServers((state) => state.activeId);
   const activeServerIsLocal = useServers((state) =>
     state.servers.find((server) => server.id === state.activeId)?.isDefault === true
@@ -92,7 +93,7 @@ export function SettingsMenu({ clientOnly = false, hostName = 'this computer', t
   const workingAgents = activeServerIsLocal
     ? sessions.filter((session) => !session.exited && session.working).length
     : null;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const [pushEnabled, setPushEnabled] = useState(readPushEnabled);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushMessage, setPushMessage] = useState<string | null>(null);

@@ -33,9 +33,9 @@ The signed app-bundle updater is configured in `src-tauri/tauri.conf.json` and
 exposed through the native-only settings flow in
 `frontend/src/lib/tauriBridge.ts`; the bridge serializes update discovery and
 delivers once-per-version native notifications. `frontend/src/components/DailyView.tsx`
-renders the preloaded local work journal, while `frontend/src/lib/dailyCache.ts`
-warms the current day and adopts it
-without a blank navigation state. `frontend/src/components/ProductSidebar.tsx`
+renders the local work journal on demand, while `frontend/src/lib/dailyCache.ts`
+keeps navigation between already-read days from returning to a blank state.
+`frontend/src/components/ProductSidebar.tsx`
 owns the always-visible signed-update action, while
 `frontend/src/components/ConnectionsView.tsx` presents loopback, LAN, Tailscale,
 multi-transport machine discovery/request state, the LAN pairing fallback, and safe
@@ -176,6 +176,24 @@ installer writes and kickstarts the per-user daemon service, but launchd owns
 that service afterward and independently supervised runners stay alive through
 app quits, daemon reloads, and app upgrades. Android and iOS are paired clients
 and do not host the Go runtime.
+
+### Bundle budget
+
+The production frontend build runs `frontend/scripts/check-bundle-size.mjs`.
+It holds the minified entry JavaScript to 558,974 bytes and entry CSS to
+279,911 bytes: the 2026-09-03 measurements of 548,974 and 269,911 bytes plus
+10 KB of headroom. Total minified JavaScript has a 1,500,000-byte ceiling, and
+every non-entry JavaScript chunk has a 250,000-byte gzip transfer ceiling.
+The check prints the eight largest JavaScript chunks with raw and gzip sizes in
+every build log so deferred growth remains visible before it reaches a limit.
+
+The entry path is the inbox and the session workspace. Settings, Daily, Search
+and its transcript reader, Fleet account and relay work, continuation dialogs,
+pairing, and onboarding after the welcome step load through dynamic imports at
+the interaction that needs them. New secondary surfaces should follow the
+per-surface imports represented by `frontend/src/components/OnDemandViews.ts`;
+an on-demand barrel that makes unrelated views arrive together defeats the
+budget even when the entry file itself stays small.
 
 ## Process model
 

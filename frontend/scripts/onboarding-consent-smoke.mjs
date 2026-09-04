@@ -6,7 +6,8 @@ const source = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'u
 
 const app = source('src/App.tsx');
 const api = readSessionsdSourceSync();
-const onboarding = source('src/components/OnboardingDialog.tsx');
+const onboarding = source('src/components/OnboardingDialog.tsx')
+  + source('src/components/OnboardingSteps.tsx');
 const settings = source('src/components/SettingsView.tsx');
 const settingsMenu = source('src/components/SettingsMenu.tsx');
 const connections = source('src/components/ConnectionsView.tsx');
