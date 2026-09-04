@@ -52,16 +52,17 @@ The native shell owns:
 
 - scoped desktop/mobile windows and platform navigation;
 - tray and native notifications;
-- OS permission prompts;
+- user-facing OS permission context and the launch-agent responsibility link;
 - secure storage for paired-machine credentials;
 - runtime staging, installation status, and signed update UI;
-- native LAN and tailnet discovery adapters.
+- native tailnet and mobile Bonjour discovery adapters.
 
 The daemon owns:
 
 - session creation, input, interruption, and termination;
 - runner adoption and recovery;
 - ledger, history, search, usage, hierarchy, and compatibility facts;
+- host Bonjour discovery, LAN connection, and saved-machine fleet relay;
 - authenticated HTTP/WebSocket contracts used by every client.
 
 Operational settings and controls require CLI/JSON parity unless they are
@@ -80,6 +81,14 @@ or roll back.
 macOS releases require Developer ID signatures for the app and nested
 binaries, notarization, stapling, Gatekeeper acceptance, a pinned updater
 signature, immutable download identity, and checksum verification.
+Each Darwin runtime binary also carries a Mach-O `__TEXT,__info_plist` section
+with its stable bundle identifier, Local Network usage description, and
+`_sessions._tcp` Bonjour declaration. The app-managed sessionsd launch agent
+declares `AssociatedBundleIdentifiers = [tech.somewhere.sessions]`, making the
+signed app the responsible code for sessionsd under macOS Local Network
+privacy. Onboarding's Fleet step and Settings › Fleet › **Allow local network**
+start the first daemon-owned browse so any macOS prompt appears in context;
+the app does not fabricate or preflight a permission result.
 
 Windows releases require a current-user installer, Authenticode, the pinned
 updater signature, manifest verification, and the hardware matrix in

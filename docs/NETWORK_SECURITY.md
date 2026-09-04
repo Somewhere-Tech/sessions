@@ -164,9 +164,14 @@ filesystem path. Any peer on a local link where the operating system publishes
 Bonjour can observe or spoof such a record, even when the selected target
 address is unreachable from that link.
 
-Native clients and `sessions machines discover` therefore verify `/api/health`
-before presenting a candidate, then require a separate request/accept/claim
-flow. Nearby bootstrap routes:
+The host app and CLI ask their loopback `sessionsd` to browse and verify
+`/api/health` before presenting a candidate, then require a separate
+request/accept/claim flow. The daemon also owns the outbound peer connection
+for `sessions machines connect`, `sessions --machine`, cross-machine grep, and
+conversation moves. A lane therefore talks only to its local daemon and needs
+no local-network permission. The global `--direct` flag is an explicit
+diagnostic escape hatch that restores client-side browsing and peer dials.
+Nearby bootstrap routes:
 
 - exist on the dedicated LAN listener, plus the main listener only for a true
   loopback peer that already has local-user authority;
@@ -193,13 +198,37 @@ Bonjour failure does not disable the listener; disabling LAN access also stops
 the advertisement.
 
 The agent surface has the same boundary. `sessions machines connect` accepts
-only private or loopback IPv4 HTTP origins or `.ts.net` HTTPS origins, follows no redirects,
-never sends the local daemon token to a candidate, and stores an issued token
-in a separate mode-0600 file. The metadata registry contains no credential.
-`sessions --machine` reads that file internally, while `sessions access`
-exposes the same pending host decisions as the native inbox. The low-level
-global `--host` flag uses the local daemon token only for a loopback target; a
-non-loopback raw host receives no local credential.
+only private or loopback IPv4 HTTP origins or `.ts.net` HTTPS origins, follows
+no redirects, never sends the local daemon token to a candidate, and stores an
+issued token in a separate mode-0600 file. The metadata registry contains no
+credential. `sessions --machine` reads that file through the local daemon's
+fleet relay, while `sessions access` exposes the same pending host decisions as
+the native inbox. The low-level global `--host` flag uses the local daemon token
+only for a loopback target; a non-loopback raw host receives no local
+credential.
+
+On macOS 15, Local Network privacy applies to launchd agents as well as apps.
+Darwin release binaries embed an Info.plist section with their stable bundle
+identifier, `NSLocalNetworkUsageDescription`, and
+`NSBonjourServices = [_sessions._tcp]`; the app-installed launch agent is
+associated with the signed Sessions app bundle so macOS attributes sessionsd's
+request to the visible app, following
+[Apple TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
+First-run Fleet onboarding and Settings › Fleet ›
+**Allow local network** start a daemon-owned Bonjour browse while the person is
+looking at that surface. macOS 14 accepts the same binary metadata but does not
+enforce the macOS 15 Local Network gate.
+
+Apple provides no supported API to preflight this permission or force its
+prompt. `sessions doctor` therefore reports the daemon's last observed state:
+`granted`, `denied`, or `not-yet-asked` (`not-required` on other platforms).
+Successful nearby discovery or connection records `granted`; a private or
+link-local Darwin dial failing with `EHOSTUNREACH`, or an empty Bonjour browse
+while this daemon is itself advertising, records `denied`. The API, CLI,
+doctor, and Fleet banner replace the misleading route error with:
+“macOS has not allowed Sessions to use the local network. System Settings ›
+Privacy & Security › Local Network › turn on Sessions.” Tailnet addresses are
+outside this classification and remain exempt.
 
 ## Native update traffic
 

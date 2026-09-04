@@ -319,15 +319,19 @@ machines`; it does not list discovery candidates or machines that this host has
 not itself been approved on.
 
 ```json
-{"machines":[{"id":"<machine id>","name":"Mac mini","endpoint":"https://mini.example.ts.net","transport":"tailnet","reachable":true}]}
+{"machines":[{"id":"<machine id>","name":"Mac mini","endpoint":"http://192.168.1.24:8787","transport":"lan","reachable":false,"reason":"local-network-permission","message":"macOS has not allowed Sessions to use the local network. System Settings › Privacy & Security › Local Network › turn on Sessions."}]}
 ```
 
 `transport` is `lan` for a saved nearby HTTP endpoint and `tailnet` for a saved
 HTTPS endpoint. To compute `reachable`, the host makes a two-second authenticated
 `GET /api/machine` probe using its saved credential and requires the returned
 stable identity to match `id`. Offline machines remain in the array with
-`reachable:false`. The response never contains a credential or paired-device
-ID. An unreadable, malformed, or unsupported saved-machine registry is 500.
+`reachable:false`. When a Darwin probe of a private or link-local destination
+fails with `EHOSTUNREACH`, that row additionally carries
+`reason:"local-network-permission"` and the exact `message` shown above.
+Other reachability failures omit both fields. The response never contains a
+credential or paired-device ID. An unreadable, malformed, or unsupported saved
+machine registry is 500.
 
 ### `/api/fleet/:machine-id/api/*` and `/api/fleet/:machine-id/ws`
 
@@ -350,6 +354,9 @@ identity. Other headers, including `X-Sessions-Creator-Session` and
 `X-Sessions-Owner-ID`, retain their values. A transport failure is 502. Every
 relayed request is logged at info level with method, destination path, machine
 ID, and calling device ID (or `local`), but never with a request body or token.
+A private or link-local Darwin dial that fails with `EHOSTUNREACH` uses the
+exact Local Network permission sentence documented by `GET
+/api/fleet/machines` instead of exposing `no route to host`.
 
 ### `GET /api/push/vapid`
 
@@ -1624,12 +1631,18 @@ already decided is 400; invalid JSON is 400. An empty or nested id is
 Auth required. Returns the state of the user-enabled plaintext LAN listener:
 
 ```json
-{"enabled":false,"url":null,"bonjour":{"advertised":false,"service":"<Bonjour service name>"}}
+{"enabled":false,"url":null,"bonjour":{"advertised":false,"service":"_sessions._tcp"},"permission":{"status":"not-yet-asked"}}
 ```
 
 `url` is the `http://<address>` of the running LAN listener or `null`;
 `bonjour.error` carries the last advertisement error and is omitted when
-empty.
+empty. `permission.status` is the daemon's last observed Local Network state:
+`granted`, `denied`, or `not-yet-asked` on Darwin and `not-required` elsewhere.
+There is no permission preflight. A denied state additionally includes
+`"reason":"local-network-permission"` and
+`"message":"macOS has not allowed Sessions to use the local network. System Settings › Privacy & Security › Local Network › turn on Sessions."`.
+Granted and denied observations persist across daemon restarts and change when
+a later nearby operation proves the opposite state.
 
 ### `POST /api/lan`
 
@@ -1641,6 +1654,48 @@ enabled as a side effect of another route. Body `{"enabled":true}` or
 daemon settings and the resulting state is returned in the `GET /api/lan`
 shape. A listener that cannot be started or stopped is
 `409 {"error":"<message>"}`. Other methods return 405.
+
+### `GET /api/lan/discover`
+
+Auth required, local-principal only. sessionsd performs a Bonjour browse and
+then verifies every candidate with `GET /api/health`; the calling CLI or app
+does not access the LAN. Optional `timeout` is a positive Go duration no longer
+than 15 seconds and defaults to `3s`. Success is:
+
+```json
+{"machines":[{"name":"Mac mini","hostname":"mini.local.","endpoint":"http://192.168.1.24:8787","address":"192.168.1.24","port":8787,"transport":"nearby","version":"v0.2.27","os":"darwin","arch":"arm64","sessions_loaded":2,"reachable":true}],"warning":"Nearby access uses unencrypted HTTP. Connect only on a private network you trust."}
+```
+
+An invalid timeout is 400. A browse failure is 502, except that a Darwin Local
+Network denial is 403 with
+`{"error":"macOS has not allowed Sessions to use the local network. System Settings › Privacy & Security › Local Network › turn on Sessions.","reason":"local-network-permission"}`.
+An empty Darwin browse while this daemon is itself advertising is classified
+the same way. Other empty results are 200 with an empty `machines` array.
+Other methods return 405.
+
+### `POST /api/lan/connect`
+
+Auth required, local-principal only. sessionsd owns the complete outbound
+request/claim/credential-verification sequence. Body:
+
+```json
+{"endpoint":"http://192.168.1.24:8787","client_id":"<lowercase v4 UUID>","name":"MacBook Pro","timeout":"10m"}
+```
+
+`endpoint` accepts the same private or loopback IPv4 HTTP and `.ts.net` HTTPS
+origins as `sessions machines connect`. `timeout` is optional, positive, at
+most ten minutes, and defaults to ten minutes. The request remains open while
+the other machine's user accepts or denies it. Acceptance returns 201:
+
+```json
+{"claim":{"device_id":"<device UUID>","token":"<credential>","name":"MacBook Pro","machine_id":"<machine id>","machine_name":"Mac mini"},"endpoint":"http://192.168.1.24:8787","transport":"nearby"}
+```
+
+The credential crosses only this authenticated loopback response; the CLI
+stores it in the existing separate owner-readable credential file. Invalid
+input is 400. A peer denial or expired request is 502. A Darwin Local Network
+denial is the same 403 error and reason as `GET /api/lan/discover`. Other
+methods return 405.
 
 ### `POST /api/pair/ticket`
 

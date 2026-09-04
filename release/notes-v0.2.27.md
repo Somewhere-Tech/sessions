@@ -1,5 +1,7 @@
 # Sessions 0.2.27
 
+- Makes Mac fleet access work from agents without granting network access to each lane: sessionsd now owns Bonjour discovery, machine connection, and relayed `--machine`, grep, and move traffic; macOS Local Network failures name the exact System Settings fix across the CLI, API, Fleet, and `sessions doctor`, while `--direct` remains available for explicit diagnostics.
+- Gives macOS a responsible process for that permission: signed Darwin runtime binaries embed the Local Network and `_sessions._tcp` declarations, the launch agent is associated with Sessions.app, and Fleet onboarding plus Settings › Fleet › **Allow local network** trigger the daemon's first browse while the user is looking.
 - Automatically retries a failed Rich Claude or Codex turn when the provider is unavailable or rate-limited, with a bounded five-attempt backoff, one exhaustion notification, visible countdown state, `sessions retry <id> [--stop]`, and no hidden second prompt when new input arrives.
 - Recognizes a provider control that a session stops at before its first turn — Claude Code's folder-trust dialog, a login prompt — as a needs-you state instead of a not-started one, so sending a message no longer presses Enter on the highlighted choice and ends the session.
 - Answers those controls from the conversation view: the exact choices the terminal is showing appear as buttons, without switching to the raw terminal.
