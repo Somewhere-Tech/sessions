@@ -332,6 +332,18 @@ function providerSystemMessage(event: ClaudeSessionEvent, index: number): Dispat
       errorResponse: detail
     };
   }
+  if (event.subtype === 'continuation_started') {
+    const detail = typeof event.detail === 'string' ? event.detail.trim() : '';
+    if (!detail) return null;
+    return {
+      id: event.uuid ?? `continuation-started-${index}`,
+      role: 'assistant',
+      content: '',
+      status: 'sent',
+      createdAt: at,
+      quietStatus: detail
+    };
+  }
   if (event.subtype !== 'provider_retry') return null;
   const attempt = typeof event.attempt === 'number' ? event.attempt : 0;
   const max = typeof event.max === 'number' ? event.max : 0;

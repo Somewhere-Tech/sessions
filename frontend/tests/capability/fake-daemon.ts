@@ -21,6 +21,8 @@ import { useServers, type ServerConfig } from '../../src/lib/servers';
 import { useSessions } from '../../src/store/sessions';
 import type { DirectoryCandidate, SessionInfo, StructuredSessionEvent } from '../../src/types';
 import type {
+  ContinuationJob,
+  ContinuationPreview,
   HistoryMessage,
   HistorySession,
   ProviderStatus,
@@ -59,6 +61,9 @@ export interface FakeMachine {
   profiles?: unknown[];
   directories?: DirectoryCandidate[];
   providers?: ProviderStatus[];
+  /** Optional continuation responses; GET advances through the snapshots. */
+  continuationPreview?: ContinuationPreview;
+  continuationJobs?: ContinuationJob[];
   team?: TeamListing;
   projectFailure?: { status: number; message: string };
   teamFailure?: { status: number; message: string };
@@ -93,6 +98,8 @@ export interface FakeDaemon {
   archived: string[];
   /** Conversations adopted through POST /api/recovery/adopt. */
   adopted: string[];
+  /** Continuation job ids canceled through the job API. */
+  continuationCanceled: string[];
   machineFor(origin: string): FakeMachine | undefined;
   session(id: string): SessionInfo | undefined;
   /** Route requests whose path/method this fake does not model, for the report. */
@@ -211,6 +218,41 @@ function searchFor(machine: FakeMachine, query: string, limit: number): SearchRe
   };
 }
 
+function fakeContinuationPreview(machine: FakeMachine, body: unknown): ContinuationPreview {
+  const request = (body ?? {}) as { messageLimit?: number; destinationProvider?: 'claude' | 'codex' };
+  const base = machine.continuationPreview ?? {
+    conversation: 'Saved conversation', sourceProvider: 'codex', destinationProvider: 'claude',
+    totalMessageCount: 84, messageCount: 84, characterCount: 48_000,
+    estimatedTokens: 12_000, thresholdTokens: 60_000, limited: false, sourceUntouched: true
+  };
+  const limit = request.messageLimit && request.messageLimit > 0
+    ? Math.min(request.messageLimit, base.totalMessageCount)
+    : base.totalMessageCount;
+  const ratio = base.totalMessageCount > 0 ? limit / base.totalMessageCount : 1;
+  const characters = limit < base.totalMessageCount ? Math.ceil(base.characterCount * ratio) : base.characterCount;
+  return {
+    ...base,
+    destinationProvider: request.destinationProvider ?? base.destinationProvider,
+    messageCount: limit,
+    characterCount: characters,
+    estimatedTokens: Math.ceil(characters / 4),
+    limited: limit < base.totalMessageCount
+  };
+}
+
+function fakeContinuationJob(machine: FakeMachine, body: unknown): ContinuationJob {
+  const request = (body ?? {}) as { destinationProvider?: 'claude' | 'codex'; model?: string; effort?: string };
+  const provider = request.destinationProvider ?? 'claude';
+  return {
+    id: 'continuation-1', status: 'running', stage: 'exporting-history',
+    stageText: 'Exporting conversation history', provider,
+    model: request.model, modelDisplayName: request.model, effort: request.effort,
+    preview: fakeContinuationPreview(machine, body), events: [
+      { stage: 'exporting-history', text: 'Exporting conversation history', at: NOW }
+    ]
+  };
+}
+
 /**
  * Replace window.fetch and window.WebSocket with the in-process daemon and seed
  * lib/servers + the sessions store so the mounted components address it.
@@ -218,6 +260,7 @@ function searchFor(machine: FakeMachine, query: string, limit: number): SearchRe
 export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
   const byOrigin = new Map<string, FakeMachine>();
   for (const machine of machines) byOrigin.set(originOf(machine), machine);
+  const continuationIndexes = new Map<string, number>();
 
   const daemon: FakeDaemon = {
     machines,
@@ -230,6 +273,7 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     retryStopped: [],
     archived: [],
     adopted: [],
+    continuationCanceled: [],
     machineFor: (origin) => byOrigin.get(origin),
     session: (id) => machines.flatMap((m) => m.sessions).find((s) => s.id === id),
     restore: () => { /* setup.ts re-bans the network after every test */ }
@@ -441,6 +485,37 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     }
     if (path === '/api/recovery/fork' && method === 'POST') {
       return jsonResponse({ ok: true, laneId: 'forked-1' });
+    }
+    if (path === '/api/recovery/continuation/preview' && method === 'POST') {
+      return jsonResponse(fakeContinuationPreview(machine, body));
+    }
+    if (path === '/api/recovery/continuation/jobs' && method === 'POST') {
+      continuationIndexes.set(machine.id, 0);
+      const job = machine.continuationJobs?.[0] ?? fakeContinuationJob(machine, body);
+      if (job.laneId && !machine.sessions.some((session) => session.id === job.laneId)) {
+        const created = makeSession({ id: job.laneId, name: 'Continued conversation', cmd: job.provider, tool: job.provider === 'codex' ? 'codex' : 'claude-code' });
+        machine.sessions.push(created);
+        daemon.created.push(created);
+      }
+      return jsonResponse(job, 202);
+    }
+    const continuationRoute = /^\/api\/recovery\/continuation\/jobs\/([^/]+)$/.exec(path);
+    if (continuationRoute && method === 'GET') {
+      const snapshots = machine.continuationJobs ?? [fakeContinuationJob(machine, body)];
+      const index = Math.min((continuationIndexes.get(machine.id) ?? 0) + 1, snapshots.length - 1);
+      continuationIndexes.set(machine.id, index);
+      return jsonResponse(snapshots[index]);
+    }
+    if (continuationRoute && method === 'DELETE') {
+      daemon.continuationCanceled.push(decodeURIComponent(continuationRoute[1]));
+      const snapshots = machine.continuationJobs ?? [fakeContinuationJob(machine, body)];
+      const current = snapshots[continuationIndexes.get(machine.id) ?? 0];
+      if (current?.laneId) {
+        const created = machine.sessions.find((session) => session.id === current.laneId);
+        if (created) created.exited = true;
+        daemon.ended.push(current.laneId);
+      }
+      return jsonResponse({ ...current, status: 'canceled', stageText: 'The new session was ended. The original conversation was not changed.' });
     }
 
     // ── search ──────────────────────────────────────────────────────────

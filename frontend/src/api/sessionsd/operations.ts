@@ -1,4 +1,4 @@
-import type { ClaudeSessionEvent, CreateSessionRequest, DirectoryCandidate, SessionInfo } from '../../types';
+import type { ClaudeSessionEvent, CreateSessionRequest, DirectoryCandidate, ProviderFailureKind, ProviderRetry, SessionInfo } from '../../types';
 import { getActiveServer, type ServerConfig } from '../../lib/servers';
 import { randomUUID } from '../../lib/uuid';
 import {
@@ -55,12 +55,89 @@ export interface ProviderStatus {
   latestVersion?: string;
   lastCheckedAt?: string;
   updateAvailable: boolean;
+  models?: SessionModelOption[];
+  modelsError?: string;
 }
 
-export async function fetchProviderStatuses(signal?: AbortSignal): Promise<ProviderStatus[]> {
-  const r = await apiFetch(`${httpBase()}/api/providers`, { signal });
+export async function fetchProviderStatuses(signal?: AbortSignal, includeModels = false): Promise<ProviderStatus[]> {
+  const suffix = includeModels ? '?include_models=1' : '';
+  const r = await apiFetch(`${httpBase()}/api/providers${suffix}`, { signal });
   const body = await featureJSON<{ providers: ProviderStatus[] }>(r, 'Provider status');
   return body.providers;
+}
+
+export interface ContinuationPreview {
+  conversation: string;
+  sourceProvider: 'claude' | 'codex';
+  destinationProvider: 'claude' | 'codex';
+  totalMessageCount: number;
+  messageCount: number;
+  characterCount: number;
+  estimatedTokens: number;
+  thresholdTokens: number;
+  limited: boolean;
+  sourceUntouched: boolean;
+}
+
+export interface ContinuationJobEvent {
+  stage: 'exporting-history' | 'creating-session' | 'provider-starting' | 'first-reply';
+  text: string;
+  at: number;
+}
+
+export interface ContinuationJob {
+  id: string;
+  status: 'running' | 'succeeded' | 'canceled' | 'failed';
+  stage: ContinuationJobEvent['stage'];
+  stageText: string;
+  provider: 'claude' | 'codex';
+  model?: string;
+  modelDisplayName?: string;
+  effort?: string;
+  laneId?: string;
+  preview?: ContinuationPreview;
+  events: ContinuationJobEvent[];
+  error?: string;
+  warning?: string;
+  failureKind?: ProviderFailureKind;
+  failureDetail?: string;
+  retry?: ProviderRetry;
+}
+
+export interface ContinuationRequest {
+  target: string;
+  historyId?: string;
+  sourceSessionId?: string;
+  destinationProvider: 'claude' | 'codex';
+  model?: string;
+  effort?: string;
+  messageLimit?: number;
+  confirmWholeHistory?: boolean;
+}
+
+export async function previewContinuation(request: ContinuationRequest, signal?: AbortSignal): Promise<ContinuationPreview> {
+  const r = await apiFetch(`${httpBase()}/api/recovery/continuation/preview`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request), signal
+  });
+  return json<ContinuationPreview>(r);
+}
+
+export async function startContinuation(request: ContinuationRequest): Promise<ContinuationJob> {
+  const r = await apiFetch(`${httpBase()}/api/recovery/continuation/jobs`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request)
+  });
+  return json<ContinuationJob>(r);
+}
+
+export async function fetchContinuationJob(id: string): Promise<ContinuationJob> {
+  const r = await apiFetch(`${httpBase()}/api/recovery/continuation/jobs/${encodeURIComponent(id)}`);
+  return json<ContinuationJob>(r);
+}
+
+export async function cancelContinuationJob(id: string): Promise<ContinuationJob> {
+  const r = await apiFetch(`${httpBase()}/api/recovery/continuation/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return json<ContinuationJob>(r);
 }
 
 export async function updateProvider(id: ProviderStatus['id']): Promise<{ provider: ProviderStatus; output: string }> {
@@ -116,6 +193,7 @@ export async function updateSessionModel(
 export interface SessionModelOption {
   id: string;
   displayName: string;
+  description?: string;
   hidden: boolean;
   isDefault: boolean;
   defaultReasoningEffort: string;

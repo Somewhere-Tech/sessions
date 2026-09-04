@@ -37,6 +37,7 @@ import { preloadDaily } from './lib/dailyCache';
 import { INITIAL_STATUS, type ActiveStatus } from './lib/activeStatus';
 import { effectiveParentId } from './lib/workingSet';
 import { preferNextSessionView } from './lib/sessionViewPreference';
+import { providerConversationId } from './lib/sessionStatus';
 import { handleExternalLinkClick } from './lib/externalLinks';
 import {
   fetchServerMachineIdentity,
@@ -48,7 +49,7 @@ import {
   type OnboardingState,
   type ServerHealth
 } from './api/sessionsd';
-import { adoptConversationWithRepair, adoptionWarning } from './lib/adoptConversation';
+import { adoptionWarning } from './lib/adoptConversation';
 import { resumeExactSession } from './lib/resumeExactSession';
 import type { SessionInfo, SessionTool } from './types';
 const TOOL_ICONS: Record<SessionTool, string> = {
@@ -362,6 +363,17 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     );
     openSession(result.laneId);
   }, [openSession, refresh]);
+  const chooseHowToContinue = useCallback((
+    session: SessionInfo,
+    destinationProvider?: 'claude' | 'codex'
+  ): void => {
+    setDialogOpen({
+      resumeProviderId: providerConversationId(session) ?? session.id,
+      sourceSessionId: session.id,
+      historyId: session.id,
+      destinationProvider
+    });
+  }, []);
   const forkSession = useCallback(async (
     session: SessionInfo,
     destinationProvider: 'claude' | 'codex',
@@ -538,25 +550,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   ): Promise<void> => {
     useServers.getState().setActive(serverId);
     setServerScope(serverId);
-    // Shared adopt-then-repair (lib/adoptConversation.ts): the same one
-    // ResumeDialog uses, so both entry points answer "did my history
-    // annotations finish?" identically. Repair is record-only and never
-    // turns an annotation failure into a second runtime.
-    const adopted = await adoptConversationWithRepair(providerSessionId, sourceSessionId, historyId);
-    const result = adopted.result;
-    setAdoptionNotice(adoptionWarning(adopted));
-    await refresh(serverId);
-    // Native Claude resume can immediately show a provider-only picker in its
-    // terminal. Imported Codex and Sessions transcript recovery are authored
-    // conversations, so open their Conversation view instead.
-    preferNextSessionView(
-      result.laneId,
-      result.transcriptRecovery || result.destinationProvider === 'codex' || result.mode
-        ? 'remote'
-        : 'terminal'
-    );
-    openSession(result.laneId);
-  }, [openSession, refresh, setServerScope]);
+    setDialogOpen({
+      resumeProviderId: providerSessionId,
+      sourceSessionId,
+      historyId
+    });
+  }, [setServerScope]);
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
     const onMessage = (event: MessageEvent<unknown>): void => {
@@ -766,7 +765,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       onOpenMachineSession={openFleetSession}
       onNew={openNewSession}
       onContinue={() => setDialogOpen('resume')}
-      onResumeSession={resumeSession}
+      onResumeSession={chooseHowToContinue}
       onForkSession={forkSession}
       onStartLinked={(id) => setDialogOpen({ delegateFrom: id })}
       openSessionIds={openTabIds}

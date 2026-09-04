@@ -192,7 +192,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
             <div>
               <span>Private device discovery</span>
               <h2>Machines you can connect to</h2>
-              <p>Sessions checks both Tailscale and your nearby network, then shows only verified Sessions runtimes.</p>
+              <p>Sessions checks both Tailscale and your nearby network, then shows only computers it can verify.</p>
             </div>
             <div className="fleet-discovery-actions">
               <button type="button" className="btn btn-ghost" disabled={discoveryBusy || accessRequest !== null} onClick={() => void findMachines()}>Search again</button>

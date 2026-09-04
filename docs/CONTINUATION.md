@@ -39,38 +39,53 @@ conversation identity. Sessions refuses to start a second writer when that
 identity is already live. The ended Sessions runtime is linked to its
 successor; the provider history is not copied or rewritten.
 
-## Cross-provider Continue (preview)
+## Continue a conversation with a different agent
 
 Choose an earlier conversation, then choose the other agent under **Continue
-with**. The CLI equivalent is:
+with**. Before anything starts, Sessions shows:
+
+- the conversation name, message count, and an approximate token count;
+- the agent, model, and effort setting that will receive the history;
+- a choice between the whole conversation and only the last N messages; and
+- a reminder that the original conversation will not change and nothing is
+  sent until you press **Start**.
+
+Sessions estimates one token for every four characters. This is a warning
+estimate, not the destination provider's bill. If the whole history is above
+60,000 estimated tokens, **Start** stays disabled until you either choose a
+shorter tail or confirm **Send the whole history anyway**.
+
+After Start, the dialog reports each step: exporting the history, creating the
+new session, starting the chosen agent, and waiting for its first reply. If the
+agent has not replied after a minute, you can keep waiting or cancel. Cancel
+ends only the newly created session; it does not change the original. Provider
+sign-in, quota, and connection problems appear in the same dialog.
+
+When the first reply arrives, Sessions opens the new conversation. Its first
+system line names the source, source agent, number of messages, and chosen
+model so it is always clear how the conversation began.
+
+The CLI equivalent is:
 
 ```sh
 sessions continue <history-id> --with codex
 sessions continue <history-id> --with claude
 ```
 
-The operation is intentionally smaller than copying provider files:
+The history transfer is intentionally smaller than copying provider files:
 
 - Sessions reads the exact selected history ID.
-- Only authored user and assistant text is portable. Markdown and intentional
-  code blocks are retained.
+- Only messages written by the person and the agent are portable. Markdown and
+  intentional code blocks are retained.
 - Tool calls, tool output, diffs, attachments, credentials, usage records, and
   provider-internal events are not copied.
 - A new destination-provider conversation is created in the recorded
   workspace. The source conversation is never deleted or modified.
-- The new Sessions runtime records the source history ID, provider, import
-  mode, and imported message count.
+- The new Sessions session records the source history ID, provider, transfer
+  method, and message count.
 
-Codex exposes an app-server history injection method. Claude-to-Codex Continue
-therefore materializes authored messages as native Codex response items before
-the next user turn.
-
-Claude does not expose a supported arbitrary transcript-import method.
-Codex-to-Claude Continue displays the authored source turns in Sessions and
-links the exact local transcript. On the first real turn, Claude receives a
-small system instruction to load that transcript through the local
-`sessions --json transcript <history-id>` command. Sessions does not fabricate
-Claude JSONL or claim that linked history is native Claude history.
+Sessions gives the selected messages to the new agent as conversation context;
+it does not alter or pretend to extend the original provider conversation.
 
 ## Long-conversation search
 
@@ -93,7 +108,7 @@ and make no model call.
   response.
 - The preview supports Claude and Codex Rich sessions. It does not translate
   shell/PTY screen history.
-- Imported bundles are local mode-0600 sidecars and are capped at 8 MiB.
+- Imported bundles are local mode-0600 sidecars and are capped at 32 MiB.
 - Destination-provider model context limits still apply.
 - Cross-machine cross-provider continuation depends on the separate,
   user-approved conversation transfer path.

@@ -20,7 +20,6 @@ import {
   type SearchConversationGroup
 } from '../lib/searchConversations';
 import {
-  isPromptHistoryOnly,
   managedSourceSessionID,
   plural,
   type BrowseFilters,
@@ -424,7 +423,8 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
     try {
       await onResumeConversation(serverId, providerSessionId, sourceSessionId, historyId);
     } catch (reason) {
-      setContinuationError(reason instanceof Error ? reason.message : 'Could not resume this conversation');
+      setContinuationError(reason instanceof Error ? reason.message : 'Could not open the continuation details');
+    } finally {
       setContinuingKey(null);
     }
   };
@@ -717,9 +717,7 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
                     row.group.primary.serverId,
                     row.group.primary.provider_session_id || row.group.primary.session_id,
                     managedSourceSessionID(row.group.primary.session_id),
-                    !row.group.primary.provider_session_id || isPromptHistoryOnly(row.group.primary.session_id)
-                      ? row.group.primary.session_id
-                      : undefined
+                    row.group.primary.session_id
                   )
                   : undefined}
                 resumePending={continuingKey === row.key}

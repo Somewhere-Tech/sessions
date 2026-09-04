@@ -11,7 +11,7 @@ const settings = source('src/components/SettingsView.tsx');
 const settingsMenu = source('src/components/SettingsMenu.tsx');
 const connections = source('src/components/ConnectionsView.tsx');
 const newSession = source('src/components/NewSessionDialog.tsx');
-const resume = source('src/components/ResumeDialog.tsx');
+const resume = source('src/components/ResumeDialog.tsx') + source('src/components/ResumeActions.tsx');
 
 assert.match(app, /fetchOnboardingState/);
 assert.match(app, /onboarding\.supported !== false && !onboarding\.complete/);

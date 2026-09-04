@@ -22,9 +22,10 @@ const limits = {
   // Keep only a narrow 2 KB allowance for that authenticated routing surface.
   // Optional fleet-account onboarding and Settings add a measured 6.24 KB;
   // keep a narrow 8 KB allowance for that magic-link and sign-out surface.
-	// Three-source Fleet merging and the phone-side signed account claim add a
-	// measured 15.74 KB; keep a narrow 17 KB allowance for that complete path.
-	totalJavaScript: 1_252_000,
+  // Three-source Fleet merging and the phone-side signed account claim add a
+  // measured 15.74 KB, and the cross-provider confirmation and cancelable
+  // progress flow a measured 7.54 KB; keep a narrow allowance for both.
+  totalJavaScript: 1_261_000,
 };
 
 const entryJavaScript = assets.find((asset) => /^index-[^.]+\.js$/.test(asset.name));

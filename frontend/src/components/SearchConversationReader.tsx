@@ -187,8 +187,8 @@ export function ConversationReader({
             </div>
             <div className="search-conversation-actions">
               <span>{promptHistoryOnly
-                ? 'Sessions found Claude’s prompt index, but not a full local transcript. Resume restores this exact conversation in its recorded workspace.'
-                : 'Viewing is read-only. Resume opens this exact conversation in a new runtime.'}</span>
+                ? 'Sessions found the requests you sent Claude, but not the full conversation. You can reopen it only if Claude still has it.'
+                : 'Viewing does not change this conversation. Continue lets you choose the agent, model, and amount of history before anything is sent.'}</span>
               {canResume ? (
                 <button
                   type="button"
@@ -198,10 +198,10 @@ export function ConversationReader({
                     selected.serverId,
                     providerSessionID || historyID,
                     managedSourceSessionID(selected.sessionId),
-                    !providerSessionID || promptHistoryOnly ? historyID : undefined
+                    historyID
                   ); }}
                 >
-                  {continuing ? 'Resuming…' : 'Resume conversation'}
+                  {continuing ? 'Opening details…' : 'Continue conversation…'}
                 </button>
               ) : null}
             </div>

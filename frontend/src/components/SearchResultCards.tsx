@@ -69,7 +69,7 @@ export function SearchConversationCard({
               : messageMatches.length > 0
               ? plural(messageMatches.length, 'matching message')
               : 'Named conversation'}
-            {group.sourceSessionIds.length > 1 ? ` · continued across ${group.sourceSessionIds.length} Sessions runs` : ''}
+            {group.sourceSessionIds.length > 1 ? ` · opened ${group.sourceSessionIds.length} times in Sessions` : ''}
           </span>
         </button>
         <span className="search-conversation-matches">
@@ -102,7 +102,7 @@ export function SearchConversationCard({
             <button type="button" onClick={() => onView(result)}>{promptHistoryOnly ? 'View retained prompts' : 'Open conversation'} <span aria-hidden>→</span></button>
             {onResume ? (
               <button type="button" className="is-resume" disabled={resumePending} onClick={() => { void onResume(); }}>
-                {resumePending ? 'Resuming…' : 'Resume conversation'}
+                {resumePending ? 'Opening details…' : 'Continue conversation…'}
               </button>
             ) : null}
           </span>

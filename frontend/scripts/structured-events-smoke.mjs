@@ -365,6 +365,16 @@ try {
   assert.equal(providerFaults[1].quietStatus, 'Retrying (2 of 5) …');
   assert.equal(providerFaults[1].content, '', 'provider retries must stay a quiet system line');
 
+  const continued = eventsToMessages([{
+    ...codexBase,
+    type: 'system',
+    subtype: 'continuation_started',
+    timestamp: '2026-07-20T10:00:06Z',
+    detail: 'Continued from Frozen release plan (Codex) · 84 messages · model Sonnet 5'
+  }]);
+  assert.equal(continued.length, 1, 'a continued conversation must begin with its source line');
+  assert.equal(continued[0].quietStatus, 'Continued from Frozen release plan (Codex) · 84 messages · model Sonnet 5');
+
   process.stdout.write('structured-events smoke passed\n');
 } finally {
   await rm(work, { recursive: true, force: true });

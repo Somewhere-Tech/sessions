@@ -617,10 +617,10 @@ export function SessionNavigator({
             <button
               type="button"
               className="session-row-continue"
-              aria-label={`Resume ${label} in a new runtime`}
-              title="Resume this conversation in a new runtime"
+              aria-label={`Continue ${label}`}
+              title="Choose the agent and model before continuing"
               onClick={(event) => { event.stopPropagation(); onResumeSession(session); }}
-            >Resume <span aria-hidden>→</span></button>
+            >Continue <span aria-hidden>→</span></button>
           ) : null}
           {!selectingEnded ? (
             <div
@@ -695,7 +695,7 @@ export function SessionNavigator({
                     : isPinned(session) ? 'Unpin' : 'Pin'}
                   {session.exited ? <small>ended · archive instead</small> : null}
                 </button>
-                {end && canContinueSession(session) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onResumeSession(session); }}>Resume…</button> : null}
+                {end && canContinueSession(session) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onResumeSession(session); }}>Continue conversation…</button> : null}
                 {providerName ? (
                   <details className="session-action-submenu">
                     <summary>Fork <small>original stays here</small></summary>
@@ -709,9 +709,9 @@ export function SessionNavigator({
                     </div>
                   </details>
                 ) : null}
-                {session.reopenedAs ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.reopenedAs!); }}>Open resumed runtime</button> : null}
-                {session.resumedFrom ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.resumedFrom!); }}>View previous runtime</button> : null}
-                <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onStartLinked(session.id); }}>Start linked session…</button>
+                {session.reopenedAs ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.reopenedAs!); }}>Open continued conversation</button> : null}
+                {session.resumedFrom ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.resumedFrom!); }}>View earlier conversation</button> : null}
+                <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onStartLinked(session.id); }}>Start related session…</button>
                 <details className="session-action-submenu">
                   <summary>Move</summary>
                   <div>
@@ -799,7 +799,7 @@ export function SessionNavigator({
       <header className="session-navigator-head">
         <div><span>Operations inbox</span><strong>Sessions</strong></div>
         <div className="session-navigator-actions">
-          <button type="button" className="session-continue-action" onClick={onContinue}>Resume</button>
+          <button type="button" className="session-continue-action" onClick={onContinue}>Continue</button>
           <button type="button" className="session-new-action" onClick={onNew} aria-label="New session"><span aria-hidden>＋</span> New</button>
         </div>
       </header>

@@ -132,17 +132,20 @@ try {
 }
 
 // ── Single-implementation checks ───────────────────────────────────────────
-const [app, resumeDialog, pairingHook, connectScreen, fleetView, connectionsView] = await Promise.all([
+const [app, resumeDialog, resumeActions, pairingHook, connectScreen, fleetView, connectionsView] = await Promise.all([
   source('src/App.tsx'),
   source('src/components/ResumeDialog.tsx'),
+  source('src/components/ResumeActions.tsx'),
   source('src/hooks/useMachineAccessPairing.ts'),
   source('src/components/ConnectScreen.tsx'),
   source('src/components/FleetView.tsx'),
   source('src/components/ConnectionsView.tsx')
 ]);
 
-for (const [name, surface] of [['App.tsx', app], ['ResumeDialog.tsx', resumeDialog]]) {
-  assert.match(surface, /adoptConversationWithRepair/, `${name} must use the shared adopt path`);
+assert.match(app, /resumeExactSession/, 'App.tsx must use the shared exact-resume path');
+assert.match(resumeDialog, /<ResumeActions/, 'ResumeDialog.tsx must delegate continuation actions');
+for (const [name, surface] of [['App.tsx', app], ['ResumeActions.tsx', resumeActions]]) {
+  assert.match(surface, /resumeExactSession|adoptConversationWithRepair/, `${name} must use a shared resume path`);
   assert.doesNotMatch(surface, /\bawait adoptConversation\(/, `${name} must not adopt directly`);
 }
 assert.match(app, /setAdoptionNotice\(adoptionWarning\(adopted\)\)/,

@@ -62,7 +62,7 @@ describe('capability: resume a conversation', () => {
     render(<ResumeFlow onResumed={(laneId) => { resumedLaneId = laneId; }} />);
 
     await user.click(await screen.findByRole('button', { name: /Thursday migration plan/ }));
-    await user.click(await screen.findByRole('button', { name: 'Resume with Claude' }));
+    await user.click(await screen.findByRole('button', { name: 'Continue Claude conversation' }));
 
     // The daemon bound the same provider conversation the person picked.
     await waitFor(() => expect(daemon.adopted).toEqual([PROVIDER_UUID]));
