@@ -28,11 +28,9 @@ func (a *app) cmdContinue(args []string) error {
 	if _, err := a.useQualifiedHistoryReference(&args[0]); err != nil {
 		return err
 	}
-	if repairSet && repairLaneID == "" {
-		return fail(1, "--repair requires the existing live successor id")
-	}
-	if sourceSet && sourceSessionID == "" {
-		return fail(1, "--source requires the ended source session id")
+	sourceSessionID, repairLaneID, err = a.resolveRecoverySessionIDs(sourceSessionID, sourceSet, repairLaneID, repairSet)
+	if err != nil {
+		return err
 	}
 	if destinationSet && destinationProvider != "claude" && destinationProvider != "codex" {
 		return fail(1, "--with must be claude or codex")

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -280,27 +281,28 @@ func filterLaneViews(lanes []laneView, options laneListOptions, daemonUserID str
 }
 
 func resolveSubtreeID(lanes []laneView, idOrPrefix string) (string, error) {
-	candidates := make(map[string]struct{})
+	seen := make(map[string]struct{})
 	for _, lane := range lanes {
-		candidates[lane.ID] = struct{}{}
+		seen[lane.ID] = struct{}{}
 		for _, ancestor := range lane.CreatorAncestry {
-			candidates[ancestor] = struct{}{}
+			seen[ancestor] = struct{}{}
 		}
 	}
-	if _, exact := candidates[idOrPrefix]; exact {
-		return idOrPrefix, nil
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
 	}
-	matches := make([]string, 0, 2)
-	for candidate := range candidates {
-		if strings.HasPrefix(candidate, idOrPrefix) {
-			matches = append(matches, candidate)
-		}
+	slices.Sort(ids)
+	candidates := make([]idCandidate, 0, len(ids))
+	for _, id := range ids {
+		candidates = append(candidates, labeledID(id))
 	}
-	if len(matches) == 1 {
-		return matches[0], nil
+	id, found, err := resolveIDPrefix(idOrPrefix, "session", "sessions lanes", candidates)
+	if err != nil {
+		return "", err
 	}
-	if len(matches) > 1 {
-		return "", fail(1, "ambiguous subtree prefix %q", idOrPrefix)
+	if found {
+		return id, nil
 	}
 	if looksLikeLaneID(idOrPrefix) {
 		// A valid session can legitimately have no lane descendants, in which
@@ -616,22 +618,16 @@ func (a *app) resolveLaneID(idOrPrefix string) (string, bool, error) {
 	if err := json.Unmarshal(listed.body, &response); err != nil {
 		return "", false, err
 	}
+	candidates := make([]idCandidate, 0, len(response.Lanes))
 	for _, lane := range response.Lanes {
-		if lane.ID == idOrPrefix {
-			return lane.ID, true, nil
-		}
+		candidates = append(candidates, labeledID(lane.ID, lane.Name, toolOfSession(lane.session)))
 	}
-	matches := make([]string, 0, 2)
-	for _, lane := range response.Lanes {
-		if strings.HasPrefix(lane.ID, idOrPrefix) {
-			matches = append(matches, lane.ID)
-		}
+	id, found, resolveErr := resolveIDPrefix(idOrPrefix, "lane", "sessions lanes", candidates)
+	if resolveErr != nil {
+		return "", false, resolveErr
 	}
-	if len(matches) == 1 {
-		return matches[0], true, nil
-	}
-	if len(matches) > 1 {
-		return "", false, fail(1, "ambiguous lane prefix %q", idOrPrefix)
+	if found {
+		return id, true, nil
 	}
 	if looksLikeLaneID(idOrPrefix) {
 		_, statusCode, err := a.fetchLaneManifest(context.Background(), idOrPrefix)

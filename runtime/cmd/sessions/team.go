@@ -63,6 +63,11 @@ func (a *app) cmdTeam(args []string) error {
 	if lane == "" {
 		return fail(1, "no calling lane: run this inside a Sessions lane, or pass `sessions team <lane-id>`")
 	}
+	resolved, err := a.resolveSessionID(lane)
+	if err != nil {
+		return err
+	}
+	lane = resolved
 
 	path := "/api/lanes/mine?lane=" + escapeID(lane)
 	var listing teamListing

@@ -158,3 +158,32 @@ func TestDevicesListJSONAndRevokePrefix(t *testing.T) {
 		t.Fatalf("json list = %#v, err=%v, output=%q", parsed, err, stdout.String())
 	}
 }
+
+func TestAccessAcceptResolvesThePrintedRequestPrefix(t *testing.T) {
+	requestID := "534c15f6-1111-4111-8111-111111111111"
+	pending := accessRequest{RequestID: requestID, Name: "Laptop", Transport: "tailnet"}
+	decidedID := ""
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/access/requests":
+			_ = json.NewEncoder(response).Encode(accessRequestsResponse{Requests: []accessRequest{pending}})
+		case request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/api/access/requests/"):
+			decidedID = strings.TrimPrefix(request.URL.Path, "/api/access/requests/")
+			_ = json.NewEncoder(response).Encode(pending)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"--host", server.URL, "access", "accept", requestID[:8]},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if code != 0 || stderr.Len() != 0 || decidedID != requestID {
+		t.Fatalf("accept exit=%d decided=%q stdout=%q stderr=%q", code, decidedID, stdout.String(), stderr.String())
+	}
+}

@@ -907,7 +907,7 @@ Examples:
 
 ```text
 Usage:
-  sessions recall [<full-session-id> [--raw]]
+  sessions recall [<session-id-or-prefix> [--raw]]
 
 inspect integration recall data
 
@@ -1361,7 +1361,7 @@ Usage:
 
 review and decide machine access requests
 
-List pending nearby and Tailscale access requests, or accept or deny one by id. Requests show the transport and verified Tailscale identity or observed private-LAN source address before approval. This is the CLI equivalent of the native access inbox, so an authorized agent can complete the same workflow without GUI automation.
+List pending nearby and Tailscale access requests, or accept or deny one by exact id or the unique prefix printed by the list. Requests show the transport and verified Tailscale identity or observed private-LAN source address before approval. This is the CLI equivalent of the native access inbox, so an authorized agent can complete the same workflow without GUI automation.
 
 Examples:
   sessions access requests

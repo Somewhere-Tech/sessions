@@ -18,7 +18,11 @@ func (a *app) cmdFork(args []string) error {
 	if destinationSet && destinationProvider != "claude" && destinationProvider != "codex" {
 		return fail(1, "--with must be claude or codex")
 	}
-	body := map[string]any{"sourceSessionId": args[0]}
+	sourceID, err := a.resolveSessionID(args[0])
+	if err != nil {
+		return err
+	}
+	body := map[string]any{"sourceSessionId": sourceID}
 	if destinationSet {
 		body["destinationProvider"] = destinationProvider
 	}

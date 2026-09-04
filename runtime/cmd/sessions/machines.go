@@ -1010,9 +1010,24 @@ func (a *app) cmdAccess(args []string) error {
 		return writer.Flush()
 	}
 	if len(args) == 2 && (args[0] == "accept" || args[0] == "deny") {
+		var pending accessRequestsResponse
+		if err := a.getJSON("/api/access/requests", &pending); err != nil {
+			return err
+		}
+		candidates := make([]idCandidate, 0, len(pending.Requests))
+		for _, request := range pending.Requests {
+			candidates = append(candidates, labeledID(request.RequestID, request.Name, request.Transport))
+		}
+		requestID, found, err := resolveIDPrefix(args[1], "access request", "sessions access requests", candidates)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fail(1, "no pending access request matches %q; run `sessions access requests`", args[1])
+		}
 		var decided accessRequest
 		if err := a.postJSON(
-			"/api/access/requests/"+url.PathEscape(args[1]),
+			"/api/access/requests/"+url.PathEscape(requestID),
 			map[string]string{"decision": args[0]}, &decided, 2,
 		); err != nil {
 			return err
@@ -1024,7 +1039,7 @@ func (a *app) cmdAccess(args []string) error {
 		if args[0] == "deny" {
 			verb = "Denied"
 		}
-		_, err := fmt.Fprintf(a.stdout, "%s access for %s (%s).\n", verb, decided.Name, decided.Transport)
+		_, err = fmt.Fprintf(a.stdout, "%s access for %s (%s).\n", verb, decided.Name, decided.Transport)
 		return err
 	}
 	return fail(1, "usage: sessions access <requests|accept ID|deny ID>")
@@ -1277,21 +1292,20 @@ func loadSavedMachine(home, reference string) (savedMachine, error) {
 func findMachine(machines []savedMachine, reference string) (int, error) {
 	reference = strings.TrimSpace(reference)
 	for index, machine := range machines {
-		if strings.EqualFold(machine.Alias, reference) || machine.MachineID == reference {
+		if strings.EqualFold(machine.Alias, reference) {
 			return index, nil
 		}
 	}
-	matches := make([]int, 0, 1)
-	for index, machine := range machines {
-		if strings.HasPrefix(machine.MachineID, reference) {
-			matches = append(matches, index)
-		}
+	candidates := make([]idCandidate, 0, len(machines))
+	for _, machine := range machines {
+		candidates = append(candidates, labeledID(machine.MachineID, machine.Alias, machine.Name))
 	}
-	if len(matches) == 1 {
-		return matches[0], nil
+	id, found, err := resolveIDPrefix(reference, "machine", "sessions machines", candidates)
+	if err != nil {
+		return -1, err
 	}
-	if len(matches) > 1 {
-		return -1, fail(1, "machine reference %q is ambiguous", reference)
+	if found {
+		return candidateIndex(id, candidates), nil
 	}
 	return -1, fail(1, "unknown machine %q; run `sessions machines` to list saved machines", reference)
 }

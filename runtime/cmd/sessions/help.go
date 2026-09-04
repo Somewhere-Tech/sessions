@@ -247,7 +247,7 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions recover", "sessions recover --all", "sessions recover --reopen", "sessions --json recover --reopen --force"}, run: (*app).cmdRecover,
 	},
 	{
-		name: "recall", usage: "recall [<full-session-id> [--raw]]",
+		name: "recall", usage: "recall [<session-id-or-prefix> [--raw]]",
 		summary: "inspect integration recall data", group: dailyCommandGroup, localJSON: true,
 		longHelp: "Show the integration-backed recall view, optionally for one full session id. --raw prints the source payload.",
 		examples: []string{"sessions recall", "sessions recall 00000000-0000-4000-8000-000000000001 --raw"}, run: (*app).cmdRecall,
@@ -399,7 +399,7 @@ var commandTable = []commandSpec{
 	{
 		name: "access", usage: "access <requests | accept ID | deny ID>",
 		summary: "review and decide machine access requests", group: adminCommandGroup, localJSON: true,
-		longHelp: "List pending nearby and Tailscale access requests, or accept or deny one by id. Requests show the transport and verified Tailscale identity or observed private-LAN source address before approval. This is the CLI equivalent of the native access inbox, so an authorized agent can complete the same workflow without GUI automation.",
+		longHelp: "List pending nearby and Tailscale access requests, or accept or deny one by exact id or the unique prefix printed by the list. Requests show the transport and verified Tailscale identity or observed private-LAN source address before approval. This is the CLI equivalent of the native access inbox, so an authorized agent can complete the same workflow without GUI automation.",
 		examples: []string{"sessions access requests", "sessions --json access requests", "sessions access accept 0123abcd", "sessions access deny 0123abcd"}, run: (*app).cmdAccess,
 	},
 	{

@@ -706,8 +706,15 @@ func TestContinueWithProviderRequestsCrossProviderContinuation(t *testing.T) {
 }
 
 func TestForkCopiesLiveConversationWithoutEndOrForce(t *testing.T) {
+	const sourceID = "12345678-1234-4234-8234-123456789abc"
 	var posted map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == "/api/sessions" {
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{{
+				"id": sourceID, "name": "source lane", "cmd": "codex", "cwd": "/work",
+			}}})
+			return
+		}
 		if request.Method != http.MethodPost || request.URL.Path != "/api/recovery/fork" {
 			http.NotFound(response, request)
 			return
@@ -724,7 +731,7 @@ func TestForkCopiesLiveConversationWithoutEndOrForce(t *testing.T) {
 			"destinationProvider":"codex",
 			"mode":"native-import",
 			"importedMessages":42,
-			"forkedFromSessionId":"source-lane",
+			"forkedFromSessionId":"`+sourceID+`",
 			"sourceUntouched":true
 		}`)
 	}))
@@ -732,12 +739,12 @@ func TestForkCopiesLiveConversationWithoutEndOrForce(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	if code := run(
-		[]string{"--host", server.URL, "fork", "source-lane", "--with", "codex", "--at", "17", "--message-id", "message-hash"},
+		[]string{"--host", server.URL, "fork", sourceID[:8], "--with", "codex", "--at", "17", "--message-id", "message-hash"},
 		strings.NewReader(""), &stdout, &stderr,
 	); code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if posted["sourceSessionId"] != "source-lane" || posted["destinationProvider"] != "codex" ||
+	if posted["sourceSessionId"] != sourceID || posted["destinationProvider"] != "codex" ||
 		posted["sourceMessageIndex"] != float64(17) || posted["sourceMessageId"] != "message-hash" {
 		t.Fatalf("posted body = %#v", posted)
 	}
@@ -745,7 +752,7 @@ func TestForkCopiesLiveConversationWithoutEndOrForce(t *testing.T) {
 		t.Fatalf("fork must not force or end its source: %#v", posted)
 	}
 	if stdout.String() != "forked-lane\n" ||
-		!strings.Contains(stderr.String(), "source source-lane keeps running") {
+		!strings.Contains(stderr.String(), "source "+sourceID+" keeps running") {
 		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
@@ -820,6 +827,13 @@ func TestAdoptPartialSuccessPrintsSafeRepairAndRepairUsesExistingLane(t *testing
 	sourceID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	var posted []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == "/api/sessions" {
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{
+				{"id": laneID, "name": "successor", "cmd": "codex", "cwd": "/work"},
+				{"id": sourceID, "name": "source", "cmd": "codex", "cwd": "/work"},
+			}})
+			return
+		}
 		if request.Method != http.MethodPost || request.URL.Path != "/api/recovery/adopt" {
 			http.NotFound(response, request)
 			return
@@ -861,7 +875,7 @@ func TestAdoptPartialSuccessPrintsSafeRepairAndRepairUsesExistingLane(t *testing
 	stdout.Reset()
 	stderr.Reset()
 	if code := run(
-		[]string{"--host", server.URL, "adopt", provider, "--repair", laneID, "--source", sourceID},
+		[]string{"--host", server.URL, "adopt", provider, "--repair", laneID[:8], "--source", sourceID[:8]},
 		strings.NewReader(""), &stdout, &stderr,
 	); code != 0 {
 		t.Fatalf("repair exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())

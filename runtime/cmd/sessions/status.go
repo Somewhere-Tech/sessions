@@ -165,29 +165,15 @@ func (a *app) resolveStatusSession(idOrPrefix string) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	for index := range sessions {
-		if sessions[index].ID == idOrPrefix {
-			return &sessions[index], nil
-		}
+	candidates := candidatesForSessions(a, sessions)
+	id, found, resolveErr := resolveIDPrefix(idOrPrefix, "session", "sessions ls", candidates)
+	if resolveErr != nil {
+		return nil, resolveErr
 	}
-	matches := make([]int, 0)
-	for index := range sessions {
-		if strings.HasPrefix(sessions[index].ID, idOrPrefix) {
-			matches = append(matches, index)
-		}
-	}
-	if len(matches) == 1 {
-		return &sessions[matches[0]], nil
-	}
-	if len(matches) == 0 {
+	if !found {
 		return nil, fail(1, "%s", unknownSessionMessage(idOrPrefix))
 	}
-	var lines strings.Builder
-	for _, index := range matches {
-		candidate := sessions[index]
-		fmt.Fprintf(&lines, "  %s  %s\n", prefixString(candidate.ID, 8), a.sessionLabel(candidate))
-	}
-	return nil, fail(1, "ambiguous session prefix '%s' — matches:\n%srun `sessions ls`", idOrPrefix, lines.String())
+	return &sessions[candidateIndex(id, candidates)], nil
 }
 
 func (a *app) latestVerdict(id string) (*verdictprotocol.Record, error) {

@@ -287,7 +287,7 @@ func TestForgetMachineRemovesOnlyLocalCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"machines", "forget", "mini"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+	if code := run([]string{"machines", "forget", machine.MachineID[:8]}, strings.NewReader(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	if _, err := os.Stat(savedMachineTokenPath(home, machine.MachineID)); !os.IsNotExist(err) {

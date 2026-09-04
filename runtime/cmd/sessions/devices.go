@@ -66,19 +66,18 @@ func (a *app) revokePairedDevice(prefix string) error {
 	if err != nil {
 		return err
 	}
-	matches := make([]pairedDevice, 0, 1)
+	candidates := make([]idCandidate, 0, len(devices))
 	for _, device := range devices {
-		if strings.HasPrefix(device.DeviceID, prefix) {
-			matches = append(matches, device)
-		}
+		candidates = append(candidates, labeledID(device.DeviceID, displayDeviceName(device.Name)))
 	}
-	if len(matches) == 0 {
+	id, found, resolveErr := resolveIDPrefix(prefix, "device", "sessions devices", candidates)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	if !found {
 		return fail(1, "no paired device matches %q; run `sessions devices` to list device ids", prefix)
 	}
-	if len(matches) > 1 {
-		return fail(1, "device prefix %q is ambiguous (%d matches); use more characters from `sessions devices`", prefix, len(matches))
-	}
-	matched := matches[0]
+	matched := devices[candidateIndex(id, candidates)]
 	response, err := a.api.request(context.Background(), http.MethodDelete, "/api/devices/"+escapeID(matched.DeviceID), nil, 5*time.Second)
 	if err != nil {
 		return fail(2, "cannot revoke %s (%s): %s", displayDeviceName(matched.Name), matched.DeviceID, err)

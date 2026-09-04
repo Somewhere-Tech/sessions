@@ -187,32 +187,26 @@ func (a *app) sessionLabel(value session) string {
 }
 
 func (a *app) resolveSessionID(idOrPrefix string) (string, error) {
-	sessions, err := a.listSessions(true)
+	id, found, err := a.matchSessionID(idOrPrefix)
 	if err != nil {
 		return "", err
 	}
-	for _, candidate := range sessions {
-		if candidate.ID == idOrPrefix {
-			return candidate.ID, nil
-		}
-	}
-	matches := make([]session, 0)
-	for _, candidate := range sessions {
-		if strings.HasPrefix(candidate.ID, idOrPrefix) {
-			matches = append(matches, candidate)
-		}
-	}
-	if len(matches) == 1 {
-		return matches[0].ID, nil
-	}
-	if len(matches) == 0 {
+	if !found {
 		return "", fail(1, "%s", unknownSessionMessage(idOrPrefix))
 	}
-	var lines strings.Builder
-	for _, candidate := range matches {
-		fmt.Fprintf(&lines, "  %s  %s\n", prefixString(candidate.ID, 8), a.sessionLabel(candidate))
+	return id, nil
+}
+
+func (a *app) matchSessionID(idOrPrefix string) (string, bool, error) {
+	sessions, err := a.listSessions(true)
+	if err != nil {
+		return "", false, err
 	}
-	return "", fail(1, "ambiguous session prefix '%s' — matches:\n%srun `sessions ls`", idOrPrefix, lines.String())
+	id, found, resolveErr := resolveIDPrefix(idOrPrefix, "session", "sessions ls", candidatesForSessions(a, sessions))
+	if resolveErr != nil {
+		return "", false, resolveErr
+	}
+	return id, found, nil
 }
 
 func prefixString(value string, count int) string {
