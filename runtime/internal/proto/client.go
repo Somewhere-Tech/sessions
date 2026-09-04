@@ -101,6 +101,10 @@ func (r *SocketRunner) Info() RunnerInfo {
 	defer r.mu.Unlock()
 	info := r.info
 	info.Args = append([]string(nil), info.Args...)
+	if info.Turn != nil {
+		turn := *info.Turn
+		info.Turn = &turn
+	}
 	return info
 }
 

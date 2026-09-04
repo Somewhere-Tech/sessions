@@ -106,6 +106,10 @@ func (r *Runner) Info() proto.RunnerInfo {
 	defer r.mu.Unlock()
 	info := r.info
 	info.Args = append([]string(nil), info.Args...)
+	if info.Turn != nil {
+		turn := *info.Turn
+		info.Turn = &turn
+	}
 	info.CurrentSeq = r.currentSeqLocked()
 	return info
 }
@@ -256,6 +260,13 @@ func (r *Runner) AddCodexEvent(value any) {
 
 func (r *Runner) SetRetry(value *proto.ProviderRetry) {
 	r.Emit(proto.Event{Kind: proto.EventRetry, Retry: value})
+}
+
+func (r *Runner) SetTurnWorking(working bool) {
+	r.mu.Lock()
+	r.info.Turn = &proto.TurnState{Working: working}
+	r.signalChangeLocked()
+	r.mu.Unlock()
 }
 
 func (r *Runner) Emit(event proto.Event) {

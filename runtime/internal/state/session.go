@@ -709,6 +709,16 @@ func (s *Session) SetWorking(working bool) (previous bool, exited bool) {
 	return previous, exited
 }
 
+// RunnerTurnState returns the exact Rich turn state captured in the runner's
+// reconnect HELLO. Older compatible runners omit it.
+func (s *Session) RunnerTurnState() (bool, bool) {
+	info := s.runner.Info()
+	if info.ProtocolVersion < 5 || info.Turn == nil {
+		return false, false
+	}
+	return info.Turn.Working, true
+}
+
 // SetIdleResult publishes the last useful outcome as additive session state.
 // LastSummary deliberately survives the next working transition so operators
 // can still see the most recently completed result while a follow-up runs.

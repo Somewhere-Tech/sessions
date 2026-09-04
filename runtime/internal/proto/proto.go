@@ -23,7 +23,7 @@ const (
 	// ProtocolVersion is the current daemon/runner wire revision. Version zero
 	// means the legacy HELLO omitted protocolVersion; it remains supported while
 	// immutable pre-1 runners are still alive.
-	ProtocolVersion          = 4
+	ProtocolVersion          = 5
 	MinimumCompatibleVersion = 0
 	MaximumCompatibleVersion = ProtocolVersion
 )

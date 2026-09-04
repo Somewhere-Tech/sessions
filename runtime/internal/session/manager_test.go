@@ -225,6 +225,51 @@ func TestCodexAppServerStructuredHistoryAndLifecycleAreAuthoritative(t *testing.
 	}
 }
 
+func TestRichRunnerReconnectRestoresExactTurnStateAndConversation(t *testing.T) {
+	root := t.TempDir()
+	id := "00000000-0000-4000-8000-000000000071"
+	info := proto.RunnerInfo{
+		ID: id, Cmd: "codex", Cwd: root, Cols: 120, Rows: 40, PID: 4242,
+		ProtocolVersion: proto.ProtocolVersion, Turn: &proto.TurnState{Working: true},
+	}
+	runner := prototest.NewRunner(info)
+	user, _ := codexapp.UserHistoryEvent("conversation-1", "keep working", time.Unix(1, 0))
+	runner.AddCodexEvent(json.RawMessage(user))
+	phase := "final_answer"
+	assistant, _ := codexapp.HistoryEvent(codexapp.ItemCompleted{
+		ConversationID: "conversation-1", TurnID: "old-turn", CompletedAtMS: 2000,
+		Item: codexapp.ThreadItem{ID: "message-1", Type: "agentMessage", Text: "earlier result", Phase: &phase},
+	}, time.Unix(2, 0))
+	runner.AddCodexEvent(json.RawMessage(assistant))
+	completed, _ := codexapp.HistoryEvent(codexapp.TurnComplete{
+		ConversationID: "conversation-1", TurnID: "old-turn", Status: "completed",
+	}, time.Unix(3, 0))
+	runner.AddCodexEvent(json.RawMessage(completed))
+
+	manager := NewManager(testConfig(root), prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, Notify: func(PushPayload) {},
+	})
+	t.Cleanup(manager.Close)
+	session, err := manager.registry.RegisterMetadata(context.Background(), runner, state.RunnerMetadata{
+		Info: info, Kind: state.KindCodexAppServer,
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.manage(session)
+	got := session.Info()
+	if !got.Working || got.IdleReason != "" || got.IdleSince != nil {
+		t.Fatalf("reconnected Rich state = working %v, idle %q at %v", got.Working, got.IdleReason, got.IdleSince)
+	}
+	snapshot, _, err := session.Snapshot(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(snapshot, "[user]\nkeep working") || !strings.Contains(snapshot, "[assistant]\nearlier result") {
+		t.Fatalf("reconnected structured snapshot = %q", snapshot)
+	}
+}
+
 type codexBoundLauncher struct{ *prototest.Launcher }
 
 func (l codexBoundLauncher) Launch(ctx context.Context, request proto.LaunchRequest) (proto.Runner, error) {

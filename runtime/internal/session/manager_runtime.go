@@ -65,7 +65,10 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 				runtime.structuredLifecycleWorking = &value
 			}
 		}
-		if runtime.structuredLifecycleWorking != nil {
+		if working, exact := session.RunnerTurnState(); exact {
+			runtime.structuredLifecycleWorking = &working
+			session.SetWorking(working)
+		} else if runtime.structuredLifecycleWorking != nil {
 			session.SetWorking(*runtime.structuredLifecycleWorking)
 		}
 	}

@@ -6,11 +6,13 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/claudep"
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -24,6 +26,33 @@ func TestStructuredProfileLoginHintKeepsToolErrorAndTeachesPTYLogin(t *testing.T
 	if got := structuredProfileLoginHint(toolErr, ""); got != toolErr {
 		t.Fatalf("default structured error changed: %v", got)
 	}
+}
+
+func TestClaudeHelloReportsCurrentTurnState(t *testing.T) {
+	server, daemon := net.Pipe()
+	r := &claudeStructuredRunner{
+		cfg:    config{id: "claude-session", cmd: "claude", cwd: "/tmp"},
+		logger: log.New(io.Discard, "", 0), clients: make(map[*client]struct{}), active: true,
+		retry: &structuredRetryController{},
+	}
+	done := make(chan struct{})
+	go func() {
+		r.serveClient(server)
+		close(done)
+	}()
+	frame, err := proto.Read(daemon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got hello
+	if frame.Type != proto.Hello || json.Unmarshal(frame.Payload, &got) != nil {
+		t.Fatalf("runner hello = type %v payload %s", frame.Type, frame.Payload)
+	}
+	if got.ProtocolVersion != proto.ProtocolVersion || got.Turn == nil || !got.Turn.Working {
+		t.Fatalf("runner hello turn state = %#v", got)
+	}
+	_ = daemon.Close()
+	<-done
 }
 
 func TestClaudeResultFaultUsesAPIStatusAndRunnerPersistsStreamFailures(t *testing.T) {

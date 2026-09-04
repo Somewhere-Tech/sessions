@@ -25,6 +25,14 @@ type RunnerInfo struct {
 	RemoteEndpoint  string         `json:"remoteEndpoint,omitempty"`
 	ClaudeSessionID string         `json:"claudeSessionId,omitempty"`
 	Retry           *ProviderRetry `json:"retry,omitempty"`
+	Turn            *TurnState     `json:"turn,omitempty"`
+}
+
+// TurnState is the Rich runner's exact current provider-turn state. It lives
+// in HELLO so a replacement daemon does not have to infer live work from a
+// bounded history replay.
+type TurnState struct {
+	Working bool `json:"working"`
 }
 
 // ProviderRetry is the live runner-owned schedule for one retained failed

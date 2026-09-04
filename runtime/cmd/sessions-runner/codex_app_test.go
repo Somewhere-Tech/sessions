@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,31 @@ func TestCodexInputDuringActiveTurnUsesProviderSteering(t *testing.T) {
 	if r.composer.Len() != 0 {
 		t.Fatalf("composer retained %q after a refused message", r.composer.String())
 	}
+}
+
+func TestCodexHelloReportsCurrentTurnState(t *testing.T) {
+	r := newCodexTestRunner(t)
+	r.active = true
+	r.retry = &structuredRetryController{}
+	server, daemon := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		r.serveClient(server)
+		close(done)
+	}()
+	frame, err := proto.Read(daemon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got hello
+	if frame.Type != proto.Hello || json.Unmarshal(frame.Payload, &got) != nil {
+		t.Fatalf("runner hello = type %v payload %s", frame.Type, frame.Payload)
+	}
+	if got.ProtocolVersion != proto.ProtocolVersion || got.Turn == nil || !got.Turn.Working {
+		t.Fatalf("runner hello turn state = %#v", got)
+	}
+	_ = daemon.Close()
+	<-done
 }
 
 func TestCodexRejectedSteeringIsExplicit(t *testing.T) {

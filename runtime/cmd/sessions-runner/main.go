@@ -80,6 +80,7 @@ type hello struct {
 	RemoteEndpoint  string               `json:"remoteEndpoint,omitempty"`
 	ClaudeSessionID string               `json:"claudeSessionId,omitempty"`
 	Retry           *proto.ProviderRetry `json:"retry,omitempty"`
+	Turn            *proto.TurnState     `json:"turn,omitempty"`
 }
 
 type exitInfo struct {

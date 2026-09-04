@@ -282,7 +282,7 @@ func (r *claudeStructuredRunner) serveClient(connection net.Conn) {
 		ID: r.cfg.id, Cmd: r.cfg.cmd, Args: r.cfg.args, Cwd: r.cfg.cwd,
 		Cols: r.cfg.cols, Rows: r.cfg.rows, CreatedAt: r.createdAt,
 		PID: os.Getpid(), ProtocolVersion: proto.ProtocolVersion, RuntimeVersion: version,
-		ClaudeSessionID: r.sessionID, Retry: r.retry.Current(),
+		ClaudeSessionID: r.sessionID, Retry: r.retry.Current(), Turn: &proto.TurnState{Working: r.active},
 	}
 	r.mu.Unlock()
 	payload, err := json.Marshal(h)

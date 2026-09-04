@@ -84,7 +84,7 @@ Sent immediately on every accepted socket connection:
   "createdAt":1750000000123,
   "pid":43210,
   "currentSeq":42,
-  "protocolVersion":4,
+  "protocolVersion":5,
   "runtimeVersion":"0.2.3"
 }
 ```
@@ -98,9 +98,11 @@ Fields and types are exact:
 - `runtimeVersion`: optional Sessions release string; legacy runners omit it
 - `retry`: optional live Rich-turn schedule with numeric `attempt`, `max`, and
   `nextAt`, plus string `kind`; omitted when no automatic retry is pending
+- `turn`: protocol-5 Rich runners send `{"working":true|false}` with the exact
+  current provider-turn state; terminal runners and older Rich runners omit it
 
-Current protocol version is 4. The daemon treats a missing version as 0 and
-accepts versions 0 through 4. It rejects an explicitly unsupported version
+Current protocol version is 5. The daemon treats a missing version as 0 and
+accepts versions 0 through 5. It rejects an explicitly unsupported version
 immediately after HELLO, before replay, input, resize, snapshot, or kill frames.
 This preserves immutable pre-versioned runners without guessing that unknown
 future frame semantics are safe. `createdAt` is the current runner process's
@@ -108,6 +110,12 @@ start time from its metadata object, so it resets on a runner respawn.
 `cols`/`rows` are the live PTY object's current values;
 `currentSeq` is the in-memory log's latest sequence after disk restoration and
 any non-persisted restore notices.
+
+The `turn` value is sampled under the Rich runner's turn mutex for every new
+connection. A replacement daemon uses it ahead of replay-derived lifecycle
+state, so a bounded or not-yet-populated replay cannot make active work look
+finished. Protocols 0 through 4 remain compatible: when `turn` is absent, the
+daemon derives the best available state from structured lifecycle history.
 
 The daemon's `RunnerClient.connect()` requires HELLO within 2,000 ms by default.
 It resolves the connection Promise on HELLO but also exposes HELLO as an event.
@@ -260,7 +268,7 @@ delayed cleanup path; KILL does not directly close the socket or send an ack.
 For both a newly created runner and startup discovery, sessionsd:
 
 1. connects to the Unix socket and waits up to two seconds for HELLO;
-2. accepts protocol versions 0 through 4 and rejects values outside that range;
+2. accepts protocol versions 0 through 5 and rejects values outside that range;
 3. creates a local 4 MiB EventLog and 5,000-row xterm mirror sized from HELLO;
 4. installs OUTPUT/EXIT/disconnect listeners;
 5. sends REPLAY_REQ with `afterSeq=0`;
