@@ -50,6 +50,11 @@ type serveStatus struct {
 func ParseStatus(encoded []byte) (Status, error) {
 	var wire wireStatus
 	if err := json.Unmarshal(encoded, &wire); err != nil {
+		// The CLI prints prose instead of JSON when it cannot reach its
+		// daemon or GUI; that sentence is the diagnosis, not the JSON error.
+		if text := strings.TrimSpace(string(encoded)); text != "" && !strings.HasPrefix(text, "{") {
+			return Status{}, fmt.Errorf("Tailscale CLI: %s", firstLine(text))
+		}
 		return Status{}, fmt.Errorf("decode Tailscale status: %w", err)
 	}
 	result := Status{Present: true}
@@ -116,6 +121,7 @@ func (c Client) run(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	command := exec.CommandContext(ctx, c.Path, args...)
 	command.Stdin = nil
+	command.Env = cliEnvironment(os.Environ())
 	encoded, err := command.CombinedOutput()
 	if err != nil {
 		detail := strings.TrimSpace(string(encoded))
@@ -125,6 +131,20 @@ func (c Client) run(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, errors.New(detail)
 	}
 	return encoded, nil
+}
+
+// cliEnvironment is the environment the Tailscale CLI needs. The Mac App
+// Store build decides whether it was run from a shell by looking for SHLVL;
+// without it the CLI tries to start the GUI itself and fails under launchd
+// ("The Tailscale GUI failed to start"), which is how sessionsd runs.
+func cliEnvironment(base []string) []string {
+	env := append([]string(nil), base...)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "SHLVL=") {
+			return env
+		}
+	}
+	return append(env, "SHLVL=1")
 }
 
 func (c Client) Status(ctx context.Context) (Status, error) {
@@ -182,4 +202,11 @@ func endpointFromAuthority(authority string) string {
 		return ""
 	}
 	return "https://" + parsed.Host
+}
+
+func firstLine(text string) string {
+	if index := strings.IndexByte(text, '\n'); index >= 0 {
+		return strings.TrimSpace(text[:index])
+	}
+	return text
 }
