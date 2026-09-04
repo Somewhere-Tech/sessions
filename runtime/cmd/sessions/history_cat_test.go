@@ -15,9 +15,9 @@ func TestCatAndResurrectUseFleetSearchReference(t *testing.T) {
 	var continued string
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch {
-		case request.Method == http.MethodGet && request.URL.Path == "/api/history/"+historyID:
+		case request.Method == http.MethodGet && request.URL.Path == "/api/fleet/machine-mini/api/history/"+historyID:
 			_, _ = io.WriteString(response, "[user]\nRemember the launch.\n")
-		case request.Method == http.MethodPost && request.URL.Path == "/api/recovery/adopt":
+		case request.Method == http.MethodPost && request.URL.Path == "/api/fleet/machine-mini/api/recovery/adopt":
 			var body map[string]any
 			_ = json.NewDecoder(request.Body).Decode(&body)
 			continued, _ = body["historyId"].(string)
@@ -29,6 +29,7 @@ func TestCatAndResurrectUseFleetSearchReference(t *testing.T) {
 	defer server.Close()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SESSIONS_HOST", server.URL)
 	if _, err := saveMachine(home, savedMachine{
 		Alias: "mini", MachineID: "machine-mini", Name: "Mini", Endpoint: server.URL,
 	}, "device-secret"); err != nil {

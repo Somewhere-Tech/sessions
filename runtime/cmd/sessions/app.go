@@ -145,6 +145,7 @@ type app struct {
 	sleep          func(time.Duration)
 	api            *apiClient
 	explicitTarget bool
+	direct         bool
 	listModels     func(context.Context) ([]codexapp.Model, error)
 	runUpdate      func(context.Context, bool) (nativeUpdateResult, error)
 	cliIsCurrent   func(string) bool
@@ -162,6 +163,7 @@ func explainAPIClientNetworkError(client *apiClient, err error) error {
 func newApp(arguments []string, stdin io.Reader, stdout, stderr io.Writer) (*app, error) {
 	args, host, port, wantJSON := parseGlobalArgs(arguments)
 	explicitTarget := hasExplicitConnectionTarget(arguments)
+	direct := hasGlobalFlag(arguments, "--direct")
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve home directory: %w", err)
@@ -169,7 +171,7 @@ func newApp(arguments []string, stdin io.Reader, stdout, stderr io.Writer) (*app
 	output := &countingWriter{inner: stdout}
 	app := &app{
 		stdin: stdin, stdout: output, stderr: stderr, output: output,
-		args: args, host: host, port: port, wantJSON: wantJSON, explicitTarget: explicitTarget,
+		args: args, host: host, port: port, wantJSON: wantJSON, explicitTarget: explicitTarget, direct: direct,
 		home: home, now: time.Now, sleep: time.Sleep, listModels: listLiveCodexModels,
 		runUpdate:    runNativeAppUpdate,
 		cliIsCurrent: installedCLIMatches,
@@ -189,23 +191,72 @@ func newApp(arguments []string, stdin io.Reader, stdout, stderr io.Writer) (*app
 		if err != nil {
 			return nil, err
 		}
-		host = machine.Endpoint
-		port = ""
-		tokenPath = savedMachineTokenPath(home, machine.MachineID)
-		localToken = false
-		app.host = host
-		app.port = port
+		if direct {
+			host = machine.Endpoint
+			port = ""
+			tokenPath = savedMachineTokenPath(home, machine.MachineID)
+			localToken = false
+			app.host = host
+			app.port = port
+		} else {
+			host = getenv("SESSIONS_HOST", "127.0.0.1")
+			localToken = cliHostIsLoopback(host)
+			if localToken {
+				tokenPath, err = sessionstate.LocalTokenPathFromEnv()
+				if err != nil {
+					return nil, fmt.Errorf("resolve local daemon token path: %w", err)
+				}
+			}
+			app.host = host
+		}
+		client, clientErr := newAPIClient(host, port, tokenPath, localToken)
+		if clientErr != nil {
+			return nil, fail(2, "%s", clientErr)
+		}
+		if !direct {
+			client, clientErr = client.withFleetRelay(machine)
+			if clientErr != nil {
+				return nil, fail(2, "%s", clientErr)
+			}
+		}
+		app.api = client
+		app.selectSubcommand()
+		return app, nil
 	}
-	if len(app.args) > 0 {
-		app.sub = app.args[0]
-		app.args = app.args[1:]
-	}
+	app.selectSubcommand()
 	client, err := newAPIClient(host, port, tokenPath, localToken)
 	if err != nil {
 		return nil, fail(2, "%s", err)
 	}
 	app.api = client
 	return app, nil
+}
+
+func (a *app) selectSubcommand() {
+	if len(a.args) == 0 {
+		return
+	}
+	a.sub = a.args[0]
+	a.args = a.args[1:]
+}
+
+func hasGlobalFlag(arguments []string, flag string) bool {
+	for index := 0; index < len(arguments); {
+		switch arguments[index] {
+		case flag:
+			return true
+		case "--json", "--direct":
+			index++
+		case "--host", "--port", "--machine":
+			if index+1 >= len(arguments) {
+				return false
+			}
+			index += 2
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func hasExplicitConnectionTarget(arguments []string) bool {
@@ -223,6 +274,8 @@ func hasExplicitConnectionTarget(arguments []string) bool {
 		case "--host", "--port", "--machine":
 			return true
 		case "--json":
+			continue
+		case "--direct":
 			continue
 		default:
 			return false
@@ -280,6 +333,8 @@ func parseGlobalArgs(arguments []string) (args []string, host, port string, want
 		case "--json":
 			wantJSON = true
 			index++
+		case "--direct":
+			index++
 		case "--host", "--port", "--machine":
 			name := arguments[index]
 			if index+1 >= len(arguments) || arguments[index+1] == "--" {
@@ -289,7 +344,6 @@ func parseGlobalArgs(arguments []string) (args []string, host, port string, want
 				host = arguments[index+1]
 			} else if name == "--machine" {
 				host = "machine:" + arguments[index+1]
-				port = ""
 			} else {
 				port = arguments[index+1]
 			}

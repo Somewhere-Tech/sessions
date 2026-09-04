@@ -25,6 +25,18 @@ type apiClient struct {
 	client         *http.Client
 	creatorSession string
 	ownerID        string
+	pathPrefix     string
+	relayEndpoint  string
+}
+
+func (c *apiClient) withFleetRelay(machine savedMachine) (*apiClient, error) {
+	client, err := newAPIClient(c.host, c.port, c.tokenPath, c.localToken)
+	if err != nil {
+		return nil, err
+	}
+	client.pathPrefix = "/api/fleet/" + url.PathEscape(machine.MachineID)
+	client.relayEndpoint = machine.Endpoint
+	return client, nil
 }
 
 type apiResponse struct {
@@ -91,6 +103,7 @@ func (c *apiClient) close() {
 }
 
 func (c *apiClient) target(path string) (*url.URL, error) {
+	path = c.pathPrefix + path
 	if strings.HasPrefix(strings.ToLower(c.host), "http://") || strings.HasPrefix(strings.ToLower(c.host), "https://") {
 		parsed, err := url.Parse(c.host)
 		if err != nil {

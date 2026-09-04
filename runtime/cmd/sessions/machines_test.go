@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +14,30 @@ import (
 	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
+
+func TestMachineCommandUsesDaemonFleetRelayPath(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		path = request.URL.Path
+		_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{}})
+	}))
+	defer server.Close()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SESSIONS_HOST", server.URL)
+	if _, err := saveMachine(home, savedMachine{
+		Alias: "mini", MachineID: "machine-mini", Name: "Mini", Endpoint: "http://10.0.0.2:8787", Transport: "nearby",
+	}, "device-secret"); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--machine", "mini", "--json", "ls"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if path != "/api/fleet/machine-mini/api/sessions" {
+		t.Fatalf("request path = %q", path)
+	}
+}
 
 func TestMachineRegistryKeepsCredentialsOutOfMetadataAndUsesPrivateModes(t *testing.T) {
 	home := t.TempDir()
@@ -78,7 +105,7 @@ func TestNativeMachineSyncSharesApprovedMachinesWithAgents(t *testing.T) {
 	}
 }
 
-func TestSavedMachineGlobalSelectsEndpointAndTokenWithoutPrintingIt(t *testing.T) {
+func TestSavedMachineGlobalUsesLocalDaemonRelayUnlessDirect(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	machine, err := saveMachine(home, savedMachine{
@@ -98,11 +125,23 @@ func TestSavedMachineGlobalSelectsEndpointAndTokenWithoutPrintingIt(t *testing.T
 		t.Fatal(err)
 	}
 	defer application.close()
-	if application.api.host != machine.Endpoint {
+	if application.api.host != "127.0.0.1" {
 		t.Fatalf("api host = %q", application.api.host)
 	}
-	if application.api.tokenPath != savedMachineTokenPath(home, machine.MachineID) {
-		t.Fatalf("token path = %q", application.api.tokenPath)
+	if application.api.pathPrefix != "/api/fleet/"+machine.MachineID || application.api.relayEndpoint != machine.Endpoint {
+		t.Fatalf("relay client = host %q prefix %q endpoint %q", application.api.host, application.api.pathPrefix, application.api.relayEndpoint)
+	}
+	application.close()
+	application, err = newApp(
+		[]string{"--direct", "--machine", "mini", "ls"},
+		strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.close()
+	if application.api.host != machine.Endpoint || application.api.tokenPath != savedMachineTokenPath(home, machine.MachineID) {
+		t.Fatalf("direct client = host %q token %q", application.api.host, application.api.tokenPath)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 
 type Client struct {
 	endpoint *url.URL
+	display  string
 	token    string
 	http     *http.Client
 }
@@ -36,12 +37,33 @@ func NewClient(endpoint, token string) (*Client, error) {
 	}
 	parsed.Path = ""
 	return &Client{
-		endpoint: parsed, token: token,
+		endpoint: parsed, display: strings.TrimSuffix(parsed.String(), "/"), token: token,
 		http: &http.Client{Timeout: 2 * time.Minute},
 	}, nil
 }
 
-func (c *Client) Endpoint() string { return strings.TrimSuffix(c.endpoint.String(), "/") }
+// NewRelayClient sends migration requests through a local sessionsd while
+// retaining the real destination endpoint in plans and lineage records.
+func NewRelayClient(relayOrigin, destination, machineID string) (*Client, error) {
+	client, err := NewClient(relayOrigin, "")
+	if err != nil {
+		return nil, fmt.Errorf("invalid fleet relay endpoint: %w", err)
+	}
+	if machineID == "" || url.PathEscape(machineID) != machineID || strings.Contains(machineID, "..") {
+		return nil, fmt.Errorf("invalid fleet relay machine id")
+	}
+	client.endpoint.Path = "/api/fleet/" + machineID
+	client.display = strings.TrimSuffix(destination, "/")
+	return client, nil
+}
+
+func (c *Client) Endpoint() string { return c.display }
+
+func (c *Client) requestURL(path string) string {
+	target := *c.endpoint
+	target.Path = strings.TrimSuffix(c.endpoint.Path, "/") + path
+	return target.String()
+}
 
 func (c *Client) Receive(ctx context.Context, body ReceiveRequest) (ReceiveResult, error) {
 	var result ReceiveResult
@@ -58,7 +80,7 @@ func (c *Client) Create(ctx context.Context, body ReceiveRequest) (CreateResult,
 		return CreateResult{}, err
 	}
 	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, c.Endpoint()+"/api/migrate/create", bytes.NewReader(encoded),
+		ctx, http.MethodPost, c.requestURL("/api/migrate/create"), bytes.NewReader(encoded),
 	)
 	if err != nil {
 		return CreateResult{}, err
@@ -94,7 +116,7 @@ func (c *Client) post(ctx context.Context, path string, body any, wantStatus int
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint()+path, bytes.NewReader(encoded))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.requestURL(path), bytes.NewReader(encoded))
 	if err != nil {
 		return err
 	}

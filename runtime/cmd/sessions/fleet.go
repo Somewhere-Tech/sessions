@@ -90,9 +90,13 @@ func (a *app) useQualifiedHistoryReference(value *string) (string, error) {
 		if machineErr != nil {
 			return "", machineErr
 		}
-		client, err = newAPIClient(
-			machine.Endpoint, "", savedMachineTokenPath(a.home, machine.MachineID), false,
-		)
+		if a.direct {
+			client, err = newAPIClient(
+				machine.Endpoint, "", savedMachineTokenPath(a.home, machine.MachineID), false,
+			)
+		} else {
+			client, err = a.api.withFleetRelay(machine)
+		}
 		alias = machine.Alias
 	}
 	if err != nil {
@@ -113,9 +117,15 @@ func (a *app) approvedFleetTargets() ([]fleetTarget, error) {
 		return nil, err
 	}
 	for _, machine := range registry.Machines {
-		client, clientErr := newAPIClient(
-			machine.Endpoint, "", savedMachineTokenPath(a.home, machine.MachineID), false,
-		)
+		var client *apiClient
+		var clientErr error
+		if a.direct {
+			client, clientErr = newAPIClient(
+				machine.Endpoint, "", savedMachineTokenPath(a.home, machine.MachineID), false,
+			)
+		} else {
+			client, clientErr = a.api.withFleetRelay(machine)
+		}
 		if clientErr != nil {
 			continue
 		}

@@ -514,7 +514,7 @@ func writeTopLevelHelpFor(writer io.Writer, commands []commandSpec) error {
 			}
 		}
 	}
-	_, err := io.WriteString(writer, "\nDelegating to another agent:\n  Sessions is cross-agent and cross-provider: a Claude session can create and\n  drive a Codex delegate and the reverse, which native subagents cannot do, and\n  a delegate outlives the session that created it. Create one with `sessions new\n  --tool claude|codex` or `sessions run` for a headless lane, hand it work with\n  `sessions ask` or `sessions send --from <your-session>` so the message carries\n  durable attribution back to you, then join the results with `sessions wait\n  <id>` for one, `--any` for the first of several, or `--all` for every one.\n  `sessions list --mine` recovers the delegates you created after a compaction,\n  so ids never have to be remembered. See `sessions help wait`.\n\nGlobal flags:\n  --json           machine-friendly output; may also appear among command options\n  --machine NAME   use a saved Sessions machine and its device credential\n  --host HOST      low-level sessionsd host; local token stays on loopback\n  --port PORT      sessionsd port (default 8787)\n\nConnection flags must precede the command. Arguments after `sessions run --` always belong to the child command.\n\nRun `sessions help <command>` for one command or `sessions docs` for the complete offline reference.\n")
+	_, err := io.WriteString(writer, "\nDelegating to another agent:\n  Sessions is cross-agent and cross-provider: a Claude session can create and\n  drive a Codex delegate and the reverse, which native subagents cannot do, and\n  a delegate outlives the session that created it. Create one with `sessions new\n  --tool claude|codex` or `sessions run` for a headless lane, hand it work with\n  `sessions ask` or `sessions send --from <your-session>` so the message carries\n  durable attribution back to you, then join the results with `sessions wait\n  <id>` for one, `--any` for the first of several, or `--all` for every one.\n  `sessions list --mine` recovers the delegates you created after a compaction,\n  so ids never have to be remembered. See `sessions help wait`.\n\nGlobal flags:\n  --json           machine-friendly output; may also appear among command options\n  --machine NAME   use a saved machine through the local daemon fleet relay\n  --direct         dial a --machine peer directly (debugging only)\n  --host HOST      low-level sessionsd host; local token stays on loopback\n  --port PORT      sessionsd port (default 8787)\n\nConnection flags must precede the command. Arguments after `sessions run --` always belong to the child command.\n\nRun `sessions help <command>` for one command or `sessions docs` for the complete offline reference.\n")
 	return err
 }
 
@@ -540,7 +540,7 @@ func writeCommandSpecHelp(writer io.Writer, command commandSpec) error {
 			}
 		}
 	}
-	_, err := io.WriteString(writer, "\n--json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.\n")
+	_, err := io.WriteString(writer, "\n--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.\n")
 	return err
 }
 

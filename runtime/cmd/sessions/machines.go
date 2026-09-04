@@ -232,6 +232,9 @@ func (a *app) discoverMachines(args []string) error {
 			return err
 		}
 	}
+	if !a.direct {
+		return a.discoverMachinesViaDaemon(timeout)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout+time.Second)
 	defer cancel()
 	candidates, err := discovery.Browse(ctx, timeout)
@@ -257,6 +260,20 @@ func (a *app) discoverMachines(args []string) error {
 			machines = append(machines, machine)
 		}
 	}
+	return a.writeDiscoveredMachines(machines)
+}
+
+func (a *app) discoverMachinesViaDaemon(timeout time.Duration) error {
+	var response struct {
+		Machines []discoveredMachine `json:"machines"`
+	}
+	if err := a.getJSON("/api/lan/discover?timeout="+url.QueryEscape(timeout.String()), &response); err != nil {
+		return err
+	}
+	return a.writeDiscoveredMachines(response.Machines)
+}
+
+func (a *app) writeDiscoveredMachines(machines []discoveredMachine) error {
 	if a.wantJSON {
 		return writeJSON(a.stdout, struct {
 			Machines []discoveredMachine `json:"machines"`
@@ -286,7 +303,7 @@ func (a *app) discoverMachines(args []string) error {
 	if err := writer.Flush(); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(a.stdout, "\nNearby access is unencrypted. Connect only on a private network you trust.")
+	_, err := fmt.Fprintln(a.stdout, "\nNearby access is unencrypted. Connect only on a private network you trust.")
 	return err
 }
 
@@ -309,6 +326,9 @@ func (a *app) connectMachine(args []string) error {
 		if timeout > 10*time.Minute {
 			return fail(1, "--timeout cannot exceed 10m")
 		}
+	}
+	if !a.direct {
+		return a.connectMachineViaDaemon(endpoint, transport, alias, timeout)
 	}
 	clientID, err := loadOrCreateClientID(a.home)
 	if err != nil {
@@ -363,18 +383,42 @@ func (a *app) connectMachine(args []string) error {
 	}
 
 connected:
-	if claim.Token == "" || claim.MachineID == "" || claim.DeviceID == "" {
-		return fail(2, "the other machine returned an incomplete credential")
-	}
-	if err := validateMachineID(claim.MachineID); err != nil {
-		return fail(2, "the other machine sent an unusable stable id, so no credential was saved: %s", err)
-	}
 	health, err := verifyMachineCredential(endpoint, claim.Token)
 	if err != nil {
 		return fail(2, "verify the issued machine credential: %s", localnetwork.Explain(endpoint, err))
 	}
 	if health.Name != "sessionsd" {
 		return fail(2, "the approved endpoint is not sessionsd")
+	}
+	return a.finishMachineConnect(endpoint, transport, alias, claim)
+}
+
+func (a *app) connectMachineViaDaemon(endpoint, transport, alias string, timeout time.Duration) error {
+	clientID, err := loadOrCreateClientID(a.home)
+	if err != nil {
+		return fail(2, "prepare this device identity: %s", err)
+	}
+	deviceName, _ := os.Hostname()
+	var response struct {
+		Claim accessClaim `json:"claim"`
+	}
+	if !a.wantJSON {
+		fmt.Fprintf(a.stdout, "Requesting access from %s. Accept it on the other machine; waiting up to %s…\n", endpoint, timeout.Round(time.Second))
+	}
+	if err := a.postJSON("/api/lan/connect", map[string]string{
+		"endpoint": endpoint, "client_id": clientID, "name": deviceName, "timeout": timeout.String(),
+	}, &response, 2); err != nil {
+		return err
+	}
+	return a.finishMachineConnect(endpoint, transport, alias, response.Claim)
+}
+
+func (a *app) finishMachineConnect(endpoint, transport, alias string, claim accessClaim) error {
+	if claim.Token == "" || claim.MachineID == "" || claim.DeviceID == "" {
+		return fail(2, "the other machine returned an incomplete credential")
+	}
+	if err := validateMachineID(claim.MachineID); err != nil {
+		return fail(2, "the other machine sent an unusable stable id, so no credential was saved: %s", err)
 	}
 	record, err := saveMachine(a.home, savedMachine{
 		Alias: alias, MachineID: claim.MachineID, Name: claim.MachineName,

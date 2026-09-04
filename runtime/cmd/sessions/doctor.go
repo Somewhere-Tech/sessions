@@ -45,7 +45,7 @@ type doctorMirrorRow struct {
 const legacyRunnerLabelPrefix = "tech.pretty-pty.runner."
 
 func (a *app) cmdDoctor() error {
-	localRuntime := a.api.localToken
+	localRuntime := a.api.localToken && a.api.pathPrefix == ""
 	if localRuntime {
 		if err := ptyPreflight(); err != nil {
 			return err

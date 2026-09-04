@@ -132,6 +132,7 @@ func TestSearchFleetReturnsPartialDeduplicatedDurableReferences(t *testing.T) {
 	}
 	defer application.close()
 	application.explicitTarget = false
+	application.direct = true
 	if err := application.dispatch(); err != nil {
 		t.Fatal(err)
 	}

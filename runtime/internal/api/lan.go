@@ -45,6 +45,7 @@ type lanListener struct {
 	pickIP       func() (net.IP, error)
 	listen       func(string, string) (net.Listener, error)
 	advertise    discovery.AdvertiseFunc
+	browse       func(context.Context, time.Duration) ([]discovery.Candidate, error)
 	settingsPath string
 	server       *http.Server
 	registration discovery.Registration
@@ -69,7 +70,7 @@ func newLANListener(config state.Config, handler http.Handler, identity machineI
 	}
 	return &lanListener{
 		config: config, handler: handler, pickIP: lanutil.PrimaryIPv4,
-		listen: net.Listen, advertise: discovery.Advertise, settingsPath: settingsPath,
+		listen: net.Listen, advertise: discovery.Advertise, browse: discovery.Browse, settingsPath: settingsPath,
 		machineName: identity.Name, machineID: identity.ID,
 		permission: initialLocalNetworkPermission(),
 	}
@@ -311,6 +312,9 @@ func (s *Server) CloseLAN() error {
 }
 
 func (s *Server) handleLANRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
+	if s.handleLANClientRoute(response, request, corsOrigin) {
+		return true
+	}
 	if request.URL.Path != "/api/lan" {
 		return false
 	}

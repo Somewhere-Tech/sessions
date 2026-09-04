@@ -124,7 +124,8 @@ Delegating to another agent:
 
 Global flags:
   --json           machine-friendly output; may also appear among command options
-  --machine NAME   use a saved Sessions machine and its device credential
+  --machine NAME   use a saved machine through the local daemon fleet relay
+  --direct         dial a --machine peer directly (debugging only)
   --host HOST      low-level sessionsd host; local token stays on loopback
   --port PORT      sessionsd port (default 8787)
 
@@ -159,7 +160,7 @@ Examples:
   sessions new --name preview --cwd ~/work --cmd npm run dev
   sessions new --cmd /bin/zsh
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions profiles`
@@ -176,7 +177,7 @@ Examples:
   sessions profiles
   sessions --json profiles
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions onboarding`
@@ -193,7 +194,7 @@ Examples:
   sessions onboarding
   sessions --json onboarding
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions defaults`
@@ -212,7 +213,7 @@ Examples:
   sessions --machine mini defaults --permissions full
   sessions --json defaults
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions providers`
@@ -230,7 +231,7 @@ Examples:
   sessions providers update codex
   sessions --json providers
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions run`
@@ -253,7 +254,7 @@ Examples:
   sessions run --wait --timeout 30m -- ./slow-migration.sh
   sessions --json run --wait -- sh -c 'exit 3'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions tags`
@@ -272,7 +273,7 @@ Examples:
   sessions tags 0123abcd --remove client
   sessions --json tags 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions rename`
@@ -296,7 +297,7 @@ Examples:
   sessions rename 0123abcd --auto
   sessions --json rename 0123abcd 'Database migration'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions worktrees`
@@ -316,7 +317,7 @@ Examples:
   sessions worktrees clean --dry-run
   sessions worktrees clean
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions transcripts`
@@ -334,7 +335,7 @@ Examples:
   sessions transcripts --apply
   sessions --json transcripts
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions gc`
@@ -354,7 +355,7 @@ Examples:
   sessions gc --older-than 30d --apply
   sessions --json gc
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions archive`
@@ -372,7 +373,7 @@ Examples:
   sessions archive 0123abcd 89abcdef
   sessions --json archive 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions aside`
@@ -391,7 +392,7 @@ Examples:
   sessions aside 0123abcd --clear
   sessions --json aside 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions pin`
@@ -413,7 +414,7 @@ Examples:
   sessions pin bolo
   sessions --json pin 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions unpin`
@@ -430,7 +431,7 @@ Examples:
   sessions unpin 0123abcd
   sessions --json unpin 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions ls`
@@ -464,7 +465,7 @@ Examples:
   sessions ls --kind lane
   sessions --json ls
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions list`
@@ -488,7 +489,7 @@ Examples:
   sessions list --mine -a
   sessions list --owner team:mine
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions lanes`
@@ -510,7 +511,7 @@ Examples:
   sessions lanes --mine
   sessions lanes --subtree 0123abcd --direct
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions team`
@@ -531,7 +532,7 @@ Examples:
   sessions --json team 0123abcd
   sessions team --all
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions fanout`
@@ -549,7 +550,7 @@ Examples:
   sessions fanout --with codex --no-wait -- run the test suite and report failures
   sessions --json fanout --timeout 20m -- summarize what changed in src/
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions approve`
@@ -567,7 +568,7 @@ Examples:
   sessions approve 0123abcd --for-session
   sessions approve 0123abcd --deny
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions retry`
@@ -585,7 +586,7 @@ Examples:
   sessions retry 0123abcd --stop
   sessions --json retry 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions projects`
@@ -604,7 +605,7 @@ Examples:
   sessions --json projects
   sessions projects forget p_0123
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions send`
@@ -627,7 +628,7 @@ Examples:
   sessions send 0123abcd --file prompt.md
   sessions send 0123abcd -- --json is a flag, not output
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions send-status`
@@ -644,7 +645,7 @@ Examples:
   sessions send-status 11111111-2222-4333-8444-555555555555
   sessions --json send-status 11111111-2222-4333-8444-555555555555
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions ask`
@@ -665,7 +666,7 @@ Examples:
   sessions ask 0123abcd 'Summarize the failing test.'
   sessions --json ask 0123abcd --wait-timeout 2m 'Report status.'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions wait`
@@ -692,7 +693,7 @@ Examples:
   sessions --json wait 0123abcd 89abcdef lane-c --all --timeout 30m
   sessions wait 0123abcd --until commit --timeout 10m
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions last`
@@ -710,7 +711,7 @@ Examples:
   sessions last 0123abcd --role assistant -n 1
   sessions --json last 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions history`
@@ -754,7 +755,7 @@ Examples:
   sessions history --cwd . --since 1w
   sessions --json history --since yesterday
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions grep`
@@ -772,7 +773,7 @@ Examples:
   sessions grep --tool claude --role user bolo
   sessions --json grep 'release decision'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions search`
@@ -791,7 +792,7 @@ Examples:
   sessions search 'near(draft,egress,8) OR "stable session"' --timeline
   sessions search '{{first_name}}' --exact --session 0123abcd --json
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions usage`
@@ -814,7 +815,7 @@ Examples:
   sessions usage model
   sessions --json usage monthly
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions resources`
@@ -840,7 +841,7 @@ Examples:
   sessions resources -n 25
   sessions --json resources
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions status`
@@ -857,7 +858,7 @@ Examples:
   sessions status 0123abcd
   sessions --json status 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions kill`
@@ -878,7 +879,7 @@ Examples:
   sessions --json kill 0123abcd
   sessions kill --json 0123abcd 89abcdef
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions recover`
@@ -897,7 +898,7 @@ Examples:
   sessions recover --reopen
   sessions --json recover --reopen --force
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions recall`
@@ -914,7 +915,7 @@ Examples:
   sessions recall
   sessions recall 00000000-0000-4000-8000-000000000001 --raw
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions source`
@@ -933,7 +934,7 @@ Examples:
   sessions source 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001' --raw
   sessions --json source PM
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions snap`
@@ -950,7 +951,7 @@ Examples:
   sessions snap 0123abcd
   sessions snap 0123abcd --raw
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions tail`
@@ -968,7 +969,7 @@ Examples:
   sessions tail 0123abcd -n 200 -f
   sessions tail 0123abcd --lines 200 --follow
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions cat`
@@ -986,7 +987,7 @@ Examples:
   sessions cat 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'
   sessions --json cat 'local::provider:codex:00000000-0000-4000-8000-000000000001'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions transcript`
@@ -1003,7 +1004,7 @@ Examples:
   sessions transcript 0123abcd
   sessions --json transcript 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions input`
@@ -1021,7 +1022,7 @@ Examples:
   sessions --json input 0123abcd 'Continue.'
   sessions input 0123abcd --json 'Continue.'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions keys`
@@ -1039,7 +1040,7 @@ Examples:
   sessions keys 0123abcd ^c
   sessions keys PM shift-tab
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions resize`
@@ -1055,7 +1056,7 @@ Resize the terminal associated with a session to the requested columns and rows.
 Examples:
   sessions resize 0123abcd 160 48
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions verdict`
@@ -1072,7 +1073,7 @@ Examples:
   sessions verdict 0123abcd
   sessions --json verdict emit 0123abcd '{"schemaVersion":1,"verdict":"pass","findings":[]}'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions move`
@@ -1093,7 +1094,7 @@ Examples:
   sessions move 0123abcd --machine mini --terminal
   sessions move 0123abcd --to https://mini.tailnet.ts.net --dry-run
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions adopt`
@@ -1111,7 +1112,7 @@ Examples:
   sessions adopt ~/.claude/projects/example/session.jsonl --force
   sessions adopt 00000000-0000-4000-8000-000000000001 --repair 0123abcd --source 4567cdef
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions resume`
@@ -1131,7 +1132,7 @@ Examples:
   sessions resume db-final-review-sol --with claude
   sessions --json resume provider:codex:00000000-0000-4000-8000-000000000001
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions fork`
@@ -1150,7 +1151,7 @@ Examples:
   sessions fork 0123abcd --at 42 --message-id a1b2c3
   sessions --json fork 0123abcd --with claude
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions model`
@@ -1168,7 +1169,7 @@ Examples:
   sessions model 0123abcd gpt-5.6-sol --effort high
   sessions --json model 0123abcd opus
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions models`
@@ -1185,7 +1186,7 @@ Examples:
   sessions models
   sessions --json models
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions attach`
@@ -1201,7 +1202,7 @@ Attach the local terminal to a session. Press Ctrl+Q to detach without terminati
 Examples:
   sessions attach 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions install`
@@ -1217,7 +1218,7 @@ Register the development sessionsd macOS LaunchAgent and start it.
 Examples:
   sessions install
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions uninstall`
@@ -1233,7 +1234,7 @@ Stop and remove the development sessionsd macOS LaunchAgent.
 Examples:
   sessions uninstall
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions update`
@@ -1251,7 +1252,7 @@ Examples:
   sessions update --check
   sessions --json update --check
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions pair`
@@ -1269,7 +1270,7 @@ Examples:
   sessions pair --name 'Uzair phone'
   sessions --json pair
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions devices`
@@ -1287,7 +1288,7 @@ Examples:
   sessions --json devices
   sessions devices revoke 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions machines`
@@ -1307,7 +1308,7 @@ Examples:
   sessions --machine mini ls
   sessions machines forget mini
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions access`
@@ -1326,7 +1327,7 @@ Examples:
   sessions access accept 0123abcd
   sessions access deny 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions lan`
@@ -1346,7 +1347,7 @@ Examples:
   sessions lan status
   sessions lan disable
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions notify`
@@ -1365,7 +1366,7 @@ Examples:
   sessions notify on done
   sessions --json notify status
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions remote`
@@ -1383,7 +1384,7 @@ Examples:
   sessions remote status
   sessions remote disable
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions token`
@@ -1399,7 +1400,7 @@ Read and print the local daemon token for use by an authorized Sessions client.
 Examples:
   sessions token
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions backup`
@@ -1418,7 +1419,7 @@ Examples:
   sessions backup decrypt transcript.jsonl.enc
   sessions --json backup status
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions doctor`
@@ -1435,7 +1436,7 @@ Examples:
   sessions doctor
   sessions --json doctor
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions support`
@@ -1455,7 +1456,7 @@ Examples:
   sessions support --bundle ./sessions-support.json
   sessions --json support --attach --ticket tsk_1234abcd --project sessions
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions docs`
@@ -1472,7 +1473,7 @@ Examples:
   sessions docs
   sessions docs > sessions-cli.md
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions help`
@@ -1490,7 +1491,7 @@ Examples:
   sessions help run
   sessions recover --help
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions version`
@@ -1507,5 +1508,5 @@ Examples:
   sessions version
   sessions --version
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

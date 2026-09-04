@@ -112,6 +112,7 @@ func runFleetHistoryCLI(
 	}
 	t.Cleanup(application.close)
 	application.explicitTarget = false
+	application.direct = true
 	dispatchErr := application.dispatch()
 	return stdout.String(), stderr.String(), dispatchErr
 }
