@@ -182,6 +182,11 @@ localStorage.removeItem('sessions:search-state:v3');
   // An exited session holding the same provider UUID is not a live binding.
   const native = rowByTitle(first, 'Release notes for 0.2.16');
   assert.ok(native.actions.includes('Resume conversation'), 'an ended runtime must not suppress resume');
+  assert.equal(first.rows.filter((row) => row.title === 'Release notes for 0.2.16').length, 1,
+    'copies of one provider conversation must share one card');
+  assert.ok(native.badges.includes('2 copies'));
+  assert.match(native.note, /Why there are copies/);
+  assert.match(native.note, /Resume uses the newest/);
 
   // ── 5. Moved conversations point at the machine that has them ───────────
   const moved = rowByTitle(first, 'Fleet migration plan');
@@ -297,7 +302,7 @@ localStorage.removeItem('sessions:search-state:v3');
   assert.equal(
     nativeResume,
     'resume fixture provider=uuid-native source=native history=-',
-    'a conversation with a provider handle resumes through it, with no history override'
+    'a copied provider conversation resumes from its newest Sessions runtime'
   );
 
   // Attaching goes to the live session, not to a second runtime on top of it.

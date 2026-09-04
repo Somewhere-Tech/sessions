@@ -123,6 +123,20 @@ const SESSIONS: FixtureSession[] = [
     external: true
   },
   {
+    id: 'native-older-copy',
+    name: 'Release notes for 0.2.16',
+    tool: 'codex',
+    provider_session_id: 'uuid-native',
+    cwd: `${CWD}/release`,
+    machine: MACHINE,
+    created_at: NOW - 28 * HOUR,
+    last_activity_at: NOW - 26 * HOUR,
+    conversation_updated_at: NOW - 26 * HOUR,
+    message_count: 19,
+    conversation_available: true,
+    external: true
+  },
+  {
     id: 'moved',
     name: 'Fleet migration plan',
     tool: 'claude',
