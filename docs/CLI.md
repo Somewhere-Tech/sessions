@@ -679,7 +679,7 @@ Usage:
 
 wait for session idle, lane exit, or a fan-out join
 
-Wait for a session to become idle or a lane to exit. --summary reports which target changed and its last useful assistant/output summary. A single lane wait propagates the lane exit code. Conditions include --until commit, --until-file-contains FILE STRING, and --until-idle-stable D.
+Wait for a session to become idle or a lane to exit. --summary reports which target changed and its last useful assistant/output summary. A single lane wait propagates the lane exit code. Conditions include --until commit, --until-file-contains FILE STRING, and --until-idle-stable D. If sessionsd restarts after the target is resolved, wait prints `sessionsd restarted; still waiting` once on stderr and reconnects with backoff for the remainder of the same timeout; this also applies to fanout joins.
 
 Every wait answers with the same JSON object: ok, kind, reason, session, working, idleMs, and the optional elapsedMs, idleReason, detail, summary, and a nested lane or condition object carrying what only that kind of target can report — a lane's exit_code, signal, duration_ms, and last_output_tail, or a condition's commit, file, or idle_stable_ms. kind is session, lane, commit, file-contains, or idle-stable, and the target id is always in session. reason is idle, needs-input, exited, satisfied, failed, gone, or timeout, and ok is true only when the caller can stop waiting and act. A lane that exits non-zero reports failed with its status in lane.exit_code. --summary adds prose; it never changes the shape.
 

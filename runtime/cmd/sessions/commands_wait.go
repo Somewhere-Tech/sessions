@@ -187,29 +187,38 @@ func (a *app) cmdWait(args []string) error {
 		return err
 	}
 	start := a.now()
+	deadline := start.Add(timeout)
+	restart := waitRestart{app: a}
 	tracker := waitTracker{ref: waitTargetRef{id: id}}
+	attempted := false
 	for {
+		if attempted && !a.now().Before(deadline) {
+			return a.writeSessionWaitTimeout(id, timeout, tracker.last)
+		}
+		attempted = true
 		sessions, err := a.listSessions(false)
 		if err != nil {
+			if restart.pause(err, deadline) {
+				continue
+			}
 			return err
 		}
+		restart.reset()
 		probe := a.probeSessionWait(&tracker, sessions, idle, includeSummary)
+		tracker.last = probe
 		if probe.outcome != nil {
 			return a.writeWaitOutcome(*probe.outcome, probe.human, probe.humanToStderr)
 		}
-		if a.now().Sub(start) >= timeout {
-			return a.writeWaitOutcome(waitOutcome{
-				OK:      false,
-				Kind:    waitKindSession,
-				Reason:  waitReasonTimeout,
-				Session: id,
-				Working: probe.working,
-				IdleMS:  probe.idleMS,
-			}, fmt.Sprintf("timeout: still active after %dms (last %dms ago)",
-				timeout.Milliseconds(), probe.idleMS), true)
-		}
 		a.sleep(waitPollInterval(idle))
 	}
+}
+
+func (a *app) writeSessionWaitTimeout(id string, timeout time.Duration, probe waitProbe) error {
+	return a.writeWaitOutcome(waitOutcome{
+		OK: false, Kind: waitKindSession, Reason: waitReasonTimeout, Session: id,
+		Working: probe.working, IdleMS: probe.idleMS,
+	}, fmt.Sprintf("timeout: still active after %dms (last %dms ago)",
+		timeout.Milliseconds(), probe.idleMS), true)
 }
 
 func waitPollInterval(idle time.Duration) time.Duration {

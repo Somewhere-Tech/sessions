@@ -439,8 +439,9 @@ func idsOfWaitRefs(refs []waitTargetRef) []string {
 
 func (a *app) waitForLaneExit(ids []string, timeout time.Duration) (string, laneManifest, error) {
 	conditions := make([]waitcond.Condition, 0, len(ids))
+	restart := waitRestart{app: a}
 	for _, id := range ids {
-		conditions = append(conditions, &laneExitCondition{app: a, id: id})
+		conditions = append(conditions, &laneExitCondition{app: a, id: id, restart: &restart})
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -577,8 +578,9 @@ func parseFanOutWaitArgs(args []string) (fanOutWaitRequest, error) {
 }
 
 type laneExitCondition struct {
-	app *app
-	id  string
+	app     *app
+	id      string
+	restart *waitRestart
 }
 
 func (condition *laneExitCondition) Wait(ctx context.Context) (waitcond.Result, error) {
@@ -587,7 +589,13 @@ func (condition *laneExitCondition) Wait(ctx context.Context) (waitcond.Result, 
 	for {
 		_, statusCode, err := condition.app.fetchLaneManifest(ctx, condition.id)
 		if err != nil {
+			if condition.restart != nil && condition.restart.pause(err, contextDeadline(ctx)) {
+				continue
+			}
 			return waitcond.Result{}, err
+		}
+		if condition.restart != nil {
+			condition.restart.reset()
 		}
 		if statusCode == http.StatusOK {
 			return waitcond.Result{Kind: laneExitKind, Session: condition.id}, nil
@@ -601,6 +609,14 @@ func (condition *laneExitCondition) Wait(ctx context.Context) (waitcond.Result, 
 		case <-ticker.C:
 		}
 	}
+}
+
+func contextDeadline(ctx context.Context) time.Time {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return time.Now()
+	}
+	return deadline
 }
 
 func (a *app) resolveLaneID(idOrPrefix string) (string, bool, error) {
