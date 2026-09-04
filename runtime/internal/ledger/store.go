@@ -486,6 +486,10 @@ func (w observationWriter) RecordRunnerLost(ctx context.Context, value Observati
 	return w.store.observe(ctx, EventRunnerLost, value.Meta, ActorDaemon, emptyPayload{})
 }
 
+func (w observationWriter) RecordRunnerArtifactsRetired(ctx context.Context, value Observation) error {
+	return w.store.observe(ctx, EventRunnerArtifactsRetired, value.Meta, ActorDaemon, emptyPayload{})
+}
+
 func (w observationWriter) RecordReaped(ctx context.Context, value Observation) error {
 	return w.store.observe(ctx, EventReaped, value.Meta, ActorDaemon, emptyPayload{})
 }

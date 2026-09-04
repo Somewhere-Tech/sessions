@@ -24,6 +24,12 @@ func (m *Manager) withDurableClosed(
 		log.Printf("[ledger] read durable closed sessions: %v", err)
 		return infos
 	}
+	return m.withDurableClosedStates(infos, states, includeEnded)
+}
+
+func (m *Manager) withDurableClosedStates(
+	infos []state.SessionInfo, states []ledger.LaneState, includeEnded bool,
+) []state.SessionInfo {
 	archived := make(map[string]struct{})
 	for _, lane := range states {
 		if lane.Archived {
@@ -153,12 +159,16 @@ func durableExitReason(lane ledger.LaneState) string {
 }
 
 func (m *Manager) withProvenance(ctx context.Context, infos []state.SessionInfo) []state.SessionInfo {
-	if m.ledgerReader == nil || len(infos) == 0 {
-		return infos
-	}
 	states, err := m.ledgerStates(ctx)
 	if err != nil {
 		log.Printf("[ledger] read provenance graph: %v", err)
+		return infos
+	}
+	return m.withProvenanceStates(infos, states)
+}
+
+func (m *Manager) withProvenanceStates(infos []state.SessionInfo, states []ledger.LaneState) []state.SessionInfo {
+	if m.ledgerReader == nil || len(infos) == 0 {
 		return infos
 	}
 	byID := make(map[string]ledger.LaneState, len(states))

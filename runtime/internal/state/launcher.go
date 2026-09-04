@@ -211,7 +211,7 @@ func (l *LaunchdLauncher) Reap(id string) error {
 		found = true
 		domain := fmt.Sprintf("gui/%d/%s", os.Getuid(), candidate.label)
 		output, bootoutErr := exec.Command("launchctl", "bootout", domain).CombinedOutput()
-		if bootoutErr != nil {
+		if bootoutErr != nil && !launchdJobAbsent(output) {
 			reapErrors = append(reapErrors,
 				fmt.Errorf("launchctl bootout %s: %w: %s", candidate.label, bootoutErr, strings.TrimSpace(string(output))))
 		}
@@ -231,4 +231,9 @@ func (l *LaunchdLauncher) Reap(id string) error {
 		return nil
 	}
 	return errors.Join(reapErrors...)
+}
+
+func launchdJobAbsent(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "no such process") || strings.Contains(message, "could not find service")
 }

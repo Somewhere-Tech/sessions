@@ -43,6 +43,7 @@ type Config struct {
 	GlobalHooksPath    string
 	WebDir             string
 	RunnerPath         string
+	PprofAddress       string
 }
 
 func ConfigFromEnv() (Config, error) {

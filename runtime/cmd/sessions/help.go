@@ -433,10 +433,10 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions backup enable --project my-project --interval 15m --encrypt", "sessions backup now", "sessions backup decrypt transcript.jsonl.enc", "sessions --json backup status"}, run: (*app).cmdBackup,
 	},
 	{
-		name: "doctor", usage: "doctor",
+		name: "doctor", usage: "doctor [--cpu-profile DURATION]",
 		summary: "diagnose daemon and session health", group: adminCommandGroup, localJSON: true,
-		longHelp: "Report per-session health, spawn path, QoS state, and sessions which should be recreated.",
-		examples: []string{"sessions doctor", "sessions --json doctor"}, run: func(a *app, _ []string) error { return a.cmdDoctor() },
+		longHelp: "Report per-session health, spawn path, QoS state, and sessions which should be recreated. --cpu-profile captures the local daemon for a whole-second duration, writes the pprof data to the current directory, and prints its ten hottest symbolized frames. The daemon must have been started with a loopback-only SESSIONS_PPROF address.",
+		examples: []string{"sessions doctor", "sessions doctor --cpu-profile 30s", "sessions --json doctor"}, run: func(a *app, args []string) error { return a.cmdDoctor(args) },
 	},
 	{
 		name: "support", usage: "support [--diagnostics | --bundle PATH | --attach --ticket tsk_ID --project somewhere-project]",

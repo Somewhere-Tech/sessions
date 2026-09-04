@@ -187,6 +187,14 @@ func TestDoctorReportsRetiredOrphanRestoreMarkers(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsBoundedRunnerArtifactCleanup(t *testing.T) {
+	var output strings.Builder
+	writeDoctorArtifactHealth(&output, map[string]any{"retired": float64(10), "pending": float64(170)})
+	if got := output.String(); !strings.Contains(got, "10 stale set(s) retired; 170 pending") {
+		t.Fatalf("runner artifact health = %q", got)
+	}
+}
+
 // doctor must stay usable on a Windows host: the PTY preflight is the Unix
 // terminal adapter, and its remedy names a macOS-only toolchain.
 func TestDoctorProbesAreGuardedByHost(t *testing.T) {

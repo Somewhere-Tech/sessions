@@ -1148,16 +1148,16 @@ func TestDescriptionPersistsAndFirstMessageFallbackNeverOverridesExplicit(t *tes
 	}
 }
 
-func TestMassKillGuardRefusesDiscoverySweepBeforeBootout(t *testing.T) {
+func TestDiscoveryRetiresStaleArtifactsInBoundedBatches(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
 	if err := os.MkdirAll(config.LaunchAgentsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-time.Minute)
-	paths := make([]string, 0, DefaultMassKillLimit+1)
-	for i := 0; i < DefaultMassKillLimit+1; i++ {
-		id := "00000000-0000-4000-8000-00000000000" + string(rune('0'+i))
+	paths := make([]string, 0, DefaultDiscoveryBatch+2)
+	for i := 0; i < DefaultDiscoveryBatch+2; i++ {
+		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", i)
 		path := state.RunnerPlistPath(config.LaunchAgentsDir, id)
 		if err := os.WriteFile(path, []byte("scratch"), 0o600); err != nil {
 			t.Fatal(err)
@@ -1169,17 +1169,19 @@ func TestMassKillGuardRefusesDiscoverySweepBeforeBootout(t *testing.T) {
 	}
 	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{DisableWatchers: true})
 	t.Cleanup(manager.Close)
-	err := manager.Discover(context.Background())
-	var guardErr *MassKillError
-	if !errors.As(err, &guardErr) || guardErr.Count != DefaultMassKillLimit+1 {
-		t.Fatalf("Discover() error = %v, want mass-kill guard for %d", err, DefaultMassKillLimit+1)
+	if err := manager.Discover(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	for _, path := range paths {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("guarded sweep mutated %s: %v", path, err)
+	for index, path := range paths {
+		_, err := os.Stat(path)
+		if index < DefaultDiscoveryBatch && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("batch left %s: %v", path, err)
+		}
+		if index >= DefaultDiscoveryBatch && err != nil {
+			t.Fatalf("batch exceeded its limit and touched %s: %v", path, err)
 		}
 	}
-	if err := manager.DiscoverWithOptions(context.Background(), DiscoverOptions{Force: true}); err != nil {
+	if err := manager.Discover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range paths {
@@ -1445,6 +1447,49 @@ func TestDiscoveryPreservesUnreachableLivePID(t *testing.T) {
 	}
 }
 
+func TestDiscoveryTrustsAnsweringSocketOverReusedPIDEvidence(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.RunnerStateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "00000000-0000-4000-8000-000000000091"
+	paths := state.For(config.RunnerStateDir, id)
+	if err := os.WriteFile(paths.Socket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteMetadata(paths.Meta, state.Metadata{
+		ID: id, Cmd: "claude", Cwd: root, Cols: 120, Rows: 40,
+		PID: os.Getpid(), SockPath: paths.Socket,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &rediscoveryLauncher{}
+	if _, err := launcher.Launch(context.Background(), proto.LaunchRequest{Info: proto.RunnerInfo{
+		ID: id, Cmd: "claude", Cwd: root, Cols: 120, Rows: 40,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config, launcher, ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour,
+		ProcessSnapshot: func(context.Context) (map[int]string, error) {
+			return map[int]string{os.Getpid(): "/bin/unrelated"}, nil
+		},
+	})
+	t.Cleanup(manager.Close)
+	if err := manager.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manager.Get(id); !ok {
+		t.Fatal("answering runner was not registered")
+	}
+	for _, path := range []string{paths.Socket, paths.Meta} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("answering runner artifact %s was removed: %v", path, err)
+		}
+	}
+}
+
 func TestDiscoveryRecognizesStructuredRunnerAndPreservesHistory(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
@@ -1591,8 +1636,8 @@ func TestDiscoverySkipsAttachRetriesForDefinitelyDeadRunner(t *testing.T) {
 	if err := manager.Discover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if launcher.attaches != 0 {
-		t.Fatalf("definitely dead runner used %d socket attach attempts, want none", launcher.attaches)
+	if launcher.attaches != 1 {
+		t.Fatalf("definitely dead runner used %d socket attach attempts, want one refusal check", launcher.attaches)
 	}
 	for _, coordinationPath := range []string{paths.Socket, paths.Meta} {
 		if _, err := os.Stat(coordinationPath); !errors.Is(err, os.ErrNotExist) {
@@ -1691,13 +1736,10 @@ func awaitFile(t *testing.T, watcher *fsnotify.Watcher, path string) {
 	}
 }
 
-// The mass-kill guard protects the destructive half of a discovery sweep. It
-// must not also stop the safe half: nothing else records runner_lost, so a
-// refusal that skipped reconciliation left those lanes reported as live in
-// every ledger-derived view and no later sweep could get back under the limit.
-// DiscoverWithOptions{Force:true} is reachable only from tests, so an operator
-// had no way out short of deleting files by hand.
-func TestGuardedDiscoverySweepStillReconcilesLedgerAndExplainsTheRefusal(t *testing.T) {
+// Bounded cleanup must still reconcile every stale lane in the same pass. The
+// limit controls destructive work, not the safe ledger observations that stop
+// missing runners from being presented as connected.
+func TestBoundedDiscoveryStillReconcilesEveryLedgerLane(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
 	if err := os.MkdirAll(config.LaunchAgentsDir, 0o700); err != nil {
@@ -1711,10 +1753,10 @@ func TestGuardedDiscoverySweepStillReconcilesLedgerAndExplainsTheRefusal(t *test
 
 	ctx := context.Background()
 	old := time.Now().Add(-time.Minute)
-	ids := make([]string, 0, DefaultMassKillLimit+1)
-	paths := make([]string, 0, DefaultMassKillLimit+1)
-	for index := 0; index < DefaultMassKillLimit+1; index++ {
-		id := fmt.Sprintf("00000000-0000-4000-8000-00000000000%d", index)
+	ids := make([]string, 0, DefaultDiscoveryBatch+1)
+	paths := make([]string, 0, DefaultDiscoveryBatch+1)
+	for index := 0; index < DefaultDiscoveryBatch+1; index++ {
+		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", index)
 		ids = append(ids, id)
 		path := state.RunnerPlistPath(config.LaunchAgentsDir, id)
 		if err := os.WriteFile(path, []byte("scratch"), 0o600); err != nil {
@@ -1739,15 +1781,16 @@ func TestGuardedDiscoverySweepStillReconcilesLedgerAndExplainsTheRefusal(t *test
 	})
 	t.Cleanup(manager.Close)
 
-	discoverErr := manager.Discover(ctx)
-	var guardErr *MassKillError
-	if !errors.As(discoverErr, &guardErr) || guardErr.Count != DefaultMassKillLimit+1 || guardErr.Limit != DefaultMassKillLimit {
-		t.Fatalf("Discover() error = %v, want a mass-kill refusal for %d candidates", discoverErr, DefaultMassKillLimit+1)
+	if err := manager.Discover(ctx); err != nil {
+		t.Fatal(err)
 	}
-	// The destructive half stays guarded.
-	for _, path := range paths {
-		if _, statErr := os.Stat(path); statErr != nil {
-			t.Fatalf("guarded sweep mutated %s: %v", path, statErr)
+	for index, path := range paths {
+		_, statErr := os.Stat(path)
+		if index < DefaultDiscoveryBatch && !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("bounded sweep left %s: %v", path, statErr)
+		}
+		if index == DefaultDiscoveryBatch && statErr != nil {
+			t.Fatalf("bounded sweep exceeded its limit and touched %s: %v", path, statErr)
 		}
 	}
 	// The safe half still runs.
@@ -1766,19 +1809,19 @@ func TestGuardedDiscoverySweepStillReconcilesLedgerAndExplainsTheRefusal(t *test
 			t.Fatalf("guarded sweep skipped ledger reconciliation for lane %s: %#v", id, reconciled)
 		}
 	}
-	// The refusal names what it refused and what is safe to do next.
-	message := discoverErr.Error()
-	for _, want := range []string{
-		"discovery", "left in place", "sessions kill", fmt.Sprintf("limit %d", DefaultMassKillLimit),
-	} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("mass-kill refusal %q does not mention %q", message, want)
+	retired, pending := manager.ArtifactRetirementHealth()
+	if retired != DefaultDiscoveryBatch || pending != 1 {
+		t.Fatalf("artifact health = retired %d pending %d", retired, pending)
+	}
+	retirementLines := 0
+	for _, event := range events {
+		if event.Type == ledger.EventRunnerArtifactsRetired {
+			retirementLines++
 		}
 	}
-	if strings.Contains(message, "retry with force") {
-		t.Fatalf("discovery refusal points at a force flag no operator surface exposes: %q", message)
+	if retirementLines != DefaultDiscoveryBatch {
+		t.Fatalf("retirement ledger lines = %d, want %d", retirementLines, DefaultDiscoveryBatch)
 	}
-	t.Logf("guarded discovery refusal: %s", message)
 }
 
 func TestPreTurnProviderDialogBecomesNeedsInputWithoutAWorkingEdge(t *testing.T) {

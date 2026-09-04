@@ -110,6 +110,10 @@ type retiredRestoreHealthService interface {
 	RetiredRestoreCount() int
 }
 
+type artifactRetirementHealthService interface {
+	ArtifactRetirementHealth() (retired, pending int)
+}
+
 type pendingRestoreService interface {
 	PendingRestore(string) (state.RestorePending, bool)
 }

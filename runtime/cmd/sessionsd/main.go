@@ -72,10 +72,8 @@ func main() {
 	if handled {
 		return
 	}
-	config, err := state.ConfigFromEnv()
-	if err != nil {
-		log.Fatal(err)
-	}
+	config, profiler := daemonConfig()
+	defer profiler.close()
 	if isWildcardHost(config.Host) {
 		fmt.Fprintf(os.Stderr,
 			"\n  sessionsd: refusing to bind to %s.\n  Set SESSIONS_HOST to a specific address — 127.0.0.1 for loopback only,\n  or a tailnet IP (100.x.y.z) for access from other devices on your tailnet.\n\n",
@@ -86,7 +84,6 @@ func main() {
 	if os.Getenv("SESSIONS_SMOKE") == "1" {
 		return
 	}
-
 	ledgerStore, err := ledger.Open(context.Background(), ledger.Options{})
 	if err != nil {
 		log.Fatalf("open lane ledger: %v", err)

@@ -44,7 +44,11 @@ type doctorMirrorRow struct {
 
 const legacyRunnerLabelPrefix = "tech.pretty-pty.runner."
 
-func (a *app) cmdDoctor() error {
+func (a *app) cmdDoctor(args []string) error {
+	cpuDuration, err := parseDoctorArgs(args)
+	if err != nil {
+		return err
+	}
 	localRuntime := a.api.localToken && a.api.pathPrefix == ""
 	if localRuntime {
 		if err := ptyPreflight(); err != nil {
@@ -60,22 +64,20 @@ func (a *app) cmdDoctor() error {
 	if response, requestErr := a.api.request(context.Background(), "GET", "/api/health/deep", nil, 0); requestErr == nil && response.status < 400 {
 		_ = json.Unmarshal(response.body, &deep)
 	}
-	processTypePattern := regexp.MustCompile(`<key>ProcessType</key>\s*<string>([^<]+)</string>`)
-	rows := make([]doctorRow, 0, len(sessions))
-	for _, value := range sessions {
-		rows = append(rows, a.doctorRunnerRow(value, localRuntime, processTypePattern))
+	profile, err := a.requestedCPUProfile(deep, cpuDuration, localRuntime)
+	if err != nil {
+		return err
 	}
-	damagedMirrors := []doctorMirrorRow(nil)
-	if localRuntime {
-		damagedMirrors = damagedTranscriptMirrors()
-	}
+	rows, damagedMirrors := a.doctorRows(sessions, localRuntime)
 	if a.wantJSON {
-		return a.writeDoctorJSON(deep, lan, rows, damagedMirrors)
+		return a.writeDoctorJSON(deep, lan, rows, damagedMirrors, profile)
 	}
+	writeCPUProfileReport(a.stdout, profile)
 	if deepMap, ok := deep.(map[string]any); ok {
 		fmt.Fprintf(a.stdout, "daemon: %s sessions, discovering=%s, uptime=%ss\n\n",
 			jsonScalar(deepMap["sessionsLoaded"]), jsonScalar(deepMap["discovering"]), jsonScalar(deepMap["uptimeSec"]))
 		writeDoctorRestoreHealth(a.stdout, deepMap["restore"])
+		writeDoctorArtifactHealth(a.stdout, deepMap["runnerArtifacts"])
 		writeDoctorTailscale(a.stdout, deepMap["tailscale"])
 		writeDoctorFleetAccount(a.stdout, deepMap["account"])
 	}
@@ -128,6 +130,31 @@ func (a *app) cmdDoctor() error {
 	}
 	a.writeDoctorMirrorHealth(damagedMirrors)
 	return nil
+}
+
+func (a *app) doctorRows(sessions []session, localRuntime bool) ([]doctorRow, []doctorMirrorRow) {
+	pattern := regexp.MustCompile(`<key>ProcessType</key>\s*<string>([^<]+)</string>`)
+	rows := make([]doctorRow, 0, len(sessions))
+	for _, value := range sessions {
+		rows = append(rows, a.doctorRunnerRow(value, localRuntime, pattern))
+	}
+	if !localRuntime {
+		return rows, nil
+	}
+	return rows, damagedTranscriptMirrors()
+}
+
+func writeDoctorArtifactHealth(writer io.Writer, value any) {
+	artifacts, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	retired, _ := artifacts["retired"].(float64)
+	pending, _ := artifacts["pending"].(float64)
+	if retired == 0 && pending == 0 {
+		return
+	}
+	fmt.Fprintf(writer, "runner artifacts: %.0f stale set(s) retired; %.0f pending bounded cleanup\n\n", retired, pending)
 }
 
 func writeDoctorRestoreHealth(writer io.Writer, value any) {
@@ -211,13 +238,14 @@ func (a *app) doctorLocalNetwork() any {
 	return lan
 }
 
-func (a *app) writeDoctorJSON(deep, lan any, rows []doctorRow, mirrors []doctorMirrorRow) error {
+func (a *app) writeDoctorJSON(deep, lan any, rows []doctorRow, mirrors []doctorMirrorRow, profile *cpuProfileReport) error {
 	return writeJSON(a.stdout, struct {
 		Daemon         any               `json:"daemon"`
 		LocalNetwork   any               `json:"local_network"`
 		Sessions       []doctorRow       `json:"sessions"`
 		DamagedMirrors []doctorMirrorRow `json:"damaged_conversations,omitempty"`
-	}{deep, lan, rows, mirrors}, true)
+		CPUProfile     *cpuProfileReport `json:"cpu_profile,omitempty"`
+	}{deep, lan, rows, mirrors, profile}, true)
 }
 
 func writeDoctorLocalNetwork(writer io.Writer, state any) {

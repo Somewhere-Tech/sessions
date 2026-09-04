@@ -1468,14 +1468,15 @@ Examples:
 
 ```text
 Usage:
-  sessions doctor
+  sessions doctor [--cpu-profile DURATION]
 
 diagnose daemon and session health
 
-Report per-session health, spawn path, QoS state, and sessions which should be recreated.
+Report per-session health, spawn path, QoS state, and sessions which should be recreated. --cpu-profile captures the local daemon for a whole-second duration, writes the pprof data to the current directory, and prints its ten hottest symbolized frames. The daemon must have been started with a loopback-only SESSIONS_PPROF address.
 
 Examples:
   sessions doctor
+  sessions doctor --cpu-profile 30s
   sessions --json doctor
 
 --json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.

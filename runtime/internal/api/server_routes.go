@@ -143,11 +143,13 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 					"current": proto.ProtocolVersion, "minimum": proto.MinimumCompatibleVersion, "maximum": proto.MaximumCompatibleVersion,
 				},
 			},
-			"discovering":    s.registry.IsDiscovering(),
-			"sessionsLoaded": len(s.registry.List(true)),
-			"restore":        restore,
-			"uptimeSec":      int64(math.Round(s.registry.Uptime().Seconds())),
-			"sessions":       s.registry.DeepDiagnostics(),
+			"discovering":     s.registry.IsDiscovering(),
+			"sessionsLoaded":  len(s.registry.List(true)),
+			"restore":         restore,
+			"runnerArtifacts": s.runnerArtifactHealth(),
+			"pprof":           s.pprofHealth(),
+			"uptimeSec":       int64(math.Round(s.registry.Uptime().Seconds())),
+			"sessions":        s.registry.DeepDiagnostics(),
 		}, corsOrigin)
 		return
 	}
@@ -407,6 +409,21 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": path}, corsOrigin)
+}
+
+func (s *Server) runnerArtifactHealth() map[string]int {
+	retired, pending := 0, 0
+	if reporter, ok := s.registry.(artifactRetirementHealthService); ok {
+		retired, pending = reporter.ArtifactRetirementHealth()
+	}
+	return map[string]int{"retired": retired, "pending": pending}
+}
+
+func (s *Server) pprofHealth() map[string]any {
+	return map[string]any{
+		"enabled": s.config.PprofAddress != "",
+		"address": s.config.PprofAddress,
+	}
 }
 
 // plainHealth stays unauthenticated for discovery and bootstrap. The selected

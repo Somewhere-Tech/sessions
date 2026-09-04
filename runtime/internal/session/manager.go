@@ -37,6 +37,7 @@ const (
 	defaultNotifyWaitingDelay = 30 * time.Second
 	defaultNotifyCooldown     = 60 * time.Second
 	DefaultMassKillLimit      = 3
+	DefaultDiscoveryBatch     = 10
 	DefaultDiscoveryInterval  = 30 * time.Second
 	discoveryIntervalEnv      = "SESSIONS_DISCOVERY_INTERVAL"
 )
@@ -91,6 +92,7 @@ type ManagerOptions struct {
 	// runner. Use Manager.runnerAlive rather than either seam directly.
 	ProcessAlive       func(int) bool
 	ProcessCommand     func(int) string
+	ProcessSnapshot    func(context.Context) (map[int]string, error)
 	Boundaries         ledger.BoundaryWriter
 	Observations       ledger.ObservationWriter
 	Retention          ledger.RetentionWriter
@@ -180,6 +182,8 @@ type Manager struct {
 	pausedRestores      map[string]pausedRestoreCacheEntry
 	pausedMissingLogged map[string]struct{}
 	pausedRetiredCount  int
+	artifactRetired     int
+	artifactPending     int
 	bindMu              sync.Mutex
 	// completionGeneration records the newest delegated-task completion
 	// attempt per session so a fresh idle classification supersedes an
@@ -280,14 +284,7 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 	if selected.DiscoveryDelay <= 0 {
 		selected.DiscoveryDelay = discoveryRetryDelay
 	}
-	if selected.ProcessAlive == nil {
-		selected.ProcessAlive = liveness.ProcessAlive
-	}
-	if selected.ProcessCommand == nil {
-		selected.ProcessCommand = func(pid int) string {
-			return liveness.ProcessCommand(context.Background(), pid)
-		}
-	}
+	configureProcessProbes(&selected)
 	if selected.ResourceEnumerator == nil {
 		selected.ResourceEnumerator = resource.SystemEnumerator()
 	}
@@ -336,6 +333,21 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 	return manager
 }
 
+func configureProcessProbes(options *ManagerOptions) {
+	custom := options.ProcessAlive != nil || options.ProcessCommand != nil
+	if options.ProcessAlive == nil {
+		options.ProcessAlive = liveness.ProcessAlive
+	}
+	if options.ProcessCommand == nil {
+		options.ProcessCommand = func(pid int) string {
+			return liveness.ProcessCommand(context.Background(), pid)
+		}
+	}
+	if options.ProcessSnapshot == nil && !custom {
+		options.ProcessSnapshot = liveness.ProcessSnapshot
+	}
+}
+
 func (m *Manager) initializeRuntimeState(ctx context.Context) {
 	m.registry.SetTerminalObservers(m.recordRunnerExited, m.recordReaped)
 	m.refreshPendingRestores()
@@ -365,25 +377,53 @@ func (m *Manager) IsDiscovering() bool       { return m.registry.IsDiscovering()
 func (m *Manager) List(includeExited bool) []state.SessionInfo {
 	ctx := context.Background()
 	infos := m.registry.List(includeExited)
+	states, err := m.ledgerStates(ctx)
+	if err != nil {
+		log.Printf("[ledger] read session list: %v", err)
+	}
 	// Restored unconditionally, not only for the include-ended listing: a
 	// session the daemon cannot currently reach has not ended, and dropping it
 	// from the default list because a socket died is a kill wearing sleep's
 	// clothes. withDurableClosed adds ended records only when they were asked
 	// for.
-	infos = m.withDurableClosed(ctx, infos, includeExited)
+	infos = m.withDurableClosedStates(infos, states, includeExited)
 	infos = m.withPendingRestores(infos)
 	infos = m.withRunnerReality(infos)
-	return m.withProvenance(ctx, infos)
+	return m.withProvenanceStates(infos, states)
 }
 
 func (m *Manager) withRunnerReality(infos []state.SessionInfo) []state.SessionInfo {
+	var processes map[int]string
+	snapshotRead := false
+	snapshotOK := false
 	for index := range infos {
-		if infos[index].Unreachable && infos[index].UnreachableReason == "runner-lost" &&
-			!m.runtimeStillLive(infos[index].ID) {
+		if !infos[index].Unreachable || infos[index].UnreachableReason != "runner-lost" {
+			continue
+		}
+		if !snapshotRead {
+			processes, snapshotOK = m.processSnapshot(context.Background())
+			snapshotRead = true
+		}
+		if !m.runnerIDAlive(infos[index].ID, processes, snapshotOK) {
 			infos[index].RunnerGone = true
 		}
 	}
 	return infos
+}
+
+func (m *Manager) runnerIDAlive(id string, processes map[int]string, snapshotOK bool) bool {
+	if session, ok := m.registry.Get(id); ok {
+		info := session.Info()
+		if !info.Exited && !info.Unreachable {
+			return true
+		}
+	}
+	metadata, err := state.ReadRunnerMetadata(filepath.Join(m.config.RunnerStateDir, id+".json"))
+	if err != nil {
+		return false
+	}
+	metadata.Info.ID = id
+	return m.runnerAliveWithSnapshot(id, metadata.Info, processes, snapshotOK)
 }
 func (m *Manager) Get(id string) (*state.Session, bool) { return m.registry.Get(id) }
 func (m *Manager) DeepDiagnostics() []map[string]any    { return m.registry.DeepDiagnostics() }

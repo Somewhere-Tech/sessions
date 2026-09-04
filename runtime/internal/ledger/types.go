@@ -28,6 +28,7 @@ const (
 	EventUserKillRequested      EventType = "user_kill_requested"
 	EventRunnerExited           EventType = "runner_exited"
 	EventRunnerLost             EventType = "runner_lost"
+	EventRunnerArtifactsRetired EventType = "runner_artifacts_retired"
 	EventReaped                 EventType = "reaped"
 	EventReopened               EventType = "reopened"
 	EventArchived               EventType = "archived"
@@ -267,6 +268,7 @@ type ObservationWriter interface {
 	RecordDescriptionDerived(context.Context, DescriptionDerived) error
 	RecordRunnerExited(context.Context, RunnerExit) error
 	RecordRunnerLost(context.Context, Observation) error
+	RecordRunnerArtifactsRetired(context.Context, Observation) error
 	RecordReaped(context.Context, Observation) error
 	RecordReopened(context.Context, Reopened) error
 	RecordDaemonRestart(context.Context, Observation) error

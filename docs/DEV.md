@@ -19,9 +19,8 @@
    provider history, and `~/Library/LaunchAgents` all follow `HOME`. A daemon
    started with only the first two enumerates the daily driver's real provider
    sessions, writes lost-runner records into the real ledger, and offers the
-   real runner plists to its discovery sweep for bootout and unlink — stopped
-   only by the mass-kill guard, which does not protect the ledger writes. Keep
-   the scratch root short:
+   real runner plists to its discovery sweep for bounded retirement. Keep the
+   scratch root short:
 
    ```sh
    HOME=/tmp/sX/home SESSIONS_STATE_DIR=/tmp/sX/runners \
@@ -54,3 +53,43 @@ The repository's active package direction is documented in
 [`NATIVE_APP.md`](NATIVE_APP.md), and the public source topology and protocol
 boundaries are documented in [`CODEBASE.md`](CODEBASE.md). Historical cutover
 notes are intentionally kept out of the public source tree.
+
+## Profiling sessionsd
+
+CPU profiling is disabled by default. Set `SESSIONS_PPROF` to a loopback IP and
+port before starting `sessionsd` to expose the standard Go `net/http/pprof`
+handlers on a separate listener:
+
+```sh
+SESSIONS_PPROF=127.0.0.1:6060 sessionsd
+```
+
+Non-loopback, wildcard, and hostname addresses are refused. The profile
+listener is deliberately separate from the product API and must not be exposed
+through LAN or tailnet routing.
+
+With profiling enabled, the local CLI can capture the daemon without needing a
+Go toolchain. It writes the raw profile to the current directory and prints the
+ten hottest symbolized frames:
+
+```sh
+sessions doctor --cpu-profile 30s
+```
+
+The duration must be a whole number of seconds from `1s` through `5m`. The raw
+`.pprof` file remains compatible with `go tool pprof` for deeper analysis.
+
+To reproduce large stale-runner discovery safely, generate a new `/tmp` fixture
+root. The generator refuses existing roots and every path outside `/tmp`:
+
+```sh
+cd runtime
+go run ./scripts/stale-state-fixture --root /tmp/sZ --sessions 450 --live 180 --pid 1
+```
+
+Then start the daemon with the complete isolation tuple from ground rule 3,
+using `/tmp/sZ/home`, `/tmp/sZ/runners`, `/tmp/sZ/lanes.sqlite3`, and a
+non-production port. The live fixture records are intentionally marked
+runner-lost but not exited, with old metadata, refusing socket files, and launch
+agent files. This matches the steady state after discovery loses contact while
+preserving the conversations as recoverable records.

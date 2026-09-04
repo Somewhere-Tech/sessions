@@ -92,3 +92,17 @@ func TestRunnerCommandPathUsesRunnerEnvironment(t *testing.T) {
 		t.Fatal("runnerCommandPath unexpectedly found missing agent")
 	}
 }
+
+func TestLaunchdJobAbsentRecognizesUnloadedService(t *testing.T) {
+	for _, output := range []string{
+		"Boot-out failed: 3: No such process",
+		"Could not find service tech.somewhere.sessions.runner.example",
+	} {
+		if !launchdJobAbsent([]byte(output)) {
+			t.Fatalf("launchdJobAbsent(%q) = false", output)
+		}
+	}
+	if launchdJobAbsent([]byte("operation not permitted")) {
+		t.Fatal("launchd permission failure was treated as an absent job")
+	}
+}

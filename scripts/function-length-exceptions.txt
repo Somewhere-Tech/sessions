@@ -37,7 +37,7 @@ go runtime/internal/session/claude_defaults.go Manager.applyClaudeDefaults 111
 go runtime/internal/search/index.go runRanked 107
 go runtime/internal/search/search.go Run 107
 go runtime/cmd/sessions/history_resolve.go app.resolveHistoryReference 106
-go runtime/internal/session/manager_provenance.go Manager.withProvenance 106
+go runtime/internal/session/manager_provenance.go Manager.withProvenanceStates 101
 go runtime/internal/watch/codex_resolver.go ResolveCodexRolloutPath 105
 go runtime/cmd/sessions/session.go app.cmdLS 104
 go runtime/cmd/sessions/support_attachment.go runSupportAttachment 104
@@ -48,7 +48,7 @@ go runtime/cmd/sessionsd/main.go main 101
 go runtime/internal/recovery/adopt.go Adopt 101
 go runtime/internal/mirror/mirror.go Mirror.writeTracked 100
 go runtime/internal/codexapp/client.go NewClient 98
-go runtime/internal/session/manager_provenance.go Manager.withDurableClosed 98
+go runtime/internal/session/manager_provenance.go Manager.withDurableClosedStates 93
 go runtime/internal/usage/scanner.go Service.syncFile 96
 go runtime/cmd/sessions/conversation.go app.cmdLast 95
 go runtime/cmd/sessions/source.go app.cmdSource 95
