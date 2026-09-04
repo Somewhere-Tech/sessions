@@ -127,7 +127,7 @@ func localProviderStatus(parent context.Context, id string) providerStatus {
 		return status
 	}
 	status.Installed = true
-	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	ctx, cancel := context.WithTimeout(parent, providerVersionTimeout)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
 	if err == nil {
@@ -170,6 +170,11 @@ func localProviderStatus(parent context.Context, id string) providerStatus {
 // providerExecutable mirrors the interactive user's common installation
 // locations. sessionsd is normally launched by a per-user service whose PATH
 // is intentionally smaller than the user's shell PATH.
+// providerVersionTimeout bounds `<provider> --version`. A slow provider still
+// reads as installed, only without a version. Tests raise it because a loaded
+// machine can take seconds just to spawn a shell.
+var providerVersionTimeout = 3 * time.Second
+
 func providerExecutable(id string) (string, error) {
 	if path, err := exec.LookPath(id); err == nil {
 		return path, nil

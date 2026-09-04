@@ -8,11 +8,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 )
 
 func TestProviderExecutableFindsUserLocalBinOutsideDaemonPath(t *testing.T) {
+	previous := providerVersionTimeout
+	providerVersionTimeout = 30 * time.Second
+	t.Cleanup(func() { providerVersionTimeout = previous })
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", "/usr/bin:/bin")
