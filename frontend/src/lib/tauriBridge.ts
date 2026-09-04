@@ -125,6 +125,9 @@ export interface NativeSavedMachine {
   name: string;
   endpoint: string;
   transport: string;
+  lan_endpoint?: string;
+  tailnet_endpoint?: string;
+  tailnet_ip_endpoint?: string;
   device_id: string;
   connected_at: string;
 }
@@ -134,6 +137,9 @@ export interface NativeAgentMachine {
   machineId: string;
   name: string;
   endpoint: string;
+  lanEndpoint?: string;
+  tailnetEndpoint?: string;
+  tailnetIpEndpoint?: string;
   deviceId?: string;
   token: string;
 }
@@ -241,6 +247,9 @@ export interface NativePairingClaim {
   deviceId: string;
   token: string;
   name: string;
+  lanEndpoint?: string;
+  tailnetEndpoint?: string;
+  tailnetIpEndpoint?: string;
 }
 
 export async function claimNativePairingLink(pairUrl: string): Promise<NativePairingClaim> {
@@ -261,6 +270,9 @@ export interface NativeNearbyPeer {
   address: string;
   port: number;
   transport: 'nearby';
+  lan_endpoint: string;
+  tailnet_endpoint?: string;
+  tailnet_ip_endpoint?: string;
   version: string;
   os: string;
   arch: string;

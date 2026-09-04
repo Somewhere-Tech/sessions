@@ -15,6 +15,7 @@ import (
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
+	"github.com/somewhere-tech/sessions/runtime/internal/tailscale"
 )
 
 const (
@@ -56,7 +57,11 @@ type commandResult struct {
 }
 
 func runTailscale(args ...string) commandResult {
-	command := exec.Command("tailscale", args...)
+	path, findErr := tailscale.FindCLI()
+	if findErr != nil {
+		return commandResult{status: -1, err: findErr}
+	}
+	command := exec.Command(path, args...)
 	var stdout, stderr strings.Builder
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -340,7 +345,11 @@ func (a *app) remoteEnable() error {
 		return fail(2, "%s", err)
 	}
 	io.WriteString(a.stderr, "Privacy notice: enabling Tailscale HTTPS issues a public certificate.\nYour machine’s .ts.net name will be visible in public Certificate Transparency logs.\n\n")
-	command := exec.Command("tailscale", "serve", "--bg", target)
+	path, err := tailscale.FindCLI()
+	if err != nil {
+		return fail(1, "Tailscale is not installed. Download it: %s", tailscaleDownloadURL)
+	}
+	command := exec.Command(path, "serve", "--bg", target)
 	command.Stdin = nil
 	command.Stdout = a.stderr
 	command.Stderr = a.stderr
@@ -356,6 +365,9 @@ func (a *app) remoteEnable() error {
 	}
 	if err := verifyEndpoint(serve.Endpoint); err != nil {
 		return failRemoteVerification(err, serve.Endpoint)
+	}
+	if err := a.setRemoteAuto(true); err != nil {
+		return err
 	}
 	return a.printConnection(serve.Endpoint, &target)
 }
@@ -474,6 +486,9 @@ func (a *app) remoteDisable() error {
 		return err
 	}
 	if before.Endpoint == "" || (before.JSON != nil && before.RootProxy == "") {
+		if err := a.setRemoteAuto(false); err != nil {
+			return err
+		}
 		if a.wantJSON {
 			return writeJSON(a.stdout, struct {
 				Enabled bool `json:"enabled"`
@@ -483,16 +498,8 @@ func (a *app) remoteDisable() error {
 		_, err := io.WriteString(a.stdout, "Remote access is already disabled.\n")
 		return err
 	}
-	result := runTailscale("serve", "--https=443", "--set-path=/", "off")
-	output := commandResultText(result)
-	if output != "" {
-		fmt.Fprintln(a.stderr, output)
-	}
-	if result.status != 0 {
-		if output == "" {
-			output = "unknown error"
-		}
-		return fail(2, "could not disable Tailscale Serve: %s", output)
+	if err := a.setRemoteAuto(false); err != nil {
+		return err
 	}
 	after, err := readServeStatus("")
 	if err != nil {
@@ -513,4 +520,9 @@ func (a *app) remoteDisable() error {
 	}
 	_, err = io.WriteString(a.stdout, "Remote access disabled.\n")
 	return err
+}
+
+func (a *app) setRemoteAuto(enabled bool) error {
+	var state any
+	return a.putJSON("/api/remote", map[string]bool{"auto": enabled}, &state, 2)
 }

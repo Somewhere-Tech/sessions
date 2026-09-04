@@ -41,7 +41,6 @@ go runtime/internal/session/manager_provenance.go Manager.withProvenance 106
 go runtime/internal/watch/codex_resolver.go ResolveCodexRolloutPath 105
 go runtime/cmd/sessions/session.go app.cmdLS 104
 go runtime/cmd/sessions/support_attachment.go runSupportAttachment 104
-go runtime/cmd/sessions/machines.go app.connectMachine 103
 go runtime/cmd/sessions/fanout.go app.cmdFanout 102
 go runtime/internal/state/session.go Session.applyEvent 102
 go runtime/cmd/sessions/lanes.go app.cmdLanes 101
@@ -79,7 +78,6 @@ go runtime/internal/integrations/day_summary.go SummarizeConversationDay 84
 go runtime/cmd/sessions/sessions.go app.cmdSessions 83
 go runtime/cmd/sessions/terminal.go app.cmdTail 83
 go runtime/internal/search/index.go refreshIndexedSession 83
-go runtime/cmd/sessions/machines.go app.syncNativeMachines 82
 go runtime/cmd/sessions/transcripts.go app.writeTranscriptsText 82
 go runtime/internal/api/onboarding_handlers.go Server.handleOnboardingRoute 81
 typescript frontend/src/hooks/useTerminal.ts useTerminal 851

@@ -360,6 +360,9 @@ fn validate_native_claim(
         device_id: claimed.device_id,
         token: claimed.token,
         name: claimed.name,
+		lan_endpoint: claimed.lan_endpoint,
+		tailnet_endpoint: claimed.tailnet_endpoint,
+		tailnet_ip_endpoint: claimed.tailnet_ip_endpoint,
     })
 }
 

@@ -72,11 +72,14 @@ type pairingTicketResponse struct {
 }
 
 type pairingClaimResponse struct {
-	DeviceID    string `json:"device_id"`
-	Token       string `json:"token"`
-	Name        string `json:"name"`
-	MachineID   string `json:"machine_id,omitempty"`
-	MachineName string `json:"machine_name,omitempty"`
+	DeviceID          string `json:"device_id"`
+	Token             string `json:"token"`
+	Name              string `json:"name"`
+	MachineID         string `json:"machine_id,omitempty"`
+	MachineName       string `json:"machine_name,omitempty"`
+	LANEndpoint       string `json:"lan_endpoint,omitempty"`
+	TailnetEndpoint   string `json:"tailnet_endpoint,omitempty"`
+	TailnetIPEndpoint string `json:"tailnet_ip_endpoint,omitempty"`
 }
 
 type deviceRecord struct {
@@ -593,6 +596,7 @@ func (s *Server) handlePairClaimRoute(response http.ResponseWriter, request *htt
 	}
 	claimed.MachineID = s.identity.ID
 	claimed.MachineName = s.identity.Name
+	s.addMachineEndpoints(&claimed)
 	s.sendJSON(response, http.StatusCreated, claimed, corsOrigin)
 	return true
 }

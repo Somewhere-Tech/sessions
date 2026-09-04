@@ -47,6 +47,9 @@ describe('capability: inherit a paired host fleet', () => {
         name: 'Mac B',
         endpoint: 'https://mac-b.example.ts.net',
         transport: 'tailnet',
+        lan_endpoint: 'http://192.168.1.20:8787',
+        tailnet_endpoint: 'https://mac-b.example.ts.net',
+        tailnet_ip_endpoint: 'http://100.100.20.30:8787',
         reachable: true
       }
     ]));
@@ -63,6 +66,7 @@ describe('capability: inherit a paired host fleet', () => {
       machineId: 'machine-b',
       relayParentId: host.id,
       relayMachineId: 'machine-b',
+      transport: 'tailnet',
       token: 'phone-on-a'
     });
     expect(httpBaseForServer(inherited)).toBe(
@@ -85,5 +89,20 @@ describe('capability: inherit a paired host fleet', () => {
 
     expect(refreshed.map((server) => server.machineId)).toEqual(['machine-a', 'machine-c']);
     expect(httpBaseForServer(refreshed[1])).toContain('/api/fleet/machine-c');
+  });
+
+  it('updates the displayed transport when the host falls back', async () => {
+    const fetchMock = vi.spyOn(window, 'fetch');
+    fetchMock.mockResolvedValueOnce(fleetResponse([
+      { id: 'machine-b', name: 'Mac B', transport: 'lan', reachable: true }
+    ]));
+    await refreshFleetServersFromHost(host.id);
+    fetchMock.mockResolvedValueOnce(fleetResponse([
+      { id: 'machine-b', name: 'Mac B', transport: 'tailnet-ip', reachable: true }
+    ]));
+
+    await refreshFleetServersFromHost(host.id);
+
+    expect(useServers.getState().servers[1]?.transport).toBe('tailnet-ip');
   });
 });

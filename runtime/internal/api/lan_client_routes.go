@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/discovery"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
+	"github.com/somewhere-tech/sessions/runtime/internal/tailscale"
 )
 
 type lanDiscoveredMachine struct {
@@ -115,10 +117,13 @@ func (s *Server) verifiedLANCandidates(ctx context.Context, candidates []discove
 }
 
 type lanConnectRequest struct {
-	Endpoint string `json:"endpoint"`
-	ClientID string `json:"client_id"`
-	Name     string `json:"name"`
-	Timeout  string `json:"timeout"`
+	Endpoint          string `json:"endpoint"`
+	LANEndpoint       string `json:"lan_endpoint"`
+	TailnetEndpoint   string `json:"tailnet_endpoint"`
+	TailnetIPEndpoint string `json:"tailnet_ip_endpoint"`
+	ClientID          string `json:"client_id"`
+	Name              string `json:"name"`
+	Timeout           string `json:"timeout"`
 }
 
 func (s *Server) serveLANConnect(response http.ResponseWriter, request *http.Request, corsOrigin string) {
@@ -127,7 +132,7 @@ func (s *Server) serveLANConnect(response http.ResponseWriter, request *http.Req
 		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
 		return
 	}
-	endpoint, transport, err := validateLANClientEndpoint(body.Endpoint)
+	candidates, err := lanConnectCandidates(body)
 	if err != nil {
 		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
 		return
@@ -140,17 +145,81 @@ func (s *Server) serveLANConnect(response http.ResponseWriter, request *http.Req
 			return
 		}
 	}
-	claim, err := connectLANMachine(request.Context(), endpoint, transport, body.ClientID, body.Name, timeout)
+	claim, used, err := s.connectLANMachineCandidates(request.Context(), candidates, body.ClientID, body.Name, timeout)
 	if err != nil {
-		s.sendLANClientError(response, localnetwork.Explain(endpoint, err), corsOrigin)
+		s.sendLANClientError(response, err, corsOrigin)
 		return
 	}
-	if transport == "nearby" {
+	if used.Transport == "lan" {
 		s.lan.markPermission("granted")
 	}
 	s.sendJSON(response, http.StatusCreated, map[string]any{
-		"claim": claim, "endpoint": endpoint, "transport": transport,
+		"claim": claim, "endpoint": used.Endpoint, "transport": used.Transport,
 	}, corsOrigin)
+}
+
+func lanConnectCandidates(body lanConnectRequest) ([]fleetendpoint.Candidate, error) {
+	if body.Endpoint != "" {
+		endpoint, transport, err := validateLANClientEndpoint(body.Endpoint)
+		if err != nil {
+			return nil, err
+		}
+		switch transport {
+		case "nearby":
+			body.LANEndpoint = endpoint
+		case "tailnet":
+			body.TailnetEndpoint = endpoint
+		case "tailnet-ip":
+			body.TailnetIPEndpoint = endpoint
+		}
+	}
+	ordered := fleetendpoint.Ordered(body.LANEndpoint, body.TailnetEndpoint, body.TailnetIPEndpoint)
+	for index := range ordered {
+		validated, transport, err := validateLANClientEndpoint(ordered[index].Endpoint)
+		if err != nil || fleetTransportName(transport) != ordered[index].Transport {
+			return nil, fmt.Errorf("invalid %s endpoint", ordered[index].Transport)
+		}
+		ordered[index].Endpoint = validated
+	}
+	if len(ordered) == 0 {
+		return nil, errors.New("at least one machine endpoint is required")
+	}
+	return ordered, nil
+}
+
+func (s *Server) connectLANMachineCandidates(ctx context.Context, candidates []fleetendpoint.Candidate, clientID, name string, timeout time.Duration) (pairingClaimResponse, fleetendpoint.Candidate, error) {
+	selected, err := s.selectLANConnectCandidate(ctx, candidates)
+	if err != nil {
+		return pairingClaimResponse{}, fleetendpoint.Candidate{}, err
+	}
+	transport := selected.Transport
+	if transport == "lan" {
+		transport = "nearby"
+	}
+	claim, err := connectLANMachine(ctx, selected.Endpoint, transport, clientID, name, timeout)
+	return claim, selected, err
+}
+
+func (s *Server) selectLANConnectCandidate(ctx context.Context, candidates []fleetendpoint.Candidate) (fleetendpoint.Candidate, error) {
+	var lastErr error
+	for index, candidate := range candidates {
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		health, err := fetchLANHealth(probeCtx, candidate.Endpoint, "")
+		cancel()
+		if err == nil && health.OK && health.Name == "sessionsd" {
+			return candidate, nil
+		}
+		if err == nil {
+			err = errors.New("endpoint did not identify itself as sessionsd")
+		}
+		explained := localnetwork.Explain(candidate.Endpoint, err)
+		if index == 0 && localnetwork.IsPermissionError(explained) {
+			s.logLANFallbackOnce(candidates[1:])
+			s.lan.markPermission("denied")
+		}
+		lastErr = fmt.Errorf("reach %s: %w", candidate.Endpoint, explained)
+	}
+	return fleetendpoint.Candidate{}, lastErr
 }
 
 func (s *Server) sendLANClientError(response http.ResponseWriter, err error, corsOrigin string) {
@@ -307,6 +376,9 @@ func validateLANClientEndpoint(raw string) (string, string, error) {
 	if parsed.Scheme == "http" {
 		ip := net.ParseIP(parsed.Hostname()).To4()
 		port, portErr := strconv.Atoi(parsed.Port())
+		if ip != nil && tailscale.TailnetIPv4([]string{ip.String()}) != "" && portErr == nil && port >= 1024 && port <= 65535 {
+			return strings.TrimSuffix(parsed.String(), "/"), "tailnet-ip", nil
+		}
 		if ip == nil || (!ip.IsPrivate() && !ip.IsLoopback()) || portErr != nil || port < 1024 || port > 65535 {
 			return "", "", errors.New("nearby HTTP endpoints require a private or loopback IPv4 literal and explicit port")
 		}

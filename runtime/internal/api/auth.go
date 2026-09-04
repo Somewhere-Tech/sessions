@@ -274,7 +274,7 @@ func (s *Server) websocketWritesAllowed(request *http.Request) (bool, error) {
 		// authorized() already decided this request.
 		return true, nil
 	}
-	if trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost()) {
+	if trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost(), s.tailnetIP.activeHost()) {
 		return true, nil
 	}
 	return s.presentedCredential(request)

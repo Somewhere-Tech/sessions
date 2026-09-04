@@ -15,6 +15,9 @@ func TestSettingsRoundTrip(t *testing.T) {
 	if notify := settings.EffectiveNotify(); !notify.Done || !notify.Waiting || !notify.Lost {
 		t.Fatalf("missing notify defaults = %#v", notify)
 	}
+	if remote := settings.EffectiveRemote(); !remote.Auto {
+		t.Fatalf("missing remote default = %#v", remote)
+	}
 	if err := SaveSettings(path, Settings{LAN: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +60,20 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 	if err := notify.Set("unknown", true); err == nil {
 		t.Fatal("unknown notification kind was accepted")
+	}
+}
+
+func TestRemoteAutoSettingRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := SaveSettings(path, Settings{Remote: &RemoteSettings{Auto: false}}); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := LoadSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Remote == nil || settings.EffectiveRemote().Auto {
+		t.Fatalf("remote setting = %#v", settings.Remote)
 	}
 }
 

@@ -12,7 +12,8 @@ import (
 )
 
 func TestDNSSDProxyArgumentsPinSelectedPrivateAddress(t *testing.T) {
-	got := dnsSDProxyArguments(net.ParseIP("192.168.1.20"), 8787, "Studio Mac", "sessions-abc123")
+	txt := endpointTXT("http://192.168.1.20:8787", "https://studio.example.ts.net", "http://100.100.1.2:8787")
+	got := dnsSDProxyArguments(net.ParseIP("192.168.1.20"), 8787, "Studio Mac", "sessions-abc123", txt)
 	want := []string{
 		"-P",
 		"Studio Mac",
@@ -25,6 +26,9 @@ func TestDNSSDProxyArgumentsPinSelectedPrivateAddress(t *testing.T) {
 		"api=1",
 		"approval=required",
 		"transport=http",
+		"lan=http://192.168.1.20:8787",
+		"tailnet=https://studio.example.ts.net",
+		"tailnet-ip=http://100.100.1.2:8787",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("dnsSDProxyArguments() = %#v, want %#v", got, want)
@@ -51,7 +55,7 @@ func TestDarwinAdvertiseSystemSmoke(t *testing.T) {
 		}
 		port = parsed
 	}
-	registration, err := Advertise(address, port, "Sessions Bonjour smoke", "smoke-test")
+	registration, err := Advertise(address, port, "Sessions Bonjour smoke", "smoke-test", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

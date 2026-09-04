@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { fetchLANState, requestLocalNetworkAccess, setLANEnabled, type LANState } from '../api/sessionsd';
+import { fetchLANState, fetchRemoteState, requestLocalNetworkAccess, setLANEnabled, setRemoteAuto, type LANState, type RemoteState } from '../api/sessionsd';
 import {
   discoverNativeMachines,
   getNativeConnectionSettings,
@@ -18,20 +18,28 @@ import { useMachineAccessPairing } from '../hooks/useMachineAccessPairing';
 import { SomewhereCard } from './SomewhereCard';
 import { ServerSelector } from './ServerSelector';
 
-interface RemoteState {
-  enabled: boolean;
-  verified: boolean;
-  endpoint?: string;
-  target?: string | null;
-  connectUrl?: string;
-  verificationError?: string;
-}
-
 interface PairState {
   url: string;
   endpoint: string;
   ticket: string;
   expires_at: string;
+}
+
+async function updateRemoteAuto(
+  enabled: boolean,
+  setRemote: Dispatch<SetStateAction<RemoteState | null>>,
+  setMessage: Dispatch<SetStateAction<string | null>>,
+  setBusy: Dispatch<SetStateAction<string | null>>
+): Promise<void> {
+  setBusy('remote-auto'); setMessage(null);
+  try {
+    setRemote(await setRemoteAuto(enabled));
+  } catch (reason) {
+    const detail = reason instanceof Error ? reason.message : String(reason);
+    setMessage(detail);
+  } finally {
+    setBusy(null);
+  }
 }
 
 export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?: boolean; hostName?: string }): JSX.Element {
@@ -42,7 +50,6 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
   const [port, setPort] = useState('8787');
   const [lan, setLAN] = useState<LANState | null>(null);
   const [remote, setRemote] = useState<RemoteState | null>(null);
-  const [remoteError, setRemoteError] = useState<string | null>(null);
   const [pair, setPair] = useState<PairState | null>(null);
   const [pairName, setPairName] = useState('My other device');
   const [incomingPairLink, setIncomingPairLink] = useState('');
@@ -52,7 +59,6 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
   const [tailnetMessage, setTailnetMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-
   const refresh = useCallback(async (): Promise<void> => {
     setMessage(null);
     const lanRequest = isTauri() && !clientOnly
@@ -65,18 +71,14 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
     setNative(nativeResult);
     if (nativeResult) setPort(String(nativeResult.port));
     setLAN(lanResult);
-    if (!isTauri() || clientOnly) {
+    if (clientOnly) {
       setRemote(null);
-      setRemoteError(null);
       return;
     }
     try {
-      const status = await runNativeConnectionAction<RemoteState>('remote', 'status');
-      setRemote(status.data);
-      setRemoteError(null);
-    } catch (reason) {
+      setRemote(await fetchRemoteState());
+    } catch {
       setRemote(null);
-      setRemoteError(reason instanceof Error ? reason.message : String(reason));
     }
   }, [clientOnly]);
 
@@ -114,22 +116,6 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
       }
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const changeRemote = async (enabled: boolean): Promise<void> => {
-    if (clientOnly || busy || !isTauri()) return;
-    setBusy('remote'); setMessage(null); setPair(null);
-    try {
-      const result = await runNativeConnectionAction<RemoteState>('remote', enabled ? 'enable' : 'disable');
-      setRemote(result.data);
-      setRemoteError(null);
-      if (result.detail) setMessage(result.detail);
-    } catch (reason) {
-      const detail = reason instanceof Error ? reason.message : String(reason);
-      setRemoteError(detail); setMessage(detail);
     } finally {
       setBusy(null);
     }
@@ -252,19 +238,13 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
             <button type="button" className={`btn${lan?.enabled ? ' btn-ghost' : ''}`} disabled={clientOnly || busy !== null} onClick={() => void changeLAN(!lan?.enabled)}>{busy === 'lan' ? 'Checking…' : lan?.enabled ? 'Turn off LAN' : 'Enable LAN access'}</button>
           </ConnectionCard>
 
-          <ConnectionCard step="03" title="Anywhere" state={clientOnly ? (connectedViaTailnet ? 'Tailscale HTTPS on' : `Check on ${machineName}`) : remote?.enabled ? 'Tailscale HTTPS on' : 'Off'} active={clientOnly ? connectedViaTailnet : remote?.enabled === true}>
+          <ConnectionCard step="03" title="Anywhere" state={clientOnly ? (connectedViaTailnet ? 'Tailscale on' : `Check on ${machineName}`) : remote?.enabled ? 'Tailscale on' : 'Off'} active={clientOnly ? connectedViaTailnet : remote?.enabled === true}>
             <p>Tailscale Serve keeps the connection inside your tailnet with HTTPS terminating on {clientOnly ? machineName : 'this Mac'}. Sessions operates no relay.</p>
             {clientOnly ? <HostConnectionChoice hostName={machineName} /> : null}
             {clientOnly && !connectedViaTailnet ? <div className="connection-privacy-note"><strong>Host-only status</strong><span>This viewer can confirm LAN access, but the host does not expose its Tailscale configuration. Open Sessions on {machineName} to inspect it.</span></div> : null}
             {remote?.endpoint ? <div className="connection-endpoint">{remote.endpoint}</div> : null}
-            {remote?.enabled ? <div className="connection-privacy-note"><strong>Ready for requests</strong><span>Other Sessions apps in this tailnet can discover this Mac. You still approve every new device.</span></div> : null}
-            {remote?.verificationError ? <div className="connection-privacy-note"><strong>Configured on this Mac</strong><span>{remote.verificationError}</span></div> : null}
-            {remoteError ? <div className="connection-error">{remoteError}</div> : null}
-            {!clientOnly && !remote?.enabled ? <div className="connection-privacy-note"><strong>Before enabling</strong><span>Tailscale issues a public certificate, so the machine’s <code>.ts.net</code> name appears in Certificate Transparency logs.</span></div> : null}
-            <div className="connection-actions">
-              <button type="button" className={`btn${remote?.enabled ? ' btn-ghost' : ''}`} disabled={clientOnly || !isTauri() || busy !== null} onClick={() => void changeRemote(!remote?.enabled)}>{busy === 'remote' ? 'Verifying…' : remote?.enabled ? 'Disable remote access' : 'Enable Tailscale HTTPS'}</button>
-              {remoteError?.toLowerCase().includes('not installed') ? <a className="btn btn-ghost" href="https://tailscale.com/download" target="_blank" rel="noreferrer">Get Tailscale</a> : null}
-            </div>
+            {remote?.tailnetIpEndpoint ? <div className="connection-endpoint">{remote.tailnetIpEndpoint}</div> : null}
+            {!clientOnly ? <label className="settings-select-row"><span><strong>Reachable over Tailscale automatically</strong><small>Sessions maintains HTTPS by name and HTTP on the tailnet address.</small></span><input type="checkbox" checked={remote?.auto ?? true} disabled={busy !== null} onChange={(event) => { if (!busy) void updateRemoteAuto(event.currentTarget.checked, setRemote, setMessage, setBusy); }} /></label> : null}
           </ConnectionCard>
         </section>
 

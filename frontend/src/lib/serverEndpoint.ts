@@ -40,7 +40,8 @@ export function isPrivateNetworkHost(host: string): boolean {
     return first === 10
       || (first === 172 && second >= 16 && second <= 31)
       || (first === 192 && second === 168)
-      || (first === 169 && second === 254);
+      || (first === 169 && second === 254)
+      || (first === 100 && second >= 64 && second <= 127);
   }
   if (!isIpv6(normalized)) return false;
   const unbracketed = normalized.replace(/^\[|\]$/g, '');

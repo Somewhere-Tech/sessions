@@ -1,0 +1,7 @@
+{
+  "BackendState": "Running",
+  "Self": {
+    "DNSName": "studio-mac.example.ts.net.",
+    "TailscaleIPs": ["100.64.12.34", "fd7a:115c:a1e0::1234"]
+  }
+}

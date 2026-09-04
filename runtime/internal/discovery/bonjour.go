@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,21 +25,24 @@ const (
 // a hint that a Sessions-shaped service may exist; callers must still verify
 // /api/health and complete the explicit access-approval flow.
 type Candidate struct {
-	Name      string `json:"name"`
-	Hostname  string `json:"hostname"`
-	Endpoint  string `json:"endpoint"`
-	Address   string `json:"address"`
-	Port      int    `json:"port"`
-	Transport string `json:"transport"`
+	Name              string `json:"name"`
+	Hostname          string `json:"hostname"`
+	Endpoint          string `json:"endpoint"`
+	LANEndpoint       string `json:"lan_endpoint"`
+	TailnetEndpoint   string `json:"tailnet_endpoint,omitempty"`
+	TailnetIPEndpoint string `json:"tailnet_ip_endpoint,omitempty"`
+	Address           string `json:"address"`
+	Port              int    `json:"port"`
+	Transport         string `json:"transport"`
 }
 
 type Registration interface {
 	Shutdown() error
 }
 
-type AdvertiseFunc func(net.IP, int, string, string) (Registration, error)
+type AdvertiseFunc func(net.IP, int, string, string, string, string) (Registration, error)
 
-func Advertise(address net.IP, port int, machineName, machineID string) (Registration, error) {
+func Advertise(address net.IP, port int, machineName, machineID, tailnetEndpoint, tailnetIPEndpoint string) (Registration, error) {
 	ip := address.To4()
 	if ip == nil || !privateIPv4(ip) {
 		return nil, fmt.Errorf("Bonjour requires a private LAN IPv4 address")
@@ -48,10 +52,11 @@ func Advertise(address net.IP, port int, machineName, machineID string) (Registr
 	}
 	instance := serviceInstance(machineName, machineID)
 	hostLabel := "sessions-" + machineIDSuffix(machineID)
-	return platformAdvertise(ip, port, instance, hostLabel)
+	lanEndpoint := "http://" + net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	return platformAdvertise(ip, port, instance, hostLabel, endpointTXT(lanEndpoint, tailnetEndpoint, tailnetIPEndpoint))
 }
 
-func advertiseWithMDNS(address net.IP, port int, instance, hostLabel string) (Registration, error) {
+func advertiseWithMDNS(address net.IP, port int, instance, hostLabel string, txt []string) (Registration, error) {
 	iface, err := interfaceForIP(address)
 	if err != nil {
 		return nil, err
@@ -63,7 +68,7 @@ func advertiseWithMDNS(address net.IP, port int, instance, hostLabel string) (Re
 		hostLabel+".local.",
 		port,
 		[]net.IP{address},
-		[]string{"sessions=1", "api=1", "approval=required", "transport=http"},
+		txt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("prepare Bonjour service: %w", err)
@@ -142,6 +147,20 @@ func candidateFromEntry(entry *mdns.ServiceEntry) (Candidate, bool) {
 	}
 	address := ip.String()
 	endpoint := "http://" + net.JoinHostPort(address, strconv.Itoa(entry.Port))
+	lanEndpoint := validatedTXTEndpoint(entry.InfoFields, "lan", "http", false)
+	if lanEndpoint == "" {
+		lanEndpoint = endpoint
+	}
+	tailnetEndpoint := validatedTXTEndpoint(entry.InfoFields, "tailnet", "https", true)
+	tailnetIPEndpoint := validatedTXTEndpoint(entry.InfoFields, "tailnet-ip", "http", false)
+	if tailnetIPEndpoint != "" {
+		parsed, _ := url.Parse(tailnetIPEndpoint)
+		ip := net.ParseIP(parsed.Hostname()).To4()
+		_, carrier, _ := net.ParseCIDR("100.64.0.0/10")
+		if ip == nil || !carrier.Contains(ip) {
+			tailnetIPEndpoint = ""
+		}
+	}
 	name := strings.TrimSuffix(entry.Name, "."+ServiceType+".local.")
 	name = strings.TrimSpace(strings.TrimSuffix(name, "."))
 	name = unescapeDNSPresentation(name)
@@ -153,9 +172,40 @@ func candidateFromEntry(entry *mdns.ServiceEntry) (Candidate, bool) {
 	}
 	hostname := strings.TrimSuffix(strings.TrimSpace(entry.Host), ".")
 	return Candidate{
-		Name: name, Hostname: hostname, Endpoint: endpoint,
+		Name: name, Hostname: hostname, Endpoint: endpoint, LANEndpoint: lanEndpoint,
+		TailnetEndpoint: tailnetEndpoint, TailnetIPEndpoint: tailnetIPEndpoint,
 		Address: address, Port: entry.Port, Transport: "nearby",
 	}, true
+}
+
+func endpointTXT(lanEndpoint, tailnetEndpoint, tailnetIPEndpoint string) []string {
+	fields := []string{"sessions=1", "api=1", "approval=required", "transport=http", "lan=" + lanEndpoint}
+	if tailnetEndpoint != "" {
+		fields = append(fields, "tailnet="+tailnetEndpoint)
+	}
+	if tailnetIPEndpoint != "" {
+		fields = append(fields, "tailnet-ip="+tailnetIPEndpoint)
+	}
+	return fields
+}
+
+func validatedTXTEndpoint(fields []string, key, scheme string, requireTSNet bool) string {
+	for _, field := range fields {
+		left, right, found := strings.Cut(field, "=")
+		if !found || !strings.EqualFold(strings.TrimSpace(left), key) {
+			continue
+		}
+		parsed, err := url.Parse(strings.TrimSpace(right))
+		if err != nil || parsed.Scheme != scheme || parsed.Hostname() == "" || parsed.User != nil ||
+			parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+			return ""
+		}
+		if requireTSNet && !strings.HasSuffix(strings.ToLower(parsed.Hostname()), ".ts.net") {
+			return ""
+		}
+		return strings.TrimSuffix(parsed.String(), "/")
+	}
+	return ""
 }
 
 func hasTXT(fields []string, key, value string) bool {

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/tailscale"
 )
 
 const (
@@ -351,8 +353,7 @@ func (s *Server) handleTailnetAccessPublicRoute(response http.ResponseWriter, re
 	case err != nil:
 		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
 	default:
-		claimed.MachineID = s.identity.ID
-		claimed.MachineName = s.identity.Name
+		s.completeAccessClaim(&claimed)
 		s.sendJSON(response, http.StatusCreated, claimed, corsOrigin)
 	}
 	return true
@@ -364,7 +365,8 @@ func (s *Server) handleNearbyAccessPublicRoute(response http.ResponseWriter, req
 		return false
 	}
 	loopback := isLoopbackPeer(request)
-	if !isLANRequest(request) && !loopback {
+	tailnetIP := isTailnetIPRequest(request)
+	if !isLANRequest(request) && !tailnetIP && !loopback {
 		s.sendJSON(response, http.StatusForbidden, map[string]any{
 			"error": "nearby access is available only on this machine's trusted LAN listener or local loopback",
 		}, "")
@@ -386,17 +388,13 @@ func (s *Server) handleNearbyAccessPublicRoute(response http.ResponseWriter, req
 		}, "")
 		return true
 	}
-	address, ok := privateRemoteIPv4(request.RemoteAddr)
-	if loopback {
-		address, ok = "127.0.0.1", true
-	}
+	identity, transport, address, ok := nearbyAccessIdentity(request, loopback, tailnetIP)
 	if !ok {
 		s.sendJSON(response, http.StatusForbidden, map[string]any{
 			"error": "nearby access requires a private IPv4 network peer",
 		}, corsOrigin)
 		return true
 	}
-	identity := tailnetIdentity{Login: "nearby:" + address}
 	if request.URL.Path == "/api/lan/access/request" {
 		var body struct {
 			ClientID string `json:"client_id"`
@@ -406,7 +404,7 @@ func (s *Server) handleNearbyAccessPublicRoute(response http.ResponseWriter, req
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
 			return true
 		}
-		created, err := s.tailnetAccess.requestForTransport(identity, body.ClientID, body.Name, "nearby", address)
+		created, err := s.tailnetAccess.requestForTransport(identity, body.ClientID, body.Name, transport, address)
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, errTailnetAccessFull) {
@@ -433,7 +431,7 @@ func (s *Server) handleNearbyAccessPublicRoute(response http.ResponseWriter, req
 		}, corsOrigin)
 		return true
 	}
-	claimed, err := s.tailnetAccess.claimForTransport(identity, "nearby", body.RequestID, body.RequestSecret, s.pair.devices)
+	claimed, err := s.tailnetAccess.claimForTransport(identity, transport, body.RequestID, body.RequestSecret, s.pair.devices)
 	switch {
 	case errors.Is(err, errTailnetAccessPending):
 		s.sendJSON(response, http.StatusAccepted, map[string]any{"status": "pending"}, corsOrigin)
@@ -444,11 +442,41 @@ func (s *Server) handleNearbyAccessPublicRoute(response http.ResponseWriter, req
 	case err != nil:
 		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
 	default:
-		claimed.MachineID = s.identity.ID
-		claimed.MachineName = s.identity.Name
+		s.completeAccessClaim(&claimed)
 		s.sendJSON(response, http.StatusCreated, claimed, corsOrigin)
 	}
 	return true
+}
+
+func nearbyAccessIdentity(request *http.Request, loopback, tailnetIP bool) (tailnetIdentity, string, string, bool) {
+	address, ok := privateRemoteIPv4(request.RemoteAddr)
+	transport := "nearby"
+	if tailnetIP {
+		host, _, _ := net.SplitHostPort(request.RemoteAddr)
+		address = tailscale.TailnetIPv4([]string{host})
+		ok = address != ""
+		transport = "tailnet-ip"
+	}
+	if loopback {
+		address, ok = "127.0.0.1", true
+	}
+	return tailnetIdentity{Login: transport + ":" + address}, transport, address, ok
+}
+
+func (s *Server) completeAccessClaim(claim *pairingClaimResponse) {
+	claim.MachineID = s.identity.ID
+	claim.MachineName = s.identity.Name
+	s.addMachineEndpoints(claim)
+}
+
+func (s *Server) addMachineEndpoints(claim *pairingClaimResponse) {
+	lan := s.lan.state()
+	if lan.URL != nil {
+		claim.LANEndpoint = *lan.URL
+	}
+	remote := s.remote.state()
+	claim.TailnetEndpoint = remote.Endpoint
+	claim.TailnetIPEndpoint = remote.TailnetIPEndpoint
 }
 
 // Access-request administration answers on two paths for the same resource.

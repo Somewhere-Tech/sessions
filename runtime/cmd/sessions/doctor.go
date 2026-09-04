@@ -80,6 +80,7 @@ func (a *app) cmdDoctor() error {
 				fmt.Fprintf(a.stdout, "restore: %.0f session(s) stayed paused after reboot; their history is preserved for explicit recovery\n\n", pending)
 			}
 		}
+		writeDoctorTailscale(a.stdout, deepMap["tailscale"])
 	}
 	writeDoctorLocalNetwork(a.stdout, lan)
 	fmt.Fprintf(a.stdout, "%s%s%s%s%sSTATUS\n",
@@ -130,6 +131,33 @@ func (a *app) cmdDoctor() error {
 	}
 	a.writeDoctorMirrorHealth(damagedMirrors)
 	return nil
+}
+
+func writeDoctorTailscale(writer io.Writer, value any) {
+	state, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	present, _ := state["present"].(bool)
+	signedIn, _ := state["signedIn"].(bool)
+	auto, _ := state["auto"].(bool)
+	endpoint, _ := state["remoteEndpoint"].(string)
+	ipEndpoint, _ := state["tailnetIpEndpoint"].(string)
+	status := "not installed"
+	if present {
+		status = "signed out"
+	}
+	if signedIn {
+		status = "signed in"
+	}
+	fmt.Fprintf(writer, "tailscale: %s, automatic=%s", status, map[bool]string{true: "on", false: "off"}[auto])
+	if endpoint != "" {
+		fmt.Fprintf(writer, ", https=%s", endpoint)
+	}
+	if ipEndpoint != "" {
+		fmt.Fprintf(writer, ", tailnet-ip=%s", ipEndpoint)
+	}
+	fmt.Fprint(writer, "\n\n")
 }
 
 func (a *app) doctorLocalNetwork() any {

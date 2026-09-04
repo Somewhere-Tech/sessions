@@ -4,6 +4,7 @@ cmd/sessions internal/ansi
 cmd/sessions internal/backup
 cmd/sessions internal/codexapp
 cmd/sessions internal/discovery
+cmd/sessions internal/fleetendpoint
 cmd/sessions internal/integrations
 cmd/sessions internal/lan
 cmd/sessions internal/ledger
@@ -13,6 +14,7 @@ cmd/sessions internal/providerargs
 cmd/sessions internal/recovery
 cmd/sessions internal/search
 cmd/sessions internal/state
+cmd/sessions internal/tailscale
 cmd/sessions internal/tokenstore
 cmd/sessions internal/usage
 cmd/sessions internal/verdict
@@ -36,6 +38,7 @@ internal/api internal/backup
 internal/api internal/codexapp
 internal/api internal/delivery
 internal/api internal/discovery
+internal/api internal/fleetendpoint
 internal/api internal/integrations
 internal/api internal/lan
 internal/api internal/ledger
@@ -48,6 +51,7 @@ internal/api internal/search
 internal/api internal/session
 internal/api internal/smartsearch
 internal/api internal/state
+internal/api internal/tailscale
 internal/api internal/tokenstore
 internal/api internal/usage
 internal/api internal/verdict

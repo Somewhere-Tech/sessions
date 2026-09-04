@@ -26,7 +26,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	path := request.URL.Path
 	origin := request.Header.Get("Origin")
 	corsOrigin := ""
-	if !requestHostIdentifiesListener(request, s.config.Host, s.config.Port, s.lan.activeHost()) {
+	if !requestHostIdentifiesListener(request, s.config.Host, s.config.Port, s.lan.activeHost(), s.tailnetIP.activeHost()) {
 		// A verified Tailscale Serve identity is the one supported proxy case:
 		// Serve preserves the tailnet hostname while adding identity headers
 		// that a direct caller cannot safely forge (see tailscaleServeIdentity).
@@ -35,7 +35,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			return
 		}
 	}
-	originAllowed := allowedOrigin(origin, s.config.Host, s.lan.activeHost())
+	originAllowed := allowedOrigin(origin, s.config.Host, s.lan.activeHost(), s.tailnetIP.activeHost())
 	if originAllowed {
 		corsOrigin = origin
 	}
@@ -46,7 +46,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	// dispatch. Credential-bearing remote clients remain valid, but the
 	// credential must verify: header presence alone is ambient browser input.
 	if isStateChangingMethod(request.Method) && origin != "" &&
-		!trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost()) {
+		!trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost(), s.tailnetIP.activeHost()) {
 		verified, err := s.presentedCredential(request)
 		if err != nil {
 			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": "verify request credential: " + err.Error()}, "")
@@ -71,38 +71,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/health" && request.Method == http.MethodGet {
-		// /api/health stays unauthenticated on purpose: native discovery,
-		// `sessions machines discover`, the updater, and the frontend's
-		// bootstrapCurrentOriginServer all depend on it, the last on the
-		// 200-vs-401 distinction. The selected private IPv4 and port are a
-		// different matter — they map the user's network for anyone who can
-		// reach the port — so that one field is redacted unless the caller
-		// has already proved it belongs here. `lan.enabled` stays visible so
-		// probes can still tell whether the listener is up.
-		lanState := s.lan.state()
-		if !s.mayReadLANEndpoint(request) {
-			lanState.URL = nil
-		}
-		restore := s.rebootRestoreHealth()
-		s.sendJSON(response, http.StatusOK, map[string]any{
-			"ok": true, "name": "sessionsd", "version": Version,
-			"status": restore["status"],
-			"listen": map[string]any{"host": s.config.Host, "port": s.config.Port},
-			"lan":    lanState,
-			"access": map[string]any{"open": s.openAccessEnabled()},
-			"system": map[string]any{"os": goruntime.GOOS, "arch": goruntime.GOARCH},
-			"compatibility": map[string]any{
-				"api": map[string]any{
-					"current": apiProtocolVersion, "minimumClient": minimumAPIClient, "maximumClient": maximumAPIClient,
-				},
-				"runner": map[string]any{
-					"current": proto.ProtocolVersion, "minimum": proto.MinimumCompatibleVersion, "maximum": proto.MaximumCompatibleVersion,
-				},
-			},
-			"discovering":    s.registry.IsDiscovering(),
-			"sessionsLoaded": len(s.registry.List(true)),
-			"restore":        restore,
-		}, corsOrigin)
+		s.sendJSON(response, http.StatusOK, s.plainHealth(request), corsOrigin)
 		return
 	}
 	if s.handlePairClaimRoute(response, request, corsOrigin) {
@@ -149,8 +118,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		restore := s.rebootRestoreHealth()
 		s.sendJSON(response, http.StatusOK, map[string]any{
 			"ok": true, "name": "sessionsd", "version": Version,
-			"status": restore["status"],
-			"access": map[string]any{"open": s.openAccessEnabled()},
+			"status":    restore["status"],
+			"access":    map[string]any{"open": s.openAccessEnabled()},
+			"tailscale": s.tailscaleHealth(),
 			"compatibility": map[string]any{
 				"api": map[string]any{
 					"current": apiProtocolVersion, "minimumClient": minimumAPIClient, "maximumClient": maximumAPIClient,
@@ -183,7 +153,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/ws" {
-		if !allowedOrigin(origin, s.config.Host, s.lan.activeHost()) {
+		if !allowedOrigin(origin, s.config.Host, s.lan.activeHost(), s.tailnetIP.activeHost()) {
 			s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
 			return
 		}
@@ -196,6 +166,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if s.handleLANRoute(response, request, corsOrigin) {
+		return
+	}
+	if s.handleRemoteRoute(response, request, corsOrigin) {
 		return
 	}
 	if s.handleNotifyRoute(response, request, corsOrigin) {
@@ -431,6 +404,36 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": path}, corsOrigin)
+}
+
+// plainHealth stays unauthenticated for discovery and bootstrap. The selected
+// LAN address is separately redacted until the caller proves it belongs here.
+func (s *Server) plainHealth(request *http.Request) map[string]any {
+	lanState := s.lan.state()
+	if !s.mayReadLANEndpoint(request) {
+		lanState.URL = nil
+	}
+	restore := s.rebootRestoreHealth()
+	return map[string]any{
+		"ok": true, "name": "sessionsd", "version": Version,
+		"status":    restore["status"],
+		"listen":    map[string]any{"host": s.config.Host, "port": s.config.Port},
+		"lan":       lanState,
+		"tailscale": s.tailscaleHealth(),
+		"access":    map[string]any{"open": s.openAccessEnabled()},
+		"system":    map[string]any{"os": goruntime.GOOS, "arch": goruntime.GOARCH},
+		"compatibility": map[string]any{
+			"api": map[string]any{
+				"current": apiProtocolVersion, "minimumClient": minimumAPIClient, "maximumClient": maximumAPIClient,
+			},
+			"runner": map[string]any{
+				"current": proto.ProtocolVersion, "minimum": proto.MinimumCompatibleVersion, "maximum": proto.MaximumCompatibleVersion,
+			},
+		},
+		"discovering":    s.registry.IsDiscovering(),
+		"sessionsLoaded": len(s.registry.List(true)),
+		"restore":        restore,
+	}
 }
 
 func (s *Server) rebootRestoreHealth() map[string]any {

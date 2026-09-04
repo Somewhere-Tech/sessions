@@ -16,21 +16,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
+	"github.com/somewhere-tech/sessions/runtime/internal/tailscale"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
 const (
 	fleetRegistryVersion = 1
-	fleetProbeTimeout    = 2 * time.Second
+	fleetProbeTimeout    = 7 * time.Second
 	fleetRegistryLimit   = 256 * 1024
 )
 
 type fleetSavedMachine struct {
-	MachineID string `json:"machine_id"`
-	Name      string `json:"name"`
-	Endpoint  string `json:"endpoint"`
-	Transport string `json:"transport"`
+	MachineID         string `json:"machine_id"`
+	Name              string `json:"name"`
+	Endpoint          string `json:"endpoint"`
+	LANEndpoint       string `json:"lan_endpoint,omitempty"`
+	TailnetEndpoint   string `json:"tailnet_endpoint,omitempty"`
+	TailnetIPEndpoint string `json:"tailnet_ip_endpoint,omitempty"`
+	Transport         string `json:"transport"`
 }
 
 type fleetMachineRegistry struct {
@@ -39,13 +44,16 @@ type fleetMachineRegistry struct {
 }
 
 type fleetMachineView struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Endpoint  string `json:"endpoint"`
-	Transport string `json:"transport"`
-	Reachable bool   `json:"reachable"`
-	Reason    string `json:"reason,omitempty"`
-	Message   string `json:"message,omitempty"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Endpoint          string `json:"endpoint"`
+	Transport         string `json:"transport"`
+	LANEndpoint       string `json:"lan_endpoint,omitempty"`
+	TailnetEndpoint   string `json:"tailnet_endpoint,omitempty"`
+	TailnetIPEndpoint string `json:"tailnet_ip_endpoint,omitempty"`
+	Reachable         bool   `json:"reachable"`
+	Reason            string `json:"reason,omitempty"`
+	Message           string `json:"message,omitempty"`
 }
 
 var fleetRelayTransport = &http.Transport{
@@ -102,7 +110,7 @@ func (s *Server) handleFleetRelay(
 		s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
 		return true
 	}
-	target, err := validatedFleetEndpoint(machine)
+	target, selected, err := s.selectFleetEndpoint(request.Context(), machine, credential)
 	if err != nil {
 		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
 		return true
@@ -129,7 +137,7 @@ func (s *Server) handleFleetRelay(
 		},
 		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
 			log.Printf("sessionsd: fleet relay failed machine=%s device_id=%s: %v", machine.MachineID, deviceID, proxyErr)
-			explained := localnetwork.Explain(machine.Endpoint, proxyErr)
+			explained := localnetwork.Explain(selected.Endpoint, proxyErr)
 			if localnetwork.IsPermissionError(explained) {
 				s.lan.markPermission("denied")
 			}
@@ -175,12 +183,12 @@ func (s *Server) serveFleetMachines(response http.ResponseWriter, request *http.
 	for index, machine := range machines {
 		index, machine := index, machine
 		views[index] = fleetMachineView{
-			ID: machine.MachineID, Name: machine.Name, Endpoint: machine.Endpoint,
-			Transport: fleetTransportName(machine.Transport),
+			ID: machine.MachineID, Name: machine.Name,
+			LANEndpoint: machine.LANEndpoint, TailnetEndpoint: machine.TailnetEndpoint,
+			TailnetIPEndpoint: machine.TailnetIPEndpoint,
 		}
 		go func() {
-			views[index].Reachable, views[index].Reason, views[index].Message =
-				s.fleetMachineReachability(request.Context(), machine)
+			views[index] = s.fleetMachineReachability(request.Context(), machine, views[index])
 			done <- struct{}{}
 		}()
 	}
@@ -190,43 +198,79 @@ func (s *Server) serveFleetMachines(response http.ResponseWriter, request *http.
 	s.sendJSON(response, http.StatusOK, map[string]any{"machines": views}, corsOrigin)
 }
 
-func (s *Server) fleetMachineReachability(parent context.Context, machine fleetSavedMachine) (bool, string, string) {
-	target, err := validatedFleetEndpoint(machine)
-	if err != nil {
-		return false, "", ""
-	}
+func (s *Server) fleetMachineReachability(parent context.Context, machine fleetSavedMachine, view fleetMachineView) fleetMachineView {
 	credential, err := s.fleetMachineCredential(machine.MachineID)
 	if err != nil || credential == "" {
-		return false, "", ""
+		return view
 	}
 	ctx, cancel := context.WithTimeout(parent, fleetProbeTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String()+"/api/machine", nil)
-	if err != nil {
-		return false, "", ""
+	target, selected, err := s.selectFleetEndpoint(ctx, machine, credential)
+	if err == nil {
+		err = probeFleetEndpoint(ctx, target, credential, machine.MachineID)
 	}
-	request.Header.Set("Authorization", "Bearer "+credential)
-	request.Header.Set("X-Forwarded-For", "127.0.0.1")
-	response, err := fleetRelayTransport.RoundTrip(request)
 	if err != nil {
 		explained := localnetwork.Explain(machine.Endpoint, err)
 		if localnetwork.IsPermissionError(explained) {
 			s.lan.markPermission("denied")
-			return false, localnetwork.Reason, localnetwork.Message
+			view.Reason, view.Message = localnetwork.Reason, localnetwork.Message
 		}
-		return false, "", ""
+		return view
+	}
+	view.Endpoint, view.Transport, view.Reachable = selected.Endpoint, selected.Transport, true
+	return view
+}
+
+func (s *Server) selectFleetEndpoint(ctx context.Context, machine fleetSavedMachine, credential string) (*url.URL, fleetendpoint.Candidate, error) {
+	candidates, err := validatedFleetEndpoints(machine)
+	if err != nil {
+		return nil, fleetendpoint.Candidate{}, err
+	}
+	if len(candidates) == 1 {
+		target, _ := url.Parse(candidates[0].Endpoint)
+		return target, candidates[0], nil
+	}
+	var lastErr error
+	for index, candidate := range candidates {
+		target, _ := url.Parse(candidate.Endpoint)
+		if err := probeFleetEndpoint(ctx, target, credential, machine.MachineID); err == nil {
+			return target, candidate, nil
+		} else {
+			lastErr = err
+			explained := localnetwork.Explain(candidate.Endpoint, err)
+			if index == 0 && localnetwork.IsPermissionError(explained) {
+				s.lan.markPermission("denied")
+				s.logLANFallbackOnce(candidates[1:])
+			}
+		}
+	}
+	return nil, fleetendpoint.Candidate{}, lastErr
+}
+
+func probeFleetEndpoint(ctx context.Context, target *url.URL, credential, machineID string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String()+"/api/machine", nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+credential)
+	response, err := fleetRelayTransport.RoundTrip(request)
+	if err != nil {
+		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return false, "", ""
+		return fmt.Errorf("machine health returned HTTP %d", response.StatusCode)
 	}
 	var identity struct {
 		MachineID string `json:"machine_id"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&identity); err != nil {
-		return false, "", ""
+		return err
 	}
-	return identity.MachineID == machine.MachineID, "", ""
+	if identity.MachineID != machineID {
+		return errors.New("credential verified a different machine identity")
+	}
+	return nil
 }
 
 var errFleetMachineNotApproved = errors.New("machine is not approved on this host")
@@ -277,7 +321,7 @@ func (s *Server) readFleetMachines() ([]fleetSavedMachine, error) {
 		if !validFleetMachineID(machine.MachineID) {
 			return nil, fmt.Errorf("saved machine has invalid id %q", machine.MachineID)
 		}
-		if _, err := validatedFleetEndpoint(machine); err != nil {
+		if _, err := validatedFleetEndpoints(machine); err != nil {
 			return nil, err
 		}
 	}
@@ -298,20 +342,47 @@ func (s *Server) fleetMachineCredential(machineID string) (string, error) {
 	return tokenstore.ReadSecret(filepath.Join(s.fleetStateRoot(), "clients", machineID+".token"))
 }
 
-func validatedFleetEndpoint(machine fleetSavedMachine) (*url.URL, error) {
-	parsed, err := url.Parse(strings.TrimSpace(machine.Endpoint))
+func validatedFleetEndpoints(machine fleetSavedMachine) ([]fleetendpoint.Candidate, error) {
+	lan, tailnet, tailnetIP := machine.LANEndpoint, machine.TailnetEndpoint, machine.TailnetIPEndpoint
+	switch fleetTransportName(machine.Transport) {
+	case "lan":
+		if lan == "" {
+			lan = machine.Endpoint
+		}
+	case "tailnet":
+		if tailnet == "" {
+			tailnet = machine.Endpoint
+		}
+	case "tailnet-ip":
+		if tailnetIP == "" {
+			tailnetIP = machine.Endpoint
+		}
+	}
+	candidates := fleetendpoint.Ordered(lan, tailnet, tailnetIP)
+	for _, candidate := range candidates {
+		if err := validateFleetCandidate(machine.MachineID, candidate); err != nil {
+			return nil, err
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("saved machine %q has no endpoint", machine.MachineID)
+	}
+	return candidates, nil
+}
+
+func validateFleetCandidate(machineID string, candidate fleetendpoint.Candidate) error {
+	parsed, err := url.Parse(strings.TrimSpace(candidate.Endpoint))
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
 		parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return nil, fmt.Errorf("saved machine %q has an invalid endpoint", machine.MachineID)
+		return fmt.Errorf("saved machine %q has an invalid endpoint", machineID)
 	}
-	transport := fleetTransportName(machine.Transport)
-	if (transport == "lan" && parsed.Scheme != "http") ||
-		(transport == "tailnet" && parsed.Scheme != "https") ||
-		(transport != "lan" && transport != "tailnet") {
-		return nil, fmt.Errorf("saved machine %q has an invalid transport", machine.MachineID)
+	valid := candidate.Transport == "lan" && parsed.Scheme == "http"
+	valid = valid || candidate.Transport == "tailnet" && parsed.Scheme == "https" && strings.HasSuffix(strings.ToLower(parsed.Hostname()), ".ts.net")
+	valid = valid || candidate.Transport == "tailnet-ip" && parsed.Scheme == "http" && tailscale.TailnetIPv4([]string{parsed.Hostname()}) != ""
+	if !valid {
+		return fmt.Errorf("saved machine %q has an invalid %s transport", machineID, candidate.Transport)
 	}
-	parsed.Path = ""
-	return parsed, nil
+	return nil
 }
 
 func fleetTransportName(value string) string {

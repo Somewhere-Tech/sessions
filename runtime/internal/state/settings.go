@@ -52,6 +52,13 @@ type AISettings struct {
 	Provider string `json:"provider"`
 }
 
+// RemoteSettings controls daemon-owned Tailscale reachability. A missing
+// section means automatic reachability is on, so upgraded machines gain the
+// zero-configuration behavior without a settings migration.
+type RemoteSettings struct {
+	Auto bool `json:"auto"`
+}
+
 // ClaudeSettings contains launch defaults owned by Sessions. "inherit" means
 // no corresponding CLI override is supplied, leaving Claude's own effective
 // configuration authoritative. Credentials and provider settings files are
@@ -267,11 +274,19 @@ func (n *NotifySettings) Set(kind string, enabled bool) error {
 type Settings struct {
 	LAN                    bool                `json:"lan"`
 	LocalNetworkPermission string              `json:"localNetworkPermission,omitempty"`
+	Remote                 *RemoteSettings     `json:"remote,omitempty"`
 	Notify                 *NotifySettings     `json:"notify,omitempty"`
 	AI                     *AISettings         `json:"ai,omitempty"`
 	Claude                 *ClaudeSettings     `json:"claude,omitempty"`
 	Delegation             *DelegationSettings `json:"delegation,omitempty"`
 	Onboarding             *OnboardingSettings `json:"onboarding,omitempty"`
+}
+
+func (s Settings) EffectiveRemote() RemoteSettings {
+	if s.Remote == nil {
+		return RemoteSettings{Auto: true}
+	}
+	return *s.Remote
 }
 
 func (s Settings) EffectiveNotify() NotifySettings {

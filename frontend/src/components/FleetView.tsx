@@ -490,7 +490,7 @@ function FleetServerGroup({
         <span className="fleet-machine-count"><strong>{activeCount} live</strong><span>{snapshot.sessions.length} total</span></span>
       </header>
       <div className="fleet-machine-meta" title={`Connected at ${formatServerEndpoint(server)}${fullVersion ? ` · Sessions ${fullVersion}` : ''}`}>
-        <span>{platformText}</span>
+        <span>{platformText}{server.transport ? ` · ${server.transport === 'lan' ? 'LAN' : server.transport === 'tailnet' ? 'Tailscale HTTPS' : 'Tailscale IP'}` : ''}</span>
         {snapshot.health?.system?.arch ? <span>{snapshot.health.system.arch}</span> : null}
         <span className="is-version">{version ? `Sessions ${version}` : 'Version unavailable'}</span>
         {profileLabels.length > 0 ? <span title={profileLabels.join(' · ')}>{snapshot.profiles.length} {snapshot.profiles.length === 1 ? 'account' : 'accounts'}</span> : null}

@@ -8,6 +8,11 @@ This document records the behavior of the normative Go daemon in
 - The default listener is `127.0.0.1:8787`. `SESSIONS_HOST` and
   `SESSIONS_PORT` override it. The server refuses `0.0.0.0`, `::`, `::0`, and
   `*` with process exit status 2.
+- When automatic Tailscale reachability is on and `tailscale status --json`
+  reports a signed-in peer, the daemon also binds the same port on that peer's
+  exact IPv4 address in `100.64.0.0/10`. It never wildcard-binds this listener
+  or substitutes a LAN/private address. Tailscale authenticates and encrypts
+  this HTTP transport; Sessions authentication remains required as below.
 - All JSON replies are compact `JSON.stringify` output with
   `Content-Type: application/json`. Except for static-file replies and the
   plain-text snapshot success response, every reply also sets:
@@ -205,6 +210,14 @@ No auth. Returns 200:
     "url": "http://192.168.1.24:8787",
     "bonjour": { "advertised": true, "service": "_sessions._tcp" }
   },
+  "tailscale": {
+    "present": true,
+    "signedIn": true,
+    "remoteEndpoint": "https://mini.example.ts.net",
+    "tailnetIpEndpoint": "http://100.100.20.30:8787",
+    "auto": true,
+    "enabled": true
+  },
   "access": { "open": false },
   "system": { "os": "darwin", "arch": "arm64" },
   "compatibility": {
@@ -236,6 +249,13 @@ because it maps the user's network to anyone who can reach the port.
 `lan.enabled` and `lan.bonjour` are never redacted, so a probe can still tell
 whether the listener is up.
 
+`tailscale.present` reports whether the CLI was found, `signedIn` reports a
+running backend with a local peer, `remoteEndpoint` is the Tailscale Serve HTTPS
+origin, `tailnetIpEndpoint` is the direct CGNAT HTTP origin, and `auto` is the
+persisted default-on choice. Missing endpoints are omitted. `enabled` means at
+least one automatic listener is active; `preview`, when true, means endpoints
+were detected without changing Serve or opening the direct listener.
+
 `system.os` uses Go's stable platform names (`darwin`, `windows`, `linux`, and
 so on) so native clients can choose a machine icon without guessing from a
 hostname. `compatibility.api` is the authoritative client acceptance range;
@@ -243,8 +263,8 @@ hostname. `compatibility.api` is the authoritative client acceptance range;
 Clients preserve their legacy behavior when an older daemon omits the additive
 object, but must stop before normal use when their protocol is outside an
 advertised range. The count includes exited sessions still in their 30-second
-grace period. The deep-health response carries the same `compatibility` and
-`access` objects but no `listen` or `lan`. `restore.pending` counts runners
+grace period. The deep-health response carries the same `compatibility`,
+`access`, and `tailscale` objects but no `listen` or `lan`. `restore.pending` counts runners
 Sessions deliberately left stopped after reboot rather than starting an
 unbounded retained fleet; their recovery evidence is preserved.
 `restore.automaticPinnedLimit` is the compiled ceiling for the most recently
@@ -294,6 +314,22 @@ Requires authentication (loopback peers are already authorized). Returns 200:
 including events evicted from the in-memory front. `lastDataAgeMs` is computed
 at request time.
 
+### `GET /api/remote`
+
+Auth required. Returns the automatic Tailscale state using the same fields as
+`GET /api/health`'s `tailscale` object, except the endpoint fields are named
+`endpoint` and `tailnetIpEndpoint`. `auto` defaults to true even before a
+settings file exists. `preview` is present only for an explicitly previewed
+daemon.
+
+### `PUT /api/remote`
+
+Auth required, local-principal only. Body `{"auto":true}` persists automatic
+tailnet reachability and immediately rechecks Tailscale. `{"auto":false}`
+closes the direct Tailscale-IP listener and removes the Serve root only when it
+currently targets this daemon. A missing or non-boolean value is 400. Tailscale
+need not be installed to turn the setting off. Other methods return 405.
+
 ### `GET /api/machine`
 
 Auth required. Returns the daemon's stable machine identity, the same
@@ -319,13 +355,14 @@ machines`; it does not list discovery candidates or machines that this host has
 not itself been approved on.
 
 ```json
-{"machines":[{"id":"<machine id>","name":"Mac mini","endpoint":"http://192.168.1.24:8787","transport":"lan","reachable":false,"reason":"local-network-permission","message":"macOS has not allowed Sessions to use the local network. System Settings › Privacy & Security › Local Network › turn on Sessions."}]}
+{"machines":[{"id":"<machine id>","name":"Mac mini","endpoint":"https://mini.example.ts.net","transport":"tailnet","lan_endpoint":"http://192.168.1.24:8787","tailnet_endpoint":"https://mini.example.ts.net","tailnet_ip_endpoint":"http://100.100.20.30:8787","reachable":true}]}
 ```
 
-`transport` is `lan` for a saved nearby HTTP endpoint and `tailnet` for a saved
-HTTPS endpoint. To compute `reachable`, the host makes a two-second authenticated
-`GET /api/machine` probe using its saved credential and requires the returned
-stable identity to match `id`. Offline machines remain in the array with
+Each row carries every saved origin additively. `transport` records the origin
+currently in use and is `lan`, `tailnet`, or `tailnet-ip`. The host tries LAN,
+then Tailscale HTTPS, then direct Tailscale-IP HTTP, making authenticated `GET
+/api/machine` probes with its saved credential and requiring the returned stable
+identity to match `id`. Offline machines remain in the array with
 `reachable:false`. When a Darwin probe of a private or link-local destination
 fails with `EHOSTUNREACH`, that row additionally carries
 `reason:"local-network-permission"` and the exact `message` shown above.
@@ -344,7 +381,8 @@ outbound request. Consequently even otherwise public remote routes such as
 `/api/health`, and authenticated identity at `/api/machine`, cannot be reached
 through an unsaved machine ID.
 
-The suffix is forwarded unchanged to the saved endpoint. Request and response
+The suffix is forwarded unchanged to the first reachable saved endpoint in the
+same LAN, Tailscale HTTPS, direct Tailscale-IP order. Request and response
 bodies are streamed, and Go's reverse proxy carries WebSocket upgrades, so the
 existing `/ws?mux=1` protocol works through the relay. The phone's
 `Authorization` and `Proxy-Authorization` headers and `token` query parameter
@@ -1549,9 +1587,10 @@ Tailscale Serve identity with:
 
 Pending claims return 202, denied claims 403, and expired or mismatched claims
 410. An accepted claim creates a two-minute pending per-device bearer
-credential plus the daemon's stable machine ID/name, using the same response
-shape as `POST /api/pair/claim`. Repeated claims return the same device ID and
-token, so a lost 201 response is safe. The first authenticated API request with
+credential plus the daemon's stable machine ID/name and its currently available
+`lan_endpoint`, `tailnet_endpoint`, and `tailnet_ip_endpoint`, using the same
+response shape as `POST /api/pair/claim`. Repeated claims return the same device
+ID and token, so a lost 201 response is safe. The first authenticated API request with
 that token durably acknowledges it; until then it is hidden from the device
 list and cannot authorize after its deadline. Issuance starts its own two-minute
 acknowledgement window even when host approval happened near the original
@@ -1574,20 +1613,20 @@ authenticated.
 
 ### `POST /api/lan/access/request`
 
-The nearby (same-LAN) counterpart of `POST /api/tailnet/access/request`. It is
-dispatched before bearer authentication but answers only on the user-enabled
-LAN listener (`POST /api/lan`); on the loopback listener it is
-The route exists on the dedicated LAN listener and on the main listener for a
-true loopback peer, which permits isolated same-machine pairing tests without
-opening bootstrap to the network-facing main listener. Other main-listener
-peers receive `403 {"error":"nearby access is available only on this machine's trusted LAN listener or local loopback"}`.
-The peer must be a private, non-loopback IPv4 address (403 otherwise), the
+The nearby counterpart of `POST /api/tailnet/access/request`. It is dispatched
+before bearer authentication and answers on the user-enabled LAN listener, the
+automatic direct Tailscale-IP listener, and the main listener for a true
+loopback peer. Other main-listener peers receive
+`403 {"error":"nearby access is available only on this machine's trusted LAN listener or local loopback"}`.
+The LAN peer must be a private, non-loopback IPv4 address; the Tailscale peer
+must be in `100.64.0.0/10` and must have arrived on that exact listener. The
 request must carry no `Origin` header (403) and exactly one
 `Content-Type: application/json` (415). Body
 `{"client_id":"<lowercase v4 UUID>","name":"<device name>"}` returns 202 with
 the same `{"request_id","request_secret","expires_at","status":"pending"}`
-shape as the tailnet route; the request is recorded with `transport`
-`nearby`, the peer address, and a login of `nearby:<address>`. An invalid
+shape as the tailnet route; the request is recorded with `transport` `nearby`
+or `tailnet-ip`, the peer address, and a synthetic login scoped to that
+transport and address. An invalid
 client id or device name is 400 and a full queue (64 pending) is 429. Other
 methods return 405.
 
@@ -1599,7 +1638,7 @@ Same listener, peer, origin, and content-type gates as
 `202 {"status":"pending"}`, a denied one
 `403 {"status":"denied","error":"<message>"}`, and an expired or mismatched one
 `410 {"status":"expired","error":"<message>"}`. Acceptance returns 201 with
-`{"device_id","token","name","machine_id","machine_name"}`, the
+`{"device_id","token","name","machine_id","machine_name","lan_endpoint","tailnet_endpoint","tailnet_ip_endpoint"}`, the
 `POST /api/pair/claim` shape, under the same two-minute acknowledgement rule
 described above. An unavailable machine identity is 503.
 
@@ -1612,9 +1651,9 @@ requests, oldest first:
 {"requests":[{"request_id":"<UUID>","client_id":"<UUID>","name":"MacBook Pro","login":"<Tailscale login or nearby:<address>>","user_name":"<Tailscale display name>","transport":"tailnet","address":"<peer IPv4>","created_at":"<RFC3339>","expires_at":"<RFC3339>","status":"pending"}]}
 ```
 
-`user_name` and `address` are omitted when empty; `transport` is `tailnet` or
-`nearby`. Decided and expired requests are not listed, and the request secret
-is never included. Other methods return 405.
+`user_name` and `address` are omitted when empty; `transport` is `tailnet`,
+`tailnet-ip`, or `nearby`. Decided and expired requests are not listed, and the
+request secret is never included. Other methods return 405.
 
 ### `POST /api/access/requests/:id`
 
@@ -1636,7 +1675,11 @@ Auth required. Returns the state of the user-enabled plaintext LAN listener:
 
 `url` is the `http://<address>` of the running LAN listener or `null`;
 `bonjour.error` carries the last advertisement error and is omitted when
-empty. `permission.status` is the daemon's last observed Local Network state:
+empty. The `_sessions._tcp` TXT record always carries `lan=<origin>` and adds
+`tailnet=<HTTPS origin>` and `tailnet-ip=<HTTP CGNAT origin>` whenever
+Tailscale reports them; all three are hints and the client must still verify
+health and obtain a device credential. `permission.status` is the daemon's last
+observed Local Network state:
 `granted`, `denied`, or `not-yet-asked` on Darwin and `not-required` elsewhere.
 There is no permission preflight. A denied state additionally includes
 `"reason":"local-network-permission"` and
@@ -1663,7 +1706,7 @@ does not access the LAN. Optional `timeout` is a positive Go duration no longer
 than 15 seconds and defaults to `3s`. Success is:
 
 ```json
-{"machines":[{"name":"Mac mini","hostname":"mini.local.","endpoint":"http://192.168.1.24:8787","address":"192.168.1.24","port":8787,"transport":"nearby","version":"v0.2.27","os":"darwin","arch":"arm64","sessions_loaded":2,"reachable":true}],"warning":"Nearby access uses unencrypted HTTP. Connect only on a private network you trust."}
+{"machines":[{"name":"Mac mini","hostname":"mini.local.","endpoint":"http://192.168.1.24:8787","lan_endpoint":"http://192.168.1.24:8787","tailnet_endpoint":"https://mini.example.ts.net","tailnet_ip_endpoint":"http://100.100.20.30:8787","address":"192.168.1.24","port":8787,"transport":"nearby","version":"v0.2.27","os":"darwin","arch":"arm64","sessions_loaded":2,"reachable":true}],"warning":"Nearby access uses unencrypted HTTP. Connect only on a private network you trust."}
 ```
 
 An invalid timeout is 400. A browse failure is 502, except that a Darwin Local
@@ -1679,16 +1722,17 @@ Auth required, local-principal only. sessionsd owns the complete outbound
 request/claim/credential-verification sequence. Body:
 
 ```json
-{"endpoint":"http://192.168.1.24:8787","client_id":"<lowercase v4 UUID>","name":"MacBook Pro","timeout":"10m"}
+{"lan_endpoint":"http://192.168.1.24:8787","tailnet_endpoint":"https://mini.example.ts.net","tailnet_ip_endpoint":"http://100.100.20.30:8787","client_id":"<lowercase v4 UUID>","name":"MacBook Pro","timeout":"10m"}
 ```
 
-`endpoint` accepts the same private or loopback IPv4 HTTP and `.ts.net` HTTPS
-origins as `sessions machines connect`. `timeout` is optional, positive, at
-most ten minutes, and defaults to ten minutes. The request remains open while
+The endpoint fields are tried in LAN, `.ts.net` HTTPS, direct Tailscale-IP HTTP
+order after an unauthenticated health probe; legacy `endpoint` is still
+accepted and is assigned to its matching kind. `timeout` is optional, positive,
+at most ten minutes, and defaults to ten minutes. The request remains open while
 the other machine's user accepts or denies it. Acceptance returns 201:
 
 ```json
-{"claim":{"device_id":"<device UUID>","token":"<credential>","name":"MacBook Pro","machine_id":"<machine id>","machine_name":"Mac mini"},"endpoint":"http://192.168.1.24:8787","transport":"nearby"}
+{"claim":{"device_id":"<device UUID>","token":"<credential>","name":"MacBook Pro","machine_id":"<machine id>","machine_name":"Mac mini","lan_endpoint":"http://192.168.1.24:8787","tailnet_endpoint":"https://mini.example.ts.net","tailnet_ip_endpoint":"http://100.100.20.30:8787"},"endpoint":"https://mini.example.ts.net","transport":"tailnet"}
 ```
 
 The credential crosses only this authenticated loopback response; the CLI

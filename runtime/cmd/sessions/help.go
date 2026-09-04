@@ -379,9 +379,9 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions devices", "sessions --json devices", "sessions devices revoke 0123abcd"}, run: (*app).cmdDevices,
 	},
 	{
-		name: "machines", usage: "machines <discover [--timeout D] | connect ENDPOINT [--name ALIAS] [--timeout D] | list | forget ALIAS | sync-native>",
+		name: "machines", usage: "machines <discover [--timeout D] | connect ENDPOINT [--lan URL] [--tailnet URL] [--tailnet-ip URL] [--name ALIAS] [--timeout D] | list | forget ALIAS | sync-native>",
 		summary: "discover, approve, and save Sessions machines", group: adminCommandGroup, localJSON: true,
-		longHelp: "Discover Sessions hosts announced with Bonjour on the nearby network, request host approval, and save the issued per-device credential in a mode-0600 file. `sessions --machine ALIAS <command>` then runs any daemon-backed CLI command against that saved machine. Discovery reveals no credentials or session data. Nearby HTTP traffic is not encrypted, so connect only on a private network you trust; use Tailscale HTTPS on untrusted networks. Forget removes the local credential but does not revoke it on the host. sync-native reconciles the saved set against a native client's machine registry read as JSON on stdin.",
+		longHelp: "Discover Sessions hosts announced with Bonjour on the nearby network, request host approval, and save the issued per-device credential in a mode-0600 file. A discovered machine carries LAN, Tailscale HTTPS, and direct Tailscale-IP origins; connection and relay attempts use that order. `sessions --machine ALIAS <command>` then runs any daemon-backed CLI command against that saved machine. Discovery reveals no credentials or session data. Nearby HTTP traffic is not encrypted, so connect only on a private network you trust. Direct tailnet-IP HTTP is authenticated and encrypted by Tailscale and remains protected by the Sessions device credential. Forget removes the local credential but does not revoke it on the host. sync-native reconciles the saved set against a native client's machine registry read as JSON on stdin.",
 		examples: []string{"sessions machines discover", "sessions machines connect http://192.168.1.20:8787 --name mini", "sessions machines", "sessions --machine mini ls", "sessions machines forget mini"}, run: (*app).cmdMachines,
 	},
 	{
@@ -405,7 +405,7 @@ var commandTable = []commandSpec{
 	{
 		name: "remote", usage: "remote <enable|disable|status>",
 		summary: "manage tailnet-only remote access", group: adminCommandGroup, localJSON: true,
-		longHelp: "Enable, disable, or inspect the Tailscale Serve HTTPS endpoint used for Sessions remote access. Once enabled, other Sessions apps in the same tailnet can discover this Mac and request access; the host must accept before a revocable device credential is issued.",
+		longHelp: "Enable, disable, or inspect tailnet-only Sessions access. When Tailscale is installed and signed in, the daemon enables its Tailscale Serve HTTPS endpoint and exact 100.64.0.0/10 interface listener automatically unless disabled. The host must still accept a new device before a revocable credential is issued. Enable turns automatic reachability on; disable turns it off and removes the Sessions-owned Serve root.",
 		examples: []string{"sessions remote enable", "sessions remote status", "sessions remote disable"}, run: (*app).cmdRemote,
 	},
 	{

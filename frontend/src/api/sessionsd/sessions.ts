@@ -201,6 +201,15 @@ export interface ServerHealth {
   version: string;
   listen: { host: string; port: number };
   lan: { enabled: boolean; url: string | null };
+  tailscale?: {
+    present: boolean;
+    signedIn: boolean;
+    remoteEndpoint?: string;
+    tailnetIpEndpoint?: string;
+    auto: boolean;
+    enabled: boolean;
+    preview?: boolean;
+  };
   access?: { open: boolean };
   system?: { os: string; arch: string };
   compatibility?: {
@@ -210,6 +219,30 @@ export interface ServerHealth {
   discovering: boolean;
   sessionsLoaded: number;
   restore?: { pending: number; automaticPinnedLimit: number };
+}
+
+export interface RemoteState {
+  auto: boolean;
+  present: boolean;
+  signedIn: boolean;
+  endpoint?: string;
+  tailnetIpEndpoint?: string;
+  enabled: boolean;
+  preview?: boolean;
+}
+
+export async function fetchRemoteState(signal?: AbortSignal): Promise<RemoteState> {
+  const r = await apiFetch(`${httpBase()}/api/remote`, { signal });
+  return json<RemoteState>(r);
+}
+
+export async function setRemoteAuto(auto: boolean): Promise<RemoteState> {
+  const r = await apiFetch(`${httpBase()}/api/remote`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ auto })
+  });
+  return json<RemoteState>(r);
 }
 
 export const API_PROTOCOL_VERSION = 1;

@@ -41,6 +41,10 @@ export interface ServerConfig {
   // Transport scheme.  Defaults to 'http' so existing stored configs
   // (which have no scheme field) continue to work without migration.
   scheme?: 'http' | 'https';
+  transport?: 'lan' | 'tailnet' | 'tailnet-ip';
+  lanEndpoint?: string;
+  tailnetEndpoint?: string;
+  tailnetIpEndpoint?: string;
   // Client-only viewers reach inherited fleet machines through the one host
   // they paired with. These runtime-only fields are never persisted: the host
   // remains the credential owner and refreshes the inherited set.
@@ -626,6 +630,9 @@ export async function syncNativeAgentMachineAccess(): Promise<void> {
       machineId: server.machineId,
       name: serverDisplayName(server),
       endpoint: `${server.scheme ?? 'http'}://${server.host}:${server.port}`,
+      ...(server.lanEndpoint ? { lanEndpoint: server.lanEndpoint } : {}),
+      ...(server.tailnetEndpoint ? { tailnetEndpoint: server.tailnetEndpoint } : {}),
+      ...(server.tailnetIpEndpoint ? { tailnetIpEndpoint: server.tailnetIpEndpoint } : {}),
       ...(server.deviceId ? { deviceId: server.deviceId } : {}),
       token: server.token
     }];

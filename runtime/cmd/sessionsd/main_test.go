@@ -31,6 +31,13 @@ func TestHandleDaemonArgsAcceptsServeAndRejectsTypos(t *testing.T) {
 	}
 }
 
+func TestDaemonArgumentsExtractsRemotePreview(t *testing.T) {
+	arguments, preview := daemonArguments([]string{"--serve", "--remote-auto-preview"})
+	if !preview || len(arguments) != 1 || arguments[0] != "--serve" {
+		t.Fatalf("daemonArguments = %q, %v", arguments, preview)
+	}
+}
+
 // The daemon must refuse every spelling of an all-interfaces bind, not just the
 // four literals the original denylist contained. "0:0:0:0:0:0:0:0" and "0000::0"
 // are valid IPv6 unspecified addresses that previously passed the check and

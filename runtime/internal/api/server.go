@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/backup"
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
 	"github.com/somewhere-tech/sessions/runtime/internal/delivery"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/project"
@@ -43,6 +47,8 @@ type Server struct {
 	pair                 *pairService
 	tailnetAccess        *tailnetAccessService
 	lan                  *lanListener
+	remote               *remoteManager
+	tailnetIP            *tailnetIPListener
 	backups              *backup.Service
 	integrationEndpoints *integrations.Service
 	usage                *usage.Service
@@ -51,6 +57,16 @@ type Server struct {
 	identity             machineIdentity
 	identityError        error
 	submits              *sessionMutexes
+	lanFallbackLog       sync.Once
+}
+
+func (s *Server) logLANFallbackOnce(fallbacks []fleetendpoint.Candidate) {
+	if len(fallbacks) == 0 {
+		return
+	}
+	s.lanFallbackLog.Do(func() {
+		log.Printf("sessionsd: macOS denied local-network access; using %s transport", fallbacks[0].Transport)
+	})
 }
 
 type authPrincipal struct {
@@ -169,6 +185,18 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 	server.usage = localUsage
 	server.smartSearch = smartsearch.NewService()
 	server.lan = newLANListener(config, server, identity)
+	server.remote = newRemoteManager(config, server.lan.settingsPath)
+	server.tailnetIP = newTailnetIPListener(config, server)
+	server.remote.onEndpoints = func(endpoint, ipEndpoint string) error {
+		server.lan.setTailnetEndpoints(endpoint, ipEndpoint)
+		if server.remote.state().Preview {
+			return server.tailnetIP.close()
+		}
+		if err := server.tailnetIP.setEndpoint(ipEndpoint); err != nil {
+			return fmt.Errorf("open tailnet-IP listener: %w", err)
+		}
+		return nil
+	}
 	// Create the token while the daemon is starting, including when the open
 	// escape hatch is present. This keeps a fresh install secure without an
 	// inbound request and makes `sessions token` immediately useful. A failure

@@ -36,6 +36,30 @@ interface RememberServerOptions {
   token?: string | null;
   select?: boolean;
   allowPrivateHTTP?: boolean;
+  lanEndpoint?: string;
+  tailnetEndpoint?: string;
+  tailnetIpEndpoint?: string;
+  transport?: 'lan' | 'tailnet' | 'tailnet-ip';
+}
+
+function pairingClaimTransport(claim: NativePairingClaim): 'lan' | 'tailnet' | 'tailnet-ip' {
+  if (claim.endpoint === claim.tailnetIpEndpoint) return 'tailnet-ip';
+  if (claim.endpoint === claim.tailnetEndpoint || claim.endpoint.toLowerCase().startsWith('https://')) return 'tailnet';
+  return 'lan';
+}
+
+type ConnectionFields = Pick<RememberServerOptions, 'lanEndpoint' | 'tailnetEndpoint' | 'tailnetIpEndpoint' | 'transport'>;
+
+function connectionFields(source: RememberServerOptions): Partial<ConnectionFields> {
+  return Object.fromEntries(
+    ['lanEndpoint', 'tailnetEndpoint', 'tailnetIpEndpoint', 'transport']
+      .map((key) => [key, source[key as keyof RememberServerOptions]])
+      .filter((entry) => entry[1] !== undefined)
+  );
+}
+
+function claimConnectionFields(claim: NativePairingClaim): Partial<ConnectionFields> {
+  return connectionFields({ ...claim, transport: pairingClaimTransport(claim) });
 }
 
 // Shared first-run/add-server path. Hosted browser connections require TLS,
@@ -67,12 +91,14 @@ export async function rememberServerEndpoint(
     : { token: options.token?.trim() || undefined };
   const name = options.name?.trim();
   const systemName = options.systemName?.trim();
+  const connection = connectionFields(options);
 
   if (existing) {
     await store.updateServer(existing.id, {
       ...endpoint,
       ...(machineId ? { machineId } : {}),
       ...(options.deviceId ? { deviceId: options.deviceId } : {}),
+      ...connection,
       ...tokenUpdate,
       ...(name ? { name, customName: name } : {}),
       ...(systemName ? { systemName, ...(!existing.customName ? { name: systemName } : {}) } : {})
@@ -102,6 +128,7 @@ export async function rememberServerEndpoint(
     ...(systemName ? { systemName } : {}),
     ...(machineId ? { machineId } : {}),
     ...(options.deviceId ? { deviceId: options.deviceId } : {}),
+    ...connection,
     ...endpoint,
     ...tokenUpdate
   });
@@ -121,6 +148,7 @@ export async function claimNativeMachinePairing(
       machineId: claim.machineId,
       deviceId: claim.deviceId,
       token: claim.token,
+      ...claimConnectionFields(claim),
       allowPrivateHTTP: true
     });
     await assertServerPersisted(server);
@@ -162,6 +190,7 @@ export async function rememberNativeMachineClaim(
       machineId: claim.machineId,
       deviceId: claim.deviceId,
       token: claim.token,
+      ...claimConnectionFields(claim),
       allowPrivateHTTP: claim.endpoint.toLowerCase().startsWith('http://')
     });
     await assertServerPersisted(server);

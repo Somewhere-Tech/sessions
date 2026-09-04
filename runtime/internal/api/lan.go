@@ -38,23 +38,25 @@ type LocalNetworkPermission struct {
 }
 
 type lanListener struct {
-	opMu         sync.Mutex
-	mu           sync.Mutex
-	config       state.Config
-	handler      http.Handler
-	pickIP       func() (net.IP, error)
-	listen       func(string, string) (net.Listener, error)
-	advertise    discovery.AdvertiseFunc
-	browse       func(context.Context, time.Duration) ([]discovery.Candidate, error)
-	settingsPath string
-	server       *http.Server
-	registration discovery.Registration
-	bonjourError string
-	machineName  string
-	machineID    string
-	host         string
-	url          string
-	permission   string
+	opMu              sync.Mutex
+	mu                sync.Mutex
+	config            state.Config
+	handler           http.Handler
+	pickIP            func() (net.IP, error)
+	listen            func(string, string) (net.Listener, error)
+	advertise         discovery.AdvertiseFunc
+	browse            func(context.Context, time.Duration) ([]discovery.Candidate, error)
+	settingsPath      string
+	server            *http.Server
+	registration      discovery.Registration
+	bonjourError      string
+	machineName       string
+	machineID         string
+	host              string
+	url               string
+	permission        string
+	tailnetEndpoint   string
+	tailnetIPEndpoint string
 }
 
 type lanRequestContextKey struct{}
@@ -267,7 +269,10 @@ func (l *lanListener) ensureBonjour(ip net.IP, port int) {
 	host := l.host
 	l.mu.Unlock()
 
-	registration, err := l.advertise(ip, port, l.machineName, l.machineID)
+	l.mu.Lock()
+	tailnetEndpoint, tailnetIPEndpoint := l.tailnetEndpoint, l.tailnetIPEndpoint
+	l.mu.Unlock()
+	registration, err := l.advertise(ip, port, l.machineName, l.machineID, tailnetEndpoint, tailnetIPEndpoint)
 	if err != nil {
 		l.mu.Lock()
 		if l.server == server && l.host == host {
@@ -286,6 +291,26 @@ func (l *lanListener) ensureBonjour(ip net.IP, port int) {
 	l.registration = registration
 	l.bonjourError = ""
 	l.mu.Unlock()
+}
+
+func (l *lanListener) setTailnetEndpoints(endpoint, ipEndpoint string) {
+	l.mu.Lock()
+	if l.tailnetEndpoint == endpoint && l.tailnetIPEndpoint == ipEndpoint {
+		l.mu.Unlock()
+		return
+	}
+	l.tailnetEndpoint, l.tailnetIPEndpoint = endpoint, ipEndpoint
+	registration := l.registration
+	l.registration = nil
+	host := l.host
+	port := portFromURL(l.url, l.config.Port)
+	l.mu.Unlock()
+	if registration != nil {
+		_ = registration.Shutdown()
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		l.ensureBonjour(ip, port)
+	}
 }
 
 func portFromURL(value string, fallback int) int {

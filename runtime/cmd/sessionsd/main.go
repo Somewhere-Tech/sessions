@@ -53,14 +53,15 @@ func isWildcardHost(host string) bool {
 }
 
 func main() {
-	handled, err := runPlatformSupervisor(os.Args[1:])
+	arguments, remotePreview := daemonArguments(os.Args[1:])
+	handled, err := runPlatformSupervisor(arguments)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if handled {
 		return
 	}
-	handled, err = handleDaemonArgs(os.Args[1:], os.Stdout)
+	handled, err = handleDaemonArgs(arguments, os.Stdout)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -107,8 +108,7 @@ func main() {
 	defer manager.Close()
 	api.Version = version
 	handler := api.NewWithUsage(config, manager, usageService, manager.Push())
-	// An explicitly isolated scratch daemon must not restore the user's
-	// persisted LAN listener on a second port.
+	// An isolated scratch daemon must not restore the user's persisted LAN listener.
 	if os.Getenv("SESSIONS_STATE_DIR") == "" {
 		handler.RestoreLAN(log.Printf)
 	}
@@ -136,7 +136,7 @@ func main() {
 			serveErrors <- err
 		}
 	}()
-
+	defer startAutomaticRemote(handler, remotePreview)()
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	cleanupPlatformStop := watchPlatformStop(stop)
@@ -154,6 +154,31 @@ func main() {
 	}
 }
 
+func startAutomaticRemote(handler *api.Server, preview bool) func() {
+	handler.SetRemotePreview(preview)
+	ctx, cancel := context.WithCancel(context.Background())
+	handler.StartRemote(ctx, log.Printf)
+	return func() {
+		cancel()
+		if err := handler.CloseTailnetIP(); err != nil {
+			log.Printf("close tailnet-IP listener: %v", err)
+		}
+	}
+}
+
+func daemonArguments(arguments []string) ([]string, bool) {
+	filtered := make([]string, 0, len(arguments))
+	preview := false
+	for _, argument := range arguments {
+		if argument == "--remote-auto-preview" {
+			preview = true
+			continue
+		}
+		filtered = append(filtered, argument)
+	}
+	return filtered, preview
+}
+
 func handleDaemonArgs(arguments []string, output io.Writer) (bool, error) {
 	if len(arguments) == 0 || (len(arguments) == 1 && arguments[0] == "--serve") {
 		return false, nil
@@ -161,7 +186,7 @@ func handleDaemonArgs(arguments []string, output io.Writer) (bool, error) {
 	if len(arguments) == 1 {
 		switch arguments[0] {
 		case "-h", "--help":
-			fmt.Fprintln(output, "Usage: sessionsd [--serve]\n\nRuns the Sessions background service. Configuration uses SESSIONS_HOST, SESSIONS_PORT, and the state environment described in docs/DEV.md.")
+			fmt.Fprintln(output, "Usage: sessionsd [--serve] [--remote-auto-preview]\n\nRuns the Sessions background service. --remote-auto-preview reports automatic Tailscale endpoints without changing Serve or opening a tailnet listener. Configuration uses SESSIONS_HOST, SESSIONS_PORT, and the state environment described in docs/DEV.md.")
 			return true, nil
 		case "-v", "--version":
 			fmt.Fprintln(output, version)

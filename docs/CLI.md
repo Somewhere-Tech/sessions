@@ -1295,11 +1295,11 @@ Examples:
 
 ```text
 Usage:
-  sessions machines <discover [--timeout D] | connect ENDPOINT [--name ALIAS] [--timeout D] | list | forget ALIAS | sync-native>
+  sessions machines <discover [--timeout D] | connect ENDPOINT [--lan URL] [--tailnet URL] [--tailnet-ip URL] [--name ALIAS] [--timeout D] | list | forget ALIAS | sync-native>
 
 discover, approve, and save Sessions machines
 
-Discover Sessions hosts announced with Bonjour on the nearby network, request host approval, and save the issued per-device credential in a mode-0600 file. `sessions --machine ALIAS <command>` then runs any daemon-backed CLI command against that saved machine. Discovery reveals no credentials or session data. Nearby HTTP traffic is not encrypted, so connect only on a private network you trust; use Tailscale HTTPS on untrusted networks. Forget removes the local credential but does not revoke it on the host. sync-native reconciles the saved set against a native client's machine registry read as JSON on stdin.
+Discover Sessions hosts announced with Bonjour on the nearby network, request host approval, and save the issued per-device credential in a mode-0600 file. A discovered machine carries LAN, Tailscale HTTPS, and direct Tailscale-IP origins; connection and relay attempts use that order. `sessions --machine ALIAS <command>` then runs any daemon-backed CLI command against that saved machine. Discovery reveals no credentials or session data. Nearby HTTP traffic is not encrypted, so connect only on a private network you trust. Direct tailnet-IP HTTP is authenticated and encrypted by Tailscale and remains protected by the Sessions device credential. Forget removes the local credential but does not revoke it on the host. sync-native reconciles the saved set against a native client's machine registry read as JSON on stdin.
 
 Examples:
   sessions machines discover
@@ -1377,7 +1377,7 @@ Usage:
 
 manage tailnet-only remote access
 
-Enable, disable, or inspect the Tailscale Serve HTTPS endpoint used for Sessions remote access. Once enabled, other Sessions apps in the same tailnet can discover this Mac and request access; the host must accept before a revocable device credential is issued.
+Enable, disable, or inspect tailnet-only Sessions access. When Tailscale is installed and signed in, the daemon enables its Tailscale Serve HTTPS endpoint and exact 100.64.0.0/10 interface listener automatically unless disabled. The host must still accept a new device before a revocable credential is issued. Enable turns automatic reachability on; disable turns it off and removes the Sessions-owned Serve root.
 
 Examples:
   sessions remote enable

@@ -24,8 +24,8 @@ type dnsSDRegistration struct {
 	err     error
 }
 
-func platformAdvertise(address net.IP, port int, instance, hostLabel string) (Registration, error) {
-	arguments := dnsSDProxyArguments(address, port, instance, hostLabel)
+func platformAdvertise(address net.IP, port int, instance, hostLabel string, txt []string) (Registration, error) {
+	arguments := dnsSDProxyArguments(address, port, instance, hostLabel, txt)
 	command := exec.Command(dnsSDPath, arguments...)
 	output, err := command.StdoutPipe()
 	if err != nil {
@@ -68,8 +68,8 @@ func platformAdvertise(address net.IP, port int, instance, hostLabel string) (Re
 	}
 }
 
-func dnsSDProxyArguments(address net.IP, port int, instance, hostLabel string) []string {
-	return []string{
+func dnsSDProxyArguments(address net.IP, port int, instance, hostLabel string, txt []string) []string {
+	arguments := []string{
 		"-P",
 		instance,
 		ServiceType,
@@ -77,11 +77,8 @@ func dnsSDProxyArguments(address net.IP, port int, instance, hostLabel string) [
 		strconv.Itoa(port),
 		hostLabel + ".local.",
 		address.String(),
-		"sessions=1",
-		"api=1",
-		"approval=required",
-		"transport=http",
 	}
+	return append(arguments, txt...)
 }
 
 func (registration *dnsSDRegistration) Shutdown() error {

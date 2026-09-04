@@ -19,8 +19,10 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/discovery"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
+	"github.com/somewhere-tech/sessions/runtime/internal/tailscale"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
@@ -28,14 +30,17 @@ const machineRegistryVersion = 1
 const nativeAppMachineSource = "native-app"
 
 type savedMachine struct {
-	Alias       string    `json:"alias"`
-	MachineID   string    `json:"machine_id"`
-	Name        string    `json:"name"`
-	Endpoint    string    `json:"endpoint"`
-	Transport   string    `json:"transport"`
-	DeviceID    string    `json:"device_id"`
-	ConnectedAt time.Time `json:"connected_at"`
-	Source      string    `json:"source,omitempty"`
+	Alias             string    `json:"alias"`
+	MachineID         string    `json:"machine_id"`
+	Name              string    `json:"name"`
+	Endpoint          string    `json:"endpoint"`
+	LANEndpoint       string    `json:"lan_endpoint,omitempty"`
+	TailnetEndpoint   string    `json:"tailnet_endpoint,omitempty"`
+	TailnetIPEndpoint string    `json:"tailnet_ip_endpoint,omitempty"`
+	Transport         string    `json:"transport"`
+	DeviceID          string    `json:"device_id"`
+	ConnectedAt       time.Time `json:"connected_at"`
+	Source            string    `json:"source,omitempty"`
 }
 
 type machineRegistry struct {
@@ -44,12 +49,15 @@ type machineRegistry struct {
 }
 
 type nativeMachineSyncItem struct {
-	Alias     string `json:"alias,omitempty"`
-	MachineID string `json:"machineId"`
-	Name      string `json:"name"`
-	Endpoint  string `json:"endpoint"`
-	DeviceID  string `json:"deviceId,omitempty"`
-	Token     string `json:"token"`
+	Alias             string `json:"alias,omitempty"`
+	MachineID         string `json:"machineId"`
+	Name              string `json:"name"`
+	Endpoint          string `json:"endpoint"`
+	LANEndpoint       string `json:"lanEndpoint,omitempty"`
+	TailnetEndpoint   string `json:"tailnetEndpoint,omitempty"`
+	TailnetIPEndpoint string `json:"tailnetIpEndpoint,omitempty"`
+	DeviceID          string `json:"deviceId,omitempty"`
+	Token             string `json:"token"`
 }
 
 type nativeMachineSyncRequest struct {
@@ -86,11 +94,14 @@ type accessBootstrap struct {
 }
 
 type accessClaim struct {
-	DeviceID    string `json:"device_id"`
-	Token       string `json:"token"`
-	Name        string `json:"name"`
-	MachineID   string `json:"machine_id"`
-	MachineName string `json:"machine_name"`
+	DeviceID          string `json:"device_id"`
+	Token             string `json:"token"`
+	Name              string `json:"name"`
+	MachineID         string `json:"machine_id"`
+	MachineName       string `json:"machine_name"`
+	LANEndpoint       string `json:"lan_endpoint,omitempty"`
+	TailnetEndpoint   string `json:"tailnet_endpoint,omitempty"`
+	TailnetIPEndpoint string `json:"tailnet_ip_endpoint,omitempty"`
 }
 
 type nearbyHealth struct {
@@ -149,32 +160,9 @@ func (a *app) syncNativeMachines(args []string) error {
 	if len(request.Machines) > 100 {
 		return fail(1, "native machine registry cannot contain more than 100 machines")
 	}
-	seen := make(map[string]bool, len(request.Machines))
-	prepared := make([]preparedNativeMachine, 0, len(request.Machines))
-	for _, item := range request.Machines {
-		item.MachineID = strings.TrimSpace(item.MachineID)
-		item.Name = strings.TrimSpace(item.Name)
-		item.DeviceID = strings.TrimSpace(item.DeviceID)
-		item.Token = strings.TrimSpace(item.Token)
-		if err := validateMachineID(item.MachineID); err != nil {
-			return fail(1, "native machine %q has an invalid stable id: %s", item.Name, err)
-		}
-		if seen[item.MachineID] {
-			return fail(1, "native machine registry contains duplicate machine %s", item.MachineID)
-		}
-		if item.Token == "" || len(item.Token) > 512 || strings.ContainsAny(item.Token, "\r\n") {
-			return fail(1, "native machine %s has an invalid device credential", item.Name)
-		}
-		seen[item.MachineID] = true
-		endpoint, transport, err := validateMachineEndpoint(item.Endpoint)
-		if err != nil {
-			return fail(1, "native machine %s: %s", item.Name, err)
-		}
-		prepared = append(prepared, preparedNativeMachine{Machine: savedMachine{
-			Alias: item.Alias, MachineID: item.MachineID, Name: item.Name,
-			Endpoint: endpoint, Transport: transport, DeviceID: item.DeviceID,
-			ConnectedAt: a.now().UTC(), Source: nativeAppMachineSource,
-		}, Token: item.Token})
+	prepared, seen, err := a.prepareNativeMachines(request.Machines)
+	if err != nil {
+		return err
 	}
 
 	synced := make([]savedMachine, 0, len(prepared))
@@ -186,6 +174,67 @@ func (a *app) syncNativeMachines(args []string) error {
 		synced = append(synced, record)
 	}
 
+	if err := a.removeStaleNativeMachines(seen); err != nil {
+		return err
+	}
+	if a.wantJSON {
+		return writeJSON(a.stdout, struct {
+			Machines []savedMachine `json:"machines"`
+		}{Machines: synced}, true)
+	}
+	_, err = fmt.Fprintf(a.stdout, "Synced %d native Sessions machine(s) for agent access.\n", len(synced))
+	return err
+}
+
+func (a *app) prepareNativeMachines(items []nativeMachineSyncItem) ([]preparedNativeMachine, map[string]bool, error) {
+	seen := make(map[string]bool, len(items))
+	prepared := make([]preparedNativeMachine, 0, len(items))
+	for _, item := range items {
+		item.MachineID = strings.TrimSpace(item.MachineID)
+		item.Name = strings.TrimSpace(item.Name)
+		item.DeviceID = strings.TrimSpace(item.DeviceID)
+		item.Token = strings.TrimSpace(item.Token)
+		if err := validateMachineID(item.MachineID); err != nil {
+			return nil, nil, fail(1, "native machine %q has an invalid stable id: %s", item.Name, err)
+		}
+		if seen[item.MachineID] {
+			return nil, nil, fail(1, "native machine registry contains duplicate machine %s", item.MachineID)
+		}
+		if item.Token == "" || len(item.Token) > 512 || strings.ContainsAny(item.Token, "\r\n") {
+			return nil, nil, fail(1, "native machine %s has an invalid device credential", item.Name)
+		}
+		seen[item.MachineID] = true
+		endpoint, transport, err := validateMachineEndpoint(item.Endpoint)
+		if err != nil {
+			return nil, nil, fail(1, "native machine %s: %s", item.Name, err)
+		}
+		for _, candidate := range []struct {
+			value *string
+			kind  string
+		}{
+			{&item.LANEndpoint, "lan"}, {&item.TailnetEndpoint, "tailnet"}, {&item.TailnetIPEndpoint, "tailnet-ip"},
+		} {
+			if *candidate.value == "" {
+				continue
+			}
+			validated, _, err := validateMachineEndpointKind(*candidate.value, candidate.kind)
+			if err != nil {
+				return nil, nil, fail(1, "native machine %s: %s", item.Name, err)
+			}
+			*candidate.value = validated
+		}
+		prepared = append(prepared, preparedNativeMachine{Machine: savedMachine{
+			Alias: item.Alias, MachineID: item.MachineID, Name: item.Name,
+			Endpoint: endpoint, Transport: transport, DeviceID: item.DeviceID,
+			LANEndpoint: item.LANEndpoint, TailnetEndpoint: item.TailnetEndpoint,
+			TailnetIPEndpoint: item.TailnetIPEndpoint,
+			ConnectedAt:       a.now().UTC(), Source: nativeAppMachineSource,
+		}, Token: item.Token})
+	}
+	return prepared, seen, nil
+}
+
+func (a *app) removeStaleNativeMachines(seen map[string]bool) error {
 	registry, err := readMachineRegistry(a.home)
 	if err != nil {
 		return fail(2, "read saved machines: %s", err)
@@ -210,13 +259,7 @@ func (a *app) syncNativeMachines(args []string) error {
 	for _, tokenPath := range removedTokenPaths {
 		_ = os.Remove(tokenPath)
 	}
-	if a.wantJSON {
-		return writeJSON(a.stdout, struct {
-			Machines []savedMachine `json:"machines"`
-		}{Machines: synced}, true)
-	}
-	_, err = fmt.Fprintf(a.stdout, "Synced %d native Sessions machine(s) for agent access.\n", len(synced))
-	return err
+	return nil
 }
 
 func (a *app) discoverMachines(args []string) error {
@@ -310,8 +353,11 @@ func (a *app) writeDiscoveredMachines(machines []discoveredMachine) error {
 func (a *app) connectMachine(args []string) error {
 	alias, _ := pluck(&args, "--name")
 	timeoutRaw, hasTimeout := pluck(&args, "--timeout")
+	lanEndpoint, hasLAN := pluck(&args, "--lan")
+	tailnetEndpoint, hasTailnet := pluck(&args, "--tailnet")
+	tailnetIPEndpoint, hasTailnetIP := pluck(&args, "--tailnet-ip")
 	if len(args) != 1 {
-		return fail(1, "usage: sessions machines connect <endpoint> [--name ALIAS] [--timeout D]")
+		return fail(1, "usage: sessions machines connect <endpoint> [--lan URL] [--tailnet URL] [--tailnet-ip URL] [--name ALIAS] [--timeout D]")
 	}
 	endpoint, transport, err := validateMachineEndpoint(args[0])
 	if err != nil {
@@ -327,14 +373,65 @@ func (a *app) connectMachine(args []string) error {
 			return fail(1, "--timeout cannot exceed 10m")
 		}
 	}
-	if !a.direct {
-		return a.connectMachineViaDaemon(endpoint, transport, alias, timeout)
+	if err := assignConnectionEndpoint(endpoint, transport, &lanEndpoint, &tailnetEndpoint, &tailnetIPEndpoint); err != nil {
+		return fail(1, "%s", err)
 	}
+	if hasLAN {
+		lanEndpoint, _, err = validateMachineEndpointKind(lanEndpoint, "lan")
+	}
+	if err == nil && hasTailnet {
+		tailnetEndpoint, _, err = validateMachineEndpointKind(tailnetEndpoint, "tailnet")
+	}
+	if err == nil && hasTailnetIP {
+		tailnetIPEndpoint, _, err = validateMachineEndpointKind(tailnetIPEndpoint, "tailnet-ip")
+	}
+	if err != nil {
+		return fail(1, "%s", err)
+	}
+	candidates := fleetendpoint.Ordered(lanEndpoint, tailnetEndpoint, tailnetIPEndpoint)
+	if !a.direct {
+		return a.connectMachineViaDaemon(candidates, alias, timeout)
+	}
+	claim, used, err := a.connectMachineDirect(candidates, timeout)
+	if err != nil {
+		return err
+	}
+	return a.finishMachineConnect(used.Endpoint, used.Transport, alias, claim)
+}
+
+func (a *app) connectMachineDirect(candidates []fleetendpoint.Candidate, timeout time.Duration) (accessClaim, fleetendpoint.Candidate, error) {
 	clientID, err := loadOrCreateClientID(a.home)
 	if err != nil {
-		return fail(2, "prepare this device identity: %s", err)
+		return accessClaim{}, fleetendpoint.Candidate{}, fail(2, "prepare this device identity: %s", err)
 	}
 	deviceName, _ := os.Hostname()
+	selected, err := selectDirectMachineEndpoint(candidates)
+	if err != nil {
+		return accessClaim{}, fleetendpoint.Candidate{}, err
+	}
+	claim, err := a.connectMachineAtEndpoint(selected, clientID, deviceName, timeout)
+	return claim, selected, err
+}
+
+func selectDirectMachineEndpoint(candidates []fleetendpoint.Candidate) (fleetendpoint.Candidate, error) {
+	var lastErr error
+	for _, candidate := range candidates {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		health, err := fetchNearbyHealth(ctx, candidate.Endpoint)
+		cancel()
+		if err == nil && health.OK && health.Name == "sessionsd" {
+			return candidate, nil
+		}
+		if err == nil {
+			err = errors.New("endpoint did not identify itself as sessionsd")
+		}
+		lastErr = fmt.Errorf("reach %s: %w", candidate.Endpoint, err)
+	}
+	return fleetendpoint.Candidate{}, lastErr
+}
+
+func (a *app) connectMachineAtEndpoint(candidate fleetendpoint.Candidate, clientID, deviceName string, timeout time.Duration) (accessClaim, error) {
+	endpoint, transport := candidate.Endpoint, candidate.Transport
 	requestPath, claimPath := accessPaths(transport)
 	client := bootstrapHTTPClient()
 	var created accessBootstrap
@@ -343,10 +440,10 @@ func (a *app) connectMachine(args []string) error {
 		map[string]string{"client_id": clientID, "name": deviceName}, &created,
 	)
 	if err != nil {
-		return fail(2, "request access from %s: %s", endpoint, localnetwork.Explain(endpoint, err))
+		return accessClaim{}, fail(2, "request access from %s: %s", endpoint, localnetwork.Explain(endpoint, err))
 	}
 	if statusCode != http.StatusAccepted || created.RequestID == "" || created.RequestSecret == "" {
-		return fail(2, "access request failed with HTTP %d", statusCode)
+		return accessClaim{}, fail(2, "access request failed with HTTP %d", statusCode)
 	}
 	if !a.wantJSON {
 		fmt.Fprintf(a.stdout, "Access requested from %s. Accept it on the other machine; waiting up to %s…\n", endpoint, timeout.Round(time.Second))
@@ -355,7 +452,7 @@ func (a *app) connectMachine(args []string) error {
 	var claim accessClaim
 	for {
 		if !a.now().Before(deadline) {
-			return fail(2, "access request expired while waiting for approval; run the command again")
+			return accessClaim{}, fail(2, "access request expired while waiting for approval; run the command again")
 		}
 		statusCode, err = postBootstrapJSON(
 			context.Background(), client, endpoint+claimPath,
@@ -364,53 +461,103 @@ func (a *app) connectMachine(args []string) error {
 		switch statusCode {
 		case http.StatusCreated:
 			if err != nil {
-				return fail(2, "claim approved access: %s", localnetwork.Explain(endpoint, err))
+				return accessClaim{}, fail(2, "claim approved access: %s", localnetwork.Explain(endpoint, err))
 			}
 			goto connected
 		case http.StatusAccepted:
 			a.sleep(2 * time.Second)
 			continue
 		case http.StatusForbidden:
-			return fail(2, "the other machine denied this access request")
+			return accessClaim{}, fail(2, "the other machine denied this access request")
 		case http.StatusGone:
-			return fail(2, "the access request expired; run the command again")
+			return accessClaim{}, fail(2, "the access request expired; run the command again")
 		default:
 			if err != nil {
-				return fail(2, "check access request: %s", localnetwork.Explain(endpoint, err))
+				return accessClaim{}, fail(2, "check access request: %s", localnetwork.Explain(endpoint, err))
 			}
-			return fail(2, "access claim failed with HTTP %d", statusCode)
+			return accessClaim{}, fail(2, "access claim failed with HTTP %d", statusCode)
 		}
 	}
 
 connected:
 	health, err := verifyMachineCredential(endpoint, claim.Token)
 	if err != nil {
-		return fail(2, "verify the issued machine credential: %s", localnetwork.Explain(endpoint, err))
+		return accessClaim{}, fail(2, "verify the issued machine credential: %s", localnetwork.Explain(endpoint, err))
 	}
 	if health.Name != "sessionsd" {
-		return fail(2, "the approved endpoint is not sessionsd")
+		return accessClaim{}, fail(2, "the approved endpoint is not sessionsd")
 	}
-	return a.finishMachineConnect(endpoint, transport, alias, claim)
+	return claim, nil
 }
 
-func (a *app) connectMachineViaDaemon(endpoint, transport, alias string, timeout time.Duration) error {
+func (a *app) connectMachineViaDaemon(candidates []fleetendpoint.Candidate, alias string, timeout time.Duration) error {
 	clientID, err := loadOrCreateClientID(a.home)
 	if err != nil {
 		return fail(2, "prepare this device identity: %s", err)
 	}
 	deviceName, _ := os.Hostname()
 	var response struct {
-		Claim accessClaim `json:"claim"`
+		Claim     accessClaim `json:"claim"`
+		Endpoint  string      `json:"endpoint"`
+		Transport string      `json:"transport"`
 	}
 	if !a.wantJSON {
-		fmt.Fprintf(a.stdout, "Requesting access from %s. Accept it on the other machine; waiting up to %s…\n", endpoint, timeout.Round(time.Second))
+		fmt.Fprintf(a.stdout, "Requesting access from %s. Accept it on the other machine; waiting up to %s…\n", candidates[0].Endpoint, timeout.Round(time.Second))
 	}
 	if err := a.postJSON("/api/lan/connect", map[string]string{
-		"endpoint": endpoint, "client_id": clientID, "name": deviceName, "timeout": timeout.String(),
+		"lan_endpoint":        endpointForTransport(candidates, "lan"),
+		"tailnet_endpoint":    endpointForTransport(candidates, "tailnet"),
+		"tailnet_ip_endpoint": endpointForTransport(candidates, "tailnet-ip"),
+		"client_id":           clientID, "name": deviceName, "timeout": timeout.String(),
 	}, &response, 2); err != nil {
 		return err
 	}
-	return a.finishMachineConnect(endpoint, transport, alias, response.Claim)
+	used := fleetendpoint.Candidate{Endpoint: response.Endpoint, Transport: response.Transport}
+	return a.finishMachineConnect(used.Endpoint, used.Transport, alias, response.Claim)
+}
+
+func assignConnectionEndpoint(endpoint, transport string, lan, tailnet, tailnetIP *string) error {
+	switch transport {
+	case "nearby":
+		if *lan == "" {
+			*lan = endpoint
+		}
+	case "tailnet":
+		if *tailnet == "" {
+			*tailnet = endpoint
+		}
+	case "tailnet-ip":
+		if *tailnetIP == "" {
+			*tailnetIP = endpoint
+		}
+	default:
+		return fmt.Errorf("unknown machine transport %q", transport)
+	}
+	return nil
+}
+
+func endpointForTransport(candidates []fleetendpoint.Candidate, transport string) string {
+	for _, candidate := range candidates {
+		if candidate.Transport == transport {
+			return candidate.Endpoint
+		}
+	}
+	return ""
+}
+
+func validateMachineEndpointKind(raw, kind string) (string, string, error) {
+	endpoint, transport, err := validateMachineEndpoint(raw)
+	if err != nil {
+		return "", "", err
+	}
+	wanted := kind
+	if wanted == "lan" {
+		wanted = "nearby"
+	}
+	if transport != wanted {
+		return "", "", fmt.Errorf("%s endpoint has transport %s", kind, transport)
+	}
+	return endpoint, transport, nil
 }
 
 func (a *app) finishMachineConnect(endpoint, transport, alias string, claim accessClaim) error {
@@ -420,10 +567,21 @@ func (a *app) finishMachineConnect(endpoint, transport, alias string, claim acce
 	if err := validateMachineID(claim.MachineID); err != nil {
 		return fail(2, "the other machine sent an unusable stable id, so no credential was saved: %s", err)
 	}
+	if claim.LANEndpoint == "" && transport == "lan" {
+		claim.LANEndpoint = endpoint
+	}
+	if claim.TailnetEndpoint == "" && transport == "tailnet" {
+		claim.TailnetEndpoint = endpoint
+	}
+	if claim.TailnetIPEndpoint == "" && transport == "tailnet-ip" {
+		claim.TailnetIPEndpoint = endpoint
+	}
 	record, err := saveMachine(a.home, savedMachine{
 		Alias: alias, MachineID: claim.MachineID, Name: claim.MachineName,
 		Endpoint: endpoint, Transport: transport, DeviceID: claim.DeviceID,
 		ConnectedAt: a.now().UTC(),
+		LANEndpoint: claim.LANEndpoint, TailnetEndpoint: claim.TailnetEndpoint,
+		TailnetIPEndpoint: claim.TailnetIPEndpoint,
 	}, claim.Token)
 	if err != nil {
 		return fail(2, "save machine credential: %s", err)
@@ -565,6 +723,9 @@ func validateMachineEndpoint(raw string) (string, string, error) {
 	if parsed.Scheme == "http" {
 		ip := net.ParseIP(parsed.Hostname()).To4()
 		port, portErr := strconv.Atoi(parsed.Port())
+		if ip != nil && tailscale.TailnetIPv4([]string{ip.String()}) != "" && portErr == nil && port >= 1024 && port <= 65535 {
+			return strings.TrimSuffix(parsed.String(), "/"), "tailnet-ip", nil
+		}
 		if ip == nil || (!ip.IsPrivate() && !ip.IsLoopback()) || portErr != nil || port < 1024 || port > 65535 {
 			return "", "", fmt.Errorf("nearby HTTP endpoints require a private or loopback IPv4 literal and explicit port")
 		}
@@ -581,7 +742,7 @@ func validateMachineEndpoint(raw string) (string, string, error) {
 }
 
 func accessPaths(transport string) (string, string) {
-	if transport == "nearby" {
+	if transport == "nearby" || transport == "lan" || transport == "tailnet-ip" {
 		return "/api/lan/access/request", "/api/lan/access/claim"
 	}
 	return "/api/tailnet/access/request", "/api/tailnet/access/claim"
@@ -826,7 +987,27 @@ func readMachineRegistry(home string) (machineRegistry, error) {
 	if registry.Machines == nil {
 		registry.Machines = []savedMachine{}
 	}
+	for index := range registry.Machines {
+		normalizeSavedMachineEndpoints(&registry.Machines[index])
+	}
 	return registry, nil
+}
+
+func normalizeSavedMachineEndpoints(machine *savedMachine) {
+	switch machine.Transport {
+	case "nearby", "lan":
+		if machine.LANEndpoint == "" {
+			machine.LANEndpoint = machine.Endpoint
+		}
+	case "tailnet":
+		if machine.TailnetEndpoint == "" {
+			machine.TailnetEndpoint = machine.Endpoint
+		}
+	case "tailnet-ip":
+		if machine.TailnetIPEndpoint == "" {
+			machine.TailnetIPEndpoint = machine.Endpoint
+		}
+	}
 }
 
 func saveMachine(home string, machine savedMachine, token string) (savedMachine, error) {
@@ -836,6 +1017,7 @@ func saveMachine(home string, machine savedMachine, token string) (savedMachine,
 	if err := validateMachineID(machine.MachineID); err != nil {
 		return savedMachine{}, err
 	}
+	normalizeSavedMachineEndpoints(&machine)
 	registry, err := readMachineRegistry(home)
 	if err != nil {
 		return savedMachine{}, err

@@ -156,6 +156,9 @@ struct NativePairingClaim {
     device_id: String,
     token: String,
     name: String,
+    lan_endpoint: Option<String>,
+    tailnet_endpoint: Option<String>,
+    tailnet_ip_endpoint: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -165,6 +168,9 @@ struct NativeAgentMachine {
     machine_id: String,
     name: String,
     endpoint: String,
+    lan_endpoint: Option<String>,
+    tailnet_endpoint: Option<String>,
+    tailnet_ip_endpoint: Option<String>,
     device_id: Option<String>,
     token: String,
 }
@@ -186,6 +192,12 @@ struct NativeNearbyPeer {
     address: String,
     port: u16,
     transport: String,
+    #[serde(default, rename = "lan_endpoint")]
+    lan_endpoint: String,
+    #[serde(rename = "tailnet_endpoint")]
+    tailnet_endpoint: Option<String>,
+    #[serde(rename = "tailnet_ip_endpoint")]
+    tailnet_ip_endpoint: Option<String>,
     version: String,
     os: String,
     arch: String,
@@ -256,6 +268,9 @@ struct PairingClaimResponse {
     device_id: String,
     token: String,
     name: String,
+    lan_endpoint: Option<String>,
+    tailnet_endpoint: Option<String>,
+    tailnet_ip_endpoint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

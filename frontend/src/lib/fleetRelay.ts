@@ -34,6 +34,7 @@ export function useFleetRelayServers(enabled: boolean): void {
 interface RelayedFleetMachine {
   id: string;
   name: string;
+  transport?: 'lan' | 'tailnet' | 'tailnet-ip';
 }
 
 function directServerOrigin(server: ServerConfig): string {
@@ -79,7 +80,8 @@ export async function refreshFleetServersFromHost(hostId: string): Promise<Serve
       token: currentHost.token,
       isDefault: false,
       relayParentId: hostId,
-      relayMachineId: machine.id
+      relayMachineId: machine.id,
+      transport: machine.transport
     }];
   });
   const servers = [currentHost, ...relayed, ...rest];
@@ -87,7 +89,7 @@ export async function refreshFleetServersFromHost(hostId: string): Promise<Serve
     ? latest.activeId
     : currentHost.id;
   const signature = (items: ServerConfig[]): string => items
-    .map((server) => `${server.id}:${server.name}:${server.relayParentId ?? ''}:${server.relayMachineId ?? ''}`)
+    .map((server) => [server.id, server.name, server.relayParentId, server.relayMachineId, server.transport].join(':'))
     .join('|');
   const unchanged = signature(servers) === signature(latest.servers);
   if (unchanged && activeId === latest.activeId) return latest.servers;

@@ -80,7 +80,7 @@ func TestLANListenerLifecycleAndAuth(t *testing.T) {
 	var advertisedIP net.IP
 	var advertisedPort int
 	registration := &fakeBonjourRegistration{}
-	daemon.handler.lan.advertise = discovery.AdvertiseFunc(func(ip net.IP, port int, _, _ string) (discovery.Registration, error) {
+	daemon.handler.lan.advertise = discovery.AdvertiseFunc(func(ip net.IP, port int, _, _, _, _ string) (discovery.Registration, error) {
 		advertisedIP = ip
 		advertisedPort = port
 		return registration, nil
@@ -231,7 +231,7 @@ func TestLANActiveHostDoesNotWaitForBonjour(t *testing.T) {
 	listener.pickIP = func() (net.IP, error) { return net.ParseIP("127.0.0.1"), nil }
 	advertiseStarted := make(chan struct{})
 	allowAdvertise := make(chan struct{})
-	listener.advertise = func(net.IP, int, string, string) (discovery.Registration, error) {
+	listener.advertise = func(net.IP, int, string, string, string, string) (discovery.Registration, error) {
 		close(advertiseStarted)
 		<-allowAdvertise
 		return &fakeBonjourRegistration{}, nil

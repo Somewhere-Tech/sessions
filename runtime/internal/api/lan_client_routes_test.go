@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/discovery"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 )
 
@@ -59,6 +60,8 @@ func TestLANConnectOwnsPeerDialAndReturnsIssuedCredential(t *testing.T) {
 	peer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		paths = append(paths, request.URL.Path)
 		switch request.URL.Path {
+		case "/api/health":
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true, "name": "sessionsd"})
 		case "/api/lan/access/request":
 			response.WriteHeader(http.StatusAccepted)
 			_, _ = response.Write([]byte(`{"request_id":"request-id","request_secret":"secret"}`))
@@ -78,8 +81,36 @@ func TestLANConnectOwnsPeerDialAndReturnsIssuedCredential(t *testing.T) {
 	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"device-token"`) {
 		t.Fatalf("status=%d body=%s paths=%v", response.Code, response.Body.String(), paths)
 	}
-	want := []string{"/api/lan/access/request", "/api/lan/access/claim", "/api/machine"}
+	want := []string{"/api/health", "/api/lan/access/request", "/api/lan/access/claim", "/api/machine"}
 	if strings.Join(paths, ",") != strings.Join(want, ",") {
 		t.Fatalf("paths = %v, want %v", paths, want)
+	}
+}
+
+func TestLANConnectSelectionStopsAtFirstReachableEndpoint(t *testing.T) {
+	failedCalls, httpsCalls, ipCalls := 0, 0, 0
+	server := func(calls *int, healthy bool) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			*calls++
+			if !healthy {
+				http.Error(response, "offline", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true, "name": "sessionsd"})
+		}))
+	}
+	lan := server(&failedCalls, false)
+	defer lan.Close()
+	tailnet := server(&httpsCalls, true)
+	defer tailnet.Close()
+	tailnetIP := server(&ipCalls, true)
+	defer tailnetIP.Close()
+	selected, err := newTestDaemon(t).handler.selectLANConnectCandidate(context.Background(), []fleetendpoint.Candidate{
+		{Endpoint: lan.URL, Transport: "lan"},
+		{Endpoint: tailnet.URL, Transport: "tailnet"},
+		{Endpoint: tailnetIP.URL, Transport: "tailnet-ip"},
+	})
+	if err != nil || selected.Transport != "tailnet" || failedCalls != 1 || httpsCalls != 1 || ipCalls != 0 {
+		t.Fatalf("selected=%#v calls=%d/%d/%d err=%v", selected, failedCalls, httpsCalls, ipCalls, err)
 	}
 }

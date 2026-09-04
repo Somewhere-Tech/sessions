@@ -21,9 +21,11 @@ them.
 - Sessions does not add third-party analytics, advertising SDKs, or silent crash
   uploads. Local diagnostics stay local until the user previews and explicitly
   sends them.
-- LAN, Tailscale Serve, pairing, a future cloud worker, backup, and support
-  access are separate capabilities. Enabling one never silently enables
-  another or creates a general-purpose tunnel.
+- LAN, Tailscale reachability, pairing, a future cloud worker, backup, and
+  support access are separate capabilities. Tailscale reachability is on by
+  default when this Mac is already signed in to Tailscale, and has its own
+  opt-out; it never enables the trusted-LAN listener or creates a
+  general-purpose tunnel.
 
 ## Claude Remote Control consent
 
@@ -91,8 +93,8 @@ The source provider file is preserved. Sessions does not transfer isolated
 profile credentials, environment variables, arbitrary attachments, PTY bytes,
 usage databases, or the full ledger. Transport security remains the selected
 machine connection's responsibility: prefer Tailscale Serve HTTPS for remote or
-untrusted networks, and use plain LAN HTTP only on a private network the user
-trusts.
+untrusted networks, use the direct Tailscale IP fallback when tailnet DNS is
+unavailable, and use plain LAN HTTP only on a private network the user trusts.
 
 ## Paired-client fleet relay
 
@@ -112,11 +114,10 @@ triggered only by a local or paired-device call naming a saved machine; it may
 carry the same API body, event response, or WebSocket frames as a direct client.
 A logs the method, path, destination machine, and calling device ID, never the
 body or either credential. The fleet-list reachability check sends only an
-authenticated machine-identity probe, waits at most two seconds per endpoint,
-and keeps offline machines visible. Relayed streams have no background retry
-queue; the phone's existing reconnect behavior starts a new request. Transport
-security remains the saved endpoint's responsibility: use Tailscale Serve HTTPS
-outside a trusted LAN.
+authenticated machine-identity probe and keeps offline machines visible. Each
+connection tries the saved LAN origin first, then Tailscale Serve HTTPS, then
+the direct Tailscale IP origin. Relayed streams have no background retry queue;
+the phone's existing reconnect behavior starts a new request.
 
 This is a user's own machine relaying to that same user's independently
 approved machines. Somewhere operates no relay, broker, tunnel, or credential
@@ -150,6 +151,35 @@ and [remote-access guide](https://github.com/pingdotgg/t3code/blob/main/docs/use
    reinstalling Sessions?
 7. Do tests prove local-only operation still works with the network unavailable?
 
+## Automatic tailnet reachability
+
+When the Tailscale CLI is installed and reports a signed-in backend,
+`sessionsd` makes the machine reachable without a separate Sessions action. It
+configures Tailscale Serve HTTPS for the daemon's loopback origin and listens on
+the daemon port at the exact IPv4 address in Tailscale's `100.64.0.0/10` range.
+It checks on startup, after a network-interface change, and periodically so a
+later Tailscale sign-in is picked up. A missing or signed-out Tailscale install
+is routine and produces no prompt or alarming error. Settings › Fleet ›
+**Reachable over Tailscale automatically** is on by default; turning it off
+stops the Tailscale-IP listener and removes the Sessions-owned Serve root.
+
+The HTTPS name is the preferred remote transport. The direct
+`http://100.x.y.z:8787` origin exists for peers whose Tailscale tunnel works but
+whose MagicDNS resolver is not applied. Plain HTTP is acceptable on that exact
+interface because Tailscale authenticates the peer and encrypts packets before
+they traverse the physical network. Sessions additionally requires the same
+revocable device credential for protected API and WebSocket routes. Bootstrap
+still requires explicit approval and binds its short-lived secret to the
+observed tailnet address.
+
+The direct listener is never wildcard-bound and never listens on Wi-Fi,
+Ethernet, public, or arbitrary private addresses: both Tailscale status parsing
+and listener creation independently require `100.64.0.0/10`. The daemon
+publishes LAN, Tailscale HTTPS, and direct Tailscale-IP origins as distinct
+endpoint kinds. Clients and the fleet relay try `lan`, `tailnet`, then
+`tailnet-ip`; a macOS Local Network denial falls through silently and is logged
+once with the transport that was selected.
+
 ## Nearby Bonjour discovery and LAN access
 
 Bonjour is a low-sensitivity discovery hint, not authentication. `sessionsd`
@@ -157,8 +187,9 @@ advertises `_sessions._tcp` only while the user-enabled LAN listener is active
 and names only that selected private IPv4 address as its target. On macOS the
 daemon registers the proxy record through Apple's system Bonjour responder;
 other platforms use the same record contract through the bundled mDNS
-implementation. The record carries the friendly instance name, IP/port,
-protocol marker, HTTP transport marker, and “approval required.” It carries no
+implementation. The record carries the friendly instance name, LAN IP/port,
+the current Tailscale HTTPS and direct-IP origins when available, protocol
+marker, HTTP transport marker, and “approval required.” It carries no
 credential, account, full machine ID, session metadata, workspace, usage, or
 filesystem path. Any peer on a local link where the operating system publishes
 Bonjour can observe or spoof such a record, even when the selected target
@@ -186,8 +217,9 @@ An approved machine is not a passive viewer. Its revocable per-device token is
 a host-administrator credential used by the native client and CLI to create,
 send to, and end sessions. Those actions run with the local Sessions user's
 authority and can therefore execute commands on that computer. Approve only a
-device you control, prefer Tailscale HTTPS outside a private LAN, and revoke a
-lost device. Sessions does not currently issue a read-only pairing token.
+device you control, prefer a Tailscale transport outside a private LAN, and
+revoke a lost device. Sessions does not currently issue a read-only pairing
+token.
 
 LAN traffic is plain HTTP. Credentials and later session traffic are therefore
 not confidential against a hostile observer on shared Wi-Fi even though API
@@ -198,14 +230,14 @@ Bonjour failure does not disable the listener; disabling LAN access also stops
 the advertisement.
 
 The agent surface has the same boundary. `sessions machines connect` accepts
-only private or loopback IPv4 HTTP origins or `.ts.net` HTTPS origins, follows
-no redirects, never sends the local daemon token to a candidate, and stores an
-issued token in a separate mode-0600 file. The metadata registry contains no
-credential. `sessions --machine` reads that file through the local daemon's
-fleet relay, while `sessions access` exposes the same pending host decisions as
-the native inbox. The low-level global `--host` flag uses the local daemon token
-only for a loopback target; a non-loopback raw host receives no local
-credential.
+only private or loopback IPv4 HTTP origins, `.ts.net` HTTPS origins, or HTTP
+origins in `100.64.0.0/10`; it follows no redirects, never sends the local
+daemon token to a candidate, and stores an issued token in a separate mode-0600
+file. The metadata registry contains no credential. `sessions --machine` reads
+that file through the local daemon's fleet relay, while `sessions access`
+exposes the same pending host decisions as the native inbox. The low-level
+global `--host` flag uses the local daemon token only for a loopback target; a
+non-loopback raw host receives no local credential.
 
 On macOS 15, Local Network privacy applies to launchd agents as well as apps.
 Darwin release binaries embed an Info.plist section with their stable bundle
