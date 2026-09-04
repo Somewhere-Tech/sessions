@@ -55,6 +55,7 @@ The web harness cannot invoke native-only discovery, pairing, or move commands, 
 - **What happens:** the callout says inherited access is the default and autonomous is opt-in; the footnote says autonomous is the default. The prominent button is autonomous, so a nervous person cannot tell which statement to trust.
 - **On-screen text:** `Inherited access is the safe default. Autonomous access is opt-in` and `Autonomous is the default so background work finishes without you.`
 - **Severity:** **scares**.
+- **Fixed:** `aff2deb`.
 
 **Proposed lane-sized fix:** Make the copy match the implemented default. If autonomous remains the product default, say `Inherited access is the safer alternative` instead of `the safe default`, label the autonomous choice `Default`, and state in the same block that agent-created children may run commands without asking.
 
@@ -67,6 +68,7 @@ The web harness cannot invoke native-only discovery, pairing, or move commands, 
 - **What happens:** while the UI and all evidence requests were connected to isolated port 8897, the card displayed `http://localhost:8787`. The Anywhere card on the same page displayed a tailnet address ending in `:8897`, making the disagreement visible on one screen.
 - **On-screen text:** `Sessions.app talks to the independent loopback daemon` and `http://localhost:8787`.
 - **Severity:** **scares**.
+- **Fixed:** `8dea1a4`.
 
 **Proposed lane-sized fix:** In a web-served build, derive the local endpoint from the active server/origin. Read a native configured port only inside the signed-app bridge, and label it `Sessions.app configured endpoint` if it differs from the connection currently being viewed.
 
@@ -79,6 +81,7 @@ The web harness cannot invoke native-only discovery, pairing, or move commands, 
 - **What happens:** `Codex default`, `Default effort`, and `Ask me` run into one another, while `Enter sends · Shift+Enter adds a line` sits on the composer border. The access choice that decides whether commands require approval is the least readable part of the primary action area.
 - **On-screen text:** `Codex default`, `Default effort`, `Ask me`, and `Enter sends · Shift+Enter adds a line`.
 - **Severity:** **blocks**.
+- **Fixed:** `586fbce`.
 
 **Proposed lane-sized fix:** At phone widths, wrap configuration into two labeled rows above the Start button, with each control owning a minimum tap width. Move the keyboard hint below the composer rather than absolutely positioning it on the border. Add a 390 px screenshot assertion for non-overlap and in-viewport bounds.
 
@@ -91,6 +94,7 @@ The web harness cannot invoke native-only discovery, pairing, or move commands, 
 - **What happens:** two cards have the same title, timestamp, message count, provider, machine, folder, and actions. A person cannot predict whether the buttons resume the same provider conversation or two distinct copies.
 - **On-screen text:** both cards read `Codex Rich lane`, `Sep 3, 9:12 PM · 5m ago · 4 messages`, and `Resume conversation`.
 - **Severity:** **confuses**.
+- **Fixed:** `67232a8`.
 
 **Proposed lane-sized fix:** Roll records sharing one provider-conversation identity into one History card, as keyword Search already does with `opened N times in Sessions`. Put the individual runtime records behind an expandable `Runs` disclosure for audit use.
 
@@ -127,6 +131,7 @@ The web harness cannot invoke native-only discovery, pairing, or move commands, 
 - **What happens:** the main action is disabled and provides no visible reason. The same native-only boundary also prevents the browser harness from reaching pairing and move dialogs.
 - **On-screen text:** `+ Find machines`.
 - **Severity:** **blocks**.
+- **Fixed:** `8a40a19`.
 
 **Proposed lane-sized fix:** Render a truthful unavailable state instead of a silent disabled button: `Find machines in Sessions.app` plus an app-open action when supported. On web, keep the current fleet readable and point to the exact native Settings → Fleet destination for discovery, pairing, and move.
 
