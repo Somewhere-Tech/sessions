@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from '../hooks/useDispatch';
 import { renderContent } from '../lib/contentRender';
 import type { SessionSidebarState } from '../hooks/useSessionSidebar';
@@ -18,6 +18,8 @@ import { ProviderFaultCard } from './ProviderFaultCard';
 import { RemoteEmptyState } from './RemoteEmptyState';
 import { useProviderControl } from '../hooks/useProviderControl';
 
+const LostConversationCard = lazy(() => import('./LostConversationCard').then((module) => ({ default: module.LostConversationCard })));
+
 function renderFileReference(path: string, cwd = ''): string {
   const escaped = path
     .replace(/&/g, '&amp;')
@@ -31,6 +33,16 @@ export interface ProviderFaultView {
   kind: ProviderFailureKind;
   detail?: string;
   retry?: ProviderRetry;
+}
+
+export interface LostConversationView {
+  providerName: 'Claude' | 'Codex';
+  onResume?: () => void;
+  onClose: () => Promise<void>;
+}
+
+function LostCard({ view }: { view: LostConversationView }): JSX.Element {
+  return <Suspense fallback={null}><LostConversationCard {...view} /></Suspense>;
 }
 
 function FaultCard({ sessionId, fault, rich, onOpenTerminal }: {
@@ -91,6 +103,8 @@ interface Props {
   pendingApproval?: PendingApproval | null;
   onApprove?: (decision: ApprovalDecision) => Promise<void>;
   providerFault?: ProviderFaultView;
+  lostConversation?: LostConversationView;
+  statusLabel?: string;
 }
 
 // Provider-neutral conversation view over the durable session transport.
@@ -133,15 +147,14 @@ export function RemoteView({
   sendRawInput,
   pendingApproval = null,
   onApprove,
-  providerFault
+  providerFault,
+  lostConversation,
+  statusLabel = 'Ready'
 }: Props): JSX.Element {
   const providerName = provider === 'codex' ? 'Codex' : 'Claude';
   const providerIdentity: ProviderIdentity = provider === 'codex' ? 'codex' : 'claude';
-  // Event-derived user contents — passed to useDispatch so an acknowledged
-  // local copy is replaced when provider history contains the same turn.
-  // Computed once per events change; the Map is
-  // stable across renders when its contents don't change so useDispatch's
-  // effect doesn't re-run unnecessarily.
+  // Event-derived user contents stay stable so dispatch reconciliation does
+  // not rerun unless provider history actually changes.
   const eventMessages = useMemo(() => eventsToMessages(events), [events]);
   // Occurrence COUNT per trimmed user content in the JSONL — a count, not
   // a set, so useDispatch can tell a genuinely-new re-send ("continue"
@@ -454,7 +467,7 @@ export function RemoteView({
             providerIdentity={providerIdentity}
             providerName={providerName}
             terminalAvailable={Boolean(terminalAvailable)}
-            control={providerFault ? <FaultCard sessionId={sessionId} fault={providerFault} rich={!terminalAvailable} onOpenTerminal={onOpenTerminal} /> : controlPending ? (
+            control={lostConversation ? <LostCard view={lostConversation} /> : providerFault ? <FaultCard sessionId={sessionId} fault={providerFault} rich={!terminalAvailable} onOpenTerminal={onOpenTerminal} /> : controlPending ? (
               <ProviderControlCard
                 detail={needsInputDetail}
                 blockingState={blockingState}
@@ -489,7 +502,7 @@ export function RemoteView({
             <small>The original conversation stays unchanged.</small>
           </div>
         ) : null}
-        {providerFault && messages.length > 0 ? <FaultCard sessionId={sessionId} fault={providerFault} rich={!terminalAvailable} onOpenTerminal={onOpenTerminal} /> : null}
+        {messages.length > 0 && lostConversation ? <LostCard view={lostConversation} /> : providerFault && messages.length > 0 ? <FaultCard sessionId={sessionId} fault={providerFault} rich={!terminalAvailable} onOpenTerminal={onOpenTerminal} /> : null}
         {visibleMessages.map((m, i) => (
           <RemoteMessage
             key={m.id}
@@ -522,7 +535,7 @@ export function RemoteView({
               : undefined}
           />
         ))}
-        {controlPending && messages.length > 0 ? (
+        {!lostConversation && controlPending && messages.length > 0 ? (
           <ProviderControlCard
             detail={needsInputDetail}
             blockingState={blockingState}
@@ -551,6 +564,7 @@ export function RemoteView({
         finalElapsed={sidebar.finalElapsed}
         currentTask={sidebar.currentTask}
         checklist={sidebar.checklist}
+        statusLabel={statusLabel}
       />
 
 

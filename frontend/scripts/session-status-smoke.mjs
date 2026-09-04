@@ -238,6 +238,12 @@ try {
   assert.equal(classifySession(unavailable).label, 'Not connected');
   assert.equal(sessionIsFinished(unavailable), false);
 
+  // An identity-aware process probe is stronger than a stale retained PID.
+  // Once the runner is confirmed gone, no surface may promise reconnection.
+  const runnerGone = { ...reconnecting, id: 'runner-gone', runnerGone: true };
+  assert.equal(classifySession(runnerGone).state, 'unavailable');
+  assert.equal(classifySession(runnerGone).label, 'Not connected');
+
   // A deliberately reboot-paused runtime is not generic connection loss and
   // never reads as idle. It has one actionable state across every surface.
   const needsRecovery = {

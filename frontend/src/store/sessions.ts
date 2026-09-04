@@ -31,6 +31,10 @@ function reconcileSessions(prev: SessionInfo[], fresh: SessionInfo[]): SessionIn
       old.exitSignal === f.exitSignal &&
       old.exitReason === f.exitReason &&
       old.exitedAt === f.exitedAt &&
+      old.unreachable === f.unreachable &&
+      old.unreachableReason === f.unreachableReason &&
+      old.unreachableSince === f.unreachableSince &&
+      old.runnerGone === f.runnerGone &&
       old.lastDataAt === f.lastDataAt &&
       old.lastUserMessageAt === f.lastUserMessageAt &&
       old.lastHumanMessageAt === f.lastHumanMessageAt &&

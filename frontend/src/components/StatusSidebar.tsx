@@ -16,6 +16,7 @@ export interface SidebarProps {
   finalElapsed: string;   // "9m 50s" frozen from the last completed turn, empty if no recent run
   currentTask: string;    // latest tool call name + preview
   checklist: SidebarChecklistItem[];
+  statusLabel: string;    // shared lifecycle classifier label when not working
 }
 
 export default function StatusSidebar({
@@ -25,14 +26,15 @@ export default function StatusSidebar({
   context,
   finalElapsed,
   currentTask,
-  checklist
+  checklist,
+  statusLabel
 }: SidebarProps) {
   return (
     <aside className={`status-sidebar${isWorking ? ' is-working' : ' is-idle'}`}>
       <section className="sidebar-section sidebar-metrics">
-        <span className="sidebar-run-state" aria-label={isWorking ? 'Agent working' : 'Last completed turn'}>
+        <span className="sidebar-run-state" aria-label={isWorking ? 'Agent working' : statusLabel}>
           <span aria-hidden>✻</span>
-          {isWorking ? 'Working' : finalElapsed || 'Ready'}
+          {isWorking ? 'Working' : statusLabel}{!isWorking && finalElapsed ? ` · ${finalElapsed}` : ''}
         </span>
         {isWorking ? (
           <>

@@ -106,6 +106,24 @@ Enter to confirm · Esc to cancel
 	}
 }
 
+func TestClassifySnapshotRecognizesClaudeAppearancePicker(t *testing.T) {
+	// Exact visible text from docs/reviews/2026-09-03-ui-friction.md section 8.
+	snapshot := `
+Let's get started.
+
+Choose the text style that looks best with
+your terminal
+To change this later, run /theme
+
+  1. Auto (match terminal)
+❯ 2. Dark mode ✔
+`
+	got := ClassifySnapshot(snapshot)
+	if got.Outcome != IdleBlocked || got.Line != "Choose Claude's terminal appearance" {
+		t.Fatalf("ClassifySnapshot() = %#v", got)
+	}
+}
+
 func TestFinalAssistantSummary(t *testing.T) {
 	events := []json.RawMessage{
 		json.RawMessage(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"## Shipped **lovable notifications**. Added rich hook metadata too."}]}}`),

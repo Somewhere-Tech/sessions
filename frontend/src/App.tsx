@@ -874,7 +874,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
                   sessionId={s.id}
                   isActive={s.id === activeId}
                   onStatusChange={s.id === activeId ? setActiveStatus : undefined}
-                  onResume={chooseHowToContinue}
+                  onResume={chooseHowToContinue} onContinueConversation={chooseHowToContinue}
                   onFork={forkSession}
                   onCloseView={closeTab}
                   onOpenSession={openSession}

@@ -137,6 +137,10 @@ export interface SessionInfo {
   unreachable?: boolean;
   unreachableReason?: string;
   unreachableSince?: number | null;
+  // The daemon's identity-aware process probe confirmed that the unreachable
+  // runner process is gone. Unlike a transient disconnect, this is recoverable
+  // only by continuing the saved provider conversation in a new runtime.
+  runnerGone?: boolean;
   // Claude-side session titles, surfaced from the JSONL by sessionsd.
   // claudeCustomTitle: set by Claude's /rename slash command.
   // claudeAiTitle: Claude's own auto-generated summary.

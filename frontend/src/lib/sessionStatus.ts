@@ -21,9 +21,9 @@ import type { SessionInfo } from '../types';
 //
 // ── Precedence, and why it is in this order ────────────────────────────────
 //
-// 1. unavailable / reconnecting — session.unreachable. When the daemon still
-//    has a process identity it is actively reconnecting. A restored record
-//    with no process identity cannot honestly promise that; it says
+// 1. unavailable / reconnecting — session.unreachable. A runnerGone probe or
+//    a restored record with no process identity cannot honestly promise a
+//    reconnect; it says
 //    "Connection lost" while preserving the saved record and never inventing
 //    an exit. Both outrank stale provenance and activity hints.
 //
@@ -166,7 +166,7 @@ export interface ClassifyOptions {
 
 function statusState(session: SessionInfo, options: ClassifyOptions): SessionStatusState {
   if (session.unreachableReason === 'restart-restore-pending') return 'needs-recovery';
-  if (session.unreachable) return session.pid && session.pid > 0 ? 'reconnecting' : 'unavailable';
+  if (session.unreachable) return !session.runnerGone && session.pid && session.pid > 0 ? 'reconnecting' : 'unavailable';
   if (isCrashedSession(session)) return 'failed';
   if (session.failureKind === 'auth') return 'auth-needed';
   if (session.failureKind === 'provider-unavailable' || session.failureKind === 'rate-limited') return 'provider-down';

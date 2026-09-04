@@ -33,6 +33,8 @@ var (
 	confirmationFooterRE     = regexp.MustCompile(`(?i)\bpress\s+enter\s+to\s+(?:confirm|continue|approve|allow)\b|\benter\s+to\s+(?:confirm|continue|approve|allow)\b.*\besc\s+to\s+(?:cancel|go\s+back)\b`)
 	claudeTrustQuestionRE    = regexp.MustCompile(`(?i)\bis this a project you created or one you trust\?`)
 	claudeTrustChoiceRE      = regexp.MustCompile(`(?i)\b(?:yes,?\s+i trust this folder|no,?\s+exit)\b`)
+	claudeAppearancePromptRE = regexp.MustCompile(`(?i)\bchoose\s+the\s+text\s+style\s+that\s+looks\s+best\s+with\s+your\s+terminal\b`)
+	claudeAppearanceChoiceRE = regexp.MustCompile(`(?is)\b1[.)]\s*auto\s*\(match terminal\).*\b2[.)]\s*dark mode\b`)
 	promptReasonRE           = regexp.MustCompile(`(?i)^\s*reason\s*:\s*(.+)$`)
 	choicePromptRE           = regexp.MustCompile(`(?i)\b(?:which|select|choose)\b.*(?:\?|:)\s*$`)
 	numberedChoiceRE         = regexp.MustCompile(`^\s*(?:[>❯›^]\s*)?\d+[.)]\s+\S`)
@@ -97,12 +99,8 @@ func ClassifyIdleReason(snapshot string) IdleOutcome { return ClassifySnapshot(s
 // activate its selected "No, exit" choice.
 func ClassifySnapshot(snapshot string) IdleClassification {
 	lines := snapshotLines(snapshot)
-	joined := strings.Join(lines, "\n")
-	if claudeTrustQuestionRE.MatchString(joined) && claudeTrustChoiceRE.MatchString(joined) {
-		return IdleClassification{
-			Outcome: IdleBlocked,
-			Line:    "Claude is waiting for you to trust this folder",
-		}
+	if classified, ok := claudeFirstRunClassification(lines); ok {
+		return classified
 	}
 	trailing := lines
 	if len(trailing) > 12 {
@@ -180,6 +178,17 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 		return IdleClassification{Outcome: IdleError, Line: displayLine(line)}
 	}
 	return IdleClassification{Outcome: IdleDone}
+}
+
+func claudeFirstRunClassification(lines []string) (IdleClassification, bool) {
+	joined := strings.Join(lines, "\n")
+	if claudeTrustQuestionRE.MatchString(joined) && claudeTrustChoiceRE.MatchString(joined) {
+		return IdleClassification{Outcome: IdleBlocked, Line: "Claude is waiting for you to trust this folder"}, true
+	}
+	if claudeAppearancePromptRE.MatchString(joined) && claudeAppearanceChoiceRE.MatchString(joined) {
+		return IdleClassification{Outcome: IdleBlocked, Line: "Choose Claude's terminal appearance"}, true
+	}
+	return IdleClassification{}, false
 }
 
 func providerFaultClassification(lines []string) (IdleClassification, bool) {

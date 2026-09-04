@@ -433,7 +433,7 @@ export function InputBar({
           onPaste={onPaste}
           placeholder={sendAvailable
             ? `Message ${provider === 'codex' ? 'Codex' : 'Claude'} — Enter sends, Shift+Enter for newline`
-            : 'This session is not available'}
+            : 'This session is not connected, so messages cannot be sent.'}
           disabled={!sendAvailable || submitting}
           rows={Math.min(6, Math.max(1, text.split('\n').length))}
           autoCapitalize="sentences"

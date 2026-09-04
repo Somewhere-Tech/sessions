@@ -97,6 +97,7 @@ function isNotConnected(session: SessionInfo): boolean {
 // A one-line reason for the not-connected fold, in the person's words.
 export function notConnectedReason(session: SessionInfo): string {
   if (session.unreachableReason === 'restart-restore-pending') return 'paused after restart · open it or send a message to wake it';
+  if (session.runnerGone) return 'runner is gone · provider conversation is saved';
   if (session.pid && session.pid > 0) return 'reconnecting to its runner';
   return 'its machine or runner is offline';
 }

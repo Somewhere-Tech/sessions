@@ -39,6 +39,9 @@ interface Props {
     destinationProvider?: 'claude' | 'codex',
     runtimeMode?: 'rich' | 'terminal'
   ) => void | Promise<void>;
+  // TODO(lane AQ, PaidStartPlan): replace this callback bridge with
+  // AQ's shared confirmation component once that component lands.
+  onContinueConversation?: (session: import('../types').SessionInfo) => void;
   onFork?: (
     session: import('../types').SessionInfo,
     destinationProvider: 'claude' | 'codex',
@@ -91,7 +94,7 @@ function TerminalProviderFault({ session, onOpenTerminal }: { session: SessionIn
 // unchanged session's view skips the poll entirely. Props are all stable
 // per session (sessionId; onStatusChange is setActiveStatus for the active
 // tab and undefined otherwise; isActive flips only on switch).
-function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onFork, onCloseView, onOpenSession, onReparent, onBack, preferFullTerminal = false }: Props): JSX.Element {
+function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onContinueConversation, onFork, onCloseView, onOpenSession, onReparent, onBack, preferFullTerminal = false }: Props): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>(() => readInitialSessionView(sessionId));
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [forkMode, setForkMode] = useState(false);
@@ -127,9 +130,8 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   // live deltas, plans, commands, file diffs, reasoning summaries, and usage.
   // Raw shell sessions remain terminal-only.
   const supportsConversation = !session || session.tool === 'claude-code' || session.tool === 'codex';
-  const effectiveView: ViewMode = supportsConversation
-    ? viewMode
-    : 'terminal';
+  const lostConversation = Boolean(session?.runnerGone && supportsConversation);
+  const effectiveView: ViewMode = supportsConversation ? lostConversation ? 'remote' : viewMode : 'terminal';
   const displayParentID = session?.displayParentSessionId !== undefined
     ? session.displayParentSessionId
     : session?.parentSessionId;
@@ -141,10 +143,9 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     session
     && session.tool !== 'terminal'
     && !richSession
+    && !lostConversation
   );
-  // Claude's Conversation view is sourced from its canonical JSONL, not its
-  // screen. Only the Codex PTY compatibility adapter needs the one-time
-  // warning about incomplete terminal interpretation.
+  // Only Codex PTY needs the one-time incomplete-interpretation warning.
   const terminalCompatibilityAgent = Boolean(
     session
     && session.tool === 'codex'
@@ -603,13 +604,13 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             }}
             aria-expanded={terminalDrawerOpen}
             aria-controls={`terminal-pane-${sessionId}`}
-            disabled={richSession}
-            title={richSession ? 'Rich sessions do not have a terminal stream' : supportsConversation ? 'Show the exact provider terminal' : 'Terminal'}
+            disabled={richSession || lostConversation}
+            title={lostConversation ? 'The runner is gone; resume the saved conversation to open a new terminal' : richSession ? 'Rich sessions do not have a terminal stream' : supportsConversation ? 'Show the exact provider terminal' : 'Terminal'}
           >
-            {richSession ? 'No terminal' : effectiveView === 'terminal' && supportsConversation ? 'Hide terminal' : 'Terminal'}
+            {lostConversation ? 'Terminal unavailable' : richSession ? 'No terminal' : effectiveView === 'terminal' && supportsConversation ? 'Hide terminal' : 'Terminal'}
           </button>
         </div>
-        {term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Live updates reconnecting…' : 'Live updates unavailable'}</span> : null}
+        {lostConversation ? <span className="session-stream-status" role="status">Runner gone · conversation saved</span> : term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Live updates reconnecting…' : 'Live updates unavailable'}</span> : null}
         {supportsConversation && onFork ? (
           <ConversationForkButton
             active={forkMode}
@@ -741,6 +742,8 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             pendingApproval={session?.pendingApproval ?? null}
             onApprove={session ? (decision) => approveSession(session.id, decision) : undefined}
             providerFault={providerFaultFor(session)}
+            lostConversation={lostConversation && session ? { providerName: session.tool === 'codex' ? 'Codex' : 'Claude', onResume: onContinueConversation ? () => onContinueConversation(session) : undefined, onClose: () => endSession(session.id, 'Closed after Sessions confirmed the runner was gone.') } : undefined}
+            statusLabel={statusLabel}
           />
         </div>
         <div className="session-details-pane">
