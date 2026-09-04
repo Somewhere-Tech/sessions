@@ -18,8 +18,44 @@ func TestParseStatusFixture(t *testing.T) {
 	if !status.Present || !status.SignedIn || status.Endpoint != "https://studio-mac.example.ts.net" {
 		t.Fatalf("status = %#v", status)
 	}
+	if status.DNSName != "studio-mac.example.ts.net" {
+		t.Fatalf("DNS name = %q", status.DNSName)
+	}
 	if len(status.TailscaleIPs) != 2 || status.TailscaleIPs[0] != "100.64.12.34" || status.TailnetIPv4 != "100.64.12.34" {
 		t.Fatalf("Tailscale IPs = %#v", status.TailscaleIPs)
+	}
+}
+
+func TestServeStatusNameFixtures(t *testing.T) {
+	statusFixture, err := os.ReadFile("testdata/status-renamed.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := ParseStatus(statusFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		fixture  string
+		wantHost string
+	}{
+		{name: "normal", fixture: "serve-current-name.json", wantHost: status.DNSName},
+		{name: "mismatch", fixture: "serve-stale-name.json", wantHost: "mac-mini-8.tail61417e.ts.net"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			encoded, readErr := os.ReadFile("testdata/" + test.fixture)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			endpoint, parseErr := ParseServedEndpoint(encoded, "http://127.0.0.1:8787", status.DNSName)
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			if host := EndpointHost(endpoint); host != test.wantHost {
+				t.Fatalf("served endpoint = %q (host %q), want host %q", endpoint, host, test.wantHost)
+			}
+		})
 	}
 }
 

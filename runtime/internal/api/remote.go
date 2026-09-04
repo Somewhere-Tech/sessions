@@ -25,6 +25,8 @@ type RemoteState struct {
 	Auto              bool   `json:"auto"`
 	Present           bool   `json:"present"`
 	SignedIn          bool   `json:"signedIn"`
+	CurrentDNSName    string `json:"-"`
+	ServedDNSName     string `json:"-"`
 	Endpoint          string `json:"endpoint,omitempty"`
 	TailnetIPEndpoint string `json:"tailnetIpEndpoint,omitempty"`
 	Enabled           bool   `json:"enabled"`
@@ -34,7 +36,7 @@ type RemoteState struct {
 
 type tailscaleClient interface {
 	Status(context.Context) (tailscale.Status, error)
-	ServedEndpoint(context.Context, string) (string, error)
+	ServedEndpoint(context.Context, string, string) (string, error)
 	Enable(context.Context, string) error
 	Disable(context.Context) error
 }
@@ -70,6 +72,18 @@ func (s *Server) tailscaleHealth() map[string]any {
 		"remoteEndpoint": remoteState.Endpoint, "tailnetIpEndpoint": remoteState.TailnetIPEndpoint,
 		"auto": remoteState.Auto, "enabled": remoteState.Enabled, "preview": remoteState.Preview,
 	}
+}
+
+func (s *Server) tailscaleDeepHealth() map[string]any {
+	health := s.tailscaleHealth()
+	remoteState := s.remote.state()
+	if remoteState.CurrentDNSName != "" {
+		health["currentDNSName"] = remoteState.CurrentDNSName
+	}
+	if remoteState.ServedDNSName != "" {
+		health["servedDNSName"] = remoteState.ServedDNSName
+	}
+	return health
 }
 
 func (m *remoteManager) state() RemoteState {
@@ -144,42 +158,66 @@ func (m *remoteManager) check(parent context.Context) {
 		m.finish(current, nil)
 		return
 	}
+	current.CurrentDNSName = status.DNSName
 	target := remoteDaemonTarget(m.config)
 	if !current.Auto {
-		served, _ := client.ServedEndpoint(ctx, target)
+		served, _ := client.ServedEndpoint(ctx, target, status.DNSName)
+		current.ServedDNSName = tailscale.EndpointHost(served)
 		if served != "" && !current.Preview {
 			if err := client.Disable(ctx); err != nil {
 				m.finish(current, err)
 				return
 			}
+			current.ServedDNSName = ""
 		}
 		m.finish(current, nil)
 		return
 	}
+	current, err = m.checkAutomatic(ctx, client, status, target, current)
+	m.finish(current, err)
+}
+
+func (m *remoteManager) checkAutomatic(
+	ctx context.Context, client tailscaleClient, status tailscale.Status, target string, current RemoteState,
+) (RemoteState, error) {
 	if current.Auto && status.TailnetIPv4 != "" {
 		current.TailnetIPEndpoint = "http://" + net.JoinHostPort(status.TailnetIPv4, fmt.Sprint(m.config.Port))
 	}
-	served, serveErr := client.ServedEndpoint(ctx, target)
-	if served != "" {
+	served, serveErr := client.ServedEndpoint(ctx, target, status.DNSName)
+	current.ServedDNSName = tailscale.EndpointHost(served)
+	if served != "" && current.ServedDNSName == status.DNSName {
 		current.Endpoint, current.Enabled = served, true
+	}
+	if served != "" && current.ServedDNSName != status.DNSName && status.DNSName != "" && !current.Preview {
+		m.logTailnetNameChange(status.DNSName)
+		if err := client.Enable(ctx, target); err != nil {
+			return current, fmt.Errorf("reconfigure Tailscale Serve: %w", err)
+		}
+		served, serveErr = client.ServedEndpoint(ctx, target, status.DNSName)
+		current.ServedDNSName = tailscale.EndpointHost(served)
+		if current.ServedDNSName == status.DNSName {
+			current.Endpoint, current.Enabled = served, true
+		}
+		return current, serveErr
 	}
 	if served == "" {
 		if current.Preview {
 			current.Endpoint = status.Endpoint
-			m.finish(current, nil)
-			return
+			return current, serveErr
 		}
 		if err := client.Enable(ctx, target); err != nil {
-			m.finish(current, fmt.Errorf("enable Tailscale Serve: %w", err))
-			return
+			return current, fmt.Errorf("enable Tailscale Serve: %w", err)
 		}
-		served, serveErr = client.ServedEndpoint(ctx, target)
-		current.Endpoint, current.Enabled = served, served != ""
+		served, serveErr = client.ServedEndpoint(ctx, target, status.DNSName)
+		current.ServedDNSName = tailscale.EndpointHost(served)
+		if current.ServedDNSName == status.DNSName {
+			current.Endpoint, current.Enabled = served, served != ""
+		}
 	}
 	if current.Endpoint == "" && current.Preview {
 		current.Endpoint = status.Endpoint
 	}
-	m.finish(current, serveErr)
+	return current, serveErr
 }
 
 func (m *remoteManager) finish(next RemoteState, err error) {
@@ -219,6 +257,15 @@ func (m *remoteManager) logOnce(detail string) {
 	}
 }
 
+func (m *remoteManager) logTailnetNameChange(name string) {
+	m.mu.RLock()
+	logf := m.logf
+	m.mu.RUnlock()
+	if logf != nil {
+		logf("tailnet name changed: re-serving as %s", name)
+	}
+}
+
 func (m *remoteManager) setAuto(ctx context.Context, enabled bool) (RemoteState, error) {
 	if err := state.UpdateSettings(m.settingsPath, func(settings *state.Settings) error {
 		settings.Remote = &state.RemoteSettings{Auto: enabled}
@@ -232,7 +279,7 @@ func (m *remoteManager) setAuto(ctx context.Context, enabled bool) (RemoteState,
 	if !enabled && !preview {
 		client, err := m.newClient()
 		if err == nil {
-			served, _ := client.ServedEndpoint(ctx, remoteDaemonTarget(m.config))
+			served, _ := client.ServedEndpoint(ctx, remoteDaemonTarget(m.config), "")
 			if served != "" {
 				if err := client.Disable(ctx); err != nil {
 					return RemoteState{}, err

@@ -144,6 +144,8 @@ func writeDoctorTailscale(writer io.Writer, value any) {
 	auto, _ := state["auto"].(bool)
 	endpoint, _ := state["remoteEndpoint"].(string)
 	ipEndpoint, _ := state["tailnetIpEndpoint"].(string)
+	currentDNSName, _ := state["currentDNSName"].(string)
+	servedDNSName, _ := state["servedDNSName"].(string)
 	status := "not installed"
 	if present {
 		status = "signed out"
@@ -158,7 +160,12 @@ func writeDoctorTailscale(writer io.Writer, value any) {
 	if ipEndpoint != "" {
 		fmt.Fprintf(writer, ", tailnet-ip=%s", ipEndpoint)
 	}
-	fmt.Fprint(writer, "\n\n")
+	fmt.Fprint(writer, "\n")
+	if currentDNSName != "" && servedDNSName != "" && !strings.EqualFold(currentDNSName, servedDNSName) {
+		fmt.Fprintf(writer, "warning: Tailscale Serve name %s does not match current tailnet name %s\n",
+			servedDNSName, currentDNSName)
+	}
+	fmt.Fprint(writer, "\n")
 }
 
 func writeDoctorFleetAccount(writer io.Writer, value any) {

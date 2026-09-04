@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
@@ -19,6 +20,7 @@ const macOSCLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 type Status struct {
 	Present      bool     `json:"present"`
 	SignedIn     bool     `json:"signedIn"`
+	DNSName      string   `json:"dnsName,omitempty"`
 	Endpoint     string   `json:"endpoint,omitempty"`
 	TailnetIPv4  string   `json:"tailnetIPv4,omitempty"`
 	TailscaleIPs []string `json:"-"`
@@ -63,6 +65,7 @@ func ParseStatus(encoded []byte) (Status, error) {
 	}
 	result.SignedIn = true
 	result.Endpoint = endpointFromDNSName(wire.Self.DNSName)
+	result.DNSName = EndpointHost(result.Endpoint)
 	result.TailscaleIPs = append([]string(nil), wire.Self.TailscaleIPs...)
 	result.TailnetIPv4 = TailnetIPv4(result.TailscaleIPs)
 	return result, nil
@@ -156,25 +159,49 @@ func (c Client) Status(ctx context.Context) (Status, error) {
 }
 
 // ServedEndpoint returns the HTTPS origin whose root handler proxies target.
+// When currentDNSName is present it prefers that name over stale Serve entries.
 // A different Serve handler is never adopted as Sessions remote access.
-func (c Client) ServedEndpoint(ctx context.Context, target string) (string, error) {
+func (c Client) ServedEndpoint(ctx context.Context, target, currentDNSName string) (string, error) {
 	encoded, err := c.run(ctx, "serve", "status", "--json")
 	if err != nil {
 		return "", err
 	}
+	return ParseServedEndpoint(encoded, target, currentDNSName)
+}
+
+// ParseServedEndpoint finds a root Serve handler for target. Tailscale can
+// retain an entry under a node's former DNS name, so the current name wins
+// even when both entries are present.
+func ParseServedEndpoint(encoded []byte, target, currentDNSName string) (string, error) {
 	var status serveStatus
 	if err := json.Unmarshal(encoded, &status); err != nil {
 		return "", fmt.Errorf("decode Tailscale Serve status: %w", err)
 	}
 	wanted := normalizeTarget(target)
-	for authority, web := range status.Web {
+	authorities := make([]string, 0, len(status.Web))
+	for authority := range status.Web {
+		authorities = append(authorities, authority)
+	}
+	sort.Strings(authorities)
+	fallback := ""
+	for _, authority := range authorities {
+		web := status.Web[authority]
 		handler, ok := web.Handlers["/"]
 		if !ok || normalizeTarget(handler.Proxy) != wanted {
 			continue
 		}
-		return endpointFromAuthority(authority), nil
+		endpoint := endpointFromAuthority(authority)
+		if endpoint == "" {
+			continue
+		}
+		if currentDNSName != "" && EndpointHost(endpoint) == strings.ToLower(strings.TrimSuffix(currentDNSName, ".")) {
+			return endpoint, nil
+		}
+		if fallback == "" {
+			fallback = endpoint
+		}
 	}
-	return "", nil
+	return fallback, nil
 }
 
 func (c Client) Enable(ctx context.Context, target string) error {
@@ -202,6 +229,15 @@ func endpointFromAuthority(authority string) string {
 		return ""
 	}
 	return "https://" + parsed.Host
+}
+
+// EndpointHost returns the canonical hostname from an endpoint origin.
+func EndpointHost(value string) string {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Hostname() == "" {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
 }
 
 func firstLine(text string) string {

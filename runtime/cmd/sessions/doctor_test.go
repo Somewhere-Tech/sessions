@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -9,6 +10,36 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestDoctorWarnsWhenServeUsesFormerTailnetName(t *testing.T) {
+	var output bytes.Buffer
+	writeDoctorTailscale(&output, map[string]any{
+		"present": true, "signedIn": true, "auto": true,
+		"currentDNSName": "mac-mini-313.tail61417e.ts.net",
+		"servedDNSName":  "mac-mini-8.tail61417e.ts.net",
+	})
+	got := output.String()
+	for _, want := range []string{
+		"tailscale: signed in, automatic=on",
+		"warning: Tailscale Serve name mac-mini-8.tail61417e.ts.net does not match current tailnet name mac-mini-313.tail61417e.ts.net",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("doctor Tailscale output = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestDoctorDoesNotWarnWhenServeUsesCurrentTailnetName(t *testing.T) {
+	var output bytes.Buffer
+	writeDoctorTailscale(&output, map[string]any{
+		"present": true, "signedIn": true, "auto": true,
+		"currentDNSName": "mac-mini-313.tail61417e.ts.net",
+		"servedDNSName":  "mac-mini-313.tail61417e.ts.net",
+	})
+	if got := output.String(); strings.Contains(got, "warning:") {
+		t.Fatalf("doctor warned for matching Tailscale names: %q", got)
+	}
+}
 
 func TestClassifyRunnerSpawn(t *testing.T) {
 	tests := map[string]string{

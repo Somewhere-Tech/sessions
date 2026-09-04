@@ -133,7 +133,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			"ok": true, "name": "sessionsd", "version": Version,
 			"status":    restore["status"],
 			"access":    map[string]any{"open": s.openAccessEnabled()},
-			"tailscale": s.tailscaleHealth(),
+			"tailscale": s.tailscaleDeepHealth(),
 			"account":   s.fleetAccountHealth(),
 			"compatibility": map[string]any{
 				"api": map[string]any{

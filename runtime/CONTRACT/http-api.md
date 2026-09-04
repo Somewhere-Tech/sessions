@@ -259,6 +259,10 @@ origin, `tailnetIpEndpoint` is the direct CGNAT HTTP origin, and `auto` is the
 persisted default-on choice. Missing endpoints are omitted. `enabled` means at
 least one automatic listener is active; `preview`, when true, means endpoints
 were detected without changing Serve or opening the direct listener.
+Authenticated deep health also includes `currentDNSName` and `servedDNSName`
+when known so `sessions doctor` can identify a Serve configuration retained
+under the machine's former tailnet name. These diagnostic names are omitted
+from unauthenticated health.
 
 `account.signedIn` reports whether sessionsd holds a complete Somewhere
 access/refresh pair. `lastRegistrationAt` and `lastRegistrationError` are
