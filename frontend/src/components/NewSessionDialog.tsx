@@ -551,25 +551,25 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                 ) : null}
                 {tool !== 'shell' ? (
                   <>
-                    <ModelPicker
-                      provider={tool === 'claude-code' ? 'claude' : 'codex'}
-                      value={selectedModel}
-                      options={modelOptions}
-                      loading={tool === 'codex' && codexModelsLoading}
-                      error={tool === 'codex' ? codexModelsError : null}
-                      onChange={selectModel}
-                      defaultLabel={`${selectedTool.name} default`}
-                      allowCustom
-                      compact
-                    />
-                    <label className="launcher-effort-chip">
+                    <div className="launcher-model-control" data-label="Model">
+                      <ModelPicker
+                        provider={tool === 'claude-code' ? 'claude' : 'codex'}
+                        value={selectedModel}
+                        options={modelOptions}
+                        loading={tool === 'codex' && codexModelsLoading} error={tool === 'codex' ? codexModelsError : null}
+                        onChange={selectModel}
+                        defaultLabel={`${selectedTool.name} default`}
+                        allowCustom compact
+                      />
+                    </div>
+                    <label className="launcher-effort-chip" data-label="Effort">
                       <span className="sr-only">Effort</span>
                       <select value={selectedEffort} onChange={(event) => selectEffort(event.currentTarget.value)} aria-label="Reasoning effort">
                         <option value="">Default effort</option>
                         {effortChoices.map((effort) => <option key={effort} value={effort}>{effortLabel(effort)}</option>)}
                       </select>
                     </label>
-                    <label className="launcher-permissions-chip">
+                    <label className="launcher-permissions-chip" data-label="Access">
                       <span className="sr-only">Access</span>
                       <select
                         value={access}
@@ -593,9 +593,9 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                 </button>
               </div>
             </div>
-            <span className="launcher-send-hint">Enter sends · Shift+Enter adds a line</span>
-            {requiresProviderLogin ? <span className="field-help">Finish the new account login first. Sessions will keep this request here instead of sending it into a login screen.</span> : null}
           </div>
+          <span className="launcher-send-hint">Enter sends · Shift+Enter adds a line</span>
+          {requiresProviderLogin ? <span className="field-help">Finish the new account login first. Sessions will keep this request here instead of sending it into a login screen.</span> : null}
           {isDelegate ? (
             <div className="launcher-inherited"><span>Runs with its parent</span><strong>{cwd}</strong><small>{serverDisplayName(getActiveServer(), true)} · grouped under {parentSession ? sessionLabel(parentSession) : 'the current session'}</small></div>
           ) : (

@@ -162,7 +162,7 @@ button.model-picker-option { display: flex; align-items: center; justify-content
 .launcher-effort-chip select { height: 30px; padding: 0 24px 0 8px; border: 0; outline: 0; background: transparent; color: var(--fg-dim); font-size: 12px; }
 .launcher-permissions-chip { display: inline-flex; min-width: 0; min-height: 32px; align-items: center; border: 1px solid var(--border); border-radius: 8px; }
 .launcher-permissions-chip select { max-width: 160px; height: 30px; padding: 0 24px 0 8px; border: 0; outline: 0; background: transparent; color: var(--fg-dim); font-size: 12px; }
-.launcher-send-hint { display: block; margin: 7px 4px -3px auto; color: var(--fg-faint); font-size: 12px; text-align: right; }
+.launcher-send-hint { display: block; align-self: flex-end; margin: -7px 4px 0; color: var(--fg-faint); font-size: 12px; text-align: right; }
 .launcher-composer-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .launcher-composer-start { flex: 0 0 auto; min-height: 36px; }
 .launcher-compact-head { justify-content: space-between; }
@@ -495,8 +495,12 @@ button.model-picker-option { display: flex; align-items: center; justify-content
   .launcher-intent-control.is-workspace { max-width: min(230px, 68vw); }
   .new-session-launcher .launcher-composer { min-height: 240px; }
   .new-session-launcher .launcher-composer textarea { min-height: 148px; }
-  .launcher-composer-footer { align-items: flex-end; flex-direction: row; }
-  .launcher-composer-context { max-height: 112px; overflow-y: auto; }
+  .launcher-composer-footer { align-items: stretch; flex-direction: column; }
+  .launcher-composer-context { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; overflow: visible; }
+  .launcher-model-control { grid-column: 1 / -1; }
+  .launcher-composer-context > [data-label] { display: grid; width: 100%; gap: 4px; border: 0; }
+  .launcher-composer-context > [data-label]::before { content: attr(data-label); color: var(--fg-faint); font-size: 12px; font-weight: 650; }
+  .launcher-composer-context > [data-label] :is(button, select) { width: 100%; max-width: none; height: 44px !important; border: 1px solid var(--border); border-radius: 8px; }
   .launcher-composer-actions { align-self: flex-end; justify-content: flex-end; }
   .new-session-launcher .launcher-advanced,
   .new-session-launcher .launcher-inherited { margin-inline: 8px; }
@@ -508,7 +512,7 @@ button.model-picker-option { display: flex; align-items: center; justify-content
   }
   .new-session-launcher.is-embedded .launcher-composer { min-height: 0; }
   .new-session-launcher.is-embedded .launcher-composer textarea { min-height: 106px; }
-  .new-session-launcher.is-embedded .launcher-composer-context { max-height: none; overflow-x: auto; overflow-y: hidden; }
+  .new-session-launcher.is-embedded .launcher-composer-context { max-height: none; overflow: visible; }
   .launcher-select-control select { max-width: 130px; }
   .launcher-context-chip.is-folder { max-width: 150px; }
   .model-picker-popover { position: fixed; right: 12px; bottom: 76px; left: 12px; width: auto; }
