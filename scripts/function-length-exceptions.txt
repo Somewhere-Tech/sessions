@@ -54,7 +54,6 @@ go runtime/cmd/sessions/conversation.go app.cmdLast 95
 go runtime/cmd/sessions/source.go app.cmdSource 95
 go runtime/internal/api/files.go Server.handleFSList 95
 go runtime/internal/recovery/adopt.go finishAdoptionAnnotations 95
-go runtime/internal/recovery/continue_provider.go createProviderCopy 95
 go runtime/internal/session/manager_runtime.go runtimeSession.startWatcher 95
 go runtime/internal/migrate/workspace.go PrepareWorkspace 94
 go runtime/internal/recovery/mutate.go Reopen 92

@@ -35,6 +35,16 @@ func ImportedHistoryEvent(sessionID, role, text, sourceHistoryID string, at time
 	})
 }
 
+// ContinuationStartedEvent is the calm, visible boundary before copied
+// messages. It lets every client say where this conversation came from and
+// which model was chosen before showing the imported history.
+func ContinuationStartedEvent(sessionID, detail string, at time.Time) (json.RawMessage, error) {
+	return marshalHistory(map[string]any{
+		"type": "system", "subtype": "continuation_started", "source": "sessions-continuation",
+		"timestamp": historyTimestamp(at), "session_id": sessionID, "detail": detail,
+	})
+}
+
 // TurnStartedEvent is the authoritative working=true boundary for one
 // per-turn Claude process.
 func TurnStartedEvent(sessionID string, at time.Time) (json.RawMessage, error) {

@@ -59,6 +59,23 @@ func TestInputRejectedEventIsVisibleButNotLifecycle(t *testing.T) {
 	}
 }
 
+func TestContinuationStartedEventIsVisibleButNotLifecycle(t *testing.T) {
+	raw, err := ContinuationStartedEvent("session-1", "Continued from Review (Codex)", time.Unix(2, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event map[string]any
+	if err := json.Unmarshal(raw, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event["subtype"] != "continuation_started" || event["detail"] != "Continued from Review (Codex)" {
+		t.Fatalf("continuation event = %#v", event)
+	}
+	if _, authoritative := HistoryLifecycle(raw); authoritative {
+		t.Fatal("continuation line incorrectly changed turn lifecycle")
+	}
+}
+
 func TestTurnArgsForcePerTurnResumeAndStructuredOutput(t *testing.T) {
 	first := turnArgs("hello", TurnOptions{
 		SessionID: "session-1", Model: "sonnet",

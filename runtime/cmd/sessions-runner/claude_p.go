@@ -178,6 +178,11 @@ func (r *claudeStructuredRunner) prepareContinuation() error {
 		}
 	}
 	if !continuation.LocalHistoryReady {
+		if raw, encodeErr := claudep.ContinuationStartedEvent(
+			r.sessionID, continuation.StartLine(), time.Now(),
+		); encodeErr == nil {
+			r.appendStructured(raw)
+		}
 		for _, message := range continuation.Messages {
 			raw, encodeErr := claudep.ImportedHistoryEvent(
 				r.sessionID, message.Role, message.Text, continuation.SourceHistoryID,

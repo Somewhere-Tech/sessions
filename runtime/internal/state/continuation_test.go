@@ -51,6 +51,18 @@ func TestContinuationRejectsProviderInternalRoles(t *testing.T) {
 	}
 }
 
+func TestContinuationStartLineNamesSourceCountAndModel(t *testing.T) {
+	value := ContinuationContext{
+		SourceTitle: "Frozen review", SourceProvider: "codex", SourceCWD: "/work",
+		DestinationModel: "sonnet", DestinationModelName: "Sonnet 5",
+		Messages: []ContinuationMessage{{Role: "user", Text: "One"}, {Role: "assistant", Text: "Two"}},
+	}
+	want := "Continued from Frozen review (Codex) · 2 messages · model Sonnet 5"
+	if got := value.StartLine(); got != want {
+		t.Fatalf("StartLine() = %q, want %q", got, want)
+	}
+}
+
 func TestContinuationAllowsSameProviderOnlyForFork(t *testing.T) {
 	value := ContinuationContext{
 		SchemaVersion:   ContinuationSchemaVersion,

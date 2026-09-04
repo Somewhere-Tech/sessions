@@ -77,43 +77,11 @@ func createProviderCopy(
 	if strings.TrimSpace(name) == "" {
 		name = filepath.Base(continuation.SourceCWD)
 	}
-	description := ""
-	var tags map[string]string
-	var displayParent *string
-	profile := ""
-	configDir := ""
-	if source != nil {
-		description = source.Description
-		tags = state.CloneTags(source.Tags)
-		if (fork || continuation.TranscriptRecovery) && continuation.SourceProvider == continuation.DestinationProvider {
-			profile = source.Profile
-			configDir = source.ConfigDir
-		}
-		if fork && source.LaneID != "" {
-			parent := source.LaneID
-			displayParent = &parent
-		} else if source.DisplayParentSessionID != nil {
-			parent := *source.DisplayParentSessionID
-			displayParent = &parent
-		}
+	request, err := continuationCreateRequest(continuation, name, source, fork)
+	if err != nil {
+		return AdoptResult{}, err
 	}
-	cmd, kind := "", ""
-	switch continuation.DestinationProvider {
-	case "codex":
-		cmd, kind = "codex", state.KindCodexAppServer
-	case "claude":
-		cmd, kind = "claude", state.KindClaudeStructured
-	default:
-		return AdoptResult{}, fmt.Errorf(
-			"unsupported destination provider %q", continuation.DestinationProvider,
-		)
-	}
-	created, err := creator.Create(ctx, state.CreateSessionRequest{
-		Cmd: cmd, Cwd: continuation.SourceCWD, Name: name,
-		Description: description, Tags: tags, Kind: kind, Profile: profile,
-		ConfigDir:              configDir,
-		DisplayParentSessionID: displayParent, Continuation: &continuation,
-	})
+	created, err := creator.Create(ctx, request)
 	if err != nil {
 		return AdoptResult{}, err
 	}
@@ -150,4 +118,73 @@ func createProviderCopy(
 		}
 	}
 	return result, nil
+}
+
+func continuationCreateRequest(
+	continuation state.ContinuationContext,
+	name string,
+	source *AdoptSource,
+	fork bool,
+) (state.CreateSessionRequest, error) {
+	cmd, kind := "", ""
+	switch continuation.DestinationProvider {
+	case "codex":
+		cmd, kind = "codex", state.KindCodexAppServer
+	case "claude":
+		cmd, kind = "claude", state.KindClaudeStructured
+	default:
+		return state.CreateSessionRequest{}, fmt.Errorf(
+			"unsupported destination provider %q", continuation.DestinationProvider,
+		)
+	}
+	request := state.CreateSessionRequest{
+		Cmd: cmd, Cwd: continuation.SourceCWD, Name: name, Kind: kind,
+		Continuation: &continuation, Args: continuationArgs(continuation),
+		Claude: continuationClaudeOptions(continuation),
+	}
+	if source == nil {
+		return request, nil
+	}
+	request.Description = source.Description
+	request.Tags = state.CloneTags(source.Tags)
+	if (fork || continuation.TranscriptRecovery) && continuation.SourceProvider == continuation.DestinationProvider {
+		request.Profile = source.Profile
+		request.ConfigDir = source.ConfigDir
+	}
+	if fork && source.LaneID != "" {
+		parent := source.LaneID
+		request.DisplayParentSessionID = &parent
+	} else if source.DisplayParentSessionID != nil {
+		parent := *source.DisplayParentSessionID
+		request.DisplayParentSessionID = &parent
+	}
+	return request, nil
+}
+
+func continuationArgs(continuation state.ContinuationContext) []string {
+	model := strings.TrimSpace(continuation.DestinationModel)
+	effort := strings.TrimSpace(continuation.DestinationEffort)
+	if continuation.DestinationProvider != "codex" {
+		return nil
+	}
+	args := make([]string, 0, 4)
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if effort != "" {
+		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%s", effort))
+	}
+	return args
+}
+
+func continuationClaudeOptions(continuation state.ContinuationContext) *state.ClaudeSessionOptions {
+	if continuation.DestinationProvider != "claude" {
+		return nil
+	}
+	model := strings.TrimSpace(continuation.DestinationModel)
+	effort := strings.TrimSpace(continuation.DestinationEffort)
+	if model == "" && effort == "" {
+		return nil
+	}
+	return &state.ClaudeSessionOptions{Model: model, Effort: effort}
 }

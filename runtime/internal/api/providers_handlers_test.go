@@ -92,3 +92,20 @@ func TestProviderUpdateAuthority(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderStatusIncludesModelChoicesOnlyWhenRequested(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	daemon := newTestDaemon(t)
+	daemon.handler.registry = continuationCatalog(daemon.registry)
+
+	plain := serve(t, daemon.handler, http.MethodGet, "/api/providers", nil, "127.0.0.1:1", nil)
+	if strings.Contains(plain.Body.String(), `"models"`) {
+		t.Fatalf("ordinary provider status unexpectedly loaded model catalogs: %s", plain.Body.String())
+	}
+	withModels := serve(t, daemon.handler, http.MethodGet, "/api/providers?include_models=1", nil, "127.0.0.1:1", nil)
+	if withModels.Code != http.StatusOK ||
+		!strings.Contains(withModels.Body.String(), `"displayName":"Fable 5"`) ||
+		!strings.Contains(withModels.Body.String(), `"displayName":"GPT Next"`) {
+		t.Fatalf("provider models status=%d body=%s", withModels.Code, withModels.Body.String())
+	}
+}

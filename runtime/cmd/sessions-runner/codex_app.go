@@ -200,6 +200,11 @@ func (r *codexAppRunner) prepareContinuation() error {
 		continuation.ProviderContext = "applied"
 	}
 	if !continuation.LocalHistoryReady {
+		if raw, encodeErr := codexapp.ContinuationStartedEvent(
+			r.conversationID, continuation.StartLine(), time.Now(),
+		); encodeErr == nil {
+			r.appendStructured(raw)
+		}
 		for _, message := range continuation.Messages {
 			raw, encodeErr := codexapp.ImportedHistoryEvent(
 				r.conversationID, message.Role, message.Text, continuation.SourceHistoryID,

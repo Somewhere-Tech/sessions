@@ -676,6 +676,11 @@ Version and last-check fields are omitted when the provider or its local update
 metadata is unavailable. Status inspection is read-only and is allowed for
 authenticated local and paired clients.
 
+With `include_models=1`, each provider also returns `models`, using the same
+model objects as `GET /api/models/codex`: `id`, `displayName`, `isDefault`,
+supported effort choices, and the default effort. A provider whose catalog
+cannot be loaded returns `modelsError` without hiding its installation status.
+
 ### `POST /api/providers/:id/update`
 
 Auth required. A loopback client, the master token, or an explicitly paired
@@ -1345,6 +1350,37 @@ creator and cannot launch another runtime. Complete repair returns `200`;
 another recoverable append failure remains `202`. A missing, ended, or
 provider-mismatched successor returns `409` and explicitly says that no session
 was started.
+
+### Cross-provider continuation jobs
+
+`POST /api/recovery/continuation/preview` is an authenticated dry run. Its body
+selects one exact conversation and destination provider, with an optional tail:
+
+```json
+{"target":"<provider conversation id>","historyId":"<optional history id>","sourceSessionId":"<optional ended Sessions id>","destinationProvider":"claude","messageLimit":40}
+```
+
+It reads only user and assistant messages and creates no session. The response
+contains `conversation`, source and destination providers, total and selected
+message counts, Unicode character count, `estimatedTokens` (characters divided
+by four, rounded up), `thresholdTokens`, `limited`, and `sourceUntouched`.
+`messageLimit` selects the last N messages; zero or omission selects all. The
+default threshold is 60,000 and can be configured with
+`SESSIONS_CONTINUATION_TOKEN_THRESHOLD`.
+
+`POST /api/recovery/continuation/jobs` accepts the same selection plus `model`,
+optional `effort`, and `confirmWholeHistory`. Above the threshold, an unlimited
+request requires `confirmWholeHistory:true`. It returns `202` with a job whose
+status is `running`, `succeeded`, `canceled`, or `failed`. `events` is an
+ordered list of `exporting-history`, `creating-session`, `provider-starting`,
+and `first-reply` stages. The job also reports the chosen model, new `laneId`,
+preview, error or warning, and current provider-fault fields when present.
+
+`GET /api/recovery/continuation/jobs/:id` returns the latest job snapshot.
+`DELETE` cancels it. If a destination session exists, cancellation requests a
+normal session end and does not report `canceled` until the daemon observes it
+ended. The source record is not marked as continued until the destination's
+first reply completes.
 
 ### `POST /api/recovery/fork`
 

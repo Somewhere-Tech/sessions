@@ -56,6 +56,14 @@ func ImportedHistoryEvent(conversationID, role, text, sourceHistoryID string, at
 	})
 }
 
+// ContinuationStartedEvent is the first visible line before copied history.
+func ContinuationStartedEvent(conversationID, detail string, at time.Time) (json.RawMessage, error) {
+	return marshalHistory(map[string]any{
+		"type": "system", "subtype": "continuation_started", "source": "sessions-continuation",
+		"timestamp": historyTimestamp(at), "conversationId": conversationID, "detail": detail,
+	})
+}
+
 // InputRejectedEvent makes steering semantics explicit when a structured
 // Codex turn is already active. Sessions never hides a prompt queue behind
 // the composer, and it never drops composed text without saying so; the user

@@ -13,16 +13,21 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 type providerStatus struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Installed       bool   `json:"installed"`
-	Version         string `json:"version,omitempty"`
-	LatestVersion   string `json:"latestVersion,omitempty"`
-	LastCheckedAt   string `json:"lastCheckedAt,omitempty"`
-	UpdateAvailable bool   `json:"updateAvailable"`
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	Installed       bool             `json:"installed"`
+	Version         string           `json:"version,omitempty"`
+	LatestVersion   string           `json:"latestVersion,omitempty"`
+	LastCheckedAt   string           `json:"lastCheckedAt,omitempty"`
+	UpdateAvailable bool             `json:"updateAvailable"`
+	Models          []codexapp.Model `json:"models,omitempty"`
+	ModelsError     string           `json:"modelsError,omitempty"`
 }
 
 var (
@@ -31,6 +36,9 @@ var (
 )
 
 func (s *Server) handleProvidersRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
+	if s.handleCodexModelsRoute(response, request, corsOrigin) {
+		return true
+	}
 	if request.URL.Path == "/api/providers" {
 		// A wrong method on a route this handler owns is 405 here, as it is on
 		// every sibling route family; returning false handed the request to the
@@ -39,10 +47,7 @@ func (s *Server) handleProvidersRoute(response http.ResponseWriter, request *htt
 			s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
 			return true
 		}
-		statuses := []providerStatus{
-			localProviderStatus(request.Context(), "claude"),
-			localProviderStatus(request.Context(), "codex"),
-		}
+		statuses := s.providerStatuses(request.Context(), request.URL.Query().Get("include_models") == "1")
 		s.sendJSON(response, http.StatusOK, map[string]any{"providers": statuses}, corsOrigin)
 		return true
 	}
@@ -106,6 +111,91 @@ func (s *Server) handleProvidersRoute(response http.ResponseWriter, request *htt
 		"output":   strings.TrimSpace(string(output)),
 	}, corsOrigin)
 	return true
+}
+
+func (s *Server) handleCodexModelsRoute(
+	response http.ResponseWriter, request *http.Request, corsOrigin string,
+) bool {
+	if request.URL.Path != "/api/models/codex" || request.Method != http.MethodGet {
+		return false
+	}
+	catalog, supported := s.registry.(newSessionModelCatalogService)
+	if !supported {
+		s.sendJSON(response, http.StatusNotImplemented, map[string]any{"error": "Codex model choices are not available on this runtime"}, corsOrigin)
+		return true
+	}
+	models, err := catalog.CodexModelOptions(request.Context())
+	if err != nil {
+		s.sendJSON(response, http.StatusBadGateway, map[string]any{"error": err.Error()}, corsOrigin)
+		return true
+	}
+	s.sendJSON(response, http.StatusOK, map[string]any{"models": models}, corsOrigin)
+	return true
+}
+
+func (s *Server) providerStatuses(ctx context.Context, includeModels bool) []providerStatus {
+	statuses := []providerStatus{
+		localProviderStatus(ctx, "claude"),
+		localProviderStatus(ctx, "codex"),
+	}
+	if !includeModels {
+		return statuses
+	}
+	settings, err := s.loadClaudeSettings()
+	if err != nil {
+		statuses[0].ModelsError = err.Error()
+	} else {
+		statuses[0].Models = claudeModelOptions(settings.Model, settings.Effort)
+	}
+	if catalog, ok := s.registry.(newSessionModelCatalogService); ok {
+		statuses[1].Models, err = catalog.CodexModelOptions(ctx)
+		if err != nil {
+			statuses[1].ModelsError = err.Error()
+		}
+	} else {
+		statuses[1].ModelsError = "Codex model choices are not available on this runtime"
+	}
+	return statuses
+}
+
+func claudeModelOptions(configuredDefault, configuredEffort string) []codexapp.Model {
+	if configuredEffort == state.ClaudeChoiceInherit {
+		configuredEffort = ""
+	}
+	efforts := []codexapp.ReasoningEffortOption{
+		{ReasoningEffort: "low", Description: "Faster, lighter reasoning"},
+		{ReasoningEffort: "medium", Description: "Balanced reasoning"},
+		{ReasoningEffort: "high", Description: "More thorough reasoning"},
+		{ReasoningEffort: "xhigh", Description: "Extended reasoning"},
+		{ReasoningEffort: "max", Description: "Maximum available reasoning"},
+	}
+	models := []codexapp.Model{
+		{ID: "claude-fable-5", Model: "claude-fable-5", DisplayName: "Fable 5", Description: "Fast, capable everyday work"},
+		{ID: "opus", Model: "opus", DisplayName: "Opus", Description: "Deep reasoning"},
+		{ID: "sonnet", Model: "sonnet", DisplayName: "Sonnet", Description: "Balanced speed and reasoning"},
+		{ID: "haiku", Model: "haiku", DisplayName: "Haiku", Description: "Fast, lightweight tasks"},
+	}
+	configuredDefault = strings.TrimSpace(configuredDefault)
+	if configuredDefault == "" {
+		configuredDefault = models[0].ID
+	}
+	found := false
+	for index := range models {
+		models[index].SupportedReasoningEfforts = efforts
+		models[index].IsDefault = models[index].ID == configuredDefault
+		if configuredEffort != "" {
+			models[index].DefaultReasoningEffort = configuredEffort
+		}
+		found = found || models[index].IsDefault
+	}
+	if !found {
+		models = append([]codexapp.Model{{
+			ID: configuredDefault, Model: configuredDefault, DisplayName: configuredDefault,
+			Description: "Your saved Claude default", IsDefault: true,
+			DefaultReasoningEffort: configuredEffort, SupportedReasoningEfforts: efforts,
+		}}, models...)
+	}
+	return models
 }
 
 // Provider updates run a fixed subcommand on an already-resolved executable,

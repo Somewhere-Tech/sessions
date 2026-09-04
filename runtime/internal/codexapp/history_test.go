@@ -74,6 +74,23 @@ func TestInputRejectedEventReportsTheRefusedMessage(t *testing.T) {
 	}
 }
 
+func TestContinuationStartedEventIsVisibleButNotLifecycle(t *testing.T) {
+	event, err := ContinuationStartedEvent("thread-1", "Continued from Review (Claude)", time.Unix(5, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(event, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value["subtype"] != "continuation_started" || value["detail"] != "Continued from Review (Claude)" {
+		t.Fatalf("continuation event = %#v", value)
+	}
+	if _, authoritative := HistoryLifecycle(event); authoritative {
+		t.Fatal("continuation line incorrectly changed turn lifecycle")
+	}
+}
+
 func TestSteeringHistoryEventPreservesQueueState(t *testing.T) {
 	event, err := SteeringHistoryEvent("thread-1", "turn-1", "also run the tests", time.Unix(6, 0))
 	if err != nil {

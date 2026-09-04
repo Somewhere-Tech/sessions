@@ -60,6 +60,7 @@ type Server struct {
 	account              *fleetaccount.Manager
 	accountError         error
 	submits              *sessionMutexes
+	continuationJobs     *continuationJobStore
 	lanFallbackLog       sync.Once
 }
 
@@ -176,7 +177,8 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 		tailnetAccess: newTailnetAccessService(),
 		submits:       newSessionMutexes(),
 		identity:      identity, identityError: identityErr,
-		deliveries: delivery.New(deliveryRoot),
+		deliveries:       delivery.New(deliveryRoot),
+		continuationJobs: newContinuationJobStore(),
 		integrationEndpoints: integrations.NewService(integrations.ServiceOptions{
 			StateDir: config.StateRoot, RunnerStateDir: config.RunnerStateDir,
 			DiscoverProviderHistory: true,

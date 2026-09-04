@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -34,24 +35,52 @@ type ContinuationMessage struct {
 // created runner. Source history remains untouched and searchable by its
 // stable Sessions history ID.
 type ContinuationContext struct {
-	SchemaVersion       int                   `json:"schemaVersion"`
-	SourceHistoryID     string                `json:"sourceHistoryId"`
-	SourceProvider      string                `json:"sourceProvider"`
-	SourceProviderID    string                `json:"sourceProviderId,omitempty"`
-	SourceTitle         string                `json:"sourceTitle,omitempty"`
-	SourceCWD           string                `json:"sourceCwd"`
-	SourceWorktreePath  string                `json:"sourceWorktreePath,omitempty"`
-	SourceBranch        string                `json:"sourceBranch,omitempty"`
-	SourceRepo          string                `json:"sourceRepo,omitempty"`
-	DestinationProvider string                `json:"destinationProvider"`
-	Mode                string                `json:"mode"`
-	Fork                bool                  `json:"fork,omitempty"`
-	TranscriptRecovery  bool                  `json:"transcriptRecovery,omitempty"`
-	ForkPointIndex      *int                  `json:"forkPointIndex,omitempty"`
-	ForkPointMessageID  string                `json:"forkPointMessageId,omitempty"`
-	Messages            []ContinuationMessage `json:"messages"`
-	LocalHistoryReady   bool                  `json:"localHistoryReady,omitempty"`
-	ProviderContext     string                `json:"providerContext,omitempty"`
+	SchemaVersion        int                   `json:"schemaVersion"`
+	SourceHistoryID      string                `json:"sourceHistoryId"`
+	SourceProvider       string                `json:"sourceProvider"`
+	SourceProviderID     string                `json:"sourceProviderId,omitempty"`
+	SourceTitle          string                `json:"sourceTitle,omitempty"`
+	SourceCWD            string                `json:"sourceCwd"`
+	SourceWorktreePath   string                `json:"sourceWorktreePath,omitempty"`
+	SourceBranch         string                `json:"sourceBranch,omitempty"`
+	SourceRepo           string                `json:"sourceRepo,omitempty"`
+	DestinationProvider  string                `json:"destinationProvider"`
+	DestinationModel     string                `json:"destinationModel,omitempty"`
+	DestinationModelName string                `json:"destinationModelName,omitempty"`
+	DestinationEffort    string                `json:"destinationEffort,omitempty"`
+	Mode                 string                `json:"mode"`
+	Fork                 bool                  `json:"fork,omitempty"`
+	TranscriptRecovery   bool                  `json:"transcriptRecovery,omitempty"`
+	ForkPointIndex       *int                  `json:"forkPointIndex,omitempty"`
+	ForkPointMessageID   string                `json:"forkPointMessageId,omitempty"`
+	Messages             []ContinuationMessage `json:"messages"`
+	LocalHistoryReady    bool                  `json:"localHistoryReady,omitempty"`
+	ProviderContext      string                `json:"providerContext,omitempty"`
+}
+
+// StartLine is the first visible line in a conversation copied to another
+// provider. It names the source and the exact destination model without
+// pretending the source conversation itself was changed.
+func (c ContinuationContext) StartLine() string {
+	title := strings.TrimSpace(c.SourceTitle)
+	if title == "" {
+		title = filepath.Base(c.SourceCWD)
+	}
+	provider := "Codex"
+	if c.SourceProvider == "claude" {
+		provider = "Claude"
+	}
+	model := strings.TrimSpace(c.DestinationModelName)
+	if model == "" {
+		model = strings.TrimSpace(c.DestinationModel)
+	}
+	if model == "" {
+		model = "provider default"
+	}
+	return fmt.Sprintf(
+		"Continued from %s (%s) · %d messages · model %s",
+		title, provider, len(c.Messages), model,
+	)
 }
 
 func (c ContinuationContext) Validate() error {
