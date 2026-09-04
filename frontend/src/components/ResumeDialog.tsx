@@ -134,6 +134,7 @@ export function ResumeDialog({
             session.sessionId === preferredProviderId
             && (!preferredHistoryId || session.historyId === preferredHistoryId)
           )) ?? null;
+          preferred ??= available.find((session) => session.sessionId === preferredProviderId) ?? null;
           if (!preferred && preferredSourceSessionId) {
             const source = useSessions.getState().sessions.find((session) => session.id === preferredSourceSessionId);
             if (source && (source.tool === 'claude-code' || source.tool === 'codex')) {

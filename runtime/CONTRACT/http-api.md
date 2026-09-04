@@ -1304,7 +1304,7 @@ Auth required. Resolves one explicit provider conversation and creates its
 successor through the normal write-ahead session boundary:
 
 ```json
-{"target":"<provider UUID or conversation path>","sourceSessionId":"<optional ended Sessions id>","force":false,"claudePermissionMode":"<optional Claude mode>"}
+{"target":"<provider UUID or conversation path>","sourceSessionId":"<optional ended Sessions id>","runtimeMode":"rich","model":"<provider model>","effort":"medium","permissions":"constrained","force":false,"claudePermissionMode":"<optional Claude mode>"}
 ```
 
 A complete adoption returns `201` with `ok: true`, the new `laneId`, and the
@@ -1321,6 +1321,11 @@ explicit `terminal` selects the provider terminal. Terminal is accepted only
 for same-provider continuation; cross-provider continuation requires Rich mode
 because its imported/linked context is delivered through the structured
 runtime.
+
+`model` and optional `effort` select the reviewed provider settings for the new
+runtime. `permissions:"constrained"` records and enforces the app's **Ask me**
+access plan; other values are rejected. Omitting these additive fields keeps
+the earlier provider-default behavior for existing clients.
 
 `claudePermissionMode` is an optional per-launch Claude override using the same
 typed values as `POST /api/sessions` (`inherit`, Claude's constrained modes, or
@@ -1398,13 +1403,16 @@ Auth required. Creates a new conversation from a stable authored-history
 snapshot while leaving the source unchanged:
 
 ```json
-{"sourceSessionId":"<live Sessions id>","destinationProvider":"codex"}
+{"sourceSessionId":"<live Sessions id>","destinationProvider":"codex","model":"gpt-5","effort":"medium","permissions":"constrained"}
 ```
 
 `destinationProvider` is optional and defaults to the source provider. The
 source must be a live, idle Claude or Codex session with a complete local
 conversation. A working source returns `409`; clients should wait for its
 current turn to finish instead of copying a partial assistant response.
+`model` and optional `effort` select the reviewed destination settings.
+`permissions` may be omitted by older clients or set to `constrained`; the
+latter is the app's **Ask me** plan and any other value is rejected.
 
 To fork through one exact authored message, include its normalized transcript
 index and stable ID:

@@ -62,18 +62,21 @@ describe('capability: continue with another provider', () => {
     render(<ResumeFlow machine={machine} />);
 
     expect(await screen.findByText('84 messages, about 62k tokens')).toBeInTheDocument();
-    expect(screen.getByText('Your Codex conversation is not changed')).toBeInTheDocument();
-    expect(screen.getByText('Nothing is sent until you press Start')).toBeInTheDocument();
-    const start = screen.getByRole('button', { name: 'Start Claude (Sonnet 5) with this history · ~62k tokens' });
+    const plan = screen.getByRole('group', { name: 'Start plan' });
+    expect(plan).toHaveTextContent('Rich');
+    expect(plan).toHaveTextContent('Ask me');
+    expect(screen.getByText('Your Codex conversation stays unchanged.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing runs until you press Start')).toBeInTheDocument();
+    const start = screen.getByRole('button', { name: 'Start Claude (Sonnet 5)' });
     expect(start).toBeDisabled();
 
-    await user.click(screen.getByRole('button', { name: 'Model' }));
+    await user.click(screen.getByRole('button', { name: 'Sonnet 5' }));
     expect(screen.getByRole('option', { name: /Opus 5/ })).toBeInTheDocument();
     await user.click(screen.getByRole('checkbox', { name: /Send the whole history anyway/ }));
     expect(start).toBeEnabled();
     await user.click(screen.getByRole('radio', { name: /Only the last/ }));
     expect(await screen.findByText('40 messages, about 30k tokens')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Start Claude \(Sonnet 5\).*~30k tokens/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Start Claude (Sonnet 5)' })).toBeEnabled();
   });
 
   it('shows every stage and provider fault, then ends only the new session on Cancel', async () => {
@@ -93,7 +96,9 @@ describe('capability: continue with another provider', () => {
     const user = userEvent.setup();
     render(<ResumeFlow machine={machine} />);
 
-    await user.click(await screen.findByRole('button', { name: /Start Claude \(Sonnet 5\)/ }));
+    const start = await screen.findByRole('button', { name: /Start Claude \(Sonnet 5\)/ });
+    await waitFor(() => expect(start).toBeEnabled());
+    await user.click(start);
     expect(await screen.findByText('Exporting conversation history')).toBeInTheDocument();
     expect(await screen.findByRole('group', { name: 'Provider trouble' }, { timeout: 3_000 })).toHaveTextContent('Claude needs you to sign in.');
     expect(screen.getByText('Creating the new session')).toBeInTheDocument();
@@ -117,7 +122,9 @@ describe('capability: continue with another provider', () => {
     const user = userEvent.setup();
     render(<ResumeFlow machine={machine} onResumed={(id) => { opened = id; }} />);
 
-    await user.click(await screen.findByRole('button', { name: /Start Claude \(Sonnet 5\)/ }));
+    const start = await screen.findByRole('button', { name: /Start Claude \(Sonnet 5\)/ });
+    await waitFor(() => expect(start).toBeEnabled());
+    await user.click(start);
     await waitFor(() => expect(opened).toBe('continued-1'), { timeout: 3_000 });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });

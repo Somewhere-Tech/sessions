@@ -81,8 +81,9 @@ func TestForkLiveConversationCreatesCopyWithoutEndingSource(t *testing.T) {
 	if err := os.WriteFile(conversationPath, []byte(conversation), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	daemon.handler.registry = continuationCatalog(daemon.registry)
 
-	body := strings.NewReader(`{"sourceSessionId":"` + created.ID + `","destinationProvider":"codex","sourceMessageIndex":1}`)
+	body := strings.NewReader(`{"sourceSessionId":"` + created.ID + `","destinationProvider":"codex","sourceMessageIndex":1,"model":"gpt-next","effort":"medium","permissions":"constrained"}`)
 	response := serve(
 		t, daemon.handler, http.MethodPost, "/api/recovery/fork", body, "127.0.0.1:1", nil,
 	)
@@ -109,6 +110,8 @@ func TestForkLiveConversationCreatesCopyWithoutEndingSource(t *testing.T) {
 	}
 	copyInfo := copySession.Info()
 	if copyInfo.Tool != state.ToolCodex ||
+		copyInfo.Model != "gpt-next" || copyInfo.Effort != "medium" ||
+		copyInfo.Permissions != state.PermissionsConstrained ||
 		copyInfo.DisplayParentSessionID == nil ||
 		*copyInfo.DisplayParentSessionID != created.ID {
 		t.Fatalf("forked session = %+v", copyInfo)
@@ -165,7 +168,8 @@ func TestResumeRestoresCodexTranscriptWhenNativeHandleWasNeverRecorded(t *testin
 		t.Fatal(err)
 	}
 
-	body := strings.NewReader(`{"target":"` + created.ID + `","historyId":"` + created.ID + `"}`)
+	daemon.handler.registry = continuationCatalog(daemon.registry)
+	body := strings.NewReader(`{"target":"` + created.ID + `","historyId":"` + created.ID + `","model":"gpt-next","effort":"medium","permissions":"constrained"}`)
 	response := serve(
 		t, daemon.handler, http.MethodPost, "/api/recovery/adopt", body, "127.0.0.1:1", nil,
 	)
@@ -184,7 +188,9 @@ func TestResumeRestoresCodexTranscriptWhenNativeHandleWasNeverRecorded(t *testin
 	}
 	info := resumed.Info()
 	if info.Profile != "work" || info.ConfigDir != profileRoot ||
-		info.ContinuedFromHistoryID != created.ID || info.ImportedMessageCount != 2 {
+		info.ContinuedFromHistoryID != created.ID || info.ImportedMessageCount != 2 ||
+		info.Model != "gpt-next" || info.Effort != "medium" ||
+		info.Permissions != state.PermissionsConstrained {
 		t.Fatalf("resumed session = %+v", info)
 	}
 	if len(daemon.launcher.Launches) != 2 {
@@ -235,7 +241,8 @@ func TestResumeUsesCodexSessionMetaWhenOnlySessionsRowMissesNativeHandle(t *test
 		t.Fatal(err)
 	}
 
-	body := strings.NewReader(`{"target":"` + created.ID + `","historyId":"` + created.ID + `"}`)
+	daemon.handler.registry = continuationCatalog(daemon.registry)
+	body := strings.NewReader(`{"target":"` + created.ID + `","historyId":"` + created.ID + `","model":"gpt-next","effort":"medium","permissions":"constrained"}`)
 	response := serve(
 		t, daemon.handler, http.MethodPost, "/api/recovery/adopt", body, "127.0.0.1:1", nil,
 	)
@@ -253,7 +260,9 @@ func TestResumeUsesCodexSessionMetaWhenOnlySessionsRowMissesNativeHandle(t *test
 		t.Fatalf("resumed session %s is not live", result.LaneID)
 	}
 	info := resumed.Info()
-	if info.Profile != "work" || info.ConfigDir != profileRoot || info.ConversationID != providerID {
+	if info.Profile != "work" || info.ConfigDir != profileRoot || info.ConversationID != providerID ||
+		info.Model != "gpt-next" || info.Effort != "medium" ||
+		info.Permissions != state.PermissionsConstrained {
 		t.Fatalf("resumed session = %+v", info)
 	}
 	if len(daemon.launcher.Launches) != 2 {

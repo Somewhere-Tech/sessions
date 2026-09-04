@@ -2,18 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import {
   cancelContinuationJob,
   fetchContinuationJob,
-  fetchProviderStatuses,
   previewContinuation,
   startContinuation,
   type ContinuationJob,
   type ContinuationPreview,
-  type ResumableSession,
-  type SessionModelOption
+  type ResumableSession
 } from '../api/sessionsd';
 import { adoptConversationWithRepair, adoptionWarning, runAdoptionRepair, type AdoptOutcome } from '../lib/adoptConversation';
 import { providerConversationId } from '../lib/sessionStatus';
+import { preferNextSessionView } from '../lib/sessionViewPreference';
 import { useSessions } from '../store/sessions';
-import { ModelPicker, type ModelPickerOption } from './ModelPicker';
+import { formatTokenEstimate, usePaidStartPlan } from '../hooks/usePaidStartPlan';
+import { PaidStartPlan, paidStartProviderName } from './PaidStartPlan';
 import { ProviderFaultCard } from './ProviderFaultCard';
 
 interface Props {
@@ -35,16 +35,8 @@ const JOB_STAGES = [
   ['provider-starting', 'Starting the agent'],
   ['first-reply', 'Waiting for the first reply']
 ] as const;
-const EMPTY_MODELS: SessionModelOption[] = [];
-
 function providerName(provider: 'claude' | 'codex'): string {
-  return provider === 'claude' ? 'Claude' : 'Codex';
-}
-
-export function formatTokenEstimate(tokens: number): string {
-  if (tokens < 1_000) return String(tokens);
-  if (tokens < 10_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
-  return `${Math.round(tokens / 1_000)}k`;
+  return paidStartProviderName(provider);
 }
 
 function sourceSessionID(selected: ResumableSession, preferred: string | undefined): string | undefined {
@@ -55,45 +47,6 @@ function sourceSessionID(selected: ResumableSession, preferred: string | undefin
     && (selected.tool === 'claude' ? session.tool === 'claude-code' : session.tool === 'codex')
   ));
   return matches.length === 1 ? matches[0]?.id : undefined;
-}
-
-function modelPickerOptions(models: SessionModelOption[]): ModelPickerOption[] {
-  return models.map((model) => ({
-    id: model.id,
-    label: model.displayName || model.id,
-    description: model.description || (model.isDefault ? 'Provider default' : model.id),
-    isDefault: model.isDefault
-  }));
-}
-
-function useProviderModels(): {
-  catalogs: Partial<Record<'claude' | 'codex', SessionModelOption[]>>;
-  errors: Partial<Record<'claude' | 'codex', string>>;
-  loading: boolean;
-} {
-  const [catalogs, setCatalogs] = useState<Partial<Record<'claude' | 'codex', SessionModelOption[]>>>({});
-  const [errors, setErrors] = useState<Partial<Record<'claude' | 'codex', string>>>({});
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetchProviderStatuses(controller.signal, true).then((providers) => {
-      if (controller.signal.aborted) return;
-      const nextCatalogs: Partial<Record<'claude' | 'codex', SessionModelOption[]>> = {};
-      const nextErrors: Partial<Record<'claude' | 'codex', string>> = {};
-      for (const provider of providers) {
-        nextCatalogs[provider.id] = (provider.models ?? []).filter((model) => !model.hidden);
-        if (provider.modelsError) nextErrors[provider.id] = provider.modelsError;
-      }
-      setCatalogs(nextCatalogs);
-      setErrors(nextErrors);
-    }).catch((reason: unknown) => {
-      if (!controller.signal.aborted) setErrors({ claude: String(reason), codex: String(reason) });
-    }).finally(() => {
-      if (!controller.signal.aborted) setLoading(false);
-    });
-    return () => controller.abort();
-  }, []);
-  return { catalogs, errors, loading };
 }
 
 function useContinuationPreview(
@@ -189,68 +142,30 @@ function ContinuationProgress({
   );
 }
 
-function ContinuationPlan({
-  selected,
-  destination,
-  model,
-  effort,
+function HistoryTransferOptions({
   historyChoice,
   lastMessages,
   confirmed,
-  models,
-  modelError,
-  modelsLoading,
   preview,
-  previewLoading,
   previewError,
   disabled,
-  onModel,
-  onEffort,
   onHistoryChoice,
   onLastMessages,
   onConfirmed
 }: {
-  selected: ResumableSession;
-  destination: 'claude' | 'codex';
-  model: string;
-  effort: string;
   historyChoice: HistoryChoice;
   lastMessages: number;
   confirmed: boolean;
-  models: SessionModelOption[];
-  modelError?: string;
-  modelsLoading: boolean;
   preview: ContinuationPreview | null;
-  previewLoading: boolean;
   previewError: string | null;
   disabled: boolean;
-  onModel: (value: string) => void;
-  onEffort: (value: string) => void;
   onHistoryChoice: (value: HistoryChoice) => void;
   onLastMessages: (value: number) => void;
   onConfirmed: (value: boolean) => void;
 }): JSX.Element {
-  const selectedModel = models.find((option) => option.id === model);
-  const efforts = selectedModel?.supportedReasoningEfforts ?? [];
-  const source = providerName(selected.tool);
-  const destinationName = providerName(destination);
   const overThreshold = Boolean(preview && !preview.limited && preview.estimatedTokens > preview.thresholdTokens);
   return (
-    <section className="continuation-plan">
-      <div className="continuation-summary">
-        <strong>{selected.title?.trim() || selected.firstUserMessage?.trim() || 'Saved conversation'}</strong>
-        <span>{previewLoading ? 'Measuring the conversation…' : preview ? `${preview.messageCount} messages, about ${formatTokenEstimate(preview.estimatedTokens)} tokens` : 'Conversation size unavailable'}</span>
-        <span>{destinationName} will start with <strong>{selectedModel?.displayName || model || 'a model you choose'}</strong>{effort ? ` · ${effort} effort` : ''}</span>
-      </div>
-      <div className="continuation-model-row">
-        <label><span>Model</span><ModelPicker provider={destination} value={model} options={modelPickerOptions(models)} onChange={onModel} loading={modelsLoading} error={modelError} disabled={disabled} includeDefault={false} /></label>
-        {efforts.length > 0 ? (
-          <label><span>Effort</span><select value={effort} disabled={disabled} onChange={(event) => onEffort(event.currentTarget.value)}>
-            {!selectedModel?.defaultReasoningEffort ? <option value="">Provider default</option> : null}
-            {efforts.map((option) => <option value={option.reasoningEffort} key={option.reasoningEffort}>{option.reasoningEffort}</option>)}
-          </select></label>
-        ) : null}
-      </div>
+    <>
       <fieldset className="continuation-history-choice" disabled={disabled}>
         <legend>History to send</legend>
         <label><input type="radio" checked={historyChoice === 'all'} onChange={() => onHistoryChoice('all')} /> <span>The whole conversation</span></label>
@@ -259,12 +174,8 @@ function ContinuationPlan({
       {overThreshold ? (
         <label className="continuation-threshold"><input type="checkbox" checked={confirmed} disabled={disabled} onChange={(event) => onConfirmed(event.currentTarget.checked)} /><span><strong>Send the whole history anyway</strong><small>This is above the {formatTokenEstimate(preview?.thresholdTokens ?? 0)} token warning level.</small></span></label>
       ) : null}
-      <div className="continuation-assurances">
-        <span>Your {source} conversation is not changed</span>
-        <span>Nothing is sent until you press Start</span>
-      </div>
       {previewError ? <div className="dialog-error" role="alert">{previewError}</div> : null}
-    </section>
+    </>
   );
 }
 
@@ -279,38 +190,39 @@ export function ResumeActions({
   onStartNew
 }: Props): JSX.Element {
   const refresh = useSessions((state) => state.refresh);
-  const [destination, setDestination] = useState<'claude' | 'codex'>(preferredDestinationProvider ?? selected?.tool ?? 'claude');
-  const [runtimeMode, setRuntimeMode] = useState<'rich' | 'terminal'>(preferredRuntimeMode ?? (selected?.transcriptRecovery ? 'rich' : selected?.tool === 'claude' ? 'terminal' : 'rich'));
   const [historyChoice, setHistoryChoice] = useState<HistoryChoice>('all');
   const [lastMessages, setLastMessages] = useState(40);
   const [confirmed, setConfirmed] = useState(false);
-  const [model, setModel] = useState('');
-  const [effort, setEffort] = useState('');
-  const { catalogs, errors: modelErrors, loading: modelsLoading } = useProviderModels();
-  const models = catalogs[destination] ?? EMPTY_MODELS;
-  const { preview, loading: previewLoading, error: previewError } = useContinuationPreview(selected, destination, historyChoice, lastMessages, preferredSourceSessionId);
-  const crossProvider = Boolean(selected && selected.tool !== destination);
-  useEffect(() => {
-    const choice = models.find((option) => option.isDefault) ?? models[0];
-    setModel(choice?.id ?? '');
-    setEffort(choice?.defaultReasoningEffort ?? choice?.supportedReasoningEfforts[0]?.reasoningEffort ?? '');
-  }, [destination, models]);
-  const same = useSameProviderResume(selected, preferredSourceSessionId, destination, runtimeMode, refresh, onResumed, onClose);
+  const sourceProvider = selected?.tool ?? 'claude';
+  const plan = usePaidStartPlan({
+    sourceProvider,
+    preferredDestination: preferredDestinationProvider,
+    preferredRuntime: preferredRuntimeMode ?? (selected?.transcriptRecovery ? 'rich' : sourceProvider === 'claude' ? 'terminal' : 'rich'),
+    terminalAvailable: !selected?.transcriptRecovery
+  });
+  const { preview, loading: previewLoading, error: previewError } = useContinuationPreview(selected, plan.destination, historyChoice, lastMessages, preferredSourceSessionId);
+  const crossProvider = Boolean(selected && selected.tool !== plan.destination);
+  const same = useSameProviderResume(selected, preferredSourceSessionId, plan.destination, plan.runtime, plan.model, plan.effort, refresh, onResumed, onClose);
   const continuation = useContinuationRun(refresh, onResumed, onClose);
   const working = crossProvider ? continuation.busy || continuation.job?.status === 'running' : same.busy;
   const error = crossProvider ? continuation.error : same.error;
   useEffect(() => onBusyChange(Boolean(working)), [onBusyChange, working]);
-  const selectedModel = models.find((option) => option.id === model);
   const overThreshold = Boolean(preview && !preview.limited && preview.estimatedTokens > preview.thresholdTokens);
-  const canStartCross = Boolean(preview && model && !previewError && !modelErrors[destination] && (!overThreshold || confirmed));
+  const canStartCross = Boolean(preview && !previewError && (!overThreshold || confirmed));
   const primaryText = !selected
     ? 'Choose a conversation'
     : working ? 'Starting…'
-    : crossProvider
-      ? preview && selectedModel
-        ? `Start ${providerName(destination)} (${selectedModel.displayName || model}) with this history · ~${formatTokenEstimate(preview.estimatedTokens)} tokens`
-        : 'Preparing details…'
-      : `Continue ${providerName(destination)} conversation`;
+    : plan.ready
+      ? `Start ${providerName(plan.destination)} (${plan.modelName})`
+      : 'Preparing details…';
+  const title = selected?.title?.trim() || selected?.firstUserMessage?.trim() || 'Saved conversation';
+  const sizeLine = crossProvider
+    ? previewLoading
+      ? 'Measuring the conversation…'
+      : preview
+        ? `${preview.messageCount} messages, about ${formatTokenEstimate(preview.estimatedTokens)} tokens`
+        : 'Conversation size unavailable'
+    : undefined;
 
   return (
     <>
@@ -323,37 +235,36 @@ export function ResumeActions({
           onCancel={() => void continuation.cancel()}
           onOpenSession={() => { if (continuation.job?.laneId) onResumed(continuation.job.laneId); }}
         />
-      ) : selected && crossProvider ? (
-        <ContinuationPlan
-          selected={selected}
-          destination={destination}
-          model={model}
-          effort={effort}
-          historyChoice={historyChoice}
-          lastMessages={lastMessages}
-          confirmed={confirmed}
-          models={models}
-          modelError={modelErrors[destination]}
-          modelsLoading={modelsLoading}
-          preview={preview}
-          previewLoading={previewLoading}
-          previewError={previewError}
-          disabled={working}
-          onModel={(value) => {
-            setModel(value);
-            const choice = models.find((option) => option.id === value);
-            setEffort(choice?.defaultReasoningEffort ?? choice?.supportedReasoningEfforts[0]?.reasoningEffort ?? '');
-          }}
-          onEffort={setEffort}
-          onHistoryChoice={(choice) => { setHistoryChoice(choice); setConfirmed(false); }}
-          onLastMessages={setLastMessages}
-          onConfirmed={setConfirmed}
-        />
       ) : selected ? (
-        <div className="continuation-same-provider">
-          Continues the original {providerName(selected.tool)} conversation. No copy is sent to another agent.
-          {destination === 'claude' && runtimeMode === 'terminal' ? <small>Remote Control follows the explicit choice for the destination machine in Settings.</small> : null}
-        </div>
+        <PaidStartPlan
+          plan={plan}
+          title={title}
+          sizeLine={sizeLine}
+          intro={crossProvider
+            ? `${providerName(plan.destination)} starts a new conversation with the history you choose.`
+            : `Continues the original ${providerName(selected.tool)} conversation.`}
+          sourceNote={crossProvider
+            ? `Your ${providerName(selected.tool)} conversation stays unchanged.`
+            : `The original ${providerName(selected.tool)} conversation opens again. Nothing is copied.`}
+          copyNote={crossProvider
+            ? 'Only your messages and the agent’s replies are carried over. Tool output, file changes, attachments, sign-in details, and usage totals stay behind.'
+            : undefined}
+          disabled={working}
+        >
+          {crossProvider ? (
+            <HistoryTransferOptions
+              historyChoice={historyChoice}
+              lastMessages={lastMessages}
+              confirmed={confirmed}
+              preview={preview}
+              previewError={previewError}
+              disabled={working}
+              onHistoryChoice={(choice) => { setHistoryChoice(choice); setConfirmed(false); }}
+              onLastMessages={setLastMessages}
+              onConfirmed={setConfirmed}
+            />
+          ) : null}
+        </PaidStartPlan>
       ) : null}
       {error ? <div className="dialog-error" role="alert">{error}</div> : null}
       {same.partialResult ? (
@@ -365,24 +276,16 @@ export function ResumeActions({
       <footer className="resume-dialog-foot">
         <button type="button" className="btn btn-ghost" onClick={onStartNew} disabled={working}>+ New session instead</button>
         <button type="button" className="btn btn-ghost" onClick={onClose} disabled={working}>Close</button>
-        {selected && !continuation.job ? (
-          <div className="resume-destination">
-            <span>Continue with</span>
-            <div role="radiogroup" aria-label="Agent for this conversation">
-              {(['claude', 'codex'] as const).map((provider) => <button type="button" role="radio" aria-checked={destination === provider} className={destination === provider ? 'is-active' : ''} onClick={() => { setDestination(provider); setRuntimeMode(provider === selected.tool && !selected.transcriptRecovery && provider === 'claude' ? 'terminal' : 'rich'); }} disabled={working} key={provider}>{providerName(provider)}</button>)}
-            </div>
-          </div>
-        ) : null}
         {!continuation.job ? <button type="button" className="btn btn-primary continuation-start" onClick={() => {
           if (!selected) return;
           if (crossProvider) void continuation.start({
             target: selected.sessionId, historyId: selected.historyId,
-            sourceSessionId: sourceSessionID(selected, preferredSourceSessionId), destinationProvider: destination,
-            model, effort, messageLimit: historyChoice === 'last' ? lastMessages : undefined,
+            sourceSessionId: sourceSessionID(selected, preferredSourceSessionId), destinationProvider: plan.destination,
+            model: plan.model, effort: plan.effort, messageLimit: historyChoice === 'last' ? lastMessages : undefined,
             confirmWholeHistory: confirmed
           });
           else void same.resume();
-        }} disabled={working || !selected || Boolean(same.partialResult) || (crossProvider && !canStartCross)}>{primaryText}</button> : null}
+        }} disabled={working || !selected || !plan.ready || Boolean(same.partialResult) || (crossProvider && !canStartCross)}>{primaryText}</button> : null}
       </footer>
     </>
   );
@@ -393,6 +296,8 @@ function useSameProviderResume(
   sourceSessionId: string | undefined,
   destination: 'claude' | 'codex',
   runtimeMode: 'rich' | 'terminal',
+  model: string,
+  effort: string,
   refresh: () => Promise<void>,
   onResumed: (laneId: string) => void,
   onClose: () => void
@@ -405,8 +310,19 @@ function useSameProviderResume(
     setBusy(true);
     setError(null);
     try {
-      const outcome = await adoptConversationWithRepair(selected.sessionId, sourceSessionID(selected, sourceSessionId), selected.historyId, destination, runtimeMode);
+      const outcome = await adoptConversationWithRepair(
+        selected.sessionId,
+        sourceSessionID(selected, sourceSessionId),
+        selected.historyId,
+        destination,
+        runtimeMode,
+        undefined,
+        model,
+        effort,
+        'constrained'
+      );
       await refresh();
+      preferNextSessionView(outcome.result.laneId, runtimeMode === 'terminal' && !outcome.result.transcriptRecovery ? 'terminal' : 'remote');
       onResumed(outcome.result.laneId);
       if (outcome.unresolved || outcome.repairError) setPartialResult(outcome);
       else onClose();
@@ -462,7 +378,11 @@ function useContinuationRun(
   useEffect(() => {
     if (!job || job.status !== 'succeeded' || !job.laneId || handledJob.current === job.id) return;
     handledJob.current = job.id;
-    void refresh().then(() => { onResumed(job.laneId as string); onClose(); }).catch((reason: unknown) => {
+    void refresh().then(() => {
+      preferNextSessionView(job.laneId as string, 'remote');
+      onResumed(job.laneId as string);
+      onClose();
+    }).catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : 'The new conversation opened, but the list did not refresh.');
     });
   }, [job, onClose, onResumed, refresh]);

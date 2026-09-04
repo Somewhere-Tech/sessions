@@ -8,7 +8,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ResumeDialog } from '../../src/components/ResumeDialog';
 import { SessionHistoryView } from '../../src/components/SessionHistoryView';
-import { resumeExactSession } from '../../src/lib/resumeExactSession';
+import type { SessionInfo } from '../../src/types';
 import { Workbench } from './harness';
 import { installFakeDaemon, makeSession, useFakeMachines, type FakeMachine } from './fake-daemon';
 
@@ -31,15 +31,23 @@ function localMachine(): FakeMachine {
       modifiedAt: Date.UTC(2026, 0, 15, 9, 0, 0),
       firstUserMessage: 'Walk me through the migration plan',
       sizeBytes: 48_000
-    }]
+    }],
+    providers: [{
+      id: 'claude', name: 'Claude Code', installed: true, updateAvailable: false,
+      models: [{
+        id: 'claude-fable-5', displayName: 'Fable 5', description: 'Everyday work', hidden: false,
+        isDefault: true, defaultReasoningEffort: 'medium',
+        supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: 'Medium' }]
+      }]
+    }, { id: 'codex', name: 'Codex', installed: true, updateAvailable: false, models: [] }]
   };
 }
 
 // The dialog closes itself on success, exactly as App.tsx lets it.
 function ResumeFlow({ onResumed }: { onResumed: (laneId: string) => void }): JSX.Element {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   return (
-    <Workbench>
+    <Workbench onContinue={() => setOpen(true)}>
       {open ? (
         <ResumeDialog
           onClose={() => setOpen(false)}
@@ -61,8 +69,12 @@ describe('capability: resume a conversation', () => {
     let resumedLaneId: string | null = null;
     render(<ResumeFlow onResumed={(laneId) => { resumedLaneId = laneId; }} />);
 
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
     await user.click(await screen.findByRole('button', { name: /Thursday migration plan/ }));
-    await user.click(await screen.findByRole('button', { name: 'Continue Claude conversation' }));
+    expect(await screen.findByRole('group', { name: 'Start plan' })).toHaveTextContent('Claude');
+    expect(screen.getByText('Nothing runs until you press Start')).toBeInTheDocument();
+    expect(daemon.adopted).toEqual([]);
+    await user.click(await screen.findByRole('button', { name: 'Start Claude (Fable 5)' }));
 
     // The daemon bound the same provider conversation the person picked.
     await waitFor(() => expect(daemon.adopted).toEqual([PROVIDER_UUID]));
@@ -77,7 +89,7 @@ describe('capability: resume a conversation', () => {
     expect(rows[0]).toHaveAttribute('data-session-id', resumedLaneId);
   });
 
-  it('resumes an ended row directly without asking which conversation again', async () => {
+  it('reviews an ended row before starting its exact conversation', async () => {
     const ended = makeSession({
       id: 'ended-runtime',
       name: 'Quarterly plan',
@@ -113,14 +125,21 @@ describe('capability: resume a conversation', () => {
     useFakeMachines([machine]);
     const user = userEvent.setup();
 
-    render(
-      <Workbench>
-        <SessionHistoryView
-          session={ended}
-          onResume={async (session) => { await resumeExactSession(session); }}
-        />
-      </Workbench>
-    );
+    function EndedResumeFlow(): JSX.Element {
+      const [selected, setSelected] = useState<SessionInfo | null>(null);
+      return <Workbench>
+        <SessionHistoryView session={ended} onResume={(session) => setSelected(session)} />
+        {selected ? <ResumeDialog
+          preferredProviderId={PROVIDER_UUID}
+          preferredSourceSessionId={selected.id}
+          preferredHistoryId={selected.id}
+          onClose={() => setSelected(null)}
+          onResumed={() => {}}
+          onStartNew={() => {}}
+        /> : null}
+      </Workbench>;
+    }
+    render(<EndedResumeFlow />);
 
     // A version-skewed daemon may ignore the additive preview limit. The
     // client still keeps the initial DOM bounded and shows the newest work.
@@ -129,10 +148,11 @@ describe('capability: resume a conversation', () => {
     expect(screen.getByRole('button', { name: 'Show earlier messages' })).toBeInTheDocument();
 
     await user.click(await screen.findByRole('button', { name: /Resume conversation/ }));
+    expect(await screen.findByRole('group', { name: 'Start plan' })).toHaveTextContent('Fable 5');
+    expect(screen.getByText('The original Claude conversation opens again. Nothing is copied.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing runs until you press Start')).toBeInTheDocument();
+    expect(daemon.adopted).toEqual([]);
+    await user.click(screen.getByRole('button', { name: 'Start Claude (Fable 5)' }));
     await waitFor(() => expect(daemon.adopted).toEqual([PROVIDER_UUID]));
-
-    // The generic picker never appeared. One click acted on the row already
-    // in view instead of asking the person to identify it a second time.
-    expect(screen.queryByText('Continue an earlier chat')).not.toBeInTheDocument();
   });
 });

@@ -5,6 +5,7 @@ import { EmptyState } from './components/EmptyState';
 // These surfaces are only opened on demand, so keep them out of the entry bundle.
 const NewSessionDialog = lazy(() => import('./components/NewSessionDialog').then((module) => ({ default: module.NewSessionDialog })));
 const ResumeDialog = lazy(() => import('./components/ResumeDialog').then((module) => ({ default: module.ResumeDialog })));
+const ForkConfirmationDialog = lazy(() => import('./components/ForkConfirmationDialog').then((module) => ({ default: module.ForkConfirmationDialog })));
 const FleetView = lazy(() => import('./components/FleetView').then((module) => ({ default: module.FleetView })));
 const UsageDashboard = lazy(() => import('./components/UsageDashboard').then((module) => ({ default: module.UsageDashboard })));
 const DailyView = lazy(() => import('./components/DailyView').then((module) => ({ default: module.DailyView })));
@@ -36,21 +37,17 @@ import { preloadUsage } from './lib/usageCache';
 import { preloadDaily } from './lib/dailyCache';
 import { INITIAL_STATUS, type ActiveStatus } from './lib/activeStatus';
 import { effectiveParentId } from './lib/workingSet';
-import { preferNextSessionView } from './lib/sessionViewPreference';
 import { providerConversationId } from './lib/sessionStatus';
 import { handleExternalLinkClick } from './lib/externalLinks';
 import {
   fetchServerMachineIdentity,
   fetchServerHealth,
   fetchOnboardingState,
-  forkConversation,
   requestLocalNetworkAccess,
   updateOnboardingPreference,
   type OnboardingState,
   type ServerHealth
 } from './api/sessionsd';
-import { adoptionWarning } from './lib/adoptConversation';
-import { resumeExactSession } from './lib/resumeExactSession';
 import type { SessionInfo, SessionTool } from './types';
 const TOOL_ICONS: Record<SessionTool, string> = {
   'claude-code': '🟠',
@@ -286,8 +283,8 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   }, [rawSessions]);
 
   const single = useMemo(() => readSingleModeParams(), []);
-  // Dialog state holds null (closed), 'new' (fresh-session mode), or
-  // 'resume' (the dedicated ended-conversation picker).
+  // Paid starts keep their exact source in dialog state. Opening a review is
+  // never the operation that creates the new runtime.
   const [dialogOpen, setDialogOpen] = useState<
     null | 'new' | 'resume' | { delegateFrom: string } | {
       resumeProviderId: string;
@@ -295,12 +292,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       historyId?: string;
       destinationProvider?: 'claude' | 'codex';
       runtimeMode?: 'rich' | 'terminal';
+    } | {
+      forkSession: SessionInfo;
+      destinationProvider: 'claude' | 'codex';
+      point?: { index: number; messageId: string };
     }
   >(null);
-  // A resume whose history annotations did not finish. Previously this was a
-  // console.warn, so the same failure that ResumeDialog puts on screen was
-  // invisible when the user continued from Fleet, Search, or the palette.
-  const [adoptionNotice, setAdoptionNotice] = useState<string | null>(null);
   const [activeStatus, setActiveStatus] = useState<ActiveStatus>(INITIAL_STATUS);
   const [openTabIds, setOpenTabIds] = useState<string[]>(readOpenTabs);
   const [theme, setTheme] = useState<ThemeMode>(readTheme);
@@ -341,37 +338,17 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // setLayoutMode is a stable React setter declared below; callbacks run only
   // after the component has completed initialization.
   }, [setActive, updateSetAside, writeOpenTabs]);
-  const resumeSession = useCallback(async (
+  const chooseHowToContinue = useCallback((
     session: SessionInfo,
     destinationProvider?: 'claude' | 'codex',
     runtimeMode?: 'rich' | 'terminal'
-  ): Promise<void> => {
-    // A button attached to one ended session means "resume this one". It must
-    // not route through the global conversation browser and ask the person to
-    // identify the conversation a second time. The generic Resume entry point
-    // still owns that browser; this path goes straight to the same durable
-    // adoption contract the browser eventually calls.
-    const adopted = await resumeExactSession(session, destinationProvider, runtimeMode);
-    const result = adopted.result;
-    setAdoptionNotice(adoptionWarning(adopted));
-    await refresh();
-    preferNextSessionView(
-      result.laneId,
-      result.transcriptRecovery || result.destinationProvider === 'codex' || result.mode
-        ? 'remote'
-        : 'terminal'
-    );
-    openSession(result.laneId);
-  }, [openSession, refresh]);
-  const chooseHowToContinue = useCallback((
-    session: SessionInfo,
-    destinationProvider?: 'claude' | 'codex'
   ): void => {
     setDialogOpen({
       resumeProviderId: providerConversationId(session) ?? session.id,
       sourceSessionId: session.id,
       historyId: session.id,
-      destinationProvider
+      destinationProvider,
+      runtimeMode
     });
   }, []);
   const forkSession = useCallback(async (
@@ -379,10 +356,8 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     destinationProvider: 'claude' | 'codex',
     point?: { index: number; messageId: string }
   ): Promise<void> => {
-    const result = await forkConversation(session.id, destinationProvider, point);
-    await refresh();
-    openSession(result.laneId);
-  }, [openSession, refresh]);
+    setDialogOpen({ forkSession: session, destinationProvider, point });
+  }, []);
 
   // Bound how many sessions are kept LIVE (mounted SessionView → xterm
   // buffer + claudeEvents history + WS attach). Without this, every session
@@ -782,15 +757,6 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         <section className="operations-content">
           <TailnetAccessInbox />
           {nativeClientOnly && onboardingPending ? <section className="client-onboarding-note" role="status" aria-live="polite"><strong>Finish setup on {machine}:</strong><span>Open Sessions on that computer once.</span></section> : null}
-          {adoptionNotice ? (
-            <section className="adoption-notice" role="status" aria-live="polite">
-              <div>
-                <strong>The conversation is live; its records are incomplete.</strong>
-                <span>{adoptionNotice}</span>
-              </div>
-              <button type="button" className="btn btn-ghost" onClick={() => setAdoptionNotice(null)}>Dismiss</button>
-            </section>
-          ) : null}
           {recoveryVisible ? (
             <MachineRecoveryNotice
               machine={selectedMachineName}
@@ -908,7 +874,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
                   sessionId={s.id}
                   isActive={s.id === activeId}
                   onStatusChange={s.id === activeId ? setActiveStatus : undefined}
-                  onResume={resumeSession}
+                  onResume={chooseHowToContinue}
                   onFork={forkSession}
                   onCloseView={closeTab}
                   onOpenSession={openSession}
@@ -968,6 +934,15 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
               : undefined}
           />
         </Suspense>
+      ) : null}
+      {dialogOpen && typeof dialogOpen === 'object' && 'forkSession' in dialogOpen ? (
+        <Suspense fallback={null}><ForkConfirmationDialog
+          session={dialogOpen.forkSession}
+          destinationProvider={dialogOpen.destinationProvider}
+          point={dialogOpen.point}
+          onClose={() => setDialogOpen(null)}
+          onStarted={openSession}
+        /></Suspense>
       ) : null}
       {dialogOpen && typeof dialogOpen === 'object' && 'delegateFrom' in dialogOpen ? (
         <Suspense fallback={null}><NewSessionDialog

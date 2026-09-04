@@ -140,7 +140,7 @@ func continuationCreateRequest(
 	request := state.CreateSessionRequest{
 		Cmd: cmd, Cwd: continuation.SourceCWD, Name: name, Kind: kind,
 		Continuation: &continuation, Args: continuationArgs(continuation),
-		Claude: continuationClaudeOptions(continuation),
+		Claude: continuationClaudeOptions(continuation), Permissions: state.PermissionsConstrained,
 	}
 	if source == nil {
 		return request, nil
@@ -183,8 +183,7 @@ func continuationClaudeOptions(continuation state.ContinuationContext) *state.Cl
 	}
 	model := strings.TrimSpace(continuation.DestinationModel)
 	effort := strings.TrimSpace(continuation.DestinationEffort)
-	if model == "" && effort == "" {
-		return nil
+	return &state.ClaudeSessionOptions{
+		Model: model, Effort: effort, PermissionMode: state.ClaudePermissionManual,
 	}
-	return &state.ClaudeSessionOptions{Model: model, Effort: effort}
 }

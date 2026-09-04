@@ -8,7 +8,11 @@ conversation or create a new conversation with the other supported agent.
 
 You do not have to end a live Claude or Codex chat to branch it. From the live
 session menu, choose **Fork a copy in Claude/Codex** for the same provider or
-**Open a copy in Claude/Codex** for the other provider. The CLI equivalent is:
+**Open a copy in Claude/Codex** for the other provider. Sessions then shows the
+same start review used everywhere else: agent, model, effort, Rich runtime,
+**Ask me** access, and the message count and estimated size of the copy. Nothing
+runs until you press **Start**, whose label names the chosen agent and model.
+The CLI equivalent is:
 
 ```sh
 sessions fork <live-session-id>
@@ -21,6 +25,10 @@ authored-history snapshot, and creates a new conversation beneath the source in
 the session tree. The original runtime, provider conversation, and working
 state stay unchanged. This is a branch, not a resume: it never marks the source
 as superseded and never needs a force flag.
+
+The review says exactly what crosses the boundary. Your messages and the
+agent's replies are copied. Tool output, file changes, attachments, sign-in
+details, usage totals, and the agent's behind-the-scenes records stay out.
 
 From saved Conversation history, choose **Fork from here** beneath any user or
 agent message. Sessions records that exact normalized message index and stable
@@ -39,16 +47,24 @@ conversation identity. Sessions refuses to start a second writer when that
 identity is already live. The ended Sessions runtime is linked to its
 successor; the provider history is not copied or rewritten.
 
+Before the successor starts, the app shows a compact plan with the resolved
+agent, provider-default model, effort, Rich or Terminal runtime, and **Ask me**
+access. The model, effort, and runtime can be reviewed or changed there. Because
+this is a native resume, there is no transfer-size claim: the provider reopens
+its own history. Nothing runs until the person presses **Start**, and the button
+names the chosen agent and model.
+
 ## Continue a conversation with a different agent
 
 Choose an earlier conversation, then choose the other agent under **Continue
 with**. Before anything starts, Sessions shows:
 
 - the conversation name, message count, and an approximate token count;
-- the agent, model, and effort setting that will receive the history;
+- the agent, model, effort, Rich runtime, and **Ask me** access that will receive
+  the history;
 - a choice between the whole conversation and only the last N messages; and
-- a reminder that the original conversation will not change and nothing is
-  sent until you press **Start**.
+- a reminder that the original conversation will not change and nothing runs
+  until you press **Start**. The Start button names the chosen agent and model.
 
 Sessions estimates one token for every four characters. This is a warning
 estimate, not the destination provider's bill. If the whole history is above
@@ -75,10 +91,10 @@ sessions continue <history-id> --with claude
 The history transfer is intentionally smaller than copying provider files:
 
 - Sessions reads the exact selected history ID.
-- Only messages written by the person and the agent are portable. Markdown and
+- Only your messages and the agent's replies are portable. Markdown and
   intentional code blocks are retained.
-- Tool calls, tool output, diffs, attachments, credentials, usage records, and
-  provider-internal events are not copied.
+- Tool calls, tool output, file changes, attachments, sign-in details, usage
+  totals, and the agent's behind-the-scenes records are not copied.
 - A new destination-provider conversation is created in the recorded
   workspace. The source conversation is never deleted or modified.
 - The new Sessions session records the source history ID, provider, transfer

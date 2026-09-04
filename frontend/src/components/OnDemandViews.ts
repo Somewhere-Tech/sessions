@@ -2,6 +2,7 @@
 // surfaces import their own module so opening one view does not fetch them all.
 export { DailyView } from './DailyView';
 export { FleetView } from './FleetView';
+export { ForkConfirmationDialog } from './ForkConfirmationDialog';
 export { NewSessionDialog } from './NewSessionDialog';
 export { ResumeDialog } from './ResumeDialog';
 export { SessionHistoryView } from './SessionHistoryView';

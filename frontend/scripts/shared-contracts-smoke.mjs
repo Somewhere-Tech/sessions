@@ -132,24 +132,32 @@ try {
 }
 
 // ── Single-implementation checks ───────────────────────────────────────────
-const [app, resumeDialog, resumeActions, pairingHook, connectScreen, fleetView, connectionsView] = await Promise.all([
+const [app, resumeDialog, resumeActions, paidStartPlan, paidStartHook, forkConfirmation, pairingHook, connectScreen, fleetView, connectionsView] = await Promise.all([
   source('src/App.tsx'),
   source('src/components/ResumeDialog.tsx'),
   source('src/components/ResumeActions.tsx'),
+  source('src/components/PaidStartPlan.tsx'),
+  source('src/hooks/usePaidStartPlan.ts'),
+  source('src/components/ForkConfirmationDialog.tsx'),
   source('src/hooks/useMachineAccessPairing.ts'),
   source('src/components/ConnectScreen.tsx'),
   source('src/components/FleetView.tsx'),
   source('src/components/ConnectionsView.tsx')
 ]);
 
-assert.match(app, /resumeExactSession/, 'App.tsx must use the shared exact-resume path');
 assert.match(resumeDialog, /<ResumeActions/, 'ResumeDialog.tsx must delegate continuation actions');
-for (const [name, surface] of [['App.tsx', app], ['ResumeActions.tsx', resumeActions]]) {
-  assert.match(surface, /resumeExactSession|adoptConversationWithRepair/, `${name} must use a shared resume path`);
-  assert.doesNotMatch(surface, /\bawait adoptConversation\(/, `${name} must not adopt directly`);
+for (const [name, surface] of [['ResumeActions.tsx', resumeActions], ['ForkConfirmationDialog.tsx', forkConfirmation]]) {
+  assert.match(surface, /<PaidStartPlan/, `${name} must use the shared paid-start confirmation`);
+  assert.match(surface, /usePaidStartPlan/, `${name} must use the shared paid-start state`);
 }
-assert.match(app, /setAdoptionNotice\(adoptionWarning\(adopted\)\)/,
-  'App.tsx must put an unfinished adoption on screen, not in the console');
+assert.match(paidStartPlan, /Nothing runs until you press Start/,
+  'the shared paid-start confirmation must make the no-start boundary explicit');
+assert.match(paidStartPlan, /Access policy/,
+  'the shared paid-start confirmation must disclose access');
+assert.match(paidStartHook, /isDefault/,
+  'the shared paid-start hook must preselect the provider default model');
+assert.doesNotMatch(app, /resumeExactSession|\bawait forkConversation\(/,
+  'App.tsx must open confirmation instead of starting resume or fork directly');
 assert.doesNotMatch(app, /console\.warn\(['"`]Sessions resumed/,
   'a failed repair must never be downgraded to a console warning');
 

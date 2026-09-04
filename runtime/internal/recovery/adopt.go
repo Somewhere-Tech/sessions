@@ -539,6 +539,9 @@ type AdoptOptions struct {
 	Events      AdoptionEventReader
 	RuntimeMode string
 	Claude      *state.ClaudeSessionOptions
+	Permissions string
+	Model       string
+	Effort      string
 	// ClaudeLive, when set, looks up which live Claude process already has
 	// this conversation open so the caller can say so. It never changes what
 	// adoption does.
@@ -585,6 +588,21 @@ type AdoptSource struct {
 	Branch                 string
 	SourceRepo             string
 	DisplayParentSessionID *string
+}
+
+func adoptionLaunch(adoption Adoption, selected AdoptOptions, kind string) ([]string, string) {
+	conversationID := ""
+	if kind == state.KindCodexAppServer || kind == state.KindClaudeStructured {
+		conversationID = adoption.ProviderUUID
+	}
+	args := append([]string(nil), adoption.Args...)
+	if adoption.Tool == string(state.ToolCodex) && selected.Model != "" {
+		args = append(args, "--model", selected.Model)
+		if selected.Effort != "" {
+			args = append(args, "-c", "model_reasoning_effort="+selected.Effort)
+		}
+	}
+	return args, conversationID
 }
 
 // Adopt creates through the normal manager boundary, then appends explicit
@@ -671,16 +689,13 @@ func Adopt(
 	default:
 		return AdoptResult{}, errors.New("runtime mode must be rich or terminal")
 	}
-	conversationID := ""
-	if kind == state.KindCodexAppServer || kind == state.KindClaudeStructured {
-		conversationID = adoption.ProviderUUID
-	}
+	launchArgs, conversationID := adoptionLaunch(adoption, selected, kind)
 	created, err := creator.Create(ctx, state.CreateSessionRequest{
-		Cmd: adoption.Cmd, Args: append([]string(nil), adoption.Args...),
+		Cmd: adoption.Cmd, Args: launchArgs,
 		Cwd: adoption.Cwd, Name: name, Description: description, Tags: tags,
 		Profile: profile, ConfigDir: configDir, Kind: kind, ConversationID: conversationID,
 		DisplayParentSessionID: displayParent, Force: selected.Force,
-		Claude: selected.Claude,
+		Claude: selected.Claude, Permissions: selected.Permissions,
 	})
 	if err != nil {
 		return AdoptResult{}, err

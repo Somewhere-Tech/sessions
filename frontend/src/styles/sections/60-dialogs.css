@@ -533,25 +533,8 @@ select.field-input {
   grid-column: 1 / -1;
   max-width: 330px;
 }
-.resume-remote-control {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 7px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-elev-1);
-  cursor: pointer;
-}
-.resume-remote-control input { margin-top: 2px; }
-.resume-remote-control span { display: grid; gap: 1px; }
-.resume-remote-control strong { color: var(--fg); font-size: 12px; }
-.resume-remote-control small { color: var(--fg-dim); }
-
 .continuation-plan,
 .continuation-progress,
-.continuation-same-provider,
 .continuation-result {
   margin-top: 12px;
   padding: 14px;
@@ -563,18 +546,37 @@ select.field-input {
 .continuation-assurances,
 .continuation-result { display: grid; gap: 5px; }
 .continuation-summary > span,
-.continuation-same-provider,
 .continuation-result span { color: var(--fg-dim); font-size: 12px; }
-.continuation-same-provider { display: grid; gap: 4px; }
-.continuation-same-provider small { color: var(--fg-faint); }
-.continuation-model-row {
+.paid-start-plan-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(110px, 0.35fr);
-  gap: 10px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
   margin-top: 12px;
 }
-.continuation-model-row label { display: grid; gap: 5px; color: var(--fg-dim); font-size: 12px; }
-.continuation-model-row select,
+.paid-start-choice { display: grid; align-content: start; gap: 5px; min-width: 0; }
+.paid-start-choice > span { color: var(--fg-faint); font-size: 12px; }
+.paid-start-choice > strong { min-height: 32px; display: flex; align-items: center; color: var(--fg); font-size: 12px; }
+.paid-start-choice select {
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px;
+}
+.paid-start-segments { display: flex; min-height: 32px; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-elev-2); }
+.paid-start-segments button { flex: 1; border: 0; border-radius: 5px; padding: 4px 6px; background: transparent; color: var(--fg-dim); font: inherit; font-size: 12px; }
+.paid-start-segments button.is-active { background: var(--bg-elev-4); color: var(--fg); }
+.paid-start-segments button:disabled:not(.is-active) { opacity: .42; }
+.paid-start-boundary { display: grid; gap: 4px; margin-top: 12px; color: var(--fg-dim); font-size: 12px; line-height: 1.45; }
+.paid-start-dialog { max-height: min(760px, calc(100vh - 32px)); overflow-y: auto; }
+.paid-start-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.paid-start-dialog > header h2 { margin: 4px 0 0; }
+.paid-start-dialog > header .dialog-close { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 9px; background: transparent; color: var(--fg); font-size: 22px; }
+.paid-start-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .continuation-history-choice input[type="number"] {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -910,7 +912,8 @@ select.field-input {
   .resume-dialog-foot { flex-wrap: wrap; }
   .resume-destination { order: -1; width: 100%; margin-left: 0; }
   .continuation-notice { grid-template-columns: 1fr; gap: 2px; }
-  .continuation-model-row { grid-template-columns: 1fr; }
+  .paid-start-plan-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .paid-start-choice:nth-child(2) { grid-column: 1 / -1; }
   .continuation-start { width: 100%; max-width: none; }
 }
 .dialog-actions {

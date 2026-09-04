@@ -14,6 +14,7 @@ export interface WorkbenchProps {
   children?: ReactNode;
   onOpen?: (id: string) => void;
   onNew?: () => void;
+  onContinue?: () => void;
 }
 
 /**
@@ -25,7 +26,8 @@ export function Workbench({
   machine = 'Fixture Mac',
   children,
   onOpen = () => {},
-  onNew = () => {}
+  onNew = () => {},
+  onContinue = () => {}
 }: WorkbenchProps): JSX.Element {
   const sessions = useSessions((state) => state.sessions);
   const activeId = useSessions((state) => state.activeId);
@@ -45,7 +47,7 @@ export function Workbench({
         onOpen={onOpen}
         onOpenMachineSession={() => {}}
         onNew={onNew}
-        onContinue={() => {}}
+        onContinue={onContinue}
         onResumeSession={() => {}}
         onForkSession={async () => {}}
         onStartLinked={() => {}}

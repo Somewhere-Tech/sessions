@@ -113,7 +113,8 @@ func TestContinuationJobPublishesStagesFaultAndFirstReply(t *testing.T) {
 		t.Fatalf("job stages = %v, want %v", stages, want)
 	}
 	info := created.Info()
-	if info.Model != "gpt-next" || info.Effort != "medium" || info.ImportedMessageCount != 2 {
+	if info.Model != "gpt-next" || info.Effort != "medium" ||
+		info.Permissions != state.PermissionsConstrained || info.ImportedMessageCount != 2 {
 		t.Fatalf("created model/history = %+v", info)
 	}
 }

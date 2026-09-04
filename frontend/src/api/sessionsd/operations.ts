@@ -522,7 +522,10 @@ export async function adoptConversation(
   historyId?: string,
   destinationProvider?: 'claude' | 'codex',
   runtimeMode?: 'rich' | 'terminal',
-  remoteControl?: boolean
+  remoteControl?: boolean,
+  model?: string,
+  effort?: string,
+  permissions?: 'constrained'
 ): Promise<AdoptConversationResult> {
   const r = await apiFetch(`${httpBase()}/api/recovery/adopt`, {
     method: 'POST',
@@ -533,7 +536,10 @@ export async function adoptConversation(
       historyId,
       destinationProvider,
       runtimeMode,
-      remoteControl
+      remoteControl,
+      model,
+      effort,
+      permissions
     })
   });
   return json<AdoptConversationResult>(r);
@@ -556,7 +562,10 @@ export async function repairAdoption(request: AdoptRepairRequest): Promise<Adopt
 export async function forkConversation(
   sourceSessionId: string,
   destinationProvider: 'claude' | 'codex',
-  point?: { index: number; messageId: string }
+  point?: { index: number; messageId: string },
+  model?: string,
+  effort?: string,
+  permissions?: 'constrained'
 ): Promise<AdoptConversationResult> {
   const r = await apiFetch(`${httpBase()}/api/recovery/fork`, {
     method: 'POST',
@@ -564,6 +573,9 @@ export async function forkConversation(
     body: JSON.stringify({
       sourceSessionId,
       destinationProvider,
+      model,
+      effort,
+      permissions,
       ...(point ? { sourceMessageIndex: point.index, sourceMessageId: point.messageId } : {})
     })
   });
