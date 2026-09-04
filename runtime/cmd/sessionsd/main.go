@@ -17,6 +17,7 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/api"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/relaycmd"
 	"github.com/somewhere-tech/sessions/runtime/internal/session"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/usage"
@@ -54,6 +55,9 @@ func isWildcardHost(host string) bool {
 
 func main() {
 	arguments, remotePreview := daemonArguments(os.Args[1:])
+	if handleRelayMode(arguments) {
+		return
+	}
 	handled, err := runPlatformSupervisor(arguments)
 	if err != nil {
 		log.Fatal(err)
@@ -87,11 +91,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("open lane ledger: %v", err)
 	}
-	defer func() {
-		if err := ledgerStore.Close(); err != nil {
-			log.Printf("close lane ledger: %v", err)
-		}
-	}()
+	defer closeLedger(ledgerStore)
 	usageService := usage.NewLocalService(config)
 	defer func() {
 		if err := usageService.Close(); err != nil {
@@ -154,10 +154,27 @@ func main() {
 	}
 }
 
+func closeLedger(store *ledger.Store) {
+	if err := store.Close(); err != nil {
+		log.Printf("close lane ledger: %v", err)
+	}
+}
+
+func handleRelayMode(arguments []string) bool {
+	if len(arguments) == 0 || arguments[0] != "--relay" {
+		return false
+	}
+	if err := relaycmd.Run(arguments[1:], os.Stdout, os.Stderr); err != nil {
+		log.Fatal(err)
+	}
+	return true
+}
+
 func startAutomaticServices(handler *api.Server, remotePreview bool) func() {
 	stopRemote := startAutomaticRemote(handler, remotePreview)
 	accountContext, stopAccount := context.WithCancel(context.Background())
 	handler.StartFleetAccount(accountContext, log.Printf)
+	handler.StartFleetRelay(accountContext, log.Printf)
 	return func() {
 		stopAccount()
 		stopRemote()
@@ -196,7 +213,7 @@ func handleDaemonArgs(arguments []string, output io.Writer) (bool, error) {
 	if len(arguments) == 1 {
 		switch arguments[0] {
 		case "-h", "--help":
-			fmt.Fprintln(output, "Usage: sessionsd [--serve] [--remote-auto-preview]\n\nRuns the Sessions background service. --remote-auto-preview reports automatic Tailscale endpoints without changing Serve or opening a tailnet listener. Configuration uses SESSIONS_HOST, SESSIONS_PORT, and the state environment described in docs/DEV.md.")
+			fmt.Fprintln(output, "Usage: sessionsd [--serve] [--remote-auto-preview] | sessionsd --relay [relay options]\n\nRuns the Sessions background service. --relay runs the separately hosted relay service; run sessions-relay --help for its options. --remote-auto-preview reports automatic Tailscale endpoints without changing Serve or opening a tailnet listener. Configuration uses SESSIONS_HOST, SESSIONS_PORT, and the state environment described in docs/DEV.md.")
 			return true, nil
 		case "-v", "--version":
 			fmt.Fprintln(output, version)

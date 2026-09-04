@@ -140,6 +140,7 @@ export interface NativeAgentMachine {
   lanEndpoint?: string;
   tailnetEndpoint?: string;
   tailnetIpEndpoint?: string;
+  relayEndpoint?: string;
   deviceId?: string;
   token: string;
 }
@@ -250,6 +251,7 @@ export interface NativePairingClaim {
   lanEndpoint?: string;
   tailnetEndpoint?: string;
   tailnetIpEndpoint?: string;
+  relayEndpoint?: string;
 }
 
 export async function claimNativePairingLink(pairUrl: string): Promise<NativePairingClaim> {

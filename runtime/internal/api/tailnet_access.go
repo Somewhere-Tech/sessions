@@ -509,6 +509,7 @@ func (s *Server) addMachineEndpoints(claim *pairingClaimResponse) {
 	remote := s.remote.state()
 	claim.TailnetEndpoint = remote.Endpoint
 	claim.TailnetIPEndpoint = remote.TailnetIPEndpoint
+	claim.RelayEndpoint = s.relayMachineEndpoint()
 }
 
 // Access-request administration answers on two paths for the same resource.

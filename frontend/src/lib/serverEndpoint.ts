@@ -4,6 +4,7 @@ export interface ParsedServerEndpoint {
   scheme: ServerScheme;
   host: string;
   port: number;
+  basePath?: string;
 }
 
 function isIpv4(host: string): boolean {
@@ -74,8 +75,9 @@ export function parseServerEndpoint(value: string): ParsedServerEndpoint {
 
   if (!parsed.hostname) throw new Error('Endpoint must include a host.');
   if (parsed.username || parsed.password) throw new Error('Credentials belong in the advanced token field.');
-  if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
-    throw new Error('Endpoint must not include a path, query, or fragment.');
+  const basePath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/$/, '');
+  if ((basePath && !/^\/m\/[A-Za-z0-9._-]+$/.test(basePath)) || parsed.search || parsed.hash) {
+    throw new Error('Endpoint must be an origin or a relay /m/<machine_id> URL.');
   }
 
   const host = parsed.hostname.toLowerCase();
@@ -88,7 +90,7 @@ export function parseServerEndpoint(value: string): ParsedServerEndpoint {
     throw new Error('Port must be between 1 and 65535.');
   }
 
-  return { scheme, host, port };
+  return { scheme, host, port, ...(basePath ? { basePath } : {}) };
 }
 
 export function formatServerEndpoint(

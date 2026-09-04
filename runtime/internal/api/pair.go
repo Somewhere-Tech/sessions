@@ -88,6 +88,7 @@ type pairingClaimResponse struct {
 	LANEndpoint       string `json:"lan_endpoint,omitempty"`
 	TailnetEndpoint   string `json:"tailnet_endpoint,omitempty"`
 	TailnetIPEndpoint string `json:"tailnet_ip_endpoint,omitempty"`
+	RelayEndpoint     string `json:"relay_endpoint,omitempty"`
 }
 
 type deviceRecord struct {
@@ -732,7 +733,7 @@ func (s *Server) servePairTicketRoute(response http.ResponseWriter, request *htt
 	endpoints := s.pairingEndpoints()
 	if len(endpoints) == 0 {
 		s.sendJSON(response, http.StatusConflict, map[string]any{
-			"error": "pairing needs a LAN or Tailscale endpoint; enable one in Settings > Fleet, then try again",
+			"error": "pairing needs a LAN, Tailscale, or relay endpoint; configure one in Settings > Fleet, then try again",
 		}, corsOrigin)
 		return
 	}
@@ -788,7 +789,7 @@ func (s *Server) pairingEndpoints() []fleetendpoint.Candidate {
 		lanEndpoint = *lan.URL
 	}
 	remote := s.remote.state()
-	return fleetendpoint.Ordered(lanEndpoint, remote.Endpoint, remote.TailnetIPEndpoint)
+	return fleetendpoint.OrderedWithRelay(lanEndpoint, remote.Endpoint, remote.TailnetIPEndpoint, s.relayMachineEndpoint())
 }
 
 func pairingFallback(endpoints []fleetendpoint.Candidate, ticket string) string {
@@ -799,8 +800,16 @@ func pairingFallback(endpoints []fleetendpoint.Candidate, ticket string) string 
 			break
 		}
 	}
-	if selected == "" && len(endpoints) > 0 {
-		selected = endpoints[0].Endpoint
+	if selected == "" {
+		for _, endpoint := range endpoints {
+			if endpoint.Transport != "relay" {
+				selected = endpoint.Endpoint
+				break
+			}
+		}
+	}
+	if selected == "" {
+		return ""
 	}
 	return strings.TrimSuffix(selected, "/") + "/pair/" + url.PathEscape(ticket)
 }

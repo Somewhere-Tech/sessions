@@ -365,9 +365,10 @@ fn validate_native_claim(
         device_id: claimed.device_id,
         token: claimed.token,
         name: claimed.name,
-		lan_endpoint: claimed.lan_endpoint,
-		tailnet_endpoint: claimed.tailnet_endpoint,
-		tailnet_ip_endpoint: claimed.tailnet_ip_endpoint,
+        lan_endpoint: claimed.lan_endpoint,
+        tailnet_endpoint: claimed.tailnet_endpoint,
+        tailnet_ip_endpoint: claimed.tailnet_ip_endpoint,
+        relay_endpoint: claimed.relay_endpoint,
     })
 }
 
@@ -588,9 +589,17 @@ fn validate_pairing_endpoint(value: &str) -> Result<String, String> {
     let host = parsed
         .host_str()
         .ok_or_else(|| "pairing link is missing a machine address".to_string())?;
-    let valid_scheme = (parsed.scheme() == "http" && pairing_http_host_is_private(host))
+    let relay = parsed.scheme() == "https"
+        && parsed
+            .path()
+            .strip_prefix("/m/")
+            .is_some_and(valid_remote_uuid);
+    let valid_scheme = relay
+        || (parsed.scheme() == "http" && pairing_http_host_is_private(host))
         || (parsed.scheme() == "https" && host.to_ascii_lowercase().ends_with(".ts.net"));
-    let valid_port = if parsed.scheme() == "http" {
+    let valid_port = if relay {
+        true
+    } else if parsed.scheme() == "http" {
         parsed.port().is_some_and(|port| port >= 1024)
     } else {
         parsed.port().is_none()
@@ -599,7 +608,7 @@ fn validate_pairing_endpoint(value: &str) -> Result<String, String> {
         || !valid_port
         || !parsed.username().is_empty()
         || parsed.password().is_some()
-        || !matches!(parsed.path(), "" | "/")
+        || (!relay && !matches!(parsed.path(), "" | "/"))
         || parsed.query().is_some()
         || parsed.fragment().is_some()
     {

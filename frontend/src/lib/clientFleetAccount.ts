@@ -190,8 +190,8 @@ async function accountClaim(machineId: string, state: ClientFleetState): Promise
 
 async function claimClientMachine(machine: FleetDirectoryMachine, state: ClientFleetState): Promise<NativePairingClaim> {
 	const claim = await accountClaim(machine.id, state);
-	let lastError: unknown = new Error('machine has no direct transport');
-	for (const candidate of directoryCandidates(machine).filter((item) => item.transport !== 'relay')) {
+	let lastError: unknown = new Error('machine has no reachable transport');
+	for (const candidate of directoryCandidates(machine)) {
 		try {
 			const response = await fetch(candidate.endpoint + CLAIM_PATH, {
 				method: 'POST', redirect: 'error',
@@ -210,7 +210,8 @@ async function claimClientMachine(machine: FleetDirectoryMachine, state: ClientF
 				endpoint: candidate.endpoint, machineId: issued.machine_id, machineName: issued.machine_name,
 				deviceId: issued.device_id, token: issued.token, name: issued.name,
 				lanEndpoint: issued.lan_endpoint, tailnetEndpoint: issued.tailnet_endpoint,
-				tailnetIpEndpoint: issued.tailnet_ip_endpoint
+				tailnetIpEndpoint: issued.tailnet_ip_endpoint,
+				relayEndpoint: issued.relay_endpoint
 			};
 		} catch (reason) {
 			lastError = reason;
@@ -253,7 +254,7 @@ export async function syncClientAccountFleet(): Promise<string[]> {
 				transport: direct.transport, transportCandidates: directoryCandidates(machine),
 				sources: ['account'], directoryOnly: true,
 				lanEndpoint: machine.endpoints_json.lan, tailnetEndpoint: machine.endpoints_json.tailnet,
-				tailnetIpEndpoint: machine.endpoints_json.tailnet_ip
+				tailnetIpEndpoint: machine.endpoints_json.tailnet_ip, relayEndpoint: machine.endpoints_json.relay
 			});
 		}
 	}

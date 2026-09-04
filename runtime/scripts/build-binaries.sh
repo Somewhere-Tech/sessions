@@ -111,6 +111,7 @@ for target in darwin/arm64 linux/arm64 linux/amd64; do
   fi
   build_binary "$goos" "$goarch" sessionsd "$daemon_tags"
   build_binary "$goos" "$goarch" sessions-runner ""
+  build_binary "$goos" "$goarch" sessions-relay ""
 done
 
 # Sign darwin binaries when an identity is configured (SESSIONS_SIGN_IDENTITY, a
@@ -121,7 +122,7 @@ if [[ -z "${SESSIONS_SIGN_IDENTITY:-}" && -r "$HOME/.config/sessions/sign-identi
   SESSIONS_SIGN_IDENTITY="$(head -n1 "$HOME/.config/sessions/sign-identity")"
 fi
 if [[ -n "${SESSIONS_SIGN_IDENTITY:-}" ]]; then
-  for command_name in sessions sessionsd sessions-runner; do
+  for command_name in sessions sessionsd sessions-runner sessions-relay; do
     signed="$out_dir/${command_name}-darwin-arm64"
     echo "> signing ${command_name}-darwin-arm64 (identity ${SESSIONS_SIGN_IDENTITY:0:8}…)"
     codesign --force --timestamp --options runtime \

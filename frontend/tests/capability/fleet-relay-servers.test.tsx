@@ -1,7 +1,7 @@
 // CAPABILITY: a client-only phone paired with one host inherits that host's
 // approved fleet without receiving or dialing another machine's credential.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { httpBaseForServer } from '../../src/api/sessionsd/core';
+import { httpBaseForServer, serverFetch } from '../../src/api/sessionsd/core';
 import { refreshFleetServersFromHost } from '../../src/lib/fleetRelay';
 import {
   useServers,
@@ -104,5 +104,39 @@ describe('capability: inherit a paired host fleet', () => {
     await refreshFleetServersFromHost(host.id);
 
     expect(useServers.getState().servers[1]?.transport).toBe('tailnet-ip');
+  });
+
+  it('tries direct transports before the owner-hosted relay', async () => {
+    const machine: ServerConfig = {
+      ...host,
+      id: 'fallback-machine',
+      machineId: 'machine-fallback',
+      token: 'device-token',
+      transportCandidates: [
+        { endpoint: 'http://192.168.1.44:8787', transport: 'lan' },
+        { endpoint: 'https://machine.example.ts.net', transport: 'tailnet' },
+        { endpoint: 'http://100.100.44.1:8787', transport: 'tailnet-ip' },
+        { endpoint: 'https://relay.example/m/machine-fallback', transport: 'relay' }
+      ]
+    };
+    useServers.setState({ servers: [machine], activeId: machine.id });
+    const fetchMock = vi.spyOn(window, 'fetch')
+      .mockRejectedValueOnce(new TypeError('LAN unavailable'))
+      .mockRejectedValueOnce(new TypeError('tailnet DNS unavailable'))
+      .mockRejectedValueOnce(new TypeError('tailnet address unavailable'))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }));
+
+    const response = await serverFetch(machine, 'http://192.168.1.44:8787/api/health');
+
+    expect(response.status).toBe(200);
+    expect(fetchMock.mock.calls.map(([target]) => String(target))).toEqual([
+      'http://192.168.1.44:8787/api/machine',
+      'https://machine.example.ts.net/api/machine',
+      'http://100.100.44.1:8787/api/machine',
+      'https://relay.example/m/machine-fallback/api/machine',
+      'https://relay.example/m/machine-fallback/api/health'
+    ]);
+    expect(useServers.getState().servers[0]?.transport).toBe('relay');
   });
 });

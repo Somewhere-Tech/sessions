@@ -17,6 +17,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/project"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/relay"
 	sessionruntime "github.com/somewhere-tech/sessions/runtime/internal/session"
 	"github.com/somewhere-tech/sessions/runtime/internal/smartsearch"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
@@ -59,6 +60,11 @@ type Server struct {
 	identityError        error
 	account              *fleetaccount.Manager
 	accountError         error
+	relayConnector       *relay.Connector
+	relayMu              sync.RWMutex
+	relayDirectoryBase   string
+	relayConnected       bool
+	relayWake            chan struct{}
 	submits              *sessionMutexes
 	continuationJobs     *continuationJobStore
 	lanFallbackLog       sync.Once
@@ -176,6 +182,7 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 		pair:          newPairService(config),
 		tailnetAccess: newTailnetAccessService(),
 		submits:       newSessionMutexes(),
+		relayWake:     make(chan struct{}, 1),
 		identity:      identity, identityError: identityErr,
 		deliveries:       delivery.New(deliveryRoot),
 		continuationJobs: newContinuationJobStore(),

@@ -34,7 +34,7 @@ func (s *Server) initFleetAccount() {
 }
 
 func (s *Server) fleetAccountEndpoints() fleetaccount.Endpoints {
-	result := fleetaccount.Endpoints{Relay: strings.TrimSpace(s.config.FleetRelayEndpoint)}
+	result := fleetaccount.Endpoints{Relay: s.relayMachineEndpoint()}
 	if lan := s.lan.state(); lan.URL != nil {
 		result.LAN = *lan.URL
 	}
@@ -159,7 +159,7 @@ func (s *Server) serveFleetAccountMachineClaim(response http.ResponseWriter, req
 	}
 	candidates, err := lanConnectCandidates(lanConnectRequest{
 		LANEndpoint: machine.EndpointsJSON.LAN, TailnetEndpoint: machine.EndpointsJSON.Tailnet,
-		TailnetIPEndpoint: machine.EndpointsJSON.TailnetIP,
+		TailnetIPEndpoint: machine.EndpointsJSON.TailnetIP, RelayEndpoint: machine.EndpointsJSON.Relay,
 	})
 	if err != nil {
 		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)

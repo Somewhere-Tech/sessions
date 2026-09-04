@@ -50,23 +50,25 @@ interface RememberServerOptions {
   lanEndpoint?: string;
   tailnetEndpoint?: string;
   tailnetIpEndpoint?: string;
-  transport?: 'lan' | 'tailnet' | 'tailnet-ip';
+  relayEndpoint?: string;
+  transport?: 'lan' | 'tailnet' | 'tailnet-ip' | 'relay';
 	transportCandidates?: ServerConfig['transportCandidates'];
 	sources?: ServerConfig['sources'];
 	directoryOnly?: boolean;
 }
 
-function pairingClaimTransport(claim: NativePairingClaim): 'lan' | 'tailnet' | 'tailnet-ip' {
+function pairingClaimTransport(claim: NativePairingClaim): 'lan' | 'tailnet' | 'tailnet-ip' | 'relay' {
+  if (claim.endpoint === claim.relayEndpoint || /\/m\/[A-Za-z0-9._-]+\/?$/.test(claim.endpoint)) return 'relay';
   if (claim.endpoint === claim.tailnetIpEndpoint) return 'tailnet-ip';
   if (claim.endpoint === claim.tailnetEndpoint || claim.endpoint.toLowerCase().startsWith('https://')) return 'tailnet';
   return 'lan';
 }
 
-type ConnectionFields = Pick<RememberServerOptions, 'lanEndpoint' | 'tailnetEndpoint' | 'tailnetIpEndpoint' | 'transport' | 'transportCandidates' | 'sources' | 'directoryOnly'>;
+type ConnectionFields = Pick<RememberServerOptions, 'lanEndpoint' | 'tailnetEndpoint' | 'tailnetIpEndpoint' | 'relayEndpoint' | 'transport' | 'transportCandidates' | 'sources' | 'directoryOnly'>;
 
 function connectionFields(source: RememberServerOptions): Partial<ConnectionFields> {
   return Object.fromEntries(
-		['lanEndpoint', 'tailnetEndpoint', 'tailnetIpEndpoint', 'transport', 'transportCandidates', 'sources', 'directoryOnly']
+		['lanEndpoint', 'tailnetEndpoint', 'tailnetIpEndpoint', 'relayEndpoint', 'transport', 'transportCandidates', 'sources', 'directoryOnly']
       .map((key) => [key, source[key as keyof RememberServerOptions]])
       .filter((entry) => entry[1] !== undefined)
   );

@@ -52,7 +52,8 @@ function nativeClaim(response: Awaited<ReturnType<typeof claimFleetDirectoryMach
 		name: response.claim.name,
 		lanEndpoint: response.claim.lan_endpoint,
 		tailnetEndpoint: response.claim.tailnet_endpoint,
-		tailnetIpEndpoint: response.claim.tailnet_ip_endpoint
+		tailnetIpEndpoint: response.claim.tailnet_ip_endpoint,
+		relayEndpoint: response.claim.relay_endpoint
 	};
 }
 
@@ -68,6 +69,7 @@ async function rememberDirectoryMachine(machine: FleetDirectoryMachine): Promise
 		lanEndpoint: machine.endpoints_json.lan,
 		tailnetEndpoint: machine.endpoints_json.tailnet,
 		tailnetIpEndpoint: machine.endpoints_json.tailnet_ip,
+		relayEndpoint: machine.endpoints_json.relay,
 		transport: direct.transport,
 		transportCandidates: candidates,
 		sources: ['account'], directoryOnly: true

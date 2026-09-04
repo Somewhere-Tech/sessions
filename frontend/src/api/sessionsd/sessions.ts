@@ -288,12 +288,13 @@ export interface FleetAccountClaim {
 	lan_endpoint?: string;
 	tailnet_endpoint?: string;
 	tailnet_ip_endpoint?: string;
+	relay_endpoint?: string;
 }
 
 export interface FleetAccountClaimResponse {
 	claim: FleetAccountClaim;
 	endpoint: string;
-	transport: 'lan' | 'tailnet' | 'tailnet-ip';
+	transport: 'lan' | 'tailnet' | 'tailnet-ip' | 'relay';
 }
 
 export async function fetchFleetDirectory(signal?: AbortSignal): Promise<FleetDirectoryResponse> {
@@ -331,6 +332,24 @@ export async function setRemoteAuto(auto: boolean): Promise<RemoteState> {
     body: JSON.stringify({ auto })
   });
   return json<RemoteState>(r);
+}
+
+export interface RelayState {
+  url: string;
+  connected: boolean;
+  source?: 'settings' | 'directory' | 'environment';
+}
+
+export async function fetchRelayState(signal?: AbortSignal): Promise<RelayState> {
+  const response = await apiFetch(`${httpBase()}/api/relay`, { signal });
+  return json<RelayState>(response);
+}
+
+export async function setRelayURL(url: string): Promise<RelayState> {
+  const response = await apiFetch(`${httpBase()}/api/relay`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url })
+  });
+  return json<RelayState>(response);
 }
 
 export const API_PROTOCOL_VERSION = 1;

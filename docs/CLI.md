@@ -94,6 +94,7 @@ Models and interactive:
 
 Admin/operational:
   install                  install and start the development daemon
+  relay                    configure or install the optional relay
   uninstall                stop and remove the development daemon
   update                   securely update Sessions.app
   pair                     show a one-time device pairing code
@@ -1218,6 +1219,25 @@ Register the development sessionsd macOS LaunchAgent and start it.
 
 Examples:
   sessions install
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions relay`
+
+```text
+Usage:
+  sessions relay <status | set URL | disable | install [--listen :8899] [--cert FILE --key FILE] [--allow-file FILE | --directory-url URL --owner-token-file FILE]>
+
+configure or install the optional relay
+
+Inspect, set, or disable this daemon's outbound relay fallback, or install sessions-relay as a macOS LaunchAgent. The relay accepts outbound machine tunnels only after an Ed25519 challenge matches either the owner's Somewhere directory or a static allow-list. Put TLS directly on the relay with --cert/--key, or keep its listener behind Tailscale Serve or Caddy. Owner tokens are read from a mode-0600 file rather than command arguments.
+
+Examples:
+  sessions relay status
+  sessions relay set https://relay.example
+  sessions relay disable
+  sessions relay install --listen 127.0.0.1:8899 --allow-file ~/.config/sessions/relay-allow.json
 
 --json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

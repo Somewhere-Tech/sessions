@@ -35,6 +35,7 @@ type fleetSavedMachine struct {
 	LANEndpoint       string `json:"lan_endpoint,omitempty"`
 	TailnetEndpoint   string `json:"tailnet_endpoint,omitempty"`
 	TailnetIPEndpoint string `json:"tailnet_ip_endpoint,omitempty"`
+	RelayEndpoint     string `json:"relay_endpoint,omitempty"`
 	Transport         string `json:"transport"`
 }
 
@@ -51,6 +52,7 @@ type fleetMachineView struct {
 	LANEndpoint       string `json:"lan_endpoint,omitempty"`
 	TailnetEndpoint   string `json:"tailnet_endpoint,omitempty"`
 	TailnetIPEndpoint string `json:"tailnet_ip_endpoint,omitempty"`
+	RelayEndpoint     string `json:"relay_endpoint,omitempty"`
 	Reachable         bool   `json:"reachable"`
 	Reason            string `json:"reason,omitempty"`
 	Message           string `json:"message,omitempty"`
@@ -186,6 +188,7 @@ func (s *Server) serveFleetMachines(response http.ResponseWriter, request *http.
 			ID: machine.MachineID, Name: machine.Name,
 			LANEndpoint: machine.LANEndpoint, TailnetEndpoint: machine.TailnetEndpoint,
 			TailnetIPEndpoint: machine.TailnetIPEndpoint,
+			RelayEndpoint:     machine.RelayEndpoint,
 		}
 		go func() {
 			views[index] = s.fleetMachineReachability(request.Context(), machine, views[index])
@@ -343,7 +346,7 @@ func (s *Server) fleetMachineCredential(machineID string) (string, error) {
 }
 
 func validatedFleetEndpoints(machine fleetSavedMachine) ([]fleetendpoint.Candidate, error) {
-	lan, tailnet, tailnetIP := machine.LANEndpoint, machine.TailnetEndpoint, machine.TailnetIPEndpoint
+	lan, tailnet, tailnetIP, relayEndpoint := machine.LANEndpoint, machine.TailnetEndpoint, machine.TailnetIPEndpoint, machine.RelayEndpoint
 	switch fleetTransportName(machine.Transport) {
 	case "lan":
 		if lan == "" {
@@ -357,8 +360,12 @@ func validatedFleetEndpoints(machine fleetSavedMachine) ([]fleetendpoint.Candida
 		if tailnetIP == "" {
 			tailnetIP = machine.Endpoint
 		}
+	case "relay":
+		if relayEndpoint == "" {
+			relayEndpoint = machine.Endpoint
+		}
 	}
-	candidates := fleetendpoint.Ordered(lan, tailnet, tailnetIP)
+	candidates := fleetendpoint.OrderedWithRelay(lan, tailnet, tailnetIP, relayEndpoint)
 	for _, candidate := range candidates {
 		if err := validateFleetCandidate(machine.MachineID, candidate); err != nil {
 			return nil, err
@@ -372,13 +379,15 @@ func validatedFleetEndpoints(machine fleetSavedMachine) ([]fleetendpoint.Candida
 
 func validateFleetCandidate(machineID string, candidate fleetendpoint.Candidate) error {
 	parsed, err := url.Parse(strings.TrimSpace(candidate.Endpoint))
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
-		parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(candidate.Transport != "relay" && parsed.Path != "" && parsed.Path != "/") {
 		return fmt.Errorf("saved machine %q has an invalid endpoint", machineID)
 	}
 	valid := candidate.Transport == "lan" && parsed.Scheme == "http"
 	valid = valid || candidate.Transport == "tailnet" && parsed.Scheme == "https" && strings.HasSuffix(strings.ToLower(parsed.Hostname()), ".ts.net")
 	valid = valid || candidate.Transport == "tailnet-ip" && parsed.Scheme == "http" && tailscale.TailnetIPv4([]string{parsed.Hostname()}) != ""
+	relayScheme := parsed.Scheme == "https" || parsed.Scheme == "http" && net.ParseIP(parsed.Hostname()) != nil && net.ParseIP(parsed.Hostname()).IsLoopback()
+	valid = valid || candidate.Transport == "relay" && relayScheme && parsed.Path == "/m/"+url.PathEscape(machineID)
 	if !valid {
 		return fmt.Errorf("saved machine %q has an invalid %s transport", machineID, candidate.Transport)
 	}

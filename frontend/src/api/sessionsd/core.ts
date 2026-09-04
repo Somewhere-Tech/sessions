@@ -6,6 +6,7 @@ import {
   type ServerConfig
 } from '../../lib/servers';
 import { isTauri } from '../../lib/tauriBridge';
+import { parseServerEndpoint } from '../../lib/serverEndpoint';
 
 // Thrown when the daemon returns HTTP 401 (token required / wrong token).
 // Callers (UI components) can instanceof-check this to show an auth prompt
@@ -52,6 +53,7 @@ export function httpBaseForServer(s: ServerConfig): string {
   // stored configs (which predate the scheme field) compatible.
   const scheme = s.scheme ?? 'http';
   const origin = `${scheme}://${hostForUrl(s.host)}:${s.port}`;
+  if (s.basePath) return `${origin}${s.basePath}`;
   return s.relayMachineId
     ? `${origin}/api/fleet/${encodeURIComponent(s.relayMachineId)}`
     : origin;
@@ -74,6 +76,7 @@ export function wsBase(): string {
   // Mirror the http→https / ws→wss mapping so TLS connections work end-to-end.
   const scheme = s.scheme === 'https' ? 'wss' : 'ws';
   const origin = `${scheme}://${hostForUrl(s.host)}:${s.port}`;
+  if (s.basePath) return `${origin}${s.basePath}`;
   return s.relayMachineId
     ? `${origin}/api/fleet/${encodeURIComponent(s.relayMachineId)}`
     : origin;
@@ -83,6 +86,39 @@ export function wsBase(): string {
 // a token configured, or an empty object when open (no auth).
 function authHeaders(s: ServerConfig): Record<string, string> {
   return s.token ? { Authorization: `Bearer ${s.token}` } : {};
+}
+
+const transportSelections = new Map<string, { endpoint: string; expires: number }>();
+
+async function selectTransport(server: ServerConfig, headers: Record<string, string>): Promise<string> {
+  const key = server.machineId ?? server.id;
+  const cached = transportSelections.get(key);
+  if (cached && cached.expires > Date.now()) return cached.endpoint;
+  for (const candidate of server.transportCandidates ?? []) {
+    try {
+      const response = await fetch(`${candidate.endpoint.replace(/\/$/, '')}/api/machine`, {
+        headers, redirect: 'error', signal: AbortSignal.timeout(5_000)
+      });
+      response.body?.cancel();
+      if (!response.ok) continue;
+      transportSelections.set(key, { endpoint: candidate.endpoint, expires: Date.now() + 30_000 });
+      const parsed = parseServerEndpoint(candidate.endpoint);
+      void useServers.getState().updateServer(server.id, { ...parsed, transport: candidate.transport });
+      return candidate.endpoint;
+    } catch { /* try the next route */ }
+  }
+  throw new Error('No machine transport is reachable.');
+}
+
+function requestThroughEndpoint(input: RequestInfo | URL, server: ServerConfig, endpoint: string): RequestInfo | URL {
+  const requested = new URL(input instanceof Request ? input.url : input.toString(), window.location.origin);
+  const currentBase = new URL(httpBaseForServer(server));
+  let path = requested.pathname;
+  if (currentBase.pathname !== '/' && path.startsWith(currentBase.pathname)) {
+    path = path.slice(currentBase.pathname.length) || '/';
+  }
+  const rewritten = `${endpoint.replace(/\/$/, '')}${path}${requested.search}`;
+  return input instanceof Request ? new Request(rewritten, input) : rewritten;
 }
 
 // Shared fetch path for active-server and explicit fleet requests. Injects
@@ -98,7 +134,16 @@ export async function serverFetch(
     ...init,
     headers: { ...extra, ...(init?.headers as Record<string, string> | undefined) }
   };
-  const res = await fetch(input, merged);
+  const endpoint = authenticate && server.machineId && server.transportCandidates?.length
+    ? await selectTransport(server, extra)
+    : '';
+  let res;
+  try {
+    res = await fetch(endpoint ? requestThroughEndpoint(input, server, endpoint) : input, merged);
+  } catch (reason) {
+    if (endpoint) transportSelections.delete(server.machineId ?? server.id);
+    throw reason;
+  }
   if (res.status === 401) {
     if (server.isDefault && isSameOriginDaemon(server)) {
       useServers.getState().markTokenRequired(server.id);

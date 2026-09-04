@@ -11,13 +11,18 @@ type Candidate struct {
 	Transport string `json:"transport"`
 }
 
-// Ordered is the one fleet transport policy: nearby LAN first, MagicDNS HTTPS
-// second, and the Tailscale CGNAT address last when peer DNS is unavailable.
+// Ordered is the direct fleet transport policy: nearby LAN first, MagicDNS
+// HTTPS second, and the Tailscale CGNAT address last when DNS is unavailable.
 func Ordered(lan, tailnet, tailnetIP string) []Candidate {
+	return OrderedWithRelay(lan, tailnet, tailnetIP, "")
+}
+
+func OrderedWithRelay(lan, tailnet, tailnetIP, relay string) []Candidate {
 	values := []Candidate{
 		{Endpoint: lan, Transport: "lan"},
 		{Endpoint: tailnet, Transport: "tailnet"},
 		{Endpoint: tailnetIP, Transport: "tailnet-ip"},
+		{Endpoint: relay, Transport: "relay"},
 	}
 	seen := make(map[string]bool, len(values))
 	result := make([]Candidate, 0, len(values))

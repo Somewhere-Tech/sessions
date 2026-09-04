@@ -16,6 +16,7 @@ commercial planning, and dogfood notes live outside the public repository.
   views.
 - CLI and JSON control surfaces suitable for people and agents.
 - Direct loopback, trusted-LAN, and user-owned tailnet access.
+- Optional owner-hosted relay fallback when direct routes are unavailable.
 - Signed update channels, explicit lifecycle controls, recovery records, and
   local usage tracking.
 - Same-provider continuation and preview cross-provider continuation for
@@ -75,8 +76,9 @@ must remain equally usable from the native interface and CLI.
 - A browser-based terminal or agent-control product.
 - Making the desktop process own daemon or runner lifetime.
 - Requiring a Sessions account for local use.
-- A hosted relay that silently creates reachability into a user's local
-  machine.
+- Making a hosted relay the primary data plane or letting relay admission
+  replace a destination daemon's device authorization. The optional relay is a
+  fallback Sessions service the owner hosts.
 
 The trust and repository boundary are documented in
 [`docs/PRINCIPLES.md`](docs/PRINCIPLES.md) and

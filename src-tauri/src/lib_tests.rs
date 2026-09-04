@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn native_pairing_links_preserve_endpoint_order() {
         let parsed = parse_native_pairing_link(
-            "sessions://pair?host=http%3A%2F%2F192.168.1.25%3A8787&host=https%3A%2F%2Fmac-mini.example.ts.net&host=http%3A%2F%2F100.100.20.30%3A8787&t=ticket-id.ticket-secret",
+            "sessions://pair?host=http%3A%2F%2F192.168.1.25%3A8787&host=https%3A%2F%2Fmac-mini.example.ts.net&host=http%3A%2F%2F100.100.20.30%3A8787&host=https%3A%2F%2Frelay.example%2Fm%2F123e4567-e89b-42d3-a456-426614174000&t=ticket-id.ticket-secret",
         )
         .unwrap();
         assert_eq!(
@@ -345,6 +345,8 @@ mod tests {
                     "http://192.168.1.25:8787".to_string(),
                     "https://mac-mini.example.ts.net".to_string(),
                     "http://100.100.20.30:8787".to_string(),
+                    "https://relay.example/m/123e4567-e89b-42d3-a456-426614174000"
+                        .to_string(),
                 ],
                 ticket: "ticket-id.ticket-secret".to_string(),
             }

@@ -39,6 +39,7 @@ type savedMachine struct {
 	LANEndpoint       string    `json:"lan_endpoint,omitempty"`
 	TailnetEndpoint   string    `json:"tailnet_endpoint,omitempty"`
 	TailnetIPEndpoint string    `json:"tailnet_ip_endpoint,omitempty"`
+	RelayEndpoint     string    `json:"relay_endpoint,omitempty"`
 	Transport         string    `json:"transport"`
 	DeviceID          string    `json:"device_id"`
 	ConnectedAt       time.Time `json:"connected_at"`
@@ -58,6 +59,7 @@ type nativeMachineSyncItem struct {
 	LANEndpoint       string `json:"lanEndpoint,omitempty"`
 	TailnetEndpoint   string `json:"tailnetEndpoint,omitempty"`
 	TailnetIPEndpoint string `json:"tailnetIpEndpoint,omitempty"`
+	RelayEndpoint     string `json:"relayEndpoint,omitempty"`
 	DeviceID          string `json:"deviceId,omitempty"`
 	Token             string `json:"token"`
 }
@@ -104,6 +106,7 @@ type accessClaim struct {
 	LANEndpoint       string `json:"lan_endpoint,omitempty"`
 	TailnetEndpoint   string `json:"tailnet_endpoint,omitempty"`
 	TailnetIPEndpoint string `json:"tailnet_ip_endpoint,omitempty"`
+	RelayEndpoint     string `json:"relay_endpoint,omitempty"`
 }
 
 type nearbyHealth struct {
@@ -225,7 +228,7 @@ func (a *app) prepareNativeMachines(items []nativeMachineSyncItem) ([]preparedNa
 			value *string
 			kind  string
 		}{
-			{&item.LANEndpoint, "lan"}, {&item.TailnetEndpoint, "tailnet"}, {&item.TailnetIPEndpoint, "tailnet-ip"},
+			{&item.LANEndpoint, "lan"}, {&item.TailnetEndpoint, "tailnet"}, {&item.TailnetIPEndpoint, "tailnet-ip"}, {&item.RelayEndpoint, "relay"},
 		} {
 			if *candidate.value == "" {
 				continue
@@ -241,6 +244,7 @@ func (a *app) prepareNativeMachines(items []nativeMachineSyncItem) ([]preparedNa
 			Endpoint: endpoint, Transport: transport, DeviceID: item.DeviceID,
 			LANEndpoint: item.LANEndpoint, TailnetEndpoint: item.TailnetEndpoint,
 			TailnetIPEndpoint: item.TailnetIPEndpoint,
+			RelayEndpoint:     item.RelayEndpoint,
 			ConnectedAt:       a.now().UTC(), Source: nativeAppMachineSource,
 		}, Token: item.Token})
 	}
@@ -369,11 +373,12 @@ func (a *app) connectMachine(args []string) error {
 	lanEndpoint, hasLAN := pluck(&args, "--lan")
 	tailnetEndpoint, hasTailnet := pluck(&args, "--tailnet")
 	tailnetIPEndpoint, hasTailnetIP := pluck(&args, "--tailnet-ip")
+	relayEndpoint, hasRelay := pluck(&args, "--relay")
 	if len(args) != 1 {
-		return fail(1, "usage: sessions machines connect <endpoint-or-pairing-link> [--lan URL] [--tailnet URL] [--tailnet-ip URL] [--name ALIAS] [--timeout D]")
+		return fail(1, "usage: sessions machines connect <endpoint-or-pairing-link> [--lan URL] [--tailnet URL] [--tailnet-ip URL] [--relay URL] [--name ALIAS] [--timeout D]")
 	}
 	if looksLikePairingLink(args[0]) {
-		if hasLAN || hasTailnet || hasTailnetIP || hasTimeout {
+		if hasLAN || hasTailnet || hasTailnetIP || hasRelay || hasTimeout {
 			return fail(1, "a pairing link cannot be combined with endpoint or timeout flags")
 		}
 		return a.connectMachinePairingLink(args[0], alias)
@@ -392,7 +397,7 @@ func (a *app) connectMachine(args []string) error {
 			return fail(1, "--timeout cannot exceed 10m")
 		}
 	}
-	if err := assignConnectionEndpoint(endpoint, transport, &lanEndpoint, &tailnetEndpoint, &tailnetIPEndpoint); err != nil {
+	if err := assignConnectionEndpoint(endpoint, transport, &lanEndpoint, &tailnetEndpoint, &tailnetIPEndpoint, &relayEndpoint); err != nil {
 		return fail(1, "%s", err)
 	}
 	if hasLAN {
@@ -404,10 +409,13 @@ func (a *app) connectMachine(args []string) error {
 	if err == nil && hasTailnetIP {
 		tailnetIPEndpoint, _, err = validateMachineEndpointKind(tailnetIPEndpoint, "tailnet-ip")
 	}
+	if err == nil && hasRelay {
+		relayEndpoint, _, err = validateMachineEndpointKind(relayEndpoint, "relay")
+	}
 	if err != nil {
 		return fail(1, "%s", err)
 	}
-	candidates := fleetendpoint.Ordered(lanEndpoint, tailnetEndpoint, tailnetIPEndpoint)
+	candidates := fleetendpoint.OrderedWithRelay(lanEndpoint, tailnetEndpoint, tailnetIPEndpoint, relayEndpoint)
 	if !a.direct {
 		return a.connectMachineViaDaemon(candidates, alias, timeout)
 	}
@@ -456,6 +464,7 @@ func (a *app) connectMachinePairingLink(value, alias string) error {
 		"lan_endpoint":        endpointForTransport(candidates, "lan"),
 		"tailnet_endpoint":    endpointForTransport(candidates, "tailnet"),
 		"tailnet_ip_endpoint": endpointForTransport(candidates, "tailnet-ip"),
+		"relay_endpoint":      endpointForTransport(candidates, "relay"),
 		"ticket":              ticket, "name": deviceName,
 	}, &response, 2); err != nil {
 		return err
@@ -601,7 +610,7 @@ func (a *app) connectMachineViaDaemon(candidates []fleetendpoint.Candidate, alia
 	return a.finishMachineConnect(used.Endpoint, used.Transport, alias, response.Claim)
 }
 
-func assignConnectionEndpoint(endpoint, transport string, lan, tailnet, tailnetIP *string) error {
+func assignConnectionEndpoint(endpoint, transport string, lan, tailnet, tailnetIP, relayEndpoint *string) error {
 	switch transport {
 	case "nearby":
 		if *lan == "" {
@@ -614,6 +623,10 @@ func assignConnectionEndpoint(endpoint, transport string, lan, tailnet, tailnetI
 	case "tailnet-ip":
 		if *tailnetIP == "" {
 			*tailnetIP = endpoint
+		}
+	case "relay":
+		if *relayEndpoint == "" {
+			*relayEndpoint = endpoint
 		}
 	default:
 		return fmt.Errorf("unknown machine transport %q", transport)
@@ -661,12 +674,16 @@ func (a *app) finishMachineConnect(endpoint, transport, alias string, claim acce
 	if claim.TailnetIPEndpoint == "" && transport == "tailnet-ip" {
 		claim.TailnetIPEndpoint = endpoint
 	}
+	if claim.RelayEndpoint == "" && transport == "relay" {
+		claim.RelayEndpoint = endpoint
+	}
 	record, err := saveMachine(a.home, savedMachine{
 		Alias: alias, MachineID: claim.MachineID, Name: claim.MachineName,
 		Endpoint: endpoint, Transport: transport, DeviceID: claim.DeviceID,
 		ConnectedAt: a.now().UTC(),
 		LANEndpoint: claim.LANEndpoint, TailnetEndpoint: claim.TailnetEndpoint,
 		TailnetIPEndpoint: claim.TailnetIPEndpoint,
+		RelayEndpoint:     claim.RelayEndpoint,
 	}, claim.Token)
 	if err != nil {
 		return fail(2, "save machine credential: %s", err)
@@ -783,7 +800,7 @@ func (a *app) claimAccountMachines(registry machineRegistry, machines []fleetacc
 	warnings := []string{}
 	for _, machine := range machines {
 		if machine.ID == "" || machine.ID == local.MachineID || saved[machine.ID] ||
-			len(fleetendpoint.Ordered(machine.EndpointsJSON.LAN, machine.EndpointsJSON.Tailnet, machine.EndpointsJSON.TailnetIP)) == 0 {
+			len(fleetendpoint.OrderedWithRelay(machine.EndpointsJSON.LAN, machine.EndpointsJSON.Tailnet, machine.EndpointsJSON.TailnetIP, machine.EndpointsJSON.Relay)) == 0 {
 			continue
 		}
 		var response struct {
@@ -801,6 +818,7 @@ func (a *app) claimAccountMachines(registry machineRegistry, machines []fleetacc
 			ConnectedAt: a.now().UTC(), Source: accountMachineSource,
 			LANEndpoint: machine.EndpointsJSON.LAN, TailnetEndpoint: machine.EndpointsJSON.Tailnet,
 			TailnetIPEndpoint: machine.EndpointsJSON.TailnetIP,
+			RelayEndpoint:     machine.EndpointsJSON.Relay,
 		}, response.Claim.Token)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("save %s account credential: %v", machine.Name, err))
@@ -815,7 +833,7 @@ func (a *app) claimAccountMachines(registry machineRegistry, machines []fleetacc
 func mergeMachineSources(saved []savedMachine, nearby []discoveredMachine, account []fleetaccount.Machine) []fleetMachineView {
 	views := make([]fleetMachineView, 0, len(saved)+len(nearby)+len(account))
 	for _, machine := range saved {
-		candidates := fleetendpoint.Ordered(machine.LANEndpoint, machine.TailnetEndpoint, machine.TailnetIPEndpoint)
+		candidates := fleetendpoint.OrderedWithRelay(machine.LANEndpoint, machine.TailnetEndpoint, machine.TailnetIPEndpoint, machine.RelayEndpoint)
 		if machine.Endpoint != "" && endpointForTransport(candidates, machine.Transport) == "" {
 			candidates = append(candidates, fleetendpoint.Candidate{Endpoint: machine.Endpoint, Transport: listedMachineTransport(machine.Transport)})
 		}
@@ -1014,9 +1032,20 @@ func (a *app) cmdAccess(args []string) error {
 
 func validateMachineEndpoint(raw string) (string, string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Hostname() == "" || parsed.User != nil ||
-		parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", "", fmt.Errorf("endpoint must be an origin such as http://192.168.1.20:8787 or https://machine.tailnet.ts.net")
+	}
+	if strings.HasPrefix(parsed.Path, "/m/") && parsed.Path != "/m/" {
+		ip := net.ParseIP(parsed.Hostname())
+		loopback := strings.EqualFold(parsed.Hostname(), "localhost") || ip != nil && ip.IsLoopback()
+		machineID := strings.TrimPrefix(strings.TrimSuffix(parsed.Path, "/"), "/m/")
+		if (parsed.Scheme == "https" || parsed.Scheme == "http" && loopback) && validateMachineID(machineID) == nil {
+			return strings.TrimSuffix(parsed.String(), "/"), "relay", nil
+		}
+		return "", "", fmt.Errorf("relay endpoints require HTTPS (or loopback HTTP for development)")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", "", fmt.Errorf("machine endpoint must be an origin or relay /m/<machine_id> URL")
 	}
 	parsed.Path = ""
 	if parsed.Scheme == "http" {
@@ -1305,6 +1334,10 @@ func normalizeSavedMachineEndpoints(machine *savedMachine) {
 	case "tailnet-ip":
 		if machine.TailnetIPEndpoint == "" {
 			machine.TailnetIPEndpoint = machine.Endpoint
+		}
+	case "relay":
+		if machine.RelayEndpoint == "" {
+			machine.RelayEndpoint = machine.Endpoint
 		}
 	}
 }

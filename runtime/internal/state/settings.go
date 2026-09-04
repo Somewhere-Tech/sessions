@@ -59,6 +59,10 @@ type RemoteSettings struct {
 	Auto bool `json:"auto"`
 }
 
+type RelaySettings struct {
+	URL string `json:"url"`
+}
+
 // ClaudeSettings contains launch defaults owned by Sessions. "inherit" means
 // no corresponding CLI override is supplied, leaving Claude's own effective
 // configuration authoritative. Credentials and provider settings files are
@@ -275,6 +279,7 @@ type Settings struct {
 	LAN                    bool                `json:"lan"`
 	LocalNetworkPermission string              `json:"localNetworkPermission,omitempty"`
 	Remote                 *RemoteSettings     `json:"remote,omitempty"`
+	Relay                  *RelaySettings      `json:"relay,omitempty"`
 	Notify                 *NotifySettings     `json:"notify,omitempty"`
 	AI                     *AISettings         `json:"ai,omitempty"`
 	Claude                 *ClaudeSettings     `json:"claude,omitempty"`

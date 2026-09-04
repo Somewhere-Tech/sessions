@@ -121,6 +121,7 @@ type lanConnectRequest struct {
 	LANEndpoint       string `json:"lan_endpoint"`
 	TailnetEndpoint   string `json:"tailnet_endpoint"`
 	TailnetIPEndpoint string `json:"tailnet_ip_endpoint"`
+	RelayEndpoint     string `json:"relay_endpoint"`
 	ClientID          string `json:"client_id"`
 	Name              string `json:"name"`
 	Timeout           string `json:"timeout"`
@@ -202,8 +203,16 @@ func lanConnectCandidates(body lanConnectRequest) ([]fleetendpoint.Candidate, er
 			body.TailnetIPEndpoint = endpoint
 		}
 	}
-	ordered := fleetendpoint.Ordered(body.LANEndpoint, body.TailnetEndpoint, body.TailnetIPEndpoint)
+	ordered := fleetendpoint.OrderedWithRelay(body.LANEndpoint, body.TailnetEndpoint, body.TailnetIPEndpoint, body.RelayEndpoint)
 	for index := range ordered {
+		if ordered[index].Transport == "relay" {
+			validated, err := validateRelayClientEndpoint(ordered[index].Endpoint)
+			if err != nil {
+				return nil, err
+			}
+			ordered[index].Endpoint = validated
+			continue
+		}
 		validated, transport, err := validateLANClientEndpoint(ordered[index].Endpoint)
 		if err != nil || fleetTransportName(transport) != ordered[index].Transport {
 			return nil, fmt.Errorf("invalid %s endpoint", ordered[index].Transport)
@@ -214,6 +223,22 @@ func lanConnectCandidates(body lanConnectRequest) ([]fleetendpoint.Candidate, er
 		return nil, errors.New("at least one machine endpoint is required")
 	}
 	return ordered, nil
+}
+
+func validateRelayClientEndpoint(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSuffix(strings.TrimSpace(raw), "/"))
+	if err != nil {
+		return "", errors.New("relay endpoint must be an HTTPS /m/<machine_id> URL")
+	}
+	ip := net.ParseIP(parsed.Hostname())
+	loopback := strings.EqualFold(parsed.Hostname(), "localhost") || ip != nil && ip.IsLoopback()
+	secure := parsed.Scheme == "https" || parsed.Scheme == "http" && loopback
+	machineID := strings.TrimPrefix(parsed.Path, "/m/")
+	if parsed.Host == "" || !secure || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		!strings.HasPrefix(parsed.Path, "/m/") || !validFleetMachineID(machineID) {
+		return "", errors.New("relay endpoint must be an HTTPS /m/<machine_id> URL")
+	}
+	return parsed.String(), nil
 }
 
 func (s *Server) connectLANMachineCandidates(ctx context.Context, candidates []fleetendpoint.Candidate, clientID, name string, timeout time.Duration) (pairingClaimResponse, fleetendpoint.Candidate, error) {

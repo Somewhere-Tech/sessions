@@ -112,6 +112,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, principal))
+	if s.handleRelayRoute(response, request, corsOrigin) {
+		return
+	}
 	if s.handleFleetRelay(response, request, corsOrigin) {
 		return
 	}

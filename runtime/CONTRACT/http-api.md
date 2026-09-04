@@ -363,6 +363,16 @@ Wrong methods return 405. Invalid request bodies return 400; an unavailable
 Somewhere auth or directory request returns 502. Account storage failures and
 an unavailable machine identity return 500.
 
+### `/api/relay`
+
+This local-principal-only setting controls the optional outbound relay tunnel.
+`GET` returns `{"url":"...","connected":false,"source":"settings|directory|environment"}`.
+`PUT` accepts `{"url":"https://relay.example"}`; an empty URL disables the
+explicit setting. HTTPS is required except for loopback HTTP development. An
+environment override wins over settings, and an owner-registered directory
+endpoint is used when neither is present. The advertised machine endpoint is
+the configured origin plus `/m/<machine-id>`.
+
 ### `GET /api/remote`
 
 Auth required. Returns the automatic Tailscale state using the same fields as

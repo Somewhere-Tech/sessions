@@ -7,15 +7,17 @@ import (
 )
 
 func TestEndpointPreferenceOrder(t *testing.T) {
-	got := Ordered(
+	got := OrderedWithRelay(
 		"http://192.168.1.20:8787",
 		"https://mini.example.ts.net",
 		"http://100.100.20.30:8787",
+		"https://relay.example/m/mini",
 	)
 	want := []Candidate{
 		{Endpoint: "http://192.168.1.20:8787", Transport: "lan"},
 		{Endpoint: "https://mini.example.ts.net", Transport: "tailnet"},
 		{Endpoint: "http://100.100.20.30:8787", Transport: "tailnet-ip"},
+		{Endpoint: "https://relay.example/m/mini", Transport: "relay"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ordered endpoints = %#v, want %#v", got, want)

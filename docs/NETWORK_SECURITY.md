@@ -76,7 +76,8 @@ keys, timestamps outside five minutes, and replayed nonces, then issues the
 same two-minute-pending, independently revocable device credential as an
 accepted access request. The daemon audit line names the device and `via
 account`. Somewhere sees the directory lookup but never the issued credential
-or later session traffic.
+or later session traffic. The account directory is not the relay service; it
+stores only the relay endpoint hint.
 
 Client-only iOS and Android builds have no local daemon state directory. Their
 optional account token pair and Ed25519 key live in the application's private
@@ -155,6 +156,40 @@ machine connection's responsibility: prefer Tailscale Serve HTTPS for remote or
 untrusted networks, use the direct Tailscale IP fallback when tailnet DNS is
 unavailable, and use plain LAN HTTP only on a private network the user trusts.
 
+## Hosted relay fallback
+
+`sessions-relay` is an optional Sessions service the owner hosts, independently
+of the Somewhere directory. Each daemon opens one outbound WebSocket and signs
+a relay-generated nonce and timestamp with its Ed25519 machine key. The relay
+admits that tunnel only when the public key matches the owner's directory or a
+static allow-list. Duplicate machine connections replace the old tunnel, many
+client streams are multiplexed per machine, each frame is limited to 64 KiB,
+and bounded queues apply backpressure. The daemon reconnects with bounded
+exponential backoff. `/healthz` exposes only service health and a connected
+machine count.
+
+Clients try LAN, Tailscale Serve, the direct tailnet address, and then the
+machine-specific relay endpoint. The relay forwards `/api/*` and `/ws` bytes
+but grants no Sessions authority. It preserves the presented device credential,
+marks the request as forwarded so the destination cannot mistake the relay's
+loopback connection for local trust, and the destination daemon performs its
+normal credential and Origin checks. A relay-admitted machine key cannot read,
+create, send to, or end a session. Revoking a client device on the destination
+therefore ends that client's relay access exactly as it ends direct access.
+
+The service stores no request bodies, terminal bytes, or transcripts and logs
+only connection events, machine IDs, methods, paths, and errors. This is a
+storage and authority boundary, not end-to-end content encryption against the
+relay operator: when HTTPS terminates at the relay, a compromised relay host
+can observe, delay, drop, replay, or alter relayed bytes. The destination's
+device authentication detects no general content tampering. Run the relay only
+on infrastructure you trust, protect its TLS key and directory token or static
+allow-list, and prefer direct LAN/tailnet routes. Compromise of the directory
+token can admit registered machine tunnels but still does not mint a device
+credential or bypass the destination daemon.
+
+See [`RELAY.md`](RELAY.md) for deployment and configuration.
+
 ## Paired-client fleet relay
 
 A phone is a viewer that inherits the approved fleet of the machine it pairs
@@ -179,11 +214,9 @@ the direct Tailscale IP origin. Relayed streams have no background retry queue;
 the phone's existing reconnect behavior starts a new request.
 
 This is a user's own machine relaying to that same user's independently
-approved machines. Somewhere operates no relay, broker, tunnel, or credential
-exchange. A Somewhere-hosted machine reached through an approved Tailscale or
-HTTPS endpoint is just another saved destination and receives no special trust
-or bypass. This preserves the roadmap non-goal: no hosted relay silently creates
-reachability into a user's local machine.
+approved machines. It is distinct from the optional `sessions-relay` transport:
+host A holds B's credential and substitutes it, while the hosted fallback pipes
+the original client's credential to B. Somewhere still operates neither path.
 
 **What we borrowed from T3 Code, and what we deliberately did not.** T3 Code's
 public remote model keeps each environment as one intact server/runtime behind
@@ -191,9 +224,10 @@ an HTTP/WebSocket connection, while LAN, Tailscale, HTTPS, and desktop-managed
 SSH forwarding are connection choices. Sessions uses the same useful UI
 property: a relayed machine is still an ordinary server base, so the existing
 Fleet, inbox, and conversation paths do not split the runtime. We did not adopt
-client-owned SSH launch, direct per-environment credentials, or a hosted relay:
-the phone learns no credential for B and gets no new tunnel authority; A stays
-the only ingress and may reach B only with B's prior approval. See T3 Code's
+client-owned SSH launch or direct per-environment credentials for this inherited
+phone path: the phone learns no credential for B and gets no new tunnel
+authority; A stays the only ingress and may reach B only with B's prior
+approval. See T3 Code's
 [remote architecture](https://github.com/pingdotgg/t3code/blob/main/docs/internals/remote.md)
 and [remote-access guide](https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md).
 
@@ -234,10 +268,10 @@ pairing ticket.
 The direct listener is never wildcard-bound and never listens on Wi-Fi,
 Ethernet, public, or arbitrary private addresses: both Tailscale status parsing
 and listener creation independently require `100.64.0.0/10`. The daemon
-publishes LAN, Tailscale HTTPS, and direct Tailscale-IP origins as distinct
-endpoint kinds. Clients and the fleet relay try `lan`, `tailnet`, then
-`tailnet-ip`; a macOS Local Network denial falls through silently and is logged
-once with the transport that was selected.
+publishes LAN, Tailscale HTTPS, direct Tailscale-IP, and optional relay origins
+as distinct endpoint kinds. Clients try `lan`, `tailnet`, `tailnet-ip`, then
+`relay`; a macOS Local Network denial falls through silently and is logged once
+with the transport that was selected.
 
 ## One-time pairing tickets
 

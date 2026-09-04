@@ -34,7 +34,7 @@ five minutes. `sessions doctor` and `/api/health` report whether the daemon is
 signed in and its last registration result.
 
 Somewhere hosts sign-in and this owner-scoped directory. It does not receive
-session content and does not become a terminal or transcript relay. A signed-in
+session content and does not run the terminal or transcript relay. A signed-in
 device lists the directory, signs a short-lived challenge with its registered
 key, and presents it directly to the selected machine. That host fetches the
 requester's public key with its own account token; only a key in the same
@@ -43,7 +43,7 @@ credential. A signature from another account never bypasses pairing.
 
 `sessions machines` merges saved pairings, live Bonjour results, and account
 directory rows by stable machine identity and endpoint. Each row includes all
-known `lan`, `tailnet`, `tailnet-ip`, and future `relay` candidates plus the
+known `lan`, `tailnet`, `tailnet-ip`, and `relay` candidates plus the
 transport currently in use. The Fleet view uses the same shape: an offline
 directory machine stays visible, while a reachable same-account machine is
 credentialed automatically without an accept prompt.
@@ -57,14 +57,15 @@ individually revocable on their hosts.
 
 ## No-account tier
 
-Sessions machines find and trust each other directly. The no-account tier has
-no Somewhere relay, broker, or credential exchange: a client connects to a
-daemon over a trusted LAN or the user's own Tailscale network, and session data
-stays on that path.
+Sessions machines find and trust each other directly. The no-account tier needs
+no relay, broker, or credential exchange: a client connects to a daemon over a
+trusted LAN or the user's own Tailscale network. People who want a fallback
+without an account may run `sessions-relay` with a static machine-key
+allow-list.
 
 ### How machines are found
 
-A host can publish up to three endpoint kinds. Every discovery record, pairing
+A host can publish up to four endpoint kinds. Every discovery record, pairing
 link, saved machine, and fleet relay keeps them distinct and tries them in this
 order:
 
@@ -74,6 +75,11 @@ order:
 3. `tailnet-ip` — HTTP on the machine's `100.64.0.0/10` address. Tailscale still
    authenticates and encrypts this traffic; this route exists when MagicDNS is
    unavailable.
+4. `relay` — HTTPS through a Sessions relay the owner operates. The relay is a
+   fallback only; the destination daemon still verifies the device credential.
+
+See [Sessions relay](RELAY.md) for deployment, configuration, and the relay
+threat model.
 
 Bonjour advertises the endpoint hints but no credential or session metadata.
 Clients verify `/api/health` before presenting or selecting a candidate. A

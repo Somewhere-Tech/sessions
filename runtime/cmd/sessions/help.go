@@ -355,6 +355,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions install"}, run: (*app).cmdInstall,
 	},
 	{
+		name: "relay", usage: "relay <status | set URL | disable | install [--listen :8899] [--cert FILE --key FILE] [--allow-file FILE | --directory-url URL --owner-token-file FILE]>",
+		summary: "configure or install the optional relay", group: adminCommandGroup, localJSON: true,
+		longHelp: "Inspect, set, or disable this daemon's outbound relay fallback, or install sessions-relay as a macOS LaunchAgent. The relay accepts outbound machine tunnels only after an Ed25519 challenge matches either the owner's Somewhere directory or a static allow-list. Put TLS directly on the relay with --cert/--key, or keep its listener behind Tailscale Serve or Caddy. Owner tokens are read from a mode-0600 file rather than command arguments.",
+		examples: []string{"sessions relay status", "sessions relay set https://relay.example", "sessions relay disable", "sessions relay install --listen 127.0.0.1:8899 --allow-file ~/.config/sessions/relay-allow.json"}, run: (*app).cmdRelay,
+	},
+	{
 		name: "uninstall", usage: "uninstall",
 		summary: "stop and remove the development daemon", group: adminCommandGroup,
 		longHelp: "Stop and remove the development sessionsd macOS LaunchAgent.",

@@ -159,6 +159,7 @@ struct NativePairingClaim {
     lan_endpoint: Option<String>,
     tailnet_endpoint: Option<String>,
     tailnet_ip_endpoint: Option<String>,
+    relay_endpoint: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -171,6 +172,7 @@ struct NativeAgentMachine {
     lan_endpoint: Option<String>,
     tailnet_endpoint: Option<String>,
     tailnet_ip_endpoint: Option<String>,
+    relay_endpoint: Option<String>,
     device_id: Option<String>,
     token: String,
 }
@@ -271,6 +273,7 @@ struct PairingClaimResponse {
     lan_endpoint: Option<String>,
     tailnet_endpoint: Option<String>,
     tailnet_ip_endpoint: Option<String>,
+    relay_endpoint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

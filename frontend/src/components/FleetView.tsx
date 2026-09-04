@@ -620,7 +620,8 @@ function serverTransportCandidates(server: ServerConfig): NonNullable<ServerConf
 	return [
 		{ endpoint: server.lanEndpoint ?? '', transport: 'lan' as const },
 		{ endpoint: server.tailnetEndpoint ?? '', transport: 'tailnet' as const },
-		{ endpoint: server.tailnetIpEndpoint ?? '', transport: 'tailnet-ip' as const }
+		{ endpoint: server.tailnetIpEndpoint ?? '', transport: 'tailnet-ip' as const },
+		{ endpoint: server.relayEndpoint ?? '', transport: 'relay' as const }
 	].filter((candidate) => candidate.endpoint !== '');
 }
 

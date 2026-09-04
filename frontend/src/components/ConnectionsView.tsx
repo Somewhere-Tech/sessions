@@ -18,6 +18,7 @@ import { useMachineAccessPairing } from '../hooks/useMachineAccessPairing';
 import { SomewhereCard } from './SomewhereCard';
 import { FleetAccountCard } from './FleetAccountCard';
 import { ServerSelector } from './ServerSelector';
+import { RelayConnectionCard } from './RelayConnectionCard';
 
 interface PairState {
   url: string;
@@ -248,7 +249,7 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
     <div className="connections-view">
       <div className="connections-shell">
         <header className="connections-heading">
-          <div><span>Private by default</span><h1>Connections</h1><p>{clientOnly ? `This device views sessions hosted by ${machineName}. Sessions never relays terminal traffic.` : 'This computer is the server. Sessions never relays terminal traffic.'}</p></div>
+          <div><span>Private by default</span><h1>Connections</h1><p>{clientOnly ? `This device views sessions hosted by ${machineName}. Direct routes stay preferred.` : 'This computer is the server. Direct routes stay preferred.'}</p></div>
           <button type="button" className="btn btn-ghost" disabled={busy !== null} onClick={() => void refresh()}>Refresh status</button>
         </header>
 
@@ -285,7 +286,7 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
           </ConnectionCard>
 
           <ConnectionCard step="03" title="Anywhere" state={clientOnly ? (connectedViaTailnet ? 'Tailscale on' : `Check on ${machineName}`) : remote?.enabled ? 'Tailscale on' : 'Off'} active={clientOnly ? connectedViaTailnet : remote?.enabled === true}>
-            <p>Tailscale Serve keeps the connection inside your tailnet with HTTPS terminating on {clientOnly ? machineName : 'this Mac'}. Sessions operates no relay.</p>
+            <p>Tailscale Serve keeps the connection inside your tailnet with HTTPS terminating on {clientOnly ? machineName : 'this Mac'}.</p>
             {clientOnly ? <HostConnectionChoice hostName={machineName} /> : null}
             {clientOnly && !connectedViaTailnet ? <div className="connection-privacy-note"><strong>Host-only status</strong><span>This viewer can confirm LAN access, but the host does not expose its Tailscale configuration. Open Sessions on {machineName} to inspect it.</span></div> : null}
             {remote?.endpoint ? <div className="connection-endpoint">{remote.endpoint}</div> : null}
@@ -293,6 +294,8 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
             {!clientOnly ? <label className="settings-select-row"><span><strong>Reachable over Tailscale automatically</strong><small>Sessions maintains HTTPS by name and HTTP on the tailnet address.</small></span><input type="checkbox" checked={remote?.auto ?? true} disabled={busy !== null} onChange={(event) => { if (!busy) void updateRemoteAuto(event.currentTarget.checked, setRemote, setMessage, setBusy); }} /></label> : null}
           </ConnectionCard>
         </section>
+
+        {!clientOnly ? <RelayConnectionCard /> : null}
 
         <section className="pair-device-card">
           <div><span className="connections-section-kicker">Tailscale + nearby · no codes</span><h2>Connect to another Sessions machine</h2><p>Search encrypted Tailscale first and nearby Bonjour as a trusted-network fallback. The other machine must approve this device.</p></div>
