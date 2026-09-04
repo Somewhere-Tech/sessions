@@ -44,7 +44,11 @@ func TestLANDiscoverExplainsEmptyBrowseWhileAdvertising(t *testing.T) {
 	daemon.handler.lan.registration = &fakeBonjourRegistration{}
 	daemon.handler.lan.mu.Unlock()
 	response := serve(t, daemon.handler, http.MethodGet, "/api/lan/discover?timeout=10ms", nil, "127.0.0.1:1", nil)
-	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "macOS has not allowed Sessions") ||
+	if initialLocalNetworkPermission() == "not-required" {
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	} else if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "macOS has not allowed Sessions") ||
 		!strings.Contains(response.Body.String(), localnetwork.Reason) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}

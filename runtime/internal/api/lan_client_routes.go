@@ -83,7 +83,7 @@ func (s *Server) serveLANDiscover(response http.ResponseWriter, request *http.Re
 		return
 	}
 	machines := s.verifiedLANCandidates(ctx, candidates)
-	if len(machines) == 0 && s.lan.state().Bonjour.Advertised {
+	if len(machines) == 0 && s.lan.state().Bonjour.Advertised && initialLocalNetworkPermission() != "not-required" {
 		s.lan.markPermission("denied")
 		s.sendJSON(response, http.StatusForbidden, map[string]any{
 			"error": localnetwork.Message, "reason": localnetwork.Reason,
