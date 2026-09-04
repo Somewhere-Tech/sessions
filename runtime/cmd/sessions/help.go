@@ -373,6 +373,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions pair", "sessions pair --ttl 5m --name 'Uzair phone'", "sessions --json pair"}, run: (*app).cmdPair,
 	},
 	{
+		name: "account", usage: "account <login [--email EMAIL] [--code CODE] | logout | status | key>",
+		summary: "manage the optional Somewhere fleet account", group: adminCommandGroup, localJSON: true,
+		longHelp: "Sign this machine in to the optional Somewhere fleet directory with an emailed magic-link code, inspect or revoke that login, or print the machine's Ed25519 public key. Login stores an access/refresh pair and the machine private key in atomic mode-0600 files owned by sessionsd; neither command exposes the private key. Sessions continues to work over LAN and the user's tailnet without an account.",
+		examples: []string{"sessions account login", "sessions account login --email owner@example.com", "sessions account status", "sessions account key", "sessions account logout"}, run: (*app).cmdAccount,
+	},
+	{
 		name: "devices", usage: "devices [revoke <id-or-prefix>]",
 		summary: "list or revoke paired devices", group: adminCommandGroup, localJSON: true,
 		longHelp: "List per-device credentials by id prefix, name, creation time, and last use. Revoke resolves an exact id or unique prefix, reports the matched device, and invalidates its token immediately.",

@@ -38,6 +38,7 @@ internal/api internal/backup
 internal/api internal/codexapp
 internal/api internal/delivery
 internal/api internal/discovery
+internal/api internal/fleetaccount
 internal/api internal/fleetendpoint
 internal/api internal/integrations
 internal/api internal/lan

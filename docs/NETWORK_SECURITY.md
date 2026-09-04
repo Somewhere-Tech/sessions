@@ -21,11 +21,54 @@ them.
 - Sessions does not add third-party analytics, advertising SDKs, or silent crash
   uploads. Local diagnostics stay local until the user previews and explicitly
   sends them.
-- LAN, Tailscale reachability, pairing, a future cloud worker, backup, and
-  support access are separate capabilities. Tailscale reachability is on by
+- LAN, Tailscale reachability, pairing, the optional Somewhere fleet account,
+  a future cloud worker, backup, and support access are separate capabilities.
+  Tailscale reachability is on by
   default when this Mac is already signed in to Tailscale, and has its own
   opt-out; it never enables the trusted-LAN listener or creates a
   general-purpose tunnel.
+
+## Optional Somewhere fleet account
+
+The account tier is opt-in during host onboarding and in Settings › Fleet; the
+CLI equivalent is `sessions account login`. Skipping it is a complete setup and
+does not disable loopback, trusted-LAN, Tailscale, discovery, pairing, or local
+session work. Sign out revokes the Somewhere auth session and removes this
+machine's directory row; it does not disable either local transport or end a
+running session.
+
+sessionsd sends the email address only to the `sessions-fleet` authentication
+functions to request and verify a Somewhere magic link. It stores the returned
+access, refresh, and logout-session tokens together in
+`fleet-account.json` under the daemon state root. The file is replaced
+atomically with mode `0600`. Every authenticated request sends the access token
+and the refresh token. sessionsd adopts a rotated pair only when the same
+response contains both `X-New-Access-Token` and `X-New-Refresh-Token`; a lone
+header is ignored, requests are serialized around rotation, and a network
+error never clears the stored login.
+
+The machine's Ed25519 private/public key pair is stored separately in
+`fleet-machine-key.json`, also atomically written with mode `0600`. This first
+account slice deliberately uses a private state file; moving the private key to
+the OS keychain is later hardening. `sessions account key` exposes only the
+unpadded-base64url public key.
+
+After sign-in, the platform sees only the app-user identity and owner-scoped
+machine directory metadata: the computer name, stable machine ID, enabled LAN,
+tailnet, and relay endpoint hints, machine public key, daemon version, and
+last-seen time. It never receives provider credentials, prompts, responses,
+transcripts, terminal bytes, session names, paths, tags, search indexes, usage
+events, logs, or the machine private key. The daemon registers after login and
+startup and sends a heartbeat every five minutes.
+
+Every machine write carries the Somewhere app-user access/refresh pair and an
+Ed25519 signature over the machine ID, Unix timestamp, nonce, method, path, and
+SHA-256 of the exact request body. The platform rejects timestamps outside five
+minutes, stores accepted nonces in an owner-scoped replay table, and rate-limits
+heartbeat retries. The registration public key may establish a new row; once a
+row exists, updates must verify with its stored key. These requests update
+directory presence only. They do not grant a client a Sessions device
+credential or create a tunnel to sessionsd.
 
 ## Claude Remote Control consent
 

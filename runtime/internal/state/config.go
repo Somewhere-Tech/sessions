@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -28,16 +29,20 @@ type Config struct {
 	// (~/.local/state/sessions on Unix, %LOCALAPPDATA%\Sessions\state on
 	// Windows). Unlike the runner directory, idle and push state do not follow
 	// SESSIONS_STATE_DIR.
-	UserStateRoot   string
-	RunnerStateDir  string
-	TokenPath       string
-	OpenPath        string
-	MachineIDPath   string
-	SettingsPath    string
-	LaunchAgentsDir string
-	GlobalHooksPath string
-	WebDir          string
-	RunnerPath      string
+	UserStateRoot      string
+	RunnerStateDir     string
+	TokenPath          string
+	OpenPath           string
+	MachineIDPath      string
+	FleetAccountPath   string
+	FleetKeyPath       string
+	FleetURL           string
+	FleetRelayEndpoint string
+	SettingsPath       string
+	LaunchAgentsDir    string
+	GlobalHooksPath    string
+	WebDir             string
+	RunnerPath         string
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -66,23 +71,27 @@ func ConfigFromEnv() (Config, error) {
 	}
 
 	return Config{
-		Host:            host,
-		Port:            port,
-		DefaultShell:    getenv("SHELL", defaultShell()),
-		DefaultCwd:      getenv("HOME", home),
-		DefaultCols:     DefaultCols,
-		DefaultRows:     DefaultRows,
-		StateRoot:       stateRoot,
-		UserStateRoot:   userStateRoot,
-		RunnerStateDir:  runnerDir,
-		TokenPath:       filepath.Join(stateRoot, "token"),
-		OpenPath:        filepath.Join(stateRoot, "open"),
-		MachineIDPath:   filepath.Join(userStateRoot, "machine-id"),
-		SettingsPath:    filepath.Join(userStateRoot, "settings.json"),
-		LaunchAgentsDir: serviceDefinitionsDir(home),
-		GlobalHooksPath: filepath.Join(userConfigRoot(home), "hooks.json"),
-		WebDir:          webDir,
-		RunnerPath:      resolveRunnerPath(os.Getenv("SESSIONS_RUNNER")),
+		Host:               host,
+		Port:               port,
+		DefaultShell:       getenv("SHELL", defaultShell()),
+		DefaultCwd:         getenv("HOME", home),
+		DefaultCols:        DefaultCols,
+		DefaultRows:        DefaultRows,
+		StateRoot:          stateRoot,
+		UserStateRoot:      userStateRoot,
+		RunnerStateDir:     runnerDir,
+		TokenPath:          filepath.Join(stateRoot, "token"),
+		OpenPath:           filepath.Join(stateRoot, "open"),
+		MachineIDPath:      filepath.Join(userStateRoot, "machine-id"),
+		FleetAccountPath:   filepath.Join(stateRoot, "fleet-account.json"),
+		FleetKeyPath:       filepath.Join(stateRoot, "fleet-machine-key.json"),
+		FleetURL:           getenv("SESSIONS_FLEET_URL", "https://sessions-fleet.somewhere.site"),
+		FleetRelayEndpoint: strings.TrimSpace(os.Getenv("SESSIONS_FLEET_RELAY_ENDPOINT")),
+		SettingsPath:       filepath.Join(userStateRoot, "settings.json"),
+		LaunchAgentsDir:    serviceDefinitionsDir(home),
+		GlobalHooksPath:    filepath.Join(userConfigRoot(home), "hooks.json"),
+		WebDir:             webDir,
+		RunnerPath:         resolveRunnerPath(os.Getenv("SESSIONS_RUNNER")),
 	}, nil
 }
 

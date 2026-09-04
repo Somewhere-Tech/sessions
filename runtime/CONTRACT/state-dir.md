@@ -11,6 +11,8 @@ root.
 ~/.local/state/sessions/
 ├── token
 ├── open
+├── fleet-account.json
+├── fleet-machine-key.json
 ├── vapid.json
 ├── push-subscriptions.json
 ├── delivery-operations/
@@ -51,6 +53,7 @@ daemon never reads the installed daemon's credentials or ledgers
 override:
 
 - `token` and `open`;
+- `fleet-account.json` and `fleet-machine-key.json`;
 - `uploads/` (`runtime/internal/api/files.go` `uploadsDir`), matching how usage
   and integration-error state already resolve;
 - `delivery-operations/`, the content-free idempotency receipts for composer
@@ -91,6 +94,26 @@ every WS auth check calls the token getter even in open mode.
 Only existence matters; contents and mode are not read. Its presence bypasses
 HTTP and WS token comparison but does not bypass Origin checks. Removing it
 immediately restores auth on later requests.
+
+### `fleet-account.json`
+
+Optional, sessionsd-printed JSON containing the Somewhere app-user access,
+refresh, and logout-session tokens, the account's public user fields, and the
+last successful registration/heartbeat or registration error. The complete
+document is replaced atomically through a synced temporary file with mode 0600.
+It follows `SESSIONS_STATE_DIR`, so an isolated daemon never reads or rotates
+the installed daemon's login. A response rotates the token pair only when it
+contains both `X-New-Access-Token` and `X-New-Refresh-Token`; a network error or
+one incomplete header never clears or partly replaces the stored pair.
+
+### `fleet-machine-key.json`
+
+Optional, sessionsd-printed JSON containing one Ed25519 public/private machine
+key as unpadded base64url. It is created on first `sessions account key` or
+account registration and replaced atomically with mode 0600. The private key is
+never returned over the HTTP API. This file follows `SESSIONS_STATE_DIR` and is
+the first account-tier storage form; a future version may move the private key
+to the OS keychain.
 
 ### `vapid.json`
 

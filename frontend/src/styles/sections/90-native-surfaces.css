@@ -665,7 +665,7 @@
 .onboarding-brand strong { color: var(--accent); font-size: 12px; }
 .onboarding-brand em { color: var(--fg); font-size: 14px; font-style: normal; font-weight: 700; }
 .onboarding-progress { display: flex; width: 105px; gap: 6px; margin-bottom: 28px; }
-.onboarding-progress span { width: 31px; height: 3px; border-radius: 999px; background: var(--border-strong); }
+.onboarding-progress span { flex: 1; height: 3px; border-radius: 999px; background: var(--border-strong); }
 .onboarding-progress span.is-active { background: var(--accent); }
 .onboarding-kicker {
   color: var(--accent);
@@ -705,6 +705,20 @@
 .onboarding-back { align-self: flex-start; margin-top: 14px; padding: 0; border: 0; background: transparent; color: var(--fg-dim); cursor: pointer; }
 .onboarding-back:hover { color: var(--fg); }
 .onboarding-footnote { display: block; margin-top: 18px; color: var(--fg-faint); font-size: 12px; line-height: 1.5; }
+.onboarding-status { margin-bottom: 16px; color: var(--fg-dim); font-size: 13px; line-height: 1.45; }
+.onboarding-account-fields,
+.fleet-account-form { display: grid; gap: 9px; margin: 0 0 16px; }
+.onboarding-account-fields input,
+.fleet-account-form input { min-height: 40px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); outline: none; background: var(--bg-base); color: var(--fg); }
+.onboarding-account-fields input:focus,
+.fleet-account-form input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.fleet-account-card { display: grid; gap: 14px; padding: 20px; }
+.fleet-account-card p { margin: 7px 0 0; color: var(--fg-dim); font-size: 13px; line-height: 1.5; }
+.fleet-account-card > small { color: var(--fg-faint); font-size: 12px; }
+.fleet-account-form { grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto; margin: 0; }
+.fleet-account-signed-in { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; align-items: center; }
+.fleet-account-signed-in div { display: grid; gap: 3px; }
+.fleet-account-signed-in small { color: var(--fg-faint); font-size: 12px; }
 
 @media (max-width: 980px) {
   .connection-ladder { grid-template-columns: 1fr; }

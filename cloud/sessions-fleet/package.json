@@ -1,0 +1,8 @@
+{
+  "name": "sessions-fleet",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke": "node scripts/smoke.mjs"
+  }
+}

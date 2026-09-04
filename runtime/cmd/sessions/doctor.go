@@ -81,6 +81,7 @@ func (a *app) cmdDoctor() error {
 			}
 		}
 		writeDoctorTailscale(a.stdout, deepMap["tailscale"])
+		writeDoctorFleetAccount(a.stdout, deepMap["account"])
 	}
 	writeDoctorLocalNetwork(a.stdout, lan)
 	fmt.Fprintf(a.stdout, "%s%s%s%s%sSTATUS\n",
@@ -156,6 +157,26 @@ func writeDoctorTailscale(writer io.Writer, value any) {
 	}
 	if ipEndpoint != "" {
 		fmt.Fprintf(writer, ", tailnet-ip=%s", ipEndpoint)
+	}
+	fmt.Fprint(writer, "\n\n")
+}
+
+func writeDoctorFleetAccount(writer io.Writer, value any) {
+	state, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	signedIn, _ := state["signedIn"].(bool)
+	status := "signed out"
+	if signedIn {
+		status = "signed in"
+	}
+	fmt.Fprintf(writer, "somewhere account: %s", status)
+	if registered, _ := state["lastRegistrationAt"].(string); registered != "" {
+		fmt.Fprintf(writer, ", machine registered=%s", registered)
+	}
+	if detail, _ := state["lastRegistrationError"].(string); detail != "" {
+		fmt.Fprintf(writer, ", registration pending=%s", detail)
 	}
 	fmt.Fprint(writer, "\n\n")
 }

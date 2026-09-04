@@ -2,6 +2,7 @@
 .gitignore
 AGENTS.md
 ARCHITECTURE.md
+cloud
 Formula
 LICENSE
 README.md

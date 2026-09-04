@@ -136,7 +136,7 @@ func main() {
 			serveErrors <- err
 		}
 	}()
-	defer startAutomaticRemote(handler, remotePreview)()
+	defer startAutomaticServices(handler, remotePreview)()
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	cleanupPlatformStop := watchPlatformStop(stop)
@@ -151,6 +151,16 @@ func main() {
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("sessionsd shutdown: %v", err)
+	}
+}
+
+func startAutomaticServices(handler *api.Server, remotePreview bool) func() {
+	stopRemote := startAutomaticRemote(handler, remotePreview)
+	accountContext, stopAccount := context.WithCancel(context.Background())
+	handler.StartFleetAccount(accountContext, log.Printf)
+	return func() {
+		stopAccount()
+		stopRemote()
 	}
 }
 

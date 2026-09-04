@@ -218,6 +218,10 @@ No auth. Returns 200:
     "auto": true,
     "enabled": true
   },
+  "account": {
+    "signedIn": true,
+    "lastRegistrationAt": "2026-09-03T20:15:00Z"
+  },
   "access": { "open": false },
   "system": { "os": "darwin", "arch": "arm64" },
   "compatibility": {
@@ -255,6 +259,12 @@ origin, `tailnetIpEndpoint` is the direct CGNAT HTTP origin, and `auto` is the
 persisted default-on choice. Missing endpoints are omitted. `enabled` means at
 least one automatic listener is active; `preview`, when true, means endpoints
 were detected without changing Serve or opening the direct listener.
+
+`account.signedIn` reports whether sessionsd holds a complete Somewhere
+access/refresh pair. `lastRegistrationAt` and `lastRegistrationError` are
+omitted until one exists. This health projection never includes the email,
+token pair, machine ID, or public key, because `/api/health` remains available
+without authentication. Deep health carries the same `account` object.
 
 `system.os` uses Go's stable platform names (`darwin`, `windows`, `linux`, and
 so on) so native clients can choose a machine icon without guessing from a
@@ -313,6 +323,34 @@ Requires authentication (loopback peers are already authorized). Returns 200:
 `uptimeSec` is rounded `process.uptime()`. `claudeEvents` is the absolute count
 including events evicted from the in-memory front. `lastDataAgeMs` is computed
 at request time.
+
+### `/api/account/*`
+
+Auth required and local-principal only. A paired device, remote master token,
+or open-access caller receives 403; the account token pair and machine private
+key therefore remain daemon-owned on their host.
+
+- `GET /api/account` returns
+  `{"signed_in":false}` or the stored public user, machine public key, and
+  optional `last_registration_at`, `last_registration_error`, and
+  `last_heartbeat_at` fields. It never returns access, refresh, logout-session,
+  or private-key bytes.
+- `POST /api/account/magic-link` with `{"email":"..."}` requests a
+  Somewhere magic link. Success is `{"ok":true}`.
+- `POST /api/account/verify` with `{"token":"<code-or-link-token>"}`
+  exchanges the single-use token, atomically stores the returned token pair,
+  attempts immediate machine registration, and returns the same shape as
+  `GET /api/account`. A registration failure is preserved in status rather
+  than invalidating the consumed login token.
+- `POST /api/account/logout` removes the signed machine row, revokes the
+  Somewhere auth session, and then removes local account state. A network or
+  platform failure leaves local state intact so the operation can be retried.
+- `GET /api/account/key` creates the machine key when missing and returns only
+  `{"public_key":"<unpadded-base64url-Ed25519-key>"}`.
+
+Wrong methods return 405. Invalid request bodies return 400; an unavailable
+Somewhere auth or directory request returns 502. Account storage failures and
+an unavailable machine identity return 500.
 
 ### `GET /api/remote`
 

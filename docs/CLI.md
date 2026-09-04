@@ -97,6 +97,7 @@ Admin/operational:
   uninstall                stop and remove the development daemon
   update                   securely update Sessions.app
   pair                     show a one-time device pairing code
+  account                  manage the optional Somewhere fleet account
   devices                  list or revoke paired devices
   machines                 discover, approve, and save Sessions machines
   access                   review and decide machine access requests
@@ -1269,6 +1270,26 @@ Examples:
   sessions pair
   sessions pair --ttl 5m --name 'Uzair phone'
   sessions --json pair
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions account`
+
+```text
+Usage:
+  sessions account <login [--email EMAIL] [--code CODE] | logout | status | key>
+
+manage the optional Somewhere fleet account
+
+Sign this machine in to the optional Somewhere fleet directory with an emailed magic-link code, inspect or revoke that login, or print the machine's Ed25519 public key. Login stores an access/refresh pair and the machine private key in atomic mode-0600 files owned by sessionsd; neither command exposes the private key. Sessions continues to work over LAN and the user's tailnet without an account.
+
+Examples:
+  sessions account login
+  sessions account login --email owner@example.com
+  sessions account status
+  sessions account key
+  sessions account logout
 
 --json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

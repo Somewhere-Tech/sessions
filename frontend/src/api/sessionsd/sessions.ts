@@ -210,6 +210,11 @@ export interface ServerHealth {
     enabled: boolean;
     preview?: boolean;
   };
+  account?: {
+    signedIn: boolean;
+    lastRegistrationAt?: string;
+    lastRegistrationError?: string;
+  };
   access?: { open: boolean };
   system?: { os: string; arch: string };
   compatibility?: {
@@ -219,6 +224,39 @@ export interface ServerHealth {
   discovering: boolean;
   sessionsLoaded: number;
   restore?: { pending: number; automaticPinnedLimit: number };
+}
+
+export interface FleetAccountStatus {
+  signed_in: boolean;
+  user?: { id: string; email: string; display_name?: string };
+  machine_public_key?: string;
+  last_registration_at?: string;
+  last_registration_error?: string;
+  last_heartbeat_at?: string;
+}
+
+export async function fetchFleetAccount(signal?: AbortSignal): Promise<FleetAccountStatus> {
+  const r = await apiFetch(`${httpBase()}/api/account`, { signal });
+  return featureJSON<FleetAccountStatus>(r, 'Somewhere fleet account');
+}
+
+export async function requestFleetMagicLink(email: string): Promise<void> {
+  const r = await apiFetch(`${httpBase()}/api/account/magic-link`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email })
+  });
+  await featureJSON<{ ok: boolean }>(r, 'Somewhere sign-in');
+}
+
+export async function verifyFleetMagicLink(token: string): Promise<FleetAccountStatus> {
+  const r = await apiFetch(`${httpBase()}/api/account/verify`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token })
+  });
+  return featureJSON<FleetAccountStatus>(r, 'Somewhere sign-in');
+}
+
+export async function logoutFleetAccount(): Promise<void> {
+  const r = await apiFetch(`${httpBase()}/api/account/logout`, { method: 'POST' });
+  await featureJSON<{ ok: boolean }>(r, 'Somewhere sign-out');
 }
 
 export interface RemoteState {

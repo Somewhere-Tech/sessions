@@ -112,6 +112,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if s.handleFleetRelay(response, request, corsOrigin) {
 		return
 	}
+	if s.handleFleetAccountRoute(response, request, corsOrigin) {
+		return
+	}
 	// Deep health is dispatched after authorization, unlike plain /api/health.
 	// It reports live session UUIDs and host PIDs, so an unauthenticated peer
 	// on the LAN listener or the Tailscale Serve frontend could otherwise
@@ -125,6 +128,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			"status":    restore["status"],
 			"access":    map[string]any{"open": s.openAccessEnabled()},
 			"tailscale": s.tailscaleHealth(),
+			"account":   s.fleetAccountHealth(),
 			"compatibility": map[string]any{
 				"api": map[string]any{
 					"current": apiProtocolVersion, "minimumClient": minimumAPIClient, "maximumClient": maximumAPIClient,
@@ -424,6 +428,7 @@ func (s *Server) plainHealth(request *http.Request) map[string]any {
 		"listen":    map[string]any{"host": s.config.Host, "port": s.config.Port},
 		"lan":       lanState,
 		"tailscale": s.tailscaleHealth(),
+		"account":   s.fleetAccountHealth(),
 		"access":    map[string]any{"open": s.openAccessEnabled()},
 		"system":    map[string]any{"os": goruntime.GOOS, "arch": goruntime.GOARCH},
 		"compatibility": map[string]any{

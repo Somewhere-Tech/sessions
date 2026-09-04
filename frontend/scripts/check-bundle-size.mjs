@@ -20,7 +20,9 @@ const limits = {
   entryCSS: { raw: 270_000, gzip: 45_000 },
   // The client-only fleet relay adds a measured 1.43 KB of total JavaScript.
   // Keep only a narrow 2 KB allowance for that authenticated routing surface.
-  totalJavaScript: 1_227_000,
+  // Optional fleet-account onboarding and Settings add a measured 6.24 KB;
+  // keep a narrow 8 KB allowance for that magic-link and sign-out surface.
+  totalJavaScript: 1_235_000,
 };
 
 const entryJavaScript = assets.find((asset) => /^index-[^.]+\.js$/.test(asset.name));

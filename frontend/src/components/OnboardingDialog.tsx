@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { requestFleetMagicLink, verifyFleetMagicLink } from '../api/sessionsd';
 import { ProviderMark } from './ProviderBadge';
 
 interface Props {
@@ -10,7 +11,7 @@ interface Props {
 }
 
 export function OnboardingDialog({ machine, busy, error, onAllowLocalNetwork, onChoose }: Props): JSX.Element {
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
   const [remoteControl, setRemoteControl] = useState<'enabled' | 'local-only'>('local-only');
   const [localNetworkBusy, setLocalNetworkBusy] = useState(false);
 
@@ -83,9 +84,11 @@ export function OnboardingDialog({ machine, busy, error, onAllowLocalNetwork, on
             <button type="button" className="onboarding-back" disabled={localNetworkBusy} onClick={() => setStep(2)}>Back</button>
             <small className="onboarding-footnote">Retry in Settings › Fleet. Tailscale is exempt.</small>
           </>
+        ) : step === 4 ? (
+          <SomewhereOnboardingStep onBack={() => setStep(3)} onContinue={() => setStep(5)} />
         ) : (
           <>
-            <OnboardingProgress step={4} />
+            <OnboardingProgress step={5} />
             <span className="onboarding-kicker">Delegated tasks</span>
             <h1 id="onboarding-title">How independently should child agents work?</h1>
             <p className="onboarding-lede">A manager session can start short-lived task workers. Sessions can give those workers the manager’s existing permissions, or let them work without approval prompts.</p>
@@ -102,7 +105,7 @@ export function OnboardingDialog({ machine, busy, error, onAllowLocalNetwork, on
                 Make them inherit my permissions
               </button>
             </div>
-            <button type="button" className="onboarding-back" disabled={busy} onClick={() => setStep(3)}>Back</button>
+            <button type="button" className="onboarding-back" disabled={busy} onClick={() => setStep(4)}>Back</button>
             <small className="onboarding-footnote">Autonomous is the default so background work finishes without you. You can change this later in Settings; an agent cannot widen this for itself.</small>
           </>
         )}
@@ -113,8 +116,56 @@ export function OnboardingDialog({ machine, busy, error, onAllowLocalNetwork, on
 
 function OnboardingProgress({ step }: { step: number }): JSX.Element {
   return (
-    <div className="onboarding-progress" aria-label={`Step ${step} of 4`}>
-      {[1, 2, 3, 4].map((position) => <span key={position} className={position <= step ? 'is-active' : undefined} />)}
+    <div className="onboarding-progress" aria-label={`Step ${step} of 5`}>
+      {[1, 2, 3, 4, 5].map((position) => <span key={position} className={position <= step ? 'is-active' : undefined} />)}
     </div>
+  );
+}
+
+function SomewhereOnboardingStep({ onBack, onContinue }: { onBack: () => void; onContinue: () => void }): JSX.Element {
+  const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const submit = async (): Promise<void> => {
+    setBusy(true); setMessage(null); setFailed(false);
+    try {
+      await requestFleetMagicLink(email);
+      setSent(true); setMessage(`Somewhere sent a single-use code or link to ${email.trim()}.`);
+    } catch (reason) {
+      setFailed(true);
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally { setBusy(false); }
+  };
+  const verify = async (): Promise<void> => {
+    setBusy(true); setMessage(null); setFailed(false);
+    try {
+      await verifyFleetMagicLink(code);
+      onContinue();
+    } catch (reason) {
+      setFailed(true);
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally { setBusy(false); }
+  };
+  return (
+    <>
+      <OnboardingProgress step={4} />
+      <span className="onboarding-kicker">Optional fleet account</span>
+      <h1 id="onboarding-title">Sign in to Somewhere?</h1>
+      <p className="onboarding-lede">A Somewhere account registers this machine so your fleet can appear on every signed-in device. Sessions still works without one.</p>
+      <div className="onboarding-privacy-note"><strong>Directory metadata only</strong><span>Somewhere sees this machine’s name, reachable endpoints, public key, and Sessions version—never session content or provider credentials.</span></div>
+      <div className="onboarding-account-fields">
+        <input type="email" value={email} disabled={busy || sent} placeholder="you@example.com" autoComplete="email" onChange={(event) => setEmail(event.currentTarget.value)} />
+        {sent ? <input value={code} disabled={busy} placeholder="Six-digit code or link token" autoComplete="one-time-code" onChange={(event) => setCode(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === 'Enter' && code.trim()) void verify(); }} /> : null}
+      </div>
+      {message ? <div className={failed ? 'onboarding-error' : 'onboarding-status'} role={failed ? 'alert' : 'status'}>{message}</div> : null}
+      <div className="onboarding-actions">
+        <button type="button" className="btn btn-primary" disabled={busy || (sent ? !code.trim() : !email.trim())} onClick={() => void (sent ? verify() : submit())}>{busy ? 'Waiting…' : sent ? 'Verify code' : 'Sign in to Somewhere'}</button>
+        <button type="button" className="btn btn-ghost" disabled={busy} onClick={onContinue}>Skip — Sessions works on this network without it</button>
+      </div>
+      <button type="button" className="onboarding-back" disabled={busy} onClick={onBack}>Back</button>
+    </>
   );
 }

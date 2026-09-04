@@ -11,6 +11,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/backup"
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
 	"github.com/somewhere-tech/sessions/runtime/internal/delivery"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetaccount"
 	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
@@ -56,6 +57,8 @@ type Server struct {
 	deliveries           *delivery.Store
 	identity             machineIdentity
 	identityError        error
+	account              *fleetaccount.Manager
+	accountError         error
 	submits              *sessionMutexes
 	lanFallbackLog       sync.Once
 }
@@ -197,6 +200,7 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 		}
 		return nil
 	}
+	server.initFleetAccount()
 	// Create the token while the daemon is starting, including when the open
 	// escape hatch is present. This keeps a fresh install secure without an
 	// inbound request and makes `sessions token` immediately useful. A failure

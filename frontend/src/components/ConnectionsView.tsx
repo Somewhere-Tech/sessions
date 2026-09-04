@@ -16,6 +16,7 @@ import { claimNativeMachinePairing } from '../lib/hostedBootstrap';
 import { tailnetClientID } from '../lib/tailnetClient';
 import { useMachineAccessPairing } from '../hooks/useMachineAccessPairing';
 import { SomewhereCard } from './SomewhereCard';
+import { FleetAccountCard } from './FleetAccountCard';
 import { ServerSelector } from './ServerSelector';
 
 interface PairState {
@@ -252,6 +253,8 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
         </header>
 
         {message ? <div className="connections-message" role="status">{message}</div> : null}
+
+        <FleetAccountCard clientOnly={clientOnly} />
 
         <section className="connection-ladder" aria-label="Connection options">
           <ConnectionCard step="01" title={clientOnly ? machineName : 'This computer'} state={clientOnly ? 'Connected host' : 'Always private'} active>

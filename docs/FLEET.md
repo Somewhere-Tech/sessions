@@ -1,11 +1,52 @@
-# Fleet without an account
+# Fleet
+
+Sessions has two additive fleet tiers. The default needs no account: machines
+find each other over a trusted LAN or the user's own tailnet, and pair with a
+one-time code. An optional Somewhere sign-in registers this machine in the
+user's account so the same fleet directory can appear on every signed-in
+device. Signing in does not move sessions, provider credentials, transcripts,
+terminal output, search indexes, or usage records off the machine.
+
+## Optional Somewhere account
+
+First-run onboarding offers **Sign in to Somewhere** and an equally complete
+**Skip — Sessions works on this network without it** path. The same choice is
+available later in Settings › Fleet or from the CLI:
+
+```sh
+sessions account login
+sessions account status
+sessions account key
+sessions account logout
+```
+
+Login asks for an email, sends a single-use magic-link code, and waits for that
+code. The daemon stores the returned access/refresh pair in its private state
+directory and creates one Ed25519 machine key there; both files are written
+atomically with mode `0600`. The private key never leaves the machine. A later
+release may move it into the OS keychain without changing its public identity.
+
+After login, sessionsd registers the computer name, currently known LAN,
+tailnet, and relay endpoint hints, machine public key, daemon version, and
+last-seen time. Registration requests are signed by the machine key and carry a
+single-use nonce with a five-minute timestamp window. sessionsd heartbeats every
+five minutes. `sessions doctor` and `/api/health` report whether the daemon is
+signed in and its last registration result.
+
+Somewhere hosts sign-in and this owner-scoped directory. It does not receive
+session content and does not become a terminal or transcript relay. The
+directory alone does not grant a device authority to control another machine;
+the no-account pairing and approval rules below remain the trust boundary in
+this release.
+
+## No-account tier
 
 Sessions machines find and trust each other directly. The no-account tier has
 no Somewhere relay, broker, or credential exchange: a client connects to a
 daemon over a trusted LAN or the user's own Tailscale network, and session data
 stays on that path.
 
-## How machines are found
+### How machines are found
 
 A host can publish up to three endpoint kinds. Every discovery record, pairing
 link, saved machine, and fleet relay keeps them distinct and tries them in this
@@ -23,7 +64,7 @@ Clients verify `/api/health` before presenting or selecting a candidate. A
 saved machine retains all known routes so a network change does not require
 pairing again.
 
-## Pair by possession
+### Pair by possession
 
 On the host, choose Settings › Fleet › **Pair a device**, or run:
 
@@ -56,7 +97,7 @@ single use, disappears on daemon restart, and can be revoked before use from
 the countdown card. Used, expired, revoked, and unknown tickets all return one
 instructional `410 Gone` response without revealing which condition applied.
 
-## Trust after pairing
+### Trust after pairing
 
 Each paired device receives a separate bearer credential, not the daemon's
 master token. It is still a host-administrator credential: the device can view,
@@ -74,7 +115,7 @@ audit log. Pairing does not create an account or copy provider credentials.
 For the full threat model and transport rules, see
 [NETWORK_SECURITY.md](NETWORK_SECURITY.md).
 
-## Discovery requests remain available
+### Discovery requests remain available
 
 Choosing a Bonjour-discovered machine without a ticket uses the older
 request/accept flow. The host sees the observed LAN address or verified

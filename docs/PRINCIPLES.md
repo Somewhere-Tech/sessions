@@ -123,7 +123,8 @@ session. Protocol ranges, not display-version equality, determine compatibility.
 ## Open local runtime, explicit hosted boundary
 
 The code that runs on a user's device, its local formats, and its versioned
-protocols are buildable from this repository. Optional Somewhere account,
-backup, relay, billing, abuse-control, and hosted-worker services may live in
-private repositories and consume those public contracts. See
+protocols are buildable from this repository. The minimal optional Somewhere
+sign-in and machine directory is open beside it so the account boundary is
+reviewable. Backup, relay, billing, abuse-control, and hosted-worker services
+may live in private repositories and consume those public contracts. See
 [`OPEN_SOURCE_BOUNDARY.md`](OPEN_SOURCE_BOUNDARY.md).
