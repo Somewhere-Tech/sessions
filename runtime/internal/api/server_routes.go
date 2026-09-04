@@ -445,8 +445,13 @@ func (s *Server) rebootRestoreHealth() map[string]any {
 	if reporter, ok := s.registry.(rebootRestoreHealthService); ok {
 		pending = reporter.RestorePendingCount()
 	}
+	retired := 0
+	if reporter, ok := s.registry.(retiredRestoreHealthService); ok {
+		retired = reporter.RetiredRestoreCount()
+	}
 	health := map[string]any{
 		"pending":              pending,
+		"retired":              retired,
 		"automaticPinnedLimit": state.DefaultPinnedBootRestoreLimit,
 		"degraded":             pending > 0,
 		"status":               "healthy",

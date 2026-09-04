@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -289,6 +290,7 @@ func (r *pendingRestoreRegistry) PendingRestore(id string) (state.RestorePending
 }
 
 func (r *pendingRestoreRegistry) RestorePendingCount() int { return len(r.pending) }
+func (r *pendingRestoreRegistry) RetiredRestoreCount() int { return 0 }
 
 func newTestDaemon(t *testing.T) testDaemon {
 	t.Helper()
@@ -444,6 +446,105 @@ func TestPausedAfterRebootIsDegradedAndEveryReadFailsLoudly(t *testing.T) {
 	if unknown.Code != http.StatusNotFound {
 		t.Fatalf("unknown snapshot status=%d body=%s", unknown.Code, unknown.Body.String())
 	}
+}
+
+func TestPausedRestoreCacheKeepsListAndHealthResponsiveAtScale(t *testing.T) {
+	daemon := newTestDaemon(t)
+	store, err := ledger.Open(context.Background(), ledger.Options{
+		Path: filepath.Join(daemon.root, "ledger", "lanes.sqlite3"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ids := seedPausedRestoreScale(t, daemon, store)
+	previousLogOutput := log.Writer()
+	log.SetOutput(io.Discard)
+	manager := sessionruntime.NewManager(daemon.config, daemon.launcher, sessionruntime.ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour, LedgerReader: store,
+	})
+	log.SetOutput(previousLogOutput)
+	t.Cleanup(manager.Close)
+	handler := New(daemon.config, manager)
+	for range 5 {
+		manager.List(false)
+	}
+	started := time.Now()
+	for range 20 {
+		manager.List(false)
+	}
+	if average := time.Since(started) / 20; average >= 5*time.Millisecond {
+		t.Fatalf("warm List() average = %s, want under 5ms", average)
+	} else {
+		t.Logf("warm List() average with 500 records and 30 active cached markers: %s", average)
+	}
+	if manager.RestorePendingCount() != 30 || manager.RetiredRestoreCount() != 30 {
+		t.Fatalf("restore counts = pending %d retired %d, want 30 and 30",
+			manager.RestorePendingCount(), manager.RetiredRestoreCount())
+	}
+	assertHealthResponsiveWhileListing(t, handler, manager)
+	if len(ids) != 500 {
+		t.Fatalf("seeded records = %d, want 500", len(ids))
+	}
+}
+
+func seedPausedRestoreScale(t *testing.T, daemon testDaemon, store *ledger.Store) []string {
+	t.Helper()
+	ids := make([]string, 0, 500)
+	for index := range 500 {
+		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", index)
+		created := ledger.Created{
+			Meta: ledger.Meta{LaneID: id}, LaneUUID: id, Name: fmt.Sprintf("record-%03d", index),
+			Tool: "codex", Cwd: daemon.root, CreatorKind: ledger.CreatorExternal, CreatorID: "test:local-user",
+		}
+		if err := store.Boundaries().RecordCreated(context.Background(), created); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	for _, id := range ids[:30] {
+		if err := state.WriteRestorePending(state.For(daemon.config.RunnerStateDir, id).RestorePending, id, "paused after restart"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := range 30 {
+		id := fmt.Sprintf("99999999-9999-4999-8999-%012d", index)
+		if err := state.WriteRestorePending(state.For(daemon.config.RunnerStateDir, id).RestorePending, id, "orphan after restart"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return ids
+}
+
+func assertHealthResponsiveWhileListing(t *testing.T, handler http.Handler, manager *sessionruntime.Manager) {
+	t.Helper()
+	stop := make(chan struct{})
+	var workers sync.WaitGroup
+	for range 10 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					manager.List(false)
+				}
+			}
+		}()
+	}
+	time.Sleep(20 * time.Millisecond)
+	started := time.Now()
+	response := serve(t, handler, http.MethodGet, "/api/health", nil, "127.0.0.1:1", nil)
+	elapsed := time.Since(started)
+	close(stop)
+	workers.Wait()
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"retired":30`) ||
+		elapsed >= 100*time.Millisecond {
+		t.Fatalf("health while List() was hammered = status %d in %s, want 200 under 100ms", response.Code, elapsed)
+	}
+	t.Logf("/api/health while 10 goroutines hammered List(): %s", elapsed)
 }
 
 // TestConcurrentSubmitKeepsEachMessageWithItsTarget pins the invariant the

@@ -106,6 +106,10 @@ type rebootRestoreHealthService interface {
 	RestorePendingCount() int
 }
 
+type retiredRestoreHealthService interface {
+	RetiredRestoreCount() int
+}
+
 type pendingRestoreService interface {
 	PendingRestore(string) (state.RestorePending, bool)
 }

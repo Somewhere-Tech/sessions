@@ -179,6 +179,14 @@ func TestDoctorReadsRemoteRestoreCountFromHealth(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsRetiredOrphanRestoreMarkers(t *testing.T) {
+	var output strings.Builder
+	writeDoctorRestoreHealth(&output, map[string]any{"pending": float64(0), "retired": float64(26)})
+	if got := output.String(); !strings.Contains(got, "26 orphan marker(s) retired") {
+		t.Fatalf("restore health output = %q", got)
+	}
+}
+
 // doctor must stay usable on a Windows host: the PTY preflight is the Unix
 // terminal adapter, and its remedy names a macOS-only toolchain.
 func TestDoctorProbesAreGuardedByHost(t *testing.T) {

@@ -175,9 +175,11 @@ type Manager struct {
 	notifications       map[string]*sessionNotificationState
 	notificationsClosed bool
 	discoveryMu         sync.Mutex
-	restoreHealthMu     sync.Mutex
-	restoreHealthAt     time.Time
-	restoreHealthCount  int
+	pausedRefreshMu     sync.Mutex
+	pausedMu            sync.RWMutex
+	pausedRestores      map[string]pausedRestoreCacheEntry
+	pausedMissingLogged map[string]struct{}
+	pausedRetiredCount  int
 	bindMu              sync.Mutex
 	// completionGeneration records the newest delegated-task completion
 	// attempt per session so a fresh idle classification supersedes an
@@ -311,6 +313,7 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 		runtimes:     make(map[string]*runtimeSession), hooks: loadGlobalHooks(config.GlobalHooksPath),
 		laneDeaths: make(map[string]laneDeathBurst), notifications: make(map[string]*sessionNotificationState),
 		completionGeneration: make(map[string]uint64),
+		pausedRestores:       make(map[string]pausedRestoreCacheEntry), pausedMissingLogged: make(map[string]struct{}),
 	}
 	manager.resources = resource.NewTracker(selected.ResourceEnumerator, selected.ResourceClock)
 	manager.resourceInterval = selected.ResourceInterval
@@ -327,11 +330,17 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 			})
 		}
 	}
-	manager.registry.SetTerminalObservers(manager.recordRunnerExited, manager.recordReaped)
-	manager.recordDaemonRestart(ctx)
+	manager.initializeRuntimeState(ctx)
 	manager.ticker = time.NewTicker(selected.ActivityInterval)
 	manager.startWorker(manager.activityLoop)
 	return manager
+}
+
+func (m *Manager) initializeRuntimeState(ctx context.Context) {
+	m.registry.SetTerminalObservers(m.recordRunnerExited, m.recordReaped)
+	m.refreshPendingRestores()
+	m.recordDaemonRestart(ctx)
+	m.startWorker(m.watchPendingRestores)
 }
 
 func (m *Manager) startWorker(run func()) bool {

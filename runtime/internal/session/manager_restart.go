@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
@@ -60,6 +62,7 @@ func (m *Manager) WakePaused(ctx context.Context, id string) (state.SessionInfo,
 	// The marker said "paused"; the session is live now, whichever launcher
 	// brought it back.
 	_ = os.Remove(state.For(m.config.RunnerStateDir, id).RestorePending)
+	m.removeCachedPendingRestore(id)
 	log.Printf("[restore] woke paused session %s on first contact", id)
 	return session.Info(), nil
 }
@@ -103,20 +106,14 @@ func (m *Manager) withPendingRestores(infos []state.SessionInfo) []state.Session
 	for index, info := range infos {
 		indices[info.ID] = index
 	}
-	entries, err := os.ReadDir(m.config.RunnerStateDir)
-	if os.IsNotExist(err) {
-		return infos
+	m.pausedMu.RLock()
+	paused := make([]state.SessionInfo, 0, len(m.pausedRestores))
+	for _, cached := range m.pausedRestores {
+		paused = append(paused, clonePausedInfo(cached.info))
 	}
-	if err != nil {
-		log.Printf("[restore] list paused reboot sessions: %v", err)
-		return infos
-	}
-	const suffix = ".restore-pending.json"
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), suffix) {
-			continue
-		}
-		id := strings.TrimSuffix(entry.Name(), suffix)
+	m.pausedMu.RUnlock()
+	for _, info := range paused {
+		id := info.ID
 		// A real registry connection is stronger evidence than a stale marker.
 		// A durable closed/lost record is not: reboot-pending is the current
 		// actionable state and must replace it instead of disappearing behind it.
@@ -125,19 +122,6 @@ func (m *Manager) withPendingRestores(infos []state.SessionInfo) []state.Session
 				continue
 			}
 		}
-		pending, exists := m.PendingRestore(id)
-		if !exists {
-			continue
-		}
-		metadata, metadataErr := state.ReadRunnerMetadata(filepath.Join(m.config.RunnerStateDir, id+".json"))
-		if metadataErr != nil {
-			log.Printf("[restore] read paused session %s metadata: %v", id, metadataErr)
-			metadata = m.pausedIdentityFromLedger(id)
-		} else if metadata.Info.ID != id {
-			log.Printf("[restore] paused session %s metadata belongs to %s", id, metadata.Info.ID)
-			metadata = m.pausedIdentityFromLedger(id)
-		}
-		info := pendingSessionInfo(id, metadata, pending)
 		if index, exists := indices[id]; exists {
 			infos[index] = info
 			continue
@@ -146,6 +130,150 @@ func (m *Manager) withPendingRestores(infos []state.SessionInfo) []state.Session
 		infos = append(infos, info)
 	}
 	return infos
+}
+
+func clonePausedInfo(info state.SessionInfo) state.SessionInfo {
+	info.Args = append([]string(nil), info.Args...)
+	info.Tags = state.CloneTags(info.Tags)
+	info.CreatorAncestry = append([]string(nil), info.CreatorAncestry...)
+	return info
+}
+
+const restorePendingSuffix = ".restore-pending.json"
+
+type restoreFileFingerprint struct {
+	present  bool
+	size     int64
+	modified int64
+}
+
+type pausedRestoreCacheEntry struct {
+	marker   restoreFileFingerprint
+	metadata restoreFileFingerprint
+	info     state.SessionInfo
+}
+
+func (m *Manager) refreshPendingRestores() {
+	m.pausedRefreshMu.Lock()
+	defer m.pausedRefreshMu.Unlock()
+	previous := m.pausedRestoreSnapshot()
+	next, ok := m.readPendingRestoreSnapshot(previous)
+	if !ok {
+		return
+	}
+	retired := countRetiredRestoreMarkers(m.config.RunnerStateDir)
+	m.pausedMu.Lock()
+	m.pausedRestores = next
+	m.pausedRetiredCount = retired
+	m.pausedMu.Unlock()
+}
+
+func (m *Manager) pausedRestoreSnapshot() map[string]pausedRestoreCacheEntry {
+	m.pausedMu.RLock()
+	defer m.pausedMu.RUnlock()
+	snapshot := make(map[string]pausedRestoreCacheEntry, len(m.pausedRestores))
+	for id, entry := range m.pausedRestores {
+		snapshot[id] = entry
+	}
+	return snapshot
+}
+
+func (m *Manager) readPendingRestoreSnapshot(
+	previous map[string]pausedRestoreCacheEntry,
+) (map[string]pausedRestoreCacheEntry, bool) {
+	entries, err := os.ReadDir(m.config.RunnerStateDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]pausedRestoreCacheEntry{}, true
+	}
+	if err != nil {
+		log.Printf("[restore] refresh paused reboot sessions: %v", err)
+		return nil, false
+	}
+	next := make(map[string]pausedRestoreCacheEntry)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), restorePendingSuffix) {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), restorePendingSuffix)
+		cached, keep := m.refreshPendingRestore(id, entry, previous[id])
+		if keep {
+			next[id] = cached
+		}
+	}
+	return next, true
+}
+
+func (m *Manager) refreshPendingRestore(
+	id string, marker os.DirEntry, previous pausedRestoreCacheEntry,
+) (pausedRestoreCacheEntry, bool) {
+	markerFingerprint, err := dirEntryFingerprint(marker)
+	if err != nil {
+		log.Printf("[restore] inspect paused session %s marker: %v", id, err)
+		return pausedRestoreCacheEntry{}, false
+	}
+	metadataPath := filepath.Join(m.config.RunnerStateDir, id+".json")
+	metadataFingerprint := pathFingerprint(metadataPath)
+	if previous.marker == markerFingerprint && previous.metadata == metadataFingerprint {
+		return previous, true
+	}
+	return m.loadPendingRestore(id, markerFingerprint, metadataFingerprint)
+}
+
+func dirEntryFingerprint(entry os.DirEntry) (restoreFileFingerprint, error) {
+	info, err := entry.Info()
+	if err != nil {
+		return restoreFileFingerprint{}, err
+	}
+	return restoreFileFingerprint{present: true, size: info.Size(), modified: info.ModTime().UnixNano()}, nil
+}
+
+func pathFingerprint(path string) restoreFileFingerprint {
+	info, err := os.Stat(path)
+	if err != nil {
+		return restoreFileFingerprint{}
+	}
+	return restoreFileFingerprint{present: true, size: info.Size(), modified: info.ModTime().UnixNano()}
+}
+
+func (m *Manager) loadPendingRestore(
+	id string, marker, metadataFingerprint restoreFileFingerprint,
+) (pausedRestoreCacheEntry, bool) {
+	pending, exists := m.PendingRestore(id)
+	if !exists {
+		return pausedRestoreCacheEntry{}, false
+	}
+	metadataPath := filepath.Join(m.config.RunnerStateDir, id+".json")
+	metadata, metadataErr := state.ReadRunnerMetadata(metadataPath)
+	if metadataErr == nil && metadata.Info.ID == id {
+		return newPausedRestoreCacheEntry(marker, metadataFingerprint, id, metadata, pending), true
+	}
+	if errors.Is(metadataErr, os.ErrNotExist) {
+		m.logMissingPausedMetadataOnce(id, metadataErr)
+	} else if metadataErr != nil {
+		log.Printf("[restore] read paused session %s metadata: %v", id, metadataErr)
+	} else {
+		log.Printf("[restore] paused session %s metadata belongs to %s", id, metadata.Info.ID)
+	}
+	identity, found, checked, ledgerErr := m.pausedIdentityFromLedger(id)
+	if ledgerErr != nil {
+		log.Printf("[restore] read paused session %s creation record: %v", id, ledgerErr)
+	}
+	if errors.Is(metadataErr, os.ErrNotExist) && checked && ledgerErr == nil && !found {
+		if m.retireOrphanRestoreMarker(id) {
+			return pausedRestoreCacheEntry{}, false
+		}
+		marker = restoreFileFingerprint{}
+	}
+	return newPausedRestoreCacheEntry(marker, metadataFingerprint, id, identity, pending), true
+}
+
+func newPausedRestoreCacheEntry(
+	marker, metadata restoreFileFingerprint, id string,
+	identity state.RunnerMetadata, pending state.RestorePending,
+) pausedRestoreCacheEntry {
+	return pausedRestoreCacheEntry{
+		marker: marker, metadata: metadata, info: pendingSessionInfo(id, identity, pending),
+	}
 }
 
 func pendingSessionInfo(id string, metadata state.RunnerMetadata, pending state.RestorePending) state.SessionInfo {
@@ -191,24 +319,23 @@ func pendingSessionInfo(id string, metadata state.RunnerMetadata, pending state.
 	}
 }
 
-// pausedIdentityFromLedger rebuilds what a paused session is from its
-// creation record when the runner left no metadata behind, so the inbox shows
-// its name, folder, and age rather than blanks until it is woken.
-func (m *Manager) pausedIdentityFromLedger(id string) state.RunnerMetadata {
+// pausedIdentityFromLedger rebuilds what a paused session is from its creation
+// record. checked distinguishes a proven absence from an unavailable reader.
+func (m *Manager) pausedIdentityFromLedger(id string) (state.RunnerMetadata, bool, bool, error) {
 	if m.ledgerReader == nil {
-		return state.RunnerMetadata{}
+		return state.RunnerMetadata{}, false, false, nil
 	}
 	events, err := m.ledgerReader.Events(context.Background(), id)
 	if err != nil {
-		return state.RunnerMetadata{}
+		return state.RunnerMetadata{}, false, true, err
 	}
 	for _, event := range events {
 		if event.Type != ledger.EventCreated {
 			continue
 		}
 		var created ledger.Created
-		if json.Unmarshal(event.Payload, &created) != nil {
-			continue
+		if err := json.Unmarshal(event.Payload, &created); err != nil {
+			return state.RunnerMetadata{}, false, true, fmt.Errorf("decode creation record: %w", err)
 		}
 		command := created.Tool
 		if command == "" || command == string(state.ToolTerminal) {
@@ -218,7 +345,110 @@ func (m *Manager) pausedIdentityFromLedger(id string) state.RunnerMetadata {
 			Info: proto.RunnerInfo{ID: id, Cmd: command, Cwd: created.Cwd, CreatedAt: event.AtMS},
 			Name: created.Name, Description: created.Description, Kind: created.Kind,
 			Profile: created.Profile, ConfigDir: created.ConfigDir, DelegationKind: created.DelegationKind,
+		}, true, true, nil
+	}
+	return state.RunnerMetadata{}, false, true, nil
+}
+
+func (m *Manager) logMissingPausedMetadataOnce(id string, err error) {
+	m.pausedMu.Lock()
+	if m.pausedMissingLogged == nil {
+		m.pausedMissingLogged = make(map[string]struct{})
+	}
+	_, logged := m.pausedMissingLogged[id]
+	if !logged {
+		m.pausedMissingLogged[id] = struct{}{}
+	}
+	m.pausedMu.Unlock()
+	if !logged {
+		log.Printf("[restore] read paused session %s metadata: %v", id, err)
+	}
+}
+
+func (m *Manager) retireOrphanRestoreMarker(id string) bool {
+	source := state.For(m.config.RunnerStateDir, id).RestorePending
+	directory := filepath.Join(m.config.RunnerStateDir, "retired")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		log.Printf("[restore] retire orphan paused-session marker %s: %v", id, err)
+		return false
+	}
+	destination := filepath.Join(directory, fmt.Sprintf("%s.restore-pending.%d.json", id, time.Now().UnixNano()))
+	if err := os.Rename(source, destination); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true
+		}
+		log.Printf("[restore] retire orphan paused-session marker %s: %v", id, err)
+		return false
+	}
+	log.Printf("[restore] retired orphan paused-session marker %s: no runner metadata or creation record", id)
+	return true
+}
+
+func countRetiredRestoreMarkers(runnerDir string) int {
+	entries, err := os.ReadDir(filepath.Join(runnerDir, "retired"))
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() && strings.Contains(name, ".restore-pending") && strings.HasSuffix(name, ".json") {
+			count++
 		}
 	}
-	return state.RunnerMetadata{}
+	return count
+}
+
+func (m *Manager) removeCachedPendingRestore(id string) {
+	m.pausedMu.Lock()
+	delete(m.pausedRestores, id)
+	m.pausedMu.Unlock()
+}
+
+func (m *Manager) watchPendingRestores() {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Printf("[restore] watch paused reboot sessions: %v", err)
+		return
+	}
+	defer watcher.Close()
+	if err := watcher.Add(m.config.RunnerStateDir); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("[restore] watch paused reboot sessions: %v", err)
+		}
+		return
+	}
+	m.refreshPendingRestores()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case event, open := <-watcher.Events:
+			if !open {
+				return
+			}
+			if m.pendingRestoreWatchRelevant(filepath.Base(event.Name)) {
+				m.refreshPendingRestores()
+			}
+		case err, open := <-watcher.Errors:
+			if !open {
+				return
+			}
+			log.Printf("[restore] watch paused reboot sessions: %v", err)
+		}
+	}
+}
+
+func (m *Manager) pendingRestoreWatchRelevant(name string) bool {
+	if strings.HasSuffix(name, restorePendingSuffix) {
+		return true
+	}
+	if !strings.HasSuffix(name, ".json") {
+		return false
+	}
+	id := strings.TrimSuffix(name, ".json")
+	m.pausedMu.RLock()
+	_, paused := m.pausedRestores[id]
+	m.pausedMu.RUnlock()
+	return paused
 }

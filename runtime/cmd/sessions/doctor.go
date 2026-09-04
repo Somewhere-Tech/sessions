@@ -75,11 +75,7 @@ func (a *app) cmdDoctor() error {
 	if deepMap, ok := deep.(map[string]any); ok {
 		fmt.Fprintf(a.stdout, "daemon: %s sessions, discovering=%s, uptime=%ss\n\n",
 			jsonScalar(deepMap["sessionsLoaded"]), jsonScalar(deepMap["discovering"]), jsonScalar(deepMap["uptimeSec"]))
-		if restore, ok := deepMap["restore"].(map[string]any); ok {
-			if pending, ok := restore["pending"].(float64); ok && pending > 0 {
-				fmt.Fprintf(a.stdout, "restore: %.0f session(s) stayed paused after reboot; their history is preserved for explicit recovery\n\n", pending)
-			}
-		}
+		writeDoctorRestoreHealth(a.stdout, deepMap["restore"])
 		writeDoctorTailscale(a.stdout, deepMap["tailscale"])
 		writeDoctorFleetAccount(a.stdout, deepMap["account"])
 	}
@@ -132,6 +128,24 @@ func (a *app) cmdDoctor() error {
 	}
 	a.writeDoctorMirrorHealth(damagedMirrors)
 	return nil
+}
+
+func writeDoctorRestoreHealth(writer io.Writer, value any) {
+	restore, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	pending, _ := restore["pending"].(float64)
+	retired, _ := restore["retired"].(float64)
+	if pending > 0 {
+		fmt.Fprintf(writer, "restore: %.0f session(s) stayed paused after reboot; their history is preserved for explicit recovery\n", pending)
+	}
+	if retired > 0 {
+		fmt.Fprintf(writer, "restore: %.0f orphan marker(s) retired because no session history matched them\n", retired)
+	}
+	if pending > 0 || retired > 0 {
+		fmt.Fprintln(writer)
+	}
 }
 
 func writeDoctorTailscale(writer io.Writer, value any) {

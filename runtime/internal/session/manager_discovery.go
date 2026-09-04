@@ -29,6 +29,7 @@ func (m *Manager) RunDiscoveryLoop() {
 	}
 	lastReportedError := ""
 	run := func() {
+		m.refreshPendingRestores()
 		if err := m.Discover(m.ctx); err != nil && !errors.Is(err, context.Canceled) {
 			message := err.Error()
 			if message != lastReportedError {
@@ -59,19 +60,17 @@ func (m *Manager) Discover(ctx context.Context) error {
 // RestorePendingCount is the calm, queryable safe-mode signal exposed through
 // daemon health. It never starts or adopts a runner.
 func (m *Manager) RestorePendingCount() int {
-	m.restoreHealthMu.Lock()
-	defer m.restoreHealthMu.Unlock()
-	if !m.restoreHealthAt.IsZero() && time.Since(m.restoreHealthAt) < 5*time.Second {
-		return m.restoreHealthCount
-	}
-	count, err := state.CountRestorePending(m.config.RunnerStateDir)
-	if err != nil {
-		log.Printf("count paused reboot restores: %v", err)
-		return m.restoreHealthCount
-	}
-	m.restoreHealthAt = time.Now()
-	m.restoreHealthCount = count
-	return count
+	m.pausedMu.RLock()
+	defer m.pausedMu.RUnlock()
+	return len(m.pausedRestores)
+}
+
+// RetiredRestoreCount reports reboot markers that had no metadata or creation
+// record and were moved out of the active runner directory.
+func (m *Manager) RetiredRestoreCount() int {
+	m.pausedMu.RLock()
+	defer m.pausedMu.RUnlock()
+	return m.pausedRetiredCount
 }
 
 func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptions) error {
