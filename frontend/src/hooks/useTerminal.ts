@@ -188,7 +188,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       };
 
       if (mountTerminal) {
-        const [xtermMod, serializeMod, fitMod, webglMod, canvasMod] = await Promise.all([
+        const [xtermMod, serializeMod, fitMod, webglMod] = await Promise.all([
           import('@xterm/xterm'),
           import('@xterm/addon-serialize'),
           import('@xterm/addon-fit'),
@@ -196,7 +196,6 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           // core). Kept in the same lazy chunk. See the loadAddon block
           // after open() — this is THE fix for slow typing.
           import('@xterm/addon-webgl'),
-          import('@xterm/addon-canvas'),
           // CSS side-effect import — Vite injects the stylesheet on resolve.
           // Keeps the CSS in the same lazy chunk as the JS so the initial
           // bundle stays slim. Discard the unused module value via void.
@@ -232,8 +231,10 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           // is thousands of DOM nodes + layout per keystroke (tens of ms of
           // main-thread work = the browser-side echo lag). WebGL/canvas
           // rasterize glyphs to a single canvas with no per-cell DOM or
-          // reflow. MUST load AFTER open(). Chain: webgl → canvas → DOM, all
-          // in try/catch so a missing GPU context degrades safely to the old
+          // reflow. MUST load AFTER open(). WebGL falls back to xterm's DOM
+          // renderer when a GPU context is unavailable, so the 94 KB Canvas
+          // implementation is not downloaded for every terminal as a backup.
+          // Keep setup in try/catch so a missing GPU context degrades to the old
           // behavior instead of blanking the terminal. With the live-session
           // cap (≤3 mounted), the WebGL per-page context limit isn't a risk;
           // term.dispose() (runCleanup) frees the context on unmount.
@@ -244,14 +245,11 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           const renderer = terminalRenderer(isTauri(), navigator.userAgent);
           if (renderer === 'dom') {
             // Retained for explicit future compatibility overrides only.
-          } else if (renderer === 'canvas') {
-            try { term.loadAddon(new canvasMod.CanvasAddon()); } catch { /* stay on DOM */ }
           } else {
             try {
               const webgl = new webglMod.WebglAddon();
               webgl.onContextLoss(() => {
                 try { webgl.dispose(); } catch { /* ignore */ }
-                try { term?.loadAddon(new canvasMod.CanvasAddon()); } catch { /* stay on DOM */ }
               });
               term.loadAddon(webgl);
               repairGpuAfterWrite = () => {
@@ -260,9 +258,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
                   if (term && term.rows > 0) term.refresh(0, term.rows - 1);
                 } catch { /* ordinary rendering continues */ }
               };
-            } catch {
-              try { term.loadAddon(new canvasMod.CanvasAddon()); } catch { /* stay on DOM */ }
-            }
+            } catch { /* stay on DOM */ }
           }
           // onScroll is emitted for provider output, FitAddon, replay, and
           // programmatic restoration as well as for people. Arm it only from

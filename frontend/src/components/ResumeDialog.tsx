@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { useSessions } from '../store/sessions';
 import {
   fetchResumableSessions,
@@ -6,7 +6,7 @@ import {
 } from '../api/sessionsd';
 import { getCwdLabel } from '../lib/tabLabels';
 import { ProviderBadge } from './ProviderBadge';
-import { ResumeActions } from './ResumeActions';
+const ResumeActions = lazy(() => import('./ResumeActions').then((module) => ({ default: module.ResumeActions })));
 import { ResumeMachinesNote, resumeMachinesLine } from './ResumeMachinesNote';
 import { useOtherMachines } from '../hooks/useOtherMachines';
 
@@ -402,17 +402,19 @@ export function ResumeDialog({
         </div>
 
         {flatList.length > 0 || delegatedList.length > 0 ? <ResumeMachinesNote machines={otherMachines} /> : null}
-        <ResumeActions
-          key={`${selected?.tool ?? 'none'}:${selected?.sessionId ?? 'none'}:${preferredDestinationProvider ?? 'default'}`}
-          selected={selected}
-          preferredSourceSessionId={preferredSourceSessionId}
-          preferredDestinationProvider={preferredDestinationProvider}
-          preferredRuntimeMode={preferredRuntimeMode}
-          onBusyChange={setBusy}
-          onResumed={onResumed}
-          onClose={onClose}
-          onStartNew={onStartNew}
-        />
+        <Suspense fallback={<p role="status">Loading continuation actions…</p>}>
+          <ResumeActions
+            key={`${selected?.tool ?? 'none'}:${selected?.sessionId ?? 'none'}:${preferredDestinationProvider ?? 'default'}`}
+            selected={selected}
+            preferredSourceSessionId={preferredSourceSessionId}
+            preferredDestinationProvider={preferredDestinationProvider}
+            preferredRuntimeMode={preferredRuntimeMode}
+            onBusyChange={setBusy}
+            onResumed={onResumed}
+            onClose={onClose}
+            onStartNew={onStartNew}
+          />
+        </Suspense>
       </div>
     </div>
   );

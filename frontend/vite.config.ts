@@ -68,7 +68,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (id.includes('/node_modules/@xterm/xterm/') || id.includes('/node_modules/@xterm/addon-fit/')) {
+          if (id.includes('/node_modules/@xterm/')) {
             return 'xterm';
           }
           return undefined;

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import {
   fetchAISettings,
   fetchClaudeSettings,
@@ -28,7 +28,7 @@ import {
 } from '../lib/tauriBridge';
 import { copyText } from '../lib/copyText';
 import { sizeLabel, type TextSize } from '../lib/textSize';
-import { ConnectionsView } from './ConnectionsView';
+const ConnectionsView = lazy(() => import('./ConnectionsView').then((module) => ({ default: module.ConnectionsView })));
 import type { ThemeMode } from './ProductSidebar';
 import { SomewhereCard } from './SomewhereCard';
 import { useSessions } from '../store/sessions';
@@ -347,7 +347,7 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
         ) : section === 'accounts' ? (
           <AccountSettings profiles={profiles} />
         ) : section === 'fleet' ? (
-          <ConnectionsView clientOnly={clientOnly} hostName={machineName} />
+          <Suspense fallback={<p role="status">Loading connections…</p>}><ConnectionsView clientOnly={clientOnly} hostName={machineName} /></Suspense>
         ) : section === 'cloud' ? (
           <section className="settings-page settings-cloud-page">
             <span className="settings-kicker">Somewhere account</span>

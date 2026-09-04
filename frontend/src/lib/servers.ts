@@ -541,54 +541,14 @@ function hasStoredServerList(): boolean {
   }
 }
 
-// A non-8787 page may still be the UI served by sessionsd itself (for example
-// its Tailscale HTTPS origin). With no saved configuration, probe that origin
-// and adopt it only when the response identifies a daemon. Static hosted
-// shells fall through unchanged when /api/health is absent or not sessionsd.
-//
-// This used to be a bare `fetch` with its own health test — `ok === true ||
-// typeof name === 'string'` — which is strictly weaker than the client's
-// `validateServerHealth`: it never looked at `compatibility.api`, so a daemon
-// whose API range excludes this client was adopted silently, and the user got
-// whatever confusing failure came next instead of the "Update Sessions on
-// this device or the host" message that every other entry point produces. It
-// now goes through the central client, which injects auth, translates 401,
-// and runs the range check.
-//
-// The import is dynamic on purpose: api/sessionsd.ts imports this module for
-// its server resolution, so a static import would close a module cycle for
-// one startup probe.
-export async function bootstrapCurrentOriginServer(): Promise<void> {
-  if (typeof window === 'undefined') return;
-  if (useServers.getState().servers.length > 0 || hasStoredServerList()) return;
+export function currentOriginBootstrapCandidate(): ServerConfig | null {
+  if (typeof window === 'undefined') return null;
+  if (useServers.getState().servers.length > 0 || hasStoredServerList()) return null;
 
   // The existing 8787 embeddedServer() path remains the fast path and must
   // never wait for a startup probe.
-  if (embeddedServer()) return;
-
-  const { AuthError, ServerCompatibilityError, fetchServerHealth } = await import('../api/sessionsd');
-
-  let tokenRequired = false;
-  try {
-    await fetchServerHealth(currentOriginServer());
-  } catch (error) {
-    if (error instanceof AuthError) {
-      // A daemon that answers 401 has identified itself well enough to adopt;
-      // the token prompt is the next step, not a dead end.
-      tokenRequired = true;
-    } else if (error instanceof ServerCompatibilityError) {
-      // Reachable, definitely sessionsd, and unusable by this client. Adopting
-      // it would hide that; say so on the connect surface instead.
-      useServers.getState().setPairingError(error.message);
-      return;
-    } else {
-      // Unreachable, not a daemon, or an unrecognisable body: a static hosted
-      // shell. Fall through silently exactly as before.
-      return;
-    }
-  }
-
-  await adoptCurrentOriginServer(undefined, tokenRequired);
+  if (embeddedServer()) return null;
+  return currentOriginServer();
 }
 
 // Windows moves legacy plaintext tokens out of WebView localStorage before

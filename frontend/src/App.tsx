@@ -3,12 +3,12 @@ import { SessionTabs, type TabStatus } from './components/SessionTabs';
 import { SessionView } from './components/SessionView';
 import { EmptyState } from './components/EmptyState';
 // These surfaces are only opened on demand, so keep them out of the entry bundle.
-const NewSessionDialog = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.NewSessionDialog })));
-const ResumeDialog = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.ResumeDialog })));
-const FleetView = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.FleetView })));
-const UsageDashboard = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.UsageDashboard })));
-const DailyView = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.DailyView })));
-const SettingsView = lazy(() => import('./components/OnDemandViews').then((module) => ({ default: module.SettingsView })));
+const NewSessionDialog = lazy(() => import('./components/NewSessionDialog').then((module) => ({ default: module.NewSessionDialog })));
+const ResumeDialog = lazy(() => import('./components/ResumeDialog').then((module) => ({ default: module.ResumeDialog })));
+const FleetView = lazy(() => import('./components/FleetView').then((module) => ({ default: module.FleetView })));
+const UsageDashboard = lazy(() => import('./components/UsageDashboard').then((module) => ({ default: module.UsageDashboard })));
+const DailyView = lazy(() => import('./components/DailyView').then((module) => ({ default: module.DailyView })));
+const SettingsView = lazy(() => import('./components/SettingsView').then((module) => ({ default: module.SettingsView })));
 import { MobileNav } from './components/MobileNav';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { GridView } from './components/GridView';

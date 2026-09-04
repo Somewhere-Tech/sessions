@@ -7,11 +7,11 @@ import {
 } from './lib/hostedBootstrap';
 import {
   blockNativeMachineCredentialPersistence,
-  bootstrapCurrentOriginServer,
   hydrateNativeMachineCredentials,
   syncNativeAgentMachineAccess,
   useServers
 } from './lib/servers';
+import { bootstrapCurrentOriginServer } from './lib/currentOriginBootstrap';
 import './styles/globals.css';
 import './styles/utilities.css';
 

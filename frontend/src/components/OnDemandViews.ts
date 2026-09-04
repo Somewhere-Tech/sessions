@@ -1,6 +1,5 @@
-// Keep the product's secondary surfaces in one deferred module. Each caller
-// still mounts its view through React.lazy, while shared helpers are emitted
-// once instead of duplicated across many tiny async chunks.
+// Compatibility exports for callers outside the bundled frontend. Production
+// surfaces import their own module so opening one view does not fetch them all.
 export { DailyView } from './DailyView';
 export { FleetView } from './FleetView';
 export { NewSessionDialog } from './NewSessionDialog';
