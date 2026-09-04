@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { fetchLANState, fetchRemoteState, forgetPairedDevice, listPairedDevices, requestLocalNetworkAccess, revokePairingTicket, setLANEnabled, setRemoteAuto, type LANState, type PairedDevice, type RemoteState } from '../api/sessionsd';
+import { fetchLANState, fetchRemoteState, forgetPairedDevice, httpBaseForServer, listPairedDevices, requestLocalNetworkAccess, revokePairingTicket, setLANEnabled, setRemoteAuto, type LANState, type PairedDevice, type RemoteState } from '../api/sessionsd';
 import {
   discoverNativeMachines,
   getNativeConnectionSettings,
@@ -52,6 +52,7 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
   const activeServer = useServers((state) => state.servers.find((server) => server.id === state.activeId));
   const machineName = hostName || (activeServer ? serverDisplayName(activeServer, true) : 'this computer');
   const connectedViaTailnet = activeServer?.scheme === 'https' && activeServer.host.toLowerCase().endsWith('.ts.net');
+  const activeEndpoint = activeServer ? httpBaseForServer(activeServer) : window.location.origin;
   const [native, setNative] = useState<NativeConnectionSettings | null>(null);
   const [port, setPort] = useState('8787');
   const [lan, setLAN] = useState<LANState | null>(null);
@@ -260,8 +261,9 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
         <section className="connection-ladder" aria-label="Connection options">
           <ConnectionCard step="01" title={clientOnly ? machineName : 'This computer'} state={clientOnly ? 'Connected host' : 'Always private'} active>
             <p>{clientOnly ? `Sessions on this device uses the independent daemon on ${machineName}. Closing this viewer never stops its sessions.` : 'Sessions.app talks to the independent loopback daemon. Quitting the app never stops its sessions.'}</p>
-            <div className="connection-endpoint">{clientOnly && activeServer ? `${activeServer.scheme ?? 'http'}://${activeServer.host}:${activeServer.port}` : `http://localhost:${native?.port ?? port}`}</div>
-            {!clientOnly ? <details className="connection-advanced">
+            <div className="connection-endpoint">Current connection · {activeEndpoint}</div>
+            {native ? <div className="connection-endpoint">Sessions.app configured endpoint · http://localhost:{native.port}</div> : null}
+            {!clientOnly && native ? <details className="connection-advanced">
               <summary>Advanced port</summary>
               <p>Changing this restarts only the daemon and rolls back on failure. Windows currently changes ports only while no sessions are live; Mac verifies every live runner is re-adopted.</p>
               <div className="connection-inline">
