@@ -764,6 +764,9 @@ func (m *Manager) ledgerStates(ctx context.Context) ([]ledger.LaneState, error) 
 	if m.ledgerReader == nil {
 		return nil, nil
 	}
+	if reader, ok := m.ledgerReader.(ledger.CurrentStateReader); ok {
+		return reader.CurrentStates(ctx)
+	}
 	events, err := m.ledgerReader.Events(ctx, "")
 	if err != nil {
 		return nil, err

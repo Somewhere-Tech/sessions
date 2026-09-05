@@ -6,7 +6,6 @@ go runtime/internal/api/server_routes.go Server.handleSessionRoute 432
 go runtime/internal/api/server_routes.go Server.ServeHTTP 410
 go runtime/internal/state/registry.go Registry.CreateWithLifecycle 265
 go runtime/cmd/sessions/commands.go app.cmdNew 244
-go runtime/internal/ledger/fold.go Fold 221
 go runtime/internal/api/move_handlers.go Server.handleMoveRoute 201
 go runtime/cmd/sessions/history.go app.cmdHistory 197
 go runtime/cmd/sessions-runner/main.go run 187

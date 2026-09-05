@@ -54,6 +54,7 @@ END;
 
 type Store struct {
 	db               *sql.DB
+	projection       currentProjection
 	path             string
 	clock            func() time.Time
 	newEventID       func() (string, error)

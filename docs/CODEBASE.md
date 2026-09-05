@@ -469,6 +469,13 @@ from those events and exposes safe resume recipes (`runtime/internal/ledger/fold
 The store enables WAL and synchronous-full durability and blocks update/delete
 with database triggers. Explicit retention uses a separate atomic writer to
 append `archived` facts for old closed records; it never deletes the evidence.
+Session listing reads `Store.CurrentStates`, an in-memory projection containing
+one current state per lane. Each call queries committed sequence numbers after
+its last successful read, including writes from other ledger connections.
+The initial read streams history once; later reads apply only new rows through
+the same reducer as `Fold`. Read failures publish neither partial state nor an
+advanced cursor, and callers receive detached state copies. The append-only
+database remains authoritative; this adds no persisted schema or timed cache.
 `runtime/internal/session/retention.go` refuses live registry entries and any
 still-present socket, metadata process, or current/legacy LaunchAgent; apply is
 also refused while discovery is running. Finished parents and descendants can
