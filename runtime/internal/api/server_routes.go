@@ -885,6 +885,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		var body struct {
 			Data        string `json:"data"`
 			OperationID string `json:"operation_id,omitempty"`
+			Mode        string `json:"mode,omitempty"`
 		}
 		if err := readJSON(request, &body); err != nil {
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
@@ -906,7 +907,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 					return
 				}
 			}
-			record, created, beginErr := s.deliveries.Begin(body.OperationID, id, body.Data)
+			record, created, beginErr := s.deliveries.Begin(body.OperationID, id, body.Data, body.Mode)
 			if beginErr != nil {
 				s.sendJSON(response, http.StatusConflict, map[string]any{"error": beginErr.Error(), "operation_id": body.OperationID}, corsOrigin)
 				return
@@ -928,13 +929,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			return
 		}
 		if suffix == "/submit" {
-			if reason, blocked := semanticSubmitRefusal(session.Info()); blocked {
-				record, completeErr := s.deliveries.Complete(body.OperationID, delivery.StatusNotDelivered, false, true, reason)
-				if completeErr != nil {
-					s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": completeErr.Error(), "operation_id": body.OperationID}, corsOrigin)
-					return
-				}
-				s.sendDeliveryRecord(response, record, false, corsOrigin)
+			if s.handleSubmitControl(response, request, session.Info(), body.Data, body.OperationID, body.Mode, corsOrigin, attribution) {
 				return
 			}
 		}

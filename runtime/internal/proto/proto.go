@@ -54,8 +54,9 @@ const (
 	Approve Type = 0x16
 	// RetryReq and RetryStop control the retained failed turn in a Rich runner.
 	// Protocol v4. RetryRes acknowledges both controls.
-	RetryReq  Type = 0x17
-	RetryStop Type = 0x18
+	RetryReq   Type = 0x17
+	RetryStop  Type = 0x18
+	MessageReq Type = 0x19 // capability-gated semantic message, not terminal bytes
 
 	Hello       Type = 0x20
 	Output      Type = 0x21
@@ -71,6 +72,7 @@ const (
 	// successful provider turn.
 	RetryState Type = 0x27
 	RetryRes   Type = 0x28
+	MessageRes Type = 0x29
 )
 
 var (

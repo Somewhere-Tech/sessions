@@ -26,6 +26,7 @@ type RunnerInfo struct {
 	ClaudeSessionID string         `json:"claudeSessionId,omitempty"`
 	Retry           *ProviderRetry `json:"retry,omitempty"`
 	Turn            *TurnState     `json:"turn,omitempty"`
+	MessageSubmit   bool           `json:"messageSubmit,omitempty"`
 }
 
 // TurnState is the Rich runner's exact current provider-turn state. It lives

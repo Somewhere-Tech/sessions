@@ -57,6 +57,7 @@ both current receivers for forward compatibility.
 | daemon -> runner | APPROVE | `0x16` | approval decision JSON |
 | daemon -> runner | RETRY_REQ | `0x17` | empty |
 | daemon -> runner | RETRY_STOP | `0x18` | empty |
+| daemon -> runner | MESSAGE_REQ | `0x19` | semantic message JSON, capability-gated |
 | runner -> daemon | HELLO | `0x20` | JSON `RunnerHello` |
 | runner -> daemon | OUTPUT | `0x21` | 4-byte BE `seq`, then UTF-8 chunk |
 | runner -> daemon | EXIT | `0x22` | JSON `{"code":number|null,"signal":string|null,"seq":number}` |
@@ -66,6 +67,7 @@ both current receivers for forward compatibility.
 | runner -> daemon | MODEL_RES | `0x26` | `{}` or JSON `{"error":string}` |
 | runner -> daemon | RETRY_STATE | `0x27` | JSON `{"retry":object|null}` |
 | runner -> daemon | RETRY_RES | `0x28` | `{}` or JSON `{"error":string}` |
+| runner -> daemon | MESSAGE_RES | `0x29` | correlated message outcome JSON |
 
 ## Runner to daemon frames
 
@@ -94,7 +96,7 @@ Fields and types are exact:
 - `id`, `cmd`, and `cwd`: strings
 - `args`: string array; this is the configured/original argument array
 - `cols`, `rows`, `createdAt`, `pid`, and `currentSeq`: numbers
-- `protocolVersion`: optional number for compatibility; current runners send 4
+- `protocolVersion`: optional number for compatibility; current runners send 5
 - `runtimeVersion`: optional Sessions release string; legacy runners omit it
 - `retry`: optional live Rich-turn schedule with numeric `attempt`, `max`, and
   `nextAt`, plus string `kind`; omitted when no automatic retry is pending
@@ -173,6 +175,14 @@ instead; this runner frame remains part of the stable protocol.
 Empty payload. Terminates the OUTPUT sequence generated for one REPLAY_REQ.
 There is no request identifier, so replay requests are expected to be ordered.
 
+Structured-provider replay is a recent in-memory window, not a complete
+transcript. Current runners and daemons retain at most 1,200 events and target
+4 MiB of event payloads per window. The newest individual event is kept whole
+even if larger than that byte target; frame/scanner limits bound that event.
+Eviction advances the daemon's absolute event cursor without deleting history
+from disk. Restoring the runner window reads a bounded tail (the byte target
+plus one scanner-sized record), rather than loading the complete history file.
+
 ### MODEL_RES (`0x26`)
 
 Protocol-2 Rich runners send exactly one response for each MODEL_REQ, in request
@@ -196,6 +206,27 @@ Protocol-4 Rich runners send exactly one response to RETRY_REQ and RETRY_STOP.
 disconnect or five-second timeout fails the request.
 
 ## Daemon to runner frames
+
+### Semantic messages (additive protocol-5 capability)
+
+Structured runners advertise `messageSubmit:true` in HELLO. Only then may a
+daemon send MESSAGE_REQ with `operation_id`, `text`, and optional `mode` (`auto`
+or `steer`). Text is a single message, including embedded carriage returns;
+it is not processed by the terminal composer. MESSAGE_RES echoes the operation
+id and reports `accepted`, `boundary`, and an optional `error`.
+
+`boundary:"runner"` means the runner accepted a new turn, not that the provider
+has answered. `boundary:"provider"` means Codex acknowledged active-turn
+steering. A failed provider transport can return `boundary:"unknown"`: callers
+must not automatically resend. `accepted:false` without that boundary is a
+known refusal. The daemon records intent before this request and its outcome
+afterward. If disconnected before acknowledgment, delivery remains unknown.
+
+`steer` requires an active Codex turn; it never silently starts a new turn.
+Claude rejects active-turn messages explicitly. Missing capability uses the
+legacy input path for ordinary sends; explicit steering is refused without
+writing input. The version remains 5: older daemons ignore the additive HELLO
+field and use INPUT; newer daemons never send MESSAGE_REQ to an old runner.
 
 ### INPUT (`0x10`)
 

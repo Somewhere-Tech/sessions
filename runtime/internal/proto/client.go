@@ -34,14 +34,14 @@ type SocketRunner struct {
 	replay   *replayRequest
 	model    *modelRequest
 	retry    *modelRequest
+	messages map[string]chan MessageResult
 	terminal *Event
 }
 
 type replayRequest struct {
-	done            chan struct{}
-	events          []OutputEvent
-	structured      []json.RawMessage
-	structuredStart int
+	done       chan struct{}
+	events     []OutputEvent
+	structured []json.RawMessage
 }
 
 type modelRequest struct {
@@ -402,6 +402,8 @@ func (r *SocketRunner) handleFrame(frame Frame) bool {
 		r.mu.Unlock()
 	case RetryRes:
 		r.handleRetryResponse(frame.Payload)
+	case MessageRes:
+		r.handleMessageResponse(frame.Payload)
 	case Hello, SnapshotRes:
 		// HELLO is consumed during DialRunner. Extra HELLO and legacy
 		// snapshot replies are harmless forward-compatible traffic.
@@ -439,19 +441,13 @@ func (r *SocketRunner) handleRetryResponse(payload []byte) {
 }
 
 func (r *replayRequest) appendStructured(raw json.RawMessage) {
-	if len(r.structured) < MaxStructuredReplayEvents {
-		r.structured = append(r.structured, raw)
-		return
-	}
-	r.structured[r.structuredStart] = raw
-	r.structuredStart = (r.structuredStart + 1) % len(r.structured)
+	r.structured, _ = RetainStructuredHistory(r.structured, raw)
 }
 
 func (r *replayRequest) cloneStructured() []json.RawMessage {
 	structured := make([]json.RawMessage, len(r.structured))
 	for index := range structured {
-		source := (r.structuredStart + index) % len(r.structured)
-		structured[index] = append(json.RawMessage(nil), r.structured[source]...)
+		structured[index] = append(json.RawMessage(nil), r.structured[index]...)
 	}
 	return structured
 }
@@ -512,6 +508,10 @@ func (r *SocketRunner) closeWithLoss(cleanExit bool) {
 		return
 	}
 	r.closed = true
+	for id, response := range r.messages {
+		close(response)
+		delete(r.messages, id)
+	}
 	if r.replay != nil {
 		select {
 		case <-r.replay.done:

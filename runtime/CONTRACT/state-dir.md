@@ -158,10 +158,12 @@ This directory follows an explicit `SESSIONS_STATE_DIR` as described above.
 Go-runtime-only, mode 0600 files below a mode-0700 directory. Each file is a
 durable receipt for one logical `/submit` operation: UUID, target session id,
 content SHA-256, content byte count, status, delivery/retry booleans, optional
-reason, and creation/update times. It deliberately does not store the message
+reason, optional `mode` (`steer`; omitted for ordinary sends), optional
+`acceptance` evidence (`runner`, `provider`, or `unknown`), and
+creation/update times. It deliberately does not store the message
 body. A `pending` file left by a crash is treated as `unknown` and must not be
 retried automatically. Reusing an operation id with different content or a
-different target is refused. This directory follows `SESSIONS_STATE_DIR` so an
+different target or send mode is refused. This directory follows `SESSIONS_STATE_DIR` so an
 isolated daemon cannot read or write the installed daemon's receipts.
 
 ### `idle/<id>`

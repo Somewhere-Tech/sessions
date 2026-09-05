@@ -35,6 +35,7 @@ type session struct {
 	CreatedAt         int64             `json:"createdAt"`
 	PID               int               `json:"pid"`
 	RunnerProtocol    int               `json:"runnerProtocol"`
+	MessageSubmit     bool              `json:"messageSubmit,omitempty"`
 	RunnerVersion     string            `json:"runnerVersion,omitempty"`
 	Tool              string            `json:"tool"`
 	Working           bool              `json:"working"`

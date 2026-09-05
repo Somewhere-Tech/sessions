@@ -17,14 +17,11 @@ func (s *Session) recordCodexLocked(event *proto.Event) int64 {
 
 func (s *Session) recordClaudeLocked(event *proto.Event) int64 {
 	event.ClaudeIndex = s.claudeBase + int64(len(s.claude))
-	raw := append(json.RawMessage(nil), event.ClaudeEvent...)
+	raw := event.ClaudeEvent
 	providerActivityAt := time.Now().UnixMilli()
-	s.claude = append(s.claude, raw)
-	if len(s.claude) > maxClaudeEvents {
-		removed := len(s.claude) - maxClaudeEvents
-		s.claude = append([]json.RawMessage(nil), s.claude[removed:]...)
-		s.claudeBase += int64(removed)
-	}
+	var removed int
+	s.claude, removed = proto.RetainStructuredHistory(s.claude, raw)
+	s.claudeBase += int64(removed)
 
 	var value map[string]any
 	if json.Unmarshal(raw, &value) != nil {

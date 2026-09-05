@@ -30,7 +30,6 @@ go runtime/internal/api/resumable.go mergeResumableConversations 131
 go runtime/cmd/sessions/transcripts.go app.cmdTranscripts 127
 go runtime/cmd/sessions-runner/process_windows.go startWindowsConPTYProcess 126
 go runtime/cmd/sessions/commands.go app.cmdKill 125
-go runtime/cmd/sessions/send.go app.sendAndConfirmOperation 124
 go runtime/cmd/sessions/continue.go app.cmdContinue 121
 go runtime/cmd/sessions/run.go app.cmdRun 120
 go runtime/internal/session/claude_defaults.go Manager.applyClaudeDefaults 111

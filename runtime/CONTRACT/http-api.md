@@ -1116,6 +1116,16 @@ turn accepted input into an error.
 
 ### `POST /api/sessions/:id/submit`
 
+Structured runners advertising `messageSubmit:true` accept the whole message
+through an acknowledged runner control, without terminal paste/Enter frames.
+The additive body field `mode:"steer"` asks Codex to steer its active turn;
+unsupported runners refuse without input. `mode` omitted or `auto` starts a
+new turn when idle and steers Codex when active. Claude rejects active-turn
+input rather than reporting silent success. Receipts optionally report
+`acceptance:"runner"|"provider"`; neither means the turn completed. Ambiguous
+provider transport failures remain `unknown`, never automatically retried.
+The legacy behavior below remains available to older live runners.
+
 Auth required. Body is
 `{"data":"<one complete composer message>","operation_id":"<UUID v4>"}`.
 `operation_id` is optional for older callers; the daemon generates one when it

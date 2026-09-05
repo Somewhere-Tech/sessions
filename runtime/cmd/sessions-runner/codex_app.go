@@ -318,7 +318,8 @@ func (r *codexAppRunner) serveClient(conn net.Conn) {
 		Cols: r.cfg.cols, Rows: r.cfg.rows, CreatedAt: r.createdAt,
 		PID: os.Getpid(), ProtocolVersion: proto.ProtocolVersion, RuntimeVersion: version,
 		ConversationID: r.conversationID, RemoteEndpoint: r.remoteEndpoint, Retry: r.retry.Current(),
-		Turn: &proto.TurnState{Working: r.active},
+		Turn:          &proto.TurnState{Working: r.active},
+		MessageSubmit: true,
 	}
 	r.mu.Unlock()
 	payload, err := json.Marshal(h)
@@ -353,6 +354,8 @@ func (r *codexAppRunner) detachClient(c *client) {
 
 func (r *codexAppRunner) handleFrame(c *client, frame proto.Frame) error {
 	switch frame.Type {
+	case proto.MessageReq:
+		return replyMessage(c, frame.Payload, r.submitMessage)
 	case proto.Input:
 		r.handleInput(string(frame.Payload))
 	case proto.ModelReq:

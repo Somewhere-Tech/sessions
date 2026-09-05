@@ -57,6 +57,7 @@ func (s *Server) sendDeliveryRecord(response http.ResponseWriter, record deliver
 		"delivered":     record.Delivered,
 		"retry":         record.Retry,
 		"reason":        reason,
+		"acceptance":    record.Acceptance,
 		"duplicate":     duplicate,
 		"created_at_ms": record.CreatedAtMS,
 		"updated_at_ms": record.UpdatedAtMS,

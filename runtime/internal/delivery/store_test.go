@@ -58,6 +58,12 @@ func TestOperationIDCannotBeReusedForDifferentMessage(t *testing.T) {
 	if _, _, err := store.Begin(testOperationID, "session-b", "first"); err == nil {
 		t.Fatal("different target reused an operation id")
 	}
+	if _, _, err := store.Begin(testOperationID, "session-a", "first", "steer"); err == nil {
+		t.Fatal("different send mode reused an operation id")
+	}
+	if _, created, err := store.Begin(testOperationID, "session-a", "first", "auto"); err != nil || created {
+		t.Fatalf("explicit auto should match an ordinary send: created=%v err=%v", created, err)
+	}
 }
 
 func TestInvalidOperationIDCannotEscapeRoot(t *testing.T) {

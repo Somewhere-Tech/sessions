@@ -65,6 +65,7 @@ type deliveryReceipt struct {
 	Retry       bool   `json:"retry"`
 	Reason      string `json:"reason,omitempty"`
 	Duplicate   bool   `json:"duplicate"`
+	Acceptance  string `json:"acceptance,omitempty"`
 }
 
 var (
@@ -326,7 +327,7 @@ func firstValue(value map[string]any, keys ...string) any {
 // submitComposer sends one logical message through the daemon's atomic submit
 // boundary. Raw terminal keystrokes still use /input; message text and Enter
 // must never be interleaved with another agent's concurrent submission.
-func (a *app) submitComposer(inputPath, text, sourceSessionID, operationID string, timeout time.Duration) (deliveryReceipt, error) {
+func (a *app) submitComposer(inputPath, text, sourceSessionID, operationID string, timeout time.Duration, mode ...string) (deliveryReceipt, error) {
 	headers := make(http.Header)
 	if sourceSessionID != "" {
 		headers.Set("X-Sessions-Creator-Session", sourceSessionID)
@@ -338,9 +339,13 @@ func (a *app) submitComposer(inputPath, text, sourceSessionID, operationID strin
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	response, err := a.api.requestWithHeaders(ctx, http.MethodPost, submitPath, map[string]string{
+	body := map[string]string{
 		"data": text, "operation_id": operationID,
-	}, 0, headers)
+	}
+	if len(mode) > 0 {
+		body["mode"] = mode[0]
+	}
+	response, err := a.api.requestWithHeaders(ctx, http.MethodPost, submitPath, body, 0, headers)
 	if err != nil {
 		return a.lookupDeliveryAfterTransportFailure(operationID, err)
 	}
@@ -471,12 +476,21 @@ func (a *app) sendAndConfirmOperation(
 	baseTimestamp, baseNextIndex int64,
 	tool string,
 	confirmable bool,
-	inputPath string,
+	inputPath string, mode ...string,
 ) (sendResult, error) {
-	receipt, err := a.submitComposer(inputPath, text, sourceSessionID, operationID, timeout)
+	receipt, err := a.submitComposer(inputPath, text, sourceSessionID, operationID, timeout, mode...)
 	if err != nil {
 		return sendResult{}, err
 	}
+	if result, final := acknowledgedSendResult(receipt, tool); final {
+		return result, nil
+	}
+	return a.confirmTerminalSend(id, text, timeout, baseTimestamp, baseNextIndex, tool, confirmable, inputPath, receipt)
+}
+
+// Structured acknowledgments are final delivery evidence, not a reason to
+// inspect a terminal or synthesize another Enter. Keep their boundary explicit.
+func acknowledgedSendResult(receipt deliveryReceipt, tool string) (sendResult, bool) {
 	if receipt.Status != "accepted" {
 		confirmed := false
 		exitCode := exitTransport
@@ -486,26 +500,27 @@ func (a *app) sendAndConfirmOperation(
 		return sendResult{
 			OperationID: receipt.OperationID, Confirmed: &confirmed, Confidence: receipt.Status,
 			ExitCode: exitCode, Reason: receipt.Reason, Tool: tool,
-		}, nil
+		}, true
 	}
-	if receipt.Duplicate {
+	if receipt.Duplicate || receipt.Acceptance != "" {
 		confirmed := true
+		confidence := "accepted"
+		if receipt.Acceptance != "" {
+			confidence = receipt.Acceptance + "-accepted"
+		}
 		return sendResult{
 			OperationID: receipt.OperationID, Confirmed: &confirmed,
-			Confidence: "accepted", ExitCode: 0, Tool: tool,
-		}, nil
+			Confidence: confidence, ExitCode: 0, Tool: tool,
+		}, true
 	}
+	return sendResult{}, false
+}
+
+func (a *app) confirmTerminalSend(id, text string, timeout time.Duration, baseTimestamp, baseNextIndex int64, tool string, confirmable bool, inputPath string, receipt deliveryReceipt) (sendResult, error) {
 	if !confirmable {
 		return sendResult{OperationID: receipt.OperationID, Confirmed: nil, Tool: tool}, nil
 	}
-	snippetSource := text
-	for _, line := range strings.Split(text, "\n") {
-		if strings.TrimSpace(line) != "" {
-			snippetSource = strings.TrimSpace(line)
-			break
-		}
-	}
-	snippet := prefixString(snippetSource, 25)
+	snippet := confirmationSnippet(text)
 	start := a.now()
 	enterRetries := 0
 	for {
@@ -533,17 +548,7 @@ func (a *app) sendAndConfirmOperation(
 			newTimestamp = *currentSession.LastUserMessageAt
 		}
 		if newTimestamp > baseTimestamp {
-			confirmedText := ""
-			var events eventsResponse
-			path := fmt.Sprintf("/api/sessions/%s/events?since=%d", escapeID(id), baseNextIndex)
-			if err := a.getJSON(path, &events); err == nil {
-				for index := len(events.Events) - 1; index >= 0; index-- {
-					if isRealUserEvent(events.Events[index]) {
-						confirmedText = extractEventText(events.Events[index])
-						break
-					}
-				}
-			}
+			confirmedText := a.latestUserEventText(id, baseNextIndex)
 			confirmed := true
 			decision := decideSendConfirmation(sendEvidence{JSONLConfirmed: true})
 			return sendResult{
@@ -589,6 +594,29 @@ func (a *app) sendAndConfirmOperation(
 	}
 }
 
+func confirmationSnippet(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return prefixString(strings.TrimSpace(line), 25)
+		}
+	}
+	return prefixString(text, 25)
+}
+
+func (a *app) latestUserEventText(id string, since int64) string {
+	var events eventsResponse
+	path := fmt.Sprintf("/api/sessions/%s/events?since=%d", escapeID(id), since)
+	if err := a.getJSON(path, &events); err != nil {
+		return ""
+	}
+	for index := len(events.Events) - 1; index >= 0; index-- {
+		if isRealUserEvent(events.Events[index]) {
+			return extractEventText(events.Events[index])
+		}
+	}
+	return ""
+}
+
 func anyLineContains(lines []string, snippet string) bool {
 	for _, line := range lines {
 		if strings.Contains(line, snippet) {
@@ -613,11 +641,12 @@ type sendJSONResult struct {
 
 func (a *app) cmdSend(args []string) error {
 	if len(args) == 0 || args[0] == "" {
-		return fail(1, "usage: sessions send <id> [--from session] [--no-wait] [--timeout Ns] [--file path] [--operation-id UUID] <text...>")
+		return fail(1, "usage: sessions send <id> [--steer] [--from session] [--no-wait] [--timeout Ns] [--file path] [--operation-id UUID] <text...>")
 	}
 	idArg := args[0]
 	args = args[1:]
 	noWait := removeFirst(&args, "--no-wait")
+	steer := removeFirst(&args, "--steer")
 	timeout := 10 * time.Second
 	if raw, present := pluck(&args, "--timeout"); present && raw != "" {
 		var err error
@@ -638,6 +667,14 @@ func (a *app) cmdSend(args []string) error {
 	if hasOperationID && operationID == "" {
 		return fail(1, "--operation-id needs a UUID")
 	}
+	if steer && !hasOperationID {
+		var err error
+		operationID, err = randomUUID()
+		if err != nil {
+			return err
+		}
+		hasOperationID = true
+	}
 	// An unrecognized option in the leading position is a mistake, not message
 	// text: silently typing `--json` into someone's agent session is worse than
 	// refusing it. Later words are left alone so a message may still contain a
@@ -646,7 +683,7 @@ func (a *app) cmdSend(args []string) error {
 		if args[0] == "--" {
 			args = args[1:]
 		} else if strings.HasPrefix(args[0], "--") {
-			return fail(1, "unknown send option %s — valid options are --from, --timeout, --no-wait, --file, and --operation-id; to send it as text use `sessions send <id> -- %s ...`",
+			return fail(1, "unknown send option %s — valid options are --steer, --from, --timeout, --no-wait, --file, and --operation-id; to send it as text use `sessions send <id> -- %s ...`",
 				args[0], args[0])
 		}
 	}
@@ -662,7 +699,7 @@ func (a *app) cmdSend(args []string) error {
 		text = string(encoded)
 	}
 	if text == "" {
-		return fail(1, "usage: sessions send <id> [--from session] [--no-wait] [--timeout Ns] [--file path] [--operation-id UUID] <text...>")
+		return fail(1, "usage: sessions send <id> [--steer] [--from session] [--no-wait] [--timeout Ns] [--file path] [--operation-id UUID] <text...>")
 	}
 	id, err := a.resolveSessionID(idArg)
 	if err != nil {
@@ -679,35 +716,7 @@ func (a *app) cmdSend(args []string) error {
 		if !sendOperationIDPattern.MatchString(operationID) {
 			return fail(1, "--operation-id must be a lowercase UUID")
 		}
-		sessions, listErr := a.listSessions(false)
-		if listErr != nil {
-			return listErr
-		}
-		var baseline *session
-		for index := range sessions {
-			if sessions[index].ID == id {
-				baseline = &sessions[index]
-				break
-			}
-		}
-		if baseline == nil {
-			return fail(1, "%s", unknownSessionMessage(id))
-		}
-		sourceID = a.sourceSessionOnSelectedDaemon(sessions, sourceID)
-		baseTimestamp := int64(0)
-		if baseline.LastUserMessageAt != nil {
-			baseTimestamp = *baseline.LastUserMessageAt
-		}
-		baseNextIndex := int64(0)
-		tool := toolOfSession(*baseline)
-		confirmable := isConfirmableTool(tool)
-		if confirmable {
-			var events eventsResponse
-			if eventsErr := a.getJSON("/api/sessions/"+escapeID(id)+"/events?tail=1", &events); eventsErr == nil {
-				baseNextIndex = events.NextIndex
-			}
-		}
-		result, err = a.sendAndConfirmOperation(id, text, timeout, sourceID, operationID, baseTimestamp, baseNextIndex, tool, confirmable, "/api/sessions/"+escapeID(id)+"/input")
+		result, err = a.sendExplicitOperation(id, text, sourceID, operationID, timeout, steer)
 	} else {
 		result, err = a.sendAndConfirmFrom(id, text, timeout, noWait, sourceID)
 	}
@@ -736,6 +745,10 @@ func (a *app) cmdSend(args []string) error {
 		}
 		if result.Confidence == "accepted" {
 			_, err := io.WriteString(a.stdout, "accepted (working); JSONL confirmation pending\n")
+			return err
+		}
+		if result.Confidence == "runner-accepted" {
+			_, err := io.WriteString(a.stdout, "accepted by runner; provider response pending\n")
 			return err
 		}
 		_, err := io.WriteString(a.stdout, "delivered\n")
@@ -782,6 +795,44 @@ func (a *app) cmdSend(args []string) error {
 		fmt.Fprintf(a.stderr, "  delivery operation: %s (inspect with `sessions send-status %s`)\n", result.OperationID, result.OperationID)
 	}
 	return status(result.ExitCode)
+}
+
+func (a *app) sendExplicitOperation(id, text, sourceID, operationID string, timeout time.Duration, steer bool) (sendResult, error) {
+	sessions, err := a.listSessions(false)
+	if err != nil {
+		return sendResult{}, err
+	}
+	var baseline *session
+	for index := range sessions {
+		if sessions[index].ID == id {
+			baseline = &sessions[index]
+			break
+		}
+	}
+	if baseline == nil {
+		return sendResult{}, fail(1, "%s", unknownSessionMessage(id))
+	}
+	if steer && (!baseline.MessageSubmit || toolOfSession(*baseline) != "codex") {
+		return sendResult{}, fail(1, "Steer now requires an updated structured Codex runner. Nothing was sent; keep this draft or send an ordinary follow-up.")
+	}
+	sourceID = a.sourceSessionOnSelectedDaemon(sessions, sourceID)
+	var baseTimestamp, baseNextIndex int64
+	if baseline.LastUserMessageAt != nil {
+		baseTimestamp = *baseline.LastUserMessageAt
+	}
+	tool := toolOfSession(*baseline)
+	confirmable := isConfirmableTool(tool)
+	if confirmable {
+		var events eventsResponse
+		if err := a.getJSON("/api/sessions/"+escapeID(id)+"/events?tail=1", &events); err == nil {
+			baseNextIndex = events.NextIndex
+		}
+	}
+	mode := "auto"
+	if steer {
+		mode = "steer"
+	}
+	return a.sendAndConfirmOperation(id, text, timeout, sourceID, operationID, baseTimestamp, baseNextIndex, tool, confirmable, "/api/sessions/"+escapeID(id)+"/input", mode)
 }
 
 func (a *app) cmdSendStatus(args []string) error {

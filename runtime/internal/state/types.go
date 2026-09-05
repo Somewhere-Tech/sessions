@@ -105,6 +105,7 @@ type SessionInfo struct {
 	PID               int               `json:"pid"`
 	RunnerProtocol    int               `json:"runnerProtocol"`
 	RunnerVersion     string            `json:"runnerVersion,omitempty"`
+	MessageSubmit     bool              `json:"messageSubmit,omitempty"`
 	Tool              SessionTool       `json:"tool"`
 	Working           bool              `json:"working"`
 	LastDataAt        int64             `json:"lastDataAt"`

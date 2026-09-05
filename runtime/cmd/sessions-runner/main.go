@@ -81,6 +81,7 @@ type hello struct {
 	ClaudeSessionID string               `json:"claudeSessionId,omitempty"`
 	Retry           *proto.ProviderRetry `json:"retry,omitempty"`
 	Turn            *proto.TurnState     `json:"turn,omitempty"`
+	MessageSubmit   bool                 `json:"messageSubmit,omitempty"`
 }
 
 type exitInfo struct {

@@ -37,10 +37,12 @@ type Record struct {
 	SessionID    string `json:"session_id"`
 	ContentHash  string `json:"content_sha256"`
 	ContentBytes int    `json:"content_bytes"`
+	Mode         string `json:"mode,omitempty"`
 	Status       Status `json:"status"`
 	Delivered    bool   `json:"delivered"`
 	Retry        bool   `json:"retry"`
 	Reason       string `json:"reason,omitempty"`
+	Acceptance   string `json:"acceptance,omitempty"`
 	CreatedAtMS  int64  `json:"created_at_ms"`
 	UpdatedAtMS  int64  `json:"updated_at_ms"`
 }
@@ -77,7 +79,7 @@ func ValidateOperationID(value string) error {
 // same operation already exists, created is false and the stored result is
 // returned. Reusing an id for different content or a different target is
 // rejected rather than silently deduplicating the wrong message.
-func (s *Store) Begin(operationID, sessionID, content string) (record Record, created bool, err error) {
+func (s *Store) Begin(operationID, sessionID, content string, mode ...string) (record Record, created bool, err error) {
 	if err := ValidateOperationID(operationID); err != nil {
 		return Record{}, false, err
 	}
@@ -90,6 +92,9 @@ func (s *Store) Begin(operationID, sessionID, content string) (record Record, cr
 		OperationID: operationID, SessionID: sessionID,
 		ContentHash: fmt.Sprintf("%x", hash[:]), ContentBytes: len([]byte(content)),
 		Status: StatusPending, Retry: false, CreatedAtMS: now, UpdatedAtMS: now,
+	}
+	if len(mode) > 0 && mode[0] != "auto" {
+		wanted.Mode = mode[0]
 	}
 
 	s.mu.Lock()
@@ -122,7 +127,7 @@ func (s *Store) Begin(operationID, sessionID, content string) (record Record, cr
 	if err != nil {
 		return Record{}, false, err
 	}
-	if existing.SessionID != wanted.SessionID || existing.ContentHash != wanted.ContentHash || existing.ContentBytes != wanted.ContentBytes {
+	if existing.SessionID != wanted.SessionID || existing.ContentHash != wanted.ContentHash || existing.ContentBytes != wanted.ContentBytes || existing.Mode != wanted.Mode {
 		return Record{}, false, errors.New("operation_id is already assigned to a different message")
 	}
 	return existing, false, nil
@@ -137,7 +142,7 @@ func (s *Store) Get(operationID string) (Record, error) {
 	return read(s.path(operationID))
 }
 
-func (s *Store) Complete(operationID string, status Status, delivered, retry bool, reason string) (Record, error) {
+func (s *Store) Complete(operationID string, status Status, delivered, retry bool, reason string, acceptance ...string) (Record, error) {
 	if !validTerminalStatus(status) {
 		return Record{}, fmt.Errorf("invalid delivery status %q", status)
 	}
@@ -155,6 +160,9 @@ func (s *Store) Complete(operationID string, status Status, delivered, retry boo
 	record.Delivered = delivered
 	record.Retry = retry
 	record.Reason = reason
+	if len(acceptance) > 0 {
+		record.Acceptance = acceptance[0]
+	}
 	record.UpdatedAtMS = s.now().UnixMilli()
 	if err := writeAtomic(path, record); err != nil {
 		return Record{}, err
