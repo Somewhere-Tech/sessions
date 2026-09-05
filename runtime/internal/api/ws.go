@@ -137,7 +137,7 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 				denyWrite(ctx, peer, clientMessage{Type: "input", SessionID: id})
 				continue
 			}
-			s.registry.Input(ctx, id, string(payload))
+			_ = s.writeInputForRoute(ctx, id, string(payload), "/input", state.InputAttribution{}, false)
 			continue
 		}
 		var message clientMessage
@@ -146,7 +146,7 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 				denyWrite(ctx, peer, clientMessage{Type: "input", SessionID: id})
 				continue
 			}
-			s.registry.Input(ctx, id, string(payload))
+			_ = s.writeInputForRoute(ctx, id, string(payload), "/input", state.InputAttribution{}, false)
 			continue
 		}
 		switch message.Type {
@@ -157,7 +157,7 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 				denyWrite(ctx, peer, message)
 				continue
 			}
-			s.registry.Input(ctx, id, message.Data)
+			_ = s.writeInputForRoute(ctx, id, message.Data, "/input", state.InputAttribution{}, false)
 		case "resize":
 			if !writes {
 				denyWrite(ctx, peer, message)
@@ -174,8 +174,8 @@ type muxAttachment struct {
 
 func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 	ctx, cancel := context.WithCancel(parent)
-	defer cancel()
-	defer peer.connection.CloseNow()
+	work := newMuxWork(ctx, func(ctx context.Context, message clientMessage) { s.handleMuxWork(ctx, peer, message, cancel) })
+	defer work.close()
 	attached := make(map[string]muxAttachment)
 	var attachedMu sync.Mutex
 	detach := func(id string) {
@@ -201,6 +201,9 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 			entry.cancel()
 		}
 	}()
+	// Cancel I/O before attachment cleanup, which may need a session lock
+	// currently held by a worker's input. Workers are joined after cleanup.
+	defer func() { cancel(); _ = peer.connection.CloseNow() }()
 
 	for {
 		messageType, payload, err := peer.connection.Read(ctx)
@@ -271,43 +274,13 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 			s.handleMuxSnapshot(ctx, peer, message)
 		case "events":
 			s.handleMuxEvents(ctx, peer, message)
-		case "input":
+		case "input", "submit", "resize":
 			if !writes {
 				denyWrite(ctx, peer, message)
 				continue
 			}
-			written := s.registry.Input(ctx, message.SessionID, message.Data)
-			if message.RequestID != "" {
-				_ = peer.send(ctx, map[string]any{
-					"type": "inputAck", "requestId": message.RequestID,
-					"sessionId": message.SessionID, "ok": written,
-				})
-			}
-		case "submit":
-			if !writes {
-				denyWrite(ctx, peer, message)
-				continue
-			}
-			// Same per-session lock the HTTP submit takes, so the two
-			// transports cannot interleave a message and its Enter on one
-			// session while leaving every other session free to run.
-			unlock := s.submits.lock(message.SessionID)
-			written, reason := s.submitMuxInput(ctx, message.SessionID, message.Data)
-			unlock()
-			if message.RequestID != "" {
-				_ = peer.send(ctx, map[string]any{
-					"type": "submitAck", "requestId": message.RequestID,
-					"sessionId": message.SessionID, "ok": written,
-					"reason": reason,
-				})
-			}
-		case "resize":
-			if !writes {
-				denyWrite(ctx, peer, message)
-				continue
-			}
-			if session, ok := s.registry.Get(message.SessionID); ok {
-				session.Resize(ctx, clampDimension(message.Cols, 40, 500), clampDimension(message.Rows, 10, 200))
+			if !work.enqueue(message) {
+				rejectMuxWork(ctx, peer, message)
 			}
 		}
 	}

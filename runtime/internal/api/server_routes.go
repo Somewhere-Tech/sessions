@@ -933,7 +933,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 				return
 			}
 		}
-		if err := s.writeSessionInput(request.Context(), id, body.Data, attribution, attributed); err != nil {
+		if err := s.writeInputForRoute(request.Context(), id, body.Data, suffix, attribution, attributed); err != nil {
 			if suffix == "/submit" {
 				record, completeErr := s.deliveries.Complete(body.OperationID, delivery.StatusUnknown, false, false, err.Error())
 				if completeErr == nil {

@@ -1,6 +1,6 @@
 // An ambiguous legacy submit must preserve its uncertainty and never replay.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { attachSession, submitSessionMessage, type SessionChannel } from '../../src/lib/wsMux';
+import { attachSession, sendSessionInput, submitSessionMessage, type SessionChannel } from '../../src/lib/wsMux';
 import type { MuxClientMsg } from '../../src/types';
 
 class FixtureSocket {
@@ -44,6 +44,15 @@ afterEach(async () => {
 });
 
 describe('capability: legacy submit delivery evidence', () => {
+  it('shows a bounded-work refusal without claiming the session disappeared', async () => {
+    socket.open();
+    const result = sendSessionInput(url, 'legacy', 'raw input');
+    const request = socket.sent.find(msg => msg.type === 'input')!;
+    socket.reply({ type: 'inputAck', requestId: request.requestId, sessionId: 'legacy', ok: false, reason: 'Pending input limit reached. This command was not sent.' });
+    await expect(result).rejects.toThrow('Pending input limit reached. This command was not sent.');
+    expect(socket.sent.filter(msg => msg.type === 'input')).toHaveLength(1);
+  });
+
   it('reports a connection refusal as unsent before any input leaves', async () => {
     await expect(submitSessionMessage(url, 'legacy', 'whole message')).rejects.toMatchObject({ deliveryStatus: 'not-delivered' });
     expect(socket.sent).toEqual([]);

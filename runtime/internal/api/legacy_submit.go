@@ -50,7 +50,7 @@ func (s *Server) deliverLegacyProvider(ctx context.Context, id, data string, att
 		return delivery.StatusUnknown, false, "sending stopped before Enter; inspect the composer and do not automatically resend"
 	case <-timer.C:
 	}
-	if !s.registry.Input(ctx, id, "\r") {
+	if ctx.Err() != nil || !s.registry.Input(ctx, id, "\r") {
 		return delivery.StatusUnknown, false, "Enter was not acknowledged; inspect the composer and do not automatically resend"
 	}
 	confirmation, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -88,7 +88,7 @@ func (s *Server) submitMuxInput(ctx context.Context, id, data string) (bool, str
 		_, delivered, reason := s.deliverLegacyProvider(ctx, id, data, state.InputAttribution{})
 		return delivered, reason
 	}
-	if !s.registry.Input(ctx, id, data) {
+	if ctx.Err() != nil || !s.registry.Input(ctx, id, data) {
 		return false, "session input is unavailable"
 	}
 	timer := time.NewTimer(submitSettleDelay)
@@ -98,5 +98,5 @@ func (s *Server) submitMuxInput(ctx context.Context, id, data string) (bool, str
 		return false, "sending stopped before Enter; inspect the composer before resending"
 	case <-timer.C:
 	}
-	return s.registry.Input(ctx, id, "\r"), ""
+	return ctx.Err() == nil && s.registry.Input(ctx, id, "\r"), ""
 }

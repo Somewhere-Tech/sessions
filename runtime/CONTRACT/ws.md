@@ -131,6 +131,25 @@ reconnect when no server message has arrived for 30 seconds.
   non-exited session. When `requestId` is truthy, an `inputAck` is sent with the
   resulting boolean; without it, there is no response.
 
+Mux `input`, `submit`, and `resize` execute in receive order for each session
+through a fixed pool of eight workers per connection, started on first use.
+A legacy submit's bounded provider-history wait does not occupy the receive
+loop: ping, reads, and work for another admitted session can continue.
+At most eight session IDs and 64 commands (including executing commands) are
+admitted at once, with at most 1 MiB of decoded command strings retained.
+Admission never waits for capacity. Excess input/submit requests receive
+`ok:false` and an instructional `reason` before writing; without a request ID,
+or for resize, the server sends an `error` with code `input_overloaded`.
+This transport scheduling is not a claim that a provider queued the message.
+
+Raw HTTP and single-session socket input share the submit session lock, so
+they cannot write between another client's message text and Enter. Concurrent
+connections have no shared receive order; the lock makes their writes mutually
+exclusive. Closing a mux connection cancels its waiters and confirmation work,
+discards commands not yet started, and joins its workers. Already-started
+runner socket writes retain their existing transport deadline; cancellation
+does not retract bytes already written or end the underlying session.
+
 ### `resize`
 
 ```json
@@ -308,8 +327,10 @@ absolute total; the response does not expose its selected start.
 {"type":"inputAck","requestId":"<request id>","ok":true,"sessionId":"<id>"}
 ```
 
-Only mux `input` carrying `requestId` gets this response. `ok=false` means the
-session was unknown or exited.
+Only mux `input` carrying `requestId` gets this response. `ok=false` reports a
+refusal or unsuccessful input write. The optional `reason` distinguishes a
+bounded-work refusal from an unavailable session; clients display it instead
+of assuming the session disappeared.
 
 ### `submitAck`
 

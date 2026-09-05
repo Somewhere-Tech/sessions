@@ -508,7 +508,7 @@ export async function sendSessionInput(
     data
   });
   if (msg.type !== 'inputAck') throw new Error(`unexpected mux response: ${msg.type}`);
-  if (!msg.ok) throw new Error(`unknown session ${sessionId}`);
+  if (!msg.ok) throw new Error(msg.reason || `unknown session ${sessionId}`);
 }
 
 export async function submitSessionMessage(

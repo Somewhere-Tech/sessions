@@ -101,6 +101,9 @@ func (s *Server) writeSessionInput(
 	attribution state.InputAttribution,
 	attributed bool,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !attributed {
 		if s.registry.Input(ctx, id, data) {
 			return nil
@@ -112,6 +115,19 @@ func (s *Server) writeSessionInput(
 		return errors.New("message attribution is unavailable")
 	}
 	return service.InputAttributed(ctx, id, data, attribution)
+}
+
+// HTTP submit already holds the session gate. Raw HTTP and single-socket
+// input must acquire it too, so they cannot split a submit's text and Enter.
+func (s *Server) writeInputForRoute(ctx context.Context, id, data, route string, attribution state.InputAttribution, attributed bool) error {
+	if route != "/submit" {
+		unlock, err := s.submits.lockContext(ctx, id)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
+	return s.writeSessionInput(ctx, id, data, attribution, attributed)
 }
 
 func (s *Server) sendInputError(response http.ResponseWriter, err error, corsOrigin string) {
