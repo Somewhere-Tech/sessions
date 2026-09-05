@@ -24,6 +24,7 @@ interface Props {
 // the actual project dirs, but they're a click away when needed.
 export function DirectoryBrowser({ value, onChange, serverId }: Props): JSX.Element {
   const [listing, setListing] = useState<FsListing | null>(null);
+  const [draftPath, setDraftPath] = useState(value);
   const [showHidden, setShowHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -34,6 +35,7 @@ export function DirectoryBrowser({ value, onChange, serverId }: Props): JSX.Elem
     try {
       const next = await listFs(path, serverId);
       setListing(next);
+      setDraftPath(next.path);
       // Keep parent in sync with the path we ACTUALLY landed on (after
       // realpathSync). Don't fire confirmed=true — this is navigation,
       // not a final selection.
@@ -46,18 +48,15 @@ export function DirectoryBrowser({ value, onChange, serverId }: Props): JSX.Elem
   }, [onChange, serverId]);
 
   useEffect(() => {
-    // Initial load — use the current value if non-empty, otherwise
-    // let the server default to $HOME.
     void load(value || undefined);
-    // Only on mount; subsequent navigation goes through `load(path)`
-    // calls inside this component.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => setDraftPath(value), [value]);
   const onPathInput = (e: React.KeyboardEvent<HTMLInputElement>): void => {
     if (e.key !== 'Enter') return;
     e.preventDefault();
-    const target = (e.target as HTMLInputElement).value.trim();
+    const target = draftPath.trim();
     if (target) void load(target);
   };
 
@@ -71,8 +70,8 @@ export function DirectoryBrowser({ value, onChange, serverId }: Props): JSX.Elem
         <input
           className="dir-browser-path"
           type="text"
-          value={listing?.path ?? value ?? ''}
-          onChange={(e) => onChange(e.target.value, false)}
+          value={draftPath}
+          onChange={(e) => setDraftPath(e.target.value)}
           onKeyDown={onPathInput}
           placeholder="Type a path + Enter, or click below"
           spellCheck={false}
@@ -154,7 +153,8 @@ export function DirectoryBrowser({ value, onChange, serverId }: Props): JSX.Elem
           type="button"
           className="btn btn-primary dir-browser-select"
           onClick={() => listing && onChange(listing.path, true)}
-          disabled={!listing || loading}
+          disabled={!listing || loading || draftPath.trim() !== listing.path}
+          title={listing && draftPath.trim() !== listing.path ? 'Press Enter to open this path before selecting it' : undefined}
         >
           Select
         </button>
