@@ -29,6 +29,7 @@ import { OnDemandSettingsMenu } from './components/OnDemandSettingsMenu';
 import { TailnetAccessInbox } from './components/TailnetAccessInbox';
 import { MachineRecoveryNotice } from './components/MachineRecoveryNotice';
 import { useIsMobile } from './hooks/useMediaQuery';
+import { useExactResume } from './hooks/useExactResume';
 import { useAndroidBackNavigation } from './hooks/useAndroidBackNavigation';
 import { readTabOrder, writeTabOrder, applyOrder, moveBefore } from './lib/tabOrder';
 import { getNativeConnectionSettings, getNativeRuntimeStatus, isTauri, notify, recoverNativeRuntime, syncTrayServers } from './lib/tauriBridge';
@@ -181,7 +182,6 @@ export function App(): JSX.Element {
   if (!nativeHydrated) return <div className="native-hydration">Connecting to the Sessions runtime…</div>;
   return activeServerId && !pairingError && !credentialError
     ? <>
-        {nativeClientOnly ? <Suspense fallback={null}><FleetRelaySync /></Suspense> : null}
         <ConnectedApp nativeClientOnly={nativeClientOnly} />
       </>
     : <Suspense fallback={<div className="native-hydration">Opening connection options…</div>}>
@@ -340,11 +340,17 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // setLayoutMode is a stable React setter declared below; callbacks run only
   // after the component has completed initialization.
   }, [setActive, updateSetAside, writeOpenTabs]);
+  const exactResume = useExactResume(openSession);
+  const resumeSelected = exactResume.resume;
   const chooseHowToContinue = useCallback((
     session: SessionInfo,
     destinationProvider?: 'claude' | 'codex',
     runtimeMode?: 'rich' | 'terminal'
   ): void => {
+    if (!destinationProvider && !runtimeMode) {
+      void resumeSelected(session);
+      return;
+    }
     setDialogOpen({
       resumeProviderId: providerConversationId(session) ?? session.id,
       sourceSessionId: session.id,
@@ -352,7 +358,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       destinationProvider,
       runtimeMode
     });
-  }, []);
+  }, [resumeSelected]);
   const forkSession = useCallback(async (
     session: SessionInfo,
     destinationProvider: 'claude' | 'codex',
@@ -784,6 +790,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             </header>
           ) : null}
 
+      <Suspense fallback={null}><FleetRelaySync /></Suspense>
       <main className="app-main operations-main">
         {tokenRequiredServerId === activeServerId ? (
           <DaemonBanner
@@ -881,6 +888,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         </section>
       </div>
 
+      {exactResume.notice ? <div className="dialog-error" role="alert">{exactResume.notice}<button type="button" onClick={exactResume.dismiss}>Dismiss</button></div> : null}
       <MobileNav
         layoutMode={effectiveLayout === 'grid' ? 'tabs' : effectiveLayout === 'feedback' ? 'settings' : effectiveLayout}
         showingSessionDetail={effectiveLayout === 'tabs' && mobileSessionDetail}

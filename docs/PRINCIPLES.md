@@ -114,6 +114,13 @@ are not emergencies. Red and blocking confirmation are reserved for meaningful
 danger or irreversible loss. Labels such as Close tab, Set aside, End session,
 Resume, Move, and Archive must describe their actual effect.
 
+Resume on a selected conversation reopens that exact conversation directly,
+retaining its known model, effort, and runtime. Browsing history, changing
+providers, or choosing a different runtime is a separate action; an ordinary
+resume must not reopen
+the conversation chooser or require reselecting a model. Assistant text stays
+visible in the conversation; collapsible tool details must not hide replies.
+
 ## Compatibility over forced lockstep
 
 The app, daemon, CLI, and runners have separate lifetimes. Compatible versions

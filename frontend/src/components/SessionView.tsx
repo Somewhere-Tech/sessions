@@ -24,6 +24,7 @@ import { agentLedDescendants, isAgentLedChild } from '../lib/workingSet';
 import { handBackMessage } from '../lib/handBack';
 import { SubagentsPanel } from './SubagentsPanel';
 import { ProviderFaultCard } from './ProviderFaultCard';
+import { SessionTitleRename } from './SessionTitleRename';
 
 import type { ActiveStatus } from '../lib/activeStatus';
 
@@ -83,23 +84,11 @@ function TerminalProviderFault({ session, onOpenTerminal }: { session: SessionIn
   return <div className="terminal-provider-fault"><ProviderFaultCard sessionId={session.id} failureKind={session.failureKind} detail={session.failureDetail} retry={session.retry} rich={false} onOpenTerminal={onOpenTerminal} /></div>;
 }
 
-// Owns useTerminal for the active session and exposes a Terminal /
-// Sessions layout. The terminal stream stays the source of truth — its
-// xterm instance stays mounted across mode toggles so the raw terminal
-// is always one click away.
-//
-// memo()'d: all 36 SessionViews stay mounted, and App re-renders every 3s
-// (session poll). Without memo, that parent re-render re-renders every
-// child; with it (plus stable session refs from reconcileSessions), an
-// unchanged session's view skips the poll entirely. Props are all stable
-// per session (sessionId; onStatusChange is setActiveStatus for the active
-// tab and undefined otherwise; isActive flips only on switch).
-function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onContinueConversation, onFork, onCloseView, onOpenSession, onReparent, onBack, preferFullTerminal = false }: Props): JSX.Element {
-  const [viewMode, setViewMode] = useState<ViewMode>(() => readInitialSessionView(sessionId));
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [forkMode, setForkMode] = useState(false);
-  const [terminalExpanded, setTerminalExpanded] = useState(false);
-  const [subagentsOpen, setSubagentsOpen] = useState(false);
+// Report delegated work back to its manager before navigating there.
+function useHandBack(session: SessionInfo | null, onOpenSession?: (id: string) => void): {
+  handingBack: boolean;
+  handBackToManager: (managerId: string) => Promise<void>;
+} {
   const [handingBack, setHandingBack] = useState(false);
   // The breakout loop: a lane opened from its manager reports back into the
   // manager's conversation and returns the person there.
@@ -113,9 +102,22 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
       setHandingBack(false);
     }
   };
+  return { handingBack, handBackToManager };
+}
+
+// Own the conversation/terminal view while keeping unchanged session tabs
+// memoized across daemon polls. Structured submits do not depend on a healthy
+// display stream; the daemon's acknowledged control determines their outcome.
+function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onContinueConversation, onFork, onCloseView, onOpenSession, onReparent, onBack, preferFullTerminal = false }: Props): JSX.Element {
+  const [viewMode, setViewMode] = useState<ViewMode>(() => readInitialSessionView(sessionId));
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [forkMode, setForkMode] = useState(false);
+  const [terminalExpanded, setTerminalExpanded] = useState(false);
+  const [subagentsOpen, setSubagentsOpen] = useState(false);
   const sessionViewRef = useRef<HTMLDivElement>(null);
   const terminalModePillRef = useRef<HTMLSpanElement>(null);
   const session = useSessions((s) => s.sessions.find((x) => x.id === sessionId)) ?? null;
+  const { handingBack, handBackToManager } = useHandBack(session, onOpenSession);
   const allSessions = useSessions((s) => s.sessions);
   const endSession = useSessions((s) => s.kill);
   const updateName = useSessions((s) => s.updateName);
@@ -501,7 +503,12 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             )
           ) : null}
           <div className="session-active-title-row">
-            <h1>{session ? resolvedSessionLabel(session) : 'Session'}</h1>
+            {session ? (
+              <SessionTitleRename
+                label={resolvedSessionLabel(session)}
+                onRename={(name) => updateName(session.id, name)}
+              />
+            ) : <h1>Session</h1>}
             <span className={`session-live-pill${statusTone}`}>{statusLabel}</span>
             {session ? (
               <span className="session-runtime-anchor">
@@ -714,6 +721,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             historyPending={term.historyPending}
             sendConfirmed={sendConfirmedInput}
             submitMessage={submitMessage}
+            steerMessage={session?.tool === 'codex' && session.messageSubmit ? (data) => submitAttributedMessage(sessionId, data, getActiveServer().id, undefined, 'steer') : undefined}
             connected={term.status === 'open'}
             sendAvailable={sendAvailable}
             hasEarlierClaudeEvents={term.hasEarlierClaudeEvents}

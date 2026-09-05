@@ -64,7 +64,8 @@ export interface DispatchMessage {
   // content so provider retry state can never be rendered as assistant prose.
   quietStatus?: string;
   // Number of identical provider-history turns that existed when sessionsd
-  // accepted this submission. A later occurrence replaces the local copy.
+  // began this submission, BEFORE network IO. A later occurrence replaces
+  // the local copy even when provider history arrives before the receipt.
   confirmBaseline?: number;
 }
 
@@ -79,6 +80,7 @@ export interface PendingApproval {
 }
 
 export interface SessionInfo {
+  messageSubmit?: boolean;
   id: string;
   name?: string;
   name_source?: 'launch' | 'provider' | 'explicit';

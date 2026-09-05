@@ -8,7 +8,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ResumeDialog } from '../../src/components/ResumeDialog';
 import { SessionHistoryView } from '../../src/components/SessionHistoryView';
-import type { SessionInfo } from '../../src/types';
+import { useExactResume } from '../../src/hooks/useExactResume';
 import { Workbench } from './harness';
 import { installFakeDaemon, makeSession, useFakeMachines, type FakeMachine } from './fake-daemon';
 
@@ -89,7 +89,7 @@ describe('capability: resume a conversation', () => {
     expect(rows[0]).toHaveAttribute('data-session-id', resumedLaneId);
   });
 
-  it('reviews an ended row before starting its exact conversation', async () => {
+  it('resumes an already selected ended conversation without opening a chooser', async () => {
     const ended = makeSession({
       id: 'ended-runtime',
       name: 'Quarterly plan',
@@ -126,17 +126,10 @@ describe('capability: resume a conversation', () => {
     const user = userEvent.setup();
 
     function EndedResumeFlow(): JSX.Element {
-      const [selected, setSelected] = useState<SessionInfo | null>(null);
+      const { resume, notice } = useExactResume(() => {});
       return <Workbench>
-        <SessionHistoryView session={ended} onResume={(session) => setSelected(session)} />
-        {selected ? <ResumeDialog
-          preferredProviderId={PROVIDER_UUID}
-          preferredSourceSessionId={selected.id}
-          preferredHistoryId={selected.id}
-          onClose={() => setSelected(null)}
-          onResumed={() => {}}
-          onStartNew={() => {}}
-        /> : null}
+        <SessionHistoryView session={ended} onResume={resume} />
+        {notice ? <div role="alert">{notice}</div> : null}
       </Workbench>;
     }
     render(<EndedResumeFlow />);
@@ -148,11 +141,7 @@ describe('capability: resume a conversation', () => {
     expect(screen.getByRole('button', { name: 'Show earlier messages' })).toBeInTheDocument();
 
     await user.click(await screen.findByRole('button', { name: /Resume conversation/ }));
-    expect(await screen.findByRole('group', { name: 'Start plan' })).toHaveTextContent('Fable 5');
-    expect(screen.getByText('The original Claude conversation opens again. Nothing is copied.')).toBeInTheDocument();
-    expect(screen.getByText('Nothing runs until you press Start')).toBeInTheDocument();
-    expect(daemon.adopted).toEqual([]);
-    await user.click(screen.getByRole('button', { name: 'Start Claude (Fable 5)' }));
     await waitFor(() => expect(daemon.adopted).toEqual([PROVIDER_UUID]));
+    expect(screen.queryByRole('group', { name: 'Start plan' })).not.toBeInTheDocument();
   });
 });

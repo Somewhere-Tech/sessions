@@ -59,7 +59,8 @@ interface Args {
 export interface DispatchAPI {
   messages: DispatchMessage[];
   // Called only after sessionsd acknowledges the atomic text + Enter submit.
-  recordSent: (content: string, queued?: boolean) => void;
+  prepareSend: (content: string) => number;
+  recordSent: (content: string, queued?: boolean, baseline?: number) => void;
   restoreDraft: (id: string) => void;
   remove: (id: string) => void;
   resetLog: () => void;
@@ -101,19 +102,23 @@ export function useDispatch({ sessionId, eventUserContentCounts }: Args): Dispat
       });
       return changed ? next : previous;
     });
-  }, [eventUserContentCounts]);
+  }, [eventUserContentCounts, messages]);
 
-  const recordSent = useCallback((content: string, queued = false): void => {
-    if (!content.trim()) return;
-    const now = Date.now();
-    const previous = messagesRef.current;
+  const prepareSend = useCallback((content: string): number => {
     const trimmed = content.trim();
     const providerCount = eventCountsRef.current?.get(trimmed) ?? 0;
-    const acceptedAhead = previous.filter((message) =>
+    const acceptedAhead = messagesRef.current.filter((message) =>
       message.role === 'user'
       && (message.status === 'accepted' || message.status === 'queued')
       && message.content.trim() === trimmed
+      && (message.confirmBaseline ?? 0) >= providerCount
     ).length;
+    return providerCount + acceptedAhead;
+  }, []);
+
+  const recordSent = useCallback((content: string, queued = false, baseline = prepareSend(content)): void => {
+    if (!content.trim()) return;
+    const now = Date.now();
     const message: DispatchMessage = {
       id: `user-${now}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'user',
@@ -122,10 +127,10 @@ export function useDispatch({ sessionId, eventUserContentCounts }: Args): Dispat
       createdAt: now,
       confirmedAt: now,
       queued: queued || undefined,
-      confirmBaseline: providerCount + acceptedAhead
+      confirmBaseline: baseline
     };
     setMessages((current) => [...current, message]);
-  }, []);
+  }, [prepareSend]);
 
   const restoreDraft = useCallback((id: string): void => {
     setMessages((previous) => previous.map((message) =>
@@ -141,5 +146,5 @@ export function useDispatch({ sessionId, eventUserContentCounts }: Args): Dispat
     setMessages([]);
   }, []);
 
-  return { messages, recordSent, restoreDraft, remove, resetLog };
+  return { messages, prepareSend, recordSent, restoreDraft, remove, resetLog };
 }

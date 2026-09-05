@@ -2,12 +2,14 @@ import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type 
 import { uploadFile } from '../api/sessionsd';
 import type { SessionTool } from '../types';
 import { ComposerModelControl } from './ComposerModelControl';
+import { MessageDeliveryError } from '../lib/messageDelivery';
 
 interface Props {
   // Acknowledged sender from useTerminal. Failed sends leave the draft visible
   // for retry; active Codex turns use the provider's native steering queue.
   send: (data: string) => Promise<void>;
   submitMessage: (data: string) => Promise<void>;
+  steerMessage?: (data: string) => Promise<void>;
   // Display-stream status. This may reconnect independently of the durable
   // session and must not, by itself, disable an acknowledged message send.
   connected: boolean;
@@ -23,7 +25,8 @@ interface Props {
   // parent to render an optimistic "pending" message in the Sessions
   // view so the user sees their message land instantly, instead of
   // waiting for Claude's TUI redraw + parser throttle (~500ms-1s).
-  onSubmitted?: (text: string, queued: boolean) => void;
+  onSubmitting?: (text: string) => number;
+  onSubmitted?: (text: string, queued: boolean, baseline?: number) => void;
   // Failed Remote sends restore their text here so the user's draft is
   // recoverable without copy/pasting from the red bubble. The version
   // changes per failed attempt.
@@ -57,6 +60,19 @@ function quotePath(p: string): string {
   return "'" + p.replace(/'/g, "'\"'\"'") + "'";
 }
 
+function SendControls({ disabled, submitting, feedback, steer, submit }: {
+  disabled: boolean; submitting: boolean; feedback: string;
+  steer: boolean; submit: (steer?: boolean) => Promise<void>;
+}): JSX.Element {
+  return <>
+    <button type="button" className={`btn btn-primary input-send${feedback === 'sent' ? ' is-sent' : ''}`}
+      onClick={() => void submit()} disabled={disabled || submitting} aria-label="Send"
+      title={submitting ? 'Sending…' : 'Send (Enter)'}><span aria-hidden>↑</span></button>
+    {steer ? <button type="button" className="btn btn-secondary" disabled={disabled || submitting}
+      onClick={() => void submit(true)} title="Send this follow-up to Codex’s active turn now">Steer now</button> : null}
+  </>;
+}
+
 // Bottom composer for the Sessions view. xterm itself accepts input fine
 // when focused, but in Sessions mode the user can't see the cursor — they
 // need an obvious "type here" target. Keystrokes go through the same WS
@@ -65,9 +81,11 @@ function quotePath(p: string): string {
 export function InputBar({
   send,
   submitMessage,
+  steerMessage,
   connected,
   sendAvailable = connected,
   sessionId,
+  onSubmitting,
   onSubmitted,
   recoverDraft,
   provider = 'claude-code',
@@ -132,7 +150,7 @@ export function InputBar({
     setText(recoverDraft.text);
   }, [recoverDraft, text]);
 
-  const submit = async (): Promise<void> => {
+  const submit = async (steer = false): Promise<void> => {
     if (!sendAvailable || submitInFlightRef.current) return;
     setUploadError(null); // clear any lingering upload error on submit
     setComposerNotice(null);
@@ -203,17 +221,20 @@ export function InputBar({
     submitInFlightRef.current = true;
     setSubmitting(true);
     const submittedToActiveCodex = provider === 'codex' && providerWorking;
+    // Capture before IO: provider history can arrive before the HTTP receipt.
+    const baseline = text ? onSubmitting?.(text) : undefined;
     try {
       if (text) {
-        // The daemon owns text + Enter as one atomic operation. It still
-        // writes two PTY frames (needed by Ink), but concurrent agents cannot
-        // interleave their messages between those frames.
-        await submitMessage('\x1b[200~' + text + '\x1b[201~');
+        // The daemon chooses acknowledged whole-message control when the
+        // runner supports it, or serializes the legacy terminal paste/Enter.
+        // The composer never retries either path as a second send.
+        if (steer && steerMessage) await steerMessage(text);
+        else await submitMessage('\x1b[200~' + text + '\x1b[201~');
       } else {
         // Empty buffer — just an Enter, e.g. to accept a y/n prompt.
         await send('\r');
       }
-      if (text && onSubmitted) onSubmitted(text, submittedToActiveCodex);
+      if (text && onSubmitted) onSubmitted(text, submittedToActiveCodex, baseline);
       setText('');
       restoredDraftRef.current = null;
       setFeedback('sent');
@@ -221,7 +242,7 @@ export function InputBar({
     } catch (reason) {
       setComposerNotice({
         tone: 'error',
-        title: 'Message not sent',
+        title: reason instanceof MessageDeliveryError && reason.deliveryStatus !== 'not-delivered' ? 'Delivery not confirmed' : 'Message not sent',
         detail: reason instanceof Error
           ? `${reason.message} Your draft is still here.`
           : 'Sessions is reconnecting. Your draft is still here; send it again after the connection returns.'
@@ -462,16 +483,8 @@ export function InputBar({
               onChange={onConfigureModel}
             />
           ) : null}
-          <button
-            type="button"
-            className={`btn btn-primary input-send${feedback === 'sent' ? ' is-sent' : ''}`}
-            onClick={() => void submit()}
-            disabled={!sendAvailable || submitting}
-            aria-label="Send"
-            title={submitting ? 'Sending…' : 'Send (Enter)'}
-          >
-            <span aria-hidden>↑</span>
-          </button>
+          <SendControls disabled={!sendAvailable} submitting={submitting} feedback={feedback}
+            steer={Boolean(provider === 'codex' && providerWorking && steerMessage && text.trim())} submit={submit} />
         </div>
       </div>
     </div>

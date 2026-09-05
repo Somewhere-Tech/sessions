@@ -29,6 +29,16 @@ function renderFileReference(path: string, cwd = ''): string {
   return linkifyFilePaths(escaped, cwd);
 }
 
+function countProviderUserMessages(messages: DispatchMessage[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const message of messages) {
+    if (message.role !== 'user' || message.status !== 'sent') continue;
+    const content = message.content.trim();
+    counts.set(content, (counts.get(content) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export interface ProviderFaultView {
   kind: ProviderFailureKind;
   detail?: string;
@@ -64,6 +74,7 @@ interface Props {
   // inside SessionView and are never used for conversation dispatch.
   sendConfirmed: (data: string) => Promise<void>;
   submitMessage: (data: string) => Promise<void>;
+  steerMessage?: (data: string) => Promise<void>;
   connected: boolean;
   sendAvailable?: boolean;
   hasEarlierClaudeEvents: boolean;
@@ -124,6 +135,7 @@ export function RemoteView({
   historyPending,
   sendConfirmed,
   submitMessage,
+  steerMessage,
   connected,
   sendAvailable = connected,
   hasEarlierClaudeEvents,
@@ -159,16 +171,8 @@ export function RemoteView({
   // Occurrence COUNT per trimmed user content in the JSONL — a count, not
   // a set, so useDispatch can tell a genuinely-new re-send ("continue"
   // again) from a historical duplicate and not false-confirm it.
-  const eventUserContentCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const m of eventMessages) {
-      if (m.role !== 'user' || m.status !== 'sent') continue;
-      const c = m.content.trim();
-      counts.set(c, (counts.get(c) ?? 0) + 1);
-    }
-    return counts;
-  }, [eventMessages]);
-  const { messages: dispatchMessages, recordSent, restoreDraft, remove, resetLog } = useDispatch({
+  const eventUserContentCounts = useMemo(() => countProviderUserMessages(eventMessages), [eventMessages]);
+  const { messages: dispatchMessages, prepareSend, recordSent, restoreDraft, remove, resetLog } = useDispatch({
     sessionId,
     eventUserContentCounts
   });
@@ -572,9 +576,11 @@ export function RemoteView({
         <InputBar
           send={sendConfirmed}
           submitMessage={submitMessage}
+          steerMessage={steerMessage}
           connected={connected}
           sendAvailable={sendAvailable}
           sessionId={sessionId}
+          onSubmitting={prepareSend}
           onSubmitted={recordSent}
           recoverDraft={recoverDraft}
           provider={provider}
@@ -751,8 +757,7 @@ function RemoteMessageInner({
               </details>
             ) : null}
             {m.updates && m.updates.length > 0 ? (
-              <details className="remote-bubble-disclosure remote-bubble-updates">
-                <summary>{m.updates.length} progress {m.updates.length === 1 ? 'update' : 'updates'}</summary>
+              <section className="remote-bubble-updates" aria-label="Assistant updates">
                 <div className="remote-bubble-updates-list">
                   {m.updates.map((update, index) => (
                     <div
@@ -762,7 +767,7 @@ function RemoteMessageInner({
                     />
                   ))}
                 </div>
-              </details>
+              </section>
             ) : null}
             {m.plan && m.plan.length > 0 ? (
               <PlanPanel steps={m.plan} explanation={m.planExplanation} />

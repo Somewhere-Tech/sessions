@@ -1,6 +1,7 @@
 import type { SessionInfo } from '../types';
 import { adoptConversationWithRepair, type AdoptOutcome } from './adoptConversation';
 import { providerConversationId } from './sessionStatus';
+import { sessionMode } from './sessionMode';
 
 /**
  * Resume the exact ended row the caller already chose.
@@ -13,7 +14,8 @@ import { providerConversationId } from './sessionStatus';
 export function resumeExactSession(
   session: SessionInfo,
   destinationProvider?: 'claude' | 'codex',
-  runtimeMode?: 'rich' | 'terminal'
+  runtimeMode?: 'rich' | 'terminal',
+  serverId?: string
 ): Promise<AdoptOutcome> {
   const providerId = providerConversationId(session);
   return adoptConversationWithRepair(
@@ -21,6 +23,11 @@ export function resumeExactSession(
     session.id,
     providerId ? undefined : session.id,
     destinationProvider,
-    providerId ? runtimeMode : 'rich'
+    providerId ? runtimeMode ?? sessionMode(session) : 'rich',
+    undefined,
+    session.model,
+    session.effort,
+    session.permissions === 'constrained' ? 'constrained' : undefined,
+    serverId
   );
 }

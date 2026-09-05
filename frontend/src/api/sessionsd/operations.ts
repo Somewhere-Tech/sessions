@@ -1,6 +1,7 @@
 import type { ClaudeSessionEvent, CreateSessionRequest, DirectoryCandidate, ProviderFailureKind, ProviderRetry, SessionInfo } from '../../types';
 import { getActiveServer, type ServerConfig } from '../../lib/servers';
 import { randomUUID } from '../../lib/uuid';
+import { MessageDeliveryError } from '../../lib/messageDelivery';
 import {
   AuthError,
   apiFetch,
@@ -525,9 +526,11 @@ export async function adoptConversation(
   remoteControl?: boolean,
   model?: string,
   effort?: string,
-  permissions?: 'constrained'
+  permissions?: 'constrained',
+  serverId?: string
 ): Promise<AdoptConversationResult> {
-  const r = await apiFetch(`${httpBase()}/api/recovery/adopt`, {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/recovery/adopt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -545,8 +548,9 @@ export async function adoptConversation(
   return json<AdoptConversationResult>(r);
 }
 
-export async function repairAdoption(request: AdoptRepairRequest): Promise<AdoptConversationResult> {
-  const r = await apiFetch(`${httpBase()}/api/recovery/adopt`, {
+export async function repairAdoption(request: AdoptRepairRequest, serverId?: string): Promise<AdoptConversationResult> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/recovery/adopt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -651,12 +655,12 @@ interface MessageDeliveryReceipt {
 
 function deliveryError(receipt: MessageDeliveryReceipt): Error {
   if (receipt.status === 'not-delivered' && receipt.retry) {
-    return new Error(receipt.reason || 'The session could not accept the message. It is safe to try again.');
+    return new MessageDeliveryError(receipt.reason || 'The session could not accept the message. It is safe to try again.', 'not-delivered', receipt.operation_id);
   }
   if (receipt.status === 'text-delivered') {
-    return new Error('The message text reached the session, but Sessions could not confirm Enter. Check the conversation before trying again.');
+    return new MessageDeliveryError('The message text reached the session, but Sessions could not confirm Enter. Check the conversation before trying again.', 'text-delivered', receipt.operation_id);
   }
-  return new Error('Sessions could not confirm whether the message arrived. Check the conversation before trying again.');
+  return new MessageDeliveryError('Sessions could not confirm whether the message arrived. Check the conversation before trying again.', 'unknown', receipt.operation_id);
 }
 
 async function readDeliveryResponse(response: Response): Promise<MessageDeliveryReceipt | { ok: true }> {
@@ -676,7 +680,7 @@ async function readDeliveryResponse(response: Response): Promise<MessageDelivery
 // fromSessionId records another lane as the author of the message, the way
 // `sessions send --from` does, so a hand-back reads in the manager's history
 // as coming from the lane rather than from the person.
-export async function submitMessage(sessionId: string, data: string, serverId?: string, fromSessionId?: string): Promise<void> {
+export async function submitMessage(sessionId: string, data: string, serverId?: string, fromSessionId?: string, mode?: 'steer'): Promise<void> {
   const server = requestedServer(serverId);
   const operationId = randomUUID();
   let response: Response;
@@ -687,9 +691,9 @@ export async function submitMessage(sessionId: string, data: string, serverId?: 
         'content-type': 'application/json',
         ...(fromSessionId ? { 'X-Sessions-Creator-Session': fromSessionId } : {})
       },
-      body: JSON.stringify({ data, operation_id: operationId })
+      body: JSON.stringify({ data, operation_id: operationId, mode })
     });
-  } catch (initialError) {
+  } catch {
     // A broken response does not prove a broken send. Ask the daemon for the
     // durable, content-free receipt before allowing a person or agent to
     // retry and accidentally duplicate the message.
@@ -703,7 +707,8 @@ export async function submitMessage(sessionId: string, data: string, serverId?: 
       throw deliveryError(recovered);
     } catch (receiptError) {
       if (receiptError instanceof AuthError) throw receiptError;
-      throw new Error('The connection changed while sending. Sessions could not confirm delivery, so it did not retry. Check the conversation before sending again.', { cause: initialError });
+      if (receiptError instanceof MessageDeliveryError) throw receiptError;
+      throw new MessageDeliveryError('The connection changed while sending. Sessions could not confirm delivery, so it did not retry. Check the conversation before sending again.', 'unknown', operationId);
     }
   }
   const receipt = await readDeliveryResponse(response);

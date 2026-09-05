@@ -197,6 +197,10 @@
   flex-direction: column;
   gap: 8px;
 }
+.remote-bubble-updates {
+  margin: 6px 0 9px;
+  color: var(--fg);
+}
 .remote-bubble-updates-list > div + div {
   padding-top: 8px;
   border-top: 1px solid var(--border);

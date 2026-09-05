@@ -1,7 +1,9 @@
 // CAPABILITY: a client-only phone paired with one host inherits that host's
 // approved fleet without receiving or dialing another machine's credential.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, waitFor } from '@testing-library/react';
 import { httpBaseForServer, serverFetch } from '../../src/api/sessionsd/core';
+import { FleetRelaySync } from '../../src/components/FleetRelaySync';
 import { refreshFleetServersFromHost } from '../../src/lib/fleetRelay';
 import {
   useServers,
@@ -18,6 +20,16 @@ const host: ServerConfig = {
   scheme: 'http',
   token: 'phone-on-a',
   isDefault: false
+};
+
+const secondHost: ServerConfig = {
+  ...host,
+  id: 'paired-host-b',
+  machineId: 'machine-b',
+  name: 'Mac B',
+  systemName: 'Mac B',
+  host: '192.168.1.20',
+  token: 'phone-on-b'
 };
 
 function fleetResponse(machines: unknown[]): Response {
@@ -104,6 +116,82 @@ describe('capability: inherit a paired host fleet', () => {
     await refreshFleetServersFromHost(host.id);
 
     expect(useServers.getState().servers[1]?.transport).toBe('tailnet-ip');
+  });
+
+  it('syncs every direct host without requiring it to be selected', async () => {
+    useServers.setState({ servers: [{ ...secondHost }, { ...host }], activeId: '' });
+    const fetchMock = vi.spyOn(window, 'fetch').mockImplementation(async (target) => {
+      const url = String(target);
+      if (url.startsWith('http://192.168.1.10:8897')) {
+        return fleetResponse([{ id: 'machine-c', name: 'Mac C', transport: 'lan' }]);
+      }
+      if (url.startsWith('http://192.168.1.20:8897')) {
+        return fleetResponse([{ id: 'machine-d', name: 'Mac D', transport: 'tailnet' }]);
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+
+    render(<FleetRelaySync />);
+
+    await waitFor(() => expect(useServers.getState().servers.map((server) => server.machineId)).toEqual([
+      'machine-b', 'machine-d', 'machine-a', 'machine-c'
+    ]));
+    expect(fetchMock.mock.calls.map(([target]) => String(target))).toEqual([
+      'http://192.168.1.10:8897/api/fleet/machines',
+      'http://192.168.1.20:8897/api/fleet/machines'
+    ]);
+  });
+
+  it('keeps saved and inherited entries when a host refresh fails', async () => {
+    const inherited: ServerConfig = {
+      ...host,
+      id: 'fleet:paired-host:machine-c',
+      machineId: 'machine-c',
+      name: 'Mac C',
+      relayParentId: host.id,
+      relayMachineId: 'machine-c'
+    };
+    const before = [{ ...host }, inherited, { ...secondHost }];
+    useServers.setState({ servers: before, activeId: secondHost.id });
+    vi.spyOn(window, 'fetch').mockResolvedValue(new Response('', { status: 503 }));
+
+    await expect(refreshFleetServersFromHost(host.id)).rejects.toThrow('HTTP 503');
+
+    expect(useServers.getState().servers).toEqual(before);
+    expect(useServers.getState().activeId).toBe(secondHost.id);
+  });
+
+  it('cannot restore a revoked host fleet from a pending response', async () => {
+    let resolveResponse!: (response: Response) => void;
+    vi.spyOn(window, 'fetch').mockReturnValue(new Promise((resolve) => { resolveResponse = resolve; }));
+    const refresh = refreshFleetServersFromHost(host.id);
+    useServers.setState({ servers: [{ ...secondHost }], activeId: secondHost.id });
+
+    resolveResponse(fleetResponse([{ id: 'machine-c', name: 'Mac C', transport: 'lan' }]));
+    await refresh;
+
+    expect(useServers.getState().servers).toEqual([{ ...secondHost }]);
+    expect(useServers.getState().activeId).toBe(secondHost.id);
+  });
+
+  it('preserves direct-host order and replaces inherited entries in place', async () => {
+    useServers.setState({ servers: [{ ...secondHost }, { ...host }], activeId: host.id });
+    const fetchMock = vi.spyOn(window, 'fetch');
+    fetchMock.mockResolvedValueOnce(fleetResponse([
+      { id: 'machine-d', name: 'Mac D', transport: 'lan' },
+      { id: 'machine-c', name: 'Mac C', transport: 'tailnet' }
+    ]));
+    await refreshFleetServersFromHost(secondHost.id);
+    fetchMock.mockResolvedValueOnce(fleetResponse([
+      { id: 'machine-e', name: 'Mac E', transport: 'tailnet-ip' }
+    ]));
+
+    await refreshFleetServersFromHost(secondHost.id);
+
+    expect(useServers.getState().servers.map((server) => server.machineId)).toEqual([
+      'machine-b', 'machine-e', 'machine-a'
+    ]);
+    expect(useServers.getState().activeId).toBe(host.id);
   });
 
   it('tries direct transports before the owner-hosted relay', async () => {

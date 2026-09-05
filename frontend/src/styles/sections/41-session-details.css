@@ -67,6 +67,15 @@ button.session-parent-breadcrumb:hover, button.session-parent-breadcrumb:focus-v
 .session-parent-breadcrumb span { padding: 0 4px; }
 .session-active-title-row { display: flex; align-items: center; gap: 9px; }
 .session-active-title-row h1 { min-width: 0; overflow: hidden; margin: 0; color: var(--fg); font-size: 17px; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
+.session-title-display { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.session-title-display h1 { flex: 1 1 auto; }
+.session-title-rename-button { flex: 0 0 auto; padding: 2px 5px; border: 0; border-radius: 4px; background: transparent; color: var(--fg-faint); font: inherit; font-size: 12px; cursor: pointer; }
+.session-title-rename-button:hover, .session-title-rename-button:focus-visible { background: var(--bg-elev-3); color: var(--fg); outline: none; }
+.session-title-rename { display: flex; min-width: 0; align-items: center; gap: 5px; }
+.session-title-rename input { min-width: 120px; width: min(260px, 30vw); height: 29px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--bg-base); color: var(--fg); font: 600 13px var(--font-ui); outline: none; }
+.session-title-rename button { height: 27px; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-elev-2); color: var(--fg-dim); font-size: 12px; cursor: pointer; }
+.session-title-rename button[type="submit"] { border-color: var(--accent-border-soft); color: var(--accent); }
+.session-title-rename-error { color: var(--danger); font-size: 12px; }
 .session-live-pill { flex: 0 0 auto; padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--fg-faint); font-size: 12px; font-weight: 700; text-transform: uppercase; }
 .session-live-pill.is-working { border-color: var(--accent-border-soft); background: var(--accent-bg-soft); color: var(--accent); }
 .session-live-pill.is-reconnecting { border-color: var(--accent-border-soft); color: var(--accent); }

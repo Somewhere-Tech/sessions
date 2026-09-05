@@ -100,6 +100,12 @@ try {
     activityListRadius: getComputedStyle(document.querySelector('.remote-bubble-tools-list')).borderRadius,
     reasoning: document.querySelector('.remote-bubble-reasoning')?.textContent ?? '',
     updates: document.querySelector('.remote-bubble-updates')?.textContent ?? '',
+    updatesTag: document.querySelector('.remote-bubble-updates')?.tagName ?? '',
+    updateTexts: Array.from(document.querySelectorAll('.remote-bubble-updates-list > .md-content'))
+      .map((element) => element.textContent?.trim() ?? ''),
+    updateBeforeAnswer: Boolean(document.querySelector('.remote-bubble-updates')?.compareDocumentPosition(
+      document.querySelector('.remote-bubble-assistant > .remote-bubble-content')
+    ) & Node.DOCUMENT_POSITION_FOLLOWING),
     attachControl: document.querySelector('.input-attach')?.textContent ?? '',
     quickKeyCount: document.querySelectorAll('.qk-btn').length,
     timestampCount: document.querySelectorAll('.remote-message-meta time').length,
@@ -117,7 +123,13 @@ try {
   assert.doesNotMatch(report.activityLabels[0] ?? '', /^Command\b/);
   assert.notEqual(report.activityListRadius, '0px');
   assert.match(report.reasoning, /Reasoning summary/);
-  assert.match(report.updates, /progress update/);
+  assert.match(report.updates, /The structured event adapter is live/);
+  assert.equal(report.updatesTag, 'SECTION');
+  assert.deepEqual(report.updateTexts, [
+    'The structured event adapter is live. I am finishing the desktop verification now.',
+    'The desktop fixture passes. I am checking the final response now.'
+  ]);
+  assert.equal(report.updateBeforeAnswer, true);
   assert.match(report.attachControl, /Attach/);
   assert.equal(report.quickKeyCount, 0);
   assert.equal(report.timestampCount, 2);

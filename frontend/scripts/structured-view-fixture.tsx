@@ -62,6 +62,11 @@ const events: StructuredSessionEvent[] = [
   {
     ...base,
     type: 'codex', subtype: 'item_completed', turnId: 'turn-1',
+    item: { id: 'update-2', type: 'agentMessage', phase: 'commentary', text: 'The desktop fixture passes. I am checking the final response now.' }
+  },
+  {
+    ...base,
+    type: 'codex', subtype: 'item_completed', turnId: 'turn-1',
     item: {
       id: 'answer-1', type: 'agentMessage', phase: 'final_answer',
       text: 'Sessions now has a real Codex conversation view with streaming activity, plans, command output, file diffs, reasoning summaries, context usage, and a safe interrupt control.'
