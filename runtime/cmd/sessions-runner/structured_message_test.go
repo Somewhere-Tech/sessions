@@ -59,7 +59,7 @@ func TestSteeringHistoryKeepsSubmissionOrderWhenCompletionPrecedesAck(t *testing
 		if err := json.Unmarshal(runner.history[1], &accepted); err != nil {
 			t.Fatal(err)
 		}
-		if accepted.Subtype != "user_steer" || accepted.TurnID != "turn-1" || !accepted.Timestamp.Before(completedAt) {
+		if accepted.Subtype != "user_steer" || accepted.TurnID != "turn-1" || accepted.Timestamp.After(completedAt) {
 			t.Fatalf("typed=%v: acknowledgment moved submitted message after completion: %+v; completed %s", typed, accepted, completedAt)
 		}
 	}

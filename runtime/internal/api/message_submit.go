@@ -24,6 +24,10 @@ func (s *Server) handleSubmitControl(response http.ResponseWriter, request *http
 		reason, blocked = "Steer now requires an updated structured Codex runner. This message was not sent.", true
 	}
 	if !blocked {
+		if legacyProvider(info) {
+			s.submitLegacyProvider(response, request, info.ID, data, operationID, corsOrigin, attribution)
+			return true
+		}
 		return false
 	}
 	record, err := s.deliveries.Complete(operationID, delivery.StatusNotDelivered, false, true, reason)

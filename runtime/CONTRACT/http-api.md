@@ -1144,6 +1144,23 @@ is the message boundary used by the CLI and desktop composer: concurrent agents
 cannot interleave one message's text with another message's Enter. Terminal
 keys and paste-without-submit continue to use `/input`.
 
+For legacy Claude/Codex PTY sessions the daemon normalizes `data` into exactly
+one bracketed-paste envelope, even when the caller already supplied one. This
+preserves a message across terminal read boundaries and keeps newlines inside
+the message. Embedded terminal control bytes that cannot be represented as
+literal text are refused before input. Generic terminal and structured control
+paths keep their respective contracts; INPUT itself remains unacknowledged.
+
+Legacy provider delivery is accepted only when a user event after the
+pre-input absolute history cursor matches the entire message, allowing CRLF
+and outer-whitespace normalization. The daemon waits up to five seconds after
+Enter, bounded by the request context. A match returns `acceptance:"transcript"`.
+A suffix, unrelated event, timestamp change, or Working state is insufficient.
+Timeout, partial input, and unavailable history return `unknown`,
+`delivered:false`, `retry:false`. This does not prove that nothing was sent.
+No extra Enter or automatic message resend is attempted. Existing stream
+subscriptions are unaffected by history inspection.
+
 The response is a delivery receipt with `operation_id`, `session_id`, `status`,
 `delivered`, `retry`, `reason`, `duplicate`, `created_at_ms`, and
 `updated_at_ms`. `status` is one of `accepted`, `not-delivered`, `unknown`, or
@@ -1152,6 +1169,14 @@ content reads the original receipt without sending another message, including
 after a daemon restart. Reusing it for different content or a different target
 returns 409. Receipts store only the target id, byte count, and SHA-256 digest;
 message text is not copied into the receipt directory.
+
+For a currently known legacy provider, old `accepted` receipts without an
+acceptance boundary are projected as `unknown`, `delivered:false`, `retry:false`:
+they witnessed terminal writes, not a complete provider message. The stored
+historical receipt is not rewritten and lookup never sends input. Callers must
+preserve the exact original request payload when reusing an operation ID;
+changing raw text to a paste-enveloped payload can produce a safe 409 conflict
+against an old receipt instead of replaying it.
 
 An unknown/exited target is `not-delivered` with `retry:true`. A failure after
 runner input may have happened is `unknown` or `text-delivered` with

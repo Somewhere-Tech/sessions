@@ -232,6 +232,11 @@ field and use INPUT; newer daemons never send MESSAGE_REQ to an old runner.
 
 Payload bytes are decoded as UTF-8 and passed to `pty.write` when the PTY has not
 exited. After exit they are ignored. No acknowledgement is sent at this layer.
+The daemon and CLI frame legacy provider composer submissions as one bracketed
+paste followed by Enter. An INPUT socket write is not proof that the terminal
+application received the complete message. Legacy provider acceptance requires
+a fresh complete user-history match; no protocol upgrade or runner replacement
+is needed to transmit the paste envelope through existing INPUT frames.
 
 ### MODEL_REQ (`0x15`)
 

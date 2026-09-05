@@ -295,7 +295,7 @@ export type ServerMsg =
       sessionId: string;
     }
   | { type: 'inputAck'; requestId: string; ok: boolean; sessionId: string }
-  | { type: 'submitAck'; requestId: string; ok: boolean; sessionId: string }
+  | { type: 'submitAck'; requestId: string; ok: boolean; sessionId: string; reason?: string }
   // Claude Code's structured session events. Sourced server-side from
   // ~/.claude/projects/<encoded-cwd>/<id>.jsonl. RemoteView consumes
   // these instead of the parser-derived blocks — far more reliable

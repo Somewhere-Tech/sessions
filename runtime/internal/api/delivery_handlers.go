@@ -40,6 +40,13 @@ func (s *Server) handleDeliveryRoute(response http.ResponseWriter, request *http
 func (s *Server) sendDeliveryRecord(response http.ResponseWriter, record delivery.Record, duplicate bool, corsOrigin string) {
 	status := record.Status
 	reason := record.Reason
+	delivered, retry := record.Delivered, record.Retry
+	if status == delivery.StatusAccepted && record.Acceptance == "" {
+		if current, ok := s.registry.Get(record.SessionID); ok && legacyProvider(current.Info()) {
+			status, delivered, retry = delivery.StatusUnknown, false, false
+			reason = "this legacy receipt confirms only terminal input writes, not the complete provider message; inspect history and do not automatically resend"
+		}
+	}
 	if status == delivery.StatusPending {
 		status = delivery.StatusUnknown
 		if reason == "" {
@@ -54,8 +61,8 @@ func (s *Server) sendDeliveryRecord(response http.ResponseWriter, record deliver
 		"operation_id":  record.OperationID,
 		"session_id":    record.SessionID,
 		"status":        status,
-		"delivered":     record.Delivered,
-		"retry":         record.Retry,
+		"delivered":     delivered,
+		"retry":         retry,
 		"reason":        reason,
 		"acceptance":    record.Acceptance,
 		"duplicate":     duplicate,

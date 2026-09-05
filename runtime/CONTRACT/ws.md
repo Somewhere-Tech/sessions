@@ -320,6 +320,12 @@ session was unknown or exited.
 Mux `submit` is the atomic composer-message equivalent of HTTP `/submit`.
 Unlike raw `input`, it owns the provider-compatible text/Enter sequence and is
 never queued while disconnected.
+For legacy Claude/Codex PTY sessions it uses one bracketed paste and requires
+a fresh complete user-history match before `ok:true`. An uncertain or partial
+outcome returns `ok:false` with an optional instructional `reason`; it is not
+proof of non-delivery, and clients must not automatically resend. This uses the
+same bounded confirmation and session lock as HTTP, without consuming or
+replacing any existing event subscriptions.
 
 ### `claudeEvent`
 

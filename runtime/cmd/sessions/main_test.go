@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/delivery"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
@@ -29,7 +30,7 @@ func TestDecideSendConfirmation(t *testing.T) {
 		exitCode   int
 	}{
 		{"confirmed", sendEvidence{JSONLConfirmed: true}, "confirmed", 0},
-		{"accepted-working", sendEvidence{Working: true}, "accepted", 0},
+		{"working-is-not-complete-message-proof", sendEvidence{Working: true}, "unconfirmed", 2},
 		{"still-in-composer", sendEvidence{TextStillInComposer: true}, "unconfirmed", 1},
 		{"ambiguous", sendEvidence{}, "unconfirmed", 2},
 	}
@@ -64,7 +65,7 @@ func TestClaudeSubmitSequenceMatchesNodeCLI(t *testing.T) {
 			events := []any{}
 			if submitted {
 				events = append(events, map[string]any{
-					"type": "user", "message": map[string]any{"role": "user", "content": text},
+					"type": "user", "message": map[string]any{"role": "user", "content": delivery.MessageText(text)},
 				})
 			}
 			_ = json.NewEncoder(response).Encode(map[string]any{"events": events, "nextIndex": len(events)})
@@ -95,7 +96,7 @@ func TestClaudeSubmitSequenceMatchesNodeCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Confirmed == nil || !*result.Confirmed || result.Text != text {
+	if result.Confirmed == nil || !*result.Confirmed || result.Text != delivery.MessageText(text) {
 		t.Fatalf("result = %+v, want confirmed exact text", result)
 	}
 	if want := []string{text, "\r"}; !reflect.DeepEqual(inputs, want) {
@@ -183,7 +184,7 @@ func TestExplicitSendOperationIsForwardedAndReturned(t *testing.T) {
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if body["operation_id"] != operationID || body["data"] != message {
+			if body["operation_id"] != operationID || body["data"] != "\x1b[200~"+message+"\x1b[201~" {
 				t.Errorf("submit body = %#v", body)
 			}
 			delivered = true
@@ -318,7 +319,7 @@ func TestAPIReadFailureMakesRebootPauseActionable(t *testing.T) {
 	}
 }
 
-func TestClaudeEnterRetriesRequireTextStillInComposer(t *testing.T) {
+func TestClaudeAmbiguousSubmitNeverRepeatsEnter(t *testing.T) {
 	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 	const text = "Reply with exactly PONG."
 	tests := []struct {
@@ -326,7 +327,7 @@ func TestClaudeEnterRetriesRequireTextStillInComposer(t *testing.T) {
 		snapshot   string
 		wantEnters int
 	}{
-		{name: "visible text gets two bounded retries", snapshot: "❯ " + text, wantEnters: 3},
+		{name: "visible text does not authorize another Enter", snapshot: "❯ " + text, wantEnters: 1},
 		{name: "cleared composer never retries", snapshot: "❯ ", wantEnters: 1},
 	}
 	for _, test := range tests {
@@ -1142,7 +1143,7 @@ func TestCodexRichNewSendsPositionalRequestImmediately(t *testing.T) {
 				lastUser = int64(2)
 			}
 			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
-				"id": id, "cmd": "codex", "tool": "codex", "lastUserMessageAt": lastUser,
+				"id": id, "cmd": "codex", "tool": "codex", "lastUserMessageAt": lastUser, "kind": "codex-app-server",
 			}}})
 		case httpRequest.Method == http.MethodGet && httpRequest.URL.Path == "/api/sessions/"+id+"/events":
 			events := []any{}
@@ -1325,7 +1326,7 @@ func TestInheritedClaudeChildSendsItsPositionalRequestThroughStructuredInput(t *
 				lastUser = int64(2)
 			}
 			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
-				"id": id, "cmd": "claude", "tool": "claude-code", "lastUserMessageAt": lastUser,
+				"id": id, "cmd": "claude", "tool": "claude-code", "lastUserMessageAt": lastUser, "kind": "claude-structured",
 			}}})
 		case httpRequest.Method == http.MethodGet && httpRequest.URL.Path == "/api/sessions/"+id+"/events":
 			events := []any{}
