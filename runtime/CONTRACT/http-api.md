@@ -910,13 +910,16 @@ Auth required. Body is `{"model":"<exact model>","effort":"<level>"}`. Omitting
 by the next turn of an idle Rich Claude or Rich Codex session; it does not
 rewrite provider history or interrupt a turn already in progress.
 
-Codex choices are checked against the live app-server model catalog, including
-supported effort and the session's existing service tier. Claude accepts a
+Codex choices present in the live app-server model catalog are checked against
+its supported effort and the session's existing service tier. An explicit
+Codex model ID omitted from that catalog is preserved unchanged, including its
+explicit effort and tier, because discovery is not an exhaustive support list.
+Sessions never substitutes another catalog model. Claude accepts a
 bounded model name and the provider effort values `low`, `medium`, `high`,
 `xhigh`, `max`, or empty. Success returns the updated bare `SessionInfo`.
-Terminal sessions, ended sessions, working sessions, old runners, unavailable
-models, and invalid efforts fail explicitly without changing the recorded
-model. Agents use the same contract through `sessions model`.
+Terminal sessions, ended sessions, working sessions, old runners, unsupported
+catalog-known combinations, and invalid efforts fail explicitly without
+changing the recorded model. Agents use the same contract through `sessions model`.
 
 ### `GET /api/models/codex`
 

@@ -205,7 +205,8 @@ export async function listNewSessionCodexModels(signal?: AbortSignal, serverId?:
   const server = requestedServer(serverId);
   const r = await serverFetch(server, `${httpBaseForServer(server)}/api/models/codex`, { signal });
   const body = await featureJSON<{ models?: SessionModelOption[] }>(r, 'Codex model choices');
-  return body.models ?? [];
+  if (!Array.isArray(body.models)) throw new Error('This computer returned an unreadable model list. Update Sessions on that computer.');
+  return body.models;
 }
 
 export async function listSessionModelOptions(sessionId: string): Promise<SessionModelOption[]> {

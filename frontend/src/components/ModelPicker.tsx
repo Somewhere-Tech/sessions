@@ -1,5 +1,7 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { ProviderMark } from './ProviderBadge';
+import { useAnchoredPopover } from '../hooks/useAnchoredPopover';
 
 export interface ModelPickerOption {
   id: string;
@@ -47,6 +49,7 @@ export function ModelPicker({
   const [activeIndex, setActiveIndex] = useState(0);
   const listId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const providerName = provider === 'claude' ? 'Claude' : 'Codex';
   const selected = options.find((option) => option.id === value);
@@ -69,19 +72,14 @@ export function ModelPicker({
     });
   }, [options, query]);
 
+  const closePopover = useCallback(() => setOpen(false), []);
+  const popoverStyle = useAnchoredPopover({ open, rootRef, popoverRef, focusRef: searchRef,
+    layoutKey: `${query}:${orderedOptions.length}:${customValue}:${loading ? 'loading' : 'ready'}`, onClose: closePopover });
+
   useEffect(() => {
     if (!open) return;
     setQuery('');
     setActiveIndex(0);
-    const focus = window.setTimeout(() => searchRef.current?.focus(), 0);
-    const close = (event: PointerEvent): void => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    window.addEventListener('pointerdown', close);
-    return () => {
-      window.clearTimeout(focus);
-      window.removeEventListener('pointerdown', close);
-    };
   }, [open]);
 
   useEffect(() => {
@@ -152,8 +150,12 @@ export function ModelPicker({
         <span>{value ? selected?.label ?? value : defaultLabel}</span>
         <span className="model-picker-chevron" aria-hidden>⌄</span>
       </button>
-      {open ? (
-        <section className="model-picker-popover" onKeyDown={onKeyDown} aria-label={`${providerName} model picker`}>
+      {open && popoverStyle ? createPortal((
+        <section ref={popoverRef} className="model-picker-popover" style={popoverStyle}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={onKeyDown} aria-label={`${providerName} model picker`}
+        >
           <header>
             <span><ProviderMark provider={provider} size={20} /><strong>{providerName} models</strong></span>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close model picker">×</button>
@@ -167,7 +169,7 @@ export function ModelPicker({
                 setQuery(event.currentTarget.value);
                 setActiveIndex(0);
               }}
-              placeholder={`Search ${providerName} models`}
+              placeholder={allowCustom ? 'Search or enter an exact model name' : `Search ${providerName} models`}
               aria-label={`Search ${providerName} models`}
               maxLength={128}
               role="combobox"
@@ -235,10 +237,10 @@ export function ModelPicker({
             ) : null}
           </div>
           <footer>
-            {loading ? 'Loading the live catalog…' : error ? 'Live catalog unavailable; provider defaults still work.' : '↑↓ navigate · Enter selects'}
+            {loading ? 'Loading models…' : error || (allowCustom ? 'Not listed? Enter its exact model name.' : '↑↓ navigate · Enter selects')}
           </footer>
         </section>
-      ) : null}
+      ), document.body) : null}
     </div>
   );
 }

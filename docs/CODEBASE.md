@@ -420,8 +420,9 @@ history (`runtime/internal/claudep/events.go`,
 `codexapp` speaks the Codex app-server JSON-RPC contract and persists provider
 thread IDs across turns (`runtime/internal/codexapp/client.go`,
 `runtime/internal/codexapp/transport.go`). It permits one active turn per
-conversation and normalizes app-server events into stored history; model IDs
-are checked against the provider catalog rather than guessed
+conversation and normalizes app-server events into stored history. Catalog-known
+models receive capability validation; explicit unlisted IDs are passed to Codex
+unchanged because discovery is not an exhaustive support list
 (`runtime/internal/codexapp/history.go`, `runtime/internal/codexapp/models.go`).
 
 ### `integrations`

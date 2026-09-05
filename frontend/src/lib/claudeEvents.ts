@@ -313,6 +313,32 @@ interface CodexTurnProjection {
   completed: boolean;
 }
 
+function refreshCodexTurn(projection: CodexTurnProjection): void {
+  const finalTexts: string[] = [];
+  const updates: string[] = [];
+  for (const itemID of projection.itemOrder) {
+    const text = projection.itemText.get(itemID)?.trim() ?? '';
+    if (!text) continue;
+    if (projection.itemPhase.get(itemID) === 'commentary') updates.push(text);
+    else finalTexts.push(text);
+  }
+  projection.message.content = finalTexts.join('\n\n');
+  projection.message.updates = updates.length > 0 ? updates : undefined;
+  projection.message.toolCalls = projection.tools.size > 0 ? Array.from(projection.tools.values()) : undefined;
+  projection.message.hadThinking = projection.reasoning.length > 0 || undefined;
+  projection.message.reasoningSummary = projection.reasoning.length > 0
+    ? projection.reasoning.join('\n\n')
+    : undefined;
+  projection.message.streaming = !projection.completed;
+}
+
+function markFinalTextTime(projection: CodexTurnProjection, itemID: string, at: number): void {
+  if (projection.itemPhase.get(itemID) !== 'final_answer') return;
+  if (!projection.itemText.get(itemID)?.trim()) return;
+  projection.message.createdAt = at;
+  projection.message.confirmedAt = at;
+}
+
 function isCodexAppServerHistory(events: ClaudeSessionEvent[]): boolean {
   return events.some((event) => event.source === 'codex-app-server' || event.type === 'codex' || event.provider === 'codex');
 }
@@ -394,27 +420,6 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
     turns.set(turnID, projection);
     out.push(projection.message);
     return projection;
-  };
-
-  const refreshTurn = (projection: CodexTurnProjection): void => {
-    let finalText = '';
-    const updates: string[] = [];
-    for (const itemID of projection.itemOrder) {
-      const text = projection.itemText.get(itemID)?.trim() ?? '';
-      if (!text) continue;
-      if (projection.itemPhase.get(itemID) === 'commentary') updates.push(text);
-      else finalText = text;
-    }
-    projection.message.content = finalText;
-    projection.message.updates = updates.length > 0 ? updates : undefined;
-    projection.message.toolCalls = projection.tools.size > 0
-      ? Array.from(projection.tools.values())
-      : undefined;
-    projection.message.hadThinking = projection.reasoning.length > 0 || undefined;
-    projection.message.reasoningSummary = projection.reasoning.length > 0
-      ? projection.reasoning.join('\n\n')
-      : undefined;
-    projection.message.streaming = !projection.completed;
   };
 
   const rememberItemText = (projection: CodexTurnProjection, itemID: string, text: string): void => {
@@ -529,7 +534,8 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       const itemID = event.itemId ?? '';
       const next = (projection.itemText.get(itemID) ?? '') + (event.delta ?? '');
       rememberItemText(projection, itemID, next);
-      refreshTurn(projection);
+      markFinalTextTime(projection, itemID, at);
+      refreshCodexTurn(projection);
       continue;
     }
 
@@ -543,6 +549,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
         if (text || !projection.itemText.has(itemID)) rememberItemText(projection, itemID, text);
         const phase = recordString(item, 'phase');
         if (phase) projection.itemPhase.set(itemID, phase);
+        markFinalTextTime(projection, itemID, at);
       } else if (itemType === 'reasoning') {
         const summaries = Array.isArray(item['summary'])
           ? item['summary'].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -552,7 +559,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
         const call = codexToolCall(item, projection.tools.get(itemID));
         if (call) projection.tools.set(call.id, call);
       }
-      refreshTurn(projection);
+      refreshCodexTurn(projection);
       continue;
     }
 
@@ -563,7 +570,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       projection.message.planExplanation = typeof event.explanation === 'string'
         ? event.explanation
         : undefined;
-      refreshTurn(projection);
+      refreshCodexTurn(projection);
       continue;
     }
 
@@ -573,7 +580,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       projection.message.streaming = false;
       const error = event.error?.message;
       if (error) projection.message.errorResponse = error;
-      refreshTurn(projection);
+      refreshCodexTurn(projection);
       for (const message of steeringByTurn.get(event.turnId ?? '') ?? []) {
         message.queued = false;
       }
@@ -586,7 +593,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       message.content || message.toolCalls?.length || message.updates?.length ||
       message.reasoningSummary || message.plan?.length || message.streaming || message.errorResponse || message.quietStatus
     );
-  });
+  }).sort((left, right) => left.createdAt - right.createdAt);
 }
 
 // Public entry. Walks the event stream in order and produces the

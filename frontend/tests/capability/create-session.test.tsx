@@ -36,6 +36,44 @@ function Launcher(): JSX.Element {
 }
 
 describe('capability: create a session', () => {
+  it('lets a person choose Astra before creating a Codex conversation', async () => {
+    const machine = localMachine();
+    machine.codexModels = [{
+      id: 'gpt-6-astra', displayName: 'Astra',
+      hidden: false, isDefault: false, defaultReasoningEffort: 'high',
+      supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'High' }]
+    }];
+    const daemon = installFakeDaemon([machine]);
+    useFakeMachines([machine]);
+    const user = userEvent.setup();
+    render(<Launcher />);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Agent' }), 'codex');
+    await user.click(screen.getByRole('button', { name: /Codex default/ }));
+    await user.click(await screen.findByRole('option', { name: /Astra/ }));
+    expect(screen.getByRole('button', { name: /Astra/ })).toBeInTheDocument();
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Reasoning effort' }), 'high');
+    await user.click(screen.getByRole('button', { name: 'Start session' }));
+    await waitFor(() => expect(daemon.created).toHaveLength(1));
+    const create = daemon.requests.find((request) => request.method === 'POST' && request.path === '/api/sessions');
+    expect(create?.body).toMatchObject({ kind: 'codex-app-server', args: expect.arrayContaining(['--model', 'gpt-6-astra', '-c', 'model_reasoning_effort="high"']) });
+  });
+
+  it('can submit an exact model name when the catalog does not list it', async () => {
+    const machine = localMachine();
+    const daemon = installFakeDaemon([machine]);
+    useFakeMachines([machine]);
+    const user = userEvent.setup();
+    render(<Launcher />);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Agent' }), 'codex');
+    await user.click(screen.getByRole('button', { name: /Codex default/ }));
+    await user.type(await screen.findByRole('combobox', { name: 'Search Codex models' }), 'gpt-6-astra');
+    await user.click(screen.getByRole('option', { name: /Use exact model ID/ }));
+    await user.click(screen.getByRole('button', { name: 'Start session' }));
+    await waitFor(() => expect(daemon.created).toHaveLength(1));
+    const create = daemon.requests.find((request) => request.method === 'POST' && request.path === '/api/sessions');
+    expect(create?.body).toMatchObject({ kind: 'codex-app-server', args: expect.arrayContaining(['--model', 'gpt-6-astra']) });
+  });
+
   it('starts the session the person described and shows it in the list', async () => {
     const machine = localMachine();
     const daemon = installFakeDaemon([machine]);

@@ -26,6 +26,7 @@ import type {
   HistoryMessage,
   HistorySession,
   ProviderStatus,
+  SessionModelOption,
   ResumableSession,
   SearchMatch,
   SearchResponse,
@@ -61,6 +62,7 @@ export interface FakeMachine {
   profiles?: unknown[];
   directories?: DirectoryCandidate[];
   providers?: ProviderStatus[];
+  codexModels?: SessionModelOption[];
   /** Optional continuation responses; GET advances through the snapshots. */
   continuationPreview?: ContinuationPreview;
   continuationJobs?: ContinuationJob[];
@@ -536,7 +538,7 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     if (path === '/api/fs/list') {
       return jsonResponse({ path: '/Users/example', parent: '/Users', entries: [] });
     }
-    if (path === '/api/models/codex') return jsonResponse({ models: [] });
+    if (path === '/api/models/codex') return jsonResponse({ models: machine.codexModels ?? [] });
     if (path === '/api/providers' && method === 'GET') {
       return jsonResponse({ providers: machine.providers ?? [] });
     }

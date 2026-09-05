@@ -150,6 +150,34 @@ function resolveCommand(
   return { cmd: undefined, args: undefined };
 }
 
+function useCodexCatalog(tool: NewSessionTool, machineId: string): {
+  models: SessionModelOption[]; loading: boolean; error: string | null;
+} {
+  const [models, setModels] = useState<SessionModelOption[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    setModels([]);
+    setError(null);
+    setLoading(tool === 'codex');
+    if (tool !== 'codex') return;
+    void listNewSessionCodexModels(controller.signal, machineId)
+      .then((catalog) => {
+        if (controller.signal.aborted) return;
+        const visible = catalog.filter((model) => !model.hidden);
+        setModels(visible);
+        if (!visible.length) setError('Codex returned no model choices. Enter an exact model name or use your Codex setting.');
+      })
+      .catch((reason) => {
+        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Could not load Codex models.');
+      })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [machineId, tool]);
+  return { models, loading, error };
+}
+
 export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSession = null, embedded = false }: Props): JSX.Element {
   const create = useSessions((s) => s.create);
   const openSessions = useSessions((s) => s.sessions);
@@ -177,9 +205,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const [claudeSafeMode, setClaudeSafeMode] = useState(false);
   const [codexModel, setCodexModel] = useState('');
   const [codexEffort, setCodexEffort] = useState('');
-  const [codexModels, setCodexModels] = useState<SessionModelOption[]>([]);
-  const [codexModelsLoading, setCodexModelsLoading] = useState(false);
-  const [codexModelsError, setCodexModelsError] = useState<string | null>(null);
+  const { models: codexModels, loading: codexModelsLoading, error: codexModelsError } = useCodexCatalog(tool, machineId);
   const [cwd, setCwd] = useState(
     parentSession?.cwd
       ?? openSessions.find((session) => session.id === activeId)?.cwd
@@ -255,30 +281,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       .catch(() => setProfiles([]));
     return () => controller.abort();
   }, [machineId, profileTool]);
-
-  useEffect(() => {
-    if (tool !== 'codex') {
-      setCodexModels([]);
-      setCodexModelsError(null);
-      setCodexModelsLoading(false);
-      return;
-    }
-    const controller = new AbortController();
-    setCodexModels([]);
-    setCodexModelsError(null);
-    setCodexModelsLoading(true);
-    void listNewSessionCodexModels(controller.signal, machineId)
-      .then((models) => setCodexModels(models.filter((model) => !model.hidden)))
-      .catch((reason) => {
-        if (!controller.signal.aborted) {
-          setCodexModelsError(reason instanceof Error ? reason.message : 'Could not load Codex models.');
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setCodexModelsLoading(false);
-      });
-    return () => controller.abort();
-  }, [machineId, tool]);
 
   // `inheritedProfile` reads only the parent's profile and tool, so listing
   // those two fields was substantively right — but the rule could not see it

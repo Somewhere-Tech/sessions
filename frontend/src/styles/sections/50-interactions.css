@@ -69,10 +69,8 @@
 .model-picker-trigger > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-picker-chevron { margin-left: auto; color: var(--fg-faint); }
 .model-picker-popover {
-  position: absolute;
+  position: fixed;
   z-index: 220;
-  right: 0;
-  bottom: calc(100% + 8px);
   display: grid;
   width: min(380px, calc(100vw - 32px));
   max-height: min(520px, calc(100vh - 90px));
@@ -515,7 +513,7 @@ button.model-picker-option { display: flex; align-items: center; justify-content
   .new-session-launcher.is-embedded .launcher-composer-context { max-height: none; overflow: visible; }
   .launcher-select-control select { max-width: 130px; }
   .launcher-context-chip.is-folder { max-width: 150px; }
-  .model-picker-popover { position: fixed; right: 12px; bottom: 76px; left: 12px; width: auto; }
+  .model-picker-popover { width: auto; }
   .workspace-loading-shell { grid-template-columns: 1fr; }
   .workspace-loading-navigator { display: none; }
 }
