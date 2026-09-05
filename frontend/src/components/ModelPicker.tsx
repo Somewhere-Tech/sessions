@@ -31,6 +31,15 @@ export const CLAUDE_MODEL_OPTIONS: ModelPickerOption[] = [
   { id: 'haiku', label: 'Haiku', description: 'Fast, lightweight tasks' }
 ];
 
+function filterModelOptions(options: ModelPickerOption[], query: string): ModelPickerOption[] {
+  const lowered = query.trim().toLowerCase();
+  return options.filter((option) => !lowered || `${option.label} ${option.id} ${option.description ?? ''}`.toLowerCase().includes(lowered))
+    .sort((left, right) => {
+      if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
+      return options.indexOf(left) - options.indexOf(right);
+    });
+}
+
 export function ModelPicker({
   provider,
   value,
@@ -60,17 +69,7 @@ export function ModelPicker({
     ? query.trim()
     : '';
 
-  const orderedOptions = useMemo(() => {
-    const lowered = query.trim().toLowerCase();
-    const visible = options.filter((option) => {
-      if (!lowered) return true;
-      return `${option.label} ${option.id} ${option.description ?? ''}`.toLowerCase().includes(lowered);
-    });
-    return visible.sort((left, right) => {
-      if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
-      return options.indexOf(left) - options.indexOf(right);
-    });
-  }, [options, query]);
+  const orderedOptions = useMemo(() => filterModelOptions(options, query), [options, query]);
 
   const closePopover = useCallback(() => setOpen(false), []);
   const popoverStyle = useAnchoredPopover({ open, rootRef, popoverRef, focusRef: searchRef,
@@ -164,6 +163,9 @@ export function ModelPicker({
             <span aria-hidden>⌕</span>
             <input
               ref={searchRef}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               value={query}
               onChange={(event) => {
                 setQuery(event.currentTarget.value);
@@ -232,7 +234,7 @@ export function ModelPicker({
                 <span className="model-picker-check" aria-hidden>↵</span>
               </button>
             ) : null}
-            {!loading && orderedOptions.length === 0 ? (
+            {!loading && orderedOptions.length === 0 && !customValue ? (
               <div className="model-picker-empty">No matching models</div>
             ) : null}
           </div>

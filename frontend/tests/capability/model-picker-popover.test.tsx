@@ -29,6 +29,10 @@ describe('capability: model picker stays visible outside the composer', () => {
     expect(popover.parentElement).toBe(document.body);
     expect(popover.closest('[data-testid="clipping-parent"]')).toBeNull();
     expect(popover).toHaveStyle({ position: 'fixed' });
+    const input = screen.getByRole('combobox', { name: 'Search Codex models' });
+    expect(input).toHaveAttribute('autocapitalize', 'none');
+    expect(input).toHaveAttribute('autocorrect', 'off');
+    expect(input).toHaveAttribute('spellcheck', 'false');
     expect(Number.parseFloat(popover.style.left)).toBeGreaterThanOrEqual(0);
     expect(Number.parseFloat(popover.style.top)).toBeGreaterThanOrEqual(0);
   });
