@@ -308,15 +308,27 @@ func rolloutHasCodexUserInput(path, expected string) bool {
 	scanner := bufio.NewScanner(io.LimitReader(file, codexReadByteLimit))
 	scanner.Buffer(make([]byte, 64*1024), codexReadByteLimit)
 	for scanner.Scan() {
-		var record map[string]any
-		if json.Unmarshal(scanner.Bytes(), &record) != nil || record["type"] != "response_item" {
+		// Candidate files can contain megabytes of tool output. Decode only the
+		// message envelope instead of allocating maps and strings for every tool
+		// result on every resolver poll. Content stays permissive for mixed blocks.
+		var record struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Type    string          `json:"type"`
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &record) != nil || record.Type != "response_item" {
 			continue
 		}
-		payload, ok := record["payload"].(map[string]any)
-		if !ok || payload["type"] != "message" || payload["role"] != "user" {
+		if record.Payload.Type != "message" || record.Payload.Role != "user" {
 			continue
 		}
-		content, _ := payload["content"].([]any)
+		var content []any
+		if json.Unmarshal(record.Payload.Content, &content) != nil {
+			continue
+		}
 		var text strings.Builder
 		for _, raw := range content {
 			block, _ := raw.(map[string]any)
