@@ -9,6 +9,21 @@ function event(timestamp: string, fields: Partial<StructuredSessionEvent>): Stru
 }
 
 describe('capability: Codex final answers follow in-turn steering', () => {
+  it('resolves steering acknowledged after turn completion, including replay', () => {
+    const history = [
+      event('2026-09-05T16:06:00Z', { subtype: 'turn_started' }),
+      event('2026-09-05T16:06:02Z', { subtype: 'turn_completed', status: 'completed' }),
+      event('2026-09-05T16:06:03Z', {
+        subtype: 'user_steer', type: 'user', uuid: 'late-ack',
+        message: { role: 'user', content: 'Finish with the updated answer' }
+      })
+    ];
+    for (const events of [history, JSON.parse(JSON.stringify(history))]) {
+      const message = eventsToMessages(events).find((message) => message.id === 'late-ack');
+      expect(message).toMatchObject({ status: 'sent', queued: false });
+    }
+  });
+
   it('keeps distinct final items and places their bubble after newer user questions', () => {
     const messages = eventsToMessages([
       event('2026-09-05T16:06:00Z', { subtype: 'turn_started' }),

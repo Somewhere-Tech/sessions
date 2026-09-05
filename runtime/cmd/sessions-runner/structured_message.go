@@ -51,6 +51,7 @@ func (r *codexAppRunner) submitMessage(control proto.MessageControl) proto.Messa
 	}
 	r.steerMu.Lock()
 	defer r.steerMu.Unlock()
+	submittedAt := time.Now()
 	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
 	defer cancel()
 	turnID, err := r.turnClient.SteerTurn(ctx, r.conversationID, control.Text)
@@ -60,7 +61,7 @@ func (r *codexAppRunner) submitMessage(control proto.MessageControl) proto.Messa
 		result.Boundary = "unknown"
 		return result
 	}
-	if event, err := codexapp.SteeringHistoryEvent(r.conversationID, turnID, control.Text, time.Now()); err == nil {
+	if event, err := codexapp.SteeringHistoryEvent(r.conversationID, turnID, control.Text, submittedAt); err == nil {
 		r.appendStructured(event)
 	}
 	result.Accepted, result.Boundary = true, "provider"

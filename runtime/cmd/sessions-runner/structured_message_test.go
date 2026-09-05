@@ -1,12 +1,69 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 )
+
+type completingSteerClient struct {
+	*fakeCodexTurnClient
+	beforeReply func()
+}
+
+func (c completingSteerClient) SteerTurn(ctx context.Context, conversationID, text string) (string, error) {
+	c.beforeReply()
+	return c.fakeCodexTurnClient.SteerTurn(ctx, conversationID, text)
+}
+
+func TestSteeringHistoryKeepsSubmissionOrderWhenCompletionPrecedesAck(t *testing.T) {
+	for _, typed := range []bool{true, false} {
+		runner := newCodexTestRunner(t)
+		runner.active = true
+		var completedAt time.Time
+		runner.turnClient = completingSteerClient{
+			fakeCodexTurnClient: runner.turnClient.(*fakeCodexTurnClient),
+			beforeReply: func() {
+				completedAt = time.Now()
+				event, err := codexapp.HistoryEvent(codexapp.TurnComplete{
+					ConversationID: "thread-1", TurnID: "turn-1", Status: "completed",
+				}, completedAt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				runner.appendStructured(event)
+			},
+		}
+		if typed {
+			result := runner.submitMessage(proto.MessageControl{OperationID: "late-ack", Text: "Update the answer", Mode: "steer"})
+			if !result.Accepted || result.Boundary != "provider" {
+				t.Fatalf("result = %#v", result)
+			}
+		} else {
+			runner.steerActiveTurn("Update the answer")
+		}
+		if len(runner.history) != 2 {
+			t.Fatalf("history = %s", runner.history)
+		}
+		var accepted struct {
+			Timestamp time.Time
+			TurnID    string
+			Subtype   string
+		}
+		if err := json.Unmarshal(runner.history[1], &accepted); err != nil {
+			t.Fatal(err)
+		}
+		if accepted.Subtype != "user_steer" || accepted.TurnID != "turn-1" || !accepted.Timestamp.Before(completedAt) {
+			t.Fatalf("typed=%v: acknowledgment moved submitted message after completion: %+v; completed %s", typed, accepted, completedAt)
+		}
+	}
+}
 
 func TestMessageControlSteersWholeTextOnce(t *testing.T) {
 	runner := newCodexTestRunner(t)

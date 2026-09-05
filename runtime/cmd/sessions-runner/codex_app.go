@@ -546,6 +546,7 @@ func (r *codexAppRunner) steerActiveTurn(text string) {
 	// them. This mutex provides transport ordering, not a second prompt queue.
 	r.steerMu.Lock()
 	defer r.steerMu.Unlock()
+	submittedAt := time.Now()
 	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
 	defer cancel()
 	turnID, err := r.turnClient.SteerTurn(ctx, r.conversationID, text)
@@ -561,7 +562,7 @@ func (r *codexAppRunner) steerActiveTurn(text string) {
 		}
 		return
 	}
-	event, err := codexapp.SteeringHistoryEvent(r.conversationID, turnID, text, time.Now())
+	event, err := codexapp.SteeringHistoryEvent(r.conversationID, turnID, text, submittedAt)
 	if err == nil {
 		r.appendStructured(event)
 	}

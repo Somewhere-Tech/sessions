@@ -23,9 +23,9 @@ func UserHistoryEvent(conversationID, text string, at time.Time) (json.RawMessag
 }
 
 // SteeringHistoryEvent records provider-accepted input for an active Codex
-// turn. queued is intentionally explicit so every client can explain that the
-// message will be applied after Codex's next tool call. A turn-completed event
-// later resolves this into ordinary authored history in the UI.
+// turn. queued describes acceptance while the turn may still be working, not
+// proof that Codex has applied the input. The timestamp is the submission time;
+// the acknowledgment can arrive after a turn-completed notification.
 func SteeringHistoryEvent(conversationID, turnID, text string, at time.Time) (json.RawMessage, error) {
 	return marshalHistory(map[string]any{
 		"type":           "user",
