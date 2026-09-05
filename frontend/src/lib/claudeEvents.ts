@@ -476,7 +476,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
         confirmedAt: at,
         blockId: event.uuid,
         author: event.author,
-        queued: subtype === 'user_steer' ? !turns.get(event.turnId ?? '')?.completed : undefined
+        queued: subtype === 'user_steer' && event.turnId ? !turns.get(event.turnId)?.completed : undefined
       };
       out.push(message);
       if (message.queued && event.turnId) {

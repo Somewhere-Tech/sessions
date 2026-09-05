@@ -9,6 +9,23 @@ function event(timestamp: string, fields: Partial<StructuredSessionEvent>): Stru
 }
 
 describe('capability: Codex final answers follow in-turn steering', () => {
+  it('does not invent a persistent queue for accepted steering without a turn identity', () => {
+    const history = [
+      event('2026-09-05T16:06:00Z', { subtype: 'turn_started' }),
+      event('2026-09-05T16:06:01Z', {
+        subtype: 'user_steer', type: 'user', uuid: 'unbound-ack', turnId: undefined,
+        message: { role: 'user', content: 'Use the revised requirements' }
+      }),
+      event('2026-09-05T16:06:02Z', { subtype: 'turn_completed', status: 'completed' })
+    ];
+    for (const events of [history.slice(0, 2), history, JSON.parse(JSON.stringify(history))]) {
+      const messages = eventsToMessages(events).filter((message) => message.id === 'unbound-ack');
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({ status: 'sent', content: 'Use the revised requirements' });
+      expect(messages[0]?.queued).toBeUndefined();
+    }
+  });
+
   it('resolves steering acknowledged after turn completion, including replay', () => {
     const history = [
       event('2026-09-05T16:06:00Z', { subtype: 'turn_started' }),
