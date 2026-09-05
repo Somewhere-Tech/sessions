@@ -5,6 +5,7 @@ import { RemoteView } from '../src/components/RemoteView';
 import type { StructuredSessionEvent } from '../src/types';
 
 const base = { source: 'codex-app-server', conversationId: 'thread-1' } as const;
+const steeringFixture = new URLSearchParams(window.location.search).has('steering');
 const events: StructuredSessionEvent[] = [
   {
     ...base,
@@ -94,11 +95,13 @@ createRoot(document.getElementById('root')!).render(
         sessionId="fixture-session"
         events={events}
         send={() => {}}
+        submitMessage={async () => {}}
+        steerMessage={steeringFixture ? async () => {} : undefined}
         connected
         hasEarlierClaudeEvents={false}
         loadingEarlierClaudeEvents={false}
         onLoadEarlierClaudeEvents={() => {}}
-        sidebar={sidebar}
+        sidebar={{ ...sidebar, isWorking: steeringFixture }}
         cwd="/Users/example/sessions"
         onOpenTerminal={() => {}}
         provider="codex"

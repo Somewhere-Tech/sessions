@@ -64,13 +64,11 @@ function SendControls({ disabled, submitting, feedback, steer, submit }: {
   disabled: boolean; submitting: boolean; feedback: string;
   steer: boolean; submit: (steer?: boolean) => Promise<void>;
 }): JSX.Element {
-  return <>
-    <button type="button" className={`btn btn-primary input-send${feedback === 'sent' ? ' is-sent' : ''}`}
-      onClick={() => void submit()} disabled={disabled || submitting} aria-label="Send"
-      title={submitting ? 'Sending…' : 'Send (Enter)'}><span aria-hidden>↑</span></button>
-    {steer ? <button type="button" className="btn btn-secondary" disabled={disabled || submitting}
-      onClick={() => void submit(true)} title="Send this follow-up to Codex’s active turn now">Steer now</button> : null}
-  </>;
+  return <button type="button" className={`btn btn-primary input-send${steer ? ' is-steering' : ''}${feedback === 'sent' ? ' is-sent' : ''}`}
+    onClick={() => void submit(steer)} disabled={disabled || submitting} aria-label={steer ? 'Steer now' : 'Send'}
+    title={submitting ? 'Sending…' : steer ? 'Send a new follow-up to the active turn (Enter)' : 'Send (Enter)'}>
+    {steer ? 'Steer now' : <span aria-hidden>↑</span>}
+  </button>;
 }
 
 // Bottom composer for the Sessions view. xterm itself accepts input fine
@@ -150,7 +148,7 @@ export function InputBar({
     setText(recoverDraft.text);
   }, [recoverDraft, text]);
 
-  const submit = async (steer = false): Promise<void> => {
+  const submit = async (steer = Boolean(provider === 'codex' && providerWorking && steerMessage)): Promise<void> => {
     if (!sendAvailable || submitInFlightRef.current) return;
     setUploadError(null); // clear any lingering upload error on submit
     setComposerNotice(null);

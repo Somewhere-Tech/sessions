@@ -1127,6 +1127,11 @@ new turn when idle and steers Codex when active. Claude rejects active-turn
 input rather than reporting silent success. Receipts optionally report
 `acceptance:"runner"|"provider"`; neither means the turn completed. Ambiguous
 provider transport failures remain `unknown`, never automatically retried.
+Steering submits a new message to the active turn. It does not edit, withdraw,
+or expedite a previously accepted message. Provider acceptance is not proof of
+application; a running tool can delay the effect. Clients must recover the
+receipt after an unreadable response as well as a connection failure, and keep
+the outcome unknown when no authoritative receipt can be read.
 The legacy behavior below remains available to older live runners.
 
 Auth required. Body is

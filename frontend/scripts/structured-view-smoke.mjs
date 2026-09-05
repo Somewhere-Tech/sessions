@@ -52,7 +52,8 @@ try {
 <script type="module" src="/app.js"></script></body></html>`);
 
   server = createServer(async (request, response) => {
-    const name = request.url === '/' ? 'index.html' : request.url.slice(1);
+    const pathname = new URL(request.url, 'http://fixture').pathname;
+    const name = pathname === '/' ? 'index.html' : pathname.slice(1);
     try {
       const source = name === 'openai-icon.svg' || name === 'claude-icon.svg'
         ? join(publicDir, name)
@@ -144,6 +145,25 @@ try {
       page.screenshot({ path: screenshot, captureBeyondViewport: false }),
       'screenshot'
     );
+  }
+  t.scenario('active Codex steering stays visible and fits desktop and mobile composers');
+  for (const width of [1440, 390]) {
+    await page.setViewport({ width, height: 960, deviceScaleFactor: 1 });
+    await page.goto(`http://127.0.0.1:${address.port}/?steering`, { waitUntil: 'domcontentloaded' });
+    await page.type('.input-textarea', 'Use the updated answer');
+    await t.waitForSelector(page, '.input-send.is-steering', 'the active-turn steering control');
+    const control = await page.$eval('.input-send.is-steering', (element) => ({
+      label: element.textContent,
+      fits: element.scrollWidth <= element.clientWidth,
+      right: element.getBoundingClientRect().right,
+      viewport: window.innerWidth
+    }));
+    assert.equal(control.label, 'Steer now');
+    assert.equal(control.fits, true);
+    assert.ok(control.right <= control.viewport);
+    if (process.env.STEERING_VIEW_SCREENSHOT) {
+      await page.screenshot({ path: `${process.env.STEERING_VIEW_SCREENSHOT}-${width}.png`, captureBeyondViewport: false });
+    }
   }
   t.pass(`structured-view smoke passed${process.env.STRUCTURED_VIEW_SCREENSHOT ? `: ${screenshot}` : ''}`);
 } finally {

@@ -684,9 +684,9 @@ async function readDeliveryResponse(response: Response): Promise<MessageDelivery
 export async function submitMessage(sessionId: string, data: string, serverId?: string, fromSessionId?: string, mode?: 'steer'): Promise<void> {
   const server = requestedServer(serverId);
   const operationId = randomUUID();
-  let response: Response;
+  let receipt: MessageDeliveryReceipt | { ok: true };
   try {
-    response = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/submit`, {
+    const response = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/submit`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -694,6 +694,7 @@ export async function submitMessage(sessionId: string, data: string, serverId?: 
       },
       body: JSON.stringify({ data, operation_id: operationId, mode })
     });
+    receipt = await readDeliveryResponse(response);
   } catch {
     // A broken response does not prove a broken send. Ask the daemon for the
     // durable, content-free receipt before allowing a person or agent to
@@ -712,7 +713,6 @@ export async function submitMessage(sessionId: string, data: string, serverId?: 
       throw new MessageDeliveryError('The connection changed while sending. Sessions could not confirm delivery, so it did not retry. Check the conversation before sending again.', 'unknown', operationId);
     }
   }
-  const receipt = await readDeliveryResponse(response);
   if ('ok' in receipt || receipt.status === 'accepted') return;
   throw deliveryError(receipt);
 }

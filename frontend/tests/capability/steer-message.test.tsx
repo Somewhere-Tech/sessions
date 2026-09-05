@@ -1,7 +1,7 @@
 // CAPABILITY: a follow-up can explicitly steer a working Codex turn without
 // becoming an ordinary queued message, and a refused steer remains editable.
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { InputBar } from '../../src/components/InputBar';
 import { RemoteView } from '../../src/components/RemoteView';
@@ -32,6 +32,39 @@ function inputBar(overrides: Partial<React.ComponentProps<typeof InputBar>> = {}
 }
 
 describe('capability: steer a working Codex turn', () => {
+  it('uses explicit steering for Enter and ignores repeated input while acknowledgment is pending', async () => {
+    let acknowledge!: () => void;
+    const steerMessage = vi.fn(() => new Promise<void>((resolve) => { acknowledge = resolve; }));
+    const submitMessage = vi.fn().mockResolvedValue(undefined);
+    render(inputBar({ steerMessage, submitMessage }));
+    const composer = screen.getByPlaceholderText(/Message Codex/);
+    fireEvent.change(composer, { target: { value: 'Change the final answer' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: 'Steer now' }));
+    expect(steerMessage).toHaveBeenCalledTimes(1);
+    expect(submitMessage).not.toHaveBeenCalled();
+    expect(composer).toHaveValue('Change the final answer');
+    await act(async () => acknowledge());
+    expect(composer).toHaveValue('');
+  });
+
+  it('keeps a refused in-flight steer through the working-to-idle transition', async () => {
+    let refuse!: (error: Error) => void;
+    const steerMessage = vi.fn(() => new Promise<void>((_resolve, reject) => { refuse = reject; }));
+    const submitMessage = vi.fn().mockResolvedValue(undefined);
+    const view = render(inputBar({ steerMessage, submitMessage }));
+    const composer = screen.getByPlaceholderText(/Message Codex/);
+    fireEvent.change(composer, { target: { value: 'Change the final answer' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    view.rerender(inputBar({ steerMessage, submitMessage, providerWorking: false }));
+    await act(async () => refuse(new MessageDeliveryError('Codex has no active turn.', 'not-delivered', 'idle-race')));
+    expect(composer).toHaveValue('Change the final answer');
+    expect(screen.getByRole('alert')).toHaveTextContent('Message not sent');
+    expect(submitMessage).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Steer now' })).not.toBeInTheDocument();
+  });
+
   it('offers steering only for a supported working Codex composer', async () => {
     const user = userEvent.setup();
     const { rerender } = render(inputBar({ steerMessage: vi.fn().mockResolvedValue(undefined) }));

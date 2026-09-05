@@ -140,6 +140,7 @@
   transition: background-color 0.18s ease, color 0.18s ease, transform .1s ease;
 }
 .input-send:hover:not(:disabled) { transform: translateY(-1px); }
+.input-send.is-steering { width: auto; padding-inline: 12px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
 /* Brief "✓ Sent" pulse — flips the button to the success color so the
  * user has unambiguous confirmation the bytes left the page (even when
  * the receiving app — e.g. Claude Code — is mid-render and hasn't

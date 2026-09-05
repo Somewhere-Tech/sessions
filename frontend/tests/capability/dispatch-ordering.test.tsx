@@ -120,4 +120,16 @@ describe('capability: dispatch ordering keeps one bubble per genuine turn', () =
     rendered.rerender(view(sessionId, [userEventRecord('Inspect the package', 1)], async () => {}));
     await waitFor(() => expect(screen.getAllByText('Inspect the package')).toHaveLength(1));
   });
+
+  it('reconciles an acknowledged message once after the view reloads', async () => {
+    const sessionId = 'reload-after-receipt';
+    useFakeMachines([machine(sessionId)]);
+    const rendered = render(view(sessionId, [], async () => {}));
+    await typeAndSend('Keep the active turn');
+    expect(await screen.findAllByText('Keep the active turn')).toHaveLength(1);
+    rendered.unmount();
+    render(view(sessionId, [userEventRecord('Keep the active turn', 1)], async () => {}));
+    await waitFor(() => expect(screen.getAllByText('Keep the active turn')).toHaveLength(1));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
 });

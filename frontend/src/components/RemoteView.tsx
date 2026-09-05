@@ -690,7 +690,7 @@ function RemoteMessageInner({
               <div className="remote-bubble-badge remote-bubble-badge-queued" aria-label="queued">
                 <span aria-hidden>⏳</span>
                 <span>{agentName === 'Codex'
-                  ? 'submitted after Codex’s next tool call'
+                  ? 'Accepted for this turn · may wait for a tool to finish'
                   : 'queued — Claude is finishing the previous turn'}</span>
               </div>
             ) : null}
