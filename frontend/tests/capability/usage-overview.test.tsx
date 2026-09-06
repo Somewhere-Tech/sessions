@@ -10,6 +10,24 @@ function row(): UsageRow {
 }
 
 describe('capability: understand usage without invented productivity claims', () => {
+  it('labels missing pricing alongside the headline amount, not just in a footnote', () => {
+    const total = row();
+    total.missingPricingEntries = 3;
+    render(<UsageOverview report={{ totals: total, rows: [total] }} mode="auto" />);
+    expect(screen.getByText('Partial cost estimate')).toBeVisible();
+    expect(screen.getByText('3 of 4 events unpriced; not your bill')).toBeVisible();
+    expect(screen.queryByText('Estimated cost')).not.toBeInTheDocument();
+  });
+
+  it('does not call a completely unpriced period free', () => {
+    const total = row();
+    total.costUSD = 0;
+    total.missingPricingEntries = total.entries;
+    render(<UsageOverview report={{ totals: total, rows: [total] }} mode="auto" />);
+    expect(screen.getByText('Unavailable')).toBeVisible();
+    expect(screen.queryByText('$0.000')).not.toBeInTheDocument();
+  });
+
   it('measures context reuse against input, without double-counting reasoning', () => {
     const total = row();
     render(<UsageOverview report={{ totals: total, rows: [total] }} mode="auto" />);

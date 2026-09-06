@@ -250,6 +250,8 @@ export interface HistorySession {
   // records with no transcript behind them, and on daemons older than it.
   conversation_updated_at?: number;
   message_count: number;
+  message_count_uncounted?: boolean;
+  conversation_updated_approximate?: boolean;
   conversation_available: boolean;
   external?: boolean;
   prompt_history_only?: boolean;
@@ -342,21 +344,23 @@ export async function fetchServerHistory(
   return (await json<HistoryResponse>(r)).sessions;
 }
 
-// The full listing, which is what a conversation browser needs and what
-// `sessions history` reads. `?summary=true` above deliberately stats each
-// transcript without parsing it, so on that view `message_count` is 0 for
-// every row — a browser built on it could neither show how big a conversation
-// is nor tell an empty shell from a real one. The daemon caches its per-file
-// counts by size and mtime, so the extra cost is paid once per changed file.
+// Browsing needs a catalog, not a full parse of every transcript. Cached counts
+// are useful but optional; unknown counts must never hide a conversation.
 export async function fetchServerHistoryListing(
   server: ServerConfig,
   signal?: AbortSignal
 ): Promise<HistoryListing> {
-  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/history`, { signal });
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/history?summary=true`, { signal });
   if (!r.ok) throw new Error(`Sessions history ${r.status}`);
   const body = await json<HistoryResponse>(r);
   return {
-    sessions: body.sessions ?? [],
+    sessions: (body.sessions ?? []).map((session) => ({
+      ...session,
+      // Older summary responses also use zero for uncounted transcripts, but
+      // omit the per-row marker. Keep those rows rather than asserting empty.
+      message_count_uncounted: session.message_count_uncounted
+        ?? (body.transcripts_unread === true && session.message_count === 0)
+    })),
     unreadableSessions: body.unreadable_sessions ?? 0,
     skippedRecords: body.skipped_records ?? 0,
     transcriptsUnread: body.transcripts_unread === true

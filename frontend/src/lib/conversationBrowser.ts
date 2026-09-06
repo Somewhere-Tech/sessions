@@ -49,6 +49,8 @@ export interface ConversationRow {
   tool: ConversationTool;
   cwd: string;
   messages: number;
+  messagesKnown?: boolean;
+  dateApproximate?: boolean;
   createdAt: number;
   /**
    * When the conversation was last spoken in. Prefers the transcript's own
@@ -162,6 +164,8 @@ export function buildConversationRows(sources: ConversationSource[]): Conversati
         tool: session.tool,
         cwd: session.cwd ?? '',
         messages: session.message_count ?? 0,
+        messagesKnown: session.message_count_uncounted !== true,
+        dateApproximate: session.conversation_updated_approximate === true,
         createdAt: session.created_at || 0,
         lastActiveAt: session.conversation_updated_at || session.last_activity_at || 0,
         status,
@@ -195,7 +199,7 @@ export function filterConversations(rows: ConversationRow[], filters: BrowseFilt
       // recognise, and a row nothing can bring back is not what someone
       // looking for their conversation is scrolling for.
       if (row.tool !== 'claude' && row.tool !== 'codex') return false;
-      if (row.messages <= 0) return false;
+      if (row.messagesKnown !== false && row.messages <= 0) return false;
       if (row.status === 'unrecoverable' || row.status === 'unreadable') return false;
     }
     if (cwd && !row.cwd.toLocaleLowerCase().includes(cwd)) return false;

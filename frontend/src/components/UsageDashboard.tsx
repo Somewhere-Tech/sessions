@@ -314,6 +314,7 @@ export function UsageOverview({ report, mode }: { report: Pick<UsageReport, 'tot
   const context = input + tokens.cacheReadTokens;
   const total = totalTokens(tokens);
   const models = [...new Set(report.rows.flatMap((row) => row.models).filter(Boolean))];
+  const unpriced = report.totals.missingPricingEntries;
   const parts = [
     { label: 'New context', value: input, className: 'is-input' },
     { label: 'Reused context', value: tokens.cacheReadTokens, className: 'is-cache' },
@@ -323,7 +324,10 @@ export function UsageOverview({ report, mode }: { report: Pick<UsageReport, 'tot
     { label: 'Tokens processed', value: compactNumber(total), detail: `${compactNumber(report.totals.entries)} recorded usage events` },
     { label: 'Context reused', value: context > 0 ? `${percent(tokens.cacheReadTokens, context)}%` : '—', detail: context > 0 ? 'of input served from cache' : 'No input recorded yet' },
     { label: 'Models used', value: String(models.length), detail: models.join(', ') || 'No model data yet' },
-    { label: 'Estimated cost', value: dollars(report.totals.costUSD), detail: mode === 'display' ? 'Recorded costs only; not your bill' : mode === 'auto' ? 'Recorded or token-priced; not your bill' : 'Token pricing; not your bill' }
+    { label: unpriced > 0 ? 'Partial cost estimate' : 'Estimated cost',
+      value: unpriced > 0 && unpriced >= report.totals.entries ? 'Unavailable' : dollars(report.totals.costUSD),
+      detail: unpriced > 0 ? `${unpriced} of ${report.totals.entries} events unpriced; not your bill`
+        : mode === 'display' ? 'Recorded costs only; not your bill' : mode === 'auto' ? 'Recorded or token-priced; not your bill' : 'Token pricing; not your bill' }
   ];
   return <section className="usage-overview" aria-label="Usage overview">
     <div className="usage-kpis">{stats.map((stat) => <div className="usage-kpi" key={stat.label}>

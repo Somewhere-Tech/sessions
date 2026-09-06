@@ -80,16 +80,16 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [discoveredPeers, setDiscoveredPeers] = useState<DiscoveredPeer[] | null>(null);
   const [accessRequest, setAccessRequest] = useState<PendingMachineAccess | null>(null);
-	const [discoveryMessage, setDiscoveryMessage] = useState<string | null>(null);
+	const [discoveryMessage, setDiscoveryMessage] = useState<{ text: string; details?: string } | null>(null);
 	const directoryMessage = useAccountFleetDirectory();
   const localNetworkDenied = useLocalNetworkDenied();
 	const localServer = servers.find((server) => server.isDefault) ?? servers[0]; const fleetServers = useFleetMachineSources(servers, discoveredPeers);
 	const discoveryBlocked = !isTauri() ? 'Open Sessions.app › Settings › Fleet for discovery, pairing, and moves.' : accessRequest ? `Waiting for ${accessRequest.label} to approve.` : '';
 
 	const rememberVersion = useRememberMachineVersion(setMachineVersions);
-  const findMachines = async (): Promise<void> => {
+  const findMachines = async (showPanel = true): Promise<void> => {
     if (!isTauri() || discoveryBusy || accessRequest) return;
-    setDiscoveryOpen(true);
+    if (showPanel) setDiscoveryOpen(true);
     setDiscoveryBusy(true);
     setDiscoveryMessage(null);
     try {
@@ -119,16 +119,15 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
       const failures = [tailnet, nearby]
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
         .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
-      if (failures.length === 2) setDiscoveryMessage(failures.join(' · '));
-      else if (failures.length === 1 && peers.length === 0) setDiscoveryMessage(failures[0]);
+      if (failures.length > 0) setDiscoveryMessage({ text: 'Some discovery routes did not answer. Check Tailscale or local-network access, then search again.', details: failures.join('\n') });
     } catch (reason) {
       setDiscoveredPeers([]);
-      setDiscoveryMessage(reason instanceof Error ? reason.message : String(reason));
+      setDiscoveryMessage({ text: 'Discovery could not finish. Search again or check connection settings.', details: String(reason) });
     } finally {
       setDiscoveryBusy(false);
     }
   };
-	useEffect(() => { void findMachines(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+	useEffect(() => { void findMachines(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const requestAccess = async (peer: DiscoveredPeer): Promise<void> => {
     if (!isTauri() || discoveryBusy || accessRequest) return;
@@ -139,9 +138,9 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
         ? await requestNativeNearbyAccess(peer.endpoint, tailnetClientID(), '')
         : await requestNativeTailnetAccess(peer.endpoint, tailnetClientID(), '');
       setAccessRequest({ request, transport: peer.transport, label: peer.name });
-      setDiscoveryMessage(`${peer.name} must approve this request.`);
+      setDiscoveryMessage({ text: `${peer.name} must approve this request.` });
     } catch (reason) {
-      setDiscoveryMessage(reason instanceof Error ? reason.message : String(reason));
+      setDiscoveryMessage({ text: `Could not request access to ${peer.name}. Check that it is online, then try again.`, details: String(reason) });
     } finally {
       setDiscoveryBusy(false);
     }
@@ -154,13 +153,13 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
     select: false,
     onAccepted: (server) => {
       setAccessRequest(null);
-      setDiscoveryMessage(`${server.name} is now in Fleet.`);
+      setDiscoveryMessage({ text: `${server.name} is now in Fleet.` });
     },
     onSettled: (_outcome, text) => {
       setAccessRequest(null);
-      setDiscoveryMessage(text);
+      setDiscoveryMessage({ text });
     },
-    onError: setDiscoveryMessage
+    onError: (details) => setDiscoveryMessage({ text: 'Could not check approval. Check the other computer, then try again.', details })
   });
 
   return (
@@ -229,7 +228,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
               <div className="fleet-discovery-empty">No machines answered. Enable Tailscale or trusted-network LAN on the host, then search again.</div>
             ) : null
           ) : null}
-          {discoveryMessage ? <div className="fleet-discovery-message">{discoveryMessage}</div> : null}
+          {discoveryMessage ? <FleetDiscoveryMessage message={discoveryMessage} /> : null}
         </section>
       ) : null}
 		<div className="fleet-section-label"><span>Your machines</span><strong>{fleetServers.length} visible</strong></div>
@@ -249,6 +248,13 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
       </div>
     </div>
   );
+}
+
+export function FleetDiscoveryMessage({ message }: { message: { text: string; details?: string } }): JSX.Element {
+  return <div className="fleet-discovery-message">
+    <p role="status">{message.text}</p>
+    {message.details ? <details><summary>Technical details</summary><p>{message.details}</p></details> : null}
+  </div>;
 }
 
 function useRememberMachineVersion(setVersions: Dispatch<SetStateAction<Record<string, string>>>) {
