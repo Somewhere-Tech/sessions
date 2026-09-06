@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import { fetchLANState, fetchServerHealth, listServerProfiles, listServerSessions, type AccountProfile, type ServerHealth } from '../api/sessionsd';
+import { fetchServerHealth, listServerProfiles, listServerSessions, type AccountProfile, type ServerHealth } from '../api/sessionsd';
+import { LocalNetworkGuide } from './LocalNetworkGuide';
 import { formatServerEndpoint } from '../lib/serverEndpoint';
 import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { tailnetClientID } from '../lib/tailnetClient';
@@ -84,7 +85,6 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
   const [accessRequest, setAccessRequest] = useState<PendingMachineAccess | null>(null);
 	const [discoveryMessage, setDiscoveryMessage] = useState<{ text: string; details?: string } | null>(null);
 	const directoryMessage = useAccountFleetDirectory();
-  const localNetworkDenied = useLocalNetworkDenied();
 	const localServer = servers.find((server) => server.isDefault) ?? servers[0]; const fleetServers = useFleetMachineSources(servers, discoveredPeers);
 	const discoveryBlocked = !isTauri() ? 'Open Sessions.app › Settings › Fleet for discovery, pairing, and moves.' : accessRequest ? `Waiting for ${accessRequest.label} to approve.` : '';
 
@@ -187,7 +187,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
         </div>
       </div>
       {discoveryBlocked ? <div className="fleet-permission-banner" role="status">{discoveryBlocked}</div> : null}
-      <FleetPermissionBanner visible={localNetworkDenied} />
+      <LocalNetworkGuide />
       {discoveryOpen ? (
         <section className="fleet-discovery" aria-live="polite">
           <header>
@@ -287,25 +287,6 @@ function useAccountFleetDirectory(): string | null {
 
 function useFleetMachineSources(servers: ServerConfig[], peers: DiscoveredPeer[] | null): ServerConfig[] {
 	return useMemo(() => mergeFleetMachineSources(servers, peers ?? []), [servers, peers]);
-}
-
-function useLocalNetworkDenied(): boolean {
-  const [denied, setDenied] = useState(false);
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetchLANState(controller.signal)
-      .then((state) => setDenied(state.permission?.status === 'denied'))
-      .catch(() => {});
-    return () => controller.abort();
-  }, []);
-  return denied;
-}
-
-function FleetPermissionBanner({ visible }: { visible: boolean }): JSX.Element | null {
-  if (!visible) return null;
-  return <div className="fleet-permission-banner" role="alert">
-    macOS has not allowed Sessions to use the local network. System Settings › Privacy &amp; Security › Local Network › turn on Sessions.
-  </div>;
 }
 
 function mergeDiscoveredPeers(peers: DiscoveredPeer[]): DiscoveredPeer[] {

@@ -368,8 +368,8 @@ identifier, `NSLocalNetworkUsageDescription`, and
 associated with the signed Sessions app bundle so macOS attributes sessionsd's
 request to the visible app, following
 [Apple TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
-First-run Fleet onboarding and Settings › Fleet ›
-**Allow local network** start a daemon-owned Bonjour browse while the person is
+First-run Fleet onboarding and **Check again** in the local Mac's Fleet or
+Settings permission guide start a daemon-owned Bonjour browse while the person is
 looking at that surface. macOS 14 accepts the same binary metadata but does not
 enforce the macOS 15 Local Network gate.
 
@@ -377,12 +377,21 @@ Apple provides no supported API to preflight this permission or force its
 prompt. `sessions doctor` therefore reports the daemon's last observed state:
 `granted`, `denied`, or `not-yet-asked` (`not-required` on other platforms).
 Successful nearby discovery or connection records `granted`; a private or
-link-local Darwin dial failing with `EHOSTUNREACH`, or an empty Bonjour browse
-while this daemon is itself advertising, records `denied`. The API, CLI,
-doctor, and Fleet banner replace the misleading route error with:
+link-local Darwin dial failing with `EHOSTUNREACH` records `denied` as a
+permission-related observation, not a direct reading of the macOS switch.
+An empty browse does not establish denial and leaves the observation unchanged.
+The API, CLI, and doctor explain the permission-related route error with:
 “macOS has not allowed Sessions to use the local network. System Settings ›
 Privacy & Security › Local Network › turn on Sessions.” Tailnet addresses are
 outside this classification and remain exempt.
+
+Fleet and Settings show a numbered recovery guide for denied or not-yet-asked
+access. **Open System Settings** opens the local Mac's privacy pane; it never
+changes the permission. A phone or remote viewer instead names the host Mac
+where the steps belong. The guide refreshes on return to the app and periodically,
+and confirms recovery only after the daemon reports successful access. Older
+macOS versions may open the main privacy pane; the written navigation remains
+available beside the button.
 
 ## Native update traffic
 

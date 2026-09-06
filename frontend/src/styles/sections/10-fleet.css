@@ -1,4 +1,27 @@
 /* Fleet view — one independently-polled group per configured sessionsd. */
+.local-network-guide {
+  box-sizing: border-box;
+  max-width: 1120px;
+  margin: 0 auto 20px;
+  padding: clamp(16px, 3vw, 24px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-elev-1);
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.local-network-guide h2 { margin: 0 0 8px; font-size: 18px; line-height: 1.3; }
+.local-network-guide p { margin: 8px 0; max-width: 70ch; }
+.local-network-guide ol { padding-left: 24px; margin: 16px 0; }
+.local-network-guide li { padding: 3px 0 3px 4px; }
+.local-network-guide-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.local-network-guide-actions button { min-height: 44px; white-space: normal; }
+.local-network-guide details { margin-top: 12px; color: var(--fg-dim); }
+.local-network-guide summary { cursor: pointer; }
+.local-network-guide.is-resolved { color: var(--accent); }
+
 .fleet-view {
   box-sizing: border-box;
   height: 100%;

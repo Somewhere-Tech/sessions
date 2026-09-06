@@ -391,6 +391,7 @@ pub fn run() {
             native_machine_credentials_load,
             native_machine_credentials_save,
             open_external_url,
+            open_local_network_settings,
             open_support_page,
             somewhere_cli_status
         ])

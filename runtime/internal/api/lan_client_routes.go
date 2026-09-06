@@ -85,13 +85,9 @@ func (s *Server) serveLANDiscover(response http.ResponseWriter, request *http.Re
 		return
 	}
 	machines := s.verifiedLANCandidates(ctx, candidates)
-	if len(machines) == 0 && s.lan.state().Bonjour.Advertised && initialLocalNetworkPermission() != "not-required" {
-		s.lan.markPermission("denied")
-		s.sendJSON(response, http.StatusForbidden, map[string]any{
-			"error": localnetwork.Message, "reason": localnetwork.Reason,
-		}, corsOrigin)
-		return
-	}
+	// An empty browse is not evidence of an OS denial: there may be no peers,
+	// or their health endpoints may be unavailable. Only an explicit permission
+	// error may mark access denied; successful peer contact can mark it granted.
 	if len(machines) > 0 {
 		s.lan.markPermission("granted")
 	}

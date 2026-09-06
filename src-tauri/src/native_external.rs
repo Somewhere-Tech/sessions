@@ -106,6 +106,35 @@ async fn open_external_url(url: String) -> Result<(), String> {
         .map_err(|error| format!("external link worker failed: {error}"))?
 }
 
+// Fixed destination only: do not widen the external-link scheme allowlist.
+#[tauri::command]
+async fn open_local_network_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return tauri::async_runtime::spawn_blocking(|| {
+        let mut child = Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")
+            .stdin(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Open System Settings: {error}"))?;
+        match wait_bounded(&mut child, EXTERNAL_LAUNCH_TIMEOUT) {
+            Ok(Some(status)) if status.success() => Ok(()),
+            Ok(Some(status)) => Err(format!("Open System Settings failed: {status}")),
+            Ok(None) => {
+                reap_in_background(child);
+                Ok(())
+            }
+            Err(error) => {
+                reap_in_background(child);
+                Err(format!("Open System Settings: {error}"))
+            }
+        }
+    })
+    .await
+    .map_err(|error| format!("Settings worker failed: {error}"))?;
+    #[cfg(not(target_os = "macos"))]
+    Err("Open System Settings on the Mac that needs local-network access.".to_string())
+}
+
 #[tauri::command]
 async fn open_support_page(kind: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {

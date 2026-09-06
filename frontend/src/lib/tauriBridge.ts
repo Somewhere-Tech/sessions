@@ -600,6 +600,12 @@ export async function openSupportPage(kind: SupportPage): Promise<void> {
   if (!opened) window.location.assign(target);
 }
 
+export async function openLocalNetworkSettings(): Promise<void> {
+  if (!isTauri() || isNativeMobileRuntime()) throw new Error('Open System Settings on the Mac that needs access.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('open_local_network_settings');
+}
+
 export async function openExternalURL(url: string): Promise<void> {
   if (isTauri()) {
     await invoke<void>('open_external_url', { url });

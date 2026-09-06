@@ -11,7 +11,6 @@ import (
 
 	"github.com/somewhere-tech/sessions/runtime/internal/discovery"
 	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
-	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 )
 
 func TestLANDiscoverRunsInDaemonAndReturnsVerifiedPeers(t *testing.T) {
@@ -36,7 +35,7 @@ func TestLANDiscoverRunsInDaemonAndReturnsVerifiedPeers(t *testing.T) {
 	}
 }
 
-func TestLANDiscoverExplainsEmptyBrowseWhileAdvertising(t *testing.T) {
+func TestLANDiscoverDoesNotInferPermissionDenialFromEmptyBrowse(t *testing.T) {
 	daemon := newTestDaemon(t)
 	daemon.handler.lan.browse = func(context.Context, time.Duration) ([]discovery.Candidate, error) { return nil, nil }
 	daemon.handler.lan.mu.Lock()
@@ -44,14 +43,13 @@ func TestLANDiscoverExplainsEmptyBrowseWhileAdvertising(t *testing.T) {
 	daemon.handler.lan.url = "http://10.0.0.1:8787"
 	daemon.handler.lan.registration = &fakeBonjourRegistration{}
 	daemon.handler.lan.mu.Unlock()
+	before := daemon.handler.lan.state().Permission.Status
 	response := serve(t, daemon.handler, http.MethodGet, "/api/lan/discover?timeout=10ms", nil, "127.0.0.1:1", nil)
-	if initialLocalNetworkPermission() == "not-required" {
-		if response.Code != http.StatusOK {
-			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-		}
-	} else if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "macOS has not allowed Sessions") ||
-		!strings.Contains(response.Body.String(), localnetwork.Reason) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"machines":[]`) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := daemon.handler.lan.state().Permission.Status; got != before {
+		t.Fatalf("empty browse changed permission from %q to %q", before, got)
 	}
 }
 
