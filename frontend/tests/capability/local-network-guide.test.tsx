@@ -75,7 +75,7 @@ describe('capability: permission recovery explains the next step on the right Ma
     await screen.findByRole('heading');
     state.fail = true;
     await userEvent.setup().click(screen.getByRole('button', { name: 'Check again' }));
-    expect(await screen.findByRole('status')).toHaveTextContent('Couldn’t confirm access');
+    expect(await screen.findByRole('status')).toHaveTextContent('If Sessions is already on, leave it on');
     expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
     expect(screen.getAllByRole('listitem')).toHaveLength(3);
   });

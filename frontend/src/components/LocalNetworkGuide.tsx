@@ -43,7 +43,7 @@ export function LocalNetworkGuide({ onState }: { onState?: (state: LANState) => 
       await refresh(controller.signal);
       setMessage('Check complete. If access is not confirmed yet, check the switch below, then try again.');
     } catch {
-      setMessage('Couldn’t confirm access. Check that Sessions is on in Local Network settings, then try again. Your sessions have not been stopped.');
+      setMessage('Couldn’t confirm nearby access. If Sessions is already on, leave it on. You can still try your saved computer connection in Fleet. Your sessions have not been stopped.');
     } finally {
       window.clearTimeout(timeout); checking.current = false; setBusy(false);
     }
@@ -70,6 +70,9 @@ export function LocalNetworkGuide({ onState }: { onState?: (state: LANState) => 
     {message ? <p role="status">{message}</p> : null}
     <details><summary>Don’t see Sessions in the list?</summary>
       <p>{local ? 'Choose Check again to ask macOS for access. If a prompt appears, choose Allow.' : `Open Sessions on ${name}, go to Fleet, and choose Check again. Approve the macOS prompt there.`} If no prompt appears, reopen the Sessions app and try again. Closing the app does not stop your agents.</p>
+    </details>
+    <details><summary>Already on, but the check still fails?</summary>
+      <p>A failed network check does not necessarily mean macOS blocked access. Leave the switch on. Try opening a saved computer in Fleet; if it connects, you can keep working. Otherwise, check that both devices are online and use the same private Wi-Fi or Tailscale.</p>
     </details>
   </section>;
 }
