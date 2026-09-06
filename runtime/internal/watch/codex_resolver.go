@@ -63,6 +63,7 @@ type CodexResolveOptions struct {
 	SessionsDir   string
 	Now           time.Time
 	ExpectedInput string
+	inputMatcher  func(string, string) bool
 	// ConversationID is the provider thread id Sessions recorded for the
 	// session, when it has one. It identifies the rollout exactly.
 	ConversationID string
@@ -296,13 +297,18 @@ func normalizedCodexInput(value string) string {
 }
 
 func rolloutHasCodexUserInput(path, expected string) bool {
+	matched, _ := readCodexUserInput(path, expected)
+	return matched
+}
+
+func readCodexUserInput(path, expected string) (bool, error) {
 	expected = normalizedCodexInput(expected)
 	if expected == "" {
-		return false
+		return false, nil
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(io.LimitReader(file, codexReadByteLimit))
@@ -339,19 +345,22 @@ func rolloutHasCodexUserInput(path, expected string) bool {
 			text.WriteString(value)
 		}
 		if normalizedCodexInput(text.String()) == expected {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, scanner.Err()
 }
 
-func resolveCodexInputMatch(matches []rolloutCandidate, expected string) (CodexResolution, bool) {
+func resolveCodexInputMatch(matches []rolloutCandidate, expected string, match func(string, string) bool) (CodexResolution, bool) {
+	if match == nil {
+		match = rolloutHasCodexUserInput
+	}
 	if normalizedCodexInput(expected) == "" {
 		return CodexResolution{}, false
 	}
 	matched := make([]rolloutCandidate, 0, 1)
 	for _, candidate := range matches {
-		if rolloutHasCodexUserInput(candidate.path, expected) {
+		if match(candidate.path, expected) {
 			matched = append(matched, candidate)
 		}
 	}
@@ -458,7 +467,7 @@ func ResolveCodexRolloutPath(options CodexResolveOptions) CodexResolution {
 	}
 
 	if len(matches) > 0 {
-		if resolution, handled := resolveCodexInputMatch(matches, options.ExpectedInput); handled {
+		if resolution, handled := resolveCodexInputMatch(matches, options.ExpectedInput, options.inputMatcher); handled {
 			return resolution
 		}
 		if options.StrictStart > 0 {
@@ -502,7 +511,7 @@ func ResolveCodexRolloutPath(options CodexResolveOptions) CodexResolution {
 	if len(fullScan) == 0 {
 		return CodexResolution{Reason: CodexNoCWDMatch}
 	}
-	if resolution, handled := resolveCodexInputMatch(fullScan, options.ExpectedInput); handled {
+	if resolution, handled := resolveCodexInputMatch(fullScan, options.ExpectedInput, options.inputMatcher); handled {
 		return resolution
 	}
 	sort.Slice(fullScan, func(i, j int) bool {

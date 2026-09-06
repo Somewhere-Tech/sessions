@@ -94,6 +94,7 @@ type codexTail struct {
 	lines         lineBuffer
 	anchor        readAnchor
 	expectedInput string
+	inputCache    codexInputCache
 
 	reportedSkips int
 	skipReported  bool
@@ -178,6 +179,7 @@ func (tail *codexTail) tick() {
 			SessionsDir:   tail.options.SessionsDir,
 			Now:           now,
 			ExpectedInput: tail.expectedInput,
+			inputMatcher:  tail.inputCache.matches,
 		})
 		if tail.options.RequireInputMatch && ExtractCodexResumeID(tail.options.Args) == "" && tail.expectedInput == "" {
 			resolution.Path = ""
