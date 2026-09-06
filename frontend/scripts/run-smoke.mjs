@@ -45,6 +45,7 @@ const GATE = [
   'external-links',
   'lifecycle-clarity',
   'workspace-ux',
+  'launcher-layout',
   'session-status',
   'title-clarity',
   'surface-truth',

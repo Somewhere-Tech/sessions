@@ -22,6 +22,7 @@
     "test:android-mobile": "node scripts/android-mobile-smoke.mjs",
     "test:external-links": "node scripts/external-links-smoke.mjs",
     "test:lifecycle-clarity": "node scripts/lifecycle-clarity-smoke.mjs",
+    "test:launcher-layout": "node scripts/launcher-layout-smoke.mjs",
     "test:workspace-ux": "node scripts/workspace-ux-smoke.mjs",
     "test:session-status": "node scripts/session-status-smoke.mjs",
     "test:title-clarity": "node scripts/title-clarity-smoke.mjs",

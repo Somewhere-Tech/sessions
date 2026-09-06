@@ -88,7 +88,7 @@ describe('capability: create a session', () => {
     await waitFor(() => expect(start).toBeEnabled());
 
     await user.type(
-      screen.getByPlaceholderText(/Ask an agent to work/),
+      screen.getByRole('textbox', { name: 'First request (optional)' }),
       'Ship the release notes'
     );
     await user.click(start);
@@ -109,7 +109,7 @@ describe('capability: create a session', () => {
     render(<Launcher />);
     const start = await screen.findByRole('button', { name: 'Start session' });
     await waitFor(() => expect(start).toBeEnabled());
-    fireEvent.change(screen.getByPlaceholderText(/Ask an agent to work/), {
+    fireEvent.change(screen.getByRole('textbox', { name: 'First request (optional)' }), {
       target: { value: 'Inspect this repository' }
     });
     fireEvent.click(start);

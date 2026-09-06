@@ -17,7 +17,7 @@ import { classifySession } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
 import { MachineMark } from './MachineMark';
-import { readInitialSessionView, writeSessionView, type SessionViewMode } from '../lib/sessionViewPreference';
+import { effectiveSessionView, readInitialSessionView, writeSessionView, type SessionViewMode } from '../lib/sessionViewPreference';
 import { LoadingShell } from './LoadingShell';
 import { ConversationForkButton } from './ConversationForkButton';
 import { agentLedDescendants, isAgentLedChild } from '../lib/workingSet';
@@ -133,13 +133,13 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   // Raw shell sessions remain terminal-only.
   const supportsConversation = !session || session.tool === 'claude-code' || session.tool === 'codex';
   const lostConversation = Boolean(session?.runnerGone && supportsConversation);
-  const effectiveView: ViewMode = supportsConversation ? lostConversation ? 'remote' : viewMode : 'terminal';
+  const richSession = Boolean(session && sessionMode(session) === 'rich');
+  const effectiveView: ViewMode = effectiveSessionView(viewMode, supportsConversation, richSession || lostConversation);
   const displayParentID = session?.displayParentSessionId !== undefined
     ? session.displayParentSessionId
     : session?.parentSessionId;
   const parent = displayParentID ? allSessions.find((item) => item.id === displayParentID) : null;
   const provider = normalizeProvider(session?.tool);
-  const richSession = Boolean(session && sessionMode(session) === 'rich');
   const workspaceName = session?.cwd.split('/').filter(Boolean).pop() || 'Workspace';
   const terminalBackedAgent = Boolean(
     session
@@ -597,7 +597,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           {supportsConversation ? (
             <button type="button" className="view-toggle-btn is-active" onClick={() => setViewMode('remote')} title="Structured conversation, activity, plans, and usage">Conversation</button>
           ) : null}
-          <button
+          {!richSession && <button
             type="button"
             className={`view-toggle-btn terminal-drawer-toggle${effectiveView === 'terminal' ? ' is-active' : ''}`}
             onClick={() => {
@@ -611,11 +611,11 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             }}
             aria-expanded={terminalDrawerOpen}
             aria-controls={`terminal-pane-${sessionId}`}
-            disabled={richSession || lostConversation}
-            title={lostConversation ? 'The runner is gone; resume the saved conversation to open a new terminal' : richSession ? 'Rich sessions do not have a terminal stream' : supportsConversation ? 'Show the exact provider terminal' : 'Terminal'}
+            disabled={lostConversation}
+            title={lostConversation ? 'The runner is gone; resume the saved conversation to open a new terminal' : supportsConversation ? 'Show the exact provider terminal' : 'Terminal'}
           >
-            {lostConversation ? 'Terminal unavailable' : richSession ? 'No terminal' : effectiveView === 'terminal' && supportsConversation ? 'Hide terminal' : 'Terminal'}
-          </button>
+            {lostConversation ? 'Terminal unavailable' : effectiveView === 'terminal' && supportsConversation ? 'Hide terminal' : 'Terminal'}
+          </button>}
         </div>
         {lostConversation ? <span className="session-stream-status" role="status">Runner gone · conversation saved</span> : term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Live updates reconnecting…' : 'Live updates unavailable'}</span> : null}
         {supportsConversation && onFork ? (
@@ -689,15 +689,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             </header>
           ) : null}
           {session ? <TerminalProviderFault session={session} onOpenTerminal={focusTerminal} /> : null}
-          {richSession ? (
-            <div className="rich-terminal-empty">
-              <span>Rich session</span>
-              <h2>No terminal for this Rich session</h2>
-              <p>Sessions is connected through the provider’s structured interface, which makes messages, plans, tool activity, diffs, and Stop more reliable.</p>
-              <p>A Terminal compatibility session would be a separate runtime. Its screen-read status and history can be incomplete or delayed.</p>
-              <small>To switch safely, end this runtime, choose Resume conversation, then select Terminal. Sessions will keep the same provider conversation and preserve this runtime in history.</small>
-            </div>
-          ) : (
+          {!richSession && (
             <>
               <div className="terminal-host" ref={term.containerRef} />
               <div className="mobile-terminal-keys" role="toolbar" aria-label="Terminal keys">

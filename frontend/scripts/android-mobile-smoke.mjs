@@ -125,7 +125,7 @@ try {
       assert.ok(layout.effort.right <= layout.access.left, `effort and access overlapped at ${width}px`);
       assert.ok(layout.effort.bottom <= layout.actions.top && layout.access.bottom <= layout.actions.top,
         `Start was not below configuration at ${width}px`);
-      assert.ok(layout.hint.top >= layout.composer.bottom, `keyboard hint overlapped the composer border at ${width}px`);
+      assert.equal(layout.hint.height, 0, `desktop keyboard instructions should not clutter the ${width}px launcher`);
     }
   } finally {
     await closeBrowser(browser);

@@ -368,7 +368,6 @@
   .session-control { align-items: stretch; flex-direction: column; }
   .session-control-confirm { width: 100%; }
   .session-control > .btn { align-self: flex-start; }
-  .rich-terminal-empty { width: calc(100% - 32px); }
   .home-view { padding: 24px 14px 90px; }
   .home-hero { align-items: flex-start; flex-direction: column; }
   .home-stat-grid { grid-template-columns: 1fr; }

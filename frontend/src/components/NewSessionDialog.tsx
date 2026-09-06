@@ -494,56 +494,61 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
           </div>
           <div className="launcher-head-actions">
             {onOpenResume && !isDelegate && selectedProfile === '' ? (
-              <button type="button" className="dialog-head-link" onClick={() => onOpenResume()}>Resume an earlier chat</button>
+              <button type="button" className="dialog-head-link" onClick={() => onOpenResume()}>Resume chat</button>
             ) : null}
             <button type="button" className="launcher-close" onClick={onClose} aria-label="Close new session">×</button>
           </div>
         </header>
         <div className="dialog-body">
           <section className="launcher-hero">
-            <span>{isDelegate ? 'Linked session' : 'New session'}</span>
-            <h2 className="launcher-intent" aria-label={isDelegate ? 'Start a new linked session' : 'Start a new session'}>
-              <span>Start a new</span>
-              <label className="launcher-intent-control is-agent" title={`Agent: ${selectedTool.name}`}>
+            <h2>{isDelegate ? 'Delegate a task' : 'What would you like to work on?'}</h2>
+            <p>{isDelegate ? 'Give it one focused job. It stays linked to its parent.' : 'Choose an agent and a place to work.'}</p>
+          </section>
+          <div className="launcher-setup" role="group" aria-label="Session setup">
+            <label className="launcher-setup-field">
+              <span>Agent</span>
+              <span className="launcher-intent-control is-agent">
                 <AgentMark tool={tool} size={17} />
                 <select value={tool} onChange={(event) => chooseTool(event.currentTarget.value as NewSessionTool)} aria-label="Agent">
                   {TOOLS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>
-              </label>
-              <span>{isDelegate ? 'session linked to' : 'session on'}</span>
-              {isDelegate ? (
-                <strong>{parentSession ? sessionLabel(parentSession) : 'this session'}</strong>
-              ) : (
-                <label className="launcher-intent-control is-machine" title={`Computer: ${machineTitle}`}>
+              </span>
+            </label>
+            {!isDelegate && (
+              <label className="launcher-setup-field">
+                <span>Computer</span>
+                <span className="launcher-intent-control is-machine" title={machineTitle}>
                   <MachineMark machine={machineTitle} size={16} />
                   <select value={machineId} onChange={(event) => chooseMachine(event.currentTarget.value)} aria-label="Computer">
                     {configuredMachines.map((machine) => (
                       <option key={machine.id} value={machine.id}>{serverDisplayName(machine, true)}</option>
                     ))}
                   </select>
-                </label>
-              )}
-              <span>in</span>
-              <button type="button" className="launcher-intent-control is-workspace" title={cwd || 'Choose a project folder'} onClick={() => setBrowserOpen((open) => !open)} aria-expanded={browserOpen}>
+                </span>
+              </label>
+            )}
+            <div className="launcher-setup-field is-folder">
+              <span>Folder</span>
+              <button type="button" className="launcher-intent-control is-workspace" title={cwd || 'Choose a project folder'} onClick={() => setBrowserOpen((open) => !open)} aria-label={`Folder: ${workspaceTitle}`} aria-expanded={browserOpen} disabled={isDelegate}>
                 <span className="workspace-folder-icon" aria-hidden />
                 <strong>{workspaceTitle}</strong>
+                {!isDelegate && <span className="launcher-folder-change">Change</span>}
               </button>
-            </h2>
-            <p>{isDelegate ? 'Give it one focused job. It stays grouped with its parent.' : 'Describe the work below, or leave it blank to open an empty conversation.'}</p>
-          </section>
+            </div>
+          </div>
           <div className="field launcher-task-field launcher-composer input-composer">
             <span className="sr-only">First request (optional)</span>
             <textarea
               className="input-textarea"
-              autoFocus
               value={task}
+              aria-label="First request (optional)"
               onChange={(event) => setTask(event.currentTarget.value)}
               onKeyDown={(event) => {
                 if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
                 event.preventDefault();
                 event.currentTarget.form?.requestSubmit();
               }}
-              placeholder={isDelegate ? 'Describe the work for this linked session…' : 'Ask an agent to work, or leave blank to open a conversation…'}
+              placeholder={isDelegate ? 'What should this agent do?' : 'Describe a task, or start an empty chat…'}
               rows={6}
             />
             <div className="launcher-composer-footer input-composer-footer">
@@ -590,8 +595,8 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                 ) : null}
               </div>
               <div className="launcher-composer-actions">
-                <button type={createdWithDeliveryError ? 'button' : 'submit'} className={`btn btn-primary launcher-composer-start${createdWithDeliveryError ? ' is-wide' : ''}`} disabled={!createdWithDeliveryError && (busy || !cwd.trim() || !profileValid)} onClick={createdWithDeliveryError ? onClose : undefined} aria-label={createdWithDeliveryError ? 'View session' : 'Start session'} title={createdWithDeliveryError ? 'View session' : 'Start session'}>
-                  {createdWithDeliveryError ? 'View session' : busy ? '…' : '↑'}
+                <button type={createdWithDeliveryError ? 'button' : 'submit'} className="btn btn-primary launcher-composer-start is-wide" disabled={!createdWithDeliveryError && (busy || !cwd.trim() || !profileValid)} onClick={createdWithDeliveryError ? onClose : undefined} aria-label={createdWithDeliveryError ? 'View session' : 'Start session'} title={createdWithDeliveryError ? 'View session' : 'Start session'}>
+                  {createdWithDeliveryError ? 'View session' : busy ? 'Starting…' : 'Start session'}
                 </button>
               </div>
             </div>

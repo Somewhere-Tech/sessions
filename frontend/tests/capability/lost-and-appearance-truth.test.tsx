@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SessionView } from '../../src/components/SessionView';
+import { effectiveSessionView, preferNextSessionView } from '../../src/lib/sessionViewPreference';
 import { classifySnapshotComposerState } from '../../src/lib/detectMultiChoice';
 import { classifySession } from '../../src/lib/sessionStatus';
 import { useSessions } from '../../src/store/sessions';
@@ -36,6 +37,21 @@ function localMachine(sessions: ReturnType<typeof makeSession>[]): FakeMachine {
 }
 
 describe('capability: lost and waiting state truth', () => {
+  it('keeps conversation-only sessions readable despite a requested terminal view', async () => {
+    const session = makeSession({ id: 'rich-view', tool: 'codex', kind: 'codex-app-server' });
+    const machine = localMachine([session]);
+    installFakeDaemon([machine]);
+    useFakeMachines([machine]);
+    preferNextSessionView(session.id, 'terminal');
+    const { container } = render(<SessionView sessionId={session.id} isActive />);
+    await waitFor(() => expect(container.querySelector('.session-view')).toHaveClass('view-remote'));
+    expect(screen.queryByText('No terminal')).not.toBeInTheDocument();
+    expect(screen.queryByText('No terminal for this Rich session')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Conversation' })).toBeInTheDocument();
+    expect(effectiveSessionView('terminal', true, false)).toBe('terminal');
+    expect(effectiveSessionView('remote', false, false)).toBe('terminal');
+  });
+
   it('shows one lost-conversation recovery card with consistent surrounding state', async () => {
     const lost = makeSession({
       id: 'lost-codex',
@@ -71,7 +87,7 @@ describe('capability: lost and waiting state truth', () => {
     expect(view).not.toBeNull();
     expect(view!.querySelector('.session-live-pill')).toHaveTextContent('Not connected');
     expect(view!.querySelector('.sidebar-run-state')).toHaveTextContent('Not connected');
-    expect(within(view!).getByText('Terminal unavailable')).toBeInTheDocument();
+    expect(within(view!).queryByText('Terminal unavailable')).not.toBeInTheDocument();
     const composer = within(view!).getByRole('textbox');
     expect(composer).toBeDisabled();
     expect(composer).toHaveAttribute('placeholder', 'This session is not connected, so messages cannot be sent.');

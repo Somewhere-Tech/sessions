@@ -143,26 +143,6 @@
   transform: translateX(-50%);
 }
 .terminal-provider-fault .provider-control-card { margin: 0; }
-.rich-terminal-empty {
-  display: grid;
-  width: min(560px, calc(100% - 48px));
-  height: 100%;
-  margin: 0 auto;
-  place-content: center;
-  justify-items: start;
-  color: var(--fg);
-}
-.rich-terminal-empty > span {
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-}
-.rich-terminal-empty h2 { margin: 8px 0 7px; font-size: 21px; letter-spacing: -.025em; }
-.rich-terminal-empty p { max-width: 540px; margin: 0 0 10px; color: var(--fg-dim); font-size: 14px; line-height: 1.55; }
-.rich-terminal-empty .btn { margin-top: 6px; }
-.rich-terminal-empty small { margin-top: 7px; color: var(--fg-faint); font-size: 12px; }
 .session-sessions-pane {
   position: relative;
   min-width: 0;
