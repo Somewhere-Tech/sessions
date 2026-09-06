@@ -69,7 +69,7 @@ describe('capability: resume a conversation', () => {
     let resumedLaneId: string | null = null;
     render(<ResumeFlow onResumed={(laneId) => { resumedLaneId = laneId; }} />);
 
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('button', { name: 'Resume' }));
     await user.click(await screen.findByRole('button', { name: /Thursday migration plan/ }));
     expect(await screen.findByRole('group', { name: 'Start plan' })).toHaveTextContent('Claude');
     expect(screen.getByText('Nothing runs until you press Start')).toBeInTheDocument();

@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState, type DragEvent } from 're
 import { createPortal } from 'react-dom';
 import type { SessionInfo } from '../types';
 import { resolvedSessionLabel } from '../lib/tabLabels';
+import { readWindowScope, sessionMatchesWindowScope } from '../lib/windowScope';
 import { ProviderMark, normalizeProvider } from './ProviderBadge';
 import {
   canContinueSession,
@@ -27,6 +28,9 @@ import { useFleetSessions, type FleetSessionSnapshot } from '../hooks/useFleetSe
 import { useProjects } from '../hooks/useProjects';
 import { buildInboxLayout, buildProviderFaultNotices, type ProviderFaultNotice } from '../lib/inboxSections';
 import { InboxSections, ProviderFaultBanners } from './InboxSections';
+import { useFleetProjects } from '../hooks/useFleetProjects';
+import { groupCollaborators, isSavedCollaborator } from '../lib/projectCollaborators';
+import { ProjectCollaborators } from './ProjectCollaborators';
 
 const ContinueElsewhereButton = lazy(() => import('./ContinueElsewhereButton').then((module) => ({ default: module.ContinueElsewhereButton })));
 
@@ -36,7 +40,7 @@ type DateFilter = 'all' | 'today' | 'week';
 
 const RECENTLY_ENDED_DAYS = 7;
 const RECENTLY_ENDED_LIMIT = 20;
-const MACHINE_SCOPE_KEY = 'sessions:navigator-machine-scope';
+const MACHINE_SCOPE_KEY = 'sessions:projects-machine-scope';
 const ALL_MACHINES_SCOPE = 'all-machines';
 
 type MachineScope = typeof ALL_MACHINES_SCOPE | string;
@@ -90,11 +94,13 @@ function openProviderFaultNotice(
 // answer "is it finished / does it need me?" twice, in two different ways,
 // and disagreed with Fleet and Home. It now only asks.
 
-function readMachineScope(activeMachineId: string | null): MachineScope {
+function readMachineScope(): MachineScope {
+  const scope = readWindowScope();
+  if (scope?.kind === 'server') return scope.value;
   try {
-    return window.localStorage.getItem(MACHINE_SCOPE_KEY) || activeMachineId || ALL_MACHINES_SCOPE;
+    return window.localStorage.getItem(MACHINE_SCOPE_KEY) || ALL_MACHINES_SCOPE;
   } catch {
-    return activeMachineId || ALL_MACHINES_SCOPE;
+    return ALL_MACHINES_SCOPE;
   }
 }
 
@@ -128,39 +134,6 @@ function treeKeyStep(key: string): number | 'first' | 'last' | null {
   }
 }
 
-function orderedMachineRows(sessions: SessionInfo[]): Array<{ session: SessionInfo; depth: number }> {
-  const ids = new Set(sessions.map((session) => session.id));
-  const children = new Map<string, SessionInfo[]>();
-  const roots: SessionInfo[] = [];
-  const sort = (items: SessionInfo[]): SessionInfo[] => items.sort((left, right) => lastActivity(right) - lastActivity(left));
-
-  for (const session of sessions) {
-    const parentId = effectiveParentId(session);
-    if (!parentId || !ids.has(parentId)) {
-      roots.push(session);
-      continue;
-    }
-    const nested = children.get(parentId) ?? [];
-    nested.push(session);
-    children.set(parentId, nested);
-  }
-  children.forEach(sort);
-
-  const rows: Array<{ session: SessionInfo; depth: number }> = [];
-  const visited = new Set<string>();
-  const append = (session: SessionInfo, depth: number): void => {
-    if (visited.has(session.id)) return;
-    visited.add(session.id);
-    rows.push({ session, depth });
-    for (const child of children.get(session.id) ?? []) append(child, depth + 1);
-  };
-  for (const root of sort(roots)) append(root, 0);
-  // Corrupt or cyclic legacy parentage must remain discoverable rather than
-  // disappearing from the aggregate inbox.
-  for (const session of sort([...sessions])) append(session, 0);
-  return rows;
-}
-
 interface Props {
   sessions: SessionInfo[];
   activeId: string | null;
@@ -168,6 +141,7 @@ interface Props {
   onOpen: (id: string) => void;
   onOpenMachineSession: (serverId: string, sessionId: string) => void;
   onNew: () => void;
+  onAddProjectAgent?: (serverId: string, cwd: string, tags: Record<string, string>) => void;
   onContinue: () => void;
   onResumeSession: (session: SessionInfo, destinationProvider?: 'claude' | 'codex') => void;
   onForkSession: (session: SessionInfo, destinationProvider: 'claude' | 'codex') => Promise<void>;
@@ -184,6 +158,7 @@ export function SessionNavigator({
   onOpen,
   onOpenMachineSession,
   onNew,
+  onAddProjectAgent,
   onContinue,
   onResumeSession,
   onForkSession,
@@ -200,9 +175,16 @@ export function SessionNavigator({
   const configuredMachines = useServers((state) => state.servers);
   const activeMachineId = useServers((state) => state.activeId);
   const selectMachine = useServers((state) => state.setActive);
-  const [machineScope, setMachineScopeState] = useState<MachineScope>(() => readMachineScope(activeMachineId));
+  const [machineScope, setMachineScopeState] = useState<MachineScope>(readMachineScope);
   const showingAllMachines = machineScope === ALL_MACHINES_SCOPE;
-  const fleetSnapshots = useFleetSessions(configuredMachines, showingAllMachines);
+  const remoteMachines = useMemo(() => configuredMachines.filter((server) => server.id !== activeMachineId), [configuredMachines, activeMachineId]);
+  const remoteSnapshots = useFleetSessions(remoteMachines, showingAllMachines);
+  const activeError = useSessions((state) => state.error);
+  const activeLoading = useSessions((state) => state.loading);
+  const fleetSnapshots = configuredMachines.map((server) => server.id === activeMachineId
+    ? { server, sessions, loading: activeLoading, error: activeError }
+    : remoteSnapshots.find((snapshot) => snapshot.server.id === server.id) ?? { server, sessions: [], loading: true, error: null });
+  const { projects: fleetProjects, incomplete: incompleteProjects } = useFleetProjects(configuredMachines, showingAllMachines);
   const [primary, setPrimary] = useState<PrimaryFilter>('all');
   const [provider, setProvider] = useState<ProviderFilter>('all');
   const [project, setProject] = useState('all');
@@ -383,9 +365,10 @@ export function SessionNavigator({
   }), [liveIds, navigatorSessions, pinnedIds, scopedSessions, showingAllMachines]);
 
   const matches = (session: SessionInfo): boolean => {
+    if (!sessionMatchesWindowScope(session)) return false;
     if (primary === 'needs' && !sessionNeedsYou(session)) return false;
     if (primary === 'working' && (!session.working || session.exited)) return false;
-    if (primary === 'ended' && !session.exited) return false;
+    if (primary === 'ended' && !isSavedCollaborator(session)) return false;
     const normalized = normalizeProvider(session.tool);
     if (provider !== 'all' && (provider === 'shell' ? session.tool !== 'terminal' : normalized !== provider)) return false;
     if (project !== 'all' && projectName(session) !== project) return false;
@@ -401,6 +384,11 @@ export function SessionNavigator({
   };
 
   const filteredLiveSessions = liveSessions.filter(matches);
+  const projectSnapshots = fleetSnapshots.map((snapshot) => snapshot.server.id === activeMachineId
+    ? { ...snapshot, sessions }
+    : snapshot);
+  const collaboratorGroups = groupCollaborators(projectSnapshots, fleetProjects, false, matches);
+  const savedGroups = groupCollaborators(projectSnapshots, fleetProjects, true, matches);
   // Project membership comes from the daemon; the inbox groups the single
   // machine's live rows by it and folds recent finished ones per project.
   const projectLookup = useProjects(navigatorSessions.map((session) => session.id), !showingAllMachines);
@@ -427,13 +415,6 @@ export function SessionNavigator({
   const filteredFleetEnded = fleetSessions
     .filter((session) => session.exited && matches(session))
     .sort((left, right) => lastActivity(right) - lastActivity(left));
-  const filteredFleetLiveCount = fleetSessions.filter((session) => !session.exited && matches(session)).length;
-  const recentFleetEnded = filteredFleetEnded
-    .filter((session) => lastActivity(session) >= recentCutoff)
-    .slice(0, RECENTLY_ENDED_LIMIT);
-  const visibleFleetEnded = browsingAllEnded ? filteredFleetEnded : recentFleetEnded;
-  const visibleFleetEndedRows = new Set(visibleFleetEnded);
-  const hasOlderFleetEnded = filteredFleetEnded.length > recentFleetEnded.length;
   const scopedEndedCount = showingAllMachines ? filteredFleetEnded.length : filteredEnded.length;
   useEffect(() => {
     if (counts.live === 0 && scopedEndedCount > 0) setEndedOpen(true);
@@ -559,10 +540,6 @@ export function SessionNavigator({
     const parent = currentParentID ? sessions.find((candidate) => candidate.id === currentParentID) : null;
     const resumedFrom = session.resumedFrom ? sessions.find((candidate) => candidate.id === session.resumedFrom) : null;
     const label = resolvedSessionLabel(session);
-    // Lanes this session delegated are folded out of the list; the row keeps
-    // a compact rollup so a blocked lane is visible without opening anything.
-    const lanes = sessions.filter((candidate) => !candidate.exited && isAgentLedChild(candidate) && effectiveParentId(candidate) === session.id);
-    const lanesNeedingYou = lanes.filter(sessionNeedsYou).length;
     return (
       <div className="session-tree-node" key={session.id}>
         <div
@@ -597,11 +574,7 @@ export function SessionNavigator({
           {isPinned(session) ? <span className="manager-pin is-pinned" title="Pinned" aria-label="Pinned">📌</span> : null}
           <span className="session-nav-copy">
             <span className="session-nav-title">{label}</span>
-            {lanes.length > 0 ? (
-              <span className={`session-nav-rollup${lanesNeedingYou > 0 ? ' is-attention' : ''}`} title={`${lanes.length} delegated lane${lanes.length === 1 ? '' : 's'}`}>
-                {lanes.length} lane{lanes.length === 1 ? '' : 's'}{lanesNeedingYou > 0 ? ` · ${lanesNeedingYou} needs you` : ''}
-              </span>
-            ) : null}
+            {sessionNeedsYou(session) && session.idleDetail ? <span className="session-nav-rollup">{session.idleDetail}</span> : null}
             {end ? <span className={`session-nav-ended is-${end.tone}`}>{end.label}</span> : null}
             {resumedFrom ? <span className="session-nav-parent">Resumed from {resolvedSessionLabel(resumedFrom)}</span> : null}
             {endedFlat && parent ? <span className="session-nav-parent">Under {resolvedSessionLabel(parent)}</span> : null}
@@ -738,54 +711,6 @@ export function SessionNavigator({
     );
   };
 
-  const renderFleetMachineGroup = (
-    snapshot: FleetSessionSnapshot,
-    ended: boolean
-  ): JSX.Element | null => {
-    const eligible = snapshot.sessions.filter((session) => (
-      !isAgentLedChild(session)
-      &&
-      session.exited === ended
-      && matches(session)
-      && (!ended || visibleFleetEndedRows.has(session))
-    ));
-    if (eligible.length === 0 && !snapshot.loading && !snapshot.error) return null;
-    const machineName = serverDisplayName(snapshot.server, true);
-    return (
-      <section className={`session-fleet-machine${snapshot.error ? ' is-unreachable' : ''}`} key={`${ended ? 'ended' : 'live'}:${snapshot.server.id}`}>
-        <header>
-          <span><MachineMark machine={machineName} size={16} /><strong>{machineName}</strong></span>
-          <small>{eligible.length}</small>
-        </header>
-        {orderedMachineRows(eligible).map(({ session, depth }) => {
-          const status = classifySession(session);
-          const providerName = normalizeProvider(session.tool);
-          return (
-            <button
-              type="button"
-              className="session-fleet-row"
-              key={`${snapshot.server.id}:${session.id}`}
-              style={{ '--tree-depth': Math.min(depth, 5) } as React.CSSProperties}
-              onClick={() => onOpenMachineSession(snapshot.server.id, session.id)}
-              title={`Open on ${machineName}`}
-            >
-              <span className="session-fleet-provider">
-                {providerName ? <ProviderMark provider={providerName} size={18} /> : <span aria-label="Shell">⌘</span>}
-              </span>
-              <span className="session-fleet-copy">
-                <strong>{resolvedSessionLabel(session)}</strong>
-                <small>{projectName(session)}</small>
-              </span>
-              <span className={`session-fleet-state ${status.className}`}><i aria-hidden />{status.label}</span>
-              <time>{relativeTime(lastActivity(session))}</time>
-            </button>
-          );
-        })}
-        {snapshot.loading ? <div className="session-fleet-machine-note">Checking sessions…</div> : null}
-        {snapshot.error ? <div className="session-fleet-machine-note is-error">Can’t reach this computer right now.</div> : null}
-      </section>
-    );
-  };
   const movePickerSession = movePickerId ? sessions.find((session) => session.id === movePickerId) ?? null : null;
   const endConfirmSession = endConfirmId ? sessions.find((session) => session.id === endConfirmId) ?? null : null;
   const movePickerParentID = movePickerSession ? effectiveParentId(movePickerSession) : null;
@@ -798,13 +723,13 @@ export function SessionNavigator({
   return (
     <aside className="session-navigator">
       <header className="session-navigator-head">
-        <div><span>Operations inbox</span><strong>Sessions</strong></div>
+        <div><span>Your workspace</span><strong>Projects</strong></div>
         <div className="session-navigator-actions">
-          <button type="button" className="session-continue-action" onClick={onContinue}>Continue</button>
-          <button type="button" className="session-new-action" onClick={onNew} aria-label="New session"><span aria-hidden>＋</span> New</button>
+          <button type="button" className="session-continue-action" onClick={onContinue}>Resume</button>
+          <button type="button" className="session-new-action" onClick={onNew} aria-label="New session"><span aria-hidden>＋</span> Add agent</button>
         </div>
       </header>
-      <div className="session-machine-filter" role="toolbar" aria-label="Connected computers">
+      <details className="session-machine-options"><summary>Computers</summary><div className="session-machine-filter" role="toolbar" aria-label="Connected computers">
         <button
           type="button"
           className={showingAllMachines ? 'is-active' : undefined}
@@ -828,11 +753,11 @@ export function SessionNavigator({
             <span>{serverDisplayName(configured, true)}</span>
           </button>
         ))}
-      </div>
+      </div></details>
       <div className="session-nav-search"><span aria-hidden>⌕</span><input
         value={query}
         onChange={(event) => setQuery(event.currentTarget.value)}
-        placeholder="Filter sessions"
+        placeholder="Find a project or agent"
         aria-label="Filter sessions"
         onKeyDown={(event) => {
           // Down from the filter lands on the first matching row.
@@ -845,7 +770,6 @@ export function SessionNavigator({
         <FilterButton label="All" active={primary === 'all'} onClick={() => setPrimary('all')} />
         <FilterButton label={`Needs you${counts.needs ? ` ${counts.needs}` : ''}`} active={primary === 'needs'} onClick={() => setPrimary('needs')} />
         <FilterButton label={`Working${counts.working ? ` ${counts.working}` : ''}`} active={primary === 'working'} onClick={() => setPrimary('working')} />
-        <FilterButton label="Ended" active={primary === 'ended'} onClick={() => setPrimary('ended')} />
         <details className="session-more-filters">
           <summary aria-label="More filters">⋯</summary>
           <div className="session-filter-popover">
@@ -893,29 +817,32 @@ export function SessionNavigator({
         {showingAllMachines ? <ProviderFaultBanners notices={providerFaultNotices} onOpen={openProviderFault} /> : null}
         {showingAllMachines && primary !== 'ended' ? <div className="session-tree-group session-fleet-scope-group">
           <button type="button" className="session-tree-group-head" onClick={() => setRunningOpen((current) => !current)}>
-            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Your sessions</span><strong>{counts.live}</strong>
+            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Collaborators</span>
           </button>
           {runningOpen ? (
             <>
-              {fleetSnapshots.map((snapshot) => renderFleetMachineGroup(snapshot, false))}
-              {filteredFleetLiveCount === 0 && fleetSnapshots.every((snapshot) => !snapshot.loading && !snapshot.error)
-                ? <div className="session-tree-empty is-compact">No matching live sessions.</div>
+              <ProjectCollaborators groups={collaboratorGroups} activeMachineId={activeMachineId}
+                renderLocal={(row) => renderNode(row.session)} onOpen={onOpenMachineSession}
+                onAdd={onAddProjectAgent ? (row) => onAddProjectAgent(row.server.id, row.session.cwd, { ...row.session.tags }) : undefined} />
+              {fleetSnapshots.some((snapshot) => snapshot.loading) ? <div className="session-tree-empty is-compact">Loading collaborators…</div> : null}
+              {incompleteProjects ? <p role="status" className="session-tree-empty is-compact">Some project names could not be refreshed. Known agents remain visible, grouped by folder where needed.</p> : null}
+              {fleetSnapshots.some((snapshot) => snapshot.error) ? <div className="session-tree-empty is-compact">Some computers haven’t answered. Known projects stay visible.</div> : null}
+              {collaboratorGroups.length === 0 && fleetSnapshots.every((snapshot) => !snapshot.loading && !snapshot.error)
+                ? <div className="session-tree-empty is-compact">Add an agent to start working together. Saved conversations are under Resume.</div>
                 : null}
             </>
           ) : null}
         </div> : null}
         {showingAllMachines && primary !== 'working' && primary !== 'needs' ? <div className="session-tree-group session-fleet-scope-group">
           <button type="button" className="session-tree-group-head" onClick={() => setEndedOpen((current) => !current)}>
-            <span className="session-group-disclosure"><DisclosureChevron open={endedOpen} /> Ended across your fleet</span><strong>{filteredFleetEnded.length}</strong>
+            <span className="session-group-disclosure"><DisclosureChevron open={endedOpen} /> Recently closed</span>
           </button>
           {endedOpen ? (
             <>
-              {fleetSnapshots.map((snapshot) => renderFleetMachineGroup(snapshot, true))}
-              {!browsingAllEnded && hasOlderFleetEnded ? <button type="button" className="session-all-ended" onClick={() => setShowAllEnded(true)}>All ended sessions →</button> : null}
-              {showAllEnded && primary !== 'ended' && query.trim() === '' ? <button type="button" className="session-all-ended" onClick={() => setShowAllEnded(false)}>Show recent only</button> : null}
-              {filteredFleetEnded.length === 0 && fleetSnapshots.every((snapshot) => !snapshot.loading && !snapshot.error)
-                ? <div className="session-tree-empty is-compact">No matching ended sessions.</div>
-                : null}
+              <p className="session-tree-empty is-compact">Saved conversations, including agents that need reconnecting. Opening one does not restart it.</p>
+              <ProjectCollaborators groups={savedGroups.map((group) => ({ ...group, rows: showAllEnded ? group.rows : group.rows.slice(0, 3) }))} activeMachineId={activeMachineId}
+                renderLocal={(row) => renderNode(row.session, true)} onOpen={onOpenMachineSession} />
+              <button type="button" className="session-all-ended" onClick={onContinue}>Find and resume any conversation →</button>
             </>
           ) : null}
         </div> : null}

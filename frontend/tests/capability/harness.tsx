@@ -65,4 +65,4 @@ export function Workbench({
  * accessible name is exactly "Ended"; the group head carries its count, so this
  * distinguishes the two without reaching for a class name.
  */
-export const ENDED_GROUP = /^Ended \d+$/;
+export const ENDED_GROUP = /^Recently closed$/;

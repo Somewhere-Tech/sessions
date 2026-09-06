@@ -404,8 +404,10 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // Grid is too cramped for a compact viewport. Fleet, search, and usage are
   // useful on phones and narrow Mac windows, so the mobile nav keeps them.
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(readStoredLayout);
+  const [projectSeed, setProjectSeed] = useState<{ serverId: string; cwd: string; tags: Record<string, string> } | null>(null);
   const effectiveLayout: LayoutMode = isMobile && layoutMode === 'grid' ? 'tabs' : layoutMode;
   const openNewSession = useCallback((): void => {
+    setProjectSeed(null);
     setLayoutMode('tabs');
     setMobileSessionDetail(true);
     setDialogOpen('new');
@@ -738,6 +740,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       onOpen={openSession}
       onOpenMachineSession={openFleetSession}
       onNew={openNewSession}
+      onAddProjectAgent={(serverId, cwd, tags) => { openNewSession(); setProjectSeed({ serverId, cwd, tags }); }}
       onContinue={() => setDialogOpen('resume')}
       onResumeSession={chooseHowToContinue}
       onForkSession={forkSession}
@@ -800,6 +803,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         ) : sessionWorkspace && dialogOpen === 'new' ? (
           <Suspense fallback={null}><NewSessionDialog
               embedded
+              projectSeed={projectSeed}
               onClose={() => setDialogOpen(null)}
               onStarted={openSession}
               onOpenResume={(providerId) => setDialogOpen(providerId ? { resumeProviderId: providerId } : 'resume')}

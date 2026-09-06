@@ -773,3 +773,38 @@ button.session-tree-group-head { width: 100%; }
   vertical-align: middle;
 }
 .session-nav-rollup.is-attention { color: var(--warn, #e9b44c); border-color: rgba(233, 180, 76, 0.5); }
+.session-machine-options { margin: 0 14px 6px; color: var(--fg-muted); font-size: 12px; }
+.session-machine-options > summary { cursor: pointer; padding: 6px 0; }
+.collaborator-project { margin: 12px 8px 20px; }
+.collaborator-project > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px 8px; }
+.collaborator-project h3 { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.collaborator-project > header button { border: 0; color: var(--fg-muted); background: transparent; min-width: 32px; min-height: 32px; cursor: pointer; }
+.collaborator-remote-row { position: relative; }
+.collaborator-remote-row .session-fleet-row { grid-template-columns: 24px minmax(0, 1fr); padding-right: 36px; min-height: 60px; border-radius: 8px; }
+.collaborator-rename { position: absolute; right: 0; top: 12px; width: 32px; height: 32px; background: transparent; border: 0; color: var(--fg-muted); cursor: pointer; }
+.collaborator-rename-form { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; }
+.collaborator-rename-form input { width: 100%; min-width: 0; }
+.collaborator-remote-row > p { color: var(--fg-muted); padding: 8px; font-size: 12px; }
+.collaborator-project .session-nav-meta .machine-mark { display: none; }
+.paid-start-permission-note { margin: 8px 0 0; color: var(--fg-dim); font-size: 12px; }
+@media (max-width: 600px) {
+  .collaborator-dialog .paid-start-plan-row { grid-template-columns: 1fr 1fr; }
+  .collaborator-dialog .paid-start-plan-row > :first-child { grid-column: 1 / -1; }
+}
+.collaborator-project .session-drag-handle { display: none; }
+.collaborator-context { display: grid; gap: 12px; padding: 12px 0; }
+.collaborator-context > label { display: grid; gap: 6px; }
+.collaborator-context textarea, .collaborator-context input:not([type="radio"]) { width: 100%; min-width: 0; }
+.collaborator-context fieldset { display: grid; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.collaborator-context fieldset label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.collaborator-context small { font-size: 12px; color: var(--fg-muted); line-height: 1.5; }
+.collaborator-context textarea { resize: vertical; min-height: 140px; }
+.collaborator-context details > label { display: grid; gap: 6px; padding: 8px 0; }
+.collaborator-context input:not([type="radio"]), .collaborator-context textarea, .collaborator-context select,
+.collaborator-rename-form input { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev-2); color: var(--fg); font: inherit; padding: 9px 10px; }
+.collaborator-dialog { display: flex; flex-direction: column; max-height: calc(100dvh * var(--interface-scale-inverse, 1) - 24px); overflow: hidden; }
+.collaborator-dialog > .paid-start-plan { overflow-y: auto; min-height: 0; }
+.collaborator-dialog > header, .collaborator-dialog > footer { flex-shrink: 0; }
+.collaborator-dialog .paid-start-plan-row { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+.collaborator-remote-row > .session-tree-node { min-width: 0; padding-right: 32px; }
+.collaborator-project .session-nav-meta .machine-mark { display: none; }

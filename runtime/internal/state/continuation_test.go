@@ -51,6 +51,26 @@ func TestContinuationRejectsProviderInternalRoles(t *testing.T) {
 	}
 }
 
+func TestBriefingSidecarRequiresNewSchemaAndPreservesDefaultAccount(t *testing.T) {
+	profile := ""
+	value := ContinuationContext{SchemaVersion: ContinuationSchemaVersion, SourceHistoryID: "source", SourceProvider: "claude", SourceCWD: "/work", DestinationProvider: "codex", DestinationProfile: &profile, Mode: ContinuationNativeImport, Fork: true, BriefingOnly: true, MainCollaborator: true, Messages: []ContinuationMessage{{Role: "user", Text: "Reviewed brief"}}}
+	if err := value.Validate(); err == nil {
+		t.Fatal("briefing accepted old schema which could reload full history")
+	}
+	value.SchemaVersion = ContinuationBriefingSchemaVersion
+	path := filepath.Join(t.TempDir(), "briefing.json")
+	if err := WriteContinuation(path, value); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadContinuation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DestinationProfile == nil || *got.DestinationProfile != "" || !got.BriefingOnly || !got.MainCollaborator {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestContinuationStartLineNamesSourceCountAndModel(t *testing.T) {
 	value := ContinuationContext{
 		SourceTitle: "Frozen review", SourceProvider: "codex", SourceCWD: "/work",

@@ -7,6 +7,14 @@ root.
 
 ## Default layout
 
+Continuation sidecars for authored conversation copies retain schema 1.
+Reviewed-briefing sidecars use schema 2, with `briefingOnly: true`, one reviewed
+user message, optional `destinationProfile` (empty means default), and optional
+`mainCollaborator` display intent. Current runners read both schemas. Older
+runners reject schema 2 rather than interpreting a briefing as an instruction
+to load the whole source transcript. Both schemas keep the source history ID
+for explicit lookups; neither changes the source provider history.
+
 ```text
 ~/.local/state/sessions/
 ├── token

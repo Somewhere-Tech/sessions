@@ -56,7 +56,7 @@ assert.match(navigator, />All machines</,
   'the navigator must expose one aggregate fleet scope');
 assert.match(navigator, /selectMachineScope\(configured\.id\)/,
   'connected computers must remain visible as one-click session filters');
-assert.match(navigator, /onOpenMachineSession\(snapshot\.server\.id, session\.id\)/,
+assert.match(await source('src/components/ProjectCollaborators.tsx'), /onOpen\(server\.id, session\.id\)/,
   'an aggregate row must retain its machine scope when opened');
 assert.match(fleetSessions, /listServerSessions\(server, controller\.signal\)/,
   'the aggregate inbox must query each already-configured machine directly');

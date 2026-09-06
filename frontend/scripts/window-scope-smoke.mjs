@@ -199,9 +199,9 @@ async function activeView(query) {
 async function managerTabIds() {
   const current = await openCase('', '.session-nav-row[data-session-id="codex-1"]');
   await current.page.evaluate(() => {
-    const button = [...document.querySelectorAll('[aria-label="Session status filters"] button')]
-      .find((node) => node.textContent?.trim() === 'Ended');
-    if (!(button instanceof HTMLElement)) throw new Error('Ended group is missing');
+    const button = [...document.querySelectorAll('.session-tree-group-head')]
+      .find((node) => node.textContent?.trim() === 'Recently closed');
+    if (!(button instanceof HTMLElement)) throw new Error('Recently closed group is missing');
     button.click();
   });
   await t.waitForSelector(current.page, '.session-nav-row[data-session-id="finished-child"]', 'the ended sessions to expand');
@@ -248,9 +248,9 @@ async function navigatorIds(query) {
 async function assertFinishedSessionIsReadOnly() {
   const current = await openCase('', '.session-nav-row[data-session-id="codex-1"]');
   await current.page.evaluate(() => {
-    const button = [...document.querySelectorAll('[aria-label="Session status filters"] button')]
-      .find((node) => node.textContent?.trim() === 'Ended');
-    if (!(button instanceof HTMLElement)) throw new Error('Ended group is missing');
+    const button = [...document.querySelectorAll('.session-tree-group-head')]
+      .find((node) => node.textContent?.trim() === 'Recently closed');
+    if (!(button instanceof HTMLElement)) throw new Error('Recently closed group is missing');
     button.click();
   });
   await t.waitForSelector(current.page, '.session-nav-row[data-session-id="finished-parent"]', 'the ended sessions to expand');

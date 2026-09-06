@@ -1144,16 +1144,18 @@ Examples:
 
 ```text
 Usage:
-  sessions fork <live-session> [--with claude|codex] [--at MESSAGE_INDEX [--message-id ID]]
+  sessions fork <live-session> [--with claude|codex] [--at MESSAGE_INDEX [--message-id ID]] [--briefing-file FILE|- | --generate-briefing] [--profile NAME] [--name NAME] [--model MODEL] [--effort EFFORT]
 
 copy a live conversation without stopping it
 
-Create a new Rich conversation from a stable authored-history snapshot while the original session remains live and unchanged. Omit --with to fork into the same provider, or select Claude/Codex to open a copy in the other provider. --at forks at one non-negative authored-message index, copying that user or agent message and everything before it instead of the whole history; --message-id is only valid with --at and pins the expected message identity, so a conversation that moved on is refused instead of forked from the wrong point. Sessions copies user and assistant messages only; tool output, credentials, attachments, provider internals, and the source runtime are never modified. Wait for the current turn to finish before forking.
+Create a new Rich conversation while the original remains unchanged. Omit --with for the same provider. By default, copy authored user/assistant messages from a stable snapshot; wait for the current turn to finish. Tool output, credentials, attachments, and provider internals are not copied. --at selects a message index; --message-id pins that message identity. With --briefing-file FILE (or - for stdin), add an independent main collaborator using only the reviewed briefing, up to 24 KiB, with a searchable source reference. --generate-briefing prints an editable draft using a separate tool-free call through the source account; it consumes provider allowance but creates no lane or source message. It cannot be combined with --briefing-file or --profile. --profile selects an existing destination account, with an empty value selecting the host default. --name, --model, and --effort configure the new collaborator. No account choice changes the original agent.
 
 Examples:
   sessions fork 0123abcd
   sessions fork 0123abcd --with codex
   sessions fork 0123abcd --at 42 --message-id a1b2c3
+  sessions fork 0123abcd --generate-briefing
+  sessions fork 0123abcd --with codex --briefing-file reviewed-brief.txt --profile work --name Reviewer
   sessions --json fork 0123abcd --with claude
 
 --json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.

@@ -38,6 +38,19 @@ func TestCodexArgumentsDisableToolBearingFeatures(t *testing.T) {
 	}
 }
 
+func TestProfileCallUsesOnlySelectedProviderHome(t *testing.T) {
+	t.Setenv("CODEX_HOME", "/original-codex")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/original-claude")
+	executable := fakeProviderCLI(t, "printf '%s|%s' \"$CODEX_HOME\" \"$CLAUDE_CONFIG_DIR\"\n")
+	got, err := runIsolated(context.Background(), ProviderCodex, "briefing", executable, nil, t.TempDir(), "context", "/selected-account")
+	if err != nil || got != "/selected-account|/original-claude" {
+		t.Fatalf("%q %v", got, err)
+	}
+	if os.Getenv("CODEX_HOME") != "/original-codex" {
+		t.Fatal("changed global account")
+	}
+}
+
 func TestClaudeArgumentsDisableToolsAndPersistence(t *testing.T) {
 	arguments := Arguments(ProviderClaude)
 	if !hasPair(arguments, "--tools", "") || !slices.Contains(arguments, "--strict-mcp-config") ||

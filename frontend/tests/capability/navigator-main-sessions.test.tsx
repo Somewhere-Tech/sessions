@@ -63,7 +63,6 @@ describe('capability: keep subagents out of the main navigator', () => {
     render(<Workbench />);
 
     expect(await screen.findByText('Platform manager')).toBeInTheDocument();
-    expect(await screen.findByRole('status')).toHaveTextContent('Project grouping could not be refreshed. Sessions are shown together. sessionsd 503');
-    expect(screen.getByText('Other projects')).toBeInTheDocument();
+    expect(await screen.findByRole('status')).toHaveTextContent('Some project names could not be refreshed. Known agents remain visible');
   });
 });

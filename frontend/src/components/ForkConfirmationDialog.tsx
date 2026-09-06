@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { fetchServerHistoryTranscript, forkConversation } from '../api/sessionsd';
 import { getActiveServer } from '../lib/servers';
 import { preferNextSessionView } from '../lib/sessionViewPreference';
@@ -6,6 +6,7 @@ import { formatTokenEstimate, usePaidStartPlan, type PaidStartProvider } from '.
 import { useSessions } from '../store/sessions';
 import type { SessionInfo } from '../types';
 import { PaidStartPlan, paidStartProviderName } from './PaidStartPlan';
+import { CollaboratorContext, useCollaboratorContext } from './CollaboratorContext';
 
 export interface ForkPoint {
   index: number;
@@ -45,7 +46,7 @@ function sizeThroughPoint(
   return { messages: selected.length, tokens: Math.ceil(characters / 4) };
 }
 
-function useForkSize(sessionId: string, point?: ForkPoint): {
+function useForkSize(sessionId: string, point: ForkPoint | undefined, enabled: boolean): {
   size: ForkSize | null;
   loading: boolean;
   error: string | null;
@@ -54,6 +55,7 @@ function useForkSize(sessionId: string, point?: ForkPoint): {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (!enabled) { setLoading(false); return; }
     const controller = new AbortController();
     setLoading(true);
     setError(null);
@@ -66,7 +68,7 @@ function useForkSize(sessionId: string, point?: ForkPoint): {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [point, sessionId]);
+  }, [enabled, point, sessionId]);
   return { size, loading, error };
 }
 
@@ -85,11 +87,16 @@ export function ForkConfirmationDialog({
     preferredRuntime: 'rich',
     terminalAvailable: false
   });
-  const measured = useForkSize(session.id, point);
+  const [serverId] = useState(() => getActiveServer().id);
+  const context = useCollaboratorContext(session, plan.destination, serverId, point);
+  const measured = useForkSize(session.id, point, context.mode === 'conversation');
+  const starting = useRef(false);
+  const created = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const start = async (): Promise<void> => {
-    if (busy || !plan.ready || !measured.size) return;
+    if (starting.current || !plan.ready || (context.mode === 'briefing' ? !context.briefing.trim() : !measured.size)) return;
+    starting.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -99,16 +106,20 @@ export function ForkConfirmationDialog({
         point,
         plan.model,
         plan.effort,
-        'constrained'
+        'constrained',
+        { contextMode: context.mode, briefing: context.mode === 'briefing' ? context.briefing : undefined, profile: context.profile, name: context.name.trim() || undefined, serverId }
       );
-      await refresh();
+      created.current = true;
+      // Creation already succeeded. A list refresh failure must not invite a
+      // second create; open the returned identity and let polling catch up.
+      void refresh().catch(() => undefined);
       preferNextSessionView(result.laneId, 'remote');
       onStarted(result.laneId);
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not start this copy.');
     } finally {
-      setBusy(false);
+      if (!created.current) { starting.current = false; setBusy(false); }
     }
   };
   const sizeLine = measured.loading
@@ -118,25 +129,27 @@ export function ForkConfirmationDialog({
       : 'Conversation size unavailable';
   return (
     <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
-      <section className="dialog dialog-wide paid-start-dialog" role="dialog" aria-modal="true" aria-labelledby="fork-confirmation-title">
+      <section className="dialog dialog-wide paid-start-dialog collaborator-dialog" role="dialog" aria-modal="true" aria-labelledby="fork-confirmation-title">
         <header className="dialog-header">
-          <div><span className="dialog-kicker">Review before starting</span><h2 id="fork-confirmation-title">Fork this conversation</h2></div>
+          <div><span className="dialog-kicker">Work together</span><h2 id="fork-confirmation-title">Add collaborator</h2></div>
           <button type="button" className="dialog-close" aria-label="Close" disabled={busy} onClick={onClose}>×</button>
         </header>
         <PaidStartPlan
+          compact
           plan={plan}
           title={session.name?.trim() || session.description?.trim() || 'Conversation copy'}
-          sizeLine={sizeLine}
-          intro={`${paidStartProviderName(plan.destination)} starts an independent copy${point ? ' through the message you chose' : ''}.`}
+          sizeLine={context.mode === 'conversation' ? sizeLine : undefined}
+          intro={`${paidStartProviderName(plan.destination)} joins as an independent collaborator${context.mode === 'conversation' && point ? ' with history through the message you chose' : ''}.`}
           sourceNote={session.exited ? 'The saved original stays unchanged.' : 'The original conversation keeps running.'}
-          copyNote="Only your messages and the agent’s replies are copied. Tool output, file changes, attachments, sign-in details, usage totals, and the agent’s behind-the-scenes records stay out."
+          copyNote={context.mode === 'briefing' ? 'Only the reviewed briefing is provided initially. The original history stays available for specific lookups.' : 'Only your messages and the agent’s replies are copied. Tool output, file changes, attachments, sign-in details, usage totals, and the agent’s behind-the-scenes records stay out.'}
           disabled={busy}
-        />
-        {measured.error ? <div className="dialog-error" role="alert">{measured.error}</div> : null}
+          assurance="The new collaborator starts only when you press Start."
+        ><CollaboratorContext value={context} source={session} disabled={busy} /></PaidStartPlan>
+        {context.mode === 'conversation' && measured.error ? <div className="dialog-error" role="alert">{measured.error}</div> : null}
         {error ? <div className="dialog-error" role="alert">{error}</div> : null}
         <footer className="paid-start-dialog-actions">
           <button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancel</button>
-          <button type="button" className="btn btn-primary continuation-start" disabled={busy || !plan.ready || !measured.size || Boolean(measured.error)} onClick={() => void start()}>
+          <button type="button" className="btn btn-primary continuation-start" disabled={busy || context.generating || !plan.ready || (context.mode === 'briefing' ? !context.briefing.trim() : !measured.size || Boolean(measured.error))} onClick={() => void start()}>
             {busy ? 'Starting…' : plan.ready ? `Start ${paidStartProviderName(plan.destination)} (${plan.modelName})` : 'Preparing details…'}
           </button>
         </footer>

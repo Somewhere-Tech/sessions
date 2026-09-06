@@ -121,8 +121,7 @@ describe('capability: lost and waiting state truth', () => {
     expect(classifySession(waiting).label).toBe('Needs you');
     render(<Workbench />);
 
-    const needsYou = await screen.findByRole('group', { name: 'Sessions waiting on you' });
-    expect(within(needsYou).getByText("Choose Claude's terminal appearance")).toBeInTheDocument();
-    expect(within(needsYou).queryByText('Finished')).not.toBeInTheDocument();
+    expect(await screen.findByText("Choose Claude's terminal appearance")).toBeInTheDocument();
+    expect(screen.queryByText('Finished')).not.toBeInTheDocument();
   });
 });

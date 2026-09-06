@@ -570,9 +570,12 @@ export async function forkConversation(
   point?: { index: number; messageId: string },
   model?: string,
   effort?: string,
-  permissions?: 'constrained'
+  permissions?: 'constrained',
+  collaborator?: { contextMode: 'briefing' | 'conversation'; briefing?: string; profile: string; name?: string; serverId: string }
 ): Promise<AdoptConversationResult> {
-  const r = await apiFetch(`${httpBase()}/api/recovery/fork`, {
+  const server = requestedServer(collaborator?.serverId);
+  const route = collaborator ? '/api/recovery/collaborator' : '/api/recovery/fork';
+  const r = await serverFetch(server, `${httpBaseForServer(server)}${route}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -581,10 +584,20 @@ export async function forkConversation(
       model,
       effort,
       permissions,
+      ...(collaborator ? { contextMode: collaborator.contextMode, briefing: collaborator.briefing, profile: collaborator.profile, name: collaborator.name } : {}),
       ...(point ? { sourceMessageIndex: point.index, sourceMessageId: point.messageId } : {})
     })
   });
   return featureJSON<AdoptConversationResult>(r, 'Conversation copies');
+}
+
+export async function generateConversationBriefing(sourceSessionId: string, point: { index: number; messageId: string } | undefined, serverId: string, signal: AbortSignal): Promise<{ briefing: string }> {
+  const server = requestedServer(serverId);
+  const response = await serverFetch(server, `${httpBaseForServer(server)}/api/recovery/briefing`, {
+    method: 'POST', signal, headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sourceSessionId, ...(point ? { sourceMessageIndex: point.index, sourceMessageId: point.messageId } : {}) })
+  });
+  return featureJSON(response, 'Conversation briefings');
 }
 
 export async function listDirectories(serverId?: string): Promise<DirectoryCandidate[]> {
@@ -839,8 +852,8 @@ export interface ProjectView {
 // The daemon groups sessions by the work they belong to (a folder, a git
 // checkout with its worktrees, or a Somewhere project). Older daemons have no
 // such route; an empty list means "group by nothing", not an error.
-export async function fetchProjects(signal?: AbortSignal): Promise<ProjectView[]> {
-  const server = getActiveServer();
+export async function fetchProjects(signal?: AbortSignal, target?: ServerConfig): Promise<ProjectView[]> {
+  const server = target ?? getActiveServer();
   const r = await serverFetch(server, `${httpBaseForServer(server)}/api/projects`, { signal });
   if (r.status === 404 || r.status === 501) return [];
   const body = await json<{ projects: ProjectView[] }>(r);

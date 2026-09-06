@@ -34,6 +34,17 @@ deleted. A task board such as Somewhere's tasks records outcomes, ownership,
 decisions, and relationships; Sessions should complement that durable memory,
 not recreate it as another board.
 
+Projects are the primary workspace: a project's collaborators can use different
+providers, computers, and explicitly selected accounts. Those are execution
+details, not separate teams. Account choice must not imply pooled subscriptions
+or silently move a live conversation between identities.
+
+Adding a collaborator and resuming a conversation are different actions. A new
+collaborator can start light with a reviewed briefing and references back to
+the original, or with an explicit authored-conversation copy. Neither should
+stop the source. Resume preserves the original conversation; recently closed
+work stays discoverable outside the everyday collaborator list.
+
 These principles guide the product; they are not a promise that every team
 workflow is already implemented. Usage views should explain observed activity
 and resources, never imply that tokens measure productivity, estimated API cost

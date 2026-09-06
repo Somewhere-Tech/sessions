@@ -38,6 +38,7 @@ cmd/sessionsd internal/session
 cmd/sessionsd internal/state
 cmd/sessionsd internal/usage
 cmd/sessionsd internal/winprocess
+internal/api internal/agentcall
 internal/api internal/backup
 internal/api internal/codexapp
 internal/api internal/delivery

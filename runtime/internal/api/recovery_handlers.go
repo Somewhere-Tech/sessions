@@ -55,6 +55,10 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		s.sendJSON(response, http.StatusOK, result, corsOrigin)
 	case request.URL.Path == "/api/recovery/fork" && request.Method == http.MethodPost:
 		s.handleRecoveryFork(response, request, corsOrigin)
+	case request.URL.Path == "/api/recovery/collaborator" && request.Method == http.MethodPost:
+		s.handleRecoveryFork(response, request, corsOrigin)
+	case request.URL.Path == "/api/recovery/briefing" && request.Method == http.MethodPost:
+		s.handleBriefing(response, request, corsOrigin)
 	case request.URL.Path == "/api/recovery/adopt" && request.Method == http.MethodPost:
 		var body struct {
 			Target               string `json:"target"`
@@ -556,14 +560,17 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 }
 
 type recoveryForkRequest struct {
-	SourceSessionID     string `json:"sourceSessionId"`
-	DestinationProvider string `json:"destinationProvider,omitempty"`
-	Name                string `json:"name,omitempty"`
-	SourceMessageIndex  *int   `json:"sourceMessageIndex,omitempty"`
-	SourceMessageID     string `json:"sourceMessageId,omitempty"`
-	Model               string `json:"model,omitempty"`
-	Effort              string `json:"effort,omitempty"`
-	Permissions         string `json:"permissions,omitempty"`
+	SourceSessionID     string  `json:"sourceSessionId"`
+	DestinationProvider string  `json:"destinationProvider,omitempty"`
+	Name                string  `json:"name,omitempty"`
+	SourceMessageIndex  *int    `json:"sourceMessageIndex,omitempty"`
+	SourceMessageID     string  `json:"sourceMessageId,omitempty"`
+	Model               string  `json:"model,omitempty"`
+	Effort              string  `json:"effort,omitempty"`
+	Permissions         string  `json:"permissions,omitempty"`
+	ContextMode         string  `json:"contextMode,omitempty"`
+	Briefing            string  `json:"briefing,omitempty"`
+	Profile             *string `json:"profile,omitempty"`
 }
 
 type recoveryForkPlan struct {
@@ -582,6 +589,10 @@ type recoveryHTTPError struct {
 func (s *Server) handleRecoveryFork(response http.ResponseWriter, request *http.Request, corsOrigin string) {
 	var body recoveryForkRequest
 	if err := readJSON(request, &body); err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	if err := validateCollaboratorRequest(request.URL.Path, body); err != nil {
 		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
 		return
 	}
@@ -606,6 +617,9 @@ func (s *Server) handleRecoveryFork(response http.ResponseWriter, request *http.
 	if continuationErr != nil {
 		s.sendJSON(response, continuationErr.status, map[string]any{"error": continuationErr.message}, corsOrigin)
 		return
+	}
+	if request.URL.Path == "/api/recovery/collaborator" {
+		continuation.MainCollaborator, continuation.DestinationProfile = true, body.Profile
 	}
 	result, err := recovery.ForkConversation(
 		request.Context(), continuation, body.Name, s.registry, adoptSourceFromSession(candidate),
@@ -638,7 +652,7 @@ func (s *Server) resolveRecoveryForkPlan(
 	live bool,
 	body recoveryForkRequest,
 ) (recoveryForkPlan, *recoveryHTTPError) {
-	if live && candidate.Working {
+	if live && candidate.Working && body.ContextMode != "briefing" {
 		return recoveryForkPlan{}, &recoveryHTTPError{http.StatusConflict,
 			"wait for the current turn to finish before copying this conversation; the original is still running"}
 	}
@@ -676,6 +690,9 @@ func (s *Server) recoveryForkContinuation(
 	plan recoveryForkPlan,
 	body recoveryForkRequest,
 ) (state.ContinuationContext, *recoveryHTTPError) {
+	if body.ContextMode == "briefing" {
+		return s.collaboratorBriefingContext(candidate, candidates, plan, body)
+	}
 	history, err := s.integrationEndpoints.LookupHistory(candidates, candidate.ID)
 	if err != nil || !history.ConversationAvailable || history.PromptHistoryOnly {
 		return state.ContinuationContext{}, &recoveryHTTPError{http.StatusConflict,

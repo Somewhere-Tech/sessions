@@ -151,7 +151,13 @@ func continuationCreateRequest(
 		request.Profile = source.Profile
 		request.ConfigDir = source.ConfigDir
 	}
-	if fork && source.LaneID != "" {
+	if continuation.DestinationProfile != nil {
+		request.Profile, request.ConfigDir = *continuation.DestinationProfile, ""
+	}
+	if continuation.MainCollaborator {
+		parent := ""
+		request.DisplayParentSessionID = &parent
+	} else if fork && source.LaneID != "" {
 		parent := source.LaneID
 		request.DisplayParentSessionID = &parent
 	} else if source.DisplayParentSessionID != nil {

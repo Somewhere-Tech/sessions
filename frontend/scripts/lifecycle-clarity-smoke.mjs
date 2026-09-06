@@ -91,11 +91,11 @@ assert.match(navigator, /Start related session…/);
 assert.match(navigator, /Close tab <small>keeps running<\/small>/);
 assert.match(navigator, /filter\(\(session\) => !isAgentLedChild\(session\)\)/);
 assert.doesNotMatch(navigator, /className="session-helper-summary"/);
-// Lanes stay folded out of the list, but a manager row carries a compact
-// rollup (n lanes · n needs you) so a blocked lane is visible without opening
-// anything — the "compact status rollup" docs/PRINCIPLES.md describes.
+// Helpers stay folded away. Only a collaborator's own request for input belongs
+// in its row; a helper needing its manager is not automatically a user decision.
 assert.match(navigator, /session-nav-rollup/);
-assert.match(navigator, /lanesNeedingYou > 0 \? ` · \$\{lanesNeedingYou\} needs you` : ''/);
+assert.doesNotMatch(navigator, /lanesNeedingYou/);
+assert.match(navigator, /sessionNeedsYou\(session\) && session\.idleDetail/);
 assert.match(subagents, /className="subagents-panel"/);
 assert.match(navigator, /<summary>Fork <small>original stays here<\/small><\/summary>/);
 assert.match(navigator, /'In Claude'/);
@@ -115,7 +115,7 @@ assert.doesNotMatch(resumeDialog, /preferredRemoteControl|resume-remote-control/
 assert.match(navigator, /<MachineMark machine=\{machine\} size=\{17\} \/>/);
 assert.doesNotMatch(navigator, /<span>\{machine\}<\/span>/);
 assert.match(navigator, /<ProviderMark provider=\{providerName\} size=\{20\} \/>/);
-assert.match(navigator, /className="session-continue-action" onClick=\{onContinue\}>Continue<\/button>/);
+assert.match(navigator, /className="session-continue-action" onClick=\{onContinue\}>Resume<\/button>/);
 assert.match(app, /onContinue=\{\(\) => setDialogOpen\('resume'\)\}/);
 assert.match(app, /onReparent=\{updateDisplayParent\}/);
 assert.doesNotMatch(navigator, /session-mode-glyph/);

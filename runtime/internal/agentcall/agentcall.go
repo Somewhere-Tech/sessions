@@ -58,6 +58,12 @@ var validatedCodexExecutables sync.Map
 // Run executes one isolated request. The selected CLI chooses its own default
 // model; Sessions only asks for low reasoning effort and disables tools.
 func Run(ctx context.Context, provider, purpose, prompt string) (string, error) {
+	return RunInProfile(ctx, provider, purpose, prompt, "")
+}
+
+// RunInProfile uses a daemon-resolved provider home without changing global
+// credentials or the source agent. Callers must not accept arbitrary paths.
+func RunInProfile(ctx context.Context, provider, purpose, prompt, configDir string) (string, error) {
 	ctx, cancel := boundedContext(ctx)
 	defer cancel()
 	executable, err := Executable(provider)
@@ -73,7 +79,7 @@ func Run(ctx context.Context, provider, purpose, prompt string) (string, error) 
 	}
 	defer os.RemoveAll(workingDirectory)
 
-	return runIsolated(ctx, provider, purpose, executable, Arguments(provider), workingDirectory, prompt)
+	return runIsolated(ctx, provider, purpose, executable, Arguments(provider), workingDirectory, prompt, configDir)
 }
 
 // boundedContext defends the daemon against a caller that never bounds its own
@@ -86,11 +92,18 @@ func boundedContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, defaultCallTimeout)
 }
 
-func runIsolated(ctx context.Context, provider, purpose, executable string, arguments []string, workingDirectory, prompt string) (string, error) {
+func runIsolated(ctx context.Context, provider, purpose, executable string, arguments []string, workingDirectory, prompt string, profile ...string) (string, error) {
 	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Dir = workingDirectory
 	command.Stdin = strings.NewReader(prompt)
 	command.Env = Environment()
+	if len(profile) > 0 && profile[0] != "" {
+		key := "CODEX_HOME"
+		if provider == ProviderClaude {
+			key = "CLAUDE_CONFIG_DIR"
+		}
+		command.Env = append(slices.DeleteFunc(command.Env, func(value string) bool { return strings.HasPrefix(value, key+"=") }), key+"="+profile[0])
+	}
 	command.WaitDelay = waitDelay
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout

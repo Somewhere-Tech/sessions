@@ -35,7 +35,7 @@ try {
 #fault-navigator{grid-row:1/3;display:flex;min-height:0}#retrying-view,#pty-view{display:flex;min-width:0;min-height:0}
 #retrying-view .session-view,#pty-view .session-view{flex:1}
 </style></head><body><div id="root"></div>
-<script>localStorage.setItem('sessions:servers',JSON.stringify([{id:'fixture',name:'Fixture Mac',host:'127.0.0.1',port:8787,isDefault:true}]));localStorage.setItem('sessions:active-server','fixture');localStorage.setItem('sessions:navigator-machine-scope','fixture');</script>
+<script>localStorage.setItem('sessions:servers',JSON.stringify([{id:'fixture',name:'Fixture Mac',host:'127.0.0.1',port:8787,isDefault:true}]));localStorage.setItem('sessions:active-server','fixture');localStorage.setItem('sessions:projects-machine-scope','fixture');</script>
 <script type="module" src="/app.js"></script></body></html>`);
 
   server = createServer(async (request, response) => {

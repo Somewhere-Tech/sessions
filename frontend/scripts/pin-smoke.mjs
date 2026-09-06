@@ -172,7 +172,7 @@ try {
 <script>
 localStorage.setItem('sessions:servers', JSON.stringify([{id:'fixture',name:'Fixture Mac',host:'127.0.0.1',port:8787,isDefault:true}]));
 localStorage.setItem('sessions:active-server','fixture');
-localStorage.setItem('sessions:navigator-machine-scope','fixture');
+localStorage.setItem('sessions:projects-machine-scope','fixture');
 </script>
 <script type="module" src="/app.js"></script></body></html>`);
 

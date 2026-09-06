@@ -1444,6 +1444,41 @@ normal session end and does not report `canceled` until the daemon observes it
 ended. The source record is not marked as continued until the destination's
 first reply completes.
 
+### `POST /api/recovery/collaborator`
+
+Adds an independent main collaborator using the same source, destination,
+model, effort, name, permission, and optional message-point fields as `fork`.
+Requires `contextMode: "briefing" | "conversation"`. Briefing mode also requires
+`briefing`, a reviewed UTF-8 string of 1–24576 bytes. It imports only that user
+message and retains a searchable source reference; it does not instruct the
+provider to reload the entire transcript. Conversation mode keeps fork's
+authored-copy boundary. Optional point selections are checked against the
+source message identity in both modes.
+
+Optional `profile` chooses an existing destination-provider account profile on
+the owning host. An explicit empty string selects the host default; omission
+retains same-provider inheritance. No source credentials are copied between
+providers. The new session has an explicitly empty display parent, while fork
+provenance and project tags are retained. Source work is not ended or linked as
+a successor. Response is the same created-lane result as `fork`.
+
+This is a distinct route so an older daemon cannot silently interpret a
+briefing request as a full-history fork. Old clients and the old fork route
+retain their prior behavior.
+
+### `POST /api/recovery/briefing`
+
+Explicitly generates an editable briefing from `sourceSessionId` and optional
+`sourceMessageIndex` / `sourceMessageId`. It creates no Sessions lane, sends no
+message to the source, and makes one bounded tool-disabled request through the
+source provider's installed CLI/account. This consumes provider allowance.
+The default CLI model is used. It returns `{briefing, sourceUntouched: true,
+sourceMessages, provider, profile}`; the client reviews the text before using
+the collaborator route. Generation is serialized, times out after two minutes,
+and refuses source text exceeding 256 KiB rather than silently summarizing a
+partial transcript. Tool output and provider-internal records are not included.
+Account paths and arbitrary caller text are not accepted by this route.
+
 ### `POST /api/recovery/fork`
 
 Auth required. Creates a new conversation from a stable authored-history

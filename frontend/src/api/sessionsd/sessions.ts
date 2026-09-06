@@ -43,9 +43,11 @@ export async function updateDisplayParent(
 
 export async function updateSessionName(
   sessionId: string,
-  name: string
+  name: string,
+  serverId?: string
 ): Promise<string> {
-  const r = await apiFetch(`${httpBase()}/api/sessions/${encodeURIComponent(sessionId)}/name`, {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/name`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name })

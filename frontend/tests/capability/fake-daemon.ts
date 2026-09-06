@@ -485,8 +485,11 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
         }
       });
     }
-    if (path === '/api/recovery/fork' && method === 'POST') {
+    if ((path === '/api/recovery/fork' || path === '/api/recovery/collaborator') && method === 'POST') {
       return jsonResponse({ ok: true, laneId: 'forked-1' });
+    }
+    if (path === '/api/recovery/briefing' && method === 'POST') {
+      return jsonResponse({ briefing: 'Review the release. Preserve the original conversation. Verify the tests.', sourceUntouched: true });
     }
     if (path === '/api/recovery/continuation/preview' && method === 'POST') {
       return jsonResponse(fakeContinuationPreview(machine, body));

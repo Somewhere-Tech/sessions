@@ -11,8 +11,11 @@ import (
 
 const (
 	ContinuationSchemaVersion = 1
-	ContinuationNativeImport  = "native-import"
-	ContinuationLinkedSearch  = "linked-search"
+	// Older runners must reject briefings rather than silently reload their
+	// complete source transcript using the legacy linked-search instructions.
+	ContinuationBriefingSchemaVersion = 2
+	ContinuationNativeImport          = "native-import"
+	ContinuationLinkedSearch          = "linked-search"
 	// Authored histories are written to a private local sidecar, never placed
 	// on a command line or forwarded through the daemon HTTP request. Eight
 	// MiB rejected ordinary long-running manager conversations before their
@@ -48,6 +51,9 @@ type ContinuationContext struct {
 	DestinationModel     string                `json:"destinationModel,omitempty"`
 	DestinationModelName string                `json:"destinationModelName,omitempty"`
 	DestinationEffort    string                `json:"destinationEffort,omitempty"`
+	DestinationProfile   *string               `json:"destinationProfile,omitempty"`
+	BriefingOnly         bool                  `json:"briefingOnly,omitempty"`
+	MainCollaborator     bool                  `json:"mainCollaborator,omitempty"`
 	Mode                 string                `json:"mode"`
 	Fork                 bool                  `json:"fork,omitempty"`
 	TranscriptRecovery   bool                  `json:"transcriptRecovery,omitempty"`
@@ -62,6 +68,9 @@ type ContinuationContext struct {
 // provider. It names the source and the exact destination model without
 // pretending the source conversation itself was changed.
 func (c ContinuationContext) StartLine() string {
+	if c.BriefingOnly {
+		return fmt.Sprintf("Started with a reviewed briefing from %s · original conversation unchanged", c.SourceTitle)
+	}
 	title := strings.TrimSpace(c.SourceTitle)
 	if title == "" {
 		title = filepath.Base(c.SourceCWD)
@@ -84,7 +93,15 @@ func (c ContinuationContext) StartLine() string {
 }
 
 func (c ContinuationContext) Validate() error {
-	if c.SchemaVersion != ContinuationSchemaVersion {
+	if c.DestinationProfile != nil && *c.DestinationProfile != "" {
+		if err := ValidateProfileName(*c.DestinationProfile); err != nil {
+			return err
+		}
+	}
+	if c.BriefingOnly && (c.SchemaVersion != ContinuationBriefingSchemaVersion || !c.Fork || len(c.Messages) != 1 || c.Messages[0].Role != "user") {
+		return errors.New("a briefing must be one reviewed user message for a new collaborator")
+	}
+	if c.SchemaVersion != ContinuationSchemaVersion && c.SchemaVersion != ContinuationBriefingSchemaVersion {
 		return fmt.Errorf("unsupported continuation schema %d", c.SchemaVersion)
 	}
 	if strings.TrimSpace(c.SourceHistoryID) == "" {

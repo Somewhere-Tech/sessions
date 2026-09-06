@@ -13,6 +13,8 @@ interface Props {
   disabled?: boolean;
   allowAgentChoice?: boolean;
   children?: ReactNode;
+  assurance?: string;
+  compact?: boolean;
 }
 
 export function paidStartProviderName(provider: PaidStartProvider): string {
@@ -57,10 +59,11 @@ function RuntimeChoice({ plan, disabled }: { plan: PaidStartPlanState; disabled:
   );
 }
 
-function ConfigurationRow({ plan, disabled, allowAgentChoice }: {
+function ConfigurationRow({ plan, disabled, allowAgentChoice, compact }: {
   plan: PaidStartPlanState;
   disabled: boolean;
   allowAgentChoice: boolean;
+  compact: boolean;
 }): JSX.Element {
   const selectedModel = plan.models.find((entry) => entry.id === plan.model);
   const efforts = selectedModel?.supportedReasoningEfforts ?? [];
@@ -80,8 +83,8 @@ function ConfigurationRow({ plan, disabled, allowAgentChoice }: {
           </select>
         ) : <strong>{plan.effort || 'Provider default'}</strong>}
       </PlanChoice>
-      <RuntimeChoice plan={plan} disabled={disabled} />
-      <PlanChoice label="Access policy"><strong>{plan.access}</strong></PlanChoice>
+      {!compact ? <RuntimeChoice plan={plan} disabled={disabled} /> : null}
+      {!compact ? <PlanChoice label="Access policy"><strong>{plan.access}</strong></PlanChoice> : null}
     </div>
   );
 }
@@ -95,7 +98,9 @@ export function PaidStartPlan({
   copyNote,
   disabled = false,
   allowAgentChoice = true,
-  children
+  children,
+  assurance = 'Nothing runs until you press Start',
+  compact = false
 }: Props): JSX.Element {
   return (
     <section className="continuation-plan paid-start-plan">
@@ -104,7 +109,8 @@ export function PaidStartPlan({
         <span>{intro}</span>
         {sizeLine ? <span>{sizeLine}</span> : null}
       </div>
-      <ConfigurationRow plan={plan} disabled={disabled} allowAgentChoice={allowAgentChoice} />
+      <ConfigurationRow plan={plan} disabled={disabled} allowAgentChoice={allowAgentChoice} compact={compact} />
+      {compact ? <p className="paid-start-permission-note">Permissions: {plan.access}</p> : null}
       {children}
       <div className="paid-start-boundary">
         <span>{sourceNote}</span>
@@ -112,7 +118,7 @@ export function PaidStartPlan({
         {plan.destination === 'claude' ? <span>Remote Control follows the explicit choice for the destination machine in Settings.</span> : null}
       </div>
       <div className="continuation-assurances">
-        <span>Nothing runs until you press Start</span>
+        <span>{assurance}</span>
       </div>
       {plan.modelError ? <div className="dialog-error" role="alert">{plan.modelError}</div> : null}
     </section>

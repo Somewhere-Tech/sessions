@@ -101,6 +101,7 @@ async function submitInitialRequest(sessionId: string, text: string, serverId: s
 }
 
 interface Props {
+  projectSeed?: { serverId: string; cwd: string; tags: Record<string, string> } | null;
   onClose: () => void;
   // Creation and opening are separate product actions. The daemon owns the
   // durable session; App owns which views are open.
@@ -178,7 +179,7 @@ function useCodexCatalog(tool: NewSessionTool, machineId: string): {
   return { models, loading, error };
 }
 
-export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSession = null, embedded = false }: Props): JSX.Element {
+export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSession = null, embedded = false, projectSeed = null }: Props): JSX.Element {
   const create = useSessions((s) => s.create);
   const openSessions = useSessions((s) => s.sessions);
   const activeId = useSessions((s) => s.activeId);
@@ -189,6 +190,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const selectActiveMachine = useServers((state) => state.setActive);
   const [initialDefaults] = useState(readNewSessionDefaults);
   const [machineId, setMachineId] = useState(() => {
+    if (projectSeed) return projectSeed.serverId;
     if (parentSession) return activeMachineId ?? configuredMachines[0]?.id ?? '';
     return configuredMachines.find((machine) => machine.isDefault && isLocalServer(machine))?.id
       ?? activeMachineId
@@ -207,12 +209,12 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const [codexEffort, setCodexEffort] = useState('');
   const { models: codexModels, loading: codexModelsLoading, error: codexModelsError } = useCodexCatalog(tool, machineId);
   const [cwd, setCwd] = useState(
-    parentSession?.cwd
+    projectSeed?.cwd ?? parentSession?.cwd
       ?? openSessions.find((session) => session.id === activeId)?.cwd
       ?? initialDefaults.cwd
   );
   const [browserOpen, setBrowserOpen] = useState(false);
-  const [tags, setTags] = useState<Record<string, string>>(parentSession?.tags ?? initialDefaults.tags);
+  const [tags, setTags] = useState<Record<string, string>>(projectSeed?.tags ?? parentSession?.tags ?? initialDefaults.tags);
   const [task, setTask] = useState('');
   const [recentWorkspaces, setRecentWorkspaces] = useState<DirectoryCandidate[]>([]);
   const [profiles, setProfiles] = useState<AccountProfile[]>([]);
@@ -258,6 +260,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       if (!active) return;
       setRecentWorkspaces(items);
       setCwd((current) => {
+        if (projectSeed?.serverId === machineId && current === projectSeed.cwd) return current;
         const currentCandidate = items.find((item) => item.path === current);
         if (currentCandidate) return current;
         return items.find((item) => item.kind === 'somewhere')?.path
@@ -268,7 +271,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       });
     }).catch(() => { if (active) setRecentWorkspaces([]); });
     return () => { active = false; };
-  }, [configuredMachines, machineId, parentSession, selectActiveMachine, setServerScope]);
+  }, [configuredMachines, machineId, parentSession, projectSeed, selectActiveMachine, setServerScope]);
 
   useEffect(() => {
     if (!profileTool) {

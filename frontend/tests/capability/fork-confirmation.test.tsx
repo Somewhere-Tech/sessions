@@ -38,6 +38,30 @@ function forkMachine(session: SessionInfo): FakeMachine {
 }
 
 describe('capability: confirm a conversation fork', () => {
+  it('starts light, generates only on request, and sends one reviewed briefing with the chosen account', async () => {
+    const session = makeSession({ id: 'brief-source', name: 'Manager', tool: 'claude-code', cmd: 'claude', kind: 'claude-structured' });
+    const machine = forkMachine(session);
+    machine.profiles = [{ name: 'second-account', tool: 'claude' }];
+    const daemon = installFakeDaemon([machine]);
+    useFakeMachines([machine]);
+    const user = userEvent.setup();
+    render(<Workbench><ForkConfirmationDialog session={session} destinationProvider="claude" onClose={() => {}} onStarted={() => {}} /></Workbench>);
+    const start = await screen.findByRole('button', { name: 'Start Claude (Fable 5)' });
+    expect(start).toBeDisabled();
+    expect(daemon.requests.some((r) => r.path.includes('/transcript') || r.path === '/api/recovery/briefing')).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Generate draft briefing' }));
+    const briefing = await screen.findByRole('textbox', { name: 'Briefing' });
+    await waitFor(() => expect(briefing).toHaveValue('Review the release. Preserve the original conversation. Verify the tests.'));
+    await user.click(screen.getByText('Account', { selector: 'summary' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Destination account' }), 'second-account');
+    await user.type(screen.getByRole('textbox', { name: 'Agent name' }), 'Release reviewer');
+    await user.dblClick(start);
+    const calls = daemon.requests.filter((r) => r.path === '/api/recovery/collaborator');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body).toMatchObject({ contextMode: 'briefing', profile: 'second-account', name: 'Release reviewer', briefing: 'Review the release. Preserve the original conversation. Verify the tests.' });
+    expect(daemon.ended).toEqual([]);
+  });
+
   it('opens the shared plan at an exact fork point before the fork call', async () => {
     const session = makeSession({
       id: 'source-session', name: 'Release review', tool: 'claude-code',
@@ -70,19 +94,21 @@ describe('capability: confirm a conversation fork', () => {
     const forkPoints = await screen.findAllByRole('button', { name: 'Fork here' });
     await user.click(forkPoints[1]);
     await user.click(screen.getByRole('button', { name: 'Fork in Claude' }));
+    expect(screen.getByRole('radio', { name: /Briefing Start light/ })).toBeChecked();
+    await user.click(screen.getByRole('radio', { name: /Conversation copy/ }));
 
     const plan = await screen.findByRole('group', { name: 'Start plan' });
     expect(plan).toHaveTextContent('Fable 5');
-    expect(plan).toHaveTextContent('Rich');
-    expect(plan).toHaveTextContent('Ask me');
-    expect(screen.getByText('2 messages, about 10 tokens')).toBeInTheDocument();
+    expect(screen.getByText('Permissions: Ask me')).toBeInTheDocument();
+    expect(await screen.findByText('2 messages, about 10 tokens')).toBeInTheDocument();
     expect(screen.getByText(/Tool output, file changes, attachments, sign-in details/)).toBeInTheDocument();
-    expect(screen.getByText('Nothing runs until you press Start')).toBeInTheDocument();
+    expect(screen.getByText('The new collaborator starts only when you press Start.')).toBeInTheDocument();
     expect(daemon.requests.filter((request) => request.path === '/api/recovery/fork')).toHaveLength(0);
 
     await user.click(screen.getByRole('button', { name: 'Start Claude (Fable 5)' }));
-    await waitFor(() => expect(daemon.requests.filter((request) => request.path === '/api/recovery/fork')).toHaveLength(1));
-    expect(daemon.requests.find((request) => request.path === '/api/recovery/fork')?.body).toMatchObject({
+    await waitFor(() => expect(daemon.requests.filter((request) => request.path === '/api/recovery/collaborator')).toHaveLength(1));
+    expect(daemon.requests.find((request) => request.path === '/api/recovery/collaborator')?.body).toMatchObject({
+      contextMode: 'conversation', profile: '',
       sourceSessionId: session.id,
       destinationProvider: 'claude',
       sourceMessageIndex: 1,

@@ -335,7 +335,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/recovery" || path == "/api/recovery/reopen" ||
-		path == "/api/recovery/adopt" || path == "/api/recovery/fork" {
+		path == "/api/recovery/adopt" || path == "/api/recovery/fork" || path == "/api/recovery/collaborator" || path == "/api/recovery/briefing" {
 		s.handleRecovery(response, request, corsOrigin)
 		return
 	}
