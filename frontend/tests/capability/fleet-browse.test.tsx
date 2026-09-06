@@ -42,6 +42,27 @@ function cardFor(name: string): HTMLElement {
 }
 
 describe('capability: browse the fleet', () => {
+  it('does not report an empty machine before its session list arrives', async () => {
+    const machines = fleet().slice(0, 1);
+    installFakeDaemon(machines);
+    useFakeMachines(machines, 'alpha');
+    const fetch = window.fetch;
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    window.fetch = async (...args) => {
+      if (String(args[0]).includes('/api/sessions')) await pending;
+      return fetch(...args);
+    };
+    render(<FleetView onOpenSession={() => {}} onOpenMachine={() => {}} />);
+    await waitFor(() => expect(within(cardFor('Alpha')).getAllByText('Loading sessions…').length).toBeGreaterThan(0));
+    expect(within(cardFor('Alpha')).queryByText('0 main sessions')).not.toBeInTheDocument();
+    expect(within(cardFor('Alpha')).queryByText('0 saved records')).not.toBeInTheDocument();
+    expect(within(cardFor('Alpha')).queryByText(/No sessions/)).not.toBeInTheDocument();
+    release();
+    expect(await screen.findByText('Compiling the runtime')).toBeVisible();
+    expect(within(cardFor('Alpha')).getByText('1 main session')).toBeVisible();
+  });
+
   it('keeps delegated and lost records out of the overview without deleting them', async () => {
     const machines = fleet();
     machines[0].sessions.push(

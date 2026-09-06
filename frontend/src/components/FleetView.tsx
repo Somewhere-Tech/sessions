@@ -39,6 +39,7 @@ interface ServerSnapshot {
   reachability: Reachability;
   health: ServerHealth | null;
   sessions: SessionInfo[];
+  sessionsLoaded: boolean;
   profiles: AccountProfile[];
   sessionsError: string | null;
 }
@@ -47,6 +48,7 @@ const INITIAL_SNAPSHOT: ServerSnapshot = {
   reachability: 'checking',
   health: null,
   sessions: [],
+  sessionsLoaded: false,
   profiles: [],
   sessionsError: null
 };
@@ -458,7 +460,7 @@ function FleetServerGroup({
           listServerProfiles(target, controller.signal).catch(() => [])
         ]);
         if (!stopped) {
-          setSnapshot((current) => ({ ...current, reachability: 'reachable', sessions, profiles, sessionsError: null }));
+          setSnapshot((current) => ({ ...current, reachability: 'reachable', sessions, sessionsLoaded: true, profiles, sessionsError: null }));
         }
       } catch (error) {
         if (!stopped) {
@@ -555,7 +557,7 @@ function FleetServerGroup({
           {renameError ? <span className="fleet-machine-rename-error">{renameError}</span> : null}
           <span className={`fleet-machine-status is-${snapshot.reachability}`}><span className={`fleet-reachability-dot is-${snapshot.reachability}`} aria-hidden />{reachabilityLabel}</span>
         </div>
-        <span className="fleet-machine-count"><strong>{activeCount} main {activeCount === 1 ? 'session' : 'sessions'}</strong><span>{snapshot.sessions.length} saved records</span></span>
+        <FleetSessionCount snapshot={snapshot} mainCount={activeCount} />
       </header>
       <div className="fleet-machine-meta" title={`Connected at ${formatServerEndpoint(server)}${fullVersion ? ` · Sessions ${fullVersion}` : ''}`}>
 		<FleetTransportSummary server={server} platformText={platformText} />
@@ -581,8 +583,8 @@ function FleetServerGroup({
         ))}
         {visibleSessions.length === 0 ? (
           <div className="fleet-session-empty">
-            {snapshot.reachability === 'checking'
-              ? 'Checking machine…'
+            {!snapshot.sessionsLoaded && !snapshot.sessionsError && !unavailable
+              ? 'Loading sessions…'
               : unavailable
               ? 'Session data unavailable'
               : snapshot.sessionsError
@@ -603,6 +605,15 @@ function FleetServerGroup({
       ) : null}
     </section>
   );
+}
+
+function FleetSessionCount({ snapshot, mainCount }: { snapshot: ServerSnapshot; mainCount: number }): JSX.Element {
+  return <span className="fleet-machine-count">
+    {snapshot.sessionsLoaded ? <>
+      <strong>{mainCount} main {mainCount === 1 ? 'session' : 'sessions'}</strong>
+      <span>{snapshot.sessions.length} saved records</span>
+    </> : <strong>{snapshot.sessionsError || snapshot.reachability === 'unreachable' ? 'Sessions unavailable' : 'Loading sessions…'}</strong>}
+  </span>;
 }
 
 function transportLabel(transport: 'lan' | 'tailnet' | 'tailnet-ip' | 'relay'): string {
