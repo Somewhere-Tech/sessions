@@ -5,6 +5,40 @@ shell, and command sessions. These principles describe the public product
 contract. Internal decision logs, launch notes, rejected options, and private
 service plans are maintained outside this repository.
 
+## A working team, not a process list
+
+Sessions should feel like working with a small organization: department leads,
+project managers, individual contributors, and temporary teams. Claude, Codex,
+and other providers are ways these collaborators work, not separate silos.
+The user can keep their preferred provider app as their everyday interface.
+Sessions supplies durable conversations, reliable coordination, and clear
+ownership across the computers that run the work.
+
+The default view should match the user's level of responsibility: direct
+collaborators and the individual contributors they explicitly bring forward.
+Talking directly to a contributor must not silently change who delegated the
+work. Temporary direct attention, permanent promotion to a main session, and
+handing work back to a manager are distinct intentions. A handoff should retain
+context and leave an attributable record, without restarting the agent.
+
+Sessions-managed delegated lanes are durable colleagues. A provider's internal
+harness helpers are implementation details with different lifecycle semantics.
+Neither should flood the user's main list. A child needing its manager is not
+automatically a decision for the user. Delegation and escalation should be
+explicit; names or output text are not reliable evidence of an org chart.
+
+The team is separate from its computers. Process liveness is separate from
+whether a conversation deserves the user's attention. Retained and recoverable
+work stays findable without dominating the everyday view or being silently
+deleted. A task board such as Somewhere's tasks records outcomes, ownership,
+decisions, and relationships; Sessions should complement that durable memory,
+not recreate it as another board.
+
+These principles guide the product; they are not a promise that every team
+workflow is already implemented. Usage views should explain observed activity
+and resources, never imply that tokens measure productivity, estimated API cost
+is a subscription bill, or runtime duration equals human time saved.
+
 ## Sessions are durable work
 
 A window is not a process and a process is not a conversation. Closing a tab

@@ -22,6 +22,7 @@ import {
 } from '../hooks/useMachineAccessPairing';
 import { MachinePlatformIcon } from './MachineMark';
 import { refreshDaemonAccountFleet } from '../lib/accountFleet';
+import { collapseConversationRuntimes, isAgentLedChild, isSetAside } from '../lib/workingSet';
 
 const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 5_000;
@@ -172,7 +173,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
         <div className="fleet-heading-actions">
           <label className="fleet-history-toggle">
             <input type="checkbox" checked={includeExited} onChange={(event) => setIncludeExited(event.target.checked)} />
-            Show history
+            Show all records
           </label>
           <button
             type="button"
@@ -350,6 +351,11 @@ function mergeFleetMachineSources(servers: ServerConfig[], peers: DiscoveredPeer
 	return merged;
 }
 
+function mainFleetSessions(sessions: SessionInfo[]): SessionInfo[] {
+  return collapseConversationRuntimes(sessions).filter((session) =>
+    !session.exited && !session.unreachable && !session.runnerGone && !isAgentLedChild(session) && !isSetAside(session));
+}
+
 function FleetServerGroup({
   server,
   includeExited,
@@ -471,9 +477,10 @@ function FleetServerGroup({
   }, [endpointKey, onVersion]);
 
   const unavailable = snapshot.reachability === 'unreachable';
-  const candidateSessions = snapshot.sessions.filter((session) => includeExited || !session.exited);
+  const mainSessions = mainFleetSessions(snapshot.sessions);
+  const candidateSessions = includeExited ? snapshot.sessions : mainSessions;
   const visibleSessions = sortFleetSessions(candidateSessions);
-  const activeCount = snapshot.sessions.filter((session) => !session.exited).length;
+  const activeCount = mainSessions.length;
 	const reachabilityLabel = fleetReachabilityLabel(server, snapshot.reachability);
   const profileSummary = snapshot.profiles.reduce<Record<'claude' | 'codex', string[]>>(
     (summary, profile) => {
@@ -542,7 +549,7 @@ function FleetServerGroup({
           {renameError ? <span className="fleet-machine-rename-error">{renameError}</span> : null}
           <span className={`fleet-machine-status is-${snapshot.reachability}`}><span className={`fleet-reachability-dot is-${snapshot.reachability}`} aria-hidden />{reachabilityLabel}</span>
         </div>
-        <span className="fleet-machine-count"><strong>{activeCount} live</strong><span>{snapshot.sessions.length} total</span></span>
+        <span className="fleet-machine-count"><strong>{activeCount} main {activeCount === 1 ? 'session' : 'sessions'}</strong><span>{snapshot.sessions.length} saved records</span></span>
       </header>
       <div className="fleet-machine-meta" title={`Connected at ${formatServerEndpoint(server)}${fullVersion ? ` · Sessions ${fullVersion}` : ''}`}>
 		<FleetTransportSummary server={server} platformText={platformText} />
@@ -558,7 +565,7 @@ function FleetServerGroup({
       ) : null}
 
       <div className="fleet-session-list">
-        {visibleSessions.map((session) => (
+        {visibleSessions.slice(0, includeExited ? 20 : 6).map((session) => (
           <FleetSessionRow
             key={session.id}
             session={session}
@@ -575,7 +582,7 @@ function FleetServerGroup({
               : snapshot.sessionsError
               ? snapshot.sessionsError
               : snapshot.sessions.length > 0
-              ? 'No active sessions — enable Show history to see retained work'
+              ? 'No main sessions connected. Saved and delegated work is available in Show all records.'
               : 'No sessions'}
           </div>
         ) : null}
@@ -585,7 +592,7 @@ function FleetServerGroup({
       </div>
 		{!unavailable && !server.directoryOnly ? (
         <button type="button" className="fleet-open-machine" onClick={onOpenMachine}>
-          Open all sessions on {displayMachineName} <span aria-hidden>→</span>
+          Open all sessions on {displayMachineName}{visibleSessions.length > (includeExited ? 20 : 6) ? ` · ${visibleSessions.length - (includeExited ? 20 : 6)} more` : ''} <span aria-hidden>→</span>
         </button>
       ) : null}
     </section>

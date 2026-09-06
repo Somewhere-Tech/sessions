@@ -15,7 +15,7 @@ import { configureNativeLocalPort, serverDisplayName, useServers } from '../lib/
 import { claimNativeMachinePairing } from '../lib/hostedBootstrap';
 import { tailnetClientID } from '../lib/tailnetClient';
 import { useMachineAccessPairing } from '../hooks/useMachineAccessPairing';
-import { SomewhereCard } from './SomewhereCard';
+import { connectionSettingsTarget } from '../lib/connectionSettingsTarget';
 import { FleetAccountCard } from './FleetAccountCard';
 import { ServerSelector } from './ServerSelector';
 import { RelayConnectionCard } from './RelayConnectionCard';
@@ -49,8 +49,9 @@ async function updateRemoteAuto(
 }
 
 export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?: boolean; hostName?: string }): JSX.Element {
-  const activeServer = useServers((state) => state.servers.find((server) => server.id === state.activeId));
-  const machineName = hostName || (activeServer ? serverDisplayName(activeServer, true) : 'this computer');
+  useServers((state) => state.servers);
+  const activeServer = connectionSettingsTarget();
+  const machineName = clientOnly && hostName ? hostName : serverDisplayName(activeServer, true);
   const connectedViaTailnet = activeServer?.scheme === 'https' && activeServer.host.toLowerCase().endsWith('.ts.net');
   const activeEndpoint = activeServer ? httpBaseForServer(activeServer) : window.location.origin;
   const [native, setNative] = useState<NativeConnectionSettings | null>(null);
@@ -250,7 +251,7 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
     <div className="connections-view">
       <div className="connections-shell">
         <header className="connections-heading">
-          <div><span>Private by default</span><h1>Connections</h1><p>{clientOnly ? `This device views sessions hosted by ${machineName}. Direct routes stay preferred.` : 'This computer is the server. Direct routes stay preferred.'}</p></div>
+          <div><span>Private by default</span><h1>Connections</h1><p>{clientOnly ? `This device connects through ${machineName}.` : 'Manage how this computer connects to your other devices.'}</p></div>
           <button type="button" className="btn btn-ghost" disabled={busy !== null} onClick={() => void refresh()}>Refresh status</button>
         </header>
 
@@ -344,7 +345,6 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
           </section>
         )}
 
-        <SomewhereCard clientOnly={clientOnly} hostName={machineName} />
       </div>
     </div>
   );

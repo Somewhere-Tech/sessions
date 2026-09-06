@@ -283,16 +283,10 @@ export function UsageDashboard(): JSX.Element {
         {error ? <div className="usage-error">{error}</div> : null}
         {report ? (
           <>
-            <section className="usage-kpis" aria-label="Usage totals">
-              <UsageKPI label="Total tokens" value={compactNumber(totalTokens(report.totals.tokens))} detail={`${compactNumber(report.totals.entries)} billable events`} />
-              <UsageKPI label="Estimated cost" value={dollars(report.totals.costUSD)} detail={mode === 'auto' ? 'recorded where available' : mode === 'calculate' ? 'pinned token pricing' : 'recorded costs only'} />
-              <UsageKPI label="Cache reads" value={compactNumber(report.totals.tokens.cacheReadTokens)} detail={`${percent(report.totals.tokens.cacheReadTokens, totalTokens(report.totals.tokens))}% of tokens`} />
-              <UsageKPI label="Reasoning" value={compactNumber(report.totals.tokens.reasoningTokens)} detail="included in output tokens" />
-              <UsageKPI label="Sources" value={compactNumber(report.scan.filesSeen)} detail={`${report.scan.filesRead} changed this refresh`} />
-            </section>
+            <UsageOverview report={report} mode={mode} />
 
             <section className="usage-panel">
-              <header><h2>{GROUPS.find((item) => item.id === group)?.label} breakdown</h2><span>{report.rows.length} rows · schema v{report.schemaVersion}</span></header>
+              <header><h2>{GROUPS.find((item) => item.id === group)?.label} breakdown</h2><span>{report.rows.length} groups</span></header>
               {report.rows.length === 0 ? <div className="usage-empty">No usage matched this scope, time range, and filter set.</div> : (
                 <div className="usage-row-list">
                   {report.rows.map((row) => (
@@ -314,8 +308,38 @@ export function UsageDashboard(): JSX.Element {
   );
 }
 
-function UsageKPI({ label, value, detail }: { label: string; value: string; detail: string }): JSX.Element {
-  return <div className="usage-kpi"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+export function UsageOverview({ report, mode }: { report: Pick<UsageReport, 'totals' | 'rows'>; mode: Mode }): JSX.Element {
+  const tokens = report.totals.tokens;
+  const input = tokens.inputTokens + tokens.cacheCreationTokens;
+  const context = input + tokens.cacheReadTokens;
+  const total = totalTokens(tokens);
+  const models = [...new Set(report.rows.flatMap((row) => row.models).filter(Boolean))];
+  const parts = [
+    { label: 'New context', value: input, className: 'is-input' },
+    { label: 'Reused context', value: tokens.cacheReadTokens, className: 'is-cache' },
+    { label: 'Output', value: tokens.outputTokens, className: 'is-output' }
+  ];
+  const stats = [
+    { label: 'Tokens processed', value: compactNumber(total), detail: `${compactNumber(report.totals.entries)} recorded usage events` },
+    { label: 'Context reused', value: context > 0 ? `${percent(tokens.cacheReadTokens, context)}%` : '—', detail: context > 0 ? 'of input served from cache' : 'No input recorded yet' },
+    { label: 'Models used', value: String(models.length), detail: models.join(', ') || 'No model data yet' },
+    { label: 'Estimated cost', value: dollars(report.totals.costUSD), detail: mode === 'display' ? 'Recorded costs only; not your bill' : mode === 'auto' ? 'Recorded or token-priced; not your bill' : 'Token pricing; not your bill' }
+  ];
+  return <section className="usage-overview" aria-label="Usage overview">
+    <div className="usage-kpis">{stats.map((stat) => <div className="usage-kpi" key={stat.label}>
+      <span>{stat.label}</span><strong>{stat.value}</strong><small title={stat.detail}>{stat.detail}</small>
+    </div>)}</div>
+    <div className="usage-token-mix">
+      <h2>How your agents used context</h2>
+      {total > 0 ? <div className="usage-token-track" aria-hidden="true">{parts.map((part) =>
+        <span key={part.label} className={part.className} style={{ width: `${part.value / total * 100}%` }} />
+      )}</div> : <p>No token activity recorded in this period.</p>}
+      <div className="usage-token-legend">{parts.map((part) => <span key={part.label}>
+        <i className={part.className} aria-hidden="true" />{part.label} <strong>{compactNumber(part.value)}</strong>
+      </span>)}</div>
+      <p>Output includes {compactNumber(tokens.reasoningTokens)} reported reasoning tokens. Token volume measures usage, not work quality.</p>
+    </div>
+  </section>;
 }
 
 function UsageReportRow({ row, maxTokens, editable, onTagsSaved }: { row: UsageRow; maxTokens: number; editable: boolean; onTagsSaved: () => void }): JSX.Element {

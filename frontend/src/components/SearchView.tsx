@@ -567,7 +567,7 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
     <div className="search-view">
       <div className="search-shell">
         <header className="search-heading">
-          <h1>History</h1>
+          <h1>Search</h1>
           <p>Every Claude and Codex conversation recorded on your machines. Browse the recent ones, or search for something that was said.</p>
         </header>
         <form className="search-query-row" aria-busy={searchBusy} onSubmit={(event) => {

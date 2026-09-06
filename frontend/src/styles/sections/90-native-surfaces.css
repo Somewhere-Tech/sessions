@@ -788,3 +788,18 @@
 .adoption-notice > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .adoption-notice strong { font-size: 13px; }
 .adoption-notice span { font-size: 12px; color: var(--fg-dim); }
+
+/* Connections is part of Settings, not a separate branded landing page. */
+.connections-view { background: var(--bg-base); font-family: var(--font-ui); }
+.connections-shell { width: min(960px, calc(100% - 32px)); padding: 24px 0 40px; }
+.connections-heading { gap: 16px; align-items: center; }
+.connections-heading h1 { color: var(--fg); font-size: 28px; line-height: 1.2; letter-spacing: -0.025em; }
+.connections-heading > div > span,
+.connections-section-kicker { font-family: var(--font-ui); letter-spacing: normal; text-transform: none; }
+.connections-heading > div > span::before,
+.connections-section-kicker::before { content: none; }
+.connection-card > header strong,
+.connection-card > header > span,
+.connection-advanced summary { font-family: var(--font-ui); letter-spacing: normal; text-transform: none; }
+.connection-card { background: var(--bg-elev-1); }
+.connection-card:hover { transform: none; }

@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import { FleetView } from '../../src/components/FleetView';
+import userEvent from '@testing-library/user-event';
 import { installFakeDaemon, makeSession, useFakeMachines, type FakeMachine } from './fake-daemon';
 
 function fleet(): FakeMachine[] {
@@ -41,6 +42,26 @@ function cardFor(name: string): HTMLElement {
 }
 
 describe('capability: browse the fleet', () => {
+  it('keeps delegated and lost records out of the overview without deleting them', async () => {
+    const machines = fleet();
+    machines[0].sessions.push(
+      makeSession({ id: 'child', name: 'Private test helper', creatorKind: 'session', creatorId: 'alpha-1', delegationKind: 'agent' }),
+      makeSession({ id: 'lost', name: 'Old disconnected work', runnerGone: true, unreachable: true })
+    );
+    const daemon = installFakeDaemon(machines);
+    useFakeMachines(machines, 'alpha');
+    render(<FleetView onOpenSession={() => {}} onOpenMachine={() => {}} />);
+    expect(await screen.findByText('Compiling the runtime')).toBeVisible();
+    expect(screen.queryByText('Private test helper')).not.toBeInTheDocument();
+    expect(screen.queryByText('Old disconnected work')).not.toBeInTheDocument();
+    expect(within(cardFor('Alpha')).getByText('1 main session')).toBeVisible();
+    await userEvent.setup().click(screen.getByRole('checkbox', { name: 'Show all records' }));
+    expect(await screen.findByText('Private test helper')).toBeVisible();
+    expect(screen.getByText('Old disconnected work')).toBeVisible();
+    expect(daemon.ended).toEqual([]);
+    expect(daemon.archived).toEqual([]);
+  });
+
   it('shows each machine with its own sessions, not another machine\'s', async () => {
     const machines = fleet();
     const daemon = installFakeDaemon(machines);

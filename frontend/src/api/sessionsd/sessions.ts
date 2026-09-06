@@ -1,3 +1,4 @@
+import { connectionSettingsTarget } from '../../lib/connectionSettingsTarget';
 import type { SessionInfo } from '../../types';
 import {
   getActiveServer,
@@ -236,26 +237,30 @@ export interface FleetAccountStatus {
 }
 
 export async function fetchFleetAccount(signal?: AbortSignal): Promise<FleetAccountStatus> {
-  const r = await apiFetch(`${httpBase()}/api/account`, { signal });
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/account`, { signal });
   return featureJSON<FleetAccountStatus>(r, 'Somewhere fleet account');
 }
 
 export async function requestFleetMagicLink(email: string): Promise<void> {
-  const r = await apiFetch(`${httpBase()}/api/account/magic-link`, {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/account/magic-link`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email })
   });
   await featureJSON<{ ok: boolean }>(r, 'Somewhere sign-in');
 }
 
 export async function verifyFleetMagicLink(token: string): Promise<FleetAccountStatus> {
-  const r = await apiFetch(`${httpBase()}/api/account/verify`, {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/account/verify`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token })
   });
   return featureJSON<FleetAccountStatus>(r, 'Somewhere sign-in');
 }
 
 export async function logoutFleetAccount(): Promise<void> {
-  const r = await apiFetch(`${httpBase()}/api/account/logout`, { method: 'POST' });
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/account/logout`, { method: 'POST' });
   await featureJSON<{ ok: boolean }>(r, 'Somewhere sign-out');
 }
 
@@ -298,12 +303,14 @@ export interface FleetAccountClaimResponse {
 }
 
 export async function fetchFleetDirectory(signal?: AbortSignal): Promise<FleetDirectoryResponse> {
-	const response = await apiFetch(`${httpBase()}/api/account/machines`, { signal });
+	const target = connectionSettingsTarget();
+	const response = await serverFetch(target, `${httpBaseForServer(target)}/api/account/machines`, { signal });
 	return featureJSON<FleetDirectoryResponse>(response, 'Somewhere fleet directory');
 }
 
 export async function claimFleetDirectoryMachine(machineId: string): Promise<FleetAccountClaimResponse> {
-	const response = await apiFetch(`${httpBase()}/api/account/machines/claim`, {
+	const target = connectionSettingsTarget();
+	const response = await serverFetch(target, `${httpBaseForServer(target)}/api/account/machines/claim`, {
 		method: 'POST', headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ machine_id: machineId })
 	});
@@ -321,12 +328,14 @@ export interface RemoteState {
 }
 
 export async function fetchRemoteState(signal?: AbortSignal): Promise<RemoteState> {
-  const r = await apiFetch(`${httpBase()}/api/remote`, { signal });
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/remote`, { signal });
   return json<RemoteState>(r);
 }
 
 export async function setRemoteAuto(auto: boolean): Promise<RemoteState> {
-  const r = await apiFetch(`${httpBase()}/api/remote`, {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/remote`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ auto })
@@ -341,12 +350,14 @@ export interface RelayState {
 }
 
 export async function fetchRelayState(signal?: AbortSignal): Promise<RelayState> {
-  const response = await apiFetch(`${httpBase()}/api/relay`, { signal });
+  const target = connectionSettingsTarget();
+  const response = await serverFetch(target, `${httpBaseForServer(target)}/api/relay`, { signal });
   return json<RelayState>(response);
 }
 
 export async function setRelayURL(url: string): Promise<RelayState> {
-  const response = await apiFetch(`${httpBase()}/api/relay`, {
+  const target = connectionSettingsTarget();
+  const response = await serverFetch(target, `${httpBaseForServer(target)}/api/relay`, {
     method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url })
   });
   return json<RelayState>(response);
@@ -404,12 +415,14 @@ export interface LANState {
 }
 
 export async function fetchLANState(signal?: AbortSignal): Promise<LANState> {
-  const r = await apiFetch(`${httpBase()}/api/lan`, { signal });
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/lan`, { signal });
   return json<LANState>(r);
 }
 
 export async function setLANEnabled(enabled: boolean): Promise<LANState> {
-  const r = await apiFetch(`${httpBase()}/api/lan`, {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/lan`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ enabled })
@@ -421,7 +434,8 @@ export async function setLANEnabled(enabled: boolean): Promise<LANState> {
 // Network access. The daemon owns the browse so app and agent clients never
 // need the permission themselves.
 export async function requestLocalNetworkAccess(): Promise<void> {
-  const r = await apiFetch(`${httpBase()}/api/lan/discover?timeout=3s`);
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/lan/discover?timeout=3s`);
   if (!r.ok) {
     const payload = await r.json().catch(() => null) as { error?: string } | null;
     throw new Error(payload?.error || `sessionsd ${r.status}: ${r.statusText}`);
@@ -436,19 +450,22 @@ export interface PairedDevice {
 }
 
 export async function listPairedDevices(): Promise<PairedDevice[]> {
-  const r = await apiFetch(`${httpBase()}/api/devices`);
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/devices`);
   return (await json<{ devices: PairedDevice[] }>(r)).devices;
 }
 
 export async function revokePairingTicket(ticketId: string): Promise<void> {
-  const r = await apiFetch(`${httpBase()}/api/pair/tickets/${encodeURIComponent(ticketId)}`, {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/pair/tickets/${encodeURIComponent(ticketId)}`, {
     method: 'DELETE'
   });
   await json<{ revoked: boolean }>(r);
 }
 
 export async function forgetPairedDevice(deviceId: string): Promise<void> {
-  const r = await apiFetch(`${httpBase()}/api/devices/${encodeURIComponent(deviceId)}`, {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/devices/${encodeURIComponent(deviceId)}`, {
     method: 'DELETE'
   });
   if (!r.ok) await json<unknown>(r);

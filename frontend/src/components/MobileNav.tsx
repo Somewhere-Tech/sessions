@@ -43,8 +43,7 @@ export function MobileNav({
       <nav className="mobile-nav" role="navigation" aria-label="Sessions">
         <MobileDestination label="Home" icon={<HomeIcon />} active={layoutMode === 'home'} onClick={() => go('home')} />
         <MobileDestination label="Sessions" icon={<SessionsIcon />} active={layoutMode === 'tabs'} onClick={onShowSessions} detail={showingSessionDetail} />
-        <MobileDestination label="Daily" icon={<DailyIcon />} active={layoutMode === 'today'} onClick={() => go('today')} />
-        <MobileDestination label="History" icon={<SearchIcon />} active={layoutMode === 'search'} onClick={() => go('search')} />
+        <MobileDestination label="Search" icon={<SearchIcon />} active={layoutMode === 'search'} onClick={() => go('search')} />
         <MobileDestination label="More" icon={<MoreIcon />} active={moreActive || moreOpen} onClick={() => setMoreOpen(true)} />
       </nav>
 
@@ -128,7 +127,6 @@ function Icon({ children }: { children: ReactNode }): JSX.Element {
 }
 function HomeIcon(): JSX.Element { return <Icon><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-7h6v7"/></Icon>; }
 function SessionsIcon(): JSX.Element { return <Icon><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></Icon>; }
-function DailyIcon(): JSX.Element { return <Icon><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/><path d="M8 15h8"/></Icon>; }
 function SearchIcon(): JSX.Element { return <Icon><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></Icon>; }
 function MoreIcon(): JSX.Element { return <Icon><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></Icon>; }
 function FleetIcon(): JSX.Element { return <Icon><rect x="4" y="3" width="16" height="7" rx="2"/><rect x="4" y="14" width="16" height="7" rx="2"/><path d="M8 6.5h.01M8 17.5h.01"/></Icon>; }
