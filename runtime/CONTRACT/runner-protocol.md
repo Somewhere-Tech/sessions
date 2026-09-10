@@ -234,8 +234,9 @@ This is entirely daemon-side and adds no capability: no frame, field, or HELLO
 flag changes, and a runner is never asked to remember or replay anything. The
 retained answer belongs to the daemon's live connection object for that runner,
 so replacing the connection — reconnect, adoption, wake — or restarting the
-daemon discards it, and the operation is unknown again. A runner that never
-answers leaves it unknown too.
+daemon discards it. What is lost is only the chance to settle a receipt that is
+still unknown: a receipt already resolved from this evidence is durable and
+stays accepted. A runner that never answers leaves the receipt unknown too.
 
 `steer` requires an active Codex turn; it never silently starts a new turn.
 Claude rejects active-turn messages explicitly. Missing capability uses the

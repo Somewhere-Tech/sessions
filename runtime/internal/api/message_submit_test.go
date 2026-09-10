@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/delivery"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto/prototest"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
@@ -239,4 +240,96 @@ func readDeliveryReceipt(t *testing.T, server *Server, operationID string) map[s
 	var receipt map[string]any
 	decodeBody(t, response, &receipt)
 	return receipt
+}
+
+// restartedDaemon serves the same durable state with none of the previous
+// process's in-memory evidence: a fresh registry, no sessions, no runner cache.
+func restartedDaemon(t *testing.T, daemon testDaemon) testDaemon {
+	t.Helper()
+	launcher := prototest.NewLauncher()
+	registry := state.NewRegistry(daemon.config, launcher)
+	return testDaemon{
+		config: daemon.config, registry: registry, launcher: launcher,
+		handler: New(daemon.config, registry), root: daemon.root,
+	}
+}
+
+// Once late evidence has settled a receipt, the answer lives on disk. Losing the
+// daemon-side cache that produced it — a restart, or a replacement runner that
+// never saw the operation — must not walk the receipt back to uncertainty.
+func TestConfirmedReceiptOutlivesTheCachedEvidenceThatSettledIt(t *testing.T) {
+	daemon := newTestDaemon(t)
+	session, runner := registerStructuredRunner(t, daemon, "structured-durable")
+	const operationID = "44444444-5555-4666-8777-888888888888"
+	daemon.handler.registry = &structuredMessageService{
+		sessionService: daemon.registry, err: context.Canceled,
+		result: proto.MessageResult{OperationID: operationID},
+	}
+
+	submitMessageRequest(t, daemon.handler, session.ID, operationID, "ship the release")
+	runner.AcknowledgeLate(proto.MessageResult{OperationID: operationID, Accepted: true, Boundary: "provider"})
+	if receipt := readDeliveryReceipt(t, daemon.handler, operationID); receipt["status"] != "accepted" {
+		t.Fatalf("receipt after late evidence = %#v", receipt)
+	}
+
+	// The durable record, read by a Store that never saw any of this.
+	stored, err := delivery.New(daemon.config.StateRoot).Get(operationID)
+	if err != nil {
+		t.Fatalf("read durable receipt: %v", err)
+	}
+	if stored.Status != delivery.StatusAccepted || !stored.Delivered || stored.Retry || stored.Acceptance != "provider" {
+		t.Fatalf("durable record = %+v", stored)
+	}
+
+	// A restarted daemon has no cached acknowledgment at all.
+	restarted := restartedDaemon(t, daemon)
+	if receipt := readDeliveryReceipt(t, restarted.handler, operationID); receipt["status"] != "accepted" ||
+		receipt["delivered"] != true || receipt["acceptance"] != "provider" {
+		t.Fatalf("receipt after restart = %#v", receipt)
+	}
+
+	// Neither does a replacement runner for the same session.
+	registerStructuredRunner(t, restarted, session.ID)
+	if receipt := readDeliveryReceipt(t, restarted.handler, operationID); receipt["status"] != "accepted" ||
+		receipt["acceptance"] != "provider" {
+		t.Fatalf("receipt after the runner was replaced = %#v", receipt)
+	}
+}
+
+// Without evidence there is no answer, and no answer is not permission to send
+// the message a second time.
+func TestUnsettledReceiptStaysUnknownAndNeverResubmitsAfterRestart(t *testing.T) {
+	daemon := newTestDaemon(t)
+	session, _ := registerStructuredRunner(t, daemon, "structured-unsettled")
+	const operationID = "55555555-6666-4777-8888-999999999999"
+	daemon.handler.registry = &structuredMessageService{
+		sessionService: daemon.registry, err: context.Canceled,
+		result: proto.MessageResult{OperationID: operationID},
+	}
+	submitMessageRequest(t, daemon.handler, session.ID, operationID, "ship the release")
+
+	restarted := restartedDaemon(t, daemon)
+	registerStructuredRunner(t, restarted, session.ID)
+	service := &structuredMessageService{
+		sessionService: restarted.registry,
+		result:         proto.MessageResult{OperationID: operationID, Accepted: true, Boundary: "provider"},
+	}
+	restarted.handler.registry = service
+
+	if receipt := readDeliveryReceipt(t, restarted.handler, operationID); receipt["status"] != "unknown" ||
+		receipt["delivered"] != false || receipt["retry"] != false || receipt["acceptance"] != "" {
+		t.Fatalf("receipt without evidence = %#v", receipt)
+	}
+	retry := submitMessageRequest(t, restarted.handler, session.ID, operationID, "ship the release")
+	if retry["duplicate"] != true || retry["status"] != "unknown" || retry["retry"] != false {
+		t.Fatalf("retry receipt = %#v", retry)
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if len(service.calls) != 0 {
+		t.Fatalf("an unsettled operation was submitted again: %#v", service.calls)
+	}
+	if len(service.inputCalls) != 0 {
+		t.Fatalf("an unsettled operation fell back to terminal input: %#v", service.inputCalls)
+	}
 }

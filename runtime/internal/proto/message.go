@@ -156,9 +156,10 @@ func (r *SocketRunner) retainLateResultLocked(result MessageResult) {
 // LateMessageResult returns an acknowledgment the runner sent for an operation
 // whose caller had already stopped waiting. The memory is this connection's,
 // here in the daemon, not the runner process's: replacing the connection or
-// restarting the daemon loses it, and the operation is simply unknown again.
-// Nothing is invented -- an operation this connection never saw answered has no
-// evidence.
+// restarting the daemon loses it. That costs only the chance to settle a receipt
+// that is still unknown; a receipt already confirmed from this evidence is
+// durable and stays accepted. Nothing is invented -- an operation this
+// connection never saw answered has no evidence.
 func (r *SocketRunner) LateMessageResult(operationID string) (MessageResult, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

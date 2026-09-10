@@ -323,3 +323,61 @@ func TestSubmitMessageNeverLosesAnAnswerRacingItsCancellation(t *testing.T) {
 		_ = server.Close()
 	}
 }
+
+// The retention bound is what keeps an abandoned-operation cache from becoming
+// a leak, so it is pinned rather than assumed. Deterministic: every answer is
+// handed to the same reader entry point with no waiter registered.
+func TestRetainedAcknowledgementsStayBoundedAndDropTheOldestFirst(t *testing.T) {
+	runner := messageRunner(nil, true)
+	answer := func(operationID string, boundary string) {
+		payload, err := json.Marshal(MessageResult{OperationID: operationID, Accepted: true, Boundary: boundary})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runner.handleMessageResponse(payload)
+	}
+
+	const overflow = 10
+	for index := range lateMessageResultLimit + overflow {
+		answer(fmt.Sprintf("operation-%03d", index), "runner")
+	}
+	runner.mu.Lock()
+	kept, order := len(runner.lateMessages), len(runner.lateOrder)
+	oldest := runner.lateOrder[0]
+	runner.mu.Unlock()
+	if kept != lateMessageResultLimit || order != lateMessageResultLimit {
+		t.Fatalf("retained %d results and %d order entries, want %d of each", kept, order, lateMessageResultLimit)
+	}
+	if want := fmt.Sprintf("operation-%03d", overflow); oldest != want {
+		t.Fatalf("oldest retained operation = %q, want %q", oldest, want)
+	}
+	for index := range overflow {
+		if _, ok := runner.LateMessageResult(fmt.Sprintf("operation-%03d", index)); ok {
+			t.Fatalf("operation-%03d survived past the bound", index)
+		}
+	}
+	newest := fmt.Sprintf("operation-%03d", lateMessageResultLimit+overflow-1)
+	if _, ok := runner.LateMessageResult(newest); !ok {
+		t.Fatalf("%s was not retained", newest)
+	}
+
+	// A runner that answers the same operation again replaces the value in
+	// place: re-recording an id must not queue it for eviction twice or push a
+	// live operation out early.
+	for range 5 {
+		answer(newest, "provider")
+	}
+	runner.mu.Lock()
+	kept, order = len(runner.lateMessages), len(runner.lateOrder)
+	stillOldest := runner.lateOrder[0]
+	runner.mu.Unlock()
+	if kept != lateMessageResultLimit || order != lateMessageResultLimit {
+		t.Fatalf("repeated answers grew storage to %d results and %d order entries", kept, order)
+	}
+	if stillOldest != oldest {
+		t.Fatalf("repeated answers evicted %q, oldest is now %q", oldest, stillOldest)
+	}
+	if result, ok := runner.LateMessageResult(newest); !ok || result.Boundary != "provider" {
+		t.Fatalf("latest answer for %s = %+v, ok = %t", newest, result, ok)
+	}
+}
