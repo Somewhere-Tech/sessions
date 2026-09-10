@@ -68,8 +68,9 @@ override:
   submissions;
 - `usage.sqlite3` and `errors.jsonl`;
 - `history-cache.json`, what the history listing has already computed about each
-  transcript file — its message count and its recorded last activity — keyed by
-  path with the size and modification time those answers were computed at. It is
+  transcript file — its message count, its recorded last activity, and the card
+  the provider scan read out of that file's head — keyed by path with the size
+  and modification time those answers were computed at. It is
   a cache and nothing depends on it: every entry is checked against the file
   before it is used, a file that changed or vanished is recomputed, and a file
   that cannot be parsed is treated as an empty cache. Deleting it costs one slow

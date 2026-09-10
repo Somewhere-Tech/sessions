@@ -194,9 +194,15 @@ func TestCodexHistoryListingCost(t *testing.T) {
 	}
 }
 
-// Every rollout is opened by a listing. Proving it by making files unreadable
-// counts the opens in the fixture instead of assuming them: a conversation this
-// listing never opened could not notice that its file became unreadable.
+// Every rollout a listing has not already described is opened by it. Proving
+// it by making files unreadable counts the opens in the fixture instead of
+// assuming them: a conversation this listing never opened could not notice that
+// its file became unreadable.
+//
+// The second listing runs on a store that has described nothing, which is the
+// case this measures. A store that already holds a card for one exact file
+// answers from it and does not open that file again — the same rule the message
+// counts follow, and the reason a restart no longer re-reads a fleet's history.
 func TestListingOpensEveryCodexRollout(t *testing.T) {
 	const count = 12
 	root := t.TempDir()
@@ -219,7 +225,8 @@ func TestListingOpensEveryCodexRollout(t *testing.T) {
 	}
 	time.Sleep(providerScanCacheTT + 250*time.Millisecond)
 
-	listed, err := store.List(nil)
+	// A store with nothing described yet: every rollout is opened.
+	listed, err := codexStore(root).List(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,6 +242,18 @@ func TestListingOpensEveryCodexRollout(t *testing.T) {
 	}
 	if len(listed.Sessions) != count-len(unreadable) {
 		t.Fatalf("listed %d conversations, want %d", len(listed.Sessions), count-len(unreadable))
+	}
+
+	// The store that described them before their permissions changed still
+	// lists them, because nothing about those files changed: same size, same
+	// modification time, same card. It did not open one to find out.
+	fromCards, err := store.List(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fromCards.Sessions) != count {
+		t.Fatalf("a store that already described them listed %d conversations, want %d",
+			len(fromCards.Sessions), count)
 	}
 }
 

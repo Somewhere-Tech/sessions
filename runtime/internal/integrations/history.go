@@ -283,7 +283,11 @@ type historyCacheEntry struct {
 	recordedMS  int64
 	hasRecord   bool
 	activity    bool
-	used        uint64
+	// resumable is what the provider scan derived from this file's head: the
+	// card the picker shows and the identity a resume follows. It is filled by
+	// the scan and answers for one exact file, like everything else here.
+	resumable *watch.ResumableSession
+	used      uint64
 }
 
 type HistoryStore struct {

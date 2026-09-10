@@ -28,7 +28,8 @@ func (h *HistoryStore) providerConversations() []watch.ResumableSession {
 	if !h.providerCachedAt.IsZero() && now.Sub(h.providerCachedAt) < 2*time.Second {
 		return append([]watch.ResumableSession(nil), h.providerCache...)
 	}
-	h.providerCache = watch.ScanResumableConversationsIn(h.options.ClaudeProjectsDir, h.options.CodexSessionsDir)
+	h.providerCache = watch.ScanResumableConversationsCached(
+		h.options.ClaudeProjectsDir, h.options.CodexSessionsDir, h)
 	h.providerCachedAt = now
 	return append([]watch.ResumableSession(nil), h.providerCache...)
 }
@@ -63,6 +64,42 @@ func (h *HistoryStore) archivedClaudeConversations() []watch.ArchivedClaudeConve
 	h.archiveCache = filtered
 	h.archiveCachedAt = now
 	return append([]watch.ArchivedClaudeConversation(nil), h.archiveCache...)
+}
+
+// Resumable and StoreResumable are the provider scan's side of the same
+// fingerprint discipline the message counts use. A conversation nobody has
+// appended to since it was last described is not opened at all: on a machine
+// holding gigabytes of rollouts, that read is the first listing after a restart.
+func (h *HistoryStore) Resumable(path string, info os.FileInfo) (watch.ResumableSession, bool) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	cached, ok := h.cache[path]
+	if !ok || cached.resumable == nil ||
+		cached.size != info.Size() || cached.modTimeNano != info.ModTime().UnixNano() {
+		return watch.ResumableSession{}, false
+	}
+	h.cacheClock++
+	cached.used = h.cacheClock
+	h.cache[path] = cached
+	session := *cached.resumable
+	// SourcePath is where this card came from and is not part of what was
+	// stored; a card read back from disk still describes this file.
+	session.SourcePath = path
+	return session, true
+}
+
+func (h *HistoryStore) StoreResumable(path string, info os.FileInfo, session watch.ResumableSession) {
+	stored := session
+	stored.SourcePath = ""
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	entry := h.entryForFingerprintLocked(path, info)
+	entry.resumable = &stored
+	h.cacheClock++
+	entry.used = h.cacheClock
+	h.cache[path] = entry
+	h.cacheDirty = true
+	h.evictHistoryCacheLocked()
 }
 
 func historyProviderKey(tool, providerID string) string {

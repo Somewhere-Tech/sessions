@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
 
 // What a conversation's transcript costs to describe is paid once per file, and
@@ -42,6 +44,11 @@ type persistedHistoryEntry struct {
 	RecordedMS  int64  `json:"recorded_ms,omitempty"`
 	HasRecord   bool   `json:"has_record,omitempty"`
 	Activity    bool   `json:"activity,omitempty"`
+	// Resumable is the card the provider scan read out of this file's head.
+	// The field is additive: a daemon that does not know it ignores it, and one
+	// that does treats its absence as a file it has not described yet, so the
+	// file stays readable in both directions without a version change.
+	Resumable *watch.ResumableSession `json:"resumable,omitempty"`
 }
 
 type persistedHistoryCache struct {
@@ -84,7 +91,8 @@ func (h *HistoryStore) loadPersistedCache() {
 			size: entry.Size, modTimeNano: entry.ModTimeNano,
 			count: entry.Count, skipped: entry.Skipped, counted: entry.Counted,
 			recordedMS: entry.RecordedMS, hasRecord: entry.HasRecord, activity: entry.Activity,
-			used: h.cacheClock,
+			resumable: entry.Resumable,
+			used:      h.cacheClock,
 		}
 	}
 }
@@ -110,6 +118,7 @@ func (h *HistoryStore) persistIfDirty() {
 			Path: path, Size: entry.size, ModTimeNano: entry.modTimeNano,
 			Count: entry.count, Skipped: entry.skipped, Counted: entry.counted,
 			RecordedMS: entry.recordedMS, HasRecord: entry.hasRecord, Activity: entry.activity,
+			Resumable: entry.resumable,
 		})
 	}
 	h.cacheMu.Unlock()
