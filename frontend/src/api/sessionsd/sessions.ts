@@ -438,13 +438,19 @@ export async function setLANEnabled(enabled: boolean): Promise<LANState> {
 // Starting a Bonjour browse is the supported way to make macOS ask for Local
 // Network access. The daemon owns the browse so app and agent clients never
 // need the permission themselves.
-export async function requestLocalNetworkAccess(signal?: AbortSignal): Promise<void> {
+//
+// Returns how many nearby machines the daemon actually reached. A browse that
+// succeeds and finds nothing is not evidence that local access works, so the
+// count — not the absence of an error — is what a caller may treat as proof.
+export async function requestLocalNetworkAccess(signal?: AbortSignal): Promise<number> {
   const target = connectionSettingsTarget();
   const r = await serverFetch(target, `${httpBaseForServer(target)}/api/lan/discover?timeout=3s`, { signal });
   if (!r.ok) {
     const payload = await r.json().catch(() => null) as { error?: string } | null;
     throw new Error(payload?.error || `sessionsd ${r.status}: ${r.statusText}`);
   }
+  const payload = await r.json().catch(() => null) as { machines?: unknown[] } | null;
+  return Array.isArray(payload?.machines) ? payload.machines.length : 0;
 }
 
 export interface PairedDevice {

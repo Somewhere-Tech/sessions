@@ -12,14 +12,17 @@ function fixture({ mobile = false, status = 'denied' } = {}) {
   vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(mobile ? 'iPhone' : 'Macintosh');
   const invoke = vi.fn(async () => undefined);
   Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: { invoke } });
-  const state = { status, fail: false, requests: [] as string[] };
+  // `discovered` is what the daemon actually reached. The daemon records
+  // `granted` only from real contact, so a fixture that flips `status` without
+  // finding anything is the shape of a stale, stored observation.
+  const state = { status, fail: false, discovered: [] as unknown[], requests: [] as string[] };
   globalThis.fetch = async (input) => {
     const url = String(input);
     state.requests.push(url);
     if (state.fail) throw new Error('unreachable');
     const path = new URL(url).pathname;
     if (path === '/api/lan') return new Response(JSON.stringify({ enabled: true, permission: { status: state.status } }));
-    if (path === '/api/lan/discover') return new Response(JSON.stringify({ machines: [] }));
+    if (path === '/api/lan/discover') return new Response(JSON.stringify({ machines: state.discovered }));
     throw new Error(`Unexpected request ${url}`);
   };
   return { state, invoke };
@@ -46,18 +49,56 @@ describe('capability: permission recovery explains the next step on the right Ma
     expect(await screen.findByText(/If access is not confirmed yet/)).toBeVisible();
     expect(screen.queryByText(/Nearby access is working/)).not.toBeInTheDocument();
     state.status = 'granted';
+    state.discovered = [{ name: 'Mac mini' }];
     await userEvent.setup().click(check);
     expect(await screen.findByRole('status')).toHaveTextContent('Nearby access is working on this Mac');
     expect(screen.queryByRole('button', { name: 'Open System Settings' })).not.toBeInTheDocument();
   });
 
-  it('refreshes stale warnings when the user returns from Settings', async () => {
+  // The daemon's `granted` is its last observation, not a live reading. A check
+  // that answers 200 with nothing found has contacted no one, so announcing a
+  // restored connection off the back of it would be a claim about a network
+  // this check never reached.
+  it('does not announce a working connection from an empty discovery plus a stored success', async () => {
+    const { state } = fixture();
+    render(<LocalNetworkGuide />);
+    const check = await screen.findByRole('button', { name: 'Check again' });
+    state.status = 'granted';
+    await userEvent.setup().click(check);
+    expect(await screen.findByText(/If access is not confirmed yet/)).toBeVisible();
+    expect(screen.queryByText(/Nearby access is working/)).not.toBeInTheDocument();
+    expect(screen.getAllByRole('listitem')).toHaveLength(3);
+  });
+
+  // A stored success that arrives on its own is reported as history with a way
+  // to test it, never as a live connection.
+  it('reports an unverified stored success as the host\'s last observation', async () => {
     const { state } = fixture();
     render(<LocalNetworkGuide />);
     await screen.findByRole('heading');
     state.status = 'granted';
     fireEvent.focus(window);
-    expect(await screen.findByRole('status')).toHaveTextContent('Nearby access is working');
+    const banner = await screen.findByRole('status');
+    expect(banner).toHaveTextContent('last reported nearby access working');
+    expect(banner).toHaveTextContent('not a live test');
+    expect(screen.queryByText(/Nearby access is working/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
+  });
+
+  // The failure is what just happened; the stored success is older. Returning
+  // the resolved banner here used to drop the error message entirely.
+  it('keeps a failed check visible even when the host still reports an earlier success', async () => {
+    const { state } = fixture();
+    render(<LocalNetworkGuide />);
+    await screen.findByRole('heading');
+    state.status = 'granted';
+    fireEvent.focus(window);
+    await screen.findByText(/last reported nearby access working/);
+    state.fail = true;
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Check again' }));
+    expect(await screen.findByText(/If Sessions is already on, leave it on/)).toBeVisible();
+    expect(screen.queryByText(/Nearby access is working/)).not.toBeInTheDocument();
+    expect(screen.getAllByRole('listitem')).toHaveLength(3);
   });
 
   it('never opens phone settings to fix a host Mac or asks the phone to trigger host discovery', async () => {

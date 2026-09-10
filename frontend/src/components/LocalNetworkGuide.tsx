@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchLANState, requestLocalNetworkAccess, type LANState } from '../api/sessionsd';
 import { connectionSettingsTarget } from '../lib/connectionSettingsTarget';
+import { localNetworkGuideMode, type LocalNetworkCheck } from '../lib/localNetworkGuide';
 import { isLocalServer, serverDisplayName, useServers } from '../lib/servers';
 import { isNativeMobileRuntime, isTauri, openLocalNetworkSettings } from '../lib/tauriBridge';
 
@@ -12,21 +13,22 @@ export function LocalNetworkGuide({ onState }: { onState?: (state: LANState) => 
   const name = local ? 'this Mac' : serverDisplayName(target, true);
   const [state, setState] = useState<LANState | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [lastCheck, setLastCheck] = useState<LocalNetworkCheck>('none');
   const [busy, setBusy] = useState(false);
-  const hadIssue = useRef(false);
+  const sawUnproven = useRef(false);
   const checking = useRef(false);
   const onStateRef = useRef(onState);
   onStateRef.current = onState;
   const refresh = useCallback(async (signal: AbortSignal): Promise<void> => {
     const next = await fetchLANState(signal);
     if (signal.aborted) return;
-    if (next.permission?.status === 'denied' || next.permission?.status === 'not-yet-asked') hadIssue.current = true;
+    if (next.permission?.status === 'denied' || next.permission?.status === 'not-yet-asked') sawUnproven.current = true;
     setState(next);
     onStateRef.current?.(next);
   }, []);
   useEffect(() => {
     const controller = new AbortController();
-    setState(null); setMessage(null); hadIssue.current = false;
+    setState(null); setMessage(null); setLastCheck('none'); sawUnproven.current = false;
     const update = (): void => { void refresh(controller.signal).catch(() => {}); };
     update();
     window.addEventListener('focus', update);
@@ -35,14 +37,21 @@ export function LocalNetworkGuide({ onState }: { onState?: (state: LANState) => 
   }, [refresh, target.id]);
   const check = async (): Promise<void> => {
     if (checking.current) return;
-    checking.current = true; setBusy(true); setMessage(null);
+    checking.current = true; setBusy(true); setMessage(null); setLastCheck('none');
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 8_000);
     try {
-      if (local) await requestLocalNetworkAccess(controller.signal);
+      // Only the local Mac's own daemon can browse for us; from a phone or
+      // another machine this check just re-reads what the host last observed,
+      // which proves nothing about this moment.
+      const reached = local ? await requestLocalNetworkAccess(controller.signal) : null;
       await refresh(controller.signal);
-      setMessage('Check complete. If access is not confirmed yet, check the switch below, then try again.');
+      setLastCheck(reached === null ? 'none' : reached > 0 ? 'reached' : 'none-found');
+      setMessage(reached !== null && reached > 0
+        ? null
+        : 'Check complete. If access is not confirmed yet, check the switch below, then try again.');
     } catch {
+      setLastCheck('failed');
       setMessage('Couldn’t confirm nearby access. If Sessions is already on, leave it on. You can still try your saved computer connection in Fleet. Your sessions have not been stopped.');
     } finally {
       window.clearTimeout(timeout); checking.current = false; setBusy(false);
@@ -52,9 +61,15 @@ export function LocalNetworkGuide({ onState }: { onState?: (state: LANState) => 
     try { await openLocalNetworkSettings(); setMessage('After turning on Sessions, come back here and choose Check again.'); }
     catch { setMessage('Open System Settings yourself, then follow the steps below.'); }
   };
-  const status = state?.permission?.status;
-  if (status === 'granted' && hadIssue.current) return <div className="local-network-guide is-resolved" role="status">Nearby access is working on {name}. You can return to your projects.</div>;
-  if (status !== 'denied' && status !== 'not-yet-asked') return null;
+  const checkAgain = <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => void check()}>{busy ? 'Checking…' : 'Check again'}</button>;
+  const mode = localNetworkGuideMode({ status: state?.permission?.status, sawUnproven: sawUnproven.current, lastCheck });
+  if (mode === 'hidden') return null;
+  if (mode === 'confirmed') return <div className="local-network-guide is-resolved" role="status">Nearby access is working on {name}. You can return to your projects.</div>;
+  if (mode === 'previously-worked') return <div className="local-network-guide" role="status">
+    <p>{name} last reported nearby access working. That is its most recent observation, not a live test — macOS does not let Sessions read the setting itself.</p>
+    {message ? <p>{message}</p> : null}
+    <div className="local-network-guide-actions">{checkAgain}</div>
+  </div>;
   return <section className="local-network-guide" aria-label={`Nearby access on ${name}`}>
     <h2>Let Sessions find your other devices</h2>
     <p>Check Local Network access on <strong>{name}</strong>. It helps Sessions find and connect to computers on the same Wi-Fi. Your saved conversations stay here.</p>
@@ -65,7 +80,7 @@ export function LocalNetworkGuide({ onState }: { onState?: (state: LANState) => 
     </ol>
     <div className="local-network-guide-actions">
       {local ? <button className="btn" type="button" onClick={() => void openSettings()}>Open System Settings</button> : null}
-      <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => void check()}>{busy ? 'Checking…' : 'Check again'}</button>
+      {checkAgain}
     </div>
     {message ? <p role="status">{message}</p> : null}
     <details><summary>Don’t see Sessions in the list?</summary>

@@ -140,6 +140,25 @@ func TestFleetFallbackFailureIsAttributedToTheEndpointItDialled(t *testing.T) {
 	if got := daemon.handler.lan.state().Permission.Status; got != "not-yet-asked" {
 		t.Fatalf("permission = %q, want unchanged", got)
 	}
+
+	// The row hides the detail, so assert the error itself: it must name the
+	// tailnet candidate that actually failed and must not blame the saved LAN
+	// primary, which nothing here established anything about.
+	ctx, cancel := context.WithTimeout(context.Background(), fleetProbeTimeout)
+	defer cancel()
+	_, _, err := daemon.handler.selectFleetEndpoint(ctx, fleetSavedMachine{
+		MachineID: "machine-b", Name: "B", Endpoint: fleetTestLANEndpoint, Transport: "nearby",
+		LANEndpoint: fleetTestLANEndpoint, TailnetIPEndpoint: fleetTestTailnetEndpoint,
+	}, fleetHostCredential)
+	if err == nil {
+		t.Fatal("selectFleetEndpoint succeeded with every candidate failing")
+	}
+	if !strings.Contains(err.Error(), "reach "+fleetTestTailnetEndpoint+":") {
+		t.Fatalf("error %q does not name the endpoint it dialled", err)
+	}
+	if strings.Contains(err.Error(), fleetTestLANEndpoint) {
+		t.Fatalf("error %q blamed the saved LAN primary", err)
+	}
 }
 
 // A peer that is off answers exactly like a blocked local network, so an

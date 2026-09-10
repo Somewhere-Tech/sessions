@@ -1912,9 +1912,14 @@ no supported API. It is `granted` or `not-yet-asked` on Darwin and
 contact — a verified discovery peer, a completed nearby connect, or a LAN fleet
 probe — records `granted` and persists across daemon restarts; nothing else is
 provable, so a failed dial leaves the observation unproven rather than recording
-a denial. `denied`, with its `reason` and `message`, remains a value clients must
-still accept from an older host; this daemon no longer reports it and no longer
-restores one written by an earlier version.
+a denial. The route reports that stored observation as-is and never re-verifies
+it, so `granted` means nearby contact worked when it was last attempted, not
+that the network works now: a client must not present it as a live connection,
+and a fresh failure from `GET /api/lan/discover` or `POST /api/lan/connect`
+describes the present better than this field does. `denied`, with its `reason`
+and `message`, remains a value clients must still accept from an older host and
+attribute to it; this daemon no longer reports it and no longer restores one
+written by an earlier version.
 
 ### `POST /api/lan`
 

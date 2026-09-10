@@ -374,12 +374,15 @@ looking at that surface. macOS 14 accepts the same binary metadata but does not
 enforce the macOS 15 Local Network gate.
 
 Apple provides no supported API to preflight this permission, force its prompt,
-or read the switch. Sessions therefore reports only what it can establish:
-`sessions doctor` shows `granted` once nearby contact has actually succeeded —
-macOS cannot be blocking local access while a LAN peer answers — and
-`not-yet-asked` while nothing is proven (`not-required` on other platforms).
-Successful nearby discovery, a completed nearby connect, or a LAN fleet probe
-records `granted` and reconciles any earlier failed attempt.
+or read the switch. Sessions therefore reports only what it can establish, and
+the report is a **last observation, not a current reading**: `granted` records
+that nearby contact succeeded when it was last attempted — macOS cannot be
+blocking local access while a LAN peer answers — and `not-yet-asked` means
+nothing has been proven (`not-required` on other platforms). Successful nearby
+discovery, a completed nearby connect, or a LAN fleet probe records `granted`
+and reconciles any earlier failed attempt. Nothing re-verifies it afterwards, so
+`sessions doctor` says so in words and the UI never presents a stored `granted`
+as a live connection.
 
 Nothing records a denial. A private or link-local Darwin dial failing with
 `EHOSTUNREACH` looks identical whether the switch is off or the other machine is
@@ -397,10 +400,14 @@ report `denied`, and clients keep accepting it.
 Fleet and Settings show a numbered recovery guide whenever nearby access is not
 confirmed. **Open System Settings** opens the local Mac's privacy pane; it never
 changes the permission. A phone or remote viewer instead names the host Mac
-where the steps belong. The guide refreshes on return to the app and periodically,
-and confirms recovery only after the daemon reports successful access. Older
-macOS versions may open the main privacy pane; the written navigation remains
-available beside the button.
+where the steps belong. The guide refreshes on return to the app and
+periodically, and it confirms working access only from a check that actually
+reached a nearby machine. A check that completes with nothing found, or one that
+fails, keeps the steps and its own error on screen even when the host still
+reports an earlier `granted`; that stored success is described as the host's
+last observation instead. A `denied` from an older host is attributed to that
+host rather than restated as a macOS verdict. Older macOS versions may open the
+main privacy pane; the written navigation remains available beside the button.
 
 ## Native update traffic
 

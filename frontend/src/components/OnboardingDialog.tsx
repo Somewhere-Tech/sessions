@@ -6,7 +6,7 @@ export interface OnboardingDialogProps {
   machine: string;
   busy: boolean;
   error: string | null;
-  onAllowLocalNetwork: () => Promise<void>;
+  onAllowLocalNetwork: () => Promise<unknown>;
   onChoose: (remoteControl: 'enabled' | 'local-only', delegatedAccess: 'inherit' | 'autonomous') => Promise<void>;
 }
 

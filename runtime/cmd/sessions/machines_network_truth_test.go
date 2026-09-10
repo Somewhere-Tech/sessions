@@ -43,13 +43,17 @@ func TestDoctorLocalNetworkReportsObservationsNotVerdicts(t *testing.T) {
 			map[string]any{"status": "not-yet-asked"},
 			"local network: not confirmed", "denied",
 		},
+		// A stored success is history. Reporting it as a present fact is what
+		// sent people to a settings pane after the condition had already passed.
 		"granted": {
 			map[string]any{"status": "granted"},
-			"local network: granted", "denied",
+			"nearby access worked at the host's last observation; this is not a live check", "denied",
 		},
+		// An older host's inference is that host's claim, not this CLI's reading
+		// of a macOS switch it cannot read.
 		"legacy denial from an older daemon": {
 			map[string]any{"status": "denied", "message": "older host sentence"},
-			"local network: denied — older host sentence", "System Settings",
+			"local network: the host (older version) reported denied — older host sentence", "System Settings",
 		},
 	}
 	for name, test := range tests {
