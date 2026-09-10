@@ -187,6 +187,10 @@ type HistoryOptions struct {
 	Machine                 string
 	Now                     func() time.Time
 	DiscoverProviderHistory bool
+	// CachePath is where the per-file message-count and activity fingerprints
+	// are kept between runs. Empty means they are not kept, which is what every
+	// short-lived caller wants.
+	CachePath string
 }
 
 // messageCountMode decides how much a listing is willing to pay for message
@@ -287,6 +291,8 @@ type HistoryStore struct {
 	cacheMu          sync.Mutex
 	cacheClock       uint64
 	cache            map[string]historyCacheEntry
+	cacheDirty       bool
+	cacheSavedAt     time.Time
 	providerMu       sync.Mutex
 	providerCachedAt time.Time
 	providerCache    []watch.ResumableSession
@@ -301,7 +307,9 @@ func NewHistoryStore(options HistoryOptions) *HistoryStore {
 	if options.ClaudeHistoryPath == "" && options.ClaudeProjectsDir != "" {
 		options.ClaudeHistoryPath = filepath.Join(filepath.Dir(options.ClaudeProjectsDir), "history.jsonl")
 	}
-	return &HistoryStore{options: options, cache: make(map[string]historyCacheEntry)}
+	store := &HistoryStore{options: options, cache: make(map[string]historyCacheEntry)}
+	store.loadPersistedCache()
+	return store
 }
 
 func (h *HistoryStore) List(live []state.SessionInfo) (HistoryResponse, error) {
@@ -438,6 +446,8 @@ func (h *HistoryStore) list(live []state.SessionInfo, counting messageCountMode)
 		}
 		return sessions[i].ID < sessions[j].ID
 	})
+	// Whatever this listing had to compute is worth keeping for the next boot.
+	h.persistIfDirty()
 	return sessions, nil
 }
 
@@ -854,6 +864,7 @@ func (h *HistoryStore) storeConversationActivity(path string, info os.FileInfo, 
 	h.cacheClock++
 	entry.used = h.cacheClock
 	h.cache[path] = entry
+	h.cacheDirty = true
 	h.evictHistoryCacheLocked()
 }
 

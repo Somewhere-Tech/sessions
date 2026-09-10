@@ -257,6 +257,7 @@ func (h *HistoryStore) messageCount(path, tool string, info os.FileInfo) (int, i
 	h.cacheClock++
 	entry.used = h.cacheClock
 	h.cache[path] = entry
+	h.cacheDirty = true
 	h.evictHistoryCacheLocked()
 	h.cacheMu.Unlock()
 	return count, skipped, nil

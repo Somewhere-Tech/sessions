@@ -66,7 +66,15 @@ override:
   and integration-error state already resolve;
 - `delivery-operations/`, the content-free idempotency receipts for composer
   submissions;
-- `usage.sqlite3` and `errors.jsonl`.
+- `usage.sqlite3` and `errors.jsonl`;
+- `history-cache.json`, what the history listing has already computed about each
+  transcript file — its message count and its recorded last activity — keyed by
+  path with the size and modification time those answers were computed at. It is
+  a cache and nothing depends on it: every entry is checked against the file
+  before it is used, a file that changed or vanished is recomputed, and a file
+  that cannot be parsed is treated as an empty cache. Deleting it costs one slow
+  listing. It is written after a listing that learned something, at most once
+  every five seconds, by rename, and holds at most 4096 entries (about 1 MB).
 
 These do **not** follow it, and resolve from the user state root, which is
 always derived from the home directory: `settings.json`, `machine-id`,
