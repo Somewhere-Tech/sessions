@@ -18,7 +18,7 @@ export const FLEET_BUDGET_MS = 8_000;
 /** The local machine still gets a bound, generously, because it is not a peer. */
 export const LOCAL_BUDGET_MS = 30_000;
 
-export type PeerStatus = 'answered' | 'timed-out' | 'unreachable' | 'restarting';
+export type PeerStatus = 'answered' | 'pending' | 'timed-out' | 'unreachable' | 'restarting';
 
 /** How often a machine that is restarting is asked again. */
 export const RESTART_RETRY_INTERVAL_MS = 2_000;
@@ -65,6 +65,12 @@ export function classifyPeerFailure(reason: unknown, local = false): PeerStatus 
 }
 
 export function peerReportText(report: PeerReport, retrying = false): string {
+  if (report.status === 'pending') {
+    // A machine that has not answered yet is not a machine that failed. Until
+    // its answer or its budget arrives, the only true thing to say is that we
+    // are still asking.
+    return `Loading from ${report.serverName}…`;
+  }
   if (report.status === 'restarting') {
     // While it is coming back, say so and keep asking. Once the window is over,
     // this is the same thing the connection banner says: sessionsd is not
