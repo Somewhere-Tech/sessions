@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -129,20 +128,20 @@ func TestStatusJSONFieldTableAgainstRealScratchSession(t *testing.T) {
 		t.Fatalf("decode status: %v\n%s", err, stdout.String())
 	}
 	t.Logf("status_json=%s", strings.TrimSpace(stdout.String()))
+	// status is the listing record plus what status adds, so its key set grows
+	// with the daemon's. These are the ones status itself owes the caller;
+	// TestStatusJSONCarriesEveryListingField covers the rest.
 	wantKeys := []string{
 		"age_ms", "created_at", "cwd", "description", "description_source", "git", "id",
-		"idle_detail", "idle_reason", "idle_since_ms", "kind", "last_activity_at", "last_summary",
-		"last_verdict", "lifecycle", "name", "permissions", "runner_protocol", "state", "tool",
+		"idle_detail", "idle_reason", "idle_since_ms", "last_activity_at", "last_summary",
+		"last_verdict", "lifecycle", "name", "permissions", "record", "runner_protocol", "state", "tool",
 	}
-	gotKeys := make([]string, 0, len(output))
-	for key := range output {
-		gotKeys = append(gotKeys, key)
+	for _, key := range wantKeys {
+		if _, present := output[key]; !present {
+			t.Fatalf("status is missing %q\n%s", key, stdout.String())
+		}
 	}
-	sort.Strings(gotKeys)
-	if !reflect.DeepEqual(gotKeys, wantKeys) {
-		t.Fatalf("status keys = %v, want %v\n%s", gotKeys, wantKeys, stdout.String())
-	}
-	if output["id"] != info.ID || output["name"] != "status scratch" || output["kind"] != "session" || output["state"] != "needs-you" || output["cwd"] != repo {
+	if output["id"] != info.ID || output["name"] != "status scratch" || output["record"] != "session" || output["state"] != "needs-you" || output["cwd"] != repo {
 		t.Fatalf("status identity/state = %#v", output)
 	}
 	if output["idle_reason"] != state.IdleReasonNeedsInput || output["idle_detail"] != "Approve the filesystem request?" || output["last_summary"] != "Implementation is ready for review." {
@@ -164,8 +163,13 @@ func TestStatusJSONFieldTableAgainstRealScratchSession(t *testing.T) {
 			t.Fatalf("%s = %q: %v", key, output[key], err)
 		}
 	}
+	keys := make([]string, 0, len(output))
+	for key := range output {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 	t.Logf("scratch session=%s field_table=%v git_branch=%s git_head=%s dirty_count=2 verdict=pass seq=1",
-		info.ID, gotKeys, git["branch"], git["head"])
+		info.ID, keys, git["branch"], git["head"])
 }
 
 func gitCommand(t *testing.T, directory string, args ...string) {

@@ -857,7 +857,9 @@ Usage:
 
 show a compact session status card
 
-Show session state, tool, working directory, git state, activity timestamps, and the latest explicit verdict when present.
+Show session state, tool, working directory, git state, activity timestamps, and the latest explicit verdict when present. Working, exited, the last turn's reason and summary, an unreachable runner and a provider failure each read as their own line, in the words `sessions ls` uses.
+
+--json answers with the session record `sessions ls --json` reports, field for field and name for name, plus what only status knows: record, state, git, last_verdict, created_at, last_activity_at, age_ms and the idle/ended detail fields. An agent inspecting one session before sending to it therefore reads exactly what an agent listing every session reads, and an absent field means the daemon did not report it rather than that status dropped it. `kind` is the session's own kind, as in the listing; the document type is `record`.
 
 Examples:
   sessions status 0123abcd
