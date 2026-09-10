@@ -687,17 +687,45 @@ live members waiting on a decision.
 
 ### `GET /api/profiles`
 
-Auth required. Returns profile directories by tool and name, including their
-path, currently active sessions, and last-used Unix milliseconds:
+Auth required. A profile is one account: a separate provider home with its own
+login and history. Returns them by tool and name, with their path, the label
+their owner gave them, whether the provider has written its login state there,
+the currently active sessions, and last-used Unix milliseconds:
 
 ```json
-{"profiles":[{"tool":"claude","name":"work","path":"/Users/me/.local/state/sessions/profiles/claude/work","sessions":[],"last_used":1784491200000}]}
+{"profiles":[{"tool":"claude","name":"work","label":"Work — team plan","signed_in":true,"path":"/Users/me/.local/state/sessions/profiles/claude/work","sessions":[],"last_used":1784491200000}]}
 ```
 
-Sessions exposes no profile deletion route because these directories contain
-provider credentials. Listing is implemented by
-[`internal/api/profiles_handlers.go`](../internal/api/profiles_handlers.go) and
-[`internal/session/profiles.go`](../internal/session/profiles.go).
+`label` is what a person typed when adding the account and is absent when they
+typed none. It is never read out of a provider's files. `signed_in` reports that
+the provider's own login state is present in that home — `.credentials.json` for
+Claude, `auth.json` for Codex — and nothing in it is opened or parsed. A
+provider that keeps its credential elsewhere, such as the system keychain, reads
+as not signed in here; that is a fact about the directory, not a claim about an
+account.
+
+### `POST /api/profiles`
+
+Auth required. Body is `{"tool":"claude"|"codex","name":"<1-32 lowercase
+letters, digits or hyphens>","label":"<optional>"}`. Creates the provider home
+if it is absent, records the label, and answers `{"profile":{…}}` with the same
+shape as the listing. It performs no login: the provider's own sign-in happens
+afterwards in a session created with that `profile`, where the person can see
+it. An invalid name or tool is `400`.
+
+### `DELETE /api/profiles/:tool/:name`
+
+Auth required. Unregisters the account from this machine's listing and **leaves
+the provider home in place**, answering
+`{"ok":true,"forgotten":"claude/work","home":"<path>","note":"the provider home
+was left in place for manual review"}`. Sessions has no route that deletes a
+provider home: those directories hold a real subscription's login and history.
+Creating the same tool and name again re-registers it with whatever was there.
+
+Implemented by
+[`internal/api/profiles_handlers.go`](../internal/api/profiles_handlers.go),
+[`internal/session/profiles.go`](../internal/session/profiles.go) and
+[`internal/session/accounts.go`](../internal/session/accounts.go).
 
 The optional worktree request and response fields are a backward-compatible Go
 extension implemented by [`internal/state/types.go`](../internal/state/types.go)

@@ -557,8 +557,51 @@ export interface AccountProfile {
   tool: 'claude' | 'codex';
   name: string;
   path: string;
+  /** What the person called this account. Never read out of a provider's files. */
+  label?: string;
+  /** The provider has written its login state into this home. Presence, not identity. */
+  signed_in: boolean;
   sessions: AccountProfileSession[];
   last_used: number;
+}
+
+export interface ForgottenAccount {
+  forgotten: string;
+  home: string;
+  note: string;
+}
+
+/**
+ * Register a second subscription's provider home on one machine. The login
+ * itself happens afterwards, in a session, where the person can watch it.
+ */
+export async function createAccount(
+  tool: 'claude' | 'codex', name: string, label: string, serverId?: string
+): Promise<AccountProfile> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/profiles`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tool, name, label })
+  });
+  const body = await json<{ profile: AccountProfile }>(r);
+  return body.profile;
+}
+
+/**
+ * Take an account off this machine's list. The provider home stays: it holds a
+ * real subscription's login and history, and the answer names it.
+ */
+export async function forgetAccount(
+  tool: 'claude' | 'codex', name: string, serverId?: string
+): Promise<ForgottenAccount> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(
+    server,
+    `${httpBaseForServer(server)}/api/profiles/${encodeURIComponent(tool)}/${encodeURIComponent(name)}`,
+    { method: 'DELETE' }
+  );
+  return json<ForgottenAccount>(r);
 }
 
 async function profilesForServer(server: ServerConfig, signal?: AbortSignal): Promise<AccountProfile[]> {

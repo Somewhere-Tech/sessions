@@ -23,6 +23,29 @@
 .profile-provider { font-size: 12px; font-weight: 750; }
 .profile-provider.is-claude { color: #e1835d; }
 .profile-provider.is-codex { color: #48aa99; }
+
+/* Accounts: a second subscription is a row a person reads, not a setting. */
+.accounts-list > div.accounts-row { grid-template-columns: 70px minmax(0, 1fr) auto auto auto auto auto auto; }
+.accounts-row .accounts-name { font-variant-numeric: tabular-nums; }
+.accounts-row .accounts-ready { color: var(--ok, #48aa99); }
+.accounts-row .accounts-pending { color: var(--warn, #d08a3a); }
+.accounts-add { display: grid; gap: 10px; }
+.accounts-add label { display: grid; gap: 4px; font-size: 12px; }
+.accounts-add-actions { display: flex; gap: 8px; }
+.accounts-signing-in ol { margin: 8px 0 12px; padding-left: 20px; display: grid; gap: 6px; font-size: 12px; }
+
+/* The badge a session carries when it is not on the default account. */
+.account-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+.account-badge.is-session-head { font-size: 12px; }
 .settings-cloud-page { width: min(980px, calc(100% - 48px)); }
 .settings-cloud-page .somewhere-hub { margin-top: 22px; }
 .support-draft { display: grid; gap: 7px; }

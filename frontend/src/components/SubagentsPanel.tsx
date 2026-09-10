@@ -6,6 +6,7 @@ import { resolvedSessionLabel } from '../lib/tabLabels';
 import type { ApprovalDecision, SessionInfo } from '../types';
 import { normalizeProvider, ProviderMark } from './ProviderBadge';
 import { copyText } from '../lib/copyText';
+import { AccountBadge } from './AccountBadge';
 
 interface Props {
   manager: SessionInfo;
@@ -213,7 +214,7 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
               <div className="subagent-card-head">
                 <span className={`subagent-status ${status.className}`} aria-hidden />
                 <div>
-                  <strong>{index + 1}. {resolvedSessionLabel(session)}</strong>
+                  <strong>{index + 1}. {resolvedSessionLabel(session)}<AccountBadge session={session} /></strong>
                   <small>{status.label}{activityLabel ? ` · ${activityLabel}` : ''}</small>
                 </div>
                 {provider ? <ProviderMark provider={provider} size={24} /> : <span className="subagent-shell" title="Shell">⌘</span>}

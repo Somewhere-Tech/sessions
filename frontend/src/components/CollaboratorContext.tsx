@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchProfiles, generateConversationBriefing, type AccountProfile } from '../api/sessionsd';
 import type { ForkPoint } from './ForkConfirmationDialog';
 import type { SessionInfo } from '../types';
+import { accountLabel } from '../lib/accountChoice';
 
 export function useCollaboratorContext(session: SessionInfo, destination: 'claude' | 'codex', serverId: string, point?: ForkPoint) {
   const [mode, setMode] = useState<'briefing' | 'conversation'>('briefing');
@@ -59,7 +60,7 @@ export function CollaboratorContext({ value, source, disabled }: {
     <details><summary>Account</summary><label>Run this agent with<select aria-label="Destination account" value={value.profile} disabled={disabled} onChange={(event) => value.setProfile(event.target.value)}>
       <option value="">Machine default account</option>
       {value.profile && !value.profiles.some((p) => p.name === value.profile) ? <option value={value.profile}>{value.profile}</option> : null}
-      {value.profiles.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
-    </select></label>{value.profileError ? <p role="alert">{value.profileError}</p> : null}<small>Uses an existing account on this computer. Connect a new account through Add agent → Advanced first.</small></details>
+      {value.profiles.map((p) => <option key={p.name} value={p.name}>{accountLabel(p)}{p.signed_in ? '' : ' · needs sign-in'}</option>)}
+    </select></label>{value.profileError ? <p role="alert">{value.profileError}</p> : null}<small>Uses an existing account on this computer. Settings › Accounts adds one.</small></details>
   </div>;
 }

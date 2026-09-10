@@ -18,9 +18,17 @@ type ProfileSession struct {
 }
 
 type ProfileStatus struct {
-	Tool     string           `json:"tool"`
-	Name     string           `json:"name"`
-	Path     string           `json:"path"`
+	Tool string `json:"tool"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// Label is what the person called this account when they added it. It is
+	// never read out of a provider's files: an account has the name its owner
+	// typed, or none.
+	Label string `json:"label,omitempty"`
+	// SignedIn reports that this provider home carries the login state the
+	// provider writes there. It is the presence of that state, not a claim
+	// about which account is signed in.
+	SignedIn bool             `json:"signed_in"`
 	Sessions []ProfileSession `json:"sessions"`
 	LastUsed int64            `json:"last_used"`
 }
@@ -70,9 +78,16 @@ func (m *Manager) Profiles(ctx context.Context) ([]ProfileStatus, error) {
 			if info, statErr := entry.Info(); statErr == nil {
 				lastUsed = info.ModTime().UnixMilli()
 			}
+			sidecar := readAccountSidecar(m.config.UserStateRoot, tool, entry.Name())
+			if sidecar.Removed {
+				// Unregistered from this machine's list. The home is still
+				// there, and naming it again re-registers it.
+				continue
+			}
 			key := tool + "\x00" + entry.Name()
 			profiles[key] = &ProfileStatus{
-				Tool: tool, Name: entry.Name(), Path: path,
+				Tool: tool, Name: entry.Name(), Path: path, Label: sidecar.Label,
+				SignedIn: profileSignedIn(path, tool),
 				Sessions: make([]ProfileSession, 0), LastUsed: lastUsed,
 			}
 		}

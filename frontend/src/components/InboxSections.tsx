@@ -4,6 +4,7 @@ import { type InboxLayout, type InboxSection, type ProviderFaultNotice, notConne
 import { classifySession } from '../lib/sessionStatus';
 import { resolvedSessionLabel } from '../lib/tabLabels';
 import { ProviderMark, normalizeProvider } from './ProviderBadge';
+import { AccountBadge } from './AccountBadge';
 
 interface Props {
   layout: InboxLayout;
@@ -96,7 +97,10 @@ function AttentionRow({ session, why, onOpen, folderOf, relativeTime, lastActivi
   return (
     <button type="button" className="inbox-needs-row" onClick={() => onOpen(session.id)} title={session.failureDetail || 'Open this session'}>
       <span className="inbox-needs-mark">{provider ? <ProviderMark provider={provider} size={16} /> : <span aria-hidden>⌘</span>}</span>
-      <span className="inbox-needs-copy"><strong>{resolvedSessionLabel(session)}</strong><small>{folderOf(session)}</small></span>
+      <span className="inbox-needs-copy">
+        <strong>{resolvedSessionLabel(session)}<AccountBadge session={session} /></strong>
+        <small>{folderOf(session)}</small>
+      </span>
       <span className={`inbox-needs-why${providerTrouble ? ` ${status.className}` : ''}`}>{why}</span>
       <time>{relativeTime(lastActivity(session))}</time>
     </button>

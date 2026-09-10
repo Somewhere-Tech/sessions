@@ -59,7 +59,8 @@ export interface FakeMachine {
     text: string;
     cwd?: string;
   }>;
-  profiles?: unknown[];
+  /** The accounts this machine holds, as GET /api/profiles reports them. */
+  profiles?: FakeAccount[];
   directories?: DirectoryCandidate[];
   providers?: ProviderStatus[];
   codexModels?: SessionModelOption[];
@@ -80,6 +81,17 @@ export interface FakeMachine {
   /** Optional latency used to expose same-tick duplicate-action races. */
   createDelayMS?: number;
   submitDelayMS?: number;
+}
+
+/** One second subscription on a machine: a provider home with a name. */
+export interface FakeAccount {
+  tool: 'claude' | 'codex';
+  name: string;
+  path?: string;
+  label?: string;
+  signed_in?: boolean;
+  sessions?: Array<{ id: string; name?: string }>;
+  last_used?: number;
 }
 
 export interface FakeFleetPeer {
@@ -592,7 +604,42 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     }
 
     // ── settings surfaces the views read on mount ───────────────────────
-    if (path === '/api/profiles') return jsonResponse({ profiles: machine.profiles ?? [] });
+    if (path === '/api/profiles' && method === 'GET') {
+      // Absent fields answer the way the daemon answers them, so a fixture can
+      // name an account in one line without describing a whole home.
+      return jsonResponse({
+        profiles: (machine.profiles ?? []).map((account) => ({
+          path: `/state/profiles/${account.tool}/${account.name}`,
+          signed_in: false, sessions: [], last_used: 0, ...account
+        }))
+      });
+    }
+    if (path === '/api/profiles' && method === 'POST') {
+      // Registering an account is a home and a label. The provider writes its
+      // own login later, which is what `signed_in` reports.
+      const request = body as { tool: 'claude' | 'codex'; name: string; label?: string };
+      const account: FakeAccount = {
+        tool: request.tool, name: request.name, label: request.label,
+        path: `/state/profiles/${request.tool}/${request.name}`,
+        signed_in: false, sessions: [], last_used: 0
+      };
+      machine.profiles = [...(machine.profiles ?? []).filter(
+        (existing) => !(existing.tool === account.tool && existing.name === account.name)
+      ), account];
+      return jsonResponse({ profile: account });
+    }
+    const accountRoute = /^\/api\/profiles\/([^/]+)\/([^/]+)$/.exec(path);
+    if (accountRoute && method === 'DELETE') {
+      const [, tool, name] = accountRoute;
+      machine.profiles = (machine.profiles ?? []).filter(
+        (existing) => !(existing.tool === tool && existing.name === name)
+      );
+      return jsonResponse({
+        ok: true, forgotten: `${tool}/${name}`,
+        home: `/state/profiles/${tool}/${name}`,
+        note: 'the provider home was left in place for manual review'
+      });
+    }
     if (path === '/api/directories') return jsonResponse({ directories: machine.directories ?? [] });
     if (path === '/api/fs/list') {
       return jsonResponse({ path: '/Users/example', parent: '/Users', entries: [] });

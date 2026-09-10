@@ -30,6 +30,7 @@ import { copyText } from '../lib/copyText';
 import { sizeLabel, type TextSize } from '../lib/textSize';
 const ConnectionsView = lazy(() => import('./ConnectionsView').then((module) => ({ default: module.ConnectionsView })));
 import type { ThemeMode } from './ProductSidebar';
+import { AccountsPanel } from './AccountsPanel';
 import { SomewhereCard } from './SomewhereCard';
 import { useSessions } from '../store/sessions';
 
@@ -345,7 +346,7 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
             onClaudeDraft={setClaudeSettings}
           />
         ) : section === 'accounts' ? (
-          <AccountSettings profiles={profiles} />
+          <AccountsPanel profiles={profiles} machineName={machineName} onReload={setProfiles} />
         ) : section === 'fleet' ? (
           <Suspense fallback={<p role="status">Loading connections…</p>}><ConnectionsView clientOnly={clientOnly} hostName={machineName} /></Suspense>
         ) : section === 'cloud' ? (
@@ -500,23 +501,6 @@ function AgentSettings(props: AgentSettingsProps): JSX.Element {
           ><option value="codex">Codex</option><option value="claude">Claude</option></select>
         </label>
         {props.aiMessage ? <div className="settings-message">{props.aiMessage}</div> : null}
-      </div>
-    </section>
-  );
-}
-
-function AccountSettings({ profiles }: { profiles: AccountProfile[] }): JSX.Element {
-  return (
-    <section className="settings-page">
-      <span className="settings-kicker">Isolated credentials</span>
-      <h1>Accounts & profiles</h1>
-      <p>Profiles let one Mac run multiple Claude or Codex logins without mixing provider history.</p>
-      <div className="settings-card">
-        <h2>Discovered profiles</h2>
-        <div className="settings-profile-list">
-          {profiles.map((profile) => <div key={`${profile.tool}:${profile.name}`}><span className={`profile-provider is-${profile.tool}`}>{profile.tool === 'claude' ? 'Claude' : 'Codex'}</span><strong>{profile.name}</strong><small>{profile.sessions.length} known session{profile.sessions.length === 1 ? '' : 's'}</small></div>)}
-          {profiles.length === 0 ? <p>No named profiles yet. Choose “Add another login” in New Session.</p> : null}
-        </div>
       </div>
     </section>
   );

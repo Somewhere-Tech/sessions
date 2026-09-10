@@ -37,8 +37,14 @@ var commandTable = []commandSpec{
 	{
 		name: "profiles", usage: "profiles",
 		summary: "list Claude and Codex login profiles", group: dailyCommandGroup, localJSON: true,
-		longHelp: "List profile names, private config paths, active sessions, and last-use times. Sessions never reads or copies credentials and has no profile delete command; remove a profile manually only after reviewing the printed path.",
+		longHelp: "List profile names, labels, whether the provider has signed in, private config paths, active sessions, and last-use times. Sessions never reads or copies credentials and has no profile delete command; remove a profile manually only after reviewing the printed path. `sessions accounts` is the same list with the verbs that add and unregister one.",
 		examples: []string{"sessions profiles", "sessions --json profiles"}, run: (*app).cmdProfiles,
+	},
+	{
+		name: "accounts", usage: "accounts [list | add <name> --tool claude|codex [--label TEXT] | forget <name> --tool claude|codex]",
+		summary: "list and add second Claude or ChatGPT accounts", group: dailyCommandGroup, localJSON: true,
+		longHelp: "A second subscription lives in its own provider home with its own login and history; a session picks one with --profile, and delegated lanes inherit their manager's. `accounts` with no arguments is `sessions profiles`.\n\n`accounts add <name> --tool claude|codex` registers the home, records the label you give it, and opens a session on this machine running that provider inside it so the login happens in front of you: Claude through `/login`, Codex through its Sign in with ChatGPT choice. Sessions prints what the provider prints and never handles the credential, the URL, or the code. Check the account in your browser before confirming; the account then reads as signed in because the provider wrote its own login state into that home, which is the only thing Sessions inspects.\n\n`accounts forget <name> --tool claude|codex` removes the account from this machine's list and leaves the provider home in place, naming it so you can review or delete it yourself. Adding the same name again re-registers it with its login intact. Subscription logins are the only supported form; there is no API-key path here.",
+		examples: []string{"sessions accounts", "sessions accounts add work --tool claude --label 'Work — team plan'", "sessions accounts forget work --tool claude"}, run: (*app).cmdAccounts,
 	},
 	{
 		name: "onboarding", usage: "onboarding",

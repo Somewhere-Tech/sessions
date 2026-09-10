@@ -144,3 +144,45 @@ request/accept flow. The host sees the observed LAN address or verified
 Tailscale identity and decides with the Fleet inbox or `sessions access`.
 Pairing codes are the faster path when both devices are in front of the user;
 requests remain useful when a link cannot be transferred.
+
+## Accounts
+
+A subscription is not a machine. One computer can hold several Claude or
+ChatGPT logins, each in its own provider home with its own history, and a
+session picks one when it starts. Sessions calls those accounts; the on-disk
+name is a profile, and `--profile` is unchanged.
+
+**Choosing one.** New Session has an **Account** control beside Agent and
+Computer: **Default**, every account on the selected computer, and **Add an
+account…**. The list follows the computer, because an account exists on the
+machine that holds its login. A project's last choice is remembered per
+computer, so a folder that belongs to the work plan keeps using it. A delegated
+lane starts on its manager's account, shown as *from this session*, and can be
+changed before it starts.
+
+**Adding one.** Settings › Accounts → **Add account** asks for a provider, a
+short name for the home, and a label for you to recognise it by. Sessions
+creates the home, then opens a session on that computer running the provider
+inside it so the login happens in front of you: Claude through `/login`, Codex
+through **Sign in with ChatGPT**. Sessions prints what the provider prints and
+never handles the credential, the link, or the code. **Check which account you
+are signing in as in the browser before confirming** — the provider's page, not
+Sessions, is what knows. The account reads as signed in once the provider has
+written its own login state into that home, which is the only thing Sessions
+inspects. Subscription logins are the supported form; there is no API-key path.
+
+**Seeing it.** A session that is not on the default account carries its account
+name in the session header, the inbox row, and the Lanes panel. Resuming a
+conversation keeps the account it was started on. Continuing a conversation on
+the other provider asks which account to use, because it is a different
+subscription.
+
+**Removing one.** **Remove** takes the account off this computer's list and
+leaves the provider home in place, naming the directory so you can review or
+delete it yourself. Adding the same name again re-registers it with its login
+intact. Sessions has no command that deletes a provider home.
+
+**From the CLI.** `sessions accounts` lists them with labels and sign-in state,
+`sessions accounts add <name> --tool claude|codex [--label TEXT]` performs the
+same guided login headlessly, and `sessions accounts forget <name> --tool
+claude|codex` unregisters one. `sessions profiles` remains the same listing.

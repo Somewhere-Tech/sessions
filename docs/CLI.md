@@ -38,6 +38,7 @@ document, including on failure, and its `code` matches the exit status.
 Daily workflows:
   new                      create an interactive session
   profiles                 list Claude and Codex login profiles
+  accounts                 list and add second Claude or ChatGPT accounts
   onboarding               inspect user consent and delegated access
   defaults                 inspect or change new-session defaults
   providers                inspect or update agent CLIs
@@ -173,11 +174,33 @@ Usage:
 
 list Claude and Codex login profiles
 
-List profile names, private config paths, active sessions, and last-use times. Sessions never reads or copies credentials and has no profile delete command; remove a profile manually only after reviewing the printed path.
+List profile names, labels, whether the provider has signed in, private config paths, active sessions, and last-use times. Sessions never reads or copies credentials and has no profile delete command; remove a profile manually only after reviewing the printed path. `sessions accounts` is the same list with the verbs that add and unregister one.
 
 Examples:
   sessions profiles
   sessions --json profiles
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions accounts`
+
+```text
+Usage:
+  sessions accounts [list | add <name> --tool claude|codex [--label TEXT] | forget <name> --tool claude|codex]
+
+list and add second Claude or ChatGPT accounts
+
+A second subscription lives in its own provider home with its own login and history; a session picks one with --profile, and delegated lanes inherit their manager's. `accounts` with no arguments is `sessions profiles`.
+
+`accounts add <name> --tool claude|codex` registers the home, records the label you give it, and opens a session on this machine running that provider inside it so the login happens in front of you: Claude through `/login`, Codex through its Sign in with ChatGPT choice. Sessions prints what the provider prints and never handles the credential, the URL, or the code. Check the account in your browser before confirming; the account then reads as signed in because the provider wrote its own login state into that home, which is the only thing Sessions inspects.
+
+`accounts forget <name> --tool claude|codex` removes the account from this machine's list and leaves the provider home in place, naming it so you can review or delete it yourself. Adding the same name again re-registers it with its login intact. Subscription logins are the only supported form; there is no API-key path here.
+
+Examples:
+  sessions accounts
+  sessions accounts add work --tool claude --label 'Work — team plan'
+  sessions accounts forget work --tool claude
 
 --json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

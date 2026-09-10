@@ -12,6 +12,7 @@ import { SessionDetails } from './SessionDetails';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import { getActiveServer, serverDisplayName } from '../lib/servers';
 import { resolvedSessionLabel } from '../lib/tabLabels';
+import { AccountBadge } from './AccountBadge';
 const SessionHistoryView = lazy(() => import('./SessionHistoryView').then((module) => ({ default: module.SessionHistoryView })));
 import { classifySession } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
@@ -510,6 +511,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               />
             ) : <h1>Session</h1>}
             <span className={`session-live-pill${statusTone}`}>{statusLabel}</span>
+            {session ? <AccountBadge session={session} className="is-session-head" /> : null}
             {session ? (
               <span className="session-runtime-anchor">
                 <span
