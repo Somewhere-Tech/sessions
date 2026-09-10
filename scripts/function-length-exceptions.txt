@@ -80,7 +80,7 @@ typescript frontend/src/hooks/useTerminal.ts useTerminal 851
 typescript frontend/src/components/SessionNavigator.tsx SessionNavigator 831
 typescript frontend/src/App.tsx ConnectedApp 799
 typescript frontend/src/components/SessionView.tsx SessionViewInner 678
-typescript frontend/src/components/SearchView.tsx SearchView 594
+typescript frontend/src/components/SearchView.tsx SearchView 578
 typescript frontend/src/components/NewSessionDialog.tsx NewSessionDialog 564
 typescript frontend/src/components/ResumeDialog.tsx ResumeDialog 501
 typescript frontend/src/components/SettingsMenu.tsx SettingsMenu 494

@@ -18,7 +18,18 @@ export const FLEET_BUDGET_MS = 8_000;
 /** The local machine still gets a bound, generously, because it is not a peer. */
 export const LOCAL_BUDGET_MS = 30_000;
 
-export type PeerStatus = 'answered' | 'timed-out' | 'unreachable';
+export type PeerStatus = 'answered' | 'timed-out' | 'unreachable' | 'restarting';
+
+/** How often a machine that is restarting is asked again. */
+export const RESTART_RETRY_INTERVAL_MS = 2_000;
+
+/**
+ * How long a refused local read is treated as a restart. An install restarts
+ * the daemon for two to four minutes on the machine itself, but the app is
+ * usually pointed at a daemon that comes back much sooner; past this window,
+ * saying "restarting" would be a guess about a machine that is simply down.
+ */
+export const RESTART_RETRY_WINDOW_MS = 60_000;
 
 export interface PeerReport {
   serverId: string;
@@ -36,14 +47,29 @@ export function peerBudget(base: AbortSignal, local: boolean): AbortBudget {
  * A machine that ran out of time and a machine that refused are different
  * things to a person: one may work on the next try, the other needs attention.
  * An abort raised by the budget is the first; anything else is the second.
+ *
+ * The machine in front of you is a third case. A refused connection to this
+ * Mac, during the minutes an install restarts its daemon, is a state that ends
+ * on its own — and the browser's own words for it ("Load failed" in WebKit) are
+ * no help to anyone. A refused peer stays unreachable: nothing here knows that
+ * another machine is mid-install, and guessing would be worse than saying what
+ * happened.
  */
-export function classifyPeerFailure(reason: unknown): PeerStatus {
+export function classifyPeerFailure(reason: unknown, local = false): PeerStatus {
   if (reason instanceof DOMException && reason.name === 'TimeoutError') return 'timed-out';
   if (reason instanceof DOMException && reason.name === 'AbortError') return 'timed-out';
-  return 'unreachable';
+  return local ? 'restarting' : 'unreachable';
 }
 
-export function peerReportText(report: PeerReport): string {
+export function peerReportText(report: PeerReport, retrying = false): string {
+  if (report.status === 'restarting') {
+    // While it is coming back, say so and keep asking. Once the window is over,
+    // this is the same thing the connection banner says: sessionsd is not
+    // responding, and the person has to look at the machine.
+    return retrying
+      ? `Sessions is restarting on ${report.serverName} — retrying…`
+      : `sessionsd is not responding on ${report.serverName}. Check that it is running.`;
+  }
   if (report.status === 'timed-out') {
     return `${report.serverName} did not answer in time — these results are missing its history.`;
   }

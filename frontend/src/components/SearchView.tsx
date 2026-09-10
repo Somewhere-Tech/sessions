@@ -36,6 +36,7 @@ import {
   type PeerReport
 } from '../lib/fleetPeerBudget';
 import { isTauri } from '../lib/tauriBridge';
+import { useRestartRetry } from '../hooks/useRestartRetry';
 import { ConversationBrowser } from './ConversationBrowser';
 import { ProviderBadge, normalizeProvider, type Provider } from './ProviderBadge';
 import { normalizeTranscriptIndexes } from '../lib/searchTranscript';
@@ -241,7 +242,7 @@ async function readServerForSearch(
       report: {
         serverId: server.id,
         serverName,
-        status: classifyPeerFailure(reason),
+        status: classifyPeerFailure(reason, isLocalServer(server)),
         detail: reason instanceof Error ? reason.message : null
       }
     };
@@ -413,6 +414,8 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
     () => peerReports.filter((report) => report.status !== 'answered'),
     [peerReports]
   );
+  const restarting = missingPeers.some((report) => report.status === 'restarting');
+  const stillRetrying = useRestartRetry(restarting, peerReports, () => setRetryToken((token) => token + 1));
   const countsArePartial = metas.some((meta) => meta.rollupPartial)
     || anyPeerMissing(peerReports)
     || metas.length < servers.length;
@@ -734,10 +737,14 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
 
         {missingPeers.length > 0 ? (
           <div className="search-errors" role="status">
-            {missingPeers.map(peerReportText).join(' · ')}
-            <button type="button" className="btn btn-ghost" onClick={() => setRetryToken((token) => token + 1)}>
-              Try again
-            </button>
+            {missingPeers.map((report) => peerReportText(report, stillRetrying)).join(' · ')}
+            {/* Asking again is already happening; a button beside it would only
+                invite a person to do what the screen is doing. */}
+            {stillRetrying ? null : (
+              <button type="button" className="btn btn-ghost" onClick={() => setRetryToken((token) => token + 1)}>
+                Try again
+              </button>
+            )}
           </div>
         ) : null}
         {screenError ? <div className="search-errors">{screenError}</div> : null}
@@ -782,7 +789,12 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
             } : undefined}
           />
         ) : rows.length === 0 && !loading ? (
-          <div className="usage-empty">No matching conversations.</div>
+          // A machine that did not answer is not an answer of none. Saying "no
+          // matching conversations" while this Mac is restarting would report
+          // its silence as its history.
+          <div className="usage-empty">
+            {missingPeers.length > 0 ? 'No matching conversations on the machines that answered.' : 'No matching conversations.'}
+          </div>
         ) : (
           <div className="search-results">
             {rows.map((row) => row.kind === 'group' ? (
