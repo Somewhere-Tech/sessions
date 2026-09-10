@@ -11,7 +11,8 @@ import userEvent from '@testing-library/user-event';
 import { SearchView } from '../../src/components/SearchView';
 import { ConnectionStatus } from '../../src/components/ConnectionStatus';
 import { useSessions } from '../../src/store/sessions';
-import { RESTART_RETRY_WINDOW_MS } from '../../src/lib/fleetPeerBudget';
+import { AuthError, DaemonResponseError } from '../../src/api/sessionsd';
+import { classifyPeerFailure, RESTART_RETRY_WINDOW_MS } from '../../src/lib/fleetPeerBudget';
 import { installFakeDaemon, makeSession, useFakeMachines, type FakeMachine } from './fake-daemon';
 
 function localMachine(): FakeMachine {
@@ -84,6 +85,41 @@ describe('capability: search during a daemon restart', () => {
     expect(screen.queryByText('No matching conversations.')).not.toBeInTheDocument();
     vi.useRealTimers();
   }, 20_000);
+
+  it('does not call an answered failure a restart', async () => {
+    const machine = localMachine();
+    // The daemon is running and says so — it just cannot serve this read.
+    machine.searchFailure = { status: 500, message: 'search index is rebuilding' };
+    installFakeDaemon([machine]);
+    useFakeMachines([machine], 'local');
+    const user = userEvent.setup();
+    render(<SearchView onResumeConversation={async () => {}} />);
+    await searchFor(user, 'rollout');
+
+    // What the daemon said, not what this screen guessed.
+    const notice = await screen.findByText(/search index is rebuilding/);
+    expect(notice).toHaveTextContent('sessionsd 500');
+    expect(screen.queryByText(/Sessions is restarting/)).not.toBeInTheDocument();
+    // A machine that answers is not polled every two seconds; the person decides.
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeEnabled();
+  }, 20_000);
+
+  it('keeps every answered local failure out of the restart state', () => {
+    // These reach classifyPeerFailure from readServerForSearch's catch. Only a
+    // rejected connection is a restart; each of these is a daemon that replied.
+    const answered: unknown[] = [
+      new DaemonResponseError(500, '{"error":"search index is rebuilding"}', 'Internal Server Error'),
+      new DaemonResponseError(409, '{"error":"session is paused","code":"SESSION_NEEDS_RECREATE"}', 'Conflict'),
+      new Error('Smart features is not available on this runtime. Update Sessions or connect to a current sessionsd.'),
+      new AuthError()
+    ];
+    for (const reason of answered) {
+      expect(classifyPeerFailure(reason, true)).toBe('unreachable');
+    }
+    expect(classifyPeerFailure(new TypeError('Load failed'), true)).toBe('restarting');
+    // The same refusal from a peer is still just a peer that is not there.
+    expect(classifyPeerFailure(new TypeError('Load failed'), false)).toBe('unreachable');
+  });
 
   it('agrees with the header about the same machine at the same moment', async () => {
     const { machines } = restartingFleet();

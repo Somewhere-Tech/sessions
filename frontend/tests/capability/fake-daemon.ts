@@ -68,6 +68,8 @@ export interface FakeMachine {
   continuationJobs?: ContinuationJob[];
   team?: TeamListing;
   projectFailure?: { status: number; message: string };
+  /** How this machine answers /api/search while it is running but failing. */
+  searchFailure?: { status: number; message: string };
   teamFailure?: { status: number; message: string };
   /**
    * Machines this host has approved and relays to, as GET /api/fleet/machines
@@ -576,6 +578,9 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
 
     // ── search ──────────────────────────────────────────────────────────
     if (path === '/api/search') {
+      if (machine.searchFailure) {
+        return jsonResponse({ error: machine.searchFailure.message }, machine.searchFailure.status);
+      }
       return jsonResponse(searchFor(
         machine,
         url.searchParams.get('q') ?? '',

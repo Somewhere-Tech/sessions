@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+  daemonErrorDisplay,
   fetchServerHistory,
   fetchServerHistoryTranscript,
   fetchServerResumableSessions,
@@ -243,7 +244,9 @@ async function readServerForSearch(
         serverId: server.id,
         serverName,
         status: classifyPeerFailure(reason, isLocalServer(server)),
-        detail: reason instanceof Error ? reason.message : null
+        // A daemon that answered with a failure said something; show its own
+        // sentence rather than this screen's guess about what went wrong.
+        detail: daemonErrorDisplay(reason)
       }
     };
   } finally {

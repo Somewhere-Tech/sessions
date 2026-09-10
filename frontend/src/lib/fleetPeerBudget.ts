@@ -48,17 +48,20 @@ export function peerBudget(base: AbortSignal, local: boolean): AbortBudget {
  * things to a person: one may work on the next try, the other needs attention.
  * An abort raised by the budget is the first; anything else is the second.
  *
- * The machine in front of you is a third case. A refused connection to this
- * Mac, during the minutes an install restarts its daemon, is a state that ends
- * on its own — and the browser's own words for it ("Load failed" in WebKit) are
- * no help to anyone. A refused peer stays unreachable: nothing here knows that
- * another machine is mid-install, and guessing would be worse than saying what
- * happened.
+ * The machine in front of you is a third case, and only when the connection
+ * itself never happened: fetch rejects with a TypeError when the socket is
+ * refused ("Load failed" in WebKit, "Failed to fetch" in Chromium), which is
+ * exactly what a daemon being restarted by an install looks like. A daemon that
+ * answered — 500, 409, 401, or a feature it does not carry — is running, and
+ * calling that a restart would report its answer as silence. A refused peer
+ * stays unreachable: nothing here knows another machine is mid-install, and
+ * guessing would be worse than saying what happened.
  */
 export function classifyPeerFailure(reason: unknown, local = false): PeerStatus {
   if (reason instanceof DOMException && reason.name === 'TimeoutError') return 'timed-out';
   if (reason instanceof DOMException && reason.name === 'AbortError') return 'timed-out';
-  return local ? 'restarting' : 'unreachable';
+  if (local && reason instanceof TypeError) return 'restarting';
+  return 'unreachable';
 }
 
 export function peerReportText(report: PeerReport, retrying = false): string {
