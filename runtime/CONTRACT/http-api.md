@@ -1275,8 +1275,23 @@ are 502.
 Auth required. Returns the latest durable receipt for a composer submission.
 A record left `pending` by a daemon crash is exposed as `unknown` with
 `retry:false`, because Sessions cannot prove whether runner input happened
-before the crash. A missing operation is 404. This endpoint never returns the
-message body or its content digest.
+before the crash. This endpoint never returns the message body or its content
+digest.
+
+**A recorded receipt is 200 whatever it says**, including `not-delivered`: a
+refusal is an answer about a message, not a missing resource, and a caller must
+not have to unwrap it from an error to find out that nothing was sent. `404` is
+reserved for an operation id this daemon never recorded. (`POST
+/api/sessions/:id/submit` keeps its own mapping, where `not-delivered` answers
+404 with the same receipt body.)
+
+A refusal that happened **before any input reached the provider** — a structured
+runner declining a message during an active turn, a session that is waiting on a
+provider control, a steer an older runner cannot perform — carries
+`retry:true`: nothing was sent, so sending the same operation id again once the
+condition clears is safe and cannot duplicate the message. `retry:false` means
+the opposite and is never an invitation to resend: it marks what Sessions could
+not prove, including every `unknown`.
 
 Reading is also how an interrupted submission is resolved. A structured runner
 commits the message before it acknowledges, so a caller that disconnects can

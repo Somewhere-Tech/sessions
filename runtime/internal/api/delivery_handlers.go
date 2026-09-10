@@ -33,7 +33,12 @@ func (s *Server) handleDeliveryRoute(response http.ResponseWriter, request *http
 		s.sendJSON(response, status, map[string]any{"error": err.Error(), "operation_id": operationID}, corsOrigin)
 		return true
 	}
-	s.sendDeliveryRecord(response, s.reconcileLateAcceptance(record), true, corsOrigin)
+	// A recorded refusal is an answer, not a missing resource: reading a receipt
+	// that exists is 200 whatever it says, and 404 is reserved for an operation
+	// id this daemon never recorded. The submit routes keep their own status
+	// mapping, which callers already read.
+	body, _ := s.deliveryReceiptBody(s.reconcileLateAcceptance(record), true)
+	s.sendJSON(response, http.StatusOK, body, corsOrigin)
 	return true
 }
 
@@ -65,6 +70,20 @@ func (s *Server) reconcileLateAcceptance(record delivery.Record) delivery.Record
 }
 
 func (s *Server) sendDeliveryRecord(response http.ResponseWriter, record delivery.Record, duplicate bool, corsOrigin string) {
+	body, status := s.deliveryReceiptBody(record, duplicate)
+	httpStatus := http.StatusOK
+	if status == delivery.StatusNotDelivered {
+		httpStatus = http.StatusNotFound
+	}
+	s.sendJSON(response, httpStatus, body, corsOrigin)
+}
+
+// deliveryReceiptBody projects a stored record into the receipt callers read,
+// and reports the status it was projected to. The projection is where a legacy
+// terminal receipt stops claiming to be a provider message and where a record
+// left pending by a crash becomes unknown; both are about what is known, not
+// about how the answer travels.
+func (s *Server) deliveryReceiptBody(record delivery.Record, duplicate bool) (map[string]any, delivery.Status) {
 	status := record.Status
 	reason := record.Reason
 	delivered, retry := record.Delivered, record.Retry
@@ -80,11 +99,7 @@ func (s *Server) sendDeliveryRecord(response http.ResponseWriter, record deliver
 			reason = "the request was recorded, but Sessions cannot prove whether runner input happened before the previous caller disconnected"
 		}
 	}
-	httpStatus := http.StatusOK
-	if status == delivery.StatusNotDelivered {
-		httpStatus = http.StatusNotFound
-	}
-	s.sendJSON(response, httpStatus, map[string]any{
+	return map[string]any{
 		"operation_id":  record.OperationID,
 		"session_id":    record.SessionID,
 		"status":        status,
@@ -95,5 +110,5 @@ func (s *Server) sendDeliveryRecord(response http.ResponseWriter, record deliver
 		"duplicate":     duplicate,
 		"created_at_ms": record.CreatedAtMS,
 		"updated_at_ms": record.UpdatedAtMS,
-	}, corsOrigin)
+	}, status
 }

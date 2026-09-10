@@ -47,6 +47,7 @@ type sendResult struct {
 	OperationID         string
 	Confirmed           *bool
 	Confidence          string
+	Retry               bool
 	ExitCode            int
 	Tool                string
 	Text                string
@@ -505,7 +506,7 @@ func acknowledgedSendResult(receipt deliveryReceipt, tool string) (sendResult, b
 		}
 		return sendResult{
 			OperationID: receipt.OperationID, Confirmed: &confirmed, Confidence: receipt.Status,
-			ExitCode: exitCode, Reason: receipt.Reason, Tool: tool,
+			ExitCode: exitCode, Reason: receipt.Reason, Retry: receipt.Retry, Tool: tool,
 		}, true
 	}
 	if receipt.Acceptance == "runner" || receipt.Acceptance == "provider" || receipt.Acceptance == "transcript" {
@@ -629,10 +630,21 @@ func anyLineContains(lines []string, snippet string) bool {
 	return false
 }
 
+// retryGuidance turns the receipt's retry flag into the only two sentences it
+// can mean. A refusal that happened before any input reached the provider is
+// safe to send again; anything Sessions could not prove is not.
+func retryGuidance(retry bool) string {
+	if retry {
+		return "retry:true — nothing reached the provider, so sending this message again is safe"
+	}
+	return "retry:false — Sessions cannot prove nothing arrived; inspect the conversation before sending again"
+}
+
 type sendJSONResult struct {
 	OperationID             string  `json:"operation_id,omitempty"`
 	Submitted               *bool   `json:"submitted"`
 	Confidence              string  `json:"confidence"`
+	Retry                   *bool   `json:"retry,omitempty"`
 	Reason                  string  `json:"reason,omitempty"`
 	Text                    string  `json:"text,omitempty"`
 	Tool                    string  `json:"tool,omitempty"`
@@ -760,7 +772,7 @@ func (a *app) cmdSend(args []string) error {
 	if a.wantJSON {
 		output := sendJSONResult{
 			OperationID: result.OperationID, Submitted: boolPointer(false), Confidence: result.Confidence, Reason: result.Reason,
-			TextStillInComposer: result.TextStillInComposer,
+			Retry: boolPointer(result.Retry), TextStillInComposer: result.TextStillInComposer,
 		}
 		composerTail := result.ComposerTail
 		output.ComposerTail = &composerTail
@@ -774,8 +786,11 @@ func (a *app) cmdSend(args []string) error {
 	} else if result.Reason == "session-unreachable" {
 		io.WriteString(a.stderr, "sessions send: session exited or became unreachable before submission was confirmed\n")
 	} else if (result.Confidence == "not-delivered" || result.Confidence == "unknown") && result.Reason != "" {
-		// Preserve the daemon's specific refusal or uncertainty instructions.
+		// Preserve the daemon's specific refusal or uncertainty instructions,
+		// and say what they amount to: the message did not arrive, and whether
+		// sending this same operation again is safe.
 		fmt.Fprintf(a.stderr, "sessions send: %s\n", result.Reason)
+		fmt.Fprintf(a.stderr, "  not delivered; %s\n", retryGuidance(result.Retry))
 	} else {
 		fmt.Fprintf(a.stderr, "sessions send: could not confirm submission after %dms\n", timeout.Milliseconds())
 		if isBlockingSnapshotState(result.SnapshotState) {
@@ -841,8 +856,8 @@ func (a *app) cmdSendStatus(args []string) error {
 	if len(args) != 1 || !sendOperationIDPattern.MatchString(args[0]) {
 		return fail(1, "usage: sessions send-status <operation-id>")
 	}
-	var receipt deliveryReceipt
-	if err := a.getJSON("/api/message-deliveries/"+args[0], &receipt); err != nil {
+	receipt, err := a.readDeliveryReceipt(args[0])
+	if err != nil {
 		return err
 	}
 	if a.wantJSON {
@@ -858,6 +873,30 @@ func (a *app) cmdSendStatus(args []string) error {
 		fmt.Fprintln(a.stdout, "Do not resend the message automatically.")
 	}
 	return nil
+}
+
+// readDeliveryReceipt reads one durable receipt. A receipt is recognised by its
+// shape rather than by the status code that carried it: a daemon from before
+// receipts-are-answers reports a recorded refusal as 404 with the receipt in
+// the body, and wrapping that in an error string is how a definitive answer
+// became "the CLI could not tell you".
+func (a *app) readDeliveryReceipt(operationID string) (deliveryReceipt, error) {
+	path := "/api/message-deliveries/" + operationID
+	response, err := a.api.request(context.Background(), http.MethodGet, path, nil, 0)
+	if err != nil {
+		return deliveryReceipt{}, err
+	}
+	var receipt deliveryReceipt
+	if json.Unmarshal(response.body, &receipt) == nil && receipt.Status != "" {
+		if receipt.OperationID == "" {
+			receipt.OperationID = operationID
+		}
+		return receipt, nil
+	}
+	if response.status >= 400 {
+		return deliveryReceipt{}, apiReadFailure(path, response)
+	}
+	return deliveryReceipt{}, fmt.Errorf("%s returned no delivery receipt", path)
 }
 
 func boolPointer(value bool) *bool { return &value }
