@@ -20,6 +20,7 @@ import { connectionSettingsTarget } from '../lib/connectionSettingsTarget';
 import { FleetAccountCard } from './FleetAccountCard';
 import { ServerSelector } from './ServerSelector';
 import { RelayConnectionCard } from './RelayConnectionCard';
+import { copyText } from '../lib/copyText';
 
 interface PairState {
   url: string;
@@ -334,7 +335,7 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
             incomingMessage={incomingPairMessage} onIncomingLink={setIncomingPairLink}
             onCreate={() => void createPair()} onRevoke={() => void revokePair()}
             onAdd={() => void addMachine()} onForget={(device) => void forgetDevice(device)}
-            onCopy={() => pair && void navigator.clipboard.writeText(pair.link).then(() => setMessage('Pairing link copied.'))} />
+            onCopy={() => pair && void copyText(pair.link).then((ok) => setMessage(ok ? 'Pairing link copied.' : `Copy this link: ${pair.link}`))} />
         ) : (
           <section className="pair-device-card">
             <div><span className="connections-section-kicker">Saved on this device</span><h2>Paired machines</h2><p>Switch, add, or forget the Sessions hosts this device can view.</p></div>

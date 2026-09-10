@@ -65,6 +65,14 @@ export default defineConfig({
     }
   },
   build: {
+    // The phone builds declare iOS 14.0 (src-tauri/gen/apple/project.yml, the
+    // Podfile, IPHONEOS_DEPLOYMENT_TARGET). Vite's default target is newer than
+    // that — baseline-widely-available, which is ios16.4 — and the difference
+    // is not academic: our own `class extends Error { code = '…' }` shipped as
+    // a public class field, which is ES2022 syntax, so the bundle did not parse
+    // at all on the iOS the app claims to support. Naming the declared floor
+    // costs about 700 bytes of lowering.
+    target: ['safari14', 'ios14'],
     rollupOptions: {
       output: {
         manualChunks(id) {

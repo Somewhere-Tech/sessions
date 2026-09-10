@@ -8,6 +8,7 @@ import {
   type BackupStatus,
   type SomewhereCLIStatus
 } from '../lib/tauriBridge';
+import { copyText } from '../lib/copyText';
 
 const FALLBACK_INSTALL_COMMAND = 'npm install -g @somewhere-tech/cli';
 
@@ -68,7 +69,7 @@ export function SomewhereCard({ clientOnly = false, hostName = 'this computer' }
 
   const copy = async (value: string, success: string): Promise<void> => {
     try {
-      await navigator.clipboard.writeText(value);
+      if (!await copyText(value)) throw new Error('copy refused');
       setMessage(success);
     } catch {
       setMessage(`Copy this value: ${value}`);

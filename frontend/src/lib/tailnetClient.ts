@@ -1,3 +1,5 @@
+import { randomUUID } from './uuid';
+
 const TAILNET_CLIENT_ID_KEY = 'sessions:tailnet-client-id';
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -34,7 +36,7 @@ export function tailnetClientID(): string {
   if (existing && UUID_V4.test(existing)) return existing;
   if (ephemeralClientID) return ephemeralClientID;
 
-  const created = crypto.randomUUID().toLowerCase();
+  const created = randomUUID().toLowerCase();
   ephemeralClientID = created;
   writeStored(created);
   return created;

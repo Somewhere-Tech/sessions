@@ -5,6 +5,7 @@ import { sessionActivityAt, subagentNeedsReview } from '../lib/workingSet';
 import { resolvedSessionLabel } from '../lib/tabLabels';
 import type { ApprovalDecision, SessionInfo } from '../types';
 import { normalizeProvider, ProviderMark } from './ProviderBadge';
+import { copyText } from '../lib/copyText';
 
 interface Props {
   manager: SessionInfo;
@@ -163,7 +164,7 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
   const copyCleanupRequest = async (): Promise<void> => {
     const request = 'Clean up your subagents. End only delegated sessions whose work is complete; leave anything active or uncertain running.';
     try {
-      await navigator.clipboard.writeText(request);
+      if (!await copyText(request)) throw new Error('copy refused');
       setCopiedCleanupRequest(true);
       window.setTimeout(() => setCopiedCleanupRequest(false), 1800);
     } catch {

@@ -147,7 +147,10 @@ export function combineFleetUsage(sources: FleetUsageSource[]): FleetUsageSummar
   const first = reports[0];
   const totals = emptyRow('total');
   for (const row of rows) addRow(totals, row);
-  const generatedAt = reports.map((report) => report.generatedAt).sort().at(-1) ?? first.generatedAt;
+  // Indexed from the end rather than the newer accessor for it, which arrived
+  // in iOS 15.4 — later than the iOS this app is built for.
+  const stamps = reports.map((report) => report.generatedAt).sort();
+  const generatedAt = stamps[stamps.length - 1] ?? first.generatedAt;
   return {
     report: {
       ...first,
