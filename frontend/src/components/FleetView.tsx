@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import { fetchServerHealth, listServerProfiles, listServerSessions, type AccountProfile, type ServerHealth } from '../api/sessionsd';
+import { daemonErrorDisplay, fetchServerHealth, listServerProfiles, listServerSessions, type AccountProfile, type ServerHealth } from '../api/sessionsd';
 import { LocalNetworkGuide } from './LocalNetworkGuide';
 import { formatServerEndpoint } from '../lib/serverEndpoint';
 import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
@@ -425,10 +425,9 @@ function FleetServerGroup({
             ...current,
             reachability: 'unreachable',
             sessionsError: null,
-            // A relayed machine's host answers with why it could not reach it —
-            // a saved address it cannot use, a route that did not respond.
-            // Keeping that beats the card saying only "unreachable".
-            unavailableReason: error instanceof Error ? error.message : null
+            // The host says why it could not reach this machine. One line here;
+            // the full body stays on the error for callers that need the rest.
+            unavailableReason: daemonErrorDisplay(error)
           }));
         }
         window.clearTimeout(timeout);

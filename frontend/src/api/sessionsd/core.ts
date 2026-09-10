@@ -157,24 +157,46 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
   return serverFetch(getActiveServer(), input, init);
 }
 
+// Thrown when the daemon answered with a status this caller cannot use. The
+// message is the complete body, because a failure body carries more than a
+// sentence: a reboot-paused session sends `code`, `sessionId` and the exact
+// `action` that recovers it, and dropping any of that would take the recovery
+// instruction away from whoever is reading the error. `detail` is the daemon's
+// own sentence, offered separately for a surface that wants to show one line.
+export class DaemonResponseError extends Error {
+  readonly status: number;
+  readonly body: string;
+  readonly detail: string;
+  constructor(status: number, body: string, statusText: string) {
+    super(`sessionsd ${status}: ${body || statusText}`);
+    this.name = 'DaemonResponseError';
+    this.status = status;
+    this.body = body;
+    this.detail = daemonErrorSentence(body) ?? `${body || statusText}`;
+  }
+}
+
 export async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`sessionsd ${res.status}: ${daemonErrorText(text) || res.statusText}`);
+    throw new DaemonResponseError(res.status, text, res.statusText);
   }
   return res.json() as Promise<T>;
 }
 
-// The daemon reports a failure as {"error":"<sentence>"}. Quoting the whole
-// JSON body buried that sentence in punctuation everywhere an error is shown,
-// which is how a relayed machine ended up unexplained. Reading the field loses
-// nothing: any other body is still passed through exactly as received.
-function daemonErrorText(body: string): string {
+function daemonErrorSentence(body: string): string | null {
   try {
     const parsed = JSON.parse(body) as { error?: unknown };
     if (typeof parsed?.error === 'string' && parsed.error.trim()) return parsed.error;
-  } catch { /* not a daemon JSON error; keep the body as sent */ }
-  return body;
+  } catch { /* not a daemon JSON error */ }
+  return null;
+}
+
+// One line for a surface with room for one line. Everything else the daemon
+// sent stays on the error for callers that need it.
+export function daemonErrorDisplay(error: unknown): string | null {
+  if (error instanceof DaemonResponseError) return `sessionsd ${error.status}: ${error.detail}`;
+  return error instanceof Error ? error.message : null;
 }
 
 export async function featureJSON<T>(res: Response, feature: string): Promise<T> {
