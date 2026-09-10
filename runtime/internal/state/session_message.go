@@ -17,15 +17,20 @@ func (s *Session) SubmitMessage(ctx context.Context, control proto.MessageContro
 	return runner.SubmitMessage(ctx, control)
 }
 
-// lateMessageRunner is the runner's memory of an acknowledgment whose caller had
-// already given up. Older runners simply do not have one.
+// lateMessageRunner is a runner client that remembers an acknowledgment whose
+// caller had already given up. It is an implementation detail of the daemon's
+// side of the connection, not a runner capability: a client type that does not
+// keep one simply has nothing to report, and no runner binary is asked for
+// anything new.
 type lateMessageRunner interface {
 	LateMessageResult(string) (proto.MessageResult, bool)
 }
 
-// LateMessageResult reports what this session's runner said about an operation
-// after the request that started it was interrupted. It never speaks for the
-// runner: an operation the runner has not answered has no result here.
+// LateMessageResult reports what the runner said about an operation after the
+// request that started it was interrupted, as far as this daemon's live
+// connection to it still remembers. It never speaks for the runner: an
+// unanswered operation, a replaced connection, and a restarted daemon all
+// return nothing rather than a guess.
 func (s *Session) LateMessageResult(operationID string) (proto.MessageResult, bool) {
 	s.mu.RLock()
 	runner, supported := s.runner.(lateMessageRunner)

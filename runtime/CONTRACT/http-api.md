@@ -1240,14 +1240,19 @@ message body or its content digest.
 
 Reading is also how an interrupted submission is resolved. A structured runner
 commits the message before it acknowledges, so a caller that disconnects can
-leave a delivered message recorded `unknown`. If that runner is still connected
-and has since acknowledged the same operation id, this route and a same-id
+leave a delivered message recorded `unknown`. If the daemon's connection to that
+runner is still the one that carried the request and has since received an
+acknowledgment for the same operation id, this route and a same-id
 `POST /api/sessions/:id/submit` report `accepted` with the runner's `acceptance`
 boundary. The transition is one-directional and evidence-only: `unknown` becomes
 `accepted` solely from that runner's own answer, a late refusal stays `unknown`,
 and no receipt ever moves toward looking safe to resend. Nothing is re-sent to
-reach this answer, and a daemon restart drops the runner's in-memory
-acknowledgment, so the operation simply remains `unknown`.
+reach this answer.
+
+The retained answer lives only in that daemon-side connection. A daemon restart,
+or anything that replaces the connection object such as reconnect, adoption, or
+wake, discards it and the operation simply remains `unknown`; the durable receipt
+on disk is never rewritten by the loss.
 
 ### `POST /api/sessions/:id/upload`
 

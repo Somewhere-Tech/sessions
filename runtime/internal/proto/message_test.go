@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -58,6 +59,10 @@ func TestSocketRunnerSubmitMessageWritesOneStructuredFrame(t *testing.T) {
 	}
 	if !result.Accepted || result.OperationID != want.OperationID || result.Boundary != "runner" {
 		t.Fatalf("SubmitMessage() result = %+v", result)
+	}
+	// The synchronous answer belongs to this caller and nothing else.
+	if _, ok := runner.LateMessageResult(want.OperationID); ok {
+		t.Fatal("a delivered answer was also retained as late evidence")
 	}
 }
 
@@ -198,5 +203,123 @@ func TestSocketRunnerKeepsAcknowledgementThatArrivesAfterTheCallerGaveUp(t *test
 	// evidence, and a delivered answer must not be invented for it.
 	if _, ok := runner.LateMessageResult("never-sent"); ok {
 		t.Fatal("an unrelated operation id produced evidence")
+	}
+}
+
+// The narrow interleaving the first repair missed: the reader wins the mutex
+// while the waiter is still registered and queues the answer into the buffered
+// channel, but the caller's select has already chosen to give up. Driving the
+// two halves in that order is deterministic and needs no sleep: cancellation
+// and the acknowledgment timeout both retire the waiter through this one
+// cleanup, so covering it covers both.
+func TestAbandonedWaiterKeepsAnAnswerThatWasAlreadyQueued(t *testing.T) {
+	runner := messageRunner(nil, true)
+	response := make(chan MessageResult, 1)
+	runner.mu.Lock()
+	runner.messages = map[string]chan MessageResult{"racing": response}
+	runner.mu.Unlock()
+
+	payload, _ := json.Marshal(MessageResult{OperationID: "racing", Accepted: true, Boundary: "runner"})
+	runner.handleMessageResponse(payload)
+	runner.finishMessageWaiter("racing", response)
+
+	result, ok := runner.LateMessageResult("racing")
+	if !ok || !result.Accepted || result.Boundary != "runner" {
+		t.Fatalf("late result = %+v, ok = %t; a queued answer was dropped by cleanup", result, ok)
+	}
+	runner.mu.Lock()
+	_, waiting := runner.messages["racing"]
+	runner.mu.Unlock()
+	if waiting {
+		t.Fatal("cleanup left the waiter registered")
+	}
+}
+
+// A caller that received its answer owns it. Cleanup must not also file it as
+// late evidence, and an operation that was never answered must not acquire one.
+func TestFinishedWaiterRetainsNothingWhenTheCallerWasAnswered(t *testing.T) {
+	runner := messageRunner(nil, true)
+	answered := make(chan MessageResult, 1)
+	answered <- MessageResult{OperationID: "answered", Accepted: true, Boundary: "runner"}
+	<-answered // the caller's select consumed it, exactly as SubmitMessage does
+	runner.finishMessageWaiter("answered", answered)
+	if _, ok := runner.LateMessageResult("answered"); ok {
+		t.Fatal("a consumed answer was also filed as late evidence")
+	}
+
+	runner.finishMessageWaiter("silent", make(chan MessageResult, 1))
+	if _, ok := runner.LateMessageResult("silent"); ok {
+		t.Fatal("an unanswered operation acquired evidence")
+	}
+}
+
+// A connection that drops after the answer was queued still knows the answer.
+func TestClosedConnectionKeepsAQueuedAnswerAndInventsNothing(t *testing.T) {
+	runner := messageRunner(nil, true)
+	queued := make(chan MessageResult, 1)
+	queued <- MessageResult{OperationID: "queued", Accepted: true, Boundary: "provider"}
+	close(queued)
+	runner.finishMessageWaiter("queued", queued)
+	if result, ok := runner.LateMessageResult("queued"); !ok || result.Boundary != "provider" {
+		t.Fatalf("late result after close = %+v, ok = %t", result, ok)
+	}
+
+	closedEmpty := make(chan MessageResult)
+	close(closedEmpty)
+	runner.finishMessageWaiter("lost", closedEmpty)
+	if _, ok := runner.LateMessageResult("lost"); ok {
+		t.Fatal("a closed empty channel produced an acknowledgement")
+	}
+}
+
+// The same race through the real submit path, asserted without depending on
+// which branch the scheduler picks. Reading the request frame from an unbuffered
+// pipe proves the waiter is registered and the write has returned, so queueing
+// the answer and cancelling there makes both select cases ready: Go may take
+// either. Whichever it takes, the answer must survive — returned to this caller
+// or retained as late evidence — and it must never be lost.
+func TestSubmitMessageNeverLosesAnAnswerRacingItsCancellation(t *testing.T) {
+	for attempt := range 200 {
+		client, server := net.Pipe()
+		runner := messageRunner(client, true)
+		operationID := fmt.Sprintf("racing-%d", attempt)
+		ctx, cancel := context.WithCancel(context.Background())
+
+		type outcome struct {
+			result MessageResult
+			err    error
+		}
+		done := make(chan outcome, 1)
+		go func() {
+			result, err := runner.SubmitMessage(ctx, MessageControl{OperationID: operationID, Text: "ship it"})
+			done <- outcome{result, err}
+		}()
+		if _, err := Read(server); err != nil {
+			t.Fatalf("read request: %v", err)
+		}
+		payload, _ := json.Marshal(MessageResult{OperationID: operationID, Accepted: true, Boundary: "provider"})
+		runner.handleMessageResponse(payload)
+		cancel()
+
+		got := <-done
+		late, retained := runner.LateMessageResult(operationID)
+		switch {
+		case got.err == nil:
+			if !got.result.Accepted || got.result.Boundary != "provider" {
+				t.Fatalf("returned result = %+v", got.result)
+			}
+			if retained {
+				t.Fatalf("attempt %d: a result was returned and also retained: %+v", attempt, late)
+			}
+		case errors.Is(got.err, context.Canceled):
+			if !retained || !late.Accepted || late.Boundary != "provider" {
+				t.Fatalf("attempt %d: cancellation lost an answer that was already queued", attempt)
+			}
+		default:
+			t.Fatalf("attempt %d: SubmitMessage() error = %v", attempt, got.err)
+		}
+		cancel()
+		_ = client.Close()
+		_ = server.Close()
 	}
 }

@@ -38,11 +38,12 @@ func (s *Server) handleDeliveryRoute(response http.ResponseWriter, request *http
 }
 
 // reconcileLateAcceptance settles an operation whose acknowledgment reached this
-// daemon after the request that started it was already gone. The runner keeps
-// its own answer, correlated by the durable operation id, so asking again can
-// recover it instead of leaving a message that was genuinely delivered as
-// permanent uncertainty. It only resolves unknown into accepted: a late refusal
-// stays unknown rather than becoming an after-the-fact invitation to resend.
+// daemon after the request that started it was already gone. The daemon's live
+// connection to the runner held on to that answer, correlated by the durable
+// operation id, so asking again can recover it instead of leaving a message that
+// was genuinely delivered as permanent uncertainty. It only resolves unknown
+// into accepted: a late refusal stays unknown rather than becoming an
+// after-the-fact invitation to resend.
 func (s *Server) reconcileLateAcceptance(record delivery.Record) delivery.Record {
 	if record.Status != delivery.StatusUnknown || record.Acceptance != "" {
 		return record

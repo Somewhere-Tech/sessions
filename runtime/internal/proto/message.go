@@ -70,7 +70,7 @@ func (r *SocketRunner) SubmitMessage(ctx context.Context, control MessageControl
 	response := make(chan MessageResult, 1)
 	r.messages[control.OperationID] = response
 	r.mu.Unlock()
-	defer func() { r.mu.Lock(); delete(r.messages, control.OperationID); r.mu.Unlock() }()
+	defer r.finishMessageWaiter(control.OperationID, response)
 	if err := r.write(MessageReq, payload); err != nil {
 		return MessageResult{}, err
 	}
@@ -89,6 +89,27 @@ func (r *SocketRunner) SubmitMessage(ctx context.Context, control MessageControl
 	}
 }
 
+// finishMessageWaiter retires a waiter and its channel together, under the one
+// lock that the reader also takes. Removing the waiter on its own left a race
+// the size of a scheduling gap: the reader could see the waiter, queue the
+// answer, and lose it to a cleanup that had already decided to give up. Both
+// give-up paths -- caller cancellation and the acknowledgment timeout -- end
+// here, so an answer that made it into the channel is kept as late evidence
+// even when nobody read it. A caller that consumed its result leaves the
+// channel empty and nothing is retained twice.
+func (r *SocketRunner) finishMessageWaiter(operationID string, response chan MessageResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.messages, operationID)
+	select {
+	case result, open := <-response:
+		if open {
+			r.retainLateResultLocked(result)
+		}
+	default:
+	}
+}
+
 func (r *SocketRunner) handleMessageResponse(payload []byte) {
 	var result MessageResult
 	if json.Unmarshal(payload, &result) != nil {
@@ -104,15 +125,15 @@ func (r *SocketRunner) handleMessageResponse(payload []byte) {
 		return
 	}
 	// Nobody is waiting: the caller was cancelled or timed out while the runner
-	// was already committing the message. The answer is still this runner's own
-	// correlated statement about that operation, so keep it instead of leaving a
-	// delivered message permanently unknown.
+	// was already committing the message. The answer is still the runner's own
+	// correlated statement about that operation, so this connection keeps it
+	// instead of leaving a delivered message permanently unknown.
 	r.retainLateResultLocked(result)
 }
 
-// lateMessageResultLimit bounds what an abandoned operation can cost. Results
-// are a few small fields each and only unclaimed ones are kept, so a runner
-// whose client keeps disconnecting cannot grow this without bound.
+// lateMessageResultLimit bounds what an abandoned operation can cost this
+// connection. Results are a few small fields each and only unclaimed ones are
+// kept, so a client that keeps disconnecting cannot grow this without bound.
 const lateMessageResultLimit = 64
 
 func (r *SocketRunner) retainLateResultLocked(result MessageResult) {
@@ -132,10 +153,12 @@ func (r *SocketRunner) retainLateResultLocked(result MessageResult) {
 	r.lateMessages[result.OperationID] = result
 }
 
-// LateMessageResult returns the acknowledgment this runner sent for an
-// operation whose caller had already stopped waiting. It reports only what the
-// runner actually said: an operation with no retained answer has no evidence,
-// and none is invented for it.
+// LateMessageResult returns an acknowledgment the runner sent for an operation
+// whose caller had already stopped waiting. The memory is this connection's,
+// here in the daemon, not the runner process's: replacing the connection or
+// restarting the daemon loses it, and the operation is simply unknown again.
+// Nothing is invented -- an operation this connection never saw answered has no
+// evidence.
 func (r *SocketRunner) LateMessageResult(operationID string) (MessageResult, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

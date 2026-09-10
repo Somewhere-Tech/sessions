@@ -228,8 +228,14 @@ unsolicited: it keeps the acknowledgment against its operation id — bounded, a
 only for operations nobody is waiting on — so a later status read can resolve
 that unknown. Only `accepted:true` with a boundary resolves it; a late refusal
 stays unknown, because a refusal discovered after the fact is not an instruction
-to send the message again. Runners are unchanged by this: nothing new is sent on
-the wire, and a runner that never answers leaves the operation unknown.
+to send the message again.
+
+This is entirely daemon-side and adds no capability: no frame, field, or HELLO
+flag changes, and a runner is never asked to remember or replay anything. The
+retained answer belongs to the daemon's live connection object for that runner,
+so replacing the connection — reconnect, adoption, wake — or restarting the
+daemon discards it, and the operation is unknown again. A runner that never
+answers leaves it unknown too.
 
 `steer` requires an active Codex turn; it never silently starts a new turn.
 Claude rejects active-turn messages explicitly. Missing capability uses the
