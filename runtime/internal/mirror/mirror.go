@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -26,6 +27,20 @@ const (
 	// only the active viewport, but keeping the same history makes terminal
 	// behavior (notably ED and normal-buffer restoration) match xterm-headless.
 	defaultScrollback = 5000
+
+	// DefaultScrollbackBudgetBytes bounds retained history by size as well as by
+	// line count. Five thousand lines is cheap when they are shell prompts and
+	// expensive when they are full-width: a retained cell costs on the order of
+	// a hundred bytes, so the same five thousand lines measured 5 MiB narrow and
+	// about 200 MiB at 300 columns. The budget is what makes the worst case the
+	// same shape as the ordinary one.
+	DefaultScrollbackBudgetBytes = 2 * 1024 * 1024
+
+	// scrollbackCellBytes is the retained size of one uv.Cell: a string header,
+	// a style, a link holding two more string headers, and a width. Measured at
+	// 104 to 136 bytes depending on content; the estimate is deliberately not
+	// exact, because it only decides where a budget falls.
+	scrollbackCellBytes = 128
 )
 
 var errInvalidSize = errors.New("mirror: terminal dimensions must be positive")
@@ -44,6 +59,19 @@ type Mirror struct {
 
 	drainDone chan struct{}
 	closed    bool
+
+	// The ANSI stream that rebuilds this screen and its history, kept while the
+	// emulator is released. Empty whenever the emulator is present.
+	hibernated string
+	// When this mirror was last written to or read from, which is what decides
+	// whether anyone still needs its emulator.
+	touched time.Time
+
+	// The retained-history budget in bytes, with a running estimate of what the
+	// retained history costs and the line count that estimate covers.
+	scrollbackBudget int
+	budgetBytes      int
+	budgetCountedLen int
 
 	// x/vt does not expose xterm's per-line isWrapped bit. This tiny parser
 	// tracks only sequence boundaries and pending auto-wrap transitions; x/vt
@@ -90,25 +118,32 @@ func NewSize(cols, rows int) (*Mirror, error) {
 		return nil, errInvalidSize
 	}
 
-	term := vt.NewEmulator(cols, rows)
-	term.SetScrollbackSize(defaultScrollback)
 	m := &Mirror{
-		term:      term,
 		cols:      cols,
 		rows:      rows,
-		drainDone: make(chan struct{}),
 		autoWrap:  true,
 		scrollBot: rows - 1,
+		touched:   time.Now(),
+
+		scrollbackBudget: DefaultScrollbackBudgetBytes,
 	}
 	m.wrapped[0] = make([]bool, rows)
 	m.wrapped[1] = make([]bool, rows)
+	m.startEmulatorLocked()
+	return m, nil
+}
 
-	// Some terminal queries produce replies. vt exposes those through an
-	// io.Pipe, whose writer intentionally blocks until it has a reader. The
-	// mirror is observational and never sends replies back to the PTY, so drain
-	// them to keep DA/DSR/OSC queries from stalling Write.
+// startEmulatorLocked builds the emulator and the goroutine that drains its
+// replies. Some terminal queries produce replies. vt exposes those through an
+// io.Pipe, whose writer intentionally blocks until it has a reader. The mirror
+// is observational and never sends replies back to the PTY, so drain them to
+// keep DA/DSR/OSC queries from stalling Write.
+func (m *Mirror) startEmulatorLocked() {
+	term := vt.NewEmulator(m.cols, m.rows)
+	term.SetScrollbackSize(defaultScrollback)
+	drainDone := make(chan struct{})
 	go func() {
-		defer close(m.drainDone)
+		defer close(drainDone)
 		buf := make([]byte, 4096)
 		pending := make([]byte, 0, len(drainStopMarker)*2)
 		for {
@@ -127,8 +162,39 @@ func NewSize(cols, rows int) (*Mirror, error) {
 			}
 		}
 	}()
+	m.term = term
+	m.drainDone = drainDone
+}
 
-	return m, nil
+// stopEmulator releases an emulator and its drain. It is called off the mirror
+// lock, by Close and by Hibernate, and it must stay that way.
+//
+// The stop marker goes through vt's io.Pipe, whose writer blocks until a
+// reader consumes it, and the drain goroutine can already have returned on its
+// own (its Read fails, or it saw a marker). Writing under m.mu would then block
+// forever and wedge every other operation on this session's mirror, so signal
+// off the lock and never wait on the write itself: whichever of the two
+// completes first is enough, and term.Close() below releases a writer nobody
+// will ever read (vt closes the pipe with EOF).
+func stopEmulator(term *vt.Emulator, drainDone chan struct{}) error {
+	marker := make(chan struct{})
+	go func() {
+		defer close(marker)
+		_, _ = io.WriteString(term.InputPipe(), drainStopMarker)
+	}()
+	select {
+	case <-drainDone:
+		// Drain already gone; nothing will consume the marker. Closing the
+		// emulator is what unblocks the write above.
+	case <-marker:
+		// The marker was delivered (or the pipe is already closed); either way
+		// the drain observes it and returns.
+		<-drainDone
+	}
+	// Always release the emulator, including on a failed stop-marker write: a
+	// mirror that reports an error but keeps its emulator and pipe alive leaks
+	// both for the life of the daemon.
+	return term.Close()
 }
 
 // Close releases the emulator and its terminal-response drain. A daemon owns
@@ -141,33 +207,305 @@ func (m *Mirror) Close() error {
 		return nil
 	}
 	m.closed = true
+	term, drainDone := m.term, m.drainDone
+	m.term, m.drainDone = nil, nil
+	m.hibernated = ""
 	m.mu.Unlock()
 
-	// The stop marker goes through vt's io.Pipe, whose writer blocks until a
-	// reader consumes it, and the drain goroutine can already have returned on
-	// its own (its Read fails, or it saw a marker). Writing under m.mu would
-	// then block forever and wedge every other operation on this session's
-	// mirror, so signal off the lock and never wait on the write itself:
-	// whichever of the two completes first is enough, and m.term.Close() below
-	// releases a writer nobody will ever read (vt closes the pipe with EOF).
-	marker := make(chan struct{})
-	go func() {
-		defer close(marker)
-		_, _ = io.WriteString(m.term.InputPipe(), drainStopMarker)
-	}()
-	select {
-	case <-m.drainDone:
-		// Drain already gone; nothing will consume the marker. Closing the
-		// emulator is what unblocks the write above.
-	case <-marker:
-		// The marker was delivered (or the pipe is already closed); either way
-		// the drain observes it and returns.
-		<-m.drainDone
+	// A hibernated mirror has no emulator and no drain to stop.
+	if term == nil {
+		return nil
 	}
-	// Always release the emulator, including on a failed stop-marker write: a
-	// mirror that reports an error but keeps its emulator and pipe alive leaks
-	// both for the life of the daemon.
-	return m.term.Close()
+	return stopEmulator(term, drainDone)
+}
+
+// Hibernate releases the emulator of a mirror nobody is reading.
+//
+// The emulator is what a live session actually costs: about 8 MiB at 300x50,
+// of which 4 MiB is an ANSI parser buffer x/vt allocates per emulator and the
+// rest is its two screens. A quiet session that nobody is watching does not
+// need any of it until someone reads it, so the screen and its history are kept
+// as the same ANSI stream the daemon already hands a resuming client, and the
+// emulator is rebuilt from that stream on the next read or write.
+//
+// It reports whether the mirror is hibernated afterwards. A mirror showing an
+// alternate screen, sitting inside a scroll region, or holding a half-parsed
+// escape sequence keeps its emulator: those are states the serialized stream
+// does not carry, and a screen that came back different would be worse than a
+// screen that cost memory.
+func (m *Mirror) Hibernate() bool {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return false
+	}
+	if m.term == nil {
+		m.mu.Unlock()
+		return true
+	}
+	if !m.canHibernateLocked() {
+		m.mu.Unlock()
+		return false
+	}
+	m.hibernated = m.hibernationStreamLocked()
+	term, drainDone := m.term, m.drainDone
+	m.term, m.drainDone = nil, nil
+	m.mu.Unlock()
+	_ = stopEmulator(term, drainDone)
+	return true
+}
+
+// SetScrollbackBudget changes how many bytes of history this mirror retains.
+// A budget of zero or less keeps only the line cap.
+func (m *Mirror) SetScrollbackBudget(bytes int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scrollbackBudget = bytes
+	m.budgetBytes, m.budgetCountedLen = 0, 0
+	m.enforceScrollbackBudgetLocked()
+}
+
+// enforceScrollbackBudgetLocked drops the oldest history once it costs more
+// than the budget allows.
+//
+// A line's size is its cell count, which is a slice length rather than a walk
+// of its contents, so the running total costs one addition per line that
+// scrolls. Dropping costs more: x/vt's own trim reslices its line list, which
+// leaves the dropped lines reachable through the array behind it, so the kept
+// lines are pushed into a cleared scrollback instead. That happens only when
+// the budget is actually exceeded.
+func (m *Mirror) enforceScrollbackBudgetLocked() {
+	if m.term == nil || m.scrollbackBudget <= 0 {
+		return
+	}
+	scrollback := m.term.Scrollback()
+	if scrollback == nil {
+		return
+	}
+	lines := scrollback.Lines()
+	if len(lines) < m.budgetCountedLen {
+		// History shrank under it: the line cap evicted, or something cleared
+		// the buffer. Count again rather than guess.
+		m.budgetBytes, m.budgetCountedLen = 0, 0
+	}
+	for index := m.budgetCountedLen; index < len(lines); index++ {
+		m.budgetBytes += len(lines[index]) * scrollbackCellBytes
+	}
+	m.budgetCountedLen = len(lines)
+	if m.budgetBytes <= m.scrollbackBudget {
+		return
+	}
+
+	// Over budget. The running total can only be too high — the line cap
+	// evicts silently once history is full — so the exact size decides what
+	// goes, counted backwards from the newest line a reader wants first.
+	total, first := 0, 0
+	for index := len(lines) - 1; index >= 0; index-- {
+		total += len(lines[index]) * scrollbackCellBytes
+		if total > m.scrollbackBudget {
+			first = index + 1
+			break
+		}
+	}
+	if first == 0 {
+		m.budgetBytes = total
+		return
+	}
+	kept := append([]uv.Line(nil), lines[first:]...)
+	scrollback.Clear()
+	for _, line := range kept {
+		scrollback.Push(line)
+	}
+	m.budgetBytes, m.budgetCountedLen = 0, 0
+	for _, line := range scrollback.Lines() {
+		m.budgetBytes += len(line) * scrollbackCellBytes
+		m.budgetCountedLen++
+	}
+}
+
+// HibernateIfIdle releases the emulator when nothing has written to or read
+// from this mirror for quiet. It reports whether the mirror is hibernated
+// afterwards.
+//
+// Idleness, rather than a count of viewers, is what says the emulator is not
+// needed: a client that is streaming output reads the mirror once when it
+// attaches, and a session whose runner is producing output wakes the mirror on
+// the next write anyway.
+func (m *Mirror) HibernateIfIdle(quiet time.Duration) bool {
+	m.mu.Lock()
+	idle := time.Since(m.touched) >= quiet
+	hibernated := m.term == nil && !m.closed
+	m.mu.Unlock()
+	if hibernated {
+		return true
+	}
+	if !idle {
+		return false
+	}
+	return m.Hibernate()
+}
+
+// Hibernating reports whether this mirror currently holds no emulator.
+func (m *Mirror) Hibernating() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.closed && m.term == nil
+}
+
+func (m *Mirror) canHibernateLocked() bool {
+	return !m.altScreen &&
+		m.trackState == trackGround &&
+		!m.phantom &&
+		m.scrollTop == 0 && m.scrollBot == m.rows-1
+}
+
+// hibernationStreamLocked is the stream that rebuilds this mirror.
+//
+// It follows the same shape as SerializeANSIWithScrollback — history, filler
+// rows to push it into scrollback, then the repainted viewport — but it renders
+// the history lines itself. uv.Line.Render writes OSC 8 hyperlinks with the URL
+// in the parameter field, which a terminal reads as a hyperlink reset, so a
+// history line replayed through it comes back with its links dropped. What
+// clients are sent is unchanged; what the daemon feeds back to itself must
+// survive the round trip.
+func (m *Mirror) hibernationStreamLocked() string {
+	scrollback := m.term.Scrollback()
+	var out strings.Builder
+	if scrollback != nil && scrollback.Len() > 0 {
+		for _, line := range scrollback.Lines() {
+			out.WriteString(renderLineForReplay(line))
+			out.WriteString("\r\n")
+		}
+		for row := 1; row < m.rows; row++ {
+			out.WriteString("\r\n")
+		}
+		out.WriteString("\x1b[2J\x1b[H")
+	}
+	out.WriteString(m.serializeForReplay())
+	out.WriteString(m.restoreCursorLocked())
+	return out.String()
+}
+
+// renderLineForReplay writes one retained history line so that feeding it back
+// to an emulator reproduces the same cells.
+//
+// Hyperlinks need care. x/vt fills Link.URL from the first OSC 8 field (the
+// parameters) and Link.Params from the second (the URI), so the two are
+// swapped against their names; writing them back in field order is what makes
+// the round trip an identity. uv.Line.Render writes them in the other order,
+// which a terminal reads as a hyperlink reset — clients keep receiving exactly
+// what they receive today, but the daemon cannot feed that back to itself.
+func renderLineForReplay(line uv.Line) string {
+	var out strings.Builder
+	var style uv.Style
+	var link uv.Link
+	for index := 0; index < len(line); index++ {
+		cell := line.At(index)
+		if cell == nil || cell.Width == 0 {
+			continue
+		}
+		if !cell.Style.Equal(&style) {
+			out.WriteString(cell.Style.Diff(&style))
+			style = cell.Style
+		}
+		if cell.Link != link {
+			if link != (uv.Link{}) {
+				out.WriteString("\x1b]8;;\x07")
+			}
+			if cell.Link != (uv.Link{}) {
+				out.WriteString("\x1b]8;")
+				out.WriteString(cell.Link.URL)
+				out.WriteByte(';')
+				out.WriteString(cell.Link.Params)
+				out.WriteByte('\x07')
+			}
+			link = cell.Link
+		}
+		if cell.Content == "" {
+			out.WriteByte(' ')
+		} else {
+			out.WriteString(cell.Content)
+		}
+	}
+	if link != (uv.Link{}) {
+		out.WriteString("\x1b]8;;\x07")
+	}
+	if !style.IsZero() {
+		out.WriteString("\x1b[0m")
+	}
+	return strings.TrimRight(out.String(), " ")
+}
+
+// restoreCursorLocked ends the hibernation stream by putting the pen and the
+// cursor back. The serializer paints cells and stops; where the next character
+// lands, and what it looks like, is state of its own.
+func (m *Mirror) restoreCursorLocked() string {
+	position := m.term.CursorPosition()
+	cursor := "\x1b[" + strconv.Itoa(position.Y+1) + ";" + strconv.Itoa(position.X+1) + "H"
+	if !m.autoWrap {
+		cursor += "\x1b[?7l"
+	}
+	return m.currentSGR + cursor
+}
+
+// wakeLocked rebuilds the emulator from the stream hibernation kept. The
+// wrap tracking, pen and screen mode are the mirror's own and were never
+// released, so only the emulator's cells are restored here.
+func (m *Mirror) wakeLocked() error {
+	if m.term != nil {
+		return nil
+	}
+	m.startEmulatorLocked()
+	restored := m.hibernated
+	m.hibernated = ""
+	if restored == "" {
+		return nil
+	}
+	// The replay goes through the mirror's own write path, because that path is
+	// what keeps combining marks attached through x/vt. It would also rewrite
+	// the wrap tracking, which the serialized stream cannot describe — every
+	// row in it ends in a newline — so the tracking is put back afterwards.
+	saved := m.tracking()
+	m.trackState, m.csi = trackGround, nil
+	err := m.writeTracked([]byte(restored))
+	m.restoreTracking(saved)
+	return err
+}
+
+// tracking is everything the mirror knows that the emulator does not.
+type trackingState struct {
+	trackState vtTrackState
+	csi        []byte
+	phantom    bool
+	autoWrap   bool
+	altScreen  bool
+	wrapped    [2][]bool
+	currentSGR string
+	mainANSI   string
+	scrollTop  int
+	scrollBot  int
+	sequenceY  int
+}
+
+func (m *Mirror) tracking() trackingState {
+	saved := trackingState{
+		trackState: m.trackState, csi: append([]byte(nil), m.csi...),
+		phantom: m.phantom, autoWrap: m.autoWrap, altScreen: m.altScreen,
+		currentSGR: m.currentSGR, mainANSI: m.mainANSI,
+		scrollTop: m.scrollTop, scrollBot: m.scrollBot, sequenceY: m.sequenceY,
+	}
+	for index := range m.wrapped {
+		saved.wrapped[index] = append([]bool(nil), m.wrapped[index]...)
+	}
+	return saved
+}
+
+func (m *Mirror) restoreTracking(saved trackingState) {
+	m.trackState, m.csi = saved.trackState, saved.csi
+	m.phantom, m.autoWrap, m.altScreen = saved.phantom, saved.autoWrap, saved.altScreen
+	m.currentSGR, m.mainANSI = saved.currentSGR, saved.mainANSI
+	m.scrollTop, m.scrollBot, m.sequenceY = saved.scrollTop, saved.scrollBot, saved.sequenceY
+	m.wrapped = saved.wrapped
 }
 
 // Write parses raw PTY output and updates the terminal. It implements
@@ -178,9 +516,14 @@ func (m *Mirror) Write(raw []byte) (int, error) {
 	if m.closed {
 		return 0, io.ErrClosedPipe
 	}
+	m.touched = time.Now()
+	if err := m.wakeLocked(); err != nil {
+		return 0, err
+	}
 	if err := m.writeTracked(raw); err != nil {
 		return 0, err
 	}
+	m.enforceScrollbackBudgetLocked()
 	return len(raw), nil
 }
 
@@ -195,6 +538,10 @@ func (m *Mirror) Resize(cols, rows int) error {
 	defer m.mu.Unlock()
 	if m.closed {
 		return io.ErrClosedPipe
+	}
+	m.touched = time.Now()
+	if err := m.wakeLocked(); err != nil {
+		return err
 	}
 	m.term.Resize(cols, rows)
 	for index := range m.wrapped {
@@ -689,6 +1036,10 @@ func (m *Mirror) restoreProtectedASCII() {
 func (m *Mirror) Snapshot() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.touched = time.Now()
+	if m.wakeLocked() != nil {
+		return ""
+	}
 
 	lines := make([]string, m.rows)
 	lastLine := -1
@@ -722,6 +1073,10 @@ func (m *Mirror) Snapshot() string {
 func (m *Mirror) SerializeANSI() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.touched = time.Now()
+	if m.wakeLocked() != nil {
+		return ""
+	}
 	return m.serializeANSI()
 }
 
@@ -738,7 +1093,15 @@ func (m *Mirror) SerializeANSI() string {
 func (m *Mirror) SerializeANSIWithScrollback() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.touched = time.Now()
+	m.touched = time.Now()
+	if m.wakeLocked() != nil {
+		return ""
+	}
+	return m.serializeWithScrollbackLocked()
+}
 
+func (m *Mirror) serializeWithScrollbackLocked() string {
 	scrollback := m.term.Scrollback()
 	if m.altScreen || scrollback == nil || scrollback.Len() == 0 {
 		return m.serializeANSI()
@@ -764,6 +1127,10 @@ func (m *Mirror) SerializeANSIWithScrollback() string {
 func (m *Mirror) ReflowTo(width int) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.touched = time.Now()
+	if m.wakeLocked() != nil {
+		return ""
+	}
 	serialized := m.serializeANSI()
 	if m.altScreen {
 		// addon-serialize restores the active cursor pen before switching to
@@ -774,34 +1141,23 @@ func (m *Mirror) ReflowTo(width int) string {
 	return ReflowANSI(serialized, width)
 }
 
-func (m *Mirror) serializeANSI() string {
-	lastX := make([]int, m.rows)
-	lastY := -1
-	for y := 0; y < m.rows; y++ {
-		lastX[y] = -1
-		for x := m.cols - 1; x >= 0; x-- {
-			cell := m.term.CellAt(x, y)
-			if cell == nil || cell.Width == 0 {
-				continue
-			}
-			// Default untouched cells are ordinary unstyled spaces in x/vt.
-			// A styled space is meaningful (usually an erased background run).
-			if (cell.Content != "" && cell.Content != " ") ||
-				!cell.Style.IsZero() || cell.Link.URL != "" {
-				lastX[y] = x
-				lastY = y
-				break
-			}
-		}
-	}
+// serializeANSI paints the active screen for a client. serializeForReplay
+// paints it for this daemon, which needs the cells back exactly as they are
+// rather than as a terminal should display them: no underline stands in for a
+// hyperlink, and OSC 8 fields are written in the order x/vt parses them.
+func (m *Mirror) serializeANSI() string { return m.serialize(false) }
+
+func (m *Mirror) serializeForReplay() string { return m.serialize(true) }
+
+func (m *Mirror) serialize(replay bool) string {
+	lastX, lastY := m.paintedColumns()
 	if lastY < 0 {
 		return ""
 	}
 
 	var out strings.Builder
 	var activeStyle uv.Style
-	activeLinkURL := ""
-	activeLinkParams := ""
+	var activeLink uv.Link
 	for y := 0; y <= lastY; y++ {
 		if y > 0 && !m.isSoftWrappedLine(y-1) {
 			out.WriteString("\r\n")
@@ -824,7 +1180,7 @@ func (m *Mirror) serializeANSI() string {
 				continue
 			}
 			style := cell.Style
-			if cell.Link.URL != "" && style.Underline == uv.UnderlineNone {
+			if !replay && cell.Link.URL != "" && style.Underline == uv.UnderlineNone {
 				// xterm presents OSC 8 links as underlined cells, and its addon
 				// serializes that visual attribute as SGR 4. Retain the OSC 8
 				// target while also matching the serialized/reflowed appearance.
@@ -834,22 +1190,7 @@ func (m *Mirror) serializeANSI() string {
 				out.WriteString(style.Diff(&activeStyle))
 				activeStyle = style
 			}
-
-			if cell.Link.URL != activeLinkURL || cell.Link.Params != activeLinkParams {
-				if activeLinkURL != "" {
-					out.WriteString("\x1b]8;;\x07")
-				}
-				if cell.Link.URL != "" {
-					out.WriteString("\x1b]8;")
-					out.WriteString(cell.Link.Params)
-					out.WriteByte(';')
-					out.WriteString(cell.Link.URL)
-					out.WriteByte('\x07')
-				}
-				activeLinkURL = cell.Link.URL
-				activeLinkParams = cell.Link.Params
-			}
-
+			writeLinkChange(&out, cell.Link, &activeLink, replay)
 			if cell.Content == "" {
 				out.WriteByte(' ')
 			} else {
@@ -857,13 +1198,67 @@ func (m *Mirror) serializeANSI() string {
 			}
 		}
 	}
-	if activeLinkURL != "" {
+	if activeLink.URL != "" || (replay && activeLink.Params != "") {
 		out.WriteString("\x1b]8;;\x07")
 	}
 	if !activeStyle.IsZero() {
 		out.WriteString("\x1b[0m")
 	}
 	return out.String()
+}
+
+// paintedColumns reports, for every row, the last column worth serializing, and
+// the last row that has one. A default untouched cell is an ordinary unstyled
+// space in x/vt; a styled space is meaningful, usually an erased background run.
+func (m *Mirror) paintedColumns() ([]int, int) {
+	lastX := make([]int, m.rows)
+	lastY := -1
+	for y := 0; y < m.rows; y++ {
+		lastX[y] = -1
+		for x := m.cols - 1; x >= 0; x-- {
+			cell := m.term.CellAt(x, y)
+			if cell == nil || cell.Width == 0 {
+				continue
+			}
+			if (cell.Content != "" && cell.Content != " ") ||
+				!cell.Style.IsZero() || cell.Link.URL != "" {
+				lastX[y] = x
+				lastY = y
+				break
+			}
+		}
+	}
+	return lastX, lastY
+}
+
+// writeLinkChange emits the OSC 8 transition between two cells, if there is one.
+//
+// A client is sent the parameters first and the URL second, which is the order
+// the sequence is defined in. x/vt fills Link.URL from the first field and
+// Link.Params from the second, so a stream this daemon means to feed back to
+// itself writes them in that order instead — the round trip has to land on the
+// same cells, not on the same-looking text.
+func writeLinkChange(out *strings.Builder, link uv.Link, active *uv.Link, replay bool) {
+	if link.URL == active.URL && link.Params == active.Params {
+		return
+	}
+	if active.URL != "" || (replay && active.Params != "") {
+		out.WriteString("\x1b]8;;\x07")
+	}
+	if link.URL != "" || (replay && link.Params != "") {
+		out.WriteString("\x1b]8;")
+		if replay {
+			out.WriteString(link.URL)
+			out.WriteByte(';')
+			out.WriteString(link.Params)
+		} else {
+			out.WriteString(link.Params)
+			out.WriteByte(';')
+			out.WriteString(link.URL)
+		}
+		out.WriteByte('\x07')
+	}
+	*active = link
 }
 
 func (m *Mirror) isSoftWrappedLine(y int) bool {

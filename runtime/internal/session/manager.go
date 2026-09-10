@@ -108,6 +108,9 @@ type ManagerOptions struct {
 	// session costs the machine. nil means this platform's real one; tests
 	// inject a fabricated table through it.
 	ResourceEnumerator resource.Enumerator
+	// MirrorQuiet is how long a session's terminal mirror must go untouched
+	// before the daemon releases its emulator. Zero takes the default.
+	MirrorQuiet time.Duration
 	// ResourceInterval is the floor between whole-machine samples. It is a
 	// floor, not a schedule: sampling rides the activity tick, so the real
 	// spacing is the next tick at or after this interval.
@@ -214,6 +217,13 @@ type Manager struct {
 	// resourceFailed suppresses repeated logging of the same enumeration
 	// failure. A platform that cannot sample says so once, not every tick.
 	resourceFailed bool
+
+	// mirrorQuiet is how long a session's terminal mirror must go untouched
+	// before its emulator is given back, and mirrorSwept keeps the sweep off
+	// the sub-second activity tick.
+	mirrorQuiet  time.Duration
+	mirrorSwept  time.Time
+	mirrorSweepM sync.Mutex
 }
 
 type laneDeathBurst struct {
@@ -313,6 +323,10 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 		pausedRestores:       make(map[string]pausedRestoreCacheEntry), pausedMissingLogged: make(map[string]struct{}),
 	}
 	manager.resources = resource.NewTracker(selected.ResourceEnumerator, selected.ResourceClock)
+	manager.mirrorQuiet = selected.MirrorQuiet
+	if manager.mirrorQuiet <= 0 {
+		manager.mirrorQuiet = defaultMirrorQuiet
+	}
 	manager.resourceInterval = selected.ResourceInterval
 	manager.resourceClock = selected.ResourceClock
 	manager.listModels = selected.ListCodexModels

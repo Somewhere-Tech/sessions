@@ -821,6 +821,19 @@ func (s *Session) TerminalState() (bool, proto.ExitEvent) {
 	return s.info.Exited, s.exit
 }
 
+// HibernateIdleMirror gives back this session's terminal emulator when nothing
+// has written to or read from it for quiet.
+//
+// The emulator is about 8 MiB per live session — most of what a daemon holding
+// many sessions retains — and a session that is waiting for its next turn needs
+// none of it until someone looks. The next write or read rebuilds it from the
+// stream the mirror kept. Sessions whose snapshots never come from the mirror
+// (lanes and the structured providers) are hibernated on the same rule rather
+// than a separate one: their mirrors are written to, so idleness still decides.
+func (s *Session) HibernateIdleMirror(quiet time.Duration) bool {
+	return s.mirror.HibernateIfIdle(quiet)
+}
+
 func (s *Session) Close() error {
 	s.cancelRunner()
 	return s.mirror.Close()

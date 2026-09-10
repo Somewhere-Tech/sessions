@@ -97,6 +97,25 @@ func (r *Registry) removeOrderLocked(id string) {
 	}
 }
 
+// HibernateIdleMirrors sweeps every live session and releases the terminal
+// emulator of each one nothing has touched for quiet. It answers how many
+// sessions are hibernated afterwards.
+func (r *Registry) HibernateIdleMirrors(quiet time.Duration) int {
+	r.mu.RLock()
+	sessions := make([]*Session, 0, len(r.sessions))
+	for _, session := range r.sessions {
+		sessions = append(sessions, session)
+	}
+	r.mu.RUnlock()
+	hibernated := 0
+	for _, session := range sessions {
+		if session.HibernateIdleMirror(quiet) {
+			hibernated++
+		}
+	}
+	return hibernated
+}
+
 func (r *Registry) Get(id string) (*Session, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

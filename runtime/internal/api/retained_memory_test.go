@@ -406,6 +406,10 @@ func TestRetainedMemoryAtFleetScale(t *testing.T) {
 	answered := readRetained()
 	forgetFixtureBuffers(&daemon, live)
 	settled := readRetained()
+	// What the same fleet holds once the daemon has taken back the terminal
+	// emulators of the sessions nothing is touching.
+	hibernated := daemon.registry.HibernateIdleMirrors(0)
+	afterHibernation := readRetained()
 
 	t.Logf("scale: %d records, %d live, %d KiB output + %d KiB structured per live session, %d Codex rollouts, %d Claude transcripts",
 		scale.records, scale.live, scale.outputKiBPerLive, scale.claudeKiBPerLive, scale.codexRollouts, scale.claudeTranscripts)
@@ -417,13 +421,16 @@ func TestRetainedMemoryAtFleetScale(t *testing.T) {
 		{"fleet built", built},
 		{"after listing, search and preview", answered},
 		{"fixture buffers dropped", settled},
+		{fmt.Sprintf("%d mirrors hibernated", hibernated), afterHibernation},
 	} {
 		t.Logf("%-34s heapInuse %8.1f MiB  heapAlloc %8.1f MiB  stack %6.1f MiB  sys %8.1f MiB  objects %d",
 			row.label, mib(row.reading.heapInuse), mib(row.reading.heapAlloc),
 			mib(row.reading.stackInuse), mib(row.reading.sys), row.reading.objects)
 	}
 	perLive := float64(settled.heapInuse-min(settled.heapInuse, empty.heapInuse)) / float64(max(scale.live, 1))
-	t.Logf("retained per live session: %.2f MiB", perLive/(1024*1024))
+	perLiveHibernated := float64(afterHibernation.heapInuse-min(afterHibernation.heapInuse, empty.heapInuse)) / float64(max(scale.live, 1))
+	t.Logf("retained per live session: %.2f MiB awake, %.2f MiB hibernated",
+		perLive/(1024*1024), perLiveHibernated/(1024*1024))
 
 	if path := os.Getenv("SESSIONS_HEAP_PROFILE"); path != "" {
 		file, err := os.Create(path)

@@ -161,8 +161,40 @@ func (m *Manager) activityLoop() {
 				runtime.tick()
 			}
 			m.sampleResources()
+			m.hibernateIdleMirrors()
 		}
 	}
+}
+
+const (
+	// defaultMirrorQuiet is how long a mirror goes untouched before the daemon
+	// takes its emulator back. Two minutes is longer than the gap between an
+	// agent's turns and shorter than the time a person leaves a session alone,
+	// so a working session keeps its emulator and a resting one does not.
+	defaultMirrorQuiet = 2 * time.Minute
+
+	// mirrorSweepInterval keeps the sweep off the sub-second activity tick. A
+	// pass is one lock and one clock comparison per session.
+	mirrorSweepInterval = 30 * time.Second
+)
+
+// hibernateIdleMirrors gives back the terminal emulator of every session
+// nothing has written to or read from recently. That emulator is about 8 MiB —
+// a 4 MiB ANSI parser buffer x/vt allocates per emulator plus its two screens —
+// and on a machine holding two hundred sessions it is most of what the daemon
+// retains. The mirror rebuilds itself from the stream it kept on the next read
+// or write.
+func (m *Manager) hibernateIdleMirrors() {
+	now := m.resourceClock()
+	m.mirrorSweepM.Lock()
+	if !m.mirrorSwept.IsZero() && now.Sub(m.mirrorSwept) < mirrorSweepInterval {
+		m.mirrorSweepM.Unlock()
+		return
+	}
+	m.mirrorSwept = now
+	quiet := m.mirrorQuiet
+	m.mirrorSweepM.Unlock()
+	m.registry.HibernateIdleMirrors(quiet)
 }
 
 // sampleResources measures what every live session costs the machine.
