@@ -9,6 +9,20 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { UsageDashboard } from '../../src/components/UsageDashboard';
 import { installFakeDaemon, useFakeMachines, type FakeMachine } from './fake-daemon';
 
+// Counting the real combiner, not replacing it: every case here runs the same
+// code the app runs, and the last one asks whether it ran at all.
+const combining = vi.hoisted(() => ({ count: 0 }));
+vi.mock('../../src/lib/fleetUsage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/lib/fleetUsage')>();
+  return {
+    ...actual,
+    combineFleetUsage: (sources: Parameters<typeof actual.combineFleetUsage>[0]) => {
+      combining.count += 1;
+      return actual.combineFleetUsage(sources);
+    }
+  };
+});
+
 // Each test gets its own machine ids and ports: the usage cache is keyed by
 // server and lives for the module, so a shared id would hand one test's answer
 // to the next one before it asked.
@@ -109,5 +123,24 @@ describe('capability: Usage while its reports are still in flight', () => {
     // The partial-cost sentence is untouched by the coverage clause.
     expect(cost.textContent).toMatch(/not your bill/);
     expect(screen.getByText('1 of 2 machines reporting')).toBeInTheDocument();
+  }, 20_000);
+
+  // Closing Usage while machines are still answering must leave the answers
+  // nowhere to land. React does not complain about a state update on an
+  // unmounted component any more, so the observation is the work itself: the
+  // effect must stop combining reports the moment it is cleaned up.
+  it('does no work for an answer that arrives after the view is gone', async () => {
+    const machines = fleet();
+    installFakeDaemon(machines);
+    useFakeMachines(machines, machines[0]!.id);
+    slowFleet(machines, 1_000);
+    const view = render(<UsageDashboard />);
+    await screen.findByText(/Loading from/);
+
+    const before = combining.count;
+    view.unmount();
+    // Long enough for the late answer and for the peer's budget to expire.
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    expect(combining.count).toBe(before);
   }, 20_000);
 });
