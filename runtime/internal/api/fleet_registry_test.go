@@ -325,7 +325,9 @@ func TestRowWithAnUnaddressableIDIsDroppedAndReachesNoTokenPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "clients.json"), encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	outside := filepath.Join(filepath.Dir(filepath.Dir(root)), "escape.token")
+	// Match the exact path an unguarded clients/<id>.token lookup would use,
+	// while keeping the planted file inside this test's isolated root.
+	outside := filepath.Join(root, "clients", traversalID+".token")
 	if err := os.WriteFile(outside, []byte(fleetHostCredential), 0o600); err != nil {
 		t.Fatal(err)
 	}
