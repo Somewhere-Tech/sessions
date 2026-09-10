@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -414,12 +415,16 @@ func normalizeTranscriptReaderSelected(
 		}
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			trimmed := strings.TrimSpace(string(line))
+			// Trim and decode the bytes the reader already produced. Rendering
+			// each record to a string and back cost two full copies of every
+			// line for nothing: the decoder keeps only what it stores, and the
+			// slice is not retained past this iteration.
+			trimmed := bytes.TrimSpace(line)
 			currentIndex := lineIndex
 			lineIndex++
-			if trimmed != "" {
+			if len(trimmed) > 0 {
 				var decoded map[string]any
-				if json.Unmarshal([]byte(trimmed), &decoded) != nil {
+				if json.Unmarshal(trimmed, &decoded) != nil {
 					skipped++
 				} else {
 					if tool == "codex" {
