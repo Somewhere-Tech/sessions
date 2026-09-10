@@ -373,20 +373,29 @@ Settings permission guide start a daemon-owned Bonjour browse while the person i
 looking at that surface. macOS 14 accepts the same binary metadata but does not
 enforce the macOS 15 Local Network gate.
 
-Apple provides no supported API to preflight this permission or force its
-prompt. `sessions doctor` therefore reports the daemon's last observed state:
-`granted`, `denied`, or `not-yet-asked` (`not-required` on other platforms).
-Successful nearby discovery or connection records `granted`; a private or
-link-local Darwin dial failing with `EHOSTUNREACH` records `denied` as a
-permission-related observation, not a direct reading of the macOS switch.
-An empty browse does not establish denial and leaves the observation unchanged.
-The API, CLI, and doctor explain the permission-related route error with:
-“macOS has not allowed Sessions to use the local network. System Settings ›
-Privacy & Security › Local Network › turn on Sessions.” Tailnet addresses are
-outside this classification and remain exempt.
+Apple provides no supported API to preflight this permission, force its prompt,
+or read the switch. Sessions therefore reports only what it can establish:
+`sessions doctor` shows `granted` once nearby contact has actually succeeded —
+macOS cannot be blocking local access while a LAN peer answers — and
+`not-yet-asked` while nothing is proven (`not-required` on other platforms).
+Successful nearby discovery, a completed nearby connect, or a LAN fleet probe
+records `granted` and reconciles any earlier failed attempt.
 
-Fleet and Settings show a numbered recovery guide for denied or not-yet-asked
-access. **Open System Settings** opens the local Mac's privacy pane; it never
+Nothing records a denial. A private or link-local Darwin dial failing with
+`EHOSTUNREACH` looks identical whether the switch is off or the other machine is
+asleep, powered down, or on another network, so the API, CLI, and doctor keep
+the transport error and the endpoint that failed and add the permission as one
+possible cause: “macOS may not have allowed Sessions to use the local network —
+check System Settings › Privacy & Security › Local Network › Sessions; a machine
+that is off, asleep, or on another network fails the same way.” The
+machine-readable `reason` stays `local-network-permission`, which classifies the
+failure rather than asserting a verdict. An empty browse likewise establishes
+nothing. Tailnet addresses are outside this classification and remain exempt; a
+tailnet route that works is never evidence about the LAN. Older hosts may still
+report `denied`, and clients keep accepting it.
+
+Fleet and Settings show a numbered recovery guide whenever nearby access is not
+confirmed. **Open System Settings** opens the local Mac's privacy pane; it never
 changes the permission. A phone or remote viewer instead names the host Mac
 where the steps belong. The guide refreshes on return to the app and periodically,
 and confirms recovery only after the daemon reports successful access. Older

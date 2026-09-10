@@ -40,20 +40,34 @@ func TestLocalNetworkPermissionObservationPersistsOnDarwin(t *testing.T) {
 		t.Fatalf("initial permission = %q, want not-yet-asked", got)
 	}
 
-	listener.markPermission("denied")
+	listener.markPermission("granted")
 	settings, err := state.LoadSettings(config.SettingsPath)
-	if err != nil || settings.LocalNetworkPermission != "denied" {
+	if err != nil || settings.LocalNetworkPermission != "granted" {
 		t.Fatalf("saved permission = %q, err=%v", settings.LocalNetworkPermission, err)
 	}
 	restored := newLANListener(config, http.NotFoundHandler(), identity)
-	if got := restored.state().Permission; got.Status != "denied" || got.Reason != localNetworkPermissionReason {
+	if got := restored.state().Permission; got.Status != "granted" || got.Message != "" {
 		t.Fatalf("restored permission = %#v", got)
 	}
+}
 
-	restored.markPermission("granted")
-	again := newLANListener(config, http.NotFoundHandler(), identity)
-	if got := again.state().Permission.Status; got != "granted" {
-		t.Fatalf("permission after successful retry = %q, want granted", got)
+// Earlier builds wrote "denied" from a transport errno they could not attribute.
+// That guess must not outlive the restart as an assertion about a macOS setting
+// this daemon has no way to read.
+func TestLegacyDeniedObservationIsNotRestoredAsAVerdict(t *testing.T) {
+	if initialLocalNetworkPermission() == "not-required" {
+		t.Skip("local-network privacy is macOS-specific")
+	}
+	config := state.Config{StateRoot: t.TempDir()}
+	config.UserStateRoot = config.StateRoot
+	config.SettingsPath = config.StateRoot + "/settings.json"
+	if err := state.SaveSettings(config.SettingsPath, state.Settings{LocalNetworkPermission: "denied"}); err != nil {
+		t.Fatal(err)
+	}
+	identity := machineIdentity{Name: "Permission fixture", ID: "permission-fixture"}
+	restored := newLANListener(config, http.NotFoundHandler(), identity)
+	if got := restored.state().Permission; got.Status != "not-yet-asked" || got.Reason != "" || got.Message != "" {
+		t.Fatalf("restored permission = %#v, want an unproven state rather than a stored verdict", got)
 	}
 }
 

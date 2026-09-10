@@ -2,28 +2,40 @@ package localnetwork
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"strings"
 )
 
 const (
-	Reason  = "local-network-permission"
-	Message = "macOS has not allowed Sessions to use the local network. System Settings › Privacy & Security › Local Network › turn on Sessions."
+	Reason = "local-network-permission"
+	// PossibleCause is deliberately conditional. macOS offers no supported way
+	// to read the Local Network switch, and a peer that is off, asleep, or on
+	// another subnet fails a private-address dial with the same EHOSTUNREACH.
+	// Claiming a denial from that errno told users to fix a setting that was
+	// often already correct.
+	PossibleCause = "macOS may not have allowed Sessions to use the local network — check System Settings › Privacy & Security › Local Network › Sessions; a machine that is off, asleep, or on another network fails the same way"
 )
 
-// Explain replaces Darwin's misleading EHOSTUNREACH text only when the failed
-// destination is actually on a private or link-local network. Tailnet and
-// public-network failures keep their original transport error.
+var errPossiblePermission = errors.New(PossibleCause)
+
+// Explain annotates Darwin's terse EHOSTUNREACH with the permission as a
+// possible cause when the failed destination is on a private or link-local
+// network. The original error is preserved and reported first, so callers keep
+// both the transport detail and errno matching. Tailnet and public-network
+// failures are returned unchanged.
 func Explain(endpoint string, err error) error {
 	if err == nil || !platformDenied(err) || !IsLocalEndpoint(endpoint) {
 		return err
 	}
-	return errors.New(Message)
+	return fmt.Errorf("%w (%w)", err, errPossiblePermission)
 }
 
-func IsPermissionError(err error) bool {
-	return err != nil && err.Error() == Message
+// IsPossiblePermissionError reports whether Explain added the local-network
+// permission as one candidate cause. It is not evidence that macOS refused.
+func IsPossiblePermissionError(err error) bool {
+	return errors.Is(err, errPossiblePermission)
 }
 
 func IsLocalEndpoint(endpoint string) bool {

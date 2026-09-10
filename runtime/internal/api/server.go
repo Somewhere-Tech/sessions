@@ -75,7 +75,7 @@ func (s *Server) logLANFallbackOnce(fallbacks []fleetendpoint.Candidate) {
 		return
 	}
 	s.lanFallbackLog.Do(func() {
-		log.Printf("sessionsd: macOS denied local-network access; using %s transport", fallbacks[0].Transport)
+		log.Printf("sessionsd: local-network endpoint unreachable; using %s transport", fallbacks[0].Transport)
 	})
 }
 

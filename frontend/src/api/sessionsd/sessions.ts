@@ -410,6 +410,9 @@ export interface LANState {
     error?: string;
   };
   permission?: {
+    // What the host has observed, never a reading of the macOS switch: 'granted'
+    // once nearby contact succeeded, 'not-yet-asked' while nothing is proven.
+    // 'denied' only arrives from a host running an older daemon.
     status: 'granted' | 'denied' | 'not-yet-asked' | 'not-required';
     reason?: 'local-network-permission';
     message?: string;

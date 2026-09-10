@@ -262,24 +262,24 @@ func (s *Server) selectLANConnectCandidate(ctx context.Context, candidates []fle
 		if err == nil {
 			err = errors.New("endpoint did not identify itself as sessionsd")
 		}
-		explained := localnetwork.Explain(candidate.Endpoint, err)
-		if index == 0 && localnetwork.IsPermissionError(explained) {
+		lastErr = fmt.Errorf("reach %s: %w", candidate.Endpoint, localnetwork.Explain(candidate.Endpoint, err))
+		if index == 0 && localnetwork.IsPossiblePermissionError(lastErr) {
 			s.logLANFallbackOnce(candidates[1:])
-			s.lan.markPermission("denied")
 		}
-		lastErr = fmt.Errorf("reach %s: %w", candidate.Endpoint, explained)
 	}
 	return fleetendpoint.Candidate{}, lastErr
 }
 
+// sendLANClientError reports the transport failure that actually happened. The
+// local-network permission travels as a candidate cause, never as a verdict:
+// this daemon cannot read the macOS switch, so it does not answer 403 as though
+// the operating system had refused.
 func (s *Server) sendLANClientError(response http.ResponseWriter, err error, corsOrigin string) {
-	status := http.StatusBadGateway
 	reason := ""
-	if localnetwork.IsPermissionError(err) {
-		s.lan.markPermission("denied")
-		status, reason = http.StatusForbidden, localnetwork.Reason
+	if localnetwork.IsPossiblePermissionError(err) {
+		reason = localnetwork.Reason
 	}
-	s.sendJSON(response, status, map[string]any{"error": err.Error(), "reason": reason}, corsOrigin)
+	s.sendJSON(response, http.StatusBadGateway, map[string]any{"error": err.Error(), "reason": reason}, corsOrigin)
 }
 
 func connectLANMachine(ctx context.Context, endpoint, transport, clientID, name string, timeout time.Duration) (pairingClaimResponse, error) {

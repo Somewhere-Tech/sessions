@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -299,10 +300,7 @@ func (a *app) discoverMachines(args []string) error {
 	defer cancel()
 	candidates, err := discovery.Browse(ctx, timeout)
 	if err != nil {
-		if a.localDaemonIsAdvertising() {
-			return fail(2, "%s", localnetwork.Message)
-		}
-		return fail(2, "nearby discovery failed: %s", err)
+		return fail(2, "nearby discovery failed: %s%s", err, nearbyPermissionHint())
 	}
 	machines := make([]discoveredMachine, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -344,10 +342,12 @@ func (a *app) writeDiscoveredMachines(machines []discoveredMachine) error {
 		}, true)
 	}
 	if len(machines) == 0 {
-		if a.localDaemonIsAdvertising() {
-			return fail(2, "%s", localnetwork.Message)
-		}
-		_, err := fmt.Fprintln(a.stdout, "No nearby Sessions machines found. Make sure LAN access is enabled on the other machine.")
+		// An empty browse is not a failure and not proof of a macOS denial: the
+		// other machines may simply be off or have LAN access turned off. Report
+		// what was observed and name the permission as one thing worth checking.
+		_, err := fmt.Fprintf(a.stdout,
+			"No nearby Sessions machines found. Make sure LAN access is enabled on the other machine.%s\n",
+			nearbyPermissionHint())
 		return err
 	}
 	writer := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
@@ -698,13 +698,13 @@ func (a *app) finishMachineConnect(endpoint, transport, alias string, claim acce
 	return err
 }
 
-func (a *app) localDaemonIsAdvertising() bool {
-	var state struct {
-		Bonjour struct {
-			Advertised bool `json:"advertised"`
-		} `json:"bonjour"`
+// nearbyPermissionHint names the local-network permission as a possible cause
+// on macOS, where discovery needs it, without claiming it was refused.
+func nearbyPermissionHint() string {
+	if runtime.GOOS != "darwin" {
+		return ""
 	}
-	return a.getJSON("/api/lan", &state) == nil && state.Bonjour.Advertised
+	return " (" + localnetwork.PossibleCause + ")"
 }
 
 func (a *app) listSavedMachines() error {

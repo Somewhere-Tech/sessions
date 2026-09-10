@@ -139,11 +139,12 @@ func (s *Server) handleFleetRelay(
 		},
 		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
 			log.Printf("sessionsd: fleet relay failed machine=%s device_id=%s: %v", machine.MachineID, deviceID, proxyErr)
-			explained := localnetwork.Explain(selected.Endpoint, proxyErr)
-			if localnetwork.IsPermissionError(explained) {
-				s.lan.markPermission("denied")
+			explained := fleetEndpointError(selected.Endpoint, proxyErr)
+			body := map[string]any{"error": explained.Error()}
+			if localnetwork.IsPossiblePermissionError(explained) {
+				body["reason"] = localnetwork.Reason
 			}
-			s.sendJSON(writer, http.StatusBadGateway, map[string]any{"error": explained.Error()}, corsOrigin)
+			s.sendJSON(writer, http.StatusBadGateway, body, corsOrigin)
 		},
 	}
 	proxy.ServeHTTP(response, request)
@@ -210,18 +211,37 @@ func (s *Server) fleetMachineReachability(parent context.Context, machine fleetS
 	defer cancel()
 	target, selected, err := s.selectFleetEndpoint(ctx, machine, credential)
 	if err == nil {
-		err = probeFleetEndpoint(ctx, target, credential, machine.MachineID)
+		// Selection returns the candidate it reached, or the only saved endpoint
+		// without probing it; either way that is the address this row failed at.
+		if err = probeFleetEndpoint(ctx, target, credential, machine.MachineID); err != nil {
+			err = fleetEndpointError(selected.Endpoint, err)
+		}
 	}
 	if err != nil {
-		explained := localnetwork.Explain(machine.Endpoint, err)
-		if localnetwork.IsPermissionError(explained) {
-			s.lan.markPermission("denied")
-			view.Reason, view.Message = localnetwork.Reason, localnetwork.Message
+		if localnetwork.IsPossiblePermissionError(err) {
+			view.Reason, view.Message = localnetwork.Reason, err.Error()
 		}
 		return view
 	}
+	s.observeFleetTransport(selected)
 	view.Endpoint, view.Transport, view.Reachable = selected.Endpoint, selected.Transport, true
 	return view
+}
+
+// fleetEndpointError names the endpoint this attempt actually dialled. The
+// machine's saved primary address is not evidence about a fallback route that
+// failed, and attributing a tailnet failure to it invented LAN problems.
+func fleetEndpointError(endpoint string, err error) error {
+	return fmt.Errorf("reach %s: %w", endpoint, localnetwork.Explain(endpoint, err))
+}
+
+// observeFleetTransport records the only local-network fact this daemon can
+// prove: macOS cannot be blocking local access while a LAN peer is answering.
+// A tailnet or relay success says nothing about the LAN and marks nothing.
+func (s *Server) observeFleetTransport(selected fleetendpoint.Candidate) {
+	if selected.Transport == "lan" && localnetwork.IsLocalEndpoint(selected.Endpoint) {
+		s.lan.markPermission("granted")
+	}
 }
 
 func (s *Server) selectFleetEndpoint(ctx context.Context, machine fleetSavedMachine, credential string) (*url.URL, fleetendpoint.Candidate, error) {
@@ -236,15 +256,14 @@ func (s *Server) selectFleetEndpoint(ctx context.Context, machine fleetSavedMach
 	var lastErr error
 	for index, candidate := range candidates {
 		target, _ := url.Parse(candidate.Endpoint)
-		if err := probeFleetEndpoint(ctx, target, credential, machine.MachineID); err == nil {
+		err := probeFleetEndpoint(ctx, target, credential, machine.MachineID)
+		if err == nil {
+			s.observeFleetTransport(candidate)
 			return target, candidate, nil
-		} else {
-			lastErr = err
-			explained := localnetwork.Explain(candidate.Endpoint, err)
-			if index == 0 && localnetwork.IsPermissionError(explained) {
-				s.lan.markPermission("denied")
-				s.logLANFallbackOnce(candidates[1:])
-			}
+		}
+		lastErr = fleetEndpointError(candidate.Endpoint, err)
+		if index == 0 && localnetwork.IsPossiblePermissionError(lastErr) {
+			s.logLANFallbackOnce(candidates[1:])
 		}
 	}
 	return nil, fleetendpoint.Candidate{}, lastErr

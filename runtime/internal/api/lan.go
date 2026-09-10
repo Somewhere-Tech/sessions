@@ -31,6 +31,10 @@ type LANState struct {
 	Permission LocalNetworkPermission `json:"permission"`
 }
 
+// LocalNetworkPermission reports what this daemon has observed, not a reading
+// of the macOS switch, which has no supported API. Reason and Message stay in
+// the shape for clients that still receive a "denied" observation from an older
+// host; this daemon reports only the states it can actually establish.
 type LocalNetworkPermission struct {
 	Status  string `json:"status"`
 	Reason  string `json:"reason,omitempty"`
@@ -72,8 +76,14 @@ func newLANListener(config state.Config, handler http.Handler, identity machineI
 	}
 	permission := initialLocalNetworkPermission()
 	if permission != "not-required" {
+		// Only a proven observation is restored. Earlier builds recorded
+		// "denied" from a transport errno that a sleeping or absent peer
+		// produces just as readily, and that guess then outlived the condition
+		// across every restart. An unproven state reads as not-yet-asked, which
+		// already shows the same recovery guide without asserting a macOS
+		// setting this daemon cannot read.
 		if settings, err := state.LoadSettings(settingsPath); err == nil &&
-			(settings.LocalNetworkPermission == "granted" || settings.LocalNetworkPermission == "denied") {
+			settings.LocalNetworkPermission == "granted" {
 			permission = settings.LocalNetworkPermission
 		}
 	}
@@ -108,14 +118,12 @@ func (l *lanListener) stateLocked() LANState {
 }
 
 func (l *lanListener) permissionLocked() LocalNetworkPermission {
-	permission := LocalNetworkPermission{Status: l.permission}
-	if l.permission == "denied" {
-		permission.Reason = localNetworkPermissionReason
-		permission.Message = localNetworkPermissionMessage
-	}
-	return permission
+	return LocalNetworkPermission{Status: l.permission}
 }
 
+// markPermission records an observation. Successful nearby contact is the only
+// positive proof available -- macOS cannot be blocking local access while a LAN
+// peer answers -- so a later success reconciles any earlier failed attempt.
 func (l *lanListener) markPermission(status string) {
 	if initialLocalNetworkPermission() == "not-required" {
 		return

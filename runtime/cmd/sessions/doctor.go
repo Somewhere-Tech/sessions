@@ -260,11 +260,17 @@ func writeDoctorLocalNetwork(writer io.Writer, state any) {
 	status, _ := permission["status"].(string)
 	switch status {
 	case "denied":
-		fmt.Fprintf(writer, "local network: denied — %s\n\n", localnetwork.Message)
+		// Only an older daemon still reports a denial. Print the sentence it
+		// sent rather than restating a macOS state this CLI cannot read.
+		message, _ := permission["message"].(string)
+		if message == "" {
+			message = localnetwork.PossibleCause
+		}
+		fmt.Fprintf(writer, "local network: denied — %s\n\n", message)
 	case "granted":
 		fmt.Fprint(writer, "local network: granted\n\n")
 	case "not-yet-asked":
-		fmt.Fprint(writer, "local network: not yet asked; open Fleet in Sessions to choose when macOS asks\n\n")
+		fmt.Fprint(writer, "local network: not confirmed; nearby access has not succeeded yet. Open Fleet in Sessions to try it, or check System Settings › Privacy & Security › Local Network › Sessions\n\n")
 	}
 }
 

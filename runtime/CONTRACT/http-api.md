@@ -428,7 +428,11 @@ then Tailscale HTTPS, then direct Tailscale-IP HTTP, making authenticated `GET
 identity to match `id`. Offline machines remain in the array with
 `reachable:false`. When a Darwin probe of a private or link-local destination
 fails with `EHOSTUNREACH`, that row additionally carries
-`reason:"local-network-permission"` and the exact `message` shown above.
+`reason:"local-network-permission"` and a `message` that reports the transport
+error, the endpoint the probe actually dialled, and the Local Network permission
+as one possible cause. macOS returns the same errno for a machine that is off or
+on another network, so neither field asserts that the permission was refused,
+and the endpoint named is the failed candidate rather than the saved primary.
 Other reachability failures omit both fields. The response never contains a
 credential or paired-device ID. An unreadable, malformed, or unsupported saved
 machine registry is 500.
@@ -455,9 +459,10 @@ identity. Other headers, including `X-Sessions-Creator-Session` and
 `X-Sessions-Owner-ID`, retain their values. A transport failure is 502. Every
 relayed request is logged at info level with method, destination path, machine
 ID, and calling device ID (or `local`), but never with a request body or token.
-A private or link-local Darwin dial that fails with `EHOSTUNREACH` uses the
-exact Local Network permission sentence documented by `GET
-/api/fleet/machines` instead of exposing `no route to host`.
+A private or link-local Darwin dial that fails with `EHOSTUNREACH` keeps its
+transport error, names the endpoint the relay dialled, adds the Local Network
+permission as a possible cause, and carries `reason:"local-network-permission"`
+beside the `error` field.
 
 ### `GET /api/push/vapid`
 
@@ -1901,13 +1906,15 @@ empty. The `_sessions._tcp` TXT record always carries `lan=<origin>` and adds
 `tailnet=<HTTPS origin>` and `tailnet-ip=<HTTP CGNAT origin>` whenever
 Tailscale reports them; all three are hints and the client must still verify
 health and obtain a device credential. `permission.status` is the daemon's last
-observed Local Network state:
-`granted`, `denied`, or `not-yet-asked` on Darwin and `not-required` elsewhere.
-There is no permission preflight. A denied state additionally includes
-`"reason":"local-network-permission"` and
-`"message":"macOS has not allowed Sessions to use the local network. System Settings › Privacy & Security › Local Network › turn on Sessions."`.
-Granted and denied observations persist across daemon restarts and change when
-a later nearby operation proves the opposite state.
+observed Local Network state and never a reading of the macOS switch, which has
+no supported API. It is `granted` or `not-yet-asked` on Darwin and
+`not-required` elsewhere. There is no permission preflight. Successful nearby
+contact — a verified discovery peer, a completed nearby connect, or a LAN fleet
+probe — records `granted` and persists across daemon restarts; nothing else is
+provable, so a failed dial leaves the observation unproven rather than recording
+a denial. `denied`, with its `reason` and `message`, remains a value clients must
+still accept from an older host; this daemon no longer reports it and no longer
+restores one written by an earlier version.
 
 ### `POST /api/lan`
 
@@ -1931,12 +1938,13 @@ than 15 seconds and defaults to `3s`. Success is:
 {"machines":[{"name":"Mac mini","hostname":"mini.local.","endpoint":"http://192.168.1.24:8787","lan_endpoint":"http://192.168.1.24:8787","tailnet_endpoint":"https://mini.example.ts.net","tailnet_ip_endpoint":"http://100.100.20.30:8787","address":"192.168.1.24","port":8787,"transport":"nearby","version":"v0.2.27","os":"darwin","arch":"arm64","sessions_loaded":2,"reachable":true}],"warning":"Nearby access uses unencrypted HTTP. Connect only on a private network you trust."}
 ```
 
-An invalid timeout is 400. A browse failure is 502, except that a Darwin Local
-Network denial is 403 with
-`{"error":"macOS has not allowed Sessions to use the local network. System Settings › Privacy & Security › Local Network › turn on Sessions.","reason":"local-network-permission"}`.
-An empty Darwin browse while this daemon is itself advertising is classified
-the same way. Other empty results are 200 with an empty `machines` array.
-Other methods return 405.
+An invalid timeout is 400. A browse failure is 502 with
+`{"error":"<transport failure>","reason":"<reason>"}`, where `reason` is
+`local-network-permission` when the failure was a Darwin private or link-local
+dial and empty otherwise. The daemon cannot read the macOS switch, so it never
+answers 403 as though the operating system had refused, and an empty browse —
+including one while this daemon is itself advertising — is 200 with an empty
+`machines` array. Other methods return 405.
 
 ### `POST /api/lan/connect`
 
@@ -1959,8 +1967,9 @@ the other machine's user accepts or denies it. Acceptance returns 201:
 
 The credential crosses only this authenticated loopback response; the CLI
 stores it in the existing separate owner-readable credential file. Invalid
-input is 400. A peer denial or expired request is 502. A Darwin Local Network
-denial is the same 403 error and reason as `GET /api/lan/discover`. Other
+input is 400. A peer denial or expired request is 502. A failed Darwin private
+or link-local dial is the same 502 error and `local-network-permission` reason
+as `GET /api/lan/discover`, naming the candidate endpoint that failed. Other
 methods return 405.
 
 When `ticket` is present, the daemon skips the request/accept exchange, probes
