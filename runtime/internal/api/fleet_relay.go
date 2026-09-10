@@ -114,41 +114,65 @@ func (s *Server) handleFleetRelay(
 	}
 	target, selected, err := s.selectFleetEndpoint(request.Context(), machine, credential)
 	if err != nil {
-		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
+		// Every saved route was unusable or unanswered. That is a statement
+		// about the destination, not about this host, so it must not read as
+		// this daemon having failed.
+		body := map[string]any{"error": err.Error()}
+		if errors.Is(err, errFleetEndpointUnusable) {
+			body["reason"] = fleetEndpointUnusableReason
+		}
+		s.sendJSON(response, http.StatusBadGateway, body, corsOrigin)
 		return true
 	}
 
 	log.Printf("sessionsd: fleet relay method=%s path=%s machine=%s device_id=%s", request.Method, remotePath, machine.MachineID, deviceID)
-	proxy := &httputil.ReverseProxy{
+	s.fleetRelayProxy(fleetRelayRoute{
+		target: target, selected: selected, remotePath: remotePath,
+		credential: credential, machineID: machine.MachineID, deviceID: deviceID,
+		corsOrigin: corsOrigin,
+	}).ServeHTTP(response, request)
+	return true
+}
+
+type fleetRelayRoute struct {
+	target     *url.URL
+	selected   fleetendpoint.Candidate
+	remotePath string
+	credential string
+	machineID  string
+	deviceID   string
+	corsOrigin string
+}
+
+func (s *Server) fleetRelayProxy(route fleetRelayRoute) *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
 		Transport:     fleetRelayTransport,
 		FlushInterval: -1,
 		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
-			proxyRequest.SetURL(target)
-			proxyRequest.Out.URL.Path = remotePath
+			proxyRequest.SetURL(route.target)
+			proxyRequest.Out.URL.Path = route.remotePath
 			proxyRequest.Out.URL.RawPath = ""
 			query := proxyRequest.Out.URL.Query()
 			query.Del("token")
 			proxyRequest.Out.URL.RawQuery = query.Encode()
 			proxyRequest.Out.Header.Del("Authorization")
 			proxyRequest.Out.Header.Del("Proxy-Authorization")
-			proxyRequest.Out.Header.Set("Authorization", "Bearer "+credential)
+			proxyRequest.Out.Header.Set("Authorization", "Bearer "+route.credential)
 			// SetXForwarded first removes caller-supplied forwarding claims, then
 			// records the phone as the peer. This also keeps a second scratch
 			// daemon on loopback from mistaking the relay for ambient local trust.
 			proxyRequest.SetXForwarded()
 		},
 		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
-			log.Printf("sessionsd: fleet relay failed machine=%s device_id=%s: %v", machine.MachineID, deviceID, proxyErr)
-			explained := fleetEndpointError(selected.Endpoint, proxyErr)
+			log.Printf("sessionsd: fleet relay failed machine=%s device_id=%s: %v", route.machineID, route.deviceID, proxyErr)
+			explained := fleetEndpointError(route.selected.Endpoint, proxyErr)
 			body := map[string]any{"error": explained.Error()}
 			if localnetwork.IsPossiblePermissionError(explained) {
 				body["reason"] = localnetwork.Reason
 			}
-			s.sendJSON(writer, http.StatusBadGateway, body, corsOrigin)
+			s.sendJSON(writer, http.StatusBadGateway, body, route.corsOrigin)
 		},
 	}
-	proxy.ServeHTTP(response, request)
-	return true
 }
 
 func fleetRelayCaller(principal authPrincipal) (string, bool) {
@@ -218,8 +242,11 @@ func (s *Server) fleetMachineReachability(parent context.Context, machine fleetS
 		}
 	}
 	if err != nil {
-		if localnetwork.IsPossiblePermissionError(err) {
+		switch {
+		case localnetwork.IsPossiblePermissionError(err):
 			view.Reason, view.Message = localnetwork.Reason, err.Error()
+		case errors.Is(err, errFleetEndpointUnusable):
+			view.Reason, view.Message = fleetEndpointUnusableReason, err.Error()
 		}
 		return view
 	}
@@ -297,6 +324,15 @@ func probeFleetEndpoint(ctx context.Context, target *url.URL, credential, machin
 
 var errFleetMachineNotApproved = errors.New("machine is not approved on this host")
 
+// errFleetEndpointUnusable marks a saved machine whose addresses this host
+// cannot dial. A machine claimed from the account directory is saved with the
+// addresses that directory published, so a host can end up holding a row it has
+// no transport for. That is one machine's problem; it is not evidence about the
+// rest of the fleet and never a reason to hide it.
+var errFleetEndpointUnusable = errors.New("no saved address this host can use")
+
+const fleetEndpointUnusableReason = "saved-endpoint-unusable"
+
 func (s *Server) approvedFleetMachine(machineID string) (fleetSavedMachine, string, error) {
 	if !validFleetMachineID(machineID) {
 		return fleetSavedMachine{}, "", errFleetMachineNotApproved
@@ -339,15 +375,18 @@ func (s *Server) readFleetMachines() ([]fleetSavedMachine, error) {
 	if registry.Version != fleetRegistryVersion {
 		return nil, fmt.Errorf("unsupported saved-machine registry version %d", registry.Version)
 	}
+	machines := make([]fleetSavedMachine, 0, len(registry.Machines))
 	for _, machine := range registry.Machines {
+		// The id is how a machine is named in this API and in a relay path, so a
+		// row without a usable one has no identity to show or route to and is
+		// dropped. Everything else is judged per row when that row is used: one
+		// entry this host cannot dial must not take the whole fleet with it.
 		if !validFleetMachineID(machine.MachineID) {
-			return nil, fmt.Errorf("saved machine has invalid id %q", machine.MachineID)
+			continue
 		}
-		if _, err := validatedFleetEndpoints(machine); err != nil {
-			return nil, err
-		}
+		machines = append(machines, machine)
 	}
-	return registry.Machines, nil
+	return machines, nil
 }
 
 func (s *Server) fleetStateRoot() string {
@@ -391,7 +430,7 @@ func validatedFleetEndpoints(machine fleetSavedMachine) ([]fleetendpoint.Candida
 		}
 	}
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("saved machine %q has no endpoint", machine.MachineID)
+		return nil, fmt.Errorf("%w: saved machine %q has no endpoint", errFleetEndpointUnusable, machine.MachineID)
 	}
 	return candidates, nil
 }
@@ -400,7 +439,7 @@ func validateFleetCandidate(machineID string, candidate fleetendpoint.Candidate)
 	parsed, err := url.Parse(strings.TrimSpace(candidate.Endpoint))
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		(candidate.Transport != "relay" && parsed.Path != "" && parsed.Path != "/") {
-		return fmt.Errorf("saved machine %q has an invalid endpoint", machineID)
+		return fmt.Errorf("%w: saved machine %q has an unusable endpoint", errFleetEndpointUnusable, machineID)
 	}
 	valid := candidate.Transport == "lan" && parsed.Scheme == "http"
 	valid = valid || candidate.Transport == "tailnet" && parsed.Scheme == "https" && strings.HasSuffix(strings.ToLower(parsed.Hostname()), ".ts.net")
@@ -408,7 +447,8 @@ func validateFleetCandidate(machineID string, candidate fleetendpoint.Candidate)
 	relayScheme := parsed.Scheme == "https" || parsed.Scheme == "http" && net.ParseIP(parsed.Hostname()) != nil && net.ParseIP(parsed.Hostname()).IsLoopback()
 	valid = valid || candidate.Transport == "relay" && relayScheme && parsed.Path == "/m/"+url.PathEscape(machineID)
 	if !valid {
-		return fmt.Errorf("saved machine %q has an invalid %s transport", machineID, candidate.Transport)
+		return fmt.Errorf("%w: saved machine %q has an address this host cannot use as a %s route",
+			errFleetEndpointUnusable, machineID, candidate.Transport)
 	}
 	return nil
 }

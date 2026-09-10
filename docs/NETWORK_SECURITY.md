@@ -210,7 +210,11 @@ A logs the method, path, destination machine, and calling device ID, never the
 body or either credential. The fleet-list reachability check sends only an
 authenticated machine-identity probe and keeps offline machines visible. Each
 connection tries the saved LAN origin first, then Tailscale Serve HTTPS, then
-the direct Tailscale IP origin. Relayed streams have no background retry queue;
+the direct Tailscale IP origin. A saved row A cannot use — a machine claimed
+from the account directory keeps the addresses that directory published, which A
+never validated — is listed as unreachable with the reason, and requests to it
+fail closed as a bad gateway; A still refuses to dial an address that does not
+match its transport rules, and the rest of A's fleet stays listed and usable. Relayed streams have no background retry queue;
 the phone's existing reconnect behavior starts a new request.
 
 This is a user's own machine relaying to that same user's independently

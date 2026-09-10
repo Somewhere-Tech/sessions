@@ -433,9 +433,16 @@ error, the endpoint the probe actually dialled, and the Local Network permission
 as one possible cause. macOS returns the same errno for a machine that is off or
 on another network, so neither field asserts that the permission was refused,
 and the endpoint named is the failed candidate rather than the saved primary.
-Other reachability failures omit both fields. The response never contains a
-credential or paired-device ID. An unreadable, malformed, or unsupported saved
-machine registry is 500.
+A saved machine whose addresses this host has no transport for — a row claimed
+from the account directory is stored with the addresses that directory
+published, which this host never validated — is listed with `reachable:false`,
+`reason:"saved-endpoint-unusable"` and a `message` naming the machine and the
+route it could not use. It is listed rather than hidden, and one such row never
+removes or fails the other machines. A row whose `machine_id` is not a valid id
+has no identity to show or route to and is omitted. Other reachability failures
+omit both fields. The response never contains a credential or paired-device ID.
+A registry file that cannot be read or parsed, or whose version is unsupported,
+is still 500: that is this host's own state, not a statement about a peer.
 
 ### `/api/fleet/:machine-id/api/*` and `/api/fleet/:machine-id/ws`
 
@@ -451,7 +458,11 @@ through an unsaved machine ID.
 The suffix is forwarded unchanged to the first reachable saved endpoint in the
 same LAN, Tailscale HTTPS, direct Tailscale-IP order. Request and response
 bodies are streamed, and Go's reverse proxy carries WebSocket upgrades, so the
-existing `/ws?mux=1` protocol works through the relay. The phone's
+existing `/ws?mux=1` protocol works through the relay. When no saved route can
+be used or reached, the response is `502` with the failure and the endpoint that
+was tried, plus `reason:"saved-endpoint-unusable"` when the addresses themselves
+are the problem; that is a statement about the destination, so it is never
+reported as this host failing. The phone's
 `Authorization` and `Proxy-Authorization` headers and `token` query parameter
 are removed. The host then supplies its own saved per-machine bearer credential;
 the destination therefore sees and can revoke the host's normal paired-device
