@@ -252,7 +252,7 @@ func (h *HistoryStore) cachedMessageCount(path string, info os.FileInfo) (int, i
 	h.cacheMu.Lock()
 	defer h.cacheMu.Unlock()
 	cached, ok := h.cache[path]
-	if !ok || cached.size != info.Size() || cached.modTimeNano != info.ModTime().UnixNano() {
+	if !ok || !cached.counted || cached.size != info.Size() || cached.modTimeNano != info.ModTime().UnixNano() {
 		return 0, 0, false
 	}
 	h.cacheClock++
@@ -266,11 +266,19 @@ func (h *HistoryStore) cachedMessageCount(path string, info os.FileInfo) (int, i
 // of paths over its lifetime, so it is evicted rather than grown forever.
 const maxHistoryCacheEntries = 4096
 
+// historyCacheEntry holds what has been computed about one file at one exact
+// fingerprint. The two halves are filled by different readers and each says so:
+// an entry created for its recorded activity has no count, and reporting that
+// absence as a count of zero is what the summary listing exists to avoid.
 type historyCacheEntry struct {
 	size        int64
 	modTimeNano int64
 	count       int
 	skipped     int
+	counted     bool
+	recordedMS  int64
+	hasRecord   bool
+	activity    bool
 	used        uint64
 }
 
@@ -719,7 +727,7 @@ func (h *HistoryStore) describe(source backup.Session, counting messageCountMode
 		}
 	}
 	result.ConversationAvailable = true
-	updated, fromRecord := conversationUpdatedAt(path, info)
+	updated, fromRecord := h.conversationUpdatedAt(path, info)
 	result.ConversationUpdatedAt = updated
 	result.ConversationUpdatedApproximate = !fromRecord
 	result.LastActivityAt = max(result.LastActivityAt, updated)
@@ -764,7 +772,7 @@ func (h *HistoryStore) describeExternal(source watch.ResumableSession, counting 
 		return result, "", tool, nil
 	}
 	result.SourceFingerprint = historySourceFingerprint(source.SourcePath, info)
-	updated, fromRecord := conversationUpdatedAt(source.SourcePath, info)
+	updated, fromRecord := h.conversationUpdatedAt(source.SourcePath, info)
 	result.ConversationUpdatedAt = updated
 	result.ConversationUpdatedApproximate = !fromRecord
 	// A provider conversation has no Sessions record behind it, so mtime was the
@@ -801,11 +809,62 @@ func (h *HistoryStore) describeExternal(source watch.ResumableSession, counting 
 // mtime remains the fallback for a transcript that stamped nothing -- a
 // single-record bridge file, say -- and the caller is told which it got so a
 // copy artefact is never presented as recency.
-func conversationUpdatedAt(path string, info os.FileInfo) (int64, bool) {
-	if recorded, ok := watch.ConversationRecordedActivity(path); ok {
-		return recorded.UnixMilli(), true
+//
+// The read is bounded but a listing asks it of every conversation it shows, so
+// the answer is cached against the same path, size and modification-time
+// fingerprint the message count uses. A file that has grown is a different
+// fingerprint and is read again; an unchanged one is not read at all.
+func (h *HistoryStore) conversationUpdatedAt(path string, info os.FileInfo) (int64, bool) {
+	if recordedMS, hasRecord, ok := h.cachedConversationActivity(path, info); ok {
+		if hasRecord {
+			return recordedMS, true
+		}
+		return info.ModTime().UnixMilli(), false
+	}
+	recorded, hasRecord := watch.ConversationRecordedActivity(path)
+	recordedMS := int64(0)
+	if hasRecord {
+		recordedMS = recorded.UnixMilli()
+	}
+	h.storeConversationActivity(path, info, recordedMS, hasRecord)
+	if hasRecord {
+		return recordedMS, true
 	}
 	return info.ModTime().UnixMilli(), false
+}
+
+func (h *HistoryStore) cachedConversationActivity(path string, info os.FileInfo) (int64, bool, bool) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	cached, ok := h.cache[path]
+	if !ok || !cached.activity || cached.size != info.Size() || cached.modTimeNano != info.ModTime().UnixNano() {
+		return 0, false, false
+	}
+	h.cacheClock++
+	cached.used = h.cacheClock
+	h.cache[path] = cached
+	return cached.recordedMS, cached.hasRecord, true
+}
+
+func (h *HistoryStore) storeConversationActivity(path string, info os.FileInfo, recordedMS int64, hasRecord bool) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	entry := h.entryForFingerprintLocked(path, info)
+	entry.recordedMS, entry.hasRecord, entry.activity = recordedMS, hasRecord, true
+	h.cacheClock++
+	entry.used = h.cacheClock
+	h.cache[path] = entry
+	h.evictHistoryCacheLocked()
+}
+
+// entryForFingerprintLocked keeps whatever the other reader already computed for
+// this exact file, and starts fresh when the file is not the one it saw.
+func (h *HistoryStore) entryForFingerprintLocked(path string, info os.FileInfo) historyCacheEntry {
+	cached, ok := h.cache[path]
+	if ok && cached.size == info.Size() && cached.modTimeNano == info.ModTime().UnixNano() {
+		return cached
+	}
+	return historyCacheEntry{size: info.Size(), modTimeNano: info.ModTime().UnixNano()}
 }
 
 // conversationSurface reads where a managed conversation was started from. Both

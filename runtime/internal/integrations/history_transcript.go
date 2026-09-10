@@ -227,7 +227,7 @@ func historySourceFingerprint(path string, info os.FileInfo) string {
 func (h *HistoryStore) messageCount(path, tool string, info os.FileInfo) (int, int, error) {
 	h.cacheMu.Lock()
 	cached, ok := h.cache[path]
-	if ok && cached.size == info.Size() && cached.modTimeNano == info.ModTime().UnixNano() {
+	if ok && cached.counted && cached.size == info.Size() && cached.modTimeNano == info.ModTime().UnixNano() {
 		h.cacheClock++
 		cached.used = h.cacheClock
 		h.cache[path] = cached
@@ -252,11 +252,11 @@ func (h *HistoryStore) messageCount(path, tool string, info os.FileInfo) (int, i
 		return 0, 0, closeErr
 	}
 	h.cacheMu.Lock()
+	entry := h.entryForFingerprintLocked(path, info)
+	entry.count, entry.skipped, entry.counted = count, skipped, true
 	h.cacheClock++
-	h.cache[path] = historyCacheEntry{
-		size: info.Size(), modTimeNano: info.ModTime().UnixNano(),
-		count: count, skipped: skipped, used: h.cacheClock,
-	}
+	entry.used = h.cacheClock
+	h.cache[path] = entry
 	h.evictHistoryCacheLocked()
 	h.cacheMu.Unlock()
 	return count, skipped, nil

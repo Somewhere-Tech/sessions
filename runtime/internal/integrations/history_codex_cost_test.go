@@ -237,3 +237,196 @@ func TestListingOpensEveryCodexRollout(t *testing.T) {
 		t.Fatalf("listed %d conversations, want %d", len(listed.Sessions), count-len(unreadable))
 	}
 }
+
+// activityOf finds one conversation's reported last activity in a listing.
+func activityOf(t *testing.T, listed []HistorySession, providerID string) (int64, bool) {
+	t.Helper()
+	for _, session := range listed {
+		if session.ProviderSessionID == providerID {
+			return session.LastActivityAt, true
+		}
+	}
+	return 0, false
+}
+
+// A listing must not pay to read a file it has already read and that has not
+// changed. Proving it the same way the open count was proved: an unchanged file
+// that becomes unreadable is still listed, with the activity already known,
+// because nothing opened it again. A file that has changed is a different
+// fingerprint, so it is read again — and if it is unreadable by then, it is
+// reported as unreadable rather than answered from a stale cache.
+func TestUnchangedConversationsAreNotRereadByTheNextListing(t *testing.T) {
+	const count = 9
+	root := t.TempDir()
+	sessionsDir, ids, _ := writeCodexRollouts(t, root, count, 256*1024)
+	store := codexStore(root)
+
+	first, err := store.List(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := make(map[string]int64, count)
+	for _, id := range ids {
+		activity, ok := activityOf(t, first.Sessions, id)
+		if !ok {
+			t.Fatalf("conversation %s missing from the first listing", id)
+		}
+		before[id] = activity
+	}
+
+	// One conversation grows; the rest are untouched. Then every file becomes
+	// unreadable, so any listing that opens one can be seen doing it.
+	grown := ids[count/2]
+	grownPath := filepath.Join(sessionsDir, "rollout-"+grown+".jsonl")
+	appended, err := os.OpenFile(grownPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := `{"timestamp":"2027-01-02T03:04:05Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a later answer"}]}}` + "\n"
+	if _, err := appended.WriteString(later); err != nil {
+		t.Fatal(err)
+	}
+	if err := appended.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		path := filepath.Join(sessionsDir, "rollout-"+id+".jsonl")
+		if err := os.Chmod(path, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	}
+	time.Sleep(providerScanCacheTT + 250*time.Millisecond)
+
+	second, err := store.List(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The scan opens every rollout, so an unreadable file leaves the provider
+	// listing entirely. What this test can still show is the cache: read the
+	// activity directly, which is the call a listing makes per conversation.
+	for _, id := range ids {
+		path := filepath.Join(sessionsDir, "rollout-"+id+".jsonl")
+		if err := os.Chmod(path, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0); err != nil {
+			t.Fatal(err)
+		}
+		updated, fromRecord := store.conversationUpdatedAt(path, info)
+		if id == grown {
+			// A changed file is a different fingerprint. With the file
+			// unreadable there is no record to find, so it falls back to the
+			// modification time rather than serving the pre-growth answer.
+			if fromRecord {
+				t.Fatalf("grown conversation %s answered from a record it could not read", id)
+			}
+			if updated != info.ModTime().UnixMilli() {
+				t.Fatalf("grown conversation %s reported %d, want its new modification time %d",
+					id, updated, info.ModTime().UnixMilli())
+			}
+			continue
+		}
+		if !fromRecord {
+			t.Fatalf("unchanged conversation %s was reread and lost its recorded activity", id)
+		}
+		if updated != before[id] {
+			t.Fatalf("unchanged conversation %s reported %d, want the cached %d", id, updated, before[id])
+		}
+	}
+	_ = second
+}
+
+// The count cache and the activity cache share one entry and one fingerprint.
+// Neither may be mistaken for the other: a conversation whose activity is known
+// has not thereby been counted, and the summary listing must keep saying so.
+func TestActivityCacheDoesNotInventAMessageCount(t *testing.T) {
+	root := t.TempDir()
+	_, ids, _ := writeCodexRollouts(t, root, 3, 96*1024)
+	store := codexStore(root)
+
+	summary, err := store.SearchSessions(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range summary {
+		if session.MessageCount != 0 || !session.MessageCountUncounted {
+			t.Fatalf("summary listing reported a count nobody computed: %#v", session)
+		}
+	}
+
+	counted, err := store.List(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range counted.Sessions {
+		if session.MessageCount == 0 || session.MessageCountUncounted {
+			t.Fatalf("full listing did not count %s: %#v", session.ProviderSessionID, session)
+		}
+	}
+
+	// And now that both halves are filled, the cheap listing answers from the
+	// cache rather than reporting the count as unknown again.
+	cachedSummary, err := store.SearchSessions(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range cachedSummary {
+		if session.MessageCountUncounted {
+			t.Fatalf("summary listing lost the cached count for %s", session.ProviderSessionID)
+		}
+	}
+	if len(cachedSummary) != len(ids) {
+		t.Fatalf("summary listed %d conversations, want %d", len(cachedSummary), len(ids))
+	}
+}
+
+// A file that grows after both halves were cached must be read again, and the
+// newer activity must win. This is the interaction the 2 s scan cache and the
+// fingerprint cache have to get right together.
+func TestGrownConversationIsRereadAndReportsNewerActivity(t *testing.T) {
+	root := t.TempDir()
+	sessionsDir, ids, _ := writeCodexRollouts(t, root, 1, 64*1024)
+	store := codexStore(root)
+	first, err := store.List(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, ok := activityOf(t, first.Sessions, ids[0])
+	if !ok {
+		t.Fatalf("conversation %s missing from the first listing", ids[0])
+	}
+	firstCount := first.Sessions[0].MessageCount
+
+	path := filepath.Join(sessionsDir, "rollout-"+ids[0]+".jsonl")
+	appended, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appended.WriteString(`{"timestamp":"2027-01-02T03:04:05Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a later answer"}]}}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := appended.Close(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(providerScanCacheTT + 250*time.Millisecond)
+
+	second, err := store.List(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, ok := activityOf(t, second.Sessions, ids[0])
+	if !ok {
+		t.Fatalf("conversation %s missing from the second listing", ids[0])
+	}
+	if after <= before {
+		t.Fatalf("grown conversation reported activity %d, not newer than %d", after, before)
+	}
+	if second.Sessions[0].MessageCount <= firstCount {
+		t.Fatalf("grown conversation still reports %d messages, was %d", second.Sessions[0].MessageCount, firstCount)
+	}
+}
