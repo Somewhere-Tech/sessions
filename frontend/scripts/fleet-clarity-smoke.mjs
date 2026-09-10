@@ -90,6 +90,20 @@ try {
               </button>
             </div>
           </section>
+          <section class="fleet-server-group is-unreachable" id="unavailable-card">
+            <header class="fleet-machine-header">
+              <span class="fleet-platform-mark is-macos"></span>
+              <div class="fleet-server-identity">
+                <div class="fleet-machine-title"><h2>Mac D</h2></div>
+                <span class="fleet-machine-status is-unreachable"><i class="fleet-reachability-dot is-unreachable"></i>unreachable</span>
+              </div>
+              <span class="fleet-machine-count"><strong>Sessions unavailable</strong></span>
+            </header>
+            <div class="fleet-session-list">
+              <div class="fleet-session-empty">Session data unavailable</div>
+              <div class="fleet-session-error">sessionsd 502: no saved address this host can use: saved machine "machine-d" has an address this host cannot use as a tailnet route</div>
+            </div>
+          </section>
           <section class="fleet-server-group" id="remote-card">
             <header class="fleet-machine-header">
               <span class="fleet-platform-mark is-windows" aria-label="Windows"></span>
@@ -130,6 +144,37 @@ try {
       windowsPlatformMark: remote.querySelector('.is-windows')?.getAttribute('aria-label')
     };
   });
+
+  // An unavailable machine now carries the host's own sentence about why. It is
+  // long, so it has to wrap inside the card at both widths rather than push the
+  // card sideways, and it must stay legible rather than disappear.
+  const explanation = async () => page.evaluate(() => {
+    const card = document.querySelector('#unavailable-card');
+    const reason = card.querySelector('.fleet-session-error');
+    return {
+      cardOverflow: card.scrollWidth - card.clientWidth,
+      reasonOverflow: reason.scrollWidth - reason.clientWidth,
+      right: reason.getBoundingClientRect().right,
+      cardRight: card.getBoundingClientRect().right,
+      bottom: reason.getBoundingClientRect().bottom,
+      cardBottom: card.getBoundingClientRect().bottom,
+      height: reason.getBoundingClientRect().height,
+      text: reason.textContent.replace(/\s+/g, ' ').trim(),
+      display: getComputedStyle(reason).display
+    };
+  });
+  for (const [label, width] of [['desktop', 1280], ['phone', 390]]) {
+    await page.setViewport({ width, height: 800 });
+    const reason = await explanation();
+    assert.match(reason.text, /no saved address this host can use/, `${label}: the host's explanation must be readable`);
+    assert.notEqual(reason.display, 'none', `${label}: the explanation must not be hidden`);
+    assert.ok(reason.cardOverflow <= 0, `${label}: unavailable card overflowed by ${reason.cardOverflow}px`);
+    assert.ok(reason.reasonOverflow <= 0, `${label}: the explanation overflowed by ${reason.reasonOverflow}px`);
+    assert.ok(reason.right <= reason.cardRight + 1, `${label}: the explanation escaped its card`);
+    assert.ok(reason.bottom <= reason.cardBottom + 1, `${label}: the explanation escaped the bottom of its card`);
+    assert.ok(reason.height > 0, `${label}: the explanation collapsed to zero height`);
+  }
+  await page.setViewport({ width: 700, height: 800 });
 
   assert.ok(layout.cardWidth > 600, `narrow Fleet should use one wide card, got ${layout.cardWidth}px`);
   assert.ok(layout.remoteTop >= layout.cardBottom, 'machine cards should stack rather than squeeze side by side');

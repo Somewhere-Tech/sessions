@@ -69,15 +69,34 @@ export interface FakeMachine {
   team?: TeamListing;
   projectFailure?: { status: number; message: string };
   teamFailure?: { status: number; message: string };
+  /**
+   * Machines this host has approved and relays to, as GET /api/fleet/machines
+   * reports them. A peer with no relayFailure is forwarded to its own fake
+   * daemon exactly as the host's reverse proxy forwards it.
+   */
+  fleetPeers?: FakeFleetPeer[];
   /** Optional latency used to expose same-tick duplicate-action races. */
   createDelayMS?: number;
   submitDelayMS?: number;
+}
+
+export interface FakeFleetPeer {
+  id: string;
+  name: string;
+  transport?: 'lan' | 'tailnet' | 'tailnet-ip';
+  reachable?: boolean;
+  reason?: string;
+  message?: string;
+  /** How the host answers while it cannot reach this peer. Mutable mid-test. */
+  relayFailure?: { status: number; error: string; reason?: string };
 }
 
 export interface RecordedRequest {
   method: string;
   url: string;
   path: string;
+  /** Origin of the host that relayed this request onward, when one did. */
+  relayedFrom?: string;
   origin: string;
   body: unknown;
 }
@@ -296,6 +315,10 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       body = init.body;
     }
     const record: RecordedRequest = { method, url: url.href, path: url.pathname, origin: url.origin, body };
+    // Set only by this fake when a host forwards a relayed request onward, so a
+    // test can tell "the client dialled the peer" from "the host relayed to it".
+    const relayedFrom = new Headers(init?.headers ?? {}).get('x-fake-relayed-from');
+    if (relayedFrom) record.relayedFrom = relayedFrom;
     daemon.requests.push(record);
 
     const machine = byOrigin.get(url.origin);
@@ -309,6 +332,34 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     }
 
     const path = url.pathname;
+
+    // ── inherited fleet: this host lists and relays to its approved peers ──
+    if (path === '/api/fleet/machines') {
+      return jsonResponse({
+        machines: (machine.fleetPeers ?? []).map((peer) => ({
+          id: peer.id, name: peer.name, transport: peer.transport,
+          reachable: peer.reachable ?? !peer.relayFailure,
+          reason: peer.reason, message: peer.message
+        }))
+      });
+    }
+    const relayRoute = /^\/api\/fleet\/([^/]+)(\/.*)$/.exec(path);
+    if (relayRoute) {
+      const peer = (machine.fleetPeers ?? []).find((candidate) => candidate.id === decodeURIComponent(relayRoute[1]!));
+      if (!peer) return jsonResponse({ error: 'machine is not approved on this host' }, 404);
+      if (peer.relayFailure) {
+        return jsonResponse({ error: peer.relayFailure.error, reason: peer.relayFailure.reason }, peer.relayFailure.status);
+      }
+      const destination = machines.find((candidate) => (candidate.machineId ?? candidate.id) === peer.id);
+      if (!destination) return jsonResponse({ error: 'reach peer: connection refused' }, 502);
+      // Forwarded with the peer's own daemon answering, which is what the
+      // host's reverse proxy does. The relay request above is already recorded.
+      return handle(`${originOf(destination)}${relayRoute[2]}${url.search}`, {
+        ...init,
+        headers: { ...Object.fromEntries(new Headers(init?.headers ?? {})), 'x-fake-relayed-from': url.origin }
+      });
+    }
+
     const sessionRoute = /^\/api\/sessions\/([^/]+)(\/.*)?$/.exec(path);
     const sessionId = sessionRoute ? decodeURIComponent(sessionRoute[1]) : '';
     const sessionTail = sessionRoute?.[2] ?? '';

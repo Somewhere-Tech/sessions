@@ -43,6 +43,10 @@ interface ServerSnapshot {
   sessionsLoaded: boolean;
   profiles: AccountProfile[];
   sessionsError: string | null;
+  // Why the last health probe failed, as this machine's host explained it. A
+  // snapshot of one attempt, never a standing verdict: the next successful
+  // probe clears it and a newer failure replaces it.
+  unavailableReason: string | null;
 }
 
 const INITIAL_SNAPSHOT: ServerSnapshot = {
@@ -51,7 +55,8 @@ const INITIAL_SNAPSHOT: ServerSnapshot = {
   sessions: [],
   sessionsLoaded: false,
   profiles: [],
-  sessionsError: null
+  sessionsError: null,
+  unavailableReason: null
 };
 
 interface FleetViewProps {
@@ -412,14 +417,18 @@ function FleetServerGroup({
         const health = await fetchServerHealth(target, controller.signal);
         if (!stopped) {
           onVersion(target.id, health.version);
-          setSnapshot((current) => ({ ...current, health }));
+          setSnapshot((current) => ({ ...current, health, unavailableReason: null }));
         }
-      } catch {
+      } catch (error) {
         if (!stopped) {
           setSnapshot((current) => ({
             ...current,
             reachability: 'unreachable',
-            sessionsError: null
+            sessionsError: null,
+            // A relayed machine's host answers with why it could not reach it —
+            // a saved address it cannot use, a route that did not respond.
+            // Keeping that beats the card saying only "unreachable".
+            unavailableReason: error instanceof Error ? error.message : null
           }));
         }
         window.clearTimeout(timeout);
@@ -431,7 +440,8 @@ function FleetServerGroup({
         setSnapshot((current) => ({
           ...current,
           reachability: 'reachable',
-          sessionsError: null
+          sessionsError: null,
+          unavailableReason: null
         }));
       }
 
@@ -553,38 +563,59 @@ function FleetServerGroup({
         </div>
       ) : null}
 
-      <div className="fleet-session-list">
-        {visibleSessions.slice(0, includeExited ? 20 : 6).map((session) => (
-          <FleetSessionRow
-            key={session.id}
-            session={session}
-            disabled={unavailable || session.exited}
-            onOpen={() => onOpenSession(session.id)}
-          />
-        ))}
-        {visibleSessions.length === 0 ? (
-          <div className="fleet-session-empty">
-            {!snapshot.sessionsLoaded && !snapshot.sessionsError && !unavailable
-              ? 'Loading sessions…'
-              : unavailable
-              ? 'Session data unavailable'
-              : snapshot.sessionsError
-              ? snapshot.sessionsError
-              : snapshot.sessions.length > 0
-              ? 'No main sessions connected. Saved and delegated work is available in Show all records.'
-              : 'No sessions'}
-          </div>
-        ) : null}
-        {snapshot.sessions.length > 0 && snapshot.sessionsError ? (
-          <div className="fleet-session-error">Latest session refresh failed: {snapshot.sessionsError}</div>
-        ) : null}
-      </div>
+      <FleetSessionList
+        snapshot={snapshot} sessions={visibleSessions} includeExited={includeExited}
+        unavailable={unavailable} onOpenSession={onOpenSession}
+      />
 		{!unavailable && !server.directoryOnly ? (
         <button type="button" className="fleet-open-machine" onClick={onOpenMachine}>
           Open all sessions on {displayMachineName}{visibleSessions.length > (includeExited ? 20 : 6) ? ` · ${visibleSessions.length - (includeExited ? 20 : 6)} more` : ''} <span aria-hidden>→</span>
         </button>
       ) : null}
     </section>
+  );
+}
+
+function FleetSessionList({ snapshot, sessions, includeExited, unavailable, onOpenSession }: {
+  snapshot: ServerSnapshot;
+  sessions: SessionInfo[];
+  includeExited: boolean;
+  unavailable: boolean;
+  onOpenSession: (sessionId: string) => void;
+}): JSX.Element {
+  return (
+    <div className="fleet-session-list">
+      {sessions.slice(0, includeExited ? 20 : 6).map((session) => (
+        <FleetSessionRow
+          key={session.id}
+          session={session}
+          disabled={unavailable || session.exited}
+          onOpen={() => onOpenSession(session.id)}
+        />
+      ))}
+      {sessions.length === 0 ? (
+        <div className="fleet-session-empty">
+          {!snapshot.sessionsLoaded && !snapshot.sessionsError && !unavailable
+            ? 'Loading sessions…'
+            : unavailable
+            ? 'Session data unavailable'
+            : snapshot.sessionsError
+            ? snapshot.sessionsError
+            : snapshot.sessions.length > 0
+            ? 'No main sessions connected. Saved and delegated work is available in Show all records.'
+            : 'No sessions'}
+        </div>
+      ) : null}
+      {/* Why this machine is unavailable, in its host's own words. Rendered in
+          the same slot as a failed session refresh so an explained failure and
+          an unexplained one look alike, and neither invents a live session. */}
+      {unavailable && snapshot.unavailableReason ? (
+        <div className="fleet-session-error">{snapshot.unavailableReason}</div>
+      ) : null}
+      {snapshot.sessions.length > 0 && snapshot.sessionsError ? (
+        <div className="fleet-session-error">Latest session refresh failed: {snapshot.sessionsError}</div>
+      ) : null}
+    </div>
   );
 }
 

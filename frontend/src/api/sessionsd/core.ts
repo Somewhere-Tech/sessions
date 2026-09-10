@@ -160,9 +160,21 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
 export async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`sessionsd ${res.status}: ${text || res.statusText}`);
+    throw new Error(`sessionsd ${res.status}: ${daemonErrorText(text) || res.statusText}`);
   }
   return res.json() as Promise<T>;
+}
+
+// The daemon reports a failure as {"error":"<sentence>"}. Quoting the whole
+// JSON body buried that sentence in punctuation everywhere an error is shown,
+// which is how a relayed machine ended up unexplained. Reading the field loses
+// nothing: any other body is still passed through exactly as received.
+function daemonErrorText(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    if (typeof parsed?.error === 'string' && parsed.error.trim()) return parsed.error;
+  } catch { /* not a daemon JSON error; keep the body as sent */ }
+  return body;
 }
 
 export async function featureJSON<T>(res: Response, feature: string): Promise<T> {
