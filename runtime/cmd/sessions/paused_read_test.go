@@ -71,7 +71,9 @@ func TestPausedLaneReadsFailLoudlyInsteadOfPrintingNothing(t *testing.T) {
 		t.Run(command[0], func(t *testing.T) {
 			var requested []string
 			server := pausedLaneDaemon(t, &requested)
-			t.Setenv("HOME", t.TempDir())
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
 			t.Setenv("SESSIONS_HOST", server.URL)
 
 			var stdout, stderr bytes.Buffer
@@ -111,7 +113,9 @@ func TestTheSuggestedResumeReferenceNamesTheSameLane(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	var reads []string
 	readServer := pausedLaneDaemon(t, &reads)
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("SESSIONS_HOST", readServer.URL)
 	if code := run([]string{"snap", pausedLaneID}, strings.NewReader(""), &stdout, &stderr); code == 0 {
 		t.Fatalf("paused snapshot exited 0: %q", stdout.String())
