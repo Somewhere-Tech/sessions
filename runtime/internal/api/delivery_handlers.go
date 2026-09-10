@@ -33,8 +33,34 @@ func (s *Server) handleDeliveryRoute(response http.ResponseWriter, request *http
 		s.sendJSON(response, status, map[string]any{"error": err.Error(), "operation_id": operationID}, corsOrigin)
 		return true
 	}
-	s.sendDeliveryRecord(response, record, true, corsOrigin)
+	s.sendDeliveryRecord(response, s.reconcileLateAcceptance(record), true, corsOrigin)
 	return true
+}
+
+// reconcileLateAcceptance settles an operation whose acknowledgment reached this
+// daemon after the request that started it was already gone. The runner keeps
+// its own answer, correlated by the durable operation id, so asking again can
+// recover it instead of leaving a message that was genuinely delivered as
+// permanent uncertainty. It only resolves unknown into accepted: a late refusal
+// stays unknown rather than becoming an after-the-fact invitation to resend.
+func (s *Server) reconcileLateAcceptance(record delivery.Record) delivery.Record {
+	if record.Status != delivery.StatusUnknown || record.Acceptance != "" {
+		return record
+	}
+	current, ok := s.registry.Get(record.SessionID)
+	if !ok {
+		return record
+	}
+	result, answered := current.LateMessageResult(record.OperationID)
+	if !answered || !result.Accepted || result.Boundary == "" {
+		return record
+	}
+	confirmed, err := s.deliveries.ConfirmAccepted(record.OperationID, result.Boundary,
+		"the runner acknowledged this operation after the first caller stopped waiting")
+	if err != nil {
+		return record
+	}
+	return confirmed
 }
 
 func (s *Server) sendDeliveryRecord(response http.ResponseWriter, record delivery.Record, duplicate bool, corsOrigin string) {

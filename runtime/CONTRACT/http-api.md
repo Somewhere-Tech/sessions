@@ -1238,6 +1238,17 @@ A record left `pending` by a daemon crash is exposed as `unknown` with
 before the crash. A missing operation is 404. This endpoint never returns the
 message body or its content digest.
 
+Reading is also how an interrupted submission is resolved. A structured runner
+commits the message before it acknowledges, so a caller that disconnects can
+leave a delivered message recorded `unknown`. If that runner is still connected
+and has since acknowledged the same operation id, this route and a same-id
+`POST /api/sessions/:id/submit` report `accepted` with the runner's `acceptance`
+boundary. The transition is one-directional and evidence-only: `unknown` becomes
+`accepted` solely from that runner's own answer, a late refusal stays `unknown`,
+and no receipt ever moves toward looking safe to resend. Nothing is re-sent to
+reach this answer, and a daemon restart drops the runner's in-memory
+acknowledgment, so the operation simply remains `unknown`.
+
 ### `POST /api/sessions/:id/upload`
 
 Auth required. The request body is raw bytes, not JSON. Optional header

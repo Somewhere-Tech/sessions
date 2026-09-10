@@ -170,6 +170,35 @@ func (s *Store) Complete(operationID string, status Status, delivered, retry boo
 	return record, nil
 }
 
+// ConfirmAccepted resolves an operation whose acknowledgment arrived after its
+// caller had stopped waiting. It moves only from unknown to accepted and only
+// with the boundary that actually accepted the message, so later evidence can
+// settle uncertainty while nothing can make an already-sent message look safe
+// to send again. A pending record is left alone: its submit is still running,
+// and the caller that owns it records the outcome.
+func (s *Store) ConfirmAccepted(operationID, acceptance, reason string) (Record, error) {
+	if acceptance == "" {
+		return Record{}, errors.New("a confirmed delivery requires the boundary that accepted it")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := s.path(operationID)
+	record, err := read(path)
+	if err != nil {
+		return Record{}, err
+	}
+	if record.Status != StatusUnknown || record.Acceptance != "" {
+		return record, nil
+	}
+	record.Status, record.Delivered, record.Retry = StatusAccepted, true, false
+	record.Acceptance, record.Reason = acceptance, reason
+	record.UpdatedAtMS = s.now().UnixMilli()
+	if err := writeAtomic(path, record); err != nil {
+		return Record{}, err
+	}
+	return record, nil
+}
+
 func (s *Store) path(operationID string) string {
 	return filepath.Join(s.root, operationID+".json")
 }

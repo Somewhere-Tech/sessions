@@ -35,7 +35,11 @@ type SocketRunner struct {
 	model    *modelRequest
 	retry    *modelRequest
 	messages map[string]chan MessageResult
-	terminal *Event
+	// Acknowledgments that arrived after their caller stopped waiting, oldest
+	// operation id first, so an interrupted client can still learn the outcome.
+	lateMessages map[string]MessageResult
+	lateOrder    []string
+	terminal     *Event
 }
 
 type replayRequest struct {

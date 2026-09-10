@@ -149,3 +149,54 @@ func TestSocketRunnerSubmitMessageDoesNotSucceedAfterDisconnectOrCancel(t *testi
 		})
 	}
 }
+
+// The runner starts the turn before it answers, so an acknowledgment that
+// arrives after the caller gave up is still the runner's own correlated
+// statement that the message was accepted. Dropping it turned a delivered
+// message into permanent uncertainty.
+func TestSocketRunnerKeepsAcknowledgementThatArrivesAfterTheCallerGaveUp(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	runner := messageRunner(client, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := runner.SubmitMessage(ctx, MessageControl{OperationID: "late-accept", Text: "ship it"})
+		errCh <- err
+	}()
+	if _, err := Read(server); err != nil {
+		t.Fatalf("read request: %v", err)
+	}
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("SubmitMessage() error = %v, want context.Canceled", err)
+	}
+	if _, ok := runner.LateMessageResult("late-accept"); ok {
+		t.Fatal("a result was reported before the runner answered")
+	}
+
+	payload, _ := json.Marshal(MessageResult{OperationID: "late-accept", Accepted: true, Boundary: "provider"})
+	if err := Write(server, MessageRes, payload); err != nil {
+		t.Fatalf("write late acknowledgement: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		result, ok := runner.LateMessageResult("late-accept")
+		if ok {
+			if !result.Accepted || result.Boundary != "provider" {
+				t.Fatalf("late result = %+v", result)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the runner's late acknowledgement was dropped")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Only unclaimed answers are retained: an operation nobody submitted has no
+	// evidence, and a delivered answer must not be invented for it.
+	if _, ok := runner.LateMessageResult("never-sent"); ok {
+		t.Fatal("an unrelated operation id produced evidence")
+	}
+}

@@ -91,6 +91,7 @@ type Runner struct {
 	subscribers map[uint64]chan proto.Event
 	nextSubID   uint64
 	changes     chan struct{}
+	late        map[string]proto.MessageResult
 }
 
 func NewRunner(info proto.RunnerInfo) *Runner {
@@ -99,6 +100,25 @@ func NewRunner(info proto.RunnerInfo) *Runner {
 		subscribers: make(map[uint64]chan proto.Event),
 		changes:     make(chan struct{}, 1),
 	}
+}
+
+// AcknowledgeLate records what this runner answered for an operation whose
+// caller had already stopped waiting, mirroring proto.SocketRunner's retention
+// of an acknowledgment that arrived too late for its request.
+func (r *Runner) AcknowledgeLate(result proto.MessageResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.late == nil {
+		r.late = make(map[string]proto.MessageResult, 1)
+	}
+	r.late[result.OperationID] = result
+}
+
+func (r *Runner) LateMessageResult(operationID string) (proto.MessageResult, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result, ok := r.late[operationID]
+	return result, ok
 }
 
 func (r *Runner) Info() proto.RunnerInfo {

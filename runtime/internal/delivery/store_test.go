@@ -84,3 +84,87 @@ func fileMode(t *testing.T, path string) os.FileMode {
 	}
 	return info.Mode().Perm()
 }
+
+// Later evidence may settle uncertainty; nothing may reopen a decided outcome
+// or make an already-sent message look safe to send again.
+func TestConfirmAcceptedOnlyResolvesUncertaintyAndOnlyWithEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		complete   func(*Store) error
+		acceptance string
+		wantErr    bool
+		wantStatus Status
+	}{
+		{
+			name: "unknown is resolved by the boundary that accepted it",
+			complete: func(s *Store) error {
+				_, err := s.Complete(testOperationID, StatusUnknown, false, false, "lost")
+				return err
+			},
+			acceptance: "provider", wantStatus: StatusAccepted,
+		},
+		{
+			name: "an answer without a boundary is not evidence",
+			complete: func(s *Store) error {
+				_, err := s.Complete(testOperationID, StatusUnknown, false, false, "lost")
+				return err
+			},
+			acceptance: "", wantErr: true, wantStatus: StatusUnknown,
+		},
+		{
+			name: "a refusal keeps its safe-to-retry meaning",
+			complete: func(s *Store) error {
+				_, err := s.Complete(testOperationID, StatusNotDelivered, false, true, "refused")
+				return err
+			},
+			acceptance: "provider", wantStatus: StatusNotDelivered,
+		},
+		{
+			name:       "a pending operation still belongs to its caller",
+			complete:   func(*Store) error { return nil },
+			acceptance: "provider", wantStatus: StatusPending,
+		},
+		{
+			name: "text-only terminal delivery is not upgraded by a later boundary",
+			complete: func(s *Store) error {
+				_, err := s.Complete(testOperationID, StatusTextOnly, true, false, "Enter was not sent")
+				return err
+			},
+			acceptance: "provider", wantStatus: StatusTextOnly,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			store := New(root)
+			if _, _, err := store.Begin(testOperationID, "session-a", "ship once"); err != nil {
+				t.Fatal(err)
+			}
+			if err := test.complete(store); err != nil {
+				t.Fatal(err)
+			}
+			record, err := store.ConfirmAccepted(testOperationID, test.acceptance, "runner answered late")
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("ConfirmAccepted() = %+v, want an error", record)
+				}
+			} else if err != nil {
+				t.Fatalf("ConfirmAccepted() error = %v", err)
+			}
+
+			// Whatever the call returned, the durable record is what matters.
+			stored, err := New(root).Get(testOperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Status != test.wantStatus {
+				t.Fatalf("stored status = %q, want %q", stored.Status, test.wantStatus)
+			}
+			if test.wantStatus == StatusAccepted && (!stored.Delivered || stored.Retry || stored.Acceptance != "provider") {
+				t.Fatalf("resolved record = %+v", stored)
+			}
+			if test.wantStatus == StatusNotDelivered && !stored.Retry {
+				t.Fatalf("refusal lost its retry guidance: %+v", stored)
+			}
+		})
+	}
+}

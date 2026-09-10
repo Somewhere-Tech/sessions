@@ -913,7 +913,9 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 				return
 			}
 			if !created {
-				s.sendDeliveryRecord(response, record, true, corsOrigin)
+				// The same operation, asked again. Never a second execution, and
+				// never a stale unknown when the runner has since answered.
+				s.sendDeliveryRecord(response, s.reconcileLateAcceptance(record), true, corsOrigin)
 				return
 			}
 		}

@@ -101,5 +101,44 @@ func (r *SocketRunner) handleMessageResponse(payload []byte) {
 		case response <- result:
 		default:
 		}
+		return
 	}
+	// Nobody is waiting: the caller was cancelled or timed out while the runner
+	// was already committing the message. The answer is still this runner's own
+	// correlated statement about that operation, so keep it instead of leaving a
+	// delivered message permanently unknown.
+	r.retainLateResultLocked(result)
+}
+
+// lateMessageResultLimit bounds what an abandoned operation can cost. Results
+// are a few small fields each and only unclaimed ones are kept, so a runner
+// whose client keeps disconnecting cannot grow this without bound.
+const lateMessageResultLimit = 64
+
+func (r *SocketRunner) retainLateResultLocked(result MessageResult) {
+	if result.OperationID == "" {
+		return
+	}
+	if r.lateMessages == nil {
+		r.lateMessages = make(map[string]MessageResult, 4)
+	}
+	if _, known := r.lateMessages[result.OperationID]; !known {
+		if len(r.lateOrder) >= lateMessageResultLimit {
+			delete(r.lateMessages, r.lateOrder[0])
+			r.lateOrder = append(r.lateOrder[:0], r.lateOrder[1:]...)
+		}
+		r.lateOrder = append(r.lateOrder, result.OperationID)
+	}
+	r.lateMessages[result.OperationID] = result
+}
+
+// LateMessageResult returns the acknowledgment this runner sent for an
+// operation whose caller had already stopped waiting. It reports only what the
+// runner actually said: an operation with no retained answer has no evidence,
+// and none is invented for it.
+func (r *SocketRunner) LateMessageResult(operationID string) (MessageResult, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result, ok := r.lateMessages[operationID]
+	return result, ok
 }

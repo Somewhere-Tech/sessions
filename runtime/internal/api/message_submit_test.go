@@ -37,6 +37,14 @@ func (s *structuredMessageService) Input(ctx context.Context, id, data string) b
 
 func registerStructuredSession(t *testing.T, daemon testDaemon, id string) state.SessionInfo {
 	t.Helper()
+	info, _ := registerStructuredRunner(t, daemon, id)
+	return info
+}
+
+// registerStructuredRunner also hands back the runner, so a test can make it
+// answer after its caller is gone.
+func registerStructuredRunner(t *testing.T, daemon testDaemon, id string) (state.SessionInfo, *prototest.Runner) {
+	t.Helper()
 	runner := prototest.NewRunner(proto.RunnerInfo{
 		ID: id, Cmd: "codex", Cwd: daemon.root, Cols: 120, Rows: 40, ProtocolVersion: proto.ProtocolVersion,
 		MessageSubmit: true,
@@ -45,7 +53,7 @@ func registerStructuredSession(t *testing.T, daemon testDaemon, id string) state
 	if err != nil {
 		t.Fatal(err)
 	}
-	return session.Info()
+	return session.Info(), runner
 }
 
 func submitMessageRequest(t *testing.T, server *Server, sessionID, operationID, text string) map[string]any {
@@ -148,4 +156,87 @@ func TestStructuredSubmitRefusalAndUnknownNeverBecomeSuccessOrTerminalInput(t *t
 			}
 		})
 	}
+}
+
+// One operation, accepted at the provider boundary, whose answer never reached
+// the client. The runner commits the turn before it acknowledges, so a caller
+// that disconnects mid-request leaves a delivered message recorded as unknown.
+// Asking again must recover the runner's own answer and must never send twice.
+func TestInterruptedSubmitRecoversTheRunnersLateAcknowledgement(t *testing.T) {
+	daemon := newTestDaemon(t)
+	session, runner := registerStructuredRunner(t, daemon, "structured-late-ack")
+	const operationID = "22222222-3333-4444-8555-666666666666"
+	service := &structuredMessageService{
+		sessionService: daemon.registry,
+		err:            context.Canceled,
+		result:         proto.MessageResult{OperationID: operationID},
+	}
+	daemon.handler.registry = service
+
+	// The client disappears while the runner is already committing the message.
+	first := submitMessageRequest(t, daemon.handler, session.ID, operationID, "ship the release")
+	if first["status"] != "unknown" || first["delivered"] != false || first["retry"] != false {
+		t.Fatalf("interrupted receipt = %#v", first)
+	}
+	if reread := readDeliveryReceipt(t, daemon.handler, operationID); reread["status"] != "unknown" {
+		t.Fatalf("re-read before the runner answered = %#v", reread)
+	}
+
+	// The runner answers a moment later, correlated by the same operation id.
+	runner.AcknowledgeLate(proto.MessageResult{OperationID: operationID, Accepted: true, Boundary: "provider"})
+
+	reread := readDeliveryReceipt(t, daemon.handler, operationID)
+	if reread["status"] != "accepted" || reread["delivered"] != true || reread["acceptance"] != "provider" || reread["retry"] != false {
+		t.Fatalf("recovered receipt = %#v", reread)
+	}
+
+	// Retrying the same operation reads that evidence instead of sending again.
+	retry := submitMessageRequest(t, daemon.handler, session.ID, operationID, "ship the release")
+	if retry["duplicate"] != true || retry["status"] != "accepted" || retry["acceptance"] != "provider" {
+		t.Fatalf("retry receipt = %#v", retry)
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if len(service.calls) != 1 {
+		t.Fatalf("structured calls = %d, want exactly one execution", len(service.calls))
+	}
+	if len(service.inputCalls) != 0 {
+		t.Fatalf("recovery fell back to terminal input: %#v", service.inputCalls)
+	}
+}
+
+// A late answer that says the message was refused is still uncertainty for the
+// original request: nothing here may turn it into an after-the-fact instruction
+// to send the message again.
+func TestInterruptedSubmitKeepsUncertaintyForALateRefusal(t *testing.T) {
+	daemon := newTestDaemon(t)
+	session, runner := registerStructuredRunner(t, daemon, "structured-late-refusal")
+	const operationID = "33333333-4444-4555-8666-777777777777"
+	service := &structuredMessageService{
+		sessionService: daemon.registry,
+		err:            context.Canceled,
+		result:         proto.MessageResult{OperationID: operationID},
+	}
+	daemon.handler.registry = service
+
+	submitMessageRequest(t, daemon.handler, session.ID, operationID, "ship the release")
+	runner.AcknowledgeLate(proto.MessageResult{
+		OperationID: operationID, Boundary: "runner", Error: "Claude cannot accept this message during an active turn.",
+	})
+
+	reread := readDeliveryReceipt(t, daemon.handler, operationID)
+	if reread["status"] != "unknown" || reread["delivered"] != false || reread["retry"] != false {
+		t.Fatalf("late refusal receipt = %#v", reread)
+	}
+}
+
+func readDeliveryReceipt(t *testing.T, server *Server, operationID string) map[string]any {
+	t.Helper()
+	response := serve(t, server, http.MethodGet, "/api/message-deliveries/"+operationID, nil, "127.0.0.1:4567", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("delivery re-read = %d %s", response.Code, response.Body.String())
+	}
+	var receipt map[string]any
+	decodeBody(t, response, &receipt)
+	return receipt
 }

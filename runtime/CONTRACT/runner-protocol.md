@@ -222,6 +222,15 @@ must not automatically resend. `accepted:false` without that boundary is a
 known refusal. The daemon records intent before this request and its outcome
 afterward. If disconnected before acknowledgment, delivery remains unknown.
 
+The runner decides and commits before it answers, so MESSAGE_RES may arrive
+after its requesting caller is gone. A daemon must not treat that frame as
+unsolicited: it keeps the acknowledgment against its operation id — bounded, and
+only for operations nobody is waiting on — so a later status read can resolve
+that unknown. Only `accepted:true` with a boundary resolves it; a late refusal
+stays unknown, because a refusal discovered after the fact is not an instruction
+to send the message again. Runners are unchanged by this: nothing new is sent on
+the wire, and a runner that never answers leaves the operation unknown.
+
 `steer` requires an active Codex turn; it never silently starts a new turn.
 Claude rejects active-turn messages explicitly. Missing capability uses the
 legacy input path for ordinary sends; explicit steering is refused without
