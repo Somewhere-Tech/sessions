@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,6 +19,10 @@ func TestTwoConversationsInOneWorkspaceResolveByProviderIdentityAlone(t *testing
 	root := t.TempDir()
 	claudeDir := filepath.Join(root, "claude-projects")
 	cwd := filepath.Join(root, "project")
+	cwdJSON, err := json.Marshal(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	const (
 		firstUUID  = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 		secondUUID = "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -31,7 +36,7 @@ func TestTwoConversationsInOneWorkspaceResolveByProviderIdentityAlone(t *testing
 	write := func(uuid, opening string) {
 		t.Helper()
 		contents := strings.Join([]string{
-			`{"type":"user","cwd":"` + cwd + `","message":{"role":"user","content":"` + opening + `"}}`,
+			`{"type":"user","cwd":` + string(cwdJSON) + `,"message":{"role":"user","content":"` + opening + `"}}`,
 			`{"type":"assistant","message":{"role":"assistant","content":"Answer for ` + uuid + `"}}`,
 			// Identical human titles: a chooser that matched on the title would
 			// have nothing left to tell these apart.
