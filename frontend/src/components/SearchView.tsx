@@ -30,7 +30,7 @@ import { isLocalServer, serverDisplayName, useServers, type ServerConfig } from 
 import {
   anyPeerMissing,
   classifyPeerFailure,
-  peerBudgetSignal,
+  peerBudget,
   peerReportText,
   FLEET_BUDGET_MS,
   type PeerReport
@@ -183,7 +183,8 @@ async function readServerForSearch(
   base: AbortSignal
 ): Promise<ServerResponse> {
   const serverName = serverDisplayName(server, true);
-  const signal = peerBudgetSignal(base, isLocalServer(server));
+  const budget = peerBudget(base, isLocalServer(server));
+  const signal = budget.signal;
   const filters = {
     speaker: params.speaker, tool: params.tool, sessionName: params.sessionName,
     cwd: params.cwd, since: params.since, until: params.until
@@ -244,6 +245,10 @@ async function readServerForSearch(
         detail: reason instanceof Error ? reason.message : null
       }
     };
+  } finally {
+    // The clock stops when the read is over, however it ended. Without this a
+    // finished read would keep a timer alive for the rest of its budget.
+    budget.release();
   }
 }
 
