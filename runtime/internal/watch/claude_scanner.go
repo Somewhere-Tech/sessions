@@ -319,6 +319,14 @@ func resumableCodexConversation(path string, modified time.Time) (ResumableSessi
 				}
 			}
 			lineIndex++
+			// Everything this card needs comes from the session_meta line and
+			// the first user turn. Decoding the rest of the half-megabyte head
+			// budget into maps and discarding it was the bulk of what a listing
+			// paid per conversation; a rollout that never records a user turn
+			// still reads to the budget, because absence cannot be known early.
+			if session.SessionID != "" && session.Cwd != "" && session.FirstUserMessage != "" {
+				break
+			}
 		}
 		if readErr != nil {
 			break
