@@ -76,22 +76,23 @@ func (l *Launcher) Runner(id string) *Runner {
 }
 
 type Runner struct {
-	mu          sync.Mutex
-	info        proto.RunnerInfo
-	outputs     []proto.OutputEvent
-	structured  []json.RawMessage
-	inputs      []string
-	approvals   []proto.ApprovalControl
-	models      []proto.ModelControl
-	retries     int
-	retryStops  int
-	cols        int
-	rows        int
-	exited      bool
-	subscribers map[uint64]chan proto.Event
-	nextSubID   uint64
-	changes     chan struct{}
-	late        map[string]proto.MessageResult
+	mu           sync.Mutex
+	info         proto.RunnerInfo
+	outputs      []proto.OutputEvent
+	structured   []json.RawMessage
+	inputs       []string
+	approvals    []proto.ApprovalControl
+	models       []proto.ModelControl
+	retries      int
+	retryStops   int
+	cols         int
+	rows         int
+	exited       bool
+	subscribers  map[uint64]chan proto.Event
+	nextSubID    uint64
+	changes      chan struct{}
+	forgottenSeq uint32
+	late         map[string]proto.MessageResult
 }
 
 func NewRunner(info proto.RunnerInfo) *Runner {
@@ -325,6 +326,20 @@ func cloneRaw(values []json.RawMessage) []json.RawMessage {
 // Changes reports coalesced state transitions so tests can synchronize with
 // fake-runner work without scheduler sleeps. Callers must always re-read the
 // state they care about after a notification.
+// Forget drops the events this fake recorded. A fake keeps everything it was
+// given, unbounded and on purpose, so a test that measures what the daemon
+// retains can subtract the fixture's own copy first.
+func (r *Runner) Forget() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// The sequence keeps counting. A runner that renumbered from one after
+	// forgetting would look to a session like a different runner.
+	r.forgottenSeq = r.currentSeqLocked()
+	r.outputs = nil
+	r.structured = nil
+	r.inputs = nil
+}
+
 func (r *Runner) Changes() <-chan struct{} { return r.changes }
 
 func (r *Runner) signalChangeLocked() {
@@ -366,7 +381,7 @@ func (r *Runner) CurrentSeq() uint32 {
 
 func (r *Runner) currentSeqLocked() uint32 {
 	if len(r.outputs) == 0 {
-		return 0
+		return r.forgottenSeq
 	}
 	return r.outputs[len(r.outputs)-1].Seq
 }
