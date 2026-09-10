@@ -7,6 +7,8 @@
 // machine that cannot be reached is a fact about that machine; it is not a
 // reason to withhold the rest, and it is never absence.
 
+import { abortBudget, type AbortBudget } from './abortBudget';
+
 /** One peer's own budget. Past this it has not answered, which is not an error. */
 export const PEER_BUDGET_MS = 5_000;
 
@@ -25,48 +27,9 @@ export interface PeerReport {
   detail: string | null;
 }
 
-export interface PeerBudget {
-  /** Aborts when the caller aborts, or when this machine's budget elapses. */
-  readonly signal: AbortSignal;
-  /** Stop the clock. Idempotent; call it once the read is over either way. */
-  release(): void;
-}
-
-/**
- * A read's own signal, bounded by what that machine is allowed to cost.
- *
- * Written by hand rather than with AbortSignal.any and AbortSignal.timeout:
- * `any` needs WebKit 17.4, which is newer than the iOS this app is built
- * against, and a phone whose WebView lacks it would throw here and lose the
- * search screen. A controller, a listener and a timer are the same thing and
- * run everywhere. The budget aborts with a TimeoutError so a machine that ran
- * out of time stays distinguishable from one that refused.
- */
-export function peerBudget(base: AbortSignal, local: boolean): PeerBudget {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  function release(): void {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
-    base.removeEventListener('abort', onCallerAbort);
-  }
-  function onCallerAbort(): void {
-    release();
-    controller.abort(base.reason);
-  }
-  if (base.aborted) {
-    controller.abort(base.reason);
-    return { signal: controller.signal, release };
-  }
-  base.addEventListener('abort', onCallerAbort);
-  timer = setTimeout(() => {
-    timer = undefined;
-    release();
-    controller.abort(new DOMException('This machine did not answer inside its budget.', 'TimeoutError'));
-  }, local ? LOCAL_BUDGET_MS : PEER_BUDGET_MS);
-  return { signal: controller.signal, release };
+/** A read's own signal, bounded by what that machine is allowed to cost. */
+export function peerBudget(base: AbortSignal, local: boolean): AbortBudget {
+  return abortBudget(local ? LOCAL_BUDGET_MS : PEER_BUDGET_MS, base);
 }
 
 /**

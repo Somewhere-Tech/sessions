@@ -7,6 +7,7 @@ import {
 } from '../../lib/servers';
 import { isTauri } from '../../lib/tauriBridge';
 import { parseServerEndpoint } from '../../lib/serverEndpoint';
+import { abortBudget } from '../../lib/abortBudget';
 
 // Thrown when the daemon returns HTTP 401 (token required / wrong token).
 // Callers (UI components) can instanceof-check this to show an auth prompt
@@ -88,6 +89,9 @@ function authHeaders(s: ServerConfig): Record<string, string> {
   return s.token ? { Authorization: `Bearer ${s.token}` } : {};
 }
 
+/** How long one saved route gets to prove it can reach the machine. */
+const TRANSPORT_PROBE_BUDGET_MS = 5_000;
+
 const transportSelections = new Map<string, { endpoint: string; expires: number }>();
 
 async function selectTransport(server: ServerConfig, headers: Record<string, string>): Promise<string> {
@@ -95,9 +99,12 @@ async function selectTransport(server: ServerConfig, headers: Record<string, str
   const cached = transportSelections.get(key);
   if (cached && cached.expires > Date.now()) return cached.endpoint;
   for (const candidate of server.transportCandidates ?? []) {
+    // Each route gets its own clock, stopped as soon as that route is decided,
+    // so a route that answered does not leave a timer running behind it.
+    const budget = abortBudget(TRANSPORT_PROBE_BUDGET_MS);
     try {
       const response = await fetch(`${candidate.endpoint.replace(/\/$/, '')}/api/machine`, {
-        headers, redirect: 'error', signal: AbortSignal.timeout(5_000)
+        headers, redirect: 'error', signal: budget.signal
       });
       response.body?.cancel();
       if (!response.ok) continue;
@@ -105,7 +112,9 @@ async function selectTransport(server: ServerConfig, headers: Record<string, str
       const parsed = parseServerEndpoint(candidate.endpoint);
       void useServers.getState().updateServer(server.id, { ...parsed, transport: candidate.transport });
       return candidate.endpoint;
-    } catch { /* try the next route */ }
+    } catch { /* try the next route */ } finally {
+      budget.release();
+    }
   }
   throw new Error('No machine transport is reachable.');
 }

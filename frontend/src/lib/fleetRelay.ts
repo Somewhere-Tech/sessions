@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { httpBaseForServer, serverFetch } from '../api/sessionsd/core';
+import { abortBudget } from './abortBudget';
 import {
   useServers,
   type ServerConfig
@@ -45,6 +46,9 @@ export function useFleetRelayServers(enabled: boolean): string[] {
   return errors;
 }
 
+/** How long one host gets to list the machines it relays to. */
+const HOST_FLEET_BUDGET_MS = 10_000;
+
 interface RelayedFleetMachine {
   id: string;
   name: string;
@@ -58,13 +62,21 @@ export async function refreshFleetServersFromHost(hostId: string, signal?: Abort
   const state = useServers.getState();
   const host = state.servers.find((server) => server.id === hostId && !server.relayMachineId);
   if (!host) return state.servers;
-  const response = await serverFetch(host, `${httpBaseForServer(host)}/api/fleet/machines`, {
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000)
-  });
-  if (!response.ok) {
-    throw new Error(`Sessions could not refresh the host fleet (HTTP ${response.status}).`);
+  // The budget covers reading the answer as well as getting it, and it is
+  // released as soon as the answer is in hand rather than left to expire.
+  const budget = abortBudget(HOST_FLEET_BUDGET_MS, signal);
+  let body: { machines?: RelayedFleetMachine[] };
+  try {
+    const response = await serverFetch(host, `${httpBaseForServer(host)}/api/fleet/machines`, {
+      signal: budget.signal
+    });
+    if (!response.ok) {
+      throw new Error(`Sessions could not refresh the host fleet (HTTP ${response.status}).`);
+    }
+    body = await response.json() as { machines?: RelayedFleetMachine[] };
+  } finally {
+    budget.release();
   }
-  const body = await response.json() as { machines?: RelayedFleetMachine[] };
   if (!Array.isArray(body.machines)) {
     throw new Error('Sessions received an invalid host fleet response.');
   }

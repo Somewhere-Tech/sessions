@@ -5,6 +5,9 @@
 // against. On a WebView without it this helper would throw where a read starts,
 // and the search screen would fail whole instead of one machine being late.
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { abortBudget } from '../../src/lib/abortBudget';
 import {
   classifyPeerFailure,
   peerBudget,
@@ -25,9 +28,60 @@ function aborted(signal: AbortSignal): Promise<unknown> {
 describe('capability: a per-machine budget without a modern-WebView dependency', () => {
   it('is built from a controller, a listener and a timer', () => {
     // The helper must not reach for the two APIs the shipped WebViews lack.
-    const source = peerBudget.toString();
+    const source = abortBudget.toString();
     expect(source).not.toContain('AbortSignal.any');
     expect(source).not.toContain('AbortSignal.timeout');
+  });
+
+  // The guard that matters is the tree, not this one helper: any read written
+  // tomorrow with AbortSignal.any would break the same phones, silently, and
+  // pass every test that runs in jsdom because jsdom has it.
+  it('leaves no call to either API anywhere the app ships', () => {
+    const offenders: string[] = [];
+    const walk = (directory: string): void => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) { walk(path); continue; }
+        if (!/\.(ts|tsx)$/.test(entry.name)) continue;
+        const source = readFileSync(path, 'utf8');
+        // The call, not the name: the helper's own comment explains why these
+        // are avoided and must not be mistaken for a use of them.
+        if (source.includes('AbortSignal.any(') || source.includes('AbortSignal.timeout(')) {
+          offenders.push(path);
+        }
+      }
+    };
+    walk(join(process.cwd(), 'src'));
+    expect(offenders).toEqual([]);
+  });
+
+  // Each caller's own budget and error, unchanged by the move to one helper.
+  it('keeps each existing budget and the error name its caller sees', async () => {
+    vi.useFakeTimers();
+    const hostFleet = abortBudget(10_000);
+    const transportProbe = abortBudget(5_000);
+
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(transportProbe.signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(transportProbe.signal.aborted).toBe(true);
+    expect((transportProbe.signal.reason as DOMException).name).toBe('TimeoutError');
+
+    expect(hostFleet.signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(hostFleet.signal.aborted).toBe(true);
+    expect((hostFleet.signal.reason as DOMException).name).toBe('TimeoutError');
+  });
+
+  // A budget with no caller behind it is what selectTransport uses.
+  it('works without a caller signal at all', async () => {
+    vi.useFakeTimers();
+    const budget = abortBudget(1_000);
+    expect(budget.signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(budget.signal.aborted).toBe(true);
+    budget.release();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('ends the read when the caller gives up, carrying the caller reason', async () => {
