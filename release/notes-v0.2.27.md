@@ -44,3 +44,60 @@
 - Loads secondary app views only when opened, reducing the initial JavaScript bundle from 701,455 bytes to about 584,000 bytes while keeping the total bundle within its existing budget.
 
 Existing sessions keep running across the update. No session is ended or re-adopted to install it.
+
+## Reliability follow-ups — 2026-09-10
+
+Everything below landed after the 2026-09-09 baseline and is not yet in an
+installed release. Each line ends with the commit that carries it.
+
+### Delivery truth
+
+- Recovers a structured runner's acknowledgment that arrives after the request asking for it has gone, so a message the runner accepted stops reading as permanently unknown; the upgrade is one-directional and evidence-only, a late refusal stays unknown, and nothing new goes on the wire. (fa9c32c)
+- Closes the race where a cancelled or timed-out message waiter and the runner's answer could retire together, losing the answer that was the whole point of retaining it. (5193b05)
+- Answers a refused send with its receipt: reading a recorded receipt is 200 whatever it says, `sessions send` states that the message was not delivered and whether retrying is safe, and `sessions send-status` prints the receipt instead of wrapping it in an error. (5309ab6)
+
+### Fleet and network
+
+- Reports the network failure that actually happened instead of inferring a Local Network denial from one errno, attributes each failure to the endpoint that was dialled, and stops persisting that guess across restarts. (a59f6fc)
+- Stops presenting a stored nearby-access success as a live connection: a check that reaches nothing says so, a failed check keeps its own message on screen, and an older host's denial is attributed to that host rather than restated as a current verdict. (8db86c6)
+- Keeps one unusable saved machine from costing the whole fleet: the machine listing and every relay to a healthy peer keep working, and the unusable row is listed as unreachable with the reason. (fdb3632)
+- Publishes only the addresses this host would actually dial, so a saved endpoint carrying credentials or query text is never handed to a paired device. (fdb14fb)
+- Says why one inherited machine is unavailable, as a snapshot of what the host observed rather than a permanent fact about that machine. (75d7bcf)
+- Gives Fleet its one-line failure without discarding the rest of a daemon's answer, so a recovery instruction meant for another caller — the exact command that resumes a paused session — is no longer dropped on the way. (f1abda9)
+- Stops one absent machine from holding up the whole fleet's history: each machine is read inside its own budget in parallel, local results appear first, and the response says which machines answered, timed out, or could not be reached. (dbbb0b9)
+- Lets a live route win while a preferred one is still silent, so a dead preferred address costs a short grace instead of the full per-machine budget. (4986284)
+- Says a Mac whose daemon is restarting is restarting, retries on its own for a minute, and never reports that silence as an empty search result. (9169ae2)
+- Counts only a refused connection as a restart: a daemon that answered with an error is running, and its own message is shown instead. (53049ee)
+
+### History speed and memory
+
+- Stops re-reading a Codex conversation once its listing card is finished, and stops re-reading any conversation that has not changed since it was last described. (5770276, ffe3840)
+- Gives back the terminal screen of a session nobody is watching after two quiet minutes, rebuilding it from what it kept on the next read or write, and bounds retained scrollback by size as well as by line count. (a438d33)
+- Stops building a terminal screen at all for the session kinds that are never read as one — lanes and the structured providers — which keep their raw output and event history unchanged. (6623127)
+- Keeps what a history listing already learned across a restart, so the first listing after an install no longer recounts every conversation; an entry is used only when the file still matches the size and modification time it was computed at. (68008ff)
+
+### Phones and WebViews
+
+- Builds the per-machine read budget from parts every shipped WebView has, instead of two APIs that are newer than the iOS the app is built for. (ad2b473, 7a15027)
+- Ships what the declared phones can actually run: the bundle is built for the iOS version the mobile projects name, and the three APIs used anywhere in the app that are newer than that baseline — including one that is simply absent on the plain-HTTP addresses phones reach a Mac on — go through the guarded helpers that exist for them. (d87315b)
+
+### CLI and app truth
+
+- Says Usage is loading while it is loading: a machine whose report has not arrived reads as loading by name, one that timed out says so with a Try again, an older host is described as one only after its answer arrives, and the headline states how many machines it covers. (47f6598)
+- Gives `sessions status --json` the same facts `sessions ls --json` carries, field for field and name for name, so an agent inspecting one session before sending to it reads what an agent listing every session reads; the card states working, exited, the last turn's reason and summary, an unreachable runner and a provider failure in the same words. (41464f9)
+
+### Tests, fixtures and measurements only
+
+- Measures what a listing and a preview cost on long conversations and what a daemon holding 560 records retains after it answers; both are the evidence the memory and history work above was built from. (9d50bdf, b4c9a63)
+- Pins delivery evidence that was asserted only in prose: the retention bound under overflow, and a settled receipt surviving a new store, a restarted daemon and a replacement runner. (ba01855)
+- Pins that resume follows provider identity rather than a folder or a name, that a paused lane refuses a read instead of answering quietly, and that a closed Usage view stops combining reports. (f30333e, 5651ef9, aee215e)
+- Corrects three fixtures that passed for the wrong reason: a traversal fixture planted at the path it claimed, workspace paths encoded as the product encodes them, and paused-read CLI fixtures isolated under the Windows home too. (de6b26c, 64f24e9, 8eec039)
+
+### Proof boundaries
+
+- **Verified on the installed machines.** The MacBook and the Mac mini both run the state of this branch as of 5309ab6, installed on 2026-09-10. Every live session survived every install; none was ended or re-adopted. On the Mini, daemon resident memory fell from 2.37 GB to 768 MB, and a warm history listing fell from about 11 seconds to about 1 second.
+- **Verified only in fixtures.** Everything else: the fleet timing and route behaviour, the delivery receipt paths, the restart and refusal wording, the persisted listing cache, the per-kind terminal screens, and every measurement quoted above. These run against synthetic conversations, fake runners and in-process daemons on a development Mac. Fixture numbers are not machine numbers, and no figure here was taken from a production daemon except the two in the line above.
+- **Not on the installed machines.** The `sessions status --json` parity change (41464f9) landed after that install and has no device exposure yet.
+- **No device proof at all.** Physical iPhone and Android hardware: the WebView baseline work was verified by reading the shipped bundle and the declared build targets, not by running the app on a phone. Windows: fixtures only, including the ones corrected above; no Windows machine was involved.
+
+Existing sessions keep running across these changes. No session is ended or re-adopted to install them.
