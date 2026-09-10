@@ -152,7 +152,7 @@ describe('capability: adding an account is a guided login', () => {
     expect(await screen.findByText(/check which account you are signing in as/i)).toBeInTheDocument();
   }, 20_000);
 
-  it('says an account is not signed in until the provider says otherwise', async () => {
+  it('says only what it can see: whether a login file is there', async () => {
     const machines = fleet();
     installFakeDaemon(machines);
     useFakeMachines(machines, 'local');
@@ -163,7 +163,10 @@ describe('capability: adding an account is a guided login', () => {
         onReload={() => {}}
       />
     );
-    expect(screen.getByText('Not signed in yet')).toBeInTheDocument();
+    // Presence of a provider's sign-in file is the whole fact. "Signed in"
+    // would claim a working login Sessions has never checked.
+    expect(screen.getByText('No login file yet')).toBeInTheDocument();
+    expect(screen.queryByText(/Not signed in/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
   }, 20_000);
 
@@ -206,5 +209,100 @@ describe('capability: a session says which account it is on', () => {
     const badges = screen.getAllByTitle(/uses the work account/);
     expect(badges).toHaveLength(1);
     expect(badges[0]!.textContent).toBe('work');
+  }, 20_000);
+
+  it('reports a login file it can see without calling it a working login', () => {
+    const machines = fleet();
+    installFakeDaemon(machines);
+    useFakeMachines(machines, 'local');
+    render(
+      <AccountsPanel
+        profiles={[{ tool: 'claude', name: 'work', label: 'Work', path: '/state/profiles/claude/work', signed_in: true, sessions: [], last_used: 1 }]}
+        machineName="This Mac"
+        onReload={() => {}}
+      />
+    );
+    const state = screen.getByText('Login file present');
+    expect(state).toBeInTheDocument();
+    expect(state.title).toMatch(/cannot tell you whether that login still works/);
+    expect(screen.queryByText('Signed in')).not.toBeInTheDocument();
+  }, 20_000);
+
+  // A sign-in that cannot be opened must say so, once, and leave the panel
+  // where it was — not stranded on "finish signing in" for a session that was
+  // never created.
+  it('says when the provider sign-in could not be opened, and opens one session per click', async () => {
+    const machines = fleet();
+    installFakeDaemon(machines);
+    useFakeMachines(machines, 'local');
+    const realFetch = globalThis.fetch;
+    let creates = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/api/sessions') && (init?.method ?? 'GET') === 'POST') {
+        creates += 1;
+        return new Response(JSON.stringify({ error: 'no runner is available' }), {
+          status: 503, headers: { 'content-type': 'application/json' }
+        });
+      }
+      return realFetch(input, init);
+    }) as typeof fetch;
+    const user = userEvent.setup();
+    const opened: string[] = [];
+    render(
+      <AccountsPanel
+        profiles={[{ tool: 'claude', name: 'pending', label: 'Pending', path: '/state/profiles/claude/pending', signed_in: false, sessions: [], last_used: 0 }]}
+        machineName="This Mac"
+        onOpenSession={(id) => opened.push(id)}
+        onReload={() => {}}
+      />
+    );
+
+    const signIn = screen.getByRole('button', { name: 'Sign in' });
+    await user.click(signIn);
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/no runner is available|could not open/));
+    // Not stranded on the signing-in step, and no session was reported.
+    expect(screen.queryByText(/Finish signing in/)).not.toBeInTheDocument();
+    expect(opened).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Add account' })).toBeInTheDocument();
+    expect(creates).toBe(1);
+
+    // And a second click is a second attempt, not a second session per click.
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(creates).toBe(2));
+    globalThis.fetch = realFetch;
+  }, 20_000);
+
+  // Two clicks while the first one is still in flight are one login session.
+  it('opens one login session even when the button is hit twice', async () => {
+    const machines = fleet();
+    installFakeDaemon(machines);
+    useFakeMachines(machines, 'local');
+    const realFetch = globalThis.fetch;
+    let creates = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/api/sessions') && (init?.method ?? 'GET') === 'POST') {
+        creates += 1;
+        // Slow enough that a second click lands while the first is unfinished.
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+      return realFetch(input, init);
+    }) as typeof fetch;
+    const user = userEvent.setup();
+    const opened: string[] = [];
+    render(
+      <AccountsPanel
+        profiles={[{ tool: 'claude', name: 'pending', label: 'Pending', path: '/state/profiles/claude/pending', signed_in: false, sessions: [], last_used: 0 }]}
+        machineName="This Mac"
+        onOpenSession={(id) => opened.push(id)}
+        onReload={() => {}}
+      />
+    );
+    const signIn = screen.getByRole('button', { name: 'Sign in' });
+    await user.click(signIn);
+    await user.click(signIn);
+    await waitFor(() => expect(opened).toHaveLength(1), { timeout: 5_000 });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(creates).toBe(1);
+    globalThis.fetch = realFetch;
   }, 20_000);
 });

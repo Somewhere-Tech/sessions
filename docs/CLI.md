@@ -174,7 +174,7 @@ Usage:
 
 list Claude and Codex login profiles
 
-List profile names, labels, whether the provider has signed in, private config paths, active sessions, and last-use times. Sessions never reads or copies credentials and has no profile delete command; remove a profile manually only after reviewing the printed path. `sessions accounts` is the same list with the verbs that add and unregister one.
+List profile names, labels, whether the file a provider writes at sign-in is present in that profile's home, private config paths, active sessions, and last-use times. LOGIN-FILE is presence only: Sessions never opens that file, so it is not proof that the login still works, and a provider that keeps its credential in the system keychain reports none. Sessions never reads or copies credentials and has no profile delete command; remove a profile manually only after reviewing the printed path. `sessions accounts` is the same list with the verbs that add and unregister one.
 
 Examples:
   sessions profiles
@@ -193,7 +193,7 @@ list and add second Claude or ChatGPT accounts
 
 A second subscription lives in its own provider home with its own login and history; a session picks one with --profile, and delegated lanes inherit their manager's. `accounts` with no arguments is `sessions profiles`.
 
-`accounts add <name> --tool claude|codex` registers the home, records the label you give it, and opens a session on this machine running that provider inside it so the login happens in front of you: Claude through `/login`, Codex through its Sign in with ChatGPT choice. Sessions prints what the provider prints and never handles the credential, the URL, or the code. Check the account in your browser before confirming; the account then reads as signed in because the provider wrote its own login state into that home, which is the only thing Sessions inspects.
+`accounts add <name> --tool claude|codex` registers the home, records the label you give it, and opens a session on this machine running that provider inside it so the login happens in front of you: Claude through `/login`, Codex through its Sign in with ChatGPT choice. Sessions prints what the provider prints and never handles the credential, the URL, or the code. Check the account in your browser before confirming; the account then reports its login file as present, which means the provider wrote its own sign-in file into that home — the only thing Sessions inspects. It is not a check that the login works, and it says nothing about which account it belongs to.
 
 `accounts forget <name> --tool claude|codex` removes the account from this machine's list and leaves the provider home in place, naming it so you can review or delete it yourself. Adding the same name again re-registers it with its login intact. Subscription logins are the only supported form; there is no API-key path here.
 

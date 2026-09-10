@@ -167,9 +167,13 @@ inside it so the login happens in front of you: Claude through `/login`, Codex
 through **Sign in with ChatGPT**. Sessions prints what the provider prints and
 never handles the credential, the link, or the code. **Check which account you
 are signing in as in the browser before confirming** — the provider's page, not
-Sessions, is what knows. The account reads as signed in once the provider has
-written its own login state into that home, which is the only thing Sessions
-inspects. Subscription logins are the supported form; there is no API-key path.
+Sessions, is what knows. The account then shows its **login file** as present,
+which means the provider wrote its own sign-in file into that home. That is the
+only thing Sessions inspects, and it is a weak fact on purpose: Sessions never
+opens the file, so a present file is not proof the login still works, an absent
+one is not proof it does not — a provider that keeps its credential in the
+system keychain shows none — and neither says which account it belongs to.
+Subscription logins are the supported form; there is no API-key path.
 
 **Seeing it.** A session that is not on the default account carries its account
 name in the session header, the inbox row, and the Lanes panel. Resuming a
@@ -182,7 +186,8 @@ leaves the provider home in place, naming the directory so you can review or
 delete it yourself. Adding the same name again re-registers it with its login
 intact. Sessions has no command that deletes a provider home.
 
-**From the CLI.** `sessions accounts` lists them with labels and sign-in state,
+**From the CLI.** `sessions accounts` lists them with labels and a LOGIN-FILE
+column carrying the same weak fact,
 `sessions accounts add <name> --tool claude|codex [--label TEXT]` performs the
 same guided login headlessly, and `sessions accounts forget <name> --tool
 claude|codex` unregisters one. `sessions profiles` remains the same listing.

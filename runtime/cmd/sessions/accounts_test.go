@@ -52,8 +52,9 @@ func accountsDaemon(t *testing.T, created *map[string]string, sessionBody *map[s
 	}))
 }
 
-// The list says which account is which and whether its provider has signed in.
-func TestAccountsListsLabelsAndSignInState(t *testing.T) {
+// The list says which account is which, and the one thing Sessions can see
+// about its login: whether the file a provider writes at sign-in is present.
+func TestAccountsListsLabelsAndWhetherALoginFileIsThere(t *testing.T) {
 	var created map[string]string
 	var sessionBody map[string]any
 	server := accountsDaemon(t, &created, &sessionBody)
@@ -64,7 +65,9 @@ func TestAccountsListsLabelsAndSignInState(t *testing.T) {
 	if code := run([]string{"--host", server.URL, "accounts"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("accounts exit=%d stderr=%q", code, stderr.String())
 	}
-	for _, fragment := range []string{"LABEL", "SIGNED-IN", "Work — team plan", "yes", "personal", "no"} {
+	// The column says what is actually known: whether the file a provider writes
+	// at sign-in is there. Not "signed in", which Sessions cannot see.
+	for _, fragment := range []string{"LABEL", "LOGIN-FILE", "Work — team plan", "present", "personal", "none"} {
 		if !strings.Contains(stdout.String(), fragment) {
 			t.Errorf("accounts output lacks %q:\n%s", fragment, stdout.String())
 		}
@@ -101,6 +104,11 @@ func TestAccountsAddRegistersTheHomeAndOpensTheProvidersLogin(t *testing.T) {
 			}
 			if sessionBody["cmd"] != test.command || sessionBody["profile"] != "work" {
 				t.Fatalf("login session = %#v", sessionBody)
+			}
+			// No working directory from this caller: with --machine the session
+			// is created on another computer, whose home is not this one's.
+			if cwd, present := sessionBody["cwd"]; present {
+				t.Fatalf("the login session was pinned to this caller's directory %q; the target daemon must choose its own", cwd)
 			}
 			if args, _ := sessionBody["args"].([]any); len(args) != test.args {
 				t.Fatalf("login session args = %#v", sessionBody["args"])

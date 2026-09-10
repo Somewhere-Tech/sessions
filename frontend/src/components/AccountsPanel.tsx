@@ -44,24 +44,43 @@ export function AccountsPanel({ profiles, machineName, serverId, onOpenSession, 
     } catch { /* the list is refreshed by the next visit */ }
   };
 
+  // One login session per click, and a failure that says so. A rejected create
+  // used to leave an unhandled promise and a panel stuck on "finish signing in"
+  // for a session that was never opened.
   const startLogin = async (account: AccountProfile): Promise<void> => {
-    setSignInFor(account);
-    setStage('signing-in');
-    onOpenSession?.(await openProviderLogin(account, serverId));
-  };
-
-  const addAccount = async (tool: 'claude' | 'codex', name: string, label: string): Promise<void> => {
+    if (busy) return;
     setBusy(true);
     setMessage(null);
     try {
-      await startLogin(await createAccount(tool, name, label, serverId));
-      await reload();
+      const sessionId = await openProviderLogin(account, serverId);
+      setSignInFor(account);
+      setStage('signing-in');
+      onOpenSession?.(sessionId);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Sessions could not add that account.');
-      setStage('naming');
+      setMessage(error instanceof Error ? error.message : 'Sessions could not open the provider sign-in.');
+      setSignInFor(null);
+      setStage('idle');
     } finally {
       setBusy(false);
     }
+  };
+
+  const addAccount = async (tool: 'claude' | 'codex', name: string, label: string): Promise<void> => {
+    if (busy) return;
+    let account: AccountProfile;
+    setBusy(true);
+    setMessage(null);
+    try {
+      account = await createAccount(tool, name, label, serverId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Sessions could not add that account.');
+      setStage('naming');
+      return;
+    } finally {
+      setBusy(false);
+    }
+    await startLogin(account);
+    await reload();
   };
 
   const forget = async (account: AccountProfile): Promise<void> => {
@@ -79,13 +98,7 @@ export function AccountsPanel({ profiles, machineName, serverId, onOpenSession, 
 
   return (
     <section className="settings-page accounts-panel">
-      <span className="settings-kicker">Subscriptions on {machineName}</span>
-      <h1>Accounts</h1>
-      <p>
-        Each account is a separate Claude or ChatGPT login with its own history. Sessions never reads a
-        credential: an account has the name you give it, and it reads as signed in once the provider writes
-        its own login into that account&rsquo;s home.
-      </p>
+      <AccountsIntroduction machineName={machineName} />
 
       <div className="settings-card">
         <h2>On this computer</h2>
@@ -126,11 +139,32 @@ export function AccountsPanel({ profiles, machineName, serverId, onOpenSession, 
       ) : null}
 
       {message ? <p className="settings-message" role="status">{message}</p> : null}
-      <p className="field-help">
-        Removing an account only takes it off this list. Its provider home — the login and the history —
-        is left in place for you to review or delete yourself.
-      </p>
+      <AccountsFootnote />
     </section>
+  );
+}
+
+function AccountsFootnote(): JSX.Element {
+  return (
+    <p className="field-help">
+      Removing an account only takes it off this list. Its provider home — the login and the history —
+      is left in place for you to review or delete yourself.
+    </p>
+  );
+}
+
+function AccountsIntroduction({ machineName }: { machineName: string }): JSX.Element {
+  return (
+    <>
+      <span className="settings-kicker">Subscriptions on {machineName}</span>
+      <h1>Accounts</h1>
+      <p>
+        Each account is a separate Claude or ChatGPT login with its own history. Sessions never reads a
+        credential: an account has the name you give it, and Sessions reports only whether the file a
+        provider writes when it signs in is present in that account&rsquo;s home — not whether that login
+        still works, and not which account it belongs to.
+      </p>
+    </>
   );
 }
 
@@ -149,8 +183,13 @@ function AccountsList(
           <span className={`profile-provider is-${account.tool}`}>{account.tool === 'claude' ? 'Claude' : 'Codex'}</span>
           <strong>{accountLabel(account)}</strong>
           <small className="accounts-name">{account.name}</small>
-          <small className={account.signed_in ? 'accounts-ready' : 'accounts-pending'}>
-            {account.signed_in ? 'Signed in' : 'Not signed in yet'}
+          <small
+            className={account.signed_in ? 'accounts-ready' : 'accounts-pending'}
+            title={account.signed_in
+              ? 'This account\u2019s home holds the file the provider writes when it signs in. Sessions does not open it, so it cannot tell you whether that login still works.'
+              : 'Nothing in this account\u2019s home looks like a provider login yet. A provider that keeps its credential in the system keychain also reads this way.'}
+          >
+            {account.signed_in ? 'Login file present' : 'No login file yet'}
           </small>
           <small>{account.sessions.length} active session{account.sessions.length === 1 ? '' : 's'}</small>
           <small>{account.last_used > 0 ? `Last used ${new Date(account.last_used).toLocaleDateString()}` : 'Never used'}</small>
@@ -233,7 +272,7 @@ function SigningInCard(
       <ol>
         <li>{account.tool === 'claude' ? 'Send /login in the session Sessions just opened.' : 'Choose “Sign in with ChatGPT” in the session Sessions just opened.'}</li>
         <li>Open the link it prints and <strong>check which account you are signing in as</strong> in the browser.</li>
-        <li>Come back here; the account reads as signed in once the provider has written its login.</li>
+        <li>Come back here; the account shows its login file once the provider has written one.</li>
       </ol>
       <div className="accounts-add-actions">
         <button type="button" className="btn btn-ghost" disabled={busy} onClick={onCheck}>Check again</button>

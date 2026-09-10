@@ -697,12 +697,18 @@ the currently active sessions, and last-used Unix milliseconds:
 ```
 
 `label` is what a person typed when adding the account and is absent when they
-typed none. It is never read out of a provider's files. `signed_in` reports that
-the provider's own login state is present in that home — `.credentials.json` for
-Claude, `auth.json` for Codex — and nothing in it is opened or parsed. A
-provider that keeps its credential elsewhere, such as the system keychain, reads
-as not signed in here; that is a fact about the directory, not a claim about an
-account.
+typed none. It is never read out of a provider's files.
+
+`signed_in` is **the presence of a file, and nothing more**: `.credentials.json`
+for Claude, `auth.json` for Codex. Sessions stats those names and never opens,
+parses or validates them. It therefore does **not** prove that the login works —
+an expired, revoked or malformed file reports `true` — and it does **not**
+identify the account. `false` does not prove the opposite either: a provider
+that keeps its credential in the system keychain, or under a name this daemon
+does not know, reports `false` while being perfectly signed in. Clients must
+present it as what it is; Sessions' own surfaces say "login file present" and
+"no login file yet" rather than signed in or out. The field name is retained for
+compatibility with clients that already read it.
 
 ### `POST /api/profiles`
 

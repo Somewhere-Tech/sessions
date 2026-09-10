@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 )
 
@@ -61,15 +60,14 @@ func (a *app) cmdAccountsAdd(args []string) error {
 	if tool == "codex" {
 		command, loginArgs = "codex", []string{"login"}
 	}
-	home, homeErr := os.UserHomeDir()
-	if homeErr != nil {
-		return fail(2, "resolve a working directory for the login session: %s", homeErr)
-	}
 	var info struct {
 		ID string `json:"id"`
 	}
+	// No working directory: the daemon that runs this session chooses its own
+	// default, as `sessions new` without --cwd does. Sending this caller's home
+	// would name a directory that need not exist on the machine being asked.
 	if err := a.postJSON("/api/sessions", createSessionRequest{
-		Cmd: command, Args: loginArgs, Profile: name, Cwd: home,
+		Cmd: command, Args: loginArgs, Profile: name,
 		Name: "sign in: " + name, Description: "provider login for the " + tool + " account " + name,
 	}, &info, 2); err != nil {
 		return err
@@ -86,7 +84,8 @@ func (a *app) cmdAccountsAdd(args []string) error {
 	} else {
 		fmt.Fprintf(a.stdout, "watch it with `sessions snap %s`: choose \"Sign in with ChatGPT\" and open the URL it prints\n", prefixString(info.ID, 8))
 	}
-	fmt.Fprintln(a.stdout, "check the account in the browser before confirming, then `sessions accounts` reports it signed in")
+	fmt.Fprintln(a.stdout,
+		"check the account in the browser before confirming; `sessions accounts` then reports its login file as present")
 	return nil
 }
 
@@ -126,7 +125,7 @@ func (a *app) cmdProfiles(args []string) error {
 		_, err := io.WriteString(a.stdout, "(no profiles)\n")
 		return err
 	}
-	rows := [][]string{{"TOOL", "NAME", "LABEL", "SIGNED-IN", "SESSIONS", "LAST-USED", "PATH"}}
+	rows := [][]string{{"TOOL", "NAME", "LABEL", "LOGIN-FILE", "SESSIONS", "LAST-USED", "PATH"}}
 	for _, profile := range response.Profiles {
 		sessions := make([]string, 0, len(profile.Sessions))
 		for _, current := range profile.Sessions {
@@ -148,15 +147,21 @@ func (a *app) cmdProfiles(args []string) error {
 		if label == "" {
 			label = "-"
 		}
-		signedIn := "no"
+		// Presence of the file a provider writes when it signs in. Not proof
+		// that the login still works, and a provider that keeps its credential
+		// in the system keychain reports none.
+		signedIn := "none"
 		if profile.SignedIn {
-			signedIn = "yes"
+			signedIn = "present"
 		}
 		rows = append(rows, []string{profile.Tool, profile.Name, label, signedIn, using, lastUsed, profile.Path})
 	}
 	if err := writePaddedRows(a.stdout, rows); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintln(a.stdout, "Sessions never deletes profile credentials; remove one manually only after reviewing its PATH above.")
+	_, err := fmt.Fprintln(a.stdout,
+		"LOGIN-FILE is whether the file a provider writes at sign-in is present; Sessions does not open it, "+
+			"so it is not proof that the login still works. Sessions never deletes profile credentials; "+
+			"remove one manually only after reviewing its PATH above.")
 	return err
 }
