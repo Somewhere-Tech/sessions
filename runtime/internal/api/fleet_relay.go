@@ -209,12 +209,7 @@ func (s *Server) serveFleetMachines(response http.ResponseWriter, request *http.
 	done := make(chan struct{}, len(machines))
 	for index, machine := range machines {
 		index, machine := index, machine
-		views[index] = fleetMachineView{
-			ID: machine.MachineID, Name: machine.Name,
-			LANEndpoint: machine.LANEndpoint, TailnetEndpoint: machine.TailnetEndpoint,
-			TailnetIPEndpoint: machine.TailnetIPEndpoint,
-			RelayEndpoint:     machine.RelayEndpoint,
-		}
+		views[index] = fleetMachineListing(machine)
 		go func() {
 			views[index] = s.fleetMachineReachability(request.Context(), machine, views[index])
 			done <- struct{}{}
@@ -224,6 +219,33 @@ func (s *Server) serveFleetMachines(response http.ResponseWriter, request *http.
 		<-done
 	}
 	s.sendJSON(response, http.StatusOK, map[string]any{"machines": views}, corsOrigin)
+}
+
+// fleetMachineListing publishes a saved machine's identity and only the
+// addresses this host would be willing to dial. The registry holds whatever was
+// saved -- a machine claimed from the account directory keeps the addresses that
+// directory published -- so a row can carry userinfo, a query, or a fragment.
+// An address that fails the dial rules is not shown either: it can never be used
+// from here, and this response promises to carry no credential. Its neighbours
+// on the same row, and every other machine, are unaffected.
+func fleetMachineListing(machine fleetSavedMachine) fleetMachineView {
+	publishable := func(endpoint, transport string) string {
+		if endpoint == "" {
+			return ""
+		}
+		candidate := fleetendpoint.Candidate{Endpoint: endpoint, Transport: transport}
+		if validateFleetCandidate(machine.MachineID, candidate) != nil {
+			return ""
+		}
+		return endpoint
+	}
+	return fleetMachineView{
+		ID: machine.MachineID, Name: machine.Name,
+		LANEndpoint:       publishable(machine.LANEndpoint, "lan"),
+		TailnetEndpoint:   publishable(machine.TailnetEndpoint, "tailnet"),
+		TailnetIPEndpoint: publishable(machine.TailnetIPEndpoint, "tailnet-ip"),
+		RelayEndpoint:     publishable(machine.RelayEndpoint, "relay"),
+	}
 }
 
 func (s *Server) fleetMachineReachability(parent context.Context, machine fleetSavedMachine, view fleetMachineView) fleetMachineView {

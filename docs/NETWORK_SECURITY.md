@@ -214,7 +214,10 @@ the direct Tailscale IP origin. A saved row A cannot use — a machine claimed
 from the account directory keeps the addresses that directory published, which A
 never validated — is listed as unreachable with the reason, and requests to it
 fail closed as a bad gateway; A still refuses to dial an address that does not
-match its transport rules, and the rest of A's fleet stays listed and usable. Relayed streams have no background retry queue;
+match its transport rules, and the rest of A's fleet stays listed and usable. A
+refused address is also not published: the listing carries only addresses A
+would dial, so an unvalidated saved URL cannot carry userinfo or a query
+parameter to a paired client, and no error quotes one back. Relayed streams have no background retry queue;
 the phone's existing reconnect behavior starts a new request.
 
 This is a user's own machine relaying to that same user's independently

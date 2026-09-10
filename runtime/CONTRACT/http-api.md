@@ -439,8 +439,17 @@ published, which this host never validated — is listed with `reachable:false`,
 `reason:"saved-endpoint-unusable"` and a `message` naming the machine and the
 route it could not use. It is listed rather than hidden, and one such row never
 removes or fails the other machines. A row whose `machine_id` is not a valid id
-has no identity to show or route to and is omitted. Other reachability failures
-omit both fields. The response never contains a credential or paired-device ID.
+has no identity to show or route to and is omitted; that id also never reaches a
+credential path, and a request naming it is 404. Other reachability failures omit
+both fields.
+
+Each `lan_endpoint`, `tailnet_endpoint`, `tailnet_ip_endpoint` and
+`relay_endpoint` is present only when this host would dial it. An address that
+fails those rules is omitted from the row rather than echoed, because a saved
+address this host never validated may carry userinfo, a query, or a fragment; a
+usable address beside it on the same row is still published. Together with the
+`message` never quoting an address it refused, that is how this response keeps
+its promise to contain no credential or paired-device ID.
 A registry file that cannot be read or parsed, or whose version is unsupported,
 is still 500: that is this host's own state, not a statement about a peer.
 
