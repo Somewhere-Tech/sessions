@@ -1023,12 +1023,32 @@ Auth required. Optional `cols=N` is converted with `Number`, truncated through a
 the daemon for ANSI-aware reflow; non-positive/invalid values select the
 canonical snapshot.
 
+Optional `scrollback=1`, honoured only when `cols` is absent or non-positive,
+asks for the retained history ahead of the current viewport.
+
 Success is 200 with `Content-Type: text/plain; charset=utf-8`, the serialized
 xterm buffer as the body, and `X-Sessions-Seq: <decimal sequence>`. If an allowed
 Origin was present it also sets that ACAO value and
 `Access-Control-Expose-Headers: X-Sessions-Seq`. The success path does not set
 `Vary` or the common allow-method/header fields. Unknown session is
 `404 {"error":"unknown session","id":"<id>"}`.
+
+What the body is depends on the session's `kind`, and `cols` and `scrollback`
+change it only for the first of these:
+
+- A terminal session (`kind` absent) is a PTY the daemon renders. The body is
+  its screen: reflowed when `cols` is positive, preceded by retained history
+  when `scrollback=1`, and the current viewport otherwise.
+- A `lane` is answered from its raw output, as the last 64 KiB of the bytes its
+  runner produced, escape sequences included and unrendered.
+- `codex-app-server` and `claude-structured` are answered from their structured
+  event log as the text of its user and assistant messages.
+
+Only the first kind is backed by a terminal screen; the others are not rendered
+by the daemon at all, and asking them for a screen is not what this route does.
+A session kind that neither keeps a screen nor answers from something else is
+`500 {"error":"this session kind has no terminal mirror"}` — an explicit answer
+rather than an empty screen. No kind behaves that way today.
 
 ### `GET /api/sessions/:id/events`
 

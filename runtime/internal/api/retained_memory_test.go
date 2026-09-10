@@ -46,6 +46,11 @@ type retainedScale struct {
 	// terminal's scrollback may cost per character written or per line scrolled
 	// and only a fixture that writes both can tell those apart.
 	shortLinesPerLive int
+
+	// How many of the live sessions are lanes and structured providers. The
+	// rest are terminals. A machine running agents is mostly the first two.
+	lanes      int
+	structured int
 }
 
 func envInt(name string, fallback int) int {
@@ -68,6 +73,8 @@ func miniScale() retainedScale {
 		providerKiB:       envInt("SESSIONS_RETAINED_PROVIDER_KIB", 128),
 		largeClaudeMiB:    envInt("SESSIONS_RETAINED_LARGE_MIB", 4),
 		shortLinesPerLive: envInt("SESSIONS_RETAINED_LINES", 0),
+		lanes:             envInt("SESSIONS_RETAINED_LANES", 0),
+		structured:        envInt("SESSIONS_RETAINED_STRUCTURED", 0),
 	}
 }
 
@@ -219,8 +226,17 @@ func buildRetainedFleet(t *testing.T, daemon *testDaemon, scale retainedScale, h
 	}
 	live := make([]string, 0, scale.live)
 	for index := 0; index < scale.records; index++ {
+		// Lanes first, then structured providers, then terminals: the shape of
+		// a machine that is mostly running agents rather than being watched.
+		command, kind := "/bin/sh", ""
+		switch {
+		case index < scale.lanes:
+			kind = state.KindLane
+		case index < scale.lanes+scale.structured:
+			command, kind = "/usr/local/bin/claude", state.KindClaudeStructured
+		}
 		info, err := daemon.registry.Create(ctx, state.CreateSessionRequest{
-			Cmd: "/bin/sh", Cwd: project,
+			Cmd: command, Cwd: project, Kind: kind,
 			Name: fmt.Sprintf("record %d", index),
 		})
 		if err != nil {

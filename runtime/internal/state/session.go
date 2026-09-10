@@ -53,10 +53,31 @@ type AttachOptions struct {
 	InitialReplayCap    int
 }
 
+// kindKeepsTerminalMirror reports whether this kind of session is ever read as
+// a terminal screen.
+//
+// A lane is read as its raw output tail and a structured provider as its event
+// log — see Session.snapshot, which answers both before the mirror is reached —
+// so feeding those kinds a terminal emulator built an 8 MiB screen per session
+// to absorb bytes no read path asks for. The kinds listed here are the ones
+// with no such reader; everything else is a PTY somebody looks at.
+func kindKeepsTerminalMirror(kind string) bool {
+	switch kind {
+	case KindLane, KindCodexAppServer, KindClaudeStructured:
+		return false
+	default:
+		return true
+	}
+}
+
 func newSession(ctx context.Context, info proto.RunnerInfo, runner proto.Runner, metadata SessionMetadata) (*Session, error) {
-	terminal, err := mirror.NewSize(info.Cols, info.Rows)
-	if err != nil {
-		return nil, fmt.Errorf("create session mirror: %w", err)
+	var terminal *mirror.Mirror
+	if kindKeepsTerminalMirror(metadata.Kind) {
+		created, err := mirror.NewSize(info.Cols, info.Rows)
+		if err != nil {
+			return nil, fmt.Errorf("create session mirror: %w", err)
+		}
+		terminal = created
 	}
 	tool := classifyTool(info.Cmd)
 	if metadata.Kind == KindLane {
@@ -246,7 +267,9 @@ func (s *Session) appendOutputLocked(event proto.OutputEvent) {
 	if event.At == 0 {
 		event.At = time.Now().UnixMilli()
 	}
-	_, _ = s.mirror.Write([]byte(event.Data))
+	if s.mirror != nil {
+		_, _ = s.mirror.Write([]byte(event.Data))
+	}
 	s.outputs = append(s.outputs, event)
 	s.outputSize += len(event.Data)
 	if event.Seq >= s.nextSeq {
@@ -518,6 +541,12 @@ func (s *Session) snapshot(cols int, includeScrollback bool) (string, uint32, er
 	if s.info.Kind == KindCodexAppServer || s.info.Kind == KindClaudeStructured {
 		return structuredSnapshot(s.claude), seq, nil
 	}
+	if s.mirror == nil {
+		// Every kind above answers from what it does keep. Anything that gets
+		// here is a kind with no terminal screen and no substitute, and saying
+		// so is more use to the caller than an empty one.
+		return "", seq, ErrNoTerminalMirror
+	}
 	if cols > 0 {
 		return s.mirror.ReflowTo(cols), seq, nil
 	}
@@ -647,9 +676,13 @@ func (s *Session) Resize(ctx context.Context, cols, rows int) bool {
 		return false
 	}
 	s.mu.Lock()
-	if err := s.mirror.Resize(cols, rows); err != nil {
-		s.mu.Unlock()
-		return false
+	// A kind with no terminal screen still records the size its runner was
+	// resized to; there is simply no screen to reflow.
+	if s.mirror != nil {
+		if err := s.mirror.Resize(cols, rows); err != nil {
+			s.mu.Unlock()
+			return false
+		}
 	}
 	s.info.Cols = cols
 	s.info.Rows = rows
@@ -827,15 +860,20 @@ func (s *Session) TerminalState() (bool, proto.ExitEvent) {
 // The emulator is about 8 MiB per live session — most of what a daemon holding
 // many sessions retains — and a session that is waiting for its next turn needs
 // none of it until someone looks. The next write or read rebuilds it from the
-// stream the mirror kept. Sessions whose snapshots never come from the mirror
-// (lanes and the structured providers) are hibernated on the same rule rather
-// than a separate one: their mirrors are written to, so idleness still decides.
+// stream the mirror kept. A kind that never had a screen has nothing to give
+// back and says so.
 func (s *Session) HibernateIdleMirror(quiet time.Duration) bool {
+	if s.mirror == nil {
+		return true
+	}
 	return s.mirror.HibernateIfIdle(quiet)
 }
 
 func (s *Session) Close() error {
 	s.cancelRunner()
+	if s.mirror == nil {
+		return nil
+	}
 	return s.mirror.Close()
 }
 
