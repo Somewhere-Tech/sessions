@@ -25,6 +25,7 @@ type peerDialer struct {
 	attempts []peerAttempt
 	reachAt  map[string]string // address -> real listener to connect to
 	stall    map[string]time.Duration
+	delay    map[string]time.Duration // reachable, but answers late
 	start    time.Time
 }
 
@@ -46,7 +47,19 @@ func (d *peerDialer) install(t *testing.T) func() {
 	d.start = time.Now()
 	fleetRelayTransport = &http.Transport{
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			// Recorded on entry as well as on outcome: a probe that was started
+			// and then stopped is exactly what this fixture has to be able to
+			// see, and it cannot see that from the outcome alone.
+			d.record(address, "started")
 			if target, ok := d.reachAt[address]; ok {
+				if wait, slow := d.delay[address]; slow {
+					select {
+					case <-time.After(wait):
+					case <-ctx.Done():
+						d.record(address, "cancelled")
+						return nil, ctx.Err()
+					}
+				}
 				d.record(address, "connected")
 				return (&net.Dialer{}).DialContext(ctx, network, target)
 			}
@@ -276,4 +289,146 @@ func TestAwayFirstRouteStillFallsBackToALiveOne(t *testing.T) {
 	if len(body.Machines) != 1 || !body.Machines[0].Reachable || body.Machines[0].Transport != "tailnet-ip" {
 		t.Fatalf("mixed peer = %+v", body.Machines)
 	}
+}
+
+// dialsFor reports every attempt this fixture saw for one address.
+func (d *peerDialer) dialsFor(address string) []peerAttempt {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	matched := make([]peerAttempt, 0, len(d.attempts))
+	for _, attempt := range d.attempts {
+		if attempt.address == address {
+			matched = append(matched, attempt)
+		}
+	}
+	return matched
+}
+
+// waitForDial gives a cancelled probe a moment to record that it stopped. The
+// goroutine is racing the request that already returned, so the observation is
+// polled rather than assumed to have landed.
+// The preferred route is routed but silent -- a Mac mid-install, a sleeping
+// machine on a LAN that still answers ARP. A lower route answers almost at
+// once, and the caller must not be held for the whole peer budget waiting for
+// silence to end.
+func TestSilentPreferredRouteYieldsToALiveOneQuickly(t *testing.T) {
+	var requests atomic.Int32
+	live := healthyPeer(t, "machine-mixed", &requests)
+	dialer := &peerDialer{
+		reachAt: map[string]string{"100.100.32.1:8787": live.Listener.Addr().String()},
+		stall:   map[string]time.Duration{"10.129.174.32:8787": fleetDialTimeout},
+	}
+	defer dialer.install(t)()
+
+	daemon := newTestDaemon(t)
+	savePeers(t, daemon, []fleetSavedMachine{{
+		MachineID: "machine-mixed", Name: "Mixed", Transport: "nearby",
+		Endpoint:          "http://10.129.174.32:8787",
+		LANEndpoint:       "http://10.129.174.32:8787",
+		TailnetIPEndpoint: "http://100.100.32.1:8787",
+	}})
+
+	start := time.Now()
+	response := serve(t, daemon.handler, http.MethodGet, "/api/fleet/machine-mixed/api/history", nil, "127.0.0.1:1", nil)
+	elapsed := time.Since(start)
+	if response.Code != http.StatusOK {
+		t.Fatalf("relay through the live route = %d %s", response.Code, response.Body.String())
+	}
+	// The head start plus one grace, not the peer budget.
+	if elapsed >= time.Second {
+		t.Fatalf("a silent preferred route held the caller for %v", elapsed)
+	}
+	t.Logf("silent preferred route, live second route: %v", elapsed.Round(time.Millisecond))
+
+	// The silent route was tried -- this is not a test that skipped it -- and it
+	// never connected, so nothing was waiting on it when the answer came back.
+	silent := dialer.dialsFor("10.129.174.32:8787")
+	if len(silent) == 0 {
+		t.Fatal("the preferred route was never dialled")
+	}
+	for _, attempt := range silent {
+		if attempt.outcome == "connected" {
+			t.Fatalf("the silent route connected after all: %+v", attempt)
+		}
+	}
+	// The answer came from the route that actually reached the machine.
+	if requests.Load() == 0 {
+		t.Fatal("the live route was not the one that served the request")
+	}
+}
+
+// Preference is still preference: a route that is merely slower than the one
+// behind it still wins, because the grace is long enough for it to answer.
+func TestSlowerPreferredRouteStillWins(t *testing.T) {
+	var preferredRequests, secondRequests atomic.Int32
+	preferred := healthyPeer(t, "machine-both", &preferredRequests)
+	second := healthyPeer(t, "machine-both", &secondRequests)
+	dialer := &peerDialer{
+		reachAt: map[string]string{
+			"10.129.174.32:8787": preferred.Listener.Addr().String(),
+			"100.100.32.1:8787":  second.Listener.Addr().String(),
+		},
+		// The preferred route answers late enough that the second one is already
+		// in, and early enough to be inside the grace.
+		delay: map[string]time.Duration{"10.129.174.32:8787": 200 * time.Millisecond},
+	}
+	defer dialer.install(t)()
+
+	daemon := newTestDaemon(t)
+	savePeers(t, daemon, []fleetSavedMachine{{
+		MachineID: "machine-both", Name: "Both", Transport: "nearby",
+		Endpoint:          "http://10.129.174.32:8787",
+		LANEndpoint:       "http://10.129.174.32:8787",
+		TailnetIPEndpoint: "http://100.100.32.1:8787",
+	}})
+
+	response := serve(t, daemon.handler, http.MethodGet, "/api/fleet/machines", nil, "127.0.0.1:1", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("fleet listing = %d %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Machines []fleetMachineView `json:"machines"`
+	}
+	decodeBody(t, response, &body)
+	if len(body.Machines) != 1 || !body.Machines[0].Reachable {
+		t.Fatalf("mixed peer = %+v", body.Machines)
+	}
+	if body.Machines[0].Transport != "lan" || body.Machines[0].Endpoint != "http://10.129.174.32:8787" {
+		t.Fatalf("the slower preferred route lost to the one behind it: %+v", body.Machines[0])
+	}
+}
+
+// Every route silent is still the peer budget, and the refusal names each
+// address that was tried rather than one of them.
+func TestEverySilentRouteStillSpendsTheBudgetAndNamesEachAddress(t *testing.T) {
+	dialer := &peerDialer{stall: map[string]time.Duration{
+		"10.129.174.32:8787": time.Minute,
+		"100.100.32.1:8787":  time.Minute,
+	}}
+	defer dialer.install(t)()
+
+	daemon := newTestDaemon(t)
+	savePeers(t, daemon, []fleetSavedMachine{{
+		MachineID: "machine-away", Name: "Away", Transport: "nearby",
+		Endpoint:          "http://10.129.174.32:8787",
+		LANEndpoint:       "http://10.129.174.32:8787",
+		TailnetIPEndpoint: "http://100.100.32.1:8787",
+	}})
+
+	start := time.Now()
+	response := serve(t, daemon.handler, http.MethodGet, "/api/fleet/machine-away/api/history", nil, "127.0.0.1:1", nil)
+	elapsed := time.Since(start)
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("away peer = %d %s", response.Code, response.Body.String())
+	}
+	if elapsed < fleetPeerBudget || elapsed > fleetPeerBudget+2*time.Second {
+		t.Fatalf("deciding a wholly silent peer took %v, want about the %v budget", elapsed, fleetPeerBudget)
+	}
+	body := response.Body.String()
+	for _, address := range []string{"http://10.129.174.32:8787", "http://100.100.32.1:8787"} {
+		if !strings.Contains(body, address) {
+			t.Fatalf("the refusal does not name %s: %s", address, body)
+		}
+	}
+	t.Logf("wholly silent peer: %v, body %s", elapsed.Round(time.Millisecond), body)
 }

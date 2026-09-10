@@ -153,11 +153,14 @@ func TestFleetFallbackFailureIsAttributedToTheEndpointItDialled(t *testing.T) {
 	if err == nil {
 		t.Fatal("selectFleetEndpoint succeeded with every candidate failing")
 	}
-	if !strings.Contains(err.Error(), "reach "+fleetTestTailnetEndpoint+":") {
-		t.Fatalf("error %q does not name the endpoint it dialled", err)
+	// Every route that was tried is named with the failure that route produced.
+	// The rule this protects is attribution: the tailnet address is not blamed
+	// for the LAN address's refusal, and neither is blamed for the other's.
+	if !strings.Contains(err.Error(), "reach "+fleetTestTailnetEndpoint+": dial tcp: no route to host") {
+		t.Fatalf("error %q does not attribute the tailnet failure to the tailnet route", err)
 	}
-	if strings.Contains(err.Error(), fleetTestLANEndpoint) {
-		t.Fatalf("error %q blamed the saved LAN primary", err)
+	if !strings.Contains(err.Error(), "reach "+fleetTestLANEndpoint+": dial tcp: connection refused") {
+		t.Fatalf("error %q does not attribute the LAN refusal to the LAN route", err)
 	}
 }
 

@@ -321,25 +321,126 @@ func (s *Server) selectFleetEndpoint(ctx context.Context, machine fleetSavedMach
 	// Deciding how to reach one peer is bounded, and the saved routes overlap
 	// rather than queue: a peer that is off cost one dial timeout per saved
 	// address in turn, so a caller waited three of them to be told nothing.
+	// awaitFleetRoute below decides which overlapping answer wins.
 	budget, cancel := context.WithTimeout(ctx, fleetPeerBudget)
 	defer cancel()
-	probes := s.probeFleetCandidates(budget, candidates, credential, machine.MachineID)
-	var lastErr error
-	for index := range candidates {
-		probe := <-probes[index]
-		if probe.err == nil {
-			s.observeFleetTransport(probe.candidate)
-			return probe.target, probe.candidate, nil
-		}
-		lastErr = fleetEndpointError(probe.candidate.Endpoint, probe.err)
-		if index == 0 && localnetwork.IsPossiblePermissionError(lastErr) {
-			s.logLANFallbackOnce(candidates[1:])
-		}
+	results := s.probeFleetCandidates(budget, candidates, credential, machine.MachineID)
+	winner, err := s.awaitFleetRoute(budget, candidates, results)
+	if err != nil {
+		return nil, fleetendpoint.Candidate{}, err
 	}
-	return nil, fleetendpoint.Candidate{}, lastErr
+	s.observeFleetTransport(winner.candidate)
+	return winner.target, winner.candidate, nil
 }
 
+// awaitFleetRoute picks which saved route this request uses.
+//
+// The saved order is a preference, not a queue. A route that answers is taken
+// unless a route preferred over it is still deciding, and a still-deciding
+// preferred route gets one more head start's worth of time to win -- no more.
+// A silent preferred route therefore costs a caller that head start rather than
+// the whole peer budget, while a preferred route that is merely a little slower
+// than its neighbour still wins. Returning cancels the budget, so nothing waits
+// on the routes that lost and their probes end; a dial already in flight may
+// still finish inside net/http and be discarded, which costs no caller anything
+// but is not the same as the socket closing at that instant.
+func (s *Server) awaitFleetRoute(
+	ctx context.Context, candidates []fleetendpoint.Candidate, results <-chan fleetProbe,
+) (fleetProbe, error) {
+	reported := make([]bool, len(candidates))
+	failures := make([]error, len(candidates))
+	best := -1
+	var winner fleetProbe
+	var grace <-chan time.Time
+	for outstanding := len(candidates); outstanding > 0 && preferredStillDeciding(reported, best); {
+		select {
+		case probe := <-results:
+			outstanding--
+			reported[probe.index] = true
+			if probe.err != nil {
+				failures[probe.index] = fleetEndpointError(probe.candidate.Endpoint, probe.err)
+				if probe.index == 0 && localnetwork.IsPossiblePermissionError(failures[0]) {
+					s.logLANFallbackOnce(candidates[1:])
+				}
+				continue
+			}
+			if best < 0 || probe.index < best {
+				best, winner = probe.index, probe
+			}
+			if grace == nil && best > 0 {
+				timer := time.NewTimer(fleetNextRouteDelay)
+				defer timer.Stop()
+				grace = timer.C
+			}
+		case <-grace:
+			return winner, nil
+		case <-ctx.Done():
+			if best >= 0 {
+				return winner, nil
+			}
+			return fleetProbe{}, fleetRoutesFailure(candidates, failures, ctx.Err())
+		}
+	}
+	if best >= 0 {
+		return winner, nil
+	}
+	return fleetProbe{}, fleetRoutesFailure(candidates, failures, nil)
+}
+
+// preferredStillDeciding reports whether any route preferred over the best
+// answer so far could still overtake it. With no answer yet, every route can.
+func preferredStillDeciding(reported []bool, best int) bool {
+	if best == 0 {
+		return false
+	}
+	limit := len(reported)
+	if best > 0 {
+		limit = best
+	}
+	for index := range limit {
+		if !reported[index] {
+			return true
+		}
+	}
+	return false
+}
+
+// fleetRoutesFailure names every route this host tried and what each one said.
+// One endpoint's failure is not the story when several were attempted, and the
+// caller cannot tell which address to look at unless it is told all of them.
+func fleetRoutesFailure(candidates []fleetendpoint.Candidate, failures []error, budgetErr error) error {
+	attempted := make([]error, 0, len(candidates))
+	for index, failure := range failures {
+		if failure != nil {
+			attempted = append(attempted, failure)
+			continue
+		}
+		if budgetErr != nil {
+			attempted = append(attempted, fleetEndpointError(candidates[index].Endpoint, budgetErr))
+		}
+	}
+	if len(attempted) == 1 {
+		return attempted[0]
+	}
+	return &fleetRoutesError{attempted: attempted}
+}
+
+// fleetRoutesError keeps every route's own failure inspectable -- errors.Is and
+// errors.As still see each one -- while reading as one sentence.
+type fleetRoutesError struct{ attempted []error }
+
+func (e *fleetRoutesError) Error() string {
+	parts := make([]string, 0, len(e.attempted))
+	for _, failure := range e.attempted {
+		parts = append(parts, failure.Error())
+	}
+	return strings.Join(parts, "; ")
+}
+
+func (e *fleetRoutesError) Unwrap() []error { return e.attempted }
+
 type fleetProbe struct {
+	index     int
 	candidate fleetendpoint.Candidate
 	target    *url.URL
 	err       error
@@ -347,21 +448,20 @@ type fleetProbe struct {
 
 // probeFleetCandidates starts every saved route, each after a short head start
 // for the routes preferred over it. A reachable LAN peer answers inside that
-// head start, so the ordinary request still makes one connection and the saved
-// order still decides the winner; a route that hangs no longer costs the next
-// route its turn. Results are read in preference order, so which route wins is
-// unchanged -- only how long the loser is allowed to hold everyone up.
+// head start, so the ordinary request still makes one connection; a route that
+// hangs no longer costs the next route its turn. Answers arrive on one channel
+// in whatever order they finish, and awaitFleetRoute applies the saved order to
+// them.
 func (s *Server) probeFleetCandidates(
 	ctx context.Context, candidates []fleetendpoint.Candidate, credential, machineID string,
-) []chan fleetProbe {
-	probes := make([]chan fleetProbe, len(candidates))
+) <-chan fleetProbe {
+	results := make(chan fleetProbe, len(candidates))
 	settled := make([]chan struct{}, len(candidates))
 	for index := range candidates {
-		probes[index] = make(chan fleetProbe, 1)
 		settled[index] = make(chan struct{})
 	}
 	for index, candidate := range candidates {
-		result, done := probes[index], settled[index]
+		result, done := results, settled[index]
 		var previous chan struct{}
 		if index > 0 {
 			previous = settled[index-1]
@@ -377,22 +477,22 @@ func (s *Server) probeFleetCandidates(
 					// is nothing left to give it a head start for.
 				case <-timer.C:
 				case <-ctx.Done():
-					result <- fleetProbe{candidate: candidate, err: ctx.Err()}
+					result <- fleetProbe{index: index, candidate: candidate, err: ctx.Err()}
 					return
 				}
 			}
 			target, parseErr := url.Parse(candidate.Endpoint)
 			if parseErr != nil {
-				result <- fleetProbe{candidate: candidate, err: parseErr}
+				result <- fleetProbe{index: index, candidate: candidate, err: parseErr}
 				return
 			}
 			result <- fleetProbe{
-				candidate: candidate, target: target,
+				index: index, candidate: candidate, target: target,
 				err: probeFleetEndpoint(ctx, target, credential, machineID),
 			}
 		}(index, candidate)
 	}
-	return probes
+	return results
 }
 
 func probeFleetEndpoint(ctx context.Context, target *url.URL, credential, machineID string) error {
