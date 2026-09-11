@@ -45,6 +45,7 @@ interface Props {
 }
 
 interface ComposerNotice {
+  kind?: 'busy';
   tone: 'info' | 'error';
   title: string;
   detail: string;
@@ -206,7 +207,7 @@ export function InputBar({
 
     if (richSession && providerWorking && provider !== 'codex') {
       setComposerNotice({
-        tone: 'info',
+        tone: 'info', kind: 'busy',
         title: 'Claude is still working',
         detail: 'Your draft is kept here and was not sent or queued. Send it when this turn finishes.'
       });
@@ -382,7 +383,7 @@ export function InputBar({
           >×</button>
         </div>
       ) : null}
-      {composerNotice ? (
+      {composerNotice && (composerNotice.kind !== 'busy' || providerWorking) ? (
         <div className={`input-composer-notice is-${composerNotice.tone}`} role={composerNotice.tone === 'error' ? 'alert' : 'status'}>
           <div>
             <strong>{composerNotice.title}</strong>

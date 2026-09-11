@@ -13,6 +13,8 @@ import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import { getActiveServer, serverDisplayName } from '../lib/servers';
 import { resolvedSessionLabel } from '../lib/tabLabels';
 import { AccountBadge } from './AccountBadge';
+import { ClaudeRuntimeControl } from './ClaudeRuntimeControl';
+import { observedSessionModel } from '../lib/sessionModelLabel';
 const SessionHistoryView = lazy(() => import('./SessionHistoryView').then((module) => ({ default: module.SessionHistoryView })));
 import { classifySession } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
@@ -619,6 +621,11 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             {lostConversation ? 'Terminal unavailable' : effectiveView === 'terminal' && supportsConversation ? 'Hide terminal' : 'Terminal'}
           </button>}
         </div>
+        {richSession && session?.tool === 'claude-code' && onResume && !lostConversation ?
+          <ClaudeRuntimeControl working={session.working} onContinue={continueInTerminal} onRestart={async () => {
+            await endSession(session.id, 'User requested a restart from saved conversation history.');
+            onResume(session, 'claude', 'rich');
+          }} /> : null}
         {lostConversation ? <span className="session-stream-status" role="status">Runner gone · conversation saved</span> : term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Live updates reconnecting…' : 'Live updates unavailable'}</span> : null}
         {supportsConversation && onFork ? (
           <ConversationForkButton
@@ -726,7 +733,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             onOpenTerminal={() => setViewMode('terminal')}
             terminalAvailable={!richSession}
             provider={session?.tool ?? 'claude-code'}
-            model={session?.model}
+            model={observedSessionModel(session?.model, term.claudeEvents)}
             effort={session?.effort}
             modelControlSupported={Boolean(richSession && (session?.runnerProtocol ?? 0) >= 2)}
             onConfigureModel={session ? (model, effort) => updateModel(session.id, model, effort) : undefined}

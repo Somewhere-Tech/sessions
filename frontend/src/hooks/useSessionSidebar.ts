@@ -205,6 +205,13 @@ interface Args {
   daemonWorking: boolean;
 }
 
+function claudeWorking(kind: string | undefined, daemonWorking: boolean, lastUserAt: number | null, stopReason: string | null): boolean {
+  // Structured turn state outranks incomplete or replayed history. Legacy
+  // PTYs still need transcript inference between output/activity samples.
+  if (kind === 'claude-structured') return daemonWorking;
+  return daemonWorking || (lastUserAt != null && (stopReason == null || !TERMINAL_STOP_REASONS.has(stopReason)));
+}
+
 export function useSessionSidebar({ session, events, daemonWorking }: Args): SessionSidebarState {
   return useMemo((): SessionSidebarState => {
     const ident = tool(session?.tool ?? 'terminal');
@@ -312,26 +319,7 @@ export function useSessionSidebar({ session, events, daemonWorking }: Args): Ses
       }
     }
 
-    // Working detection. The crucial fix vs the old "any assistant event
-    // means done" check: Claude emits an assistant event with
-    // stop_reason="tool_use" every time it calls a tool. The turn isn't
-    // actually finished until we see a terminal stop reason. Without
-    // this, the sidebar timer would freeze the second Claude called its
-    // first tool (Read/Bash/etc) — even though Claude continued for
-    // another N minutes processing those tool results.
-    let isWorkingFromJsonl: boolean;
-    if (lastUserAt == null) {
-      isWorkingFromJsonl = false; // no user message → nothing to wait on
-    } else if (latestStopReason == null) {
-      isWorkingFromJsonl = true; // user message landed, no assistant yet
-    } else if (TERMINAL_STOP_REASONS.has(latestStopReason)) {
-      isWorkingFromJsonl = false; // turn complete
-    } else {
-      isWorkingFromJsonl = true; // intermediate (e.g. tool_use)
-    }
-    // Combine with daemon flag for the brief moment between PTY output
-    // happening and the matching assistant event being written to JSONL.
-    const isWorking = isWorkingFromJsonl || daemonWorking;
+    const isWorking = claudeWorking(session.kind, daemonWorking, lastUserAt, latestStopReason);
 
     // Timer: time since current turn started (if working).
     const timer = isWorking && lastUserAt != null

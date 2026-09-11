@@ -10,10 +10,43 @@
 .text-size-s .md-content { font-size: 13px; line-height: 1.55; }
 .text-size-m .sessions-message,
 .text-size-m .sessions-message-body,
-.text-size-m .md-content { font-size: 14px; line-height: 1.6; }
+.text-size-m .md-content { font-size: 15px; line-height: 1.7; }
 .text-size-l .sessions-message,
 .text-size-l .sessions-message-body,
-.text-size-l .md-content { font-size: 15px; line-height: 1.65; }
+.text-size-l .md-content { font-size: 16px; line-height: 1.7; }
+
+/* Conversation chrome should read like an app, not terminal telemetry. */
+.status-sidebar .sidebar-metric,
+.status-sidebar .sidebar-metric-label {
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.text-size-m .remote-bubble-user { font-size: 15px; }
+.text-size-l .remote-bubble-user { font-size: 16px; }
+
+.claude-runtime-control { position: relative; }
+.claude-runtime-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: min(420px, calc(100vw - 40px));
+  padding: 18px;
+  z-index: 30;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: normal;
+}
+.claude-runtime-panel p { color: var(--fg-dim); margin: 10px 0; }
+.claude-runtime-panel > div { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 720px) {
+  .claude-runtime-panel { position: fixed; left: 20px; top: 120px; }
+}
 
 /* Reflowed view scales too. Keep its monospace text on a similar
  * scale so toggling between Sessions and Reflowed isn't jarring. */
