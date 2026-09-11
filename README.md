@@ -56,7 +56,16 @@ sessions install
 open http://localhost:8787
 ```
 
-`sessions install` registers `sessionsd` as the per-user development LaunchAgent
+On Linux and Windows `sessions install` is not available yet: start `sessionsd`
+yourself (see [installation details](docs/INSTALL.md)). Sessions still owns the
+sessions themselves everywhere — each runner is started detached from the
+daemon, so restarting or upgrading `sessionsd` never interrupts work, and the
+next daemon picks the runners up where they were. What Linux and Windows do not
+have yet is supervision across a reboot: launchd brings macOS runners back at
+login, while elsewhere a reboot leaves the conversations paused for you to
+resume. systemd user units are not used yet.
+
+On macOS, `sessions install` registers `sessionsd` as the per-user development LaunchAgent
 `tech.somewhere.sessions.dev.daemon`, starts it, and checks its health. Override the
 label explicitly with `SESSIONS_DAEMON_LABEL` when needed. Direct loopback use is
 zero-setup; LAN and remote clients normally authenticate with the token printed

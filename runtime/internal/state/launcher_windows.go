@@ -5,10 +5,7 @@ package state
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
@@ -75,7 +72,7 @@ func (l *WindowsLauncher) Launch(ctx context.Context, request proto.LaunchReques
 
 	command := exec.Command(l.config.RunnerPath)
 	command.Dir = request.Info.Cwd
-	command.Env = windowsRunnerEnvironment(request.Env)
+	command.Env = runnerEnvironment(request.Env)
 	command.Stdin = nil
 	command.Stdout = logFile
 	command.Stderr = logFile
@@ -92,22 +89,6 @@ func (l *WindowsLauncher) Launch(ctx context.Context, request proto.LaunchReques
 		return nil, fmt.Errorf("release Windows runner %s: %w", request.Info.ID, err)
 	}
 	return l.waitAndAttach(ctx, request.Info)
-}
-
-// openRunnerLog opens <RunnerStateDir>/<id>.log for append. A failure here is
-// reported rather than swallowed: the same directory is where the runner must
-// publish its metadata, so an unwritable one is a launch problem, not a
-// logging preference.
-func openRunnerLog(runnerStateDir, id string) (*os.File, error) {
-	if err := EnsureDir(runnerStateDir); err != nil {
-		return nil, fmt.Errorf("create runner state directory %s: %w", runnerStateDir, err)
-	}
-	path := filepath.Join(runnerStateDir, id+".log")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open runner log %s: %w", path, err)
-	}
-	return file, nil
 }
 
 func (l *WindowsLauncher) remember(id string, pid int) {
@@ -221,19 +202,6 @@ func (l *WindowsLauncher) Reap(id string) error {
 		return fmt.Errorf("Windows runner %s (pid %d) did not exit after terminate", id, record.pid)
 	}
 	return nil
-}
-
-func windowsRunnerEnvironment(environment map[string]string) []string {
-	result := make([]string, 0, len(environment))
-	for key, value := range environment {
-		if key != "" {
-			result = append(result, key+"="+value)
-		}
-	}
-	sort.Slice(result, func(left, right int) bool {
-		return result[left] < result[right]
-	})
-	return result
 }
 
 var _ proto.RunnerLauncher = (*WindowsLauncher)(nil)

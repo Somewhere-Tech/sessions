@@ -1,15 +1,11 @@
-//go:build !windows && !linux
+//go:build linux
 
 package liveness
 
 import (
 	"context"
 	"os"
-	"os/exec"
-	"strconv"
-	"strings"
 	"syscall"
-	"time"
 )
 
 // ProcessAlive reports whether a PID still names a running process. Signal 0
@@ -29,15 +25,6 @@ func ProcessAlive(pid int) bool {
 // ProcessCommand returns the command line recorded for a PID so CommandMatches
 // can tell a live runner from an unrelated process that reused its PID. An
 // empty result means "unknown", which callers treat as still-live.
-func ProcessCommand(ctx context.Context, pid int) string {
-	if pid <= 0 {
-		return ""
-	}
-	commandCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	output, err := exec.CommandContext(commandCtx, "ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(output))
+func ProcessCommand(_ context.Context, pid int) string {
+	return procCommand("/proc", pid)
 }

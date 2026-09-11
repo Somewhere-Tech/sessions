@@ -71,6 +71,10 @@ func (m *Manager) SweepStaleRunnerArtifacts(ctx context.Context) []SweptArtifact
 			state.RunnerPlistPath(m.config.LaunchAgentsDir, id),
 			state.LegacyRunnerPlistPath(m.config.LaunchAgentsDir, id),
 			state.For(m.config.RunnerStateDir, id).Socket,
+			// The launch record is what the plist is on a machine without
+			// launchd: a description of how to start this runner, which a
+			// session that has ended durably no longer needs.
+			state.For(m.config.RunnerStateDir, id).Launch,
 		} {
 			err := os.Remove(path)
 			switch {

@@ -173,7 +173,36 @@ SESSIONS_HOST=127.0.0.1 SESSIONS_PORT=8787 sessionsd
 ```
 
 Then open `http://localhost:8787` and run `sessions token` in another terminal.
-Linux systemd unit installation is not shipped yet.
+Linux systemd unit installation is not shipped yet: nothing Sessions installs
+supervises the daemon itself on Linux, so how `sessionsd` is started and
+restarted is yours to decide.
+
+#### What supervises a session on Linux and Windows
+
+Your sessions are not the daemon. On macOS each runner is a launchd job; on
+Linux and Windows Sessions starts the runner as a detached process of its own —
+its own session and process group on Linux, its own process group and Job
+Object on Windows — with its output in
+`~/.local/state/sessions/runners/<id>.log`.
+
+What that gives you:
+
+- **A session survives the daemon.** Stopping, restarting, upgrading, or
+  killing `sessionsd` leaves every runner working. The next daemon re-adopts
+  them through the same runner sockets and reports everything they produced in
+  the meantime.
+- **A session does not survive a reboot.** launchd brings a macOS runner back at
+  login, where Sessions' own policy decides which sessions resume and which stay
+  paused. Linux and Windows have no such supervisor yet, so after a reboot the
+  runners are gone and their conversations are waiting to be resumed
+  (`sessions resume <id>`, or open the session and send a message). Nothing is
+  lost; nothing restarts on its own.
+- **A crashed runner is not restarted.** launchd restarts one within the same
+  boot. On Linux and Windows the session ends and stays readable.
+
+`SESSIONS_LAUNCHER=detached` selects this launcher on macOS too. That is for a
+container with no `launchctl` and for the tests that exercise this path; a
+normal macOS install should leave it unset and keep launchd.
 
 ## Listener and state
 

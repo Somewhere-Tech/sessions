@@ -26,9 +26,13 @@ type Paths struct {
 	Manifest       string
 	KeepAlive      string
 	RestorePending string
-	Structured     string
-	ClaudeP        string
-	Continuation   string
+	// Launch is what the detached launcher must remember to be able to start
+	// the same runner again: launchd keeps it in the plist, and a platform
+	// without launchd has nowhere else to keep it.
+	Launch       string
+	Structured   string
+	ClaudeP      string
+	Continuation string
 	// Transcript is Sessions' own append-only copy of the provider
 	// conversation, and TranscriptMeta records where it came from. The
 	// provider owns the original and prunes it on its own schedule; these are
@@ -49,6 +53,7 @@ func For(dir, id string) Paths {
 		Manifest:       base + ".manifest.json",
 		KeepAlive:      base + ".keepalive.json",
 		RestorePending: base + ".restore-pending.json",
+		Launch:         base + ".launch.json",
 		Structured:     base + ".codexapp.jsonl",
 		ClaudeP:        base + ".claudep.jsonl",
 		Continuation:   base + ".continuation.json",
@@ -66,6 +71,7 @@ var runnerSidecarJSONSuffixes = []string{
 	".manifest.json",
 	".keepalive.json",
 	".restore-pending.json",
+	".launch.json",
 	".continuation.json",
 	".transcript.meta.json",
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -57,7 +58,20 @@ func (l *LaunchdLauncher) Prepare(request proto.LaunchRequest) error {
 	return err
 }
 
+// Preflight refuses before anything durable is written, and names what is
+// missing. The first check is the one this file used to answer with a bare
+// `exec: "launchctl": executable file not found in $PATH` from inside Launch:
+// a machine without launchd — a container, or any platform that is not macOS —
+// cannot use this launcher at all, and saying so is the difference between a
+// fixable message and a mystery.
 func (l *LaunchdLauncher) Preflight(request proto.LaunchRequest) error {
+	if _, err := exec.LookPath("launchctl"); err != nil {
+		return fmt.Errorf(
+			"the launchd Sessions launcher cannot start a session on %s: launchctl is not on this machine. "+
+				"Sessions supervises runners with launchd on macOS only; set %s=detached to start runners as independent processes instead: %w",
+			runtime.GOOS, LauncherEnvVar, err,
+		)
+	}
 	if _, ok := runnerCommandPath(request.Info.Cmd, request.Info.Cwd, request.Env["PATH"]); !ok {
 		return fmt.Errorf(
 			"session command %q is not executable in the Sessions runner PATH; install it under ~/.local/bin, Homebrew, /usr/local/bin, or choose another agent",
@@ -121,16 +135,26 @@ func (l *LaunchdLauncher) Attach(ctx context.Context, info proto.RunnerInfo) (pr
 }
 
 func (l *LaunchdLauncher) waitAndAttach(ctx context.Context, info proto.RunnerInfo) (proto.Runner, error) {
+	return waitForRunner(ctx, func() (proto.Runner, error) { return l.Attach(ctx, info) }, info.SocketPath)
+}
+
+// waitForRunner dials until the runner has published its socket. Every
+// launcher needs it, because starting a runner and reaching one are separate
+// events on every platform: the supervisor or the process starts, and some
+// milliseconds later the socket exists.
+func waitForRunner(
+	ctx context.Context, dial func() (proto.Runner, error), socketPath string,
+) (proto.Runner, error) {
 	deadline := time.Now().Add(60 * time.Second)
 	var lastErr error
 	for {
-		runner, err := l.Attach(ctx, info)
+		runner, err := dial()
 		if err == nil {
 			return runner, nil
 		}
 		lastErr = err
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("runner did not create socket within 60s: %s: %w", info.SocketPath, lastErr)
+			return nil, fmt.Errorf("runner did not create socket within 60s: %s: %w", socketPath, lastErr)
 		}
 		select {
 		case <-ctx.Done():
