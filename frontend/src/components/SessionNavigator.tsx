@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import type { SessionInfo } from '../types';
 import { resolvedSessionLabel } from '../lib/tabLabels';
 import { readWindowScope, sessionMatchesWindowScope } from '../lib/windowScope';
-import { ProviderMark, normalizeProvider } from './ProviderBadge';
+import { ProviderMark, normalizeProvider, type Provider } from './ProviderBadge';
 import { SessionLastMessage } from './SessionLastMessage';
 import { lastMessage } from '../lib/lastMessage';
 import {
@@ -25,10 +25,10 @@ import {
 } from '../lib/workingSet';
 import { useSessions } from '../store/sessions';
 import { MachineMark } from './MachineMark';
-import { serverDisplayName, useServers } from '../lib/servers';
+import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { useFleetSessions, type FleetSessionSnapshot } from '../hooks/useFleetSessions';
 import { useProjects } from '../hooks/useProjects';
-import { buildInboxLayout, buildProviderFaultNotices, type ProviderFaultNotice } from '../lib/inboxSections';
+import { buildInboxLayout, buildProviderFaultNotices, type ProviderFaultNotice, type SessionGrouping } from '../lib/inboxSections';
 import { InboxSections, ProviderFaultBanners } from './InboxSections';
 import { useFleetProjects } from '../hooks/useFleetProjects';
 import { groupCollaborators, isSavedCollaborator } from '../lib/projectCollaborators';
@@ -43,6 +43,7 @@ type DateFilter = 'all' | 'today' | 'week';
 const RECENTLY_ENDED_DAYS = 7;
 const RECENTLY_ENDED_LIMIT = 20;
 const MACHINE_SCOPE_KEY = 'sessions:projects-machine-scope';
+const GROUPING_KEY = 'sessions:navigator-grouping';
 const ALL_MACHINES_SCOPE = 'all-machines';
 
 type MachineScope = typeof ALL_MACHINES_SCOPE | string;
@@ -117,6 +118,21 @@ function writeMachineScope(scope: MachineScope): void {
   try { window.localStorage.setItem(MACHINE_SCOPE_KEY, scope); } catch { /* preference only */ }
 }
 
+// How this person likes to look at their sessions, remembered on this device.
+// It is a preference, not a fact about the sessions: storage that refuses to
+// answer costs the person the default arrangement and nothing else.
+function readGrouping(): SessionGrouping {
+  try {
+    return window.localStorage.getItem(GROUPING_KEY) === 'recent' ? 'recent' : 'project';
+  } catch {
+    return 'project';
+  }
+}
+
+function writeGrouping(grouping: SessionGrouping): void {
+  try { window.localStorage.setItem(GROUPING_KEY, grouping); } catch { /* preference only */ }
+}
+
 // Rows in the inbox take arrow keys and j/k like a list: focus moves row to
 // row, Enter opens, and Home/End jump. Typing in the filter is left alone.
 export function focusTreeRow(tree: HTMLElement, from: Element | null, step: number | 'first' | 'last'): boolean {
@@ -185,6 +201,7 @@ export function SessionNavigator({
   const activeMachineId = useServers((state) => state.activeId);
   const selectMachine = useServers((state) => state.setActive);
   const [machineScope, setMachineScopeState] = useState<MachineScope>(readMachineScope);
+  const [grouping, setGroupingState] = useState<SessionGrouping>(readGrouping);
   const showingAllMachines = machineScope === ALL_MACHINES_SCOPE;
   const remoteMachines = useMemo(() => configuredMachines.filter((server) => server.id !== activeMachineId), [configuredMachines, activeMachineId]);
   const remoteSnapshots = useFleetSessions(remoteMachines, showingAllMachines);
@@ -236,6 +253,10 @@ export function SessionNavigator({
       return true;
     });
   }, [sessions]);
+  const selectGrouping = (next: SessionGrouping): void => {
+    setGroupingState(next);
+    writeGrouping(next);
+  };
   const selectMachineScope = (scope: MachineScope): void => {
     setMachineScopeState(scope);
     writeMachineScope(scope);
@@ -406,9 +427,16 @@ export function SessionNavigator({
     ended: navigatorSessions.filter((session) => session.exited && matches(session)),
     attention: sessions.filter((session) => !session.exited && matches(session)),
     lastActivity,
-    projectFor: (session) => projectLookup.bySession.get(session.id) ?? null
+    projectFor: (session) => projectLookup.bySession.get(session.id) ?? null,
+    grouping
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [filteredLiveSessions, navigatorSessions, sessions, projectLookup.bySession, primary, provider, project, date, query]);
+  }), [filteredLiveSessions, navigatorSessions, sessions, projectLookup.bySession, grouping, primary, provider, project, date, query]);
+  // In the flat list nothing else says which work a row belongs to, so the row
+  // does. The daemon's project name where there is one, the folder otherwise.
+  const projectLabelOf = (session: SessionInfo): string => {
+    const ref = projectLookup.bySession.get(session.id);
+    return ref && !ref.implicit ? ref.name : projectName(session);
+  };
   const filteredPinnedSessions = pinnedSessions.filter(matches);
   const filteredEnded = navigatorSessions
     .filter((session) => session.exited)
@@ -539,7 +567,8 @@ export function SessionNavigator({
 
   const renderNode = (
     session: SessionInfo,
-    endedFlat = false
+    endedFlat = false,
+    projectLabel?: string
   ): JSX.Element | null => {
     if (!matches(session)) return null;
     const providerName = normalizeProvider(session.tool);
@@ -588,13 +617,12 @@ export function SessionNavigator({
             {end ? <span className={`session-nav-ended is-${end.tone}`}>{end.label}</span> : null}
             {resumedFrom ? <span className="session-nav-parent">Resumed from {resolvedSessionLabel(resumedFrom)}</span> : null}
             {endedFlat && parent ? <span className="session-nav-parent">Under {resolvedSessionLabel(parent)}</span> : null}
-            <span className="session-nav-meta">
-              {providerName
-                ? <span className="session-nav-provider" title={providerName === 'claude' ? 'Claude' : 'Codex'}><ProviderMark provider={providerName} size={20} /></span>
-                : <span className="session-nav-provider is-shell" title="Shell">⌘</span>}
-              <MachineMark machine={machine} size={17} />
-              <span>{session.exited ? endedAtLabel(session) : relativeTime(messageTimeOf(session))}</span>
-            </span>
+            <SessionRowMeta
+              provider={providerName}
+              machine={machine}
+              when={session.exited ? endedAtLabel(session) : relativeTime(messageTimeOf(session))}
+              project={projectLabel}
+            />
           </span>
           {selectingEnded && session.exited ? <span className={`session-row-check${selectedEnded.has(session.id) ? ' is-selected' : ''}`} aria-hidden>{selectedEnded.has(session.id) ? '✓' : ''}</span> : null}
           {!selectingEnded && end && canContinueSession(session) ? (
@@ -733,37 +761,19 @@ export function SessionNavigator({
   return (
     <aside className="session-navigator">
       <header className="session-navigator-head">
-        <div><span>Your workspace</span><strong>Projects</strong></div>
+        <div><span>Your workspace</span><strong>{grouping === 'recent' ? 'Most recent' : 'Projects'}</strong></div>
         <div className="session-navigator-actions">
           <button type="button" className="session-continue-action" onClick={onContinue}>Resume</button>
           <button type="button" className="session-new-action" onClick={onNew} aria-label="New session"><span aria-hidden>＋</span> Add agent</button>
         </div>
       </header>
-      <details className="session-machine-options"><summary>Computers</summary><div className="session-machine-filter" role="toolbar" aria-label="Connected computers">
-        <button
-          type="button"
-          className={showingAllMachines ? 'is-active' : undefined}
-          aria-pressed={showingAllMachines}
-          title="Show sessions from every connected computer"
-          onClick={() => selectMachineScope(ALL_MACHINES_SCOPE)}
-        >
-          <span className="session-all-machines-mark" aria-hidden><i /><i /><i /></span>
-          <span>All machines</span>
-        </button>
-        {configuredMachines.map((configured) => (
-          <button
-            type="button"
-            key={configured.id}
-            className={configured.id === machineScope ? 'is-active' : undefined}
-            aria-pressed={configured.id === machineScope}
-            title={`Show sessions on ${serverDisplayName(configured, true)}`}
-            onClick={() => selectMachineScope(configured.id)}
-          >
-            <MachineMark machine={serverDisplayName(configured, true)} size={16} />
-            <span>{serverDisplayName(configured, true)}</span>
-          </button>
-        ))}
-      </div></details>
+      <GroupingControl grouping={grouping} onChange={selectGrouping} />
+      <MachineScopeFilter
+        machines={configuredMachines}
+        scope={machineScope}
+        showingAll={showingAllMachines}
+        onSelect={selectMachineScope}
+      />
       <div className="session-nav-search"><span aria-hidden>⌕</span><input
         value={query}
         onChange={(event) => setQuery(event.currentTarget.value)}
@@ -882,6 +892,7 @@ export function SessionNavigator({
             relativeTime={relativeTime}
             lastActivity={lastActivity}
             providerNotices={providerFaultNotices} onOpenProviderFault={openProviderFault}
+            projectLabelOf={projectLabelOf}
           />
         ) : null}
         {!showingAllMachines && primary !== 'ended' && filteredLiveSessions.length === 0 && inboxLayout.sections.length === 0 && !inboxLayout.other
@@ -943,6 +954,88 @@ export function SessionNavigator({
         </div>
       ) : null}
     </aside>
+  );
+}
+
+// One control, two arrangements. Grouping by project is how the navigator has
+// always been read; "Most recent" is for the person who knows which
+// conversation they want and not which project it lives in.
+function GroupingControl({ grouping, onChange }: {
+  grouping: SessionGrouping;
+  onChange: (next: SessionGrouping) => void;
+}): JSX.Element {
+  return (
+    <div className="session-grouping-control" role="group" aria-label="Group sessions">
+      <button
+        type="button"
+        className={grouping === 'project' ? 'is-active' : undefined}
+        aria-pressed={grouping === 'project'}
+        title="Group sessions by the project they belong to"
+        onClick={() => onChange('project')}
+      >By project</button>
+      <button
+        type="button"
+        className={grouping === 'recent' ? 'is-active' : undefined}
+        aria-pressed={grouping === 'recent'}
+        title="One list, newest first, with each row's project on the row"
+        onClick={() => onChange('recent')}
+      >Most recent</button>
+    </div>
+  );
+}
+
+function MachineScopeFilter({ machines, scope, showingAll, onSelect }: {
+  machines: ServerConfig[];
+  scope: MachineScope;
+  showingAll: boolean;
+  onSelect: (scope: MachineScope) => void;
+}): JSX.Element {
+  return (
+    <details className="session-machine-options"><summary>Computers</summary><div className="session-machine-filter" role="toolbar" aria-label="Connected computers">
+      <button
+        type="button"
+        className={showingAll ? 'is-active' : undefined}
+        aria-pressed={showingAll}
+        title="Show sessions from every connected computer"
+        onClick={() => onSelect(ALL_MACHINES_SCOPE)}
+      >
+        <span className="session-all-machines-mark" aria-hidden><i /><i /><i /></span>
+        <span>All machines</span>
+      </button>
+      {machines.map((configured) => (
+        <button
+          type="button"
+          key={configured.id}
+          className={configured.id === scope ? 'is-active' : undefined}
+          aria-pressed={configured.id === scope}
+          title={`Show sessions on ${serverDisplayName(configured, true)}`}
+          onClick={() => onSelect(configured.id)}
+        >
+          <MachineMark machine={serverDisplayName(configured, true)} size={16} />
+          <span>{serverDisplayName(configured, true)}</span>
+        </button>
+      ))}
+    </div></details>
+  );
+}
+
+// The row's quiet line: who runs it, where, when it last said something — and,
+// in the flat list, which project it belongs to.
+function SessionRowMeta({ provider, machine, when, project }: {
+  provider: Provider | null;
+  machine: string;
+  when: string;
+  project?: string;
+}): JSX.Element {
+  return (
+    <span className="session-nav-meta">
+      {provider
+        ? <span className="session-nav-provider" title={provider === 'claude' ? 'Claude' : 'Codex'}><ProviderMark provider={provider} size={20} /></span>
+        : <span className="session-nav-provider is-shell" title="Shell">⌘</span>}
+      <MachineMark machine={machine} size={17} />
+      <span>{when}</span>
+      {project ? <span className="session-nav-project" title={`Project: ${project}`}>{project}</span> : null}
+    </span>
   );
 }
 

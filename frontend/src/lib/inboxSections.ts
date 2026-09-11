@@ -29,6 +29,14 @@ export interface InboxSection {
   updatedAt: number;
 }
 
+/**
+ * How the person asked to see their sessions. "By project" is the grouping the
+ * inbox has always used; "Most recent" is one flat list, newest first, with
+ * each row saying which project it belongs to. It changes the arrangement and
+ * nothing else: the same sessions match, in the same states.
+ */
+export type SessionGrouping = 'project' | 'recent';
+
 export interface InboxLayout {
   // Provider failures are operational trouble, not questions. Keep them in
   // their own strip above the sessions that genuinely need a decision.
@@ -41,11 +49,16 @@ export interface InboxLayout {
   sections: InboxSection[];
   // Sessions that resolved to no named project fold into this one section.
   other: InboxSection | null;
+  // Every row in one list, newest first, when the grouping is 'recent'. The
+  // project sections are empty in that case, and this section still folds the
+  // not-connected and finished rows: the order changed, not what a row is.
+  flat: InboxSection | null;
 }
 
 export const NEEDS_YOU_STRIP_LIMIT = 3;
 export const FINISHED_PER_PROJECT_LIMIT = 5;
 export const OTHER_PROJECTS_ID = 'other-projects';
+export const MOST_RECENT_ID = 'most-recent';
 export const PROVIDER_FAULT_WINDOW_MS = 10 * 60_000;
 
 export interface ProviderFaultCandidate {
@@ -111,11 +124,20 @@ export function buildInboxLayout(options: {
   attention?: SessionInfo[];
   lastActivity: (session: SessionInfo) => number;
   projectFor: (session: SessionInfo) => ProjectRef | null;
+  grouping?: SessionGrouping;
 }): InboxLayout {
   const { live, ended, lastActivity, projectFor } = options;
   const attention = options.attention ?? live;
   const waiting = attention.filter(sessionNeedsYou).sort((a, b) => lastActivity(b) - lastActivity(a));
   const providerTrouble = attention.filter(sessionHasProviderFault).sort((a, b) => lastActivity(b) - lastActivity(a));
+  const strip = {
+    providerTrouble,
+    needsYou: waiting.slice(0, NEEDS_YOU_STRIP_LIMIT),
+    moreNeedsYou: Math.max(0, waiting.length - NEEDS_YOU_STRIP_LIMIT)
+  };
+  if (options.grouping === 'recent') {
+    return { ...strip, sections: [], other: null, flat: flatSection(live, ended, lastActivity) };
+  }
 
   const sections = new Map<string, InboxSection>();
   const pinnedProjects = new Set<string>();
@@ -158,11 +180,28 @@ export function buildInboxLayout(options: {
       return pinned || b.updatedAt - a.updatedAt;
     });
 
+  return { ...strip, sections: named, other, flat: null };
+}
+
+// One list, newest first. The person asked to stop sorting by project, so the
+// only ordering left is when each session was last active — and a session that
+// cannot be reached is still folded away from the ones they can type into.
+function flatSection(
+  live: SessionInfo[],
+  ended: SessionInfo[],
+  lastActivity: (session: SessionInfo) => number
+): InboxSection {
+  const newestFirst = (a: SessionInfo, b: SessionInfo): number => lastActivity(b) - lastActivity(a);
+  const ordered = [...live].sort(newestFirst);
+  const finished = [...ended].sort(newestFirst);
   return {
-    providerTrouble,
-    needsYou: waiting.slice(0, NEEDS_YOU_STRIP_LIMIT),
-    moreNeedsYou: Math.max(0, waiting.length - NEEDS_YOU_STRIP_LIMIT),
-    sections: named,
-    other
+    id: MOST_RECENT_ID,
+    name: 'Most recent',
+    implicit: false,
+    live: ordered.filter((session) => !isNotConnected(session)),
+    notConnected: ordered.filter(isNotConnected),
+    finished: finished.slice(0, FINISHED_PER_PROJECT_LIMIT),
+    needsYou: ordered.filter(sessionNeedsYou).length,
+    updatedAt: [...ordered, ...finished].reduce((newest, session) => Math.max(newest, lastActivity(session)), 0)
   };
 }

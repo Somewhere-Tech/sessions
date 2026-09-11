@@ -10,7 +10,7 @@ import { lastMessage } from '../lib/lastMessage';
 
 interface Props {
   layout: InboxLayout;
-  renderNode: (session: SessionInfo, endedFlat?: boolean) => JSX.Element | null;
+  renderNode: (session: SessionInfo, endedFlat?: boolean, projectLabel?: string) => JSX.Element | null;
   onOpen: (id: string) => void;
   onShowAllNeedsYou: () => void;
   folderOf: (session: SessionInfo) => string;
@@ -18,13 +18,15 @@ interface Props {
   lastActivity: (session: SessionInfo) => number;
   providerNotices?: ProviderFaultNotice[];
   onOpenProviderFault?: (notice: ProviderFaultNotice) => void;
+  /** In the flat list a row says which project it belongs to, since no header does. */
+  projectLabelOf?: (session: SessionInfo) => string;
 }
 
 // The inbox body: a needs-you strip, then one section per named project,
 // then everything unnamed under Other projects. Rows come from the
 // navigator's own renderer so pins, drag, menus, and child folding behave the
 // same everywhere; this component only decides where each row sits.
-export function InboxSections({ layout, renderNode, onOpen, onShowAllNeedsYou, folderOf, relativeTime, lastActivity, providerNotices = [], onOpenProviderFault }: Props) {
+export function InboxSections({ layout, renderNode, onOpen, onShowAllNeedsYou, folderOf, relativeTime, lastActivity, providerNotices = [], onOpenProviderFault, projectLabelOf }: Props) {
   const sections = layout.other ? [...layout.sections, layout.other] : layout.sections;
   return (
     <>
@@ -67,9 +69,11 @@ export function InboxSections({ layout, renderNode, onOpen, onShowAllNeedsYou, f
           ) : null}
         </div>
       ) : null}
-      {sections.map((section) => (
-        <ProjectSection key={section.id} section={section} renderNode={renderNode} />
-      ))}
+      {layout.flat
+        ? <RecentList section={layout.flat} renderNode={renderNode} projectLabelOf={projectLabelOf} />
+        : sections.map((section) => (
+          <ProjectSection key={section.id} section={section} renderNode={renderNode} />
+        ))}
     </>
   );
 }
@@ -110,10 +114,62 @@ function AttentionRow({ session, why, onOpen, folderOf, relativeTime, lastActivi
   );
 }
 
+// A collapsed group of rows with one line saying what is inside it. Both
+// arrangements fold the same two things, so they fold them the same way.
+function Fold({ label, count, detail, children }: {
+  label: string;
+  count: number;
+  detail: string;
+  children: () => Array<JSX.Element | null>;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" className="inbox-fold" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
+        <span>{open ? '▾' : '▸'} {label} · {count}</span>
+        <small>{detail}</small>
+      </button>
+      {open ? children() : null}
+    </>
+  );
+}
+
+// The flat arrangement: one list, newest first, no project headers. Each row
+// carries its project as a label, so "which work is this?" is still answerable
+// without the grouping that used to answer it.
+function RecentList({ section, renderNode, projectLabelOf }: {
+  section: InboxSection;
+  renderNode: Props['renderNode'];
+  projectLabelOf?: Props['projectLabelOf'];
+}) {
+  const row = (session: SessionInfo, ended = false): JSX.Element | null =>
+    renderNode(session, ended, projectLabelOf?.(session));
+  return (
+    <div className="session-tree-group inbox-recent" role="group" aria-label="Sessions, most recent first">
+      {section.live.map((session) => row(session))}
+      {section.live.length === 0 && section.notConnected.length === 0
+        ? <div className="session-tree-empty is-compact">Nothing live here.</div>
+        : null}
+      {section.notConnected.length > 0 ? (
+        <Fold label="Not connected" count={section.notConnected.length} detail={notConnectedReason(section.notConnected[0]!)}>
+          {() => section.notConnected.map((session) => row(session))}
+        </Fold>
+      ) : null}
+      {section.finished.length > 0 ? (
+        <Fold
+          label="Finished"
+          count={section.finished.length}
+          detail={`${resolvedSessionLabel(section.finished[0]!)}${section.finished.length > 1 ? ` · +${section.finished.length - 1}` : ''}`}
+        >
+          {() => section.finished.map((session) => row(session, true))}
+        </Fold>
+      ) : null}
+    </div>
+  );
+}
+
 function ProjectSection({ section, renderNode }: { section: InboxSection; renderNode: Props['renderNode'] }) {
   const [open, setOpen] = useState(true);
-  const [finishedOpen, setFinishedOpen] = useState(false);
-  const [notConnectedOpen, setNotConnectedOpen] = useState(false);
   const count = section.live.length + section.notConnected.length;
   return (
     <div className={`session-tree-group inbox-project${section.implicit ? ' is-implicit' : ''}`}>
@@ -132,22 +188,18 @@ function ProjectSection({ section, renderNode }: { section: InboxSection; render
           {section.live.map((session) => renderNode(session))}
           {section.live.length === 0 && section.notConnected.length === 0 ? <div className="session-tree-empty is-compact">Nothing live here.</div> : null}
           {section.notConnected.length > 0 ? (
-            <>
-              <button type="button" className="inbox-fold" onClick={() => setNotConnectedOpen((current) => !current)} aria-expanded={notConnectedOpen}>
-                <span>{notConnectedOpen ? '▾' : '▸'} Not connected · {section.notConnected.length}</span>
-                <small>{notConnectedReason(section.notConnected[0]!)}</small>
-              </button>
-              {notConnectedOpen ? section.notConnected.map((session) => renderNode(session)) : null}
-            </>
+            <Fold label="Not connected" count={section.notConnected.length} detail={notConnectedReason(section.notConnected[0]!)}>
+              {() => section.notConnected.map((session) => renderNode(session))}
+            </Fold>
           ) : null}
           {section.finished.length > 0 ? (
-            <>
-              <button type="button" className="inbox-fold" onClick={() => setFinishedOpen((current) => !current)} aria-expanded={finishedOpen}>
-                <span>{finishedOpen ? '▾' : '▸'} Finished · {section.finished.length}</span>
-                <small>{resolvedSessionLabel(section.finished[0]!)}{section.finished.length > 1 ? ` · +${section.finished.length - 1}` : ''}</small>
-              </button>
-              {finishedOpen ? section.finished.map((session) => renderNode(session, true)) : null}
-            </>
+            <Fold
+              label="Finished"
+              count={section.finished.length}
+              detail={`${resolvedSessionLabel(section.finished[0]!)}${section.finished.length > 1 ? ` · +${section.finished.length - 1}` : ''}`}
+            >
+              {() => section.finished.map((session) => renderNode(session, true))}
+            </Fold>
           ) : null}
         </>
       ) : null}

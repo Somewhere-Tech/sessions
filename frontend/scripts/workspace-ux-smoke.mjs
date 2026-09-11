@@ -54,7 +54,9 @@ assert.match(app, /onClickCapture=\{handleExternalLinkClick\}/,
 assert.match(navigator, /aria-label="Connected computers"/);
 assert.match(navigator, />All machines</,
   'the navigator must expose one aggregate fleet scope');
-assert.match(navigator, /selectMachineScope\(configured\.id\)/,
+assert.match(navigator, /onSelect=\{selectMachineScope\}/,
+  'the computer filter must still change the navigator\'s machine scope');
+assert.match(navigator, /onSelect\(configured\.id\)/,
   'connected computers must remain visible as one-click session filters');
 assert.match(await source('src/components/ProjectCollaborators.tsx'), /onOpen\(server\.id, session\.id\)/,
   'an aggregate row must retain its machine scope when opened');

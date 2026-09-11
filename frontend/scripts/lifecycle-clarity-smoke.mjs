@@ -114,7 +114,10 @@ assert.match(resumeDialog, /key=\{`\$\{selected\?\.tool/);
 assert.doesNotMatch(resumeDialog, /preferredRemoteControl|resume-remote-control/);
 assert.match(navigator, /<MachineMark machine=\{machine\} size=\{17\} \/>/);
 assert.doesNotMatch(navigator, /<span>\{machine\}<\/span>/);
-assert.match(navigator, /<ProviderMark provider=\{providerName\} size=\{20\} \/>/);
+// The row's quiet line lives in SessionRowMeta now, so the check follows it:
+// the row hands it the session's provider, and it draws the 20px mark.
+assert.match(navigator, /provider=\{providerName\}/);
+assert.match(navigator, /<ProviderMark provider=\{provider\} size=\{20\} \/>/);
 assert.match(navigator, /className="session-continue-action" onClick=\{onContinue\}>Resume<\/button>/);
 assert.match(app, /onContinue=\{\(\) => setDialogOpen\('resume'\)\}/);
 assert.match(app, /onReparent=\{updateDisplayParent\}/);

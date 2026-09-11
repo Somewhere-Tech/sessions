@@ -25,6 +25,7 @@ import type {
   ContinuationPreview,
   HistoryMessage,
   HistorySession,
+  ProjectView,
   ProviderStatus,
   SessionModelOption,
   ResumableSession,
@@ -68,6 +69,8 @@ export interface FakeMachine {
   continuationPreview?: ContinuationPreview;
   continuationJobs?: ContinuationJob[];
   team?: TeamListing;
+  /** The project groups this machine reports, as GET /api/projects answers. */
+  projects?: ProjectView[];
   projectFailure?: { status: number; message: string };
   /** How this machine answers /api/search while it is running but failing. */
   searchFailure?: { status: number; message: string };
@@ -650,6 +653,9 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     }
     if (path === '/api/projects' && machine.projectFailure) {
       return jsonResponse({ error: machine.projectFailure.message }, machine.projectFailure.status);
+    }
+    if (path === '/api/projects' && machine.projects) {
+      return jsonResponse({ projects: machine.projects });
     }
     const providerUpdateRoute = /^\/api\/providers\/(claude|codex)\/update$/.exec(path);
     if (providerUpdateRoute && method === 'POST') {

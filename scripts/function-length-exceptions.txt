@@ -75,7 +75,7 @@ go runtime/internal/search/index.go refreshIndexedSession 83
 go runtime/cmd/sessions/transcripts.go app.writeTranscriptsText 82
 go runtime/internal/api/onboarding_handlers.go Server.handleOnboardingRoute 81
 typescript frontend/src/hooks/useTerminal.ts useTerminal 851
-typescript frontend/src/components/SessionNavigator.tsx SessionNavigator 831
+typescript frontend/src/components/SessionNavigator.tsx SessionNavigator 780
 typescript frontend/src/App.tsx ConnectedApp 799
 typescript frontend/src/components/SessionView.tsx SessionViewInner 678
 typescript frontend/src/components/SearchView.tsx SearchView 578
@@ -98,7 +98,7 @@ typescript frontend/src/components/ContinueElsewhereButton.tsx ContinueElsewhere
 typescript frontend/src/components/ModelPicker.tsx ModelPicker 213
 typescript frontend/src/components/UsageDashboard.tsx UsageDashboard 209
 typescript frontend/src/components/RemoteView.tsx RemoteMessageInner 195
-typescript frontend/src/components/SessionNavigator.tsx renderNode 190
+typescript frontend/src/components/SessionNavigator.tsx renderNode 183
 typescript frontend/src/components/CommandPalette.tsx CommandPalette 184
 typescript frontend/src/components/SessionTabs.tsx SessionTabs 184
 typescript frontend/src/lib/claudeEvents.ts eventsToMessages 182
