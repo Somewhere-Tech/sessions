@@ -9,6 +9,7 @@ import { SessionDetails } from './SessionDetails';
 import { canContinueSession, continuationSession, endedAtLabel, endedSummary } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
+import { SessionArchiveButton } from './SessionArchiveButton';
 import { ContinueElsewhereButton } from './ContinueElsewhereButton';
 import { ConversationForkButton } from './ConversationForkButton';
 
@@ -183,10 +184,7 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
             <span>{session.profile || 'Default profile'}</span><span>Saved on {serverDisplayName(getActiveServer(), true)}</span><span title={session.cwd}>{session.cwd}</span>
           </div>
         </div>
-        <div className="session-active-actions">
-          <SessionPopOutButton sessionId={session.id} label={label} />
-          {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(session.id)} title="Close this tab. The saved conversation remains available."><span aria-hidden>×</span> Close tab</button> : null}
-        </div>
+        <HistoryHeaderActions session={session} label={label} onCloseView={onCloseView} />
       </header>
       <div className="session-toolbar">
         {supportsConversation ? <div className="view-toggle is-content-switch"><button type="button" className="view-toggle-btn is-active">Conversation</button></div> : <span className="history-shell-label">Shell session</span>}
@@ -328,4 +326,28 @@ function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+// The saved conversation's own controls: open it in its own window, put it
+// away, or close the tab. Archiving is here because this is where a person
+// finishes with a conversation.
+function HistoryHeaderActions({ session, label, onCloseView }: {
+  session: SessionInfo;
+  label: string;
+  onCloseView?: (id: string) => void;
+}): JSX.Element {
+  return (
+    <div className="session-active-actions">
+      <SessionPopOutButton sessionId={session.id} label={label} />
+      <SessionArchiveButton session={session} onArchived={(id) => onCloseView?.(id)} />
+      {onCloseView ? (
+        <button
+          type="button"
+          className="btn btn-ghost session-close-view"
+          onClick={() => onCloseView(session.id)}
+          title="Close this tab. The saved conversation remains available."
+        ><span aria-hidden>×</span> Close tab</button>
+      ) : null}
+    </div>
+  );
 }

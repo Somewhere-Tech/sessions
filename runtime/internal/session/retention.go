@@ -114,6 +114,27 @@ func (m *Manager) ArchiveClosed(ctx context.Context, ids []string) (RetentionRes
 	return result, nil
 }
 
+// ArchivedSessionIDs is every lane the person has archived. Archiving takes a
+// row out of the session list and leaves the conversation intact, so the
+// surfaces that still show it -- History, search -- need to know which rows
+// those are. The ledger is the only place that knows.
+func (m *Manager) ArchivedSessionIDs(ctx context.Context) ([]string, error) {
+	if m.ledgerReader == nil {
+		return nil, errors.New("retention ledger is unavailable")
+	}
+	states, err := m.ledgerStates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(states))
+	for _, lane := range states {
+		if lane.Archived {
+			ids = append(ids, lane.LaneID)
+		}
+	}
+	return ids, nil
+}
+
 func (m *Manager) GCClosed(ctx context.Context, cutoffMS int64, dryRun bool) (RetentionResult, error) {
 	result := RetentionResult{DryRun: dryRun, CutoffMS: cutoffMS, Items: []RetentionItem{}}
 	if cutoffMS <= 0 {

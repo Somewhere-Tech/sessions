@@ -69,6 +69,8 @@ export interface ConversationRow {
   readable: boolean;
   promptHistoryOnly: boolean;
   external: boolean;
+  /** The person put this away. It is still here to read, and says so. */
+  archived: boolean;
   copies?: number;
 }
 
@@ -174,7 +176,8 @@ export function buildConversationRows(sources: ConversationSource[]): Conversati
         liveLabel: live ? classifySession(live).label : undefined,
         readable: session.conversation_available === true && session.unreadable !== true,
         promptHistoryOnly: session.prompt_history_only === true || isPromptHistoryOnly(session.id),
-        external: session.external === true
+        external: session.external === true,
+        archived: session.archived === true
       });
     }
   }

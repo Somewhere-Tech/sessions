@@ -216,6 +216,11 @@ button.session-parent-breadcrumb:hover, button.session-parent-breadcrumb:focus-v
 .session-popout-view:hover { border-color: var(--accent-border-soft); color: var(--accent); }
 .session-popout-view svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.55; }
 .session-close-view { min-height: 30px; border-color: var(--border); color: var(--fg-dim); font-size: 12px; }
+/* Putting a session away is a deliberate act, so it is a visible button rather
+   than a menu item, and a refusal is shown where the button is. */
+.session-archive-action { min-height: 30px; border-color: var(--border); color: var(--fg-dim); font-size: 12px; white-space: nowrap; }
+.session-archive-action:hover { border-color: var(--accent-border-soft); color: var(--accent); }
+.session-archive-error { max-width: 240px; color: var(--warn); font-size: 12px; }
 .session-toolbar .view-toggle { order: -2; margin-left: 0; margin-right: auto; background: transparent; }
 .session-toolbar .view-toggle.is-content-switch { padding: 2px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-base); }
 .session-toolbar .view-toggle-btn { padding: 4px 11px; }

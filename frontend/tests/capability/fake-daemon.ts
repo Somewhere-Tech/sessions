@@ -69,6 +69,13 @@ export interface FakeMachine {
   continuationPreview?: ContinuationPreview;
   continuationJobs?: ContinuationJob[];
   team?: TeamListing;
+  /**
+   * Sessions this machine refuses to archive, with the daemon's own reason.
+   * ArchiveClosed answers per id and skips the ones it will not take —
+   * "runner is still live" for a record whose process is running whatever the
+   * record says — so a caller has to be able to see a refusal.
+   */
+  archiveRefusals?: Record<string, string>;
   /** The project groups this machine reports, as GET /api/projects answers. */
   projects?: ProjectView[];
   projectFailure?: { status: number; message: string };
@@ -501,10 +508,16 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       // finished child record remains visible.
       const items = ids.map((id) => {
         const record = machine.sessions.find((s) => s.id === id);
+        const refusal = machine.archiveRefusals?.[id];
+        if (refusal) return { id, name: record?.name, status: 'skipped' as const, reason: refusal };
         if (!record) return { id, status: 'skipped' as const, reason: 'record not found' };
         if (!record.exited) return { id, name: record.name, status: 'skipped' as const, reason: 'session is still running' };
         daemon.archived.push(id);
         machine.sessions = machine.sessions.filter((s) => s.id !== id);
+        // Archiving hides a row and deletes nothing, so the conversation stays
+        // in History — marked, the way the daemon marks it from its ledger.
+        const remembered = (machine.history ?? []).find((entry) => entry.id === id);
+        if (remembered) remembered.archived = true;
         return { id, name: record.name, status: 'archived' as const };
       });
       return jsonResponse({ dry_run: false, cutoff_ms: NOW, items });

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
+	sessionruntime "github.com/somewhere-tech/sessions/runtime/internal/session"
 )
 
 const (
@@ -39,18 +41,7 @@ func (s *Server) handleIntegrationsRoute(response http.ResponseWriter, request *
 
 	switch {
 	case path == "/api/history":
-		// Both history views degrade one row at a time (integrations'
-		// markUnreadable) and cannot fail wholesale: HistoryStore.list returns a
-		// nil error unconditionally, so History and SearchSessions do too. The
-		// 500 branches that used to stand here were the last trace of the old
-		// wholesale-failure behaviour and were unreachable.
-		if request.URL.Query().Get("summary") == "true" {
-			sessions, _ := s.integrationEndpoints.SearchSessions(s.registry.List(true))
-			s.sendJSON(response, http.StatusOK, historySummaryListing(sessions), corsOrigin)
-			return true
-		}
-		history, _ := s.integrationEndpoints.History(s.registry.List(true))
-		s.sendJSON(response, http.StatusOK, historyListResponse{HistoryResponse: history}, corsOrigin)
+		s.sendHistoryListing(response, request, corsOrigin)
 		return true
 	case path == "/api/errors":
 		since, err := errorsSince(request)
@@ -195,6 +186,69 @@ type historyListResponse struct {
 // two views of /api/history can never disagree about what they lost. The
 // summary view used to build its body by hand and leave `unreadable_sessions`
 // and `skipped_records` at zero on every response.
+// sendHistoryListing answers both history views. They degrade one row at a
+// time (integrations' markUnreadable) and cannot fail wholesale:
+// HistoryStore.list returns a nil error unconditionally, so History and
+// SearchSessions do too. The 500 branches that used to stand here were the
+// last trace of the old wholesale-failure behaviour and were unreachable.
+func (s *Server) sendHistoryListing(response http.ResponseWriter, request *http.Request, corsOrigin string) {
+	archived := s.archivedSessionIDs(request.Context())
+	if request.URL.Query().Get("summary") == "true" {
+		sessions, _ := s.integrationEndpoints.SearchSessions(s.registry.List(true))
+		markArchived(sessions, archived)
+		s.sendJSON(response, http.StatusOK, historySummaryListing(sessions), corsOrigin)
+		return
+	}
+	history, _ := s.integrationEndpoints.History(s.registry.List(true))
+	markArchived(history.Sessions, archived)
+	s.sendJSON(response, http.StatusOK, historyListResponse{HistoryResponse: history}, corsOrigin)
+}
+
+type archivedLanesService interface {
+	ArchivedSessionIDs(context.Context) ([]string, error)
+}
+
+// The manager is what answers this in production. Asserting it here means a
+// drifting signature is a build failure rather than a runtime that quietly
+// stops marking anything.
+var _ archivedLanesService = (*sessionruntime.Manager)(nil)
+
+// archivedSessionIDs is which sessions the person archived, or none when this
+// runtime cannot say. A failure to read is logged and answered as none: an
+// unmarked row is what every client already handles, and inventing the flag
+// either way would be a claim about somebody's history that nothing checked.
+func (s *Server) archivedSessionIDs(ctx context.Context) []string {
+	manager, ok := s.registry.(archivedLanesService)
+	if !ok {
+		return nil
+	}
+	ids, err := manager.ArchivedSessionIDs(ctx)
+	if err != nil {
+		log.Printf("[integrations] read archived sessions: %v", err)
+		return nil
+	}
+	return ids
+}
+
+// markArchived says which of these conversations the person archived. The rows
+// are in History on purpose: archiving hides a session from the list without
+// deleting anything, so History keeps offering the conversation and names its
+// state rather than presenting it as though nothing had happened.
+func markArchived(sessions []integrations.HistorySession, archived []string) {
+	if len(archived) == 0 {
+		return
+	}
+	hidden := make(map[string]struct{}, len(archived))
+	for _, id := range archived {
+		hidden[id] = struct{}{}
+	}
+	for index := range sessions {
+		if _, ok := hidden[sessions[index].ID]; ok {
+			sessions[index].Archived = true
+		}
+	}
+}
+
 func historySummaryListing(sessions []integrations.HistorySession) historyListResponse {
 	listing := historyListResponse{
 		HistoryResponse: integrations.HistoryResponse{

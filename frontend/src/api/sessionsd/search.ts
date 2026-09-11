@@ -265,6 +265,11 @@ export interface HistorySession {
   // named and addressable — losing one file must never lose the conversation.
   unreadable?: boolean;
   unreadable_reason?: string;
+  // Archived out of the session list by the person. The conversation is still
+  // here — archiving hides a row and deletes nothing — so History keeps
+  // offering it and says which it is. Absent on daemons older than the field,
+  // where every row reads unarchived, as it always did.
+  archived?: boolean;
   skipped_records?: number;
 }
 

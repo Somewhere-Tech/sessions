@@ -95,6 +95,13 @@ type HistorySession struct {
 	// session's transcript, so a degraded message count is never mistaken for
 	// an exact one.
 	SkippedRecords int `json:"skipped_records,omitempty"`
+	// Archived marks a session the person has archived out of their list.
+	// Archiving hides a row; it deletes nothing, so the conversation is still
+	// here to find and read, and the surface that offers it says which it is.
+	// The history store reads files and never the ledger, so this is filled in
+	// by the handler that can ask. Additive: a daemon too old to send it leaves
+	// every row unmarked, which is what those clients already show.
+	Archived bool `json:"archived,omitempty"`
 
 	// Surface says where the conversation was started from -- Codex Desktop,
 	// the Codex CLI, a headless `codex exec`, Claude Code, Claude Desktop, the

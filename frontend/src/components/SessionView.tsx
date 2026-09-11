@@ -14,6 +14,7 @@ import { getActiveServer, serverDisplayName } from '../lib/servers';
 import { resolvedSessionLabel } from '../lib/tabLabels';
 import { AccountBadge } from './AccountBadge';
 import { SessionLastMessage } from './SessionLastMessage';
+import { SessionArchiveButton } from './SessionArchiveButton';
 import { ClaudeRuntimeControl } from './ClaudeRuntimeControl';
 import { observedSessionModel } from '../lib/sessionModelLabel';
 const SessionHistoryView = lazy(() => import('./SessionHistoryView').then((module) => ({ default: module.SessionHistoryView })));
@@ -594,6 +595,12 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             </button>
           ) : null}
           {session ? <SessionPopOutButton sessionId={session.id} label={resolvedSessionLabel(session)} /> : null}
+          {session ? (
+            <SessionArchiveButton
+              session={session}
+              onArchived={(id) => onCloseView?.(id)}
+            />
+          ) : null}
           {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(sessionId)} title="Close this tab. The agent keeps running and remains in Live.">Close tab</button> : null}
         </div>
       </header>
