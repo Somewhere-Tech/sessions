@@ -8,7 +8,11 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 )
 
-func TestStructuredProviderFaultSetsSummaryAndClearsAfterSuccess(t *testing.T) {
+// A structured provider fault is recorded in the failure fields and cleared by
+// the next successful turn. It is not written into LastSummary: the surfaces
+// that show a session's last message would otherwise report a provider outage
+// as something the agent said.
+func TestStructuredProviderFaultIsRecordedAsAFaultAndClearsAfterSuccess(t *testing.T) {
 	session := &Session{info: SessionInfo{Tool: ToolCodex}}
 	fault := proto.Event{Kind: proto.EventCodex, CodexEvent: json.RawMessage(
 		`{"type":"system","subtype":"provider_fault","provider":"codex","kind":"provider-unavailable","detail":"Codex API unavailable (503, overloaded)","status":503,"timestamp":"2026-09-03T12:00:00Z"}`,
@@ -16,7 +20,7 @@ func TestStructuredProviderFaultSetsSummaryAndClearsAfterSuccess(t *testing.T) {
 	session.recordCodexLocked(&fault)
 	info := session.Info()
 	if info.FailureKind != "provider-unavailable" || info.FailureProvider != "codex" ||
-		info.FailureDetail != "Codex API unavailable (503, overloaded)" || info.LastSummary != info.FailureDetail || info.FailureAt == 0 {
+		info.FailureDetail != "Codex API unavailable (503, overloaded)" || info.LastSummary != "" || info.FailureAt == 0 {
 		t.Fatalf("fault projection = %#v", info)
 	}
 	classified, ok := session.ProviderFault()
@@ -59,7 +63,7 @@ func TestNativeClaudeAPIErrorProjectsProviderFault(t *testing.T) {
 	session.recordClaudeLocked(&event)
 	info := session.Info()
 	if info.FailureKind != "provider-unavailable" || info.FailureDetail != "Claude API overloaded (529)" ||
-		info.FailureProvider != "claude" || info.LastSummary != info.FailureDetail {
+		info.FailureProvider != "claude" || info.LastSummary != "" {
 		t.Fatalf("native Claude fault = %#v", info)
 	}
 }

@@ -46,6 +46,19 @@
   white-space: nowrap;
 }
 .account-badge.is-session-head { font-size: 12px; }
+
+/* The newest message in a session, wherever it is listed. A fault is coloured
+   as a fault: it is something the provider reported, not something said. */
+.session-last-message {
+  display: block;
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-last-message.is-fault { color: var(--warn, #d08a3a); }
+.session-last-message.is-you { color: var(--fg-faint); }
 .settings-cloud-page { width: min(980px, calc(100% - 48px)); }
 .settings-cloud-page .somewhere-hub { margin-top: 22px; }
 .support-draft { display: grid; gap: 7px; }

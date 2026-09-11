@@ -756,6 +756,11 @@ func (s *Session) RunnerTurnState() (bool, bool) {
 // SetIdleResult publishes the last useful outcome as additive session state.
 // LastSummary deliberately survives the next working transition so operators
 // can still see the most recently completed result while a follow-up runs.
+//
+// A failed turn is the exception. Its line describes what went wrong, and
+// adopting that as the last summary made a provider outage read as the agent's
+// own reply for the rest of the session. The failure keeps its own fields, and
+// LastSummary keeps the last thing the agent actually produced.
 func (s *Session) SetIdleResult(reason, detail, summary string, at int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -765,7 +770,7 @@ func (s *Session) SetIdleResult(reason, detail, summary string, at int64) {
 	s.info.IdleReason = reason
 	s.info.IdleDetail = detail
 	s.info.IdleSince = &at
-	if summary != "" {
+	if summary != "" && reason != IdleReasonFailed {
 		s.info.LastSummary = summary
 	}
 }

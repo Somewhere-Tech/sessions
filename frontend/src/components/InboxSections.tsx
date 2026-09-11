@@ -5,6 +5,8 @@ import { classifySession } from '../lib/sessionStatus';
 import { resolvedSessionLabel } from '../lib/tabLabels';
 import { ProviderMark, normalizeProvider } from './ProviderBadge';
 import { AccountBadge } from './AccountBadge';
+import { SessionLastMessage } from './SessionLastMessage';
+import { lastMessage } from '../lib/lastMessage';
 
 interface Props {
   layout: InboxLayout;
@@ -99,10 +101,11 @@ function AttentionRow({ session, why, onOpen, folderOf, relativeTime, lastActivi
       <span className="inbox-needs-mark">{provider ? <ProviderMark provider={provider} size={16} /> : <span aria-hidden>⌘</span>}</span>
       <span className="inbox-needs-copy">
         <strong>{resolvedSessionLabel(session)}<AccountBadge session={session} /></strong>
+        <SessionLastMessage session={session} />
         <small>{folderOf(session)}</small>
       </span>
       <span className={`inbox-needs-why${providerTrouble ? ` ${status.className}` : ''}`}>{why}</span>
-      <time>{relativeTime(lastActivity(session))}</time>
+      <time>{relativeTime(lastMessage(session).at || lastActivity(session))}</time>
     </button>
   );
 }

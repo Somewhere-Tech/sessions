@@ -7,6 +7,7 @@ import type { ApprovalDecision, SessionInfo } from '../types';
 import { normalizeProvider, ProviderMark } from './ProviderBadge';
 import { copyText } from '../lib/copyText';
 import { AccountBadge } from './AccountBadge';
+import { lastMessageLine } from '../lib/lastMessage';
 
 interface Props {
   manager: SessionInfo;
@@ -46,7 +47,7 @@ function purpose(session: SessionInfo): string {
 // lastLine is what a lane most recently said or is waiting for, in one line.
 function lastLine(session: SessionInfo): string {
   if (session.idleReason === 'needs-input' && session.idleDetail) return session.idleDetail;
-  return session.lastSummary?.trim().split('\n')[0] ?? '';
+  return lastMessageLine(session);
 }
 
 function teamLastLine(member: TeamMember): string {

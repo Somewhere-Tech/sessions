@@ -4,6 +4,8 @@ import type { SessionInfo } from '../types';
 import { resolvedSessionLabel } from '../lib/tabLabels';
 import { readWindowScope, sessionMatchesWindowScope } from '../lib/windowScope';
 import { ProviderMark, normalizeProvider } from './ProviderBadge';
+import { SessionLastMessage } from './SessionLastMessage';
+import { lastMessage } from '../lib/lastMessage';
 import {
   canContinueSession,
   classifySession,
@@ -44,6 +46,13 @@ const MACHINE_SCOPE_KEY = 'sessions:projects-machine-scope';
 const ALL_MACHINES_SCOPE = 'all-machines';
 
 type MachineScope = typeof ALL_MACHINES_SCOPE | string;
+
+// The time shown beside a row is the time of the message it shows. Falling back
+// to the session's own activity keeps a row that has no message at all — a
+// shell, a session nobody has spoken to — reading as it did.
+function messageTimeOf(session: SessionInfo): number {
+  return lastMessage(session).at || lastActivity(session);
+}
 
 function lastActivity(session: SessionInfo): number {
   return Math.max(session.lastDataAt || 0, session.exitedAt ?? 0, session.createdAt || 0);
@@ -575,6 +584,7 @@ export function SessionNavigator({
           <span className="session-nav-copy">
             <span className="session-nav-title">{label}</span>
             {sessionNeedsYou(session) && session.idleDetail ? <span className="session-nav-rollup">{session.idleDetail}</span> : null}
+            <SessionLastMessage session={session} />
             {end ? <span className={`session-nav-ended is-${end.tone}`}>{end.label}</span> : null}
             {resumedFrom ? <span className="session-nav-parent">Resumed from {resolvedSessionLabel(resumedFrom)}</span> : null}
             {endedFlat && parent ? <span className="session-nav-parent">Under {resolvedSessionLabel(parent)}</span> : null}
@@ -583,7 +593,7 @@ export function SessionNavigator({
                 ? <span className="session-nav-provider" title={providerName === 'claude' ? 'Claude' : 'Codex'}><ProviderMark provider={providerName} size={20} /></span>
                 : <span className="session-nav-provider is-shell" title="Shell">⌘</span>}
               <MachineMark machine={machine} size={17} />
-              <span>{session.exited ? endedAtLabel(session) : relativeTime(lastActivity(session))}</span>
+              <span>{session.exited ? endedAtLabel(session) : relativeTime(messageTimeOf(session))}</span>
             </span>
           </span>
           {selectingEnded && session.exited ? <span className={`session-row-check${selectedEnded.has(session.id) ? ' is-selected' : ''}`} aria-hidden>{selectedEnded.has(session.id) ? '✓' : ''}</span> : null}

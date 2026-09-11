@@ -127,8 +127,14 @@ func TestTerminalTaskCompleteDoesNotOverrideProviderFault(t *testing.T) {
 	runtime.markTerminalTurnDone()
 	runtime.setWorking(false)
 	info, _ := manager.Get(created.ID)
-	if got := info.Info(); got.IdleReason != state.IdleReasonFailed || got.FailureKind != "provider-unavailable" ||
-		got.LastSummary != "Codex API unavailable (503, overloaded)" {
+	// The fault is recorded as a fault, in its own fields. It is deliberately
+	// not adopted as the agent's last summary: every surface that shows "the
+	// last message" would then report a provider outage as the agent's reply.
+	if got := info.Info(); got.IdleReason != state.IdleReasonFailed ||
+		got.FailureKind != "provider-unavailable" ||
+		got.FailureDetail != "Codex API unavailable (503, overloaded)" ||
+		got.IdleDetail != "Codex API unavailable (503, overloaded)" ||
+		got.LastSummary != "" {
 		t.Fatalf("Codex provider fault outcome = %#v", got)
 	}
 }

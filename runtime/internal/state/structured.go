@@ -115,14 +115,16 @@ func numericStatus(value any) int {
 	}
 }
 
+// setProviderFaultLocked records what went wrong with the provider. It does not
+// touch LastSummary: a fault is not something the agent said, and writing its
+// detail there made every surface that shows "the last message" report a
+// provider outage as the agent's reply. The fault travels in its own fields,
+// which is where a caller that wants to show it reads it.
 func (s *Session) setProviderFaultLocked(provider string, fault providerfault.Fault, at int64) {
 	s.info.FailureKind = fault.Kind
 	s.info.FailureDetail = fault.Detail
 	s.info.FailureProvider = provider
 	s.info.FailureAt = at
-	if fault.Detail != "" {
-		s.info.LastSummary = fault.Detail
-	}
 }
 
 func successfulProviderTurn(value map[string]any) bool {
