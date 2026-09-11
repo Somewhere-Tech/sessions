@@ -61,7 +61,6 @@ go runtime/internal/api/files.go listDirectoryCandidates 90
 go runtime/internal/api/tailnet_access.go Server.handleTailnetAccessPublicRoute 90
 go runtime/internal/api/ws.go Server.handleSingle 90
 go runtime/cmd/sessions/doctor.go app.cmdDoctor 89
-go runtime/internal/session/classifier.go ClassifySnapshot 88
 go runtime/internal/session/delegation.go Manager.resolveDelegatedExecution 88
 go runtime/internal/state/metadata_merge.go MergeRunnerMetadata 86
 go runtime/internal/search/query.go parseSearchQuery 85
@@ -77,7 +76,7 @@ go runtime/internal/api/onboarding_handlers.go Server.handleOnboardingRoute 81
 typescript frontend/src/hooks/useTerminal.ts useTerminal 851
 typescript frontend/src/components/SessionNavigator.tsx SessionNavigator 780
 typescript frontend/src/App.tsx ConnectedApp 799
-typescript frontend/src/components/SessionView.tsx SessionViewInner 678
+typescript frontend/src/components/SessionView.tsx SessionViewInner 675
 typescript frontend/src/components/SearchView.tsx SearchView 578
 typescript frontend/src/components/NewSessionDialog.tsx NewSessionDialog 564
 typescript frontend/src/components/ResumeDialog.tsx ResumeDialog 501

@@ -80,13 +80,40 @@ let terminalNoticeShownThisLaunch = false;
 
 function providerFaultFor(session: SessionInfo | null): ProviderFaultView | undefined {
   return session?.failureKind
-    ? { kind: session.failureKind, detail: session.failureDetail, retry: session.retry }
+    ? {
+      kind: session.failureKind, detail: session.failureDetail,
+      evidence: session.failureEvidence, retry: session.retry
+    }
     : undefined;
 }
 
+// Above the terminal the fault is one line, because the terminal is the thing
+// the card would otherwise offer to open. The full card belongs to the
+// conversation view, where the person cannot see the provider's own screen.
 function TerminalProviderFault({ session, onOpenTerminal }: { session: SessionInfo; onOpenTerminal: () => void }): JSX.Element | null {
   if (!session.failureKind) return null;
-  return <div className="terminal-provider-fault"><ProviderFaultCard sessionId={session.id} failureKind={session.failureKind} detail={session.failureDetail} retry={session.retry} rich={false} onOpenTerminal={onOpenTerminal} /></div>;
+  return (
+    <div className="terminal-provider-fault">
+      <ProviderFaultCard
+        sessionId={session.id} failureKind={session.failureKind} detail={session.failureDetail}
+        evidence={session.failureEvidence} retry={session.retry} rich={false}
+        placement="banner" onOpenTerminal={onOpenTerminal}
+      />
+    </div>
+  );
+}
+
+// The keys a phone has no room for. Same input path as the terminal itself.
+function MobileTerminalKeys({ onSend }: { onSend: (data: string) => void }): JSX.Element {
+  return (
+    <div className="mobile-terminal-keys" role="toolbar" aria-label="Terminal keys">
+      <button type="button" onClick={() => onSend('\x1b')}>Esc</button>
+      <button type="button" onClick={() => onSend('\x1b\x1b')}>↶ Earlier</button>
+      <button type="button" onClick={() => onSend('\x1b[A')}>↑ Prev</button>
+      <button type="button" onClick={() => onSend('\x1b[B')}>↓ Next</button>
+      <button type="button" onClick={() => onSend('\x03')}>Ctrl-C</button>
+    </div>
+  );
 }
 
 // Report delegated work back to its manager before navigating there.
@@ -165,6 +192,10 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     && !preferFullTerminal
     && !richSession
   );
+  // The terminal pane is on screen either as the drawer under the conversation
+  // or as the whole view. Either way the person can see the provider, so the
+  // fault is a line above it rather than a card offering to open it.
+  const terminalOnScreen = terminalDrawerOpen || (effectiveView === 'terminal' && !richSession);
   const terminalWarningKey = session ? `sessions:terminal-runtime-warning:${session.tool}` : '';
   const terminalNoticeAckKey = `${TERMINAL_NOTICE_ACK_PREFIX}${sessionId}`;
   const [terminalWarningDismissed, setTerminalWarningDismissed] = useState(() => {
@@ -710,13 +741,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           {!richSession && (
             <>
               <div className="terminal-host" ref={term.containerRef} />
-              <div className="mobile-terminal-keys" role="toolbar" aria-label="Terminal keys">
-                <button type="button" onClick={() => sendInput('\x1b')}>Esc</button>
-                <button type="button" onClick={() => sendInput('\x1b\x1b')}>↶ Earlier</button>
-                <button type="button" onClick={() => sendInput('\x1b[A')}>↑ Prev</button>
-                <button type="button" onClick={() => sendInput('\x1b[B')}>↓ Next</button>
-                <button type="button" onClick={() => sendInput('\x03')}>Ctrl-C</button>
-              </div>
+              <MobileTerminalKeys onSend={sendInput} />
               <ScrollToBottomButton
                 visible={!term.terminalAtBottom}
                 onClick={scrollTerminalToBottom}
@@ -759,7 +784,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             sendRawInput={richSession ? undefined : sendInput}
             pendingApproval={session?.pendingApproval ?? null}
             onApprove={session ? (decision) => approveSession(session.id, decision) : undefined}
-            providerFault={providerFaultFor(session)}
+            providerFault={terminalOnScreen ? undefined : providerFaultFor(session)}
             lostConversation={lostConversation && session ? { providerName: session.tool === 'codex' ? 'Codex' : 'Claude', onResume: onContinueConversation ? () => onContinueConversation(session) : undefined, onClose: () => endSession(session.id, 'Closed after Sessions confirmed the runner was gone.') } : undefined}
             statusLabel={statusLabel}
           />

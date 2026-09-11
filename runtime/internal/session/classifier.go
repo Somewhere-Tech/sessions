@@ -9,7 +9,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ansi"
-	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 )
 
 type IdleOutcome string
@@ -23,6 +22,11 @@ const (
 type IdleClassification struct {
 	Outcome IdleOutcome
 	Line    string
+	// Evidence is set only when the provider itself said something went wrong,
+	// and carries the rendered line that proves it. An error line that is not
+	// provider evidence — tool output, an echoed command, the agent's own prose
+	// — leaves this zero, and no provider fault may be raised from it.
+	Evidence providerEvidence
 }
 
 var (
@@ -94,10 +98,21 @@ func ClaudeWorkingFromSnapshot(snapshot string) bool {
 // ClassifyIdleReason applies the terminal-tail completion rules.
 func ClassifyIdleReason(snapshot string) IdleOutcome { return ClassifySnapshot(snapshot).Outcome }
 
+// ClassifySnapshotFor is ClassifySnapshot for a caller that knows which
+// provider is running. The provider decides what counts as its own login UI;
+// without one, only an anchored provider error line can be evidence.
+func ClassifySnapshotFor(provider, snapshot string) IdleClassification {
+	return classifySnapshot(provider, snapshot)
+}
+
 // Claude's first-run trust dialog spans more lines than the terminal-tail
 // window. Recognize it before trailing controls so semantic input cannot
 // activate its selected "No, exit" choice.
 func ClassifySnapshot(snapshot string) IdleClassification {
+	return classifySnapshot("", snapshot)
+}
+
+func classifySnapshot(provider, snapshot string) IdleClassification {
 	lines := snapshotLines(snapshot)
 	if classified, ok := claudeFirstRunClassification(lines); ok {
 		return classified
@@ -106,8 +121,10 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 	if len(trailing) > 12 {
 		trailing = trailing[len(trailing)-12:]
 	}
-	if classified, ok := providerFaultClassification(trailing); ok {
-		return classified
+	// The provider's own words, from rows that still have their indentation:
+	// what a tool printed is not what the provider said.
+	if evidence := terminalProviderEvidence(provider, terminalRows(snapshot)); evidence.proven() {
+		return IdleClassification{Outcome: IdleError, Line: evidence.Fault.Detail, Evidence: evidence}
 	}
 	for i := len(trailing) - 1; i >= 0; i-- {
 		line := trailing[i]
@@ -123,6 +140,34 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 			return IdleClassification{Outcome: IdleBlocked, Line: displayLine(line)}
 		}
 	}
+	if classified, ok := blockedByRenderedChoice(trailing); ok {
+		return classified
+	}
+	for i := len(trailing) - 1; i >= 0; i-- {
+		line := trailing[i]
+		if !errorRE.MatchString(line) || benignErrorRE.MatchString(line) {
+			continue
+		}
+		resolved := false
+		for _, following := range trailing[i+1:] {
+			if resolutionRE.MatchString(following) {
+				resolved = true
+				break
+			}
+		}
+		if resolved {
+			return IdleClassification{Outcome: IdleDone}
+		}
+		return IdleClassification{Outcome: IdleError, Line: displayLine(line)}
+	}
+	return IdleClassification{Outcome: IdleDone}
+}
+
+// blockedByRenderedChoice recognizes a picker the person has to answer: a
+// numbered list with one entry selected, or a selected row beside other
+// choices. The prompt above the list is what the row is named after, because
+// "❯ 2. Dark mode" tells nobody what was asked.
+func blockedByRenderedChoice(trailing []string) (IdleClassification, bool) {
 	numbered := 0
 	selectedNumbered := ""
 	for _, line := range trailing {
@@ -145,7 +190,7 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 		if prompt == "" {
 			prompt = selectedNumbered
 		}
-		return IdleClassification{Outcome: IdleBlocked, Line: displayLine(prompt)}
+		return IdleClassification{Outcome: IdleBlocked, Line: displayLine(prompt)}, true
 	}
 	selected := ""
 	for _, line := range trailing {
@@ -153,31 +198,15 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 			selected = line
 		}
 	}
-	if selected != "" {
-		for _, line := range trailing {
-			if line != selected && otherChoiceRE.MatchString(line) {
-				return IdleClassification{Outcome: IdleBlocked, Line: displayLine(selected)}
-			}
+	if selected == "" {
+		return IdleClassification{}, false
+	}
+	for _, line := range trailing {
+		if line != selected && otherChoiceRE.MatchString(line) {
+			return IdleClassification{Outcome: IdleBlocked, Line: displayLine(selected)}, true
 		}
 	}
-	for i := len(trailing) - 1; i >= 0; i-- {
-		line := trailing[i]
-		if !errorRE.MatchString(line) || benignErrorRE.MatchString(line) {
-			continue
-		}
-		resolved := false
-		for _, following := range trailing[i+1:] {
-			if resolutionRE.MatchString(following) {
-				resolved = true
-				break
-			}
-		}
-		if resolved {
-			return IdleClassification{Outcome: IdleDone}
-		}
-		return IdleClassification{Outcome: IdleError, Line: displayLine(line)}
-	}
-	return IdleClassification{Outcome: IdleDone}
+	return IdleClassification{}, false
 }
 
 func claudeFirstRunClassification(lines []string) (IdleClassification, bool) {
@@ -187,33 +216,6 @@ func claudeFirstRunClassification(lines []string) (IdleClassification, bool) {
 	}
 	if claudeAppearancePromptRE.MatchString(joined) && claudeAppearanceChoiceRE.MatchString(joined) {
 		return IdleClassification{Outcome: IdleBlocked, Line: "Choose Claude's terminal appearance"}, true
-	}
-	return IdleClassification{}, false
-}
-
-func providerFaultClassification(lines []string) (IdleClassification, bool) {
-	for index := len(lines) - 1; index >= 0; index-- {
-		line := lines[index]
-		if benignErrorRE.MatchString(line) {
-			continue
-		}
-		provider, candidate := terminalProviderFaultLine(line)
-		if !candidate {
-			continue
-		}
-		fault, matched := providerfault.Detect(provider, line, 0)
-		if !matched {
-			continue
-		}
-		for _, following := range lines[index+1:] {
-			if claudeTurnFooterRE.MatchString(following) {
-				continue
-			}
-			if resolutionRE.MatchString(following) {
-				return IdleClassification{Outcome: IdleDone}, true
-			}
-		}
-		return IdleClassification{Outcome: IdleError, Line: fault.Detail}, true
 	}
 	return IdleClassification{}, false
 }

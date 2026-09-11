@@ -23,6 +23,11 @@ type Fault struct {
 	Kind   string `json:"kind"`
 	Detail string `json:"detail"`
 	Status int    `json:"status,omitempty"`
+	// Evidence is the provider's own line this fault was read from. A claim
+	// about somebody's provider that cannot be traced to something the provider
+	// rendered is a claim Sessions should not be making, so the line travels
+	// with the fault and the surfaces that show the fault show it.
+	Evidence string `json:"evidence,omitempty"`
 }
 
 var (
@@ -46,20 +51,26 @@ func Classify(provider, text string, statusCode int) Fault {
 	if detail == "" {
 		detail = "provider turn failed"
 	}
-	return Fault{Kind: KindOther, Detail: name + " turn failed: " + detail, Status: normalizedStatus(text, statusCode)}
+	return Fault{
+		Kind: KindOther, Detail: name + " turn failed: " + detail,
+		Status: normalizedStatus(text, statusCode), Evidence: detail,
+	}
 }
 
 func Detect(provider, text string, statusCode int) (Fault, bool) {
 	status := normalizedStatus(text, statusCode)
 	lower := strings.ToLower(text)
 	name := providerName(provider)
+	// The provider's own words travel with the fault: every surface that makes
+	// a claim about somebody's provider can then show what the claim rests on.
+	evidence := concise(text)
 	switch {
 	case status == 401 || status == 403 || authRE.MatchString(text):
-		return Fault{Kind: KindAuth, Detail: authDetail(name, lower, status), Status: status}, true
+		return Fault{Kind: KindAuth, Detail: authDetail(name, lower, status), Status: status, Evidence: evidence}, true
 	case status == 429 || rateRE.MatchString(text):
-		return Fault{Kind: KindRateLimited, Detail: statusDetail(name+" rate limit reached", status), Status: status}, true
+		return Fault{Kind: KindRateLimited, Detail: statusDetail(name+" rate limit reached", status), Status: status, Evidence: evidence}, true
 	case status >= 500 && status <= 599 || unavailableRE.MatchString(text):
-		return Fault{Kind: KindUnavailable, Detail: unavailableDetail(name, lower, status), Status: status}, true
+		return Fault{Kind: KindUnavailable, Detail: unavailableDetail(name, lower, status), Status: status, Evidence: evidence}, true
 	default:
 		return Fault{}, false
 	}
@@ -72,6 +83,9 @@ func HistoryEvent(provider string, fault Fault, at time.Time) (json.RawMessage, 
 	}
 	if fault.Status != 0 {
 		value["status"] = fault.Status
+	}
+	if fault.Evidence != "" {
+		value["evidence"] = fault.Evidence
 	}
 	encoded, err := json.Marshal(value)
 	return json.RawMessage(encoded), err
@@ -184,6 +198,10 @@ func providerName(provider string) string {
 		return "Provider"
 	}
 }
+
+// Canonical is the provider name every caller keys on: "claude", "codex", or
+// whatever was passed, lowercased.
+func Canonical(provider string) string { return canonicalProvider(provider) }
 
 func canonicalProvider(provider string) string {
 	if strings.Contains(strings.ToLower(provider), "claude") {

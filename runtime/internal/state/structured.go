@@ -73,6 +73,7 @@ func (s *Session) trackProviderFaultLocked(value map[string]any, at int64) {
 		fault := providerfault.Fault{}
 		fault.Kind, _ = value["kind"].(string)
 		fault.Detail, _ = value["detail"].(string)
+		fault.Evidence, _ = value["evidence"].(string)
 		provider, _ := value["provider"].(string)
 		s.setProviderFaultLocked(provider, fault, at)
 		return
@@ -124,6 +125,7 @@ func (s *Session) setProviderFaultLocked(provider string, fault providerfault.Fa
 	s.info.FailureKind = fault.Kind
 	s.info.FailureDetail = fault.Detail
 	s.info.FailureProvider = provider
+	s.info.FailureEvidence = fault.Evidence
 	s.info.FailureAt = at
 }
 
@@ -144,6 +146,7 @@ func (s *Session) clearProviderFaultLocked() {
 	s.info.FailureKind = ""
 	s.info.FailureDetail = ""
 	s.info.FailureProvider = ""
+	s.info.FailureEvidence = ""
 	s.info.FailureAt = 0
 }
 
@@ -158,6 +161,7 @@ func (s *Session) ProviderFault() (providerfault.Fault, bool) {
 	fault := providerfault.Classify(s.info.FailureProvider, s.info.FailureDetail, 0)
 	fault.Kind = s.info.FailureKind
 	fault.Detail = s.info.FailureDetail
+	fault.Evidence = s.info.FailureEvidence
 	return fault, true
 }
 

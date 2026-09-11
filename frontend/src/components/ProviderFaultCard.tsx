@@ -6,8 +6,21 @@ interface Props {
   sessionId: string;
   failureKind: ProviderFailureKind;
   detail?: string;
+  /**
+   * The provider's own line this claim rests on. Shown, not implied: a session
+   * that was logged in and working once carried "Claude is not logged in"
+   * because those words appeared in the agent's own grep output, and there was
+   * no way for the person to see where the claim had come from.
+   */
+  evidence?: string;
   retry?: ProviderRetry;
   rich: boolean;
+  /**
+   * 'card' is the full control. 'banner' is the one-line form used when the
+   * terminal is already on screen, where a card offering to open the terminal
+   * would be repeating what the person is looking at.
+   */
+  placement?: 'card' | 'banner';
   onOpenTerminal: () => void;
 }
 
@@ -15,10 +28,13 @@ function retryCountdown(nextAt: number, now: number): number {
   return Math.max(0, Math.ceil((nextAt - now) / 1000));
 }
 
-export function ProviderFaultCard({ sessionId, failureKind, detail, retry, rich, onOpenTerminal }: Props): JSX.Element {
+export function ProviderFaultCard({
+  sessionId, failureKind, detail, evidence, retry, rich, placement = 'card', onOpenTerminal
+}: Props): JSX.Element {
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState<'retry' | 'stop' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const terminalIsVisible = placement === 'banner';
 
   useEffect(() => {
     if (!retry) return;
@@ -42,17 +58,29 @@ export function ProviderFaultCard({ sessionId, failureKind, detail, retry, rich,
   };
 
   const guidance = failureKind === 'auth'
-    ? 'Open the terminal to log in'
+    ? terminalIsVisible ? 'Log in below' : 'Open the terminal to log in'
     : retry
       ? `Retrying in ${retryCountdown(retry.nextAt, now)}s (attempt ${retry.attempt} of ${retry.max})`
       : rich
         ? 'Retry'
         : 'Send your message again when the provider is back';
+  const text = detail || 'The provider did not complete this turn.';
+
+  if (terminalIsVisible) {
+    return (
+      <div className="provider-fault-banner" role="status" aria-label="Provider trouble">
+        <strong>{text}</strong>
+        <span className="provider-fault-banner-hint">{guidance}</span>
+        {evidence ? <ProviderFaultEvidence evidence={evidence} /> : null}
+      </div>
+    );
+  }
 
   return (
     <div className="provider-control-card is-provider-fault" role="group" aria-label="Provider trouble">
       <span className="provider-control-card-title">Provider trouble</span>
-      <p className="provider-control-card-text">{detail || 'The provider did not complete this turn.'}</p>
+      <p className="provider-control-card-text">{text}</p>
+      {evidence ? <ProviderFaultEvidence evidence={evidence} /> : null}
       <span className="provider-control-card-hint" aria-live="polite">{guidance}</span>
       <div className="provider-control-card-choices" role="toolbar" aria-label="Provider recovery">
         {failureKind === 'auth' ? (
@@ -70,5 +98,14 @@ export function ProviderFaultCard({ sessionId, failureKind, detail, retry, rich,
       </div>
       {error ? <span className="provider-control-card-hint is-error" role="alert">{error}</span> : null}
     </div>
+  );
+}
+
+/** What the claim rests on, in the provider's own words. */
+function ProviderFaultEvidence({ evidence }: { evidence: string }): JSX.Element {
+  return (
+    <code className="provider-fault-evidence" title={`The provider printed this: ${evidence}`}>
+      {evidence}
+    </code>
   );
 }

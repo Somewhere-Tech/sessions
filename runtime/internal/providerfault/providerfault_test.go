@@ -78,3 +78,22 @@ func TestRetryHistoryEventUsesContractShape(t *testing.T) {
 		}
 	}
 }
+
+// A fault carries the provider's own words, so the surface that claims a
+// provider is logged out can show what the claim rests on.
+func TestClassifiedFaultCarriesTheProviderLine(t *testing.T) {
+	fault := Classify("claude", "API Error: 401 {\"error\":{\"type\":\"authentication_error\"}}", 0)
+	if fault.Kind != KindAuth {
+		t.Fatalf("kind = %q", fault.Kind)
+	}
+	if !strings.Contains(fault.Evidence, "authentication_error") {
+		t.Fatalf("evidence = %q, want the provider's own text", fault.Evidence)
+	}
+	event, err := HistoryEvent("claude", fault, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(event), "authentication_error") {
+		t.Fatalf("history event dropped the evidence: %s", event)
+	}
+}

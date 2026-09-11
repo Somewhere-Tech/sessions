@@ -77,7 +77,8 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 	}
 	if !session.Info().Working && (len(attachment.Replay.Events) > 0 || len(attachment.ClaudeEvents) > 0) {
 		if supportsTurnLifecycle(session.Info()) {
-			classification, summary := inspectIdle(session)
+			classification, summary, snapshot := inspectIdle(session)
+			clearFaultWithoutEvidence(session, classification, snapshot)
 			classification, summary = applyProviderOutcome(session, classification, summary, session.Info().LastDataAt)
 			session.SetIdleResult(
 				idleReason(classification.Outcome),

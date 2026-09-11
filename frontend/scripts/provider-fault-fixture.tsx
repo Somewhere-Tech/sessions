@@ -39,6 +39,7 @@ const ptyFault = makeSession({
   cmd: 'codex',
   failureKind: 'rate-limited',
   failureDetail: 'Codex rate limit reached (429)',
+  failureEvidence: '■ ERROR: 429 rate limit reached for this workspace',
   failureProvider: 'codex',
   failureAt: now - 60_000
 });

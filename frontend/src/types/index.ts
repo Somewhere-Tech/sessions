@@ -123,6 +123,11 @@ export interface SessionInfo {
   // retry schedule.
   failureKind?: ProviderFailureKind;
   failureDetail?: string;
+  // The provider's own line this failure was read from. Sessions shows it
+  // rather than asking the person to take its word: a session that was logged
+  // in and working once showed "Claude is not logged in" because those words
+  // appeared in the agent's own grep output.
+  failureEvidence?: string;
   failureProvider?: 'claude' | 'codex';
   failureAt?: number;
   retry?: ProviderRetry;

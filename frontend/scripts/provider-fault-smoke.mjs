@@ -95,8 +95,18 @@ try {
   await t.waitForSelector(page, '#retrying-view .remote-bubble-error', 'provider_fault to render as an error bubble');
   assert.match(await page.$eval('#retrying-view .remote-bubble-error', (node) => node.textContent ?? ''), /⚠Codex API unavailable/);
   assert.equal(await page.$eval('#retrying-view .remote-provider-retry', (node) => node.textContent?.trim()), 'Retrying (2 of 5) …');
-  await t.waitForSelector(page, '#pty-view .terminal-provider-fault .provider-control-card', 'the PTY terminal fault card to render');
-  assert.match(await page.$eval('#pty-view .terminal-provider-fault', (node) => node.textContent ?? ''), /Send your message again when the provider is back/);
+  // With the terminal on screen the fault is one line above it, not a card:
+  // a card offering to open the terminal repeats what the person is looking at.
+  await t.waitForSelector(page, '#pty-view .terminal-provider-fault .provider-fault-banner', 'the PTY terminal fault banner to render');
+  const banner = await page.$eval('#pty-view .terminal-provider-fault', (node) => ({
+    text: node.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+    cards: node.querySelectorAll('.provider-control-card').length,
+    evidence: node.querySelector('.provider-fault-evidence')?.textContent?.trim() ?? ''
+  }));
+  assert.equal(banner.cards, 0, 'the full card must not render above an open terminal');
+  assert.match(banner.text, /Send your message again when the provider is back/);
+  // The claim shows what it rests on: the provider's own line.
+  assert.equal(banner.evidence, '■ ERROR: 429 rate limit reached for this workspace');
   await page.evaluate(() => window.__providerFaultFixture.clearFaults());
   await t.waitForFunction(page, () => !document.querySelector('.inbox-provider-banner') && !document.querySelector('.inbox-provider-trouble'), 'the fleet notice and provider trouble group to clear with the daemon faults');
   assert.deepEqual(pageErrors, []);

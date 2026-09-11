@@ -19,8 +19,14 @@ const assets = files.map((name) => {
 const limits = {
   // Baseline measured 2026-09-03. These two assets are what the browser must
   // fetch before it can draw the first screen, so keep their headroom strict.
+  //
+  // entryCSS was raised once, on 2026-09-11, by a measured 430 bytes: the
+  // provider-trouble banner that replaces the card when the terminal is already
+  // on screen, and the evidence line that shows the provider's own words. CSS
+  // cannot be lazily loaded out of this entry, and the alternative was styling
+  // a new affordance by reusing rules that mean something else.
   entryJavaScript: 489_814,
-  entryCSS: 279_911,
+  entryCSS: 280_341,
   // Deferred code may grow as the product gains secondary surfaces, but no
   // one interaction should have to download an oversized lazy chunk.
   totalJavaScript: 1_500_000,

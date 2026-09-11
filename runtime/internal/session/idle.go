@@ -12,7 +12,6 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/claudep"
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
-	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -76,21 +75,22 @@ func (m *Manager) writeIdleSentinel(info state.SessionInfo) {
 	}
 }
 
-func inspectIdle(session *state.Session) (IdleClassification, string) {
+func inspectIdle(session *state.Session) (IdleClassification, string, string) {
 	snapshot, _, err := session.Snapshot(context.Background(), 0)
 	if err != nil {
 		snapshot = ""
 	}
+	info := session.Info()
 	events := session.ClaudeEventLog()
-	classification, authoritative := structuredIdleClassification(session.Info().Kind, events)
+	classification, authoritative := structuredIdleClassification(info.Kind, events)
 	if !authoritative {
-		classification = ClassifySnapshot(snapshot)
+		classification = ClassifySnapshotFor(providerForSession(info), snapshot)
 	}
 	summary := FinalAssistantSummary(events)
 	if summary == "" {
 		summary = mirrorTailSummary(snapshot)
 	}
-	return classification, summary
+	return classification, summary, snapshot
 }
 
 func structuredIdleClassification(kind string, events []json.RawMessage) (IdleClassification, bool) {
@@ -254,8 +254,30 @@ func (m *Manager) handleIdle(session *state.Session, duration time.Duration) Idl
 	if info.Exited {
 		return IdleClassification{Outcome: IdleDone}
 	}
-	classification, summary := inspectIdle(session)
+	classification, summary, snapshot := inspectIdle(session)
+	clearFaultWithoutEvidence(session, classification, snapshot)
 	return m.publishIdle(session, duration, classification, summary)
+}
+
+// clearFaultWithoutEvidence retires a terminal-read fault the screen no longer
+// supports. A completed turn already clears one; this is the other way a claim
+// stops being true — the line it was read from scrolled away and no login UI
+// took its place. A fault must never outlive the evidence for it.
+//
+// Structured faults are untouched: they come from the provider's own event
+// stream, which no amount of scrolling contradicts.
+func clearFaultWithoutEvidence(session *state.Session, classification IdleClassification, snapshot string) {
+	if classification.Evidence.proven() {
+		return
+	}
+	info := session.Info()
+	if info.FailureKind == "" || info.FailureEvidence == "" {
+		return
+	}
+	if evidenceStillOnScreen(providerForSession(info), info.FailureEvidence, snapshot) {
+		return
+	}
+	session.ClearProviderFault()
 }
 
 func (m *Manager) handleCompletedTurn(session *state.Session, duration time.Duration, faultAtStart int64) IdleClassification {
@@ -278,12 +300,11 @@ func terminalProviderFault(session *state.Session, faultAtStart int64) (IdleClas
 	if err != nil {
 		return IdleClassification{}, false
 	}
-	classification := ClassifySnapshot(snapshot)
-	if classification.Outcome != IdleError {
-		return IdleClassification{}, false
-	}
-	_, matched := providerfault.Detect(providerForSession(info), classification.Line, 0)
-	return classification, matched
+	classification := ClassifySnapshotFor(providerForSession(info), snapshot)
+	// Only the provider's own words end a turn as a provider failure. An error
+	// line that came from a tool, a command echo, or the agent's prose is an
+	// ordinary failed turn, not an outage or a logged-out provider.
+	return classification, classification.Evidence.proven()
 }
 
 func (m *Manager) publishIdle(session *state.Session, duration time.Duration, classification IdleClassification, summary string) IdleClassification {
@@ -312,13 +333,15 @@ func applyProviderOutcome(session *state.Session, classification IdleClassificat
 	}
 	fault, ok := session.ProviderFault()
 	if !ok {
-		provider := providerForSession(session.Info())
-		var matched bool
-		fault, matched = providerfault.Detect(provider, classification.Line, 0)
-		if !matched {
+		// The words in the line are not the question; what rendered them is.
+		// This used to run providerfault.Detect over whatever line the generic
+		// error rule had picked, so a grep result quoting our own "not logged
+		// in" matcher became a logged-out provider.
+		if !classification.Evidence.proven() {
 			return classification, summary
 		}
-		session.SetProviderFault(provider, fault, at)
+		fault = classification.Evidence.Fault
+		session.SetProviderFault(providerForSession(session.Info()), fault, at)
 	}
 	classification.Line = fault.Detail
 	return classification, fault.Detail

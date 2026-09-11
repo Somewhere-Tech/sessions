@@ -42,6 +42,8 @@ function countProviderUserMessages(messages: DispatchMessage[]): Map<string, num
 export interface ProviderFaultView {
   kind: ProviderFailureKind;
   detail?: string;
+  /** The provider's own line the claim rests on. */
+  evidence?: string;
   retry?: ProviderRetry;
 }
 
@@ -61,7 +63,12 @@ function FaultCard({ sessionId, fault, rich, onOpenTerminal }: {
   rich: boolean;
   onOpenTerminal: () => void;
 }): JSX.Element {
-  return <ProviderFaultCard sessionId={sessionId} failureKind={fault.kind} detail={fault.detail} retry={fault.retry} rich={rich} onOpenTerminal={onOpenTerminal} />;
+  return (
+    <ProviderFaultCard
+      sessionId={sessionId} failureKind={fault.kind} detail={fault.detail}
+      evidence={fault.evidence} retry={fault.retry} rich={rich} onOpenTerminal={onOpenTerminal}
+    />
+  );
 }
 
 interface Props {
