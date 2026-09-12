@@ -2347,6 +2347,14 @@ under a total cap — and logs
 `[burst] 30.0s profile: top frames — a 41%, b 22%, c 9% (saved to …)`. At most
 one capture per ten minutes. The line carries symbol names and percentages only.
 
+`GET /api/health/deep` also carries an additive `routes` object:
+`{"window_sec":300,"busiest":[{"route":"GET /api/sessions","count":N,"ms":W,"max_ms":M,"cpu_ms":C}, …]}`
+— the busiest route shapes of the last five minutes, largest total wall time
+first. Paths are collapsed to their shape (`GET /api/sessions/:id/transcript`),
+so no id, path or title appears. `cpu_ms` is process CPU over each request's own
+window rather than that request's alone, so concurrent requests each count the
+same CPU and it is an upper bound.
+
 `GET /api/health/deep` carries an additive `background` object: pass name to
 `{"runs":N,"ms":W,"cpu_ms":C}` for every piece of work the daemon does on its
 own initiative (`discovery`, `history-warm`, `runner-sweep`, `activity`,

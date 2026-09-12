@@ -54,6 +54,8 @@ type Server struct {
 	tailnetIP            *tailnetIPListener
 	backups              *backup.Service
 	integrationEndpoints *integrations.Service
+	// routes counts what the daemon spent its time answering, per route shape.
+	routes *routeStats
 	// historyAsked counts the full history listings this process has served, so
 	// the startup warm can tell "nobody is waiting" from "somebody is waiting
 	// right now, on the work I am about to duplicate".
@@ -199,6 +201,7 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 		identity:      identity, identityError: identityErr,
 		deliveries:       delivery.New(deliveryRoot),
 		continuationJobs: newContinuationJobStore(),
+		routes:           newRouteStats(),
 		integrationEndpoints: integrations.NewService(integrations.ServiceOptions{
 			StateDir: config.StateRoot, RunnerStateDir: config.RunnerStateDir,
 			DiscoverProviderHistory: true,

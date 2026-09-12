@@ -103,6 +103,10 @@ func record(name string, wall, cpu time.Duration) {
 	totals[name] = total
 }
 
+// ProcessCPU is this process's CPU time so far, user plus system, and whether
+// this platform can say. Callers difference it around the work they measure.
+func ProcessCPU() (time.Duration, bool) { return processCPU() }
+
 // Totals is every pass this process has run, for a caller that wants to see a
 // burst while it is happening rather than after it.
 func Totals() map[string]Total {

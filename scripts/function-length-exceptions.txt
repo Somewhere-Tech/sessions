@@ -3,7 +3,7 @@
 # may shrink but may not grow; remove it once the function reaches the limit.
 go runtime/internal/api/recovery_handlers.go Server.handleRecovery 598
 go runtime/internal/api/server_routes.go Server.handleSessionRoute 432
-go runtime/internal/api/server_routes.go Server.ServeHTTP 410
+go runtime/internal/api/server_routes.go Server.ServeHTTP 380
 go runtime/internal/state/registry.go Registry.CreateWithLifecycle 265
 go runtime/cmd/sessions/commands.go app.cmdNew 240
 go runtime/internal/api/move_handlers.go Server.handleMoveRoute 201

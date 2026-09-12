@@ -24,6 +24,7 @@ import (
 )
 
 func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	defer s.routes.begin(request.Method, request.URL.Path)()
 	path := request.URL.Path
 	origin := request.Header.Get("Origin")
 	corsOrigin := ""
@@ -41,23 +42,8 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		corsOrigin = origin
 	}
 
-	// CORS controls whether a browser may read a response; it does not stop a
-	// browser from sending a state-changing request. Reject ambient-authority
-	// writes from untrusted browser origins before authentication or route
-	// dispatch. Credential-bearing remote clients remain valid, but the
-	// credential must verify: header presence alone is ambient browser input.
-	if isStateChangingMethod(request.Method) && origin != "" &&
-		!trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost(), s.tailnetIP.activeHost()) &&
-		!sameOriginPairingClaimRequest(request) {
-		verified, err := s.presentedCredential(request)
-		if err != nil {
-			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": "verify request credential: " + err.Error()}, "")
-			return
-		}
-		if !verified {
-			s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
-			return
-		}
+	if !s.ambientWriteAllowed(response, request, origin) {
+		return
 	}
 
 	if request.Method == http.MethodOptions {
@@ -151,6 +137,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			// A burst that is happening right now can be read here rather than
 			// inferred from a fan.
 			"background":      background.Report(),
+			"routes":          s.routes.report(),
 			"restore":         restore,
 			"runnerArtifacts": s.runnerArtifactHealth(),
 			"pprof":           s.pprofHealth(),
@@ -423,6 +410,31 @@ func (s *Server) runnerArtifactHealth() map[string]int {
 		retired, pending = reporter.ArtifactRetirementHealth()
 	}
 	return map[string]int{"retired": retired, "pending": pending}
+}
+
+// ambientWriteAllowed reports whether this request may change state.
+//
+// CORS controls whether a browser may read a response; it does not stop a
+// browser from sending a state-changing request. Ambient-authority writes from
+// untrusted browser origins are rejected before authentication or route
+// dispatch. Credential-bearing remote clients remain valid, but the credential
+// must verify: header presence alone is ambient browser input.
+func (s *Server) ambientWriteAllowed(response http.ResponseWriter, request *http.Request, origin string) bool {
+	if !isStateChangingMethod(request.Method) || origin == "" ||
+		trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost(), s.tailnetIP.activeHost()) ||
+		sameOriginPairingClaimRequest(request) {
+		return true
+	}
+	verified, err := s.presentedCredential(request)
+	if err != nil {
+		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": "verify request credential: " + err.Error()}, "")
+		return false
+	}
+	if !verified {
+		s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
+		return false
+	}
+	return true
 }
 
 func (s *Server) pprofHealth() map[string]any {
