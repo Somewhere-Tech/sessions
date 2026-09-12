@@ -1,4 +1,5 @@
 import type { SessionInfo } from '../types';
+import { isHarnessOnly, splitHarnessContent } from './harnessContent';
 
 // What a session's last message actually is.
 //
@@ -33,6 +34,19 @@ function firstLine(value: string | undefined): string {
 }
 
 /**
+ * The line as a person would read it, with anything the harness injected taken
+ * out. A `<task-notification>` or `<system-reminder>` arrives as a user-role
+ * record in the provider's transcript, so a summary derived from one would
+ * otherwise be shown here as something that was said.
+ */
+function spokenLine(value: string | undefined): string {
+  const text = value?.trim() ?? '';
+  if (!text) return '';
+  if (isHarnessOnly(text)) return '';
+  return firstLine(splitHarnessContent(text).personText || text);
+}
+
+/**
  * The newest message in either direction, with who said it.
  *
  * `sending` is the composer's own optimistic state: a message this client has
@@ -42,7 +56,7 @@ function firstLine(value: string | undefined): string {
 export function lastMessage(session: SessionInfo, sending?: string): LastMessage {
   if (sending?.trim()) {
     return {
-      kind: 'you', speaker: 'You', text: firstLine(sending),
+      kind: 'you', speaker: 'You', text: spokenLine(sending),
       at: Date.now(), awaitingReply: true
     };
   }
@@ -68,7 +82,7 @@ export function lastMessage(session: SessionInfo, sending?: string): LastMessage
 
   if (agentAt > 0) {
     return {
-      kind: 'agent', speaker: 'Agent', text: firstLine(session.lastSummary),
+      kind: 'agent', speaker: 'Agent', text: spokenLine(session.lastSummary),
       at: agentAt, awaitingReply: false
     };
   }
@@ -76,7 +90,7 @@ export function lastMessage(session: SessionInfo, sending?: string): LastMessage
   // Nothing has been stamped in either direction. A summary with no time behind
   // it is still the last thing the agent produced, and it is shown without
   // claiming to be newer than anything.
-  const summary = firstLine(session.lastSummary);
+  const summary = spokenLine(session.lastSummary);
   if (summary) {
     return { kind: 'agent', speaker: 'Agent', text: summary, at: session.lastDataAt ?? 0, awaitingReply: false };
   }

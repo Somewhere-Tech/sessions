@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { harnessDisplay } from '../lib/harnessContent';
 import { fetchServerHistoryTranscript } from '../api/sessionsd';
 import {
   compactMachineName,
@@ -248,7 +249,7 @@ export function ConversationReader({
                     <span>
                       {isAnchor ? <span className="search-match-marker">Match</span> : null}
                       {message.role === 'user'
-                        ? <span className="search-role is-user">{message.author ? `${message.author.name} · via Sessions` : 'You said'}</span>
+                        ? <span className="search-role is-user">{harnessDisplay(message.text, message.author ? `${message.author.name} · via Sessions` : 'You said').speaker}</span>
                         : message.role === 'tool'
                           ? <span className="search-role is-tool">{operationLabel(message.kind)}</span>
                           : provider ? <ProviderBadge provider={provider} compact /> : <span className="search-role">Agent</span>}
@@ -264,7 +265,7 @@ export function ConversationReader({
                       <time>{message.timestamp ? relativeDate(message.timestamp) : ''}</time>
                     </span>
                   </header>
-                  <p>{message.text}</p>
+                  <p>{message.role === 'user' ? harnessDisplay(message.text, 'You said').text : message.text}</p>
                 </article>
               );
             })}

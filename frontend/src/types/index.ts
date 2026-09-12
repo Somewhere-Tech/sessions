@@ -36,6 +36,12 @@ export interface MessagePlanStep {
   status: string;
 }
 
+/** One quiet line, with the block itself for whoever wants to read it. */
+export interface HarnessEventView {
+  summary: string;
+  detail: string;
+}
+
 export interface DispatchMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -63,6 +69,18 @@ export interface DispatchMessage {
   // A Sessions-authored timeline event. This is deliberately separate from
   // content so provider retry state can never be rendered as assistant prose.
   quietStatus?: string;
+  // Content the harness put in the transcript as a user-role record: a
+  // background task's result, a system reminder, a system notification. It is
+  // never the person's message, so it is carried separately from content and
+  // rendered as one quiet line. systemEvent means the whole entry was
+  // machinery; systemNote means it trailed something the person actually
+  // wrote, and folds under their words.
+  systemEvent?: HarnessEventView;
+  systemNote?: HarnessEventView;
+  // Sessions' own marker for a send the provider has not picked up yet. It
+  // belongs on the composer, where the person is waiting, not in the record of
+  // what was said.
+  pendingQueue?: boolean;
   // Number of identical provider-history turns that existed when sessionsd
   // began this submission, BEFORE network IO. A later occurrence replaces
   // the local copy even when provider history arrives before the receipt.

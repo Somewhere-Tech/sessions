@@ -225,7 +225,11 @@ func realUserMessage(event map[string]any) bool {
 		return false
 	}
 	trimmed := strings.TrimLeft(text, " \t\r\n")
-	for _, prefix := range []string{"<", "Caveat:", "This session is being continued", "[Request interrupted"} {
+	// "[SYSTEM NOTIFICATION" is the one harness shape that does not start with
+	// "<": Claude Code delivers a background task's result through a user-role
+	// record, and counting it as a person made the navigator say "You sent a
+	// message" for a notification nobody sent.
+	for _, prefix := range []string{"<", "Caveat:", "This session is being continued", "[Request interrupted", "[SYSTEM NOTIFICATION"} {
 		if strings.HasPrefix(trimmed, prefix) {
 			return false
 		}

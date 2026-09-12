@@ -5,6 +5,7 @@ import {
   plural,
   relativeDate
 } from '../lib/conversationBrowser';
+import { harnessDisplay } from '../lib/harnessContent';
 import type { SearchConversationGroup } from '../lib/searchConversations';
 import { formatHitSpan, operationLabel, rankedMatchLabel } from '../lib/searchFormatting';
 import { ParserIcon } from './ParserIcon';
@@ -169,7 +170,10 @@ export function SearchRollupCard({
 }
 
 function searchSpeakerLabel(result: Result, provider: Provider | null): string {
-  if (result.role === 'user') return 'You said';
+  // A user-role record the harness wrote is not something the person said,
+  // whatever the role says. One rule, in lib/harnessContent.ts, so a snippet
+  // and the transcript cannot disagree about who spoke.
+  if (result.role === 'user') return harnessDisplay(result.snippet ?? '', 'You said').speaker;
   if (result.role === 'tool') return operationLabel(result.kind);
   if (provider === 'claude') return 'Claude said';
   if (provider === 'codex') return 'Codex said';

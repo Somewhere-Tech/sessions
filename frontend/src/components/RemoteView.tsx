@@ -2,7 +2,7 @@ import { Suspense, lazy, memo, useCallback, useEffect, useLayoutEffect, useMemo,
 import { useDispatch } from '../hooks/useDispatch';
 import { renderContent } from '../lib/contentRender';
 import type { SessionSidebarState } from '../hooks/useSessionSidebar';
-import type { ClaudeSessionEvent, SessionTool, ApprovalDecision, PendingApproval, ProviderFailureKind, ProviderRetry } from '../types';
+import type { ClaudeSessionEvent, HarnessEventView, SessionTool, ApprovalDecision, PendingApproval, ProviderFailureKind, ProviderRetry } from '../types';
 import { InputBar } from './InputBar';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import StatusSidebar from './StatusSidebar';
@@ -256,11 +256,19 @@ export function RemoteView({
     setVisibleCount(TAIL_WINDOW_INITIAL);
   }, [sessionId]);
 
+  // A send the provider has not picked up yet is not part of the record of
+  // what was said; it is what the person is waiting on, and it belongs beside
+  // the composer where they are waiting.
+  const transcript = useMemo(() => messages.filter((m) => !m.pendingQueue), [messages]);
+  const queuedSend = useMemo(
+    () => [...messages].reverse().find((m) => m.pendingQueue) ?? null,
+    [messages]
+  );
   const visibleMessages = useMemo(() => {
-    if (messages.length <= visibleCount) return messages;
-    return messages.slice(messages.length - visibleCount);
-  }, [messages, visibleCount]);
-  const hiddenCount = messages.length - visibleMessages.length;
+    if (transcript.length <= visibleCount) return transcript;
+    return transcript.slice(transcript.length - visibleCount);
+  }, [transcript, visibleCount]);
+  const hiddenCount = transcript.length - visibleMessages.length;
   const latestFailedSend = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]!;
@@ -457,22 +465,13 @@ export function RemoteView({
           reset sends
         </button>
       ) : null}
-      {changedFiles.length > 0 ? (
-        <details className="remote-changes-strip">
-          <summary>Changes <span>{changedFiles.length} loaded {changedFiles.length === 1 ? 'file' : 'files'}</span></summary>
-          <div>
-            {changedFiles.map((path) => (
-              <code key={path} dangerouslySetInnerHTML={{ __html: renderFileReference(path, cwd) }} />
-            ))}
-          </div>
-        </details>
-      ) : null}
+      <ChangedFilesStrip files={changedFiles} cwd={cwd} />
       <div
         className="remote-scroll"
         ref={scrollRef}
         onScroll={onScroll}
       >
-        {messages.length === 0 ? (
+        {transcript.length === 0 ? (
           <RemoteEmptyState
             historyPending={historyPending}
             providerIdentity={providerIdentity}
@@ -513,7 +512,7 @@ export function RemoteView({
             <small>The original conversation stays unchanged.</small>
           </div>
         ) : null}
-        {messages.length > 0 && lostConversation ? <LostCard view={lostConversation} /> : providerFault && messages.length > 0 ? <FaultCard sessionId={sessionId} fault={providerFault} rich={!terminalAvailable} onOpenTerminal={onOpenTerminal} /> : null}
+        {transcript.length > 0 && lostConversation ? <LostCard view={lostConversation} /> : providerFault && transcript.length > 0 ? <FaultCard sessionId={sessionId} fault={providerFault} rich={!terminalAvailable} onOpenTerminal={onOpenTerminal} /> : null}
         {visibleMessages.map((m, i) => (
           <RemoteMessage
             key={m.id}
@@ -580,6 +579,7 @@ export function RemoteView({
 
 
       <div className="remote-input-wrap">
+        {queuedSend ? <QueuedComposerStatus text={queuedSend.content} providerName={providerName} /> : null}
         <InputBar
           send={sendConfirmed}
           submitMessage={submitMessage}
@@ -601,6 +601,54 @@ export function RemoteView({
           onContinueInTerminal={onContinueInTerminal}
         />
       </div>
+    </div>
+  );
+}
+
+/** The files this conversation has touched, as links into the project. */
+function ChangedFilesStrip({ files, cwd = '' }: { files: string[]; cwd?: string }): JSX.Element | null {
+  if (files.length === 0) return null;
+  return (
+    <details className="remote-changes-strip">
+      <summary>Changes <span>{files.length} loaded {files.length === 1 ? 'file' : 'files'}</span></summary>
+      <div>
+        {files.map((path) => (
+          <code key={path} dangerouslySetInnerHTML={{ __html: renderFileReference(path, cwd) }} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
+/** A harness block: one quiet line, openable for exactly what arrived. */
+function HarnessFold({ view, className }: { view: HarnessEventView; className: string }): JSX.Element {
+  return (
+    <details className={className} data-no-copy onClick={(event) => event.stopPropagation()}>
+      <summary>{view.summary}</summary>
+      <pre>{view.detail}</pre>
+    </details>
+  );
+}
+
+function QueuedBadge({ agentName }: { agentName: string }): JSX.Element {
+  return (
+    <div className="remote-bubble-badge remote-bubble-badge-queued" aria-label="queued">
+      <span aria-hidden>⏳</span>
+      <span>{agentName === 'Codex'
+        ? 'Accepted for this turn · may wait for a tool to finish'
+        : 'queued — Claude is finishing the previous turn'}</span>
+    </div>
+  );
+}
+
+// A send the provider has not picked up yet: status where the person is
+// waiting, rather than a line in the record of what was said.
+function QueuedComposerStatus({ text, providerName }: { text: string; providerName: string }): JSX.Element {
+  return (
+    <div className="remote-provider-retry remote-queued-status" role="status">
+      <span aria-hidden>⏳</span>
+      <span>queued — {providerName} is finishing the previous turn</span>
+      <span className="remote-queued-text">{text}</span>
     </div>
   );
 }
@@ -677,6 +725,10 @@ function RemoteMessageInner({
   const lockStyle = isLatest && minHeight > 0 ? { minHeight: `${minHeight}px` } : undefined;
 
   if (m.quietStatus) return <div className="remote-provider-retry" role="status">{m.quietStatus}</div>;
+  // The harness delivered this through a user-role record. It is not the
+  // person's message and is not shown as one: one line, openable by whoever
+  // wants to read exactly what arrived.
+  if (m.systemEvent) return <HarnessFold view={m.systemEvent} className="remote-provider-retry remote-system-event" />;
 
   return (
     <div className={cls}>
@@ -693,14 +745,7 @@ function RemoteMessageInner({
             ref={bubbleRef}
             style={lockStyle}
           >
-            {m.queued ? (
-              <div className="remote-bubble-badge remote-bubble-badge-queued" aria-label="queued">
-                <span aria-hidden>⏳</span>
-                <span>{agentName === 'Codex'
-                  ? 'Accepted for this turn · may wait for a tool to finish'
-                  : 'queued — Claude is finishing the previous turn'}</span>
-              </div>
-            ) : null}
+            {m.queued ? <QueuedBadge agentName={agentName} /> : null}
             {m.interrupted ? (
               <div className="remote-bubble-badge remote-bubble-badge-interrupted" aria-label="interrupted">
                 <span aria-hidden>⎋</span>
@@ -709,6 +754,7 @@ function RemoteMessageInner({
             ) : (
               <div className="remote-bubble-content">{m.content}</div>
             )}
+            {m.systemNote ? <HarnessFold view={m.systemNote} className="remote-system-event remote-system-note" /> : null}
             {m.errorResponse ? (
               <div className="remote-bubble-error">
                 <span className="remote-bubble-error-icon" aria-hidden>⚠</span>

@@ -188,3 +188,33 @@ func TestATranscriptTickIsNotCountedAsTheUserSpeaking(t *testing.T) {
 			"it is what overwrote the owner's last contact three seconds after he typed")
 	}
 }
+
+// Claude Code delivers a background task's result, and its own reminders, as
+// user-role records. The founder's transcript showed them as his own chat
+// bubbles; counting them here would also make every surface say "You sent a
+// message" for something nobody sent.
+func TestHarnessInjectionsAreNotCountedAsTheUserSpeaking(t *testing.T) {
+	for name, content := range map[string]string{
+		"task notification":   "<task-notification>\nBackground task Monitor 'Opus worker' finished.\n</task-notification>",
+		"system reminder":     "<system-reminder>\nRemember to check the plan.\n</system-reminder>",
+		"system notification": "[SYSTEM NOTIFICATION] Background task completed",
+	} {
+		event := map[string]any{
+			"type":      "user",
+			"message":   map[string]any{"role": "user", "content": content},
+			"timestamp": "2026-09-11T18:00:00Z",
+		}
+		if realUserMessage(event) {
+			t.Errorf("%s counted as the person speaking: %q", name, content)
+		}
+	}
+	// A person who happens to mention one of these is still speaking.
+	mentioned := map[string]any{
+		"type":      "user",
+		"message":   map[string]any{"role": "user", "content": "why does <system-reminder> show up in my chat?"},
+		"timestamp": "2026-09-11T18:01:00Z",
+	}
+	if !realUserMessage(mentioned) {
+		t.Error("a person asking about a reminder was not counted as speaking")
+	}
+}
