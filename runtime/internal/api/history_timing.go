@@ -31,6 +31,10 @@ type stageTimer struct {
 	started time.Time
 	last    time.Time
 	stages  []stage
+	// notes are the facts about a listing that are not durations: which of its
+	// stages was served from a cache, so a slow one can be told from a stale
+	// one without guessing from the numbers.
+	notes map[string]any
 }
 
 type stage struct {
@@ -86,17 +90,31 @@ func (t *stageTimer) total() time.Duration {
 	return time.Since(t.started)
 }
 
+// note records a fact about this listing that is not a duration.
+func (t *stageTimer) note(name string, value any) {
+	if t == nil {
+		return
+	}
+	if t.notes == nil {
+		t.notes = make(map[string]any, 2)
+	}
+	t.notes[name] = value
+}
+
 // breakdown is the timing document a caller asking for it receives: stage name
-// to milliseconds, plus the total. Milliseconds because that is the unit the
-// question is asked in, and integers because a reader comparing stages does not
-// need nanoseconds.
-func (t *stageTimer) breakdown() map[string]int64 {
+// to milliseconds, plus the total and any notes. Milliseconds because that is
+// the unit the question is asked in, and integers because a reader comparing
+// stages does not need nanoseconds.
+func (t *stageTimer) breakdown() map[string]any {
 	if t == nil {
 		return nil
 	}
-	result := make(map[string]int64, len(t.stages)+1)
+	result := make(map[string]any, len(t.stages)+len(t.notes)+1)
 	for _, entry := range t.stages {
 		result[entry.name+"_ms"] = entry.took.Milliseconds()
+	}
+	for name, value := range t.notes {
+		result[name] = value
 	}
 	result["total_ms"] = t.total().Milliseconds()
 	return result
@@ -113,12 +131,16 @@ func (t *stageTimer) logIfSlow(what string) {
 		return
 	}
 	ordered := append([]stage(nil), t.stages...)
+	suffix := ""
+	if cached, ok := t.notes["ledger_cached"].(bool); ok && cached {
+		suffix = " (ledger cached)"
+	}
 	sort.SliceStable(ordered, func(left, right int) bool { return ordered[left].took > ordered[right].took })
 	parts := make([]string, 0, len(ordered))
 	for _, entry := range ordered {
 		parts = append(parts, fmt.Sprintf("%s %s", entry.name, round(entry.took)))
 	}
-	log.Printf("[history] %s took %s: %s", what, round(total), strings.Join(parts, ", "))
+	log.Printf("[history] %s took %s: %s%s", what, round(total), strings.Join(parts, ", "), suffix)
 }
 
 func round(value time.Duration) string {

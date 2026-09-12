@@ -12,6 +12,28 @@ type CurrentStateReader interface {
 	CurrentStates(context.Context) ([]LaneState, error)
 }
 
+// HighWaterReader answers "has anything happened?" without reading what.
+//
+// The sequence is the append-only log's own cursor, so two reads that return
+// the same number describe the same ledger — by construction, not by a timer.
+// A caller holding something derived from the log can therefore keep it until
+// the number moves, which is exact rather than a heuristic.
+type HighWaterReader interface {
+	HighWaterMark(context.Context) (int64, error)
+}
+
+// HighWaterMark is the sequence of the newest committed lane event, or zero for
+// an empty ledger. It is one indexed row read: the primary key is the sequence,
+// so this is a b-tree seek to the last leaf and nothing else.
+func (s *Store) HighWaterMark(ctx context.Context) (int64, error) {
+	var mark int64
+	row := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM lane_events`)
+	if err := row.Scan(&mark); err != nil {
+		return 0, fmt.Errorf("read ledger high-water mark: %w", err)
+	}
+	return mark, nil
+}
+
 type currentProjection struct {
 	mu    sync.Mutex
 	seq   int64

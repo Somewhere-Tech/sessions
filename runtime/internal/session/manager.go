@@ -170,9 +170,12 @@ type Manager struct {
 	worktrees    ledger.WorktreeWriter
 	attributions ledger.AttributionWriter
 	ledgerReader LedgerReader
-	usage        UsageRecorder
-	notify       func(PushPayload)
-	listModels   func(context.Context, string) ([]codexapp.Model, error)
+	// ledgerCache holds what the ledger says, for as long as the ledger has not
+	// said anything new. See ledger_cache.go.
+	ledgerCache ledgerCache
+	usage       UsageRecorder
+	notify      func(PushPayload)
+	listModels  func(context.Context, string) ([]codexapp.Model, error)
 
 	deathMu             sync.Mutex
 	laneDeaths          map[string]laneDeathBurst
@@ -402,6 +405,11 @@ type ListTiming struct {
 	// projection is incremental, so the first caller pays for the whole ledger
 	// and every later one pays for what has happened since.
 	Ledger time.Duration
+	// LedgerCached reports that the fold was served from the cache keyed on the
+	// ledger's own sequence, which is the difference between a listing that
+	// reads the log and one that reads a single number to learn it has not
+	// changed.
+	LedgerCached bool
 	// Restores reads the paused-after-reboot markers; Reality probes the
 	// processes of runners the daemon has lost contact with.
 	Restores time.Duration
@@ -415,7 +423,8 @@ func (m *Manager) ListTimed(includeExited bool) ([]state.SessionInfo, ListTiming
 	var timing ListTiming
 	infos := m.registry.List(includeExited)
 	ledgerStart := time.Now()
-	states, err := m.ledgerStates(ctx)
+	states, cached, err := m.ledgerStatesCached(ctx)
+	timing.LedgerCached = cached
 	timing.Ledger = time.Since(ledgerStart)
 	if err != nil {
 		log.Printf("[ledger] read session list: %v", err)
@@ -802,18 +811,4 @@ func (m *Manager) observe(ctx context.Context, label string, record func(ledger.
 	if err := record(m.observations); err != nil {
 		log.Printf("[ledger] record %s: %v", label, err)
 	}
-}
-
-func (m *Manager) ledgerStates(ctx context.Context) ([]ledger.LaneState, error) {
-	if m.ledgerReader == nil {
-		return nil, nil
-	}
-	if reader, ok := m.ledgerReader.(ledger.CurrentStateReader); ok {
-		return reader.CurrentStates(ctx)
-	}
-	events, err := m.ledgerReader.Events(ctx, "")
-	if err != nil {
-		return nil, err
-	}
-	return ledger.Fold(events), nil
 }

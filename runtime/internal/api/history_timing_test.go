@@ -28,12 +28,13 @@ func TestStageTimerDoesNotDoubleCountAnInnerStage(t *testing.T) {
 	timer.mark("store")
 
 	breakdown := timer.breakdown()
-	sum := breakdown["ledger_ms"] + breakdown["live_ms"] + breakdown["store_ms"]
-	if sum > breakdown["total_ms"]+2 {
-		t.Fatalf("stages sum to %dms against a total of %dms: %#v", sum, breakdown["total_ms"], breakdown)
+	sum := milliseconds(t, breakdown, "ledger_ms") + milliseconds(t, breakdown, "live_ms") +
+		milliseconds(t, breakdown, "store_ms")
+	if total := milliseconds(t, breakdown, "total_ms"); sum > total+2 {
+		t.Fatalf("stages sum to %dms against a total of %dms: %#v", sum, total, breakdown)
 	}
-	if breakdown["ledger_ms"] != 10 {
-		t.Fatalf("inner stage = %dms, want the 10ms it reported", breakdown["ledger_ms"])
+	if got := milliseconds(t, breakdown, "ledger_ms"); got != 10 {
+		t.Fatalf("inner stage = %dms, want the 10ms it reported", got)
 	}
 }
 
@@ -41,7 +42,7 @@ func TestStageTimerRepeatsAddUp(t *testing.T) {
 	timer := newStageTimer()
 	timer.markFor("ledger", 30*time.Millisecond)
 	timer.markFor("ledger", 12*time.Millisecond)
-	if got := timer.breakdown()["ledger_ms"]; got != 42 {
+	if got := milliseconds(t, timer.breakdown(), "ledger_ms"); got != 42 {
 		t.Fatalf("repeated stage = %dms, want them added: a listing that folds the ledger three times must read as three", got)
 	}
 }
@@ -58,12 +59,12 @@ func TestHistoryListingReportsItsStagesWhenAsked(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	var body struct {
-		Timing map[string]int64 `json:"timing"`
+		Timing map[string]any `json:"timing"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	for _, stage := range []string{"total_ms", "ledger_ms", "store_ms"} {
+	for _, stage := range []string{"total_ms", "ledger_ms", "store_ms", "ledger_cached"} {
 		if _, present := body.Timing[stage]; !present {
 			t.Fatalf("timing is missing %s: %#v", stage, body.Timing)
 		}
@@ -112,7 +113,28 @@ func (r *countingRegistry) List(includeExited bool) []state.SessionInfo {
 	return r.listTimer.List(includeExited)
 }
 
+// milliseconds reads one stage out of a breakdown, which carries durations
+// beside facts like ledger_cached and is therefore not uniformly numeric.
+func milliseconds(t *testing.T, breakdown map[string]any, stage string) int64 {
+	t.Helper()
+	switch value := breakdown[stage].(type) {
+	case int64:
+		return value
+	case float64:
+		return int64(value)
+	default:
+		t.Fatalf("%s = %#v, want a duration in milliseconds", stage, breakdown[stage])
+		return 0
+	}
+}
+
 func newTimingDaemon(t *testing.T) (*Server, *sessionruntime.Manager) {
+	t.Helper()
+	server, manager, _ := newTimingDaemonWithLedger(t)
+	return server, manager
+}
+
+func newTimingDaemonWithLedger(t *testing.T) (*Server, *sessionruntime.Manager, *ledger.Store) {
 	t.Helper()
 	root := t.TempDir()
 	// This daemon reads its own empty world. Without it the history store
@@ -136,7 +158,34 @@ func newTimingDaemon(t *testing.T) (*Server, *sessionruntime.Manager) {
 		Boundaries: store.Boundaries(), Observations: store.Observations(),
 		LedgerReader: store, Retention: store.Retention(),
 	})
-	return New(config, manager), manager
+	return New(config, manager), manager, store
+}
+
+// The flag exists so an operator reading a slow listing can tell a fold from a
+// cache hit without inferring it from the numbers. Its meaning is exactly "the
+// ledger has not moved since the last fold" — including at startup, where the
+// daemon's own restart bookkeeping has already folded it once.
+func TestListingSaysWhetherTheLedgerWasCached(t *testing.T) {
+	daemon, manager, store := newTimingDaemonWithLedger(t)
+	defer manager.Close()
+
+	if cached, ok := timeListing(t, daemon)["ledger_cached"].(bool); !ok || !cached {
+		t.Fatalf("a listing over an unchanged ledger reported ledger_cached=%#v", cached)
+	}
+
+	// An appended event is a miss, once, and the listing after it is a hit
+	// again. Nothing about this is timed.
+	if err := store.Observations().RecordIdle(context.Background(), ledger.Observation{
+		Meta: ledger.Meta{LaneID: "00000000-0000-4000-8000-000000000001"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if cached, ok := timeListing(t, daemon)["ledger_cached"].(bool); !ok || cached {
+		t.Fatalf("a listing after an appended event reported ledger_cached=%#v", cached)
+	}
+	if cached, ok := timeListing(t, daemon)["ledger_cached"].(bool); !ok || !cached {
+		t.Fatalf("the listing after the refold reported ledger_cached=%#v", cached)
+	}
 }
 
 // A cold-run harness against this machine's own state, for the twelve-second
@@ -176,9 +225,10 @@ func TestHistoryListingStagesAgainstRealState(t *testing.T) {
 
 	// The claim this harness exists to check: the first listing a person sees
 	// is within 3x the second.
-	if first["total_ms"] > 3*max64(second["total_ms"], 1) {
+	firstTotal, secondTotal := milliseconds(t, first, "total_ms"), milliseconds(t, second, "total_ms")
+	if firstTotal > 3*max64(secondTotal, 1) {
 		t.Errorf("the first listing after a startup warm is %.1fx the second (%dms against %dms); the breakdown above says which stage",
-			float64(first["total_ms"])/float64(max64(second["total_ms"], 1)), first["total_ms"], second["total_ms"])
+			float64(firstTotal)/float64(max64(secondTotal, 1)), firstTotal, secondTotal)
 	}
 }
 
@@ -239,7 +289,7 @@ func newProfileDaemon(t *testing.T) (*Server, *sessionruntime.Manager) {
 	return New(config, manager), manager
 }
 
-func timeListing(t *testing.T, daemon *Server) map[string]int64 {
+func timeListing(t *testing.T, daemon *Server) map[string]any {
 	t.Helper()
 	response := serve(t, daemon, http.MethodGet, "/api/history?timing=1", nil, "127.0.0.1:4321", nil)
 	if response.Code != http.StatusOK {
@@ -247,7 +297,7 @@ func timeListing(t *testing.T, daemon *Server) map[string]int64 {
 	}
 	var body struct {
 		Sessions []json.RawMessage `json:"sessions"`
-		Timing   map[string]int64  `json:"timing"`
+		Timing   map[string]any    `json:"timing"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -317,12 +367,12 @@ func TestWarmHistoryRunsBeforeAnybodyAsks(t *testing.T) {
 			t.Fatalf("status=%d", response.Code)
 		}
 		var body struct {
-			Timing map[string]int64 `json:"timing"`
+			Timing map[string]any `json:"timing"`
 		}
 		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 			t.Fatal(err)
 		}
-		if body.Timing["total_ms"] < 2_000 {
+		if milliseconds(t, body.Timing, "total_ms") < 2_000 {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)

@@ -2335,7 +2335,12 @@ given.
 `GET /api/history?timing=1` adds an additive `timing` object to the response:
 stage name to milliseconds (`ledger_ms`, `restores_ms`, `probes_ms`, `live_ms`,
 `track_ms`, `observe_ms`, `archived_ms`, `store_ms`, `encode_ms`) plus
-`total_ms`. Stage names are diagnostic, not a contract: a daemon may add or
+`total_ms`, and the boolean `ledger_cached`. `ledger_cached` is true when the
+ledger-derived stages were served from the projection cached against the
+ledger's own high-water sequence, which is exact rather than timed: the cache is
+recomputed on the first read after any event is appended, and never otherwise.
+Values are therefore not all numbers — a reader must switch on the type or on
+the `_ms` suffix. Stage names are diagnostic, not a contract: a daemon may add or
 rename one, and a reader must treat any key it does not recognize as another
 stage. It carries durations only — no paths, ids or titles — so it can be
 pasted into a bug report. The same numbers are logged as one line whenever a

@@ -174,7 +174,7 @@ type historyListResponse struct {
 	TranscriptsUnread bool `json:"transcripts_unread,omitempty"`
 	// Timing is where this listing spent its time, in milliseconds per stage.
 	// Present only when the request carried ?timing=1; see docs/http-api.md.
-	Timing map[string]int64 `json:"timing,omitempty"`
+	Timing map[string]any `json:"timing,omitempty"`
 	// UncountedSessions is how many rows carry a message_count that is not a
 	// count. The summary view answers with whatever counts are already cached
 	// and declines to parse the rest, so it is usually partly counted rather
@@ -256,6 +256,7 @@ func (s *Server) liveSessions(timer *stageTimer) []state.SessionInfo {
 	}
 	live, timing := runtime.ListTimed(true)
 	timer.markFor("ledger", timing.Ledger)
+	timer.note("ledger_cached", timing.LedgerCached)
 	timer.markFor("restores", timing.Restores)
 	timer.markFor("probes", timing.Reality)
 	timer.mark("live")

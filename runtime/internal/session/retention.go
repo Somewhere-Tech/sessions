@@ -122,17 +122,7 @@ func (m *Manager) ArchivedSessionIDs(ctx context.Context) ([]string, error) {
 	if m.ledgerReader == nil {
 		return nil, errors.New("retention ledger is unavailable")
 	}
-	states, err := m.ledgerStates(ctx)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(states))
-	for _, lane := range states {
-		if lane.Archived {
-			ids = append(ids, lane.LaneID)
-		}
-	}
-	return ids, nil
+	return m.archivedLaneIDs(ctx)
 }
 
 func (m *Manager) GCClosed(ctx context.Context, cutoffMS int64, dryRun bool) (RetentionResult, error) {
