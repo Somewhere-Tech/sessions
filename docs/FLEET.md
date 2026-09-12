@@ -160,6 +160,16 @@ computer, so a folder that belongs to the work plan keeps using it. A delegated
 lane starts on its manager's account, shown as *from this session*, and can be
 changed before it starts.
 
+**Per computer.** Each machine card in Fleet lists the accounts that computer
+has — the label its owner typed, the provider, and the same login-file fact —
+and an account another computer has that this one lacks appears there as **Log
+in here too**. That runs the same guided login on the computer whose card it is
+under: the home is registered there, the provider's sign-in opens there, and the
+instruction to check the account in the browser is the same one. Settings ›
+Accounts has a **Computer** switcher over the same list, so a second
+subscription can be set up on the machine that needs it without pointing the
+whole app at that machine first.
+
 **Adding one.** Settings › Accounts → **Add account** asks for a provider, a
 short name for the home, and a label for you to recognise it by. Sessions
 creates the home, then opens a session on that computer running the provider

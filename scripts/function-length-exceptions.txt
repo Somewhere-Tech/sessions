@@ -89,7 +89,6 @@ typescript frontend/src/components/SettingsView.tsx SettingsView 336
 typescript frontend/src/components/ConnectionsView.tsx ConnectionsView 303
 typescript frontend/src/components/SessionHistoryView.tsx SessionHistoryView 292
 typescript frontend/src/components/SearchConversationReader.tsx ConversationReader 264
-typescript frontend/src/components/FleetView.tsx FleetServerGroup 225
 typescript frontend/src/components/ConversationBrowser.tsx ConversationBrowser 230
 typescript frontend/src/lib/claudeEvents.ts codexEventsToMessages 224
 typescript frontend/src/components/SubagentsPanel.tsx SubagentsPanel 219
@@ -109,5 +108,6 @@ typescript frontend/src/components/SessionDetails.tsx SessionDetails 166
 typescript frontend/src/store/sessions.ts useSessions 156
 typescript frontend/src/hooks/useSessionSidebar.ts useSessionSidebar 155
 typescript frontend/src/components/ComposerModelControl.tsx ComposerModelControl 152
+typescript frontend/src/components/FleetView.tsx FleetServerGroup 149
 typescript frontend/src/hooks/useTerminal.ts onMessage 144
 typescript frontend/src/components/DirectoryBrowser.tsx DirectoryBrowser 140

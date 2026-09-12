@@ -229,7 +229,6 @@
 .fleet-machine-rename button { height: 27px; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-elev-2); color: var(--fg-dim); font-size: 12px; cursor: pointer; }
 .fleet-machine-rename button[type="submit"] { border-color: var(--accent-border-soft); color: var(--accent); }
 .fleet-machine-rename-error { display: block; margin-top: 3px; color: var(--danger) !important; font-size: 12px !important; }
-.fleet-machine-badge { flex: 0 0 auto; padding: 2px 6px; border: 1px solid var(--accent-border-soft); border-radius: 999px; background: var(--accent-bg-soft); color: var(--accent) !important; font-size: 12px !important; font-weight: 650; }
 .fleet-machine-status { display: inline-flex !important; align-items: center; gap: 7px; margin-top: 4px; }
 .fleet-machine-status.is-reachable { color: var(--ok); }
 .fleet-machine-status.is-unreachable { color: var(--danger); font-weight: 600; }
@@ -246,7 +245,12 @@
 .fleet-version-notice.is-older strong { color: #f59e0b; }
 .fleet-version-notice.is-newer { background: color-mix(in srgb, var(--accent) 9%, var(--bg-elev-1)); }
 .fleet-version-notice.is-newer strong { color: var(--accent); }
-.fleet-machine-profiles { padding: 7px 15px; border-bottom: 1px solid var(--border); color: var(--accent); font-size: 12px; }
+/* The accounts this computer has, and the ones another computer has first;
+   the meta row above already styles a wrapping strip of pills. */
+.fleet-account { display: inline-flex; align-items: center; gap: 5px; }
+.fleet-account.is-missing { background: none; border: 1px dashed var(--border); }
+.fleet-account .btn { padding: 0 5px; font-size: 12px; }
+.fleet-machine-accounts .accounts-signing-in { flex: 1 0 100%; }
 .fleet-session-list { transition: opacity 120ms ease, filter 120ms ease; }
 .fleet-session-row {
   display: grid;

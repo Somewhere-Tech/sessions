@@ -22,6 +22,7 @@ import {
   type PendingMachineAccess as SharedPendingMachineAccess
 } from '../hooks/useMachineAccessPairing';
 import { MachinePlatformIcon } from './MachineMark';
+import { FleetMachineAccounts, accountsMissingOn, type AccountElsewhere } from './FleetMachineAccounts';
 import { refreshDaemonAccountFleet } from '../lib/accountFleet';
 import { collapseConversationRuntimes, isAgentLedChild, isSetAside } from '../lib/workingSet';
 
@@ -94,6 +95,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
 	const discoveryBlocked = !isTauri() ? 'Open Sessions.app › Settings › Fleet for discovery, pairing, and moves.' : accessRequest ? `Waiting for ${accessRequest.label} to approve.` : '';
 
 	const rememberVersion = useRememberMachineVersion(setMachineVersions);
+	const accounts = useFleetAccounts(fleetServers);
   const findMachines = async (showPanel = true): Promise<void> => {
     if (!isTauri() || discoveryBusy || accessRequest) return;
     if (showPanel) setDiscoveryOpen(true);
@@ -248,6 +250,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
             includeExited={includeExited}
             localVersion={localServer ? machineVersions[localServer.id] : undefined}
             onVersion={rememberVersion}
+            accountsElsewhere={accounts.missingOn(server.id)} onAccounts={accounts.remember}
             onOpenSession={(sessionId) => onOpenSession(server.id, sessionId)}
             onOpenMachine={() => onOpenMachine(server.id)}
           />
@@ -269,6 +272,34 @@ function useRememberMachineVersion(setVersions: Dispatch<SetStateAction<Record<s
     if (!version) return;
     setVersions((current) => current[serverId] === version ? current : { ...current, [serverId]: version });
   }, [setVersions]);
+}
+
+/**
+ * What each computer has, gathered from the cards' own polls, so that one card
+ * can say which account another computer has and this one does not.
+ */
+function useFleetAccounts(servers: ServerConfig[]): {
+  remember: (serverId: string, profiles: AccountProfile[]) => void;
+  missingOn: (serverId: string) => AccountElsewhere[];
+} {
+  const [accounts, setAccounts] = useState<Record<string, AccountProfile[]>>({});
+  const remember = useCallback((serverId: string, profiles: AccountProfile[]): void => {
+    // Each card polls; an unchanged answer must not re-render the whole fleet.
+    setAccounts((current) => sameAccounts(current[serverId], profiles) ? current : { ...current, [serverId]: profiles });
+  }, []);
+  const nameOf = (serverId: string): string => {
+    const machine = servers.find((candidate) => candidate.id === serverId);
+    return machine ? serverDisplayName(machine, true) : 'another computer';
+  };
+  return { remember, missingOn: (serverId) => accountsMissingOn(accounts, serverId, nameOf) };
+}
+
+function sameAccounts(left: AccountProfile[] | undefined, right: AccountProfile[]): boolean {
+  return left !== undefined && left.length === right.length && left.every((account, index) => {
+    const other = right[index];
+    return other !== undefined && account.tool === other.tool && account.name === other.name
+      && account.signed_in === other.signed_in && (account.label ?? '') === (other.label ?? '');
+  });
 }
 
 function useAccountFleetDirectory(): string | null {
@@ -350,37 +381,15 @@ function mainFleetSessions(sessions: SessionInfo[]): SessionInfo[] {
     !session.exited && !session.unreachable && !session.runnerGone && !isAgentLedChild(session) && !isSetAside(session));
 }
 
-function FleetServerGroup({
-  server,
-  includeExited,
-  localVersion,
-  onVersion,
-  onOpenSession,
-  onOpenMachine
-}: {
-  server: ServerConfig;
-  includeExited: boolean;
-  localVersion?: string;
-  onVersion: (serverId: string, version: string) => void;
-  onOpenSession: (sessionId: string) => void;
-  onOpenMachine: () => void;
-}): JSX.Element {
-  const updateServer = useServers((state) => state.updateServer);
-  const localServer = useServers((state) => state.servers.find((candidate) => candidate.isDefault));
+/**
+ * One machine card's own polling loop: health, then sessions and accounts, then
+ * again. Each card owns its loop, so a slow or dead machine cannot delay any
+ * other machine's updates.
+ */
+function useMachineSnapshot(
+  server: ServerConfig, onVersion: (serverId: string, version: string) => void
+): [ServerSnapshot, Dispatch<SetStateAction<ServerSnapshot>>] {
   const [snapshot, setSnapshot] = useState<ServerSnapshot>(INITIAL_SNAPSHOT);
-  const [renaming, setRenaming] = useState(false);
-  const [machineName, setMachineName] = useState(server.customName ?? serverDisplayName(server));
-  const [renameError, setRenameError] = useState<string | null>(null);
-
-  // Depending on the resolved string rather than on three raw fields is what
-  // makes this effect's dependency list honest: `serverDisplayName` reads
-  // customName, systemName, name AND isDefault, so the old list was both
-  // incomplete and unable to satisfy the exhaustive-deps rule.
-  const resolvedMachineName = server.customName ?? serverDisplayName(server);
-  useEffect(() => {
-    if (!renaming) setMachineName(resolvedMachineName);
-  }, [renaming, resolvedMachineName]);
-
   // The poll is keyed on the address it actually dials, not on the server
   // object. `server` gets a new identity whenever ANY field changes, so with
   // `[onVersion, server]` renaming a machine tore the poll down, reset the
@@ -473,6 +482,46 @@ function FleetServerGroup({
       window.clearTimeout(pollTimer);
     };
   }, [endpointKey, onVersion]);
+  return [snapshot, setSnapshot];
+}
+
+function FleetServerGroup({
+  server,
+  includeExited,
+  localVersion,
+  onVersion,
+  accountsElsewhere,
+  onAccounts,
+  onOpenSession,
+  onOpenMachine
+}: {
+  server: ServerConfig;
+  includeExited: boolean;
+  localVersion?: string;
+  onVersion: (serverId: string, version: string) => void;
+  accountsElsewhere: AccountElsewhere[];
+  onAccounts: (serverId: string, profiles: AccountProfile[]) => void;
+  onOpenSession: (sessionId: string) => void;
+  onOpenMachine: () => void;
+}): JSX.Element {
+  const updateServer = useServers((state) => state.updateServer);
+  const localServer = useServers((state) => state.servers.find((candidate) => candidate.isDefault));
+  const [snapshot, setSnapshot] = useMachineSnapshot(server, onVersion);
+  const [renaming, setRenaming] = useState(false);
+  const [machineName, setMachineName] = useState(server.customName ?? serverDisplayName(server));
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  // Depending on the resolved string rather than on three raw fields is what
+  // makes this effect's dependency list honest: `serverDisplayName` reads
+  // customName, systemName, name AND isDefault, so the old list was both
+  // incomplete and unable to satisfy the exhaustive-deps rule.
+  const resolvedMachineName = server.customName ?? serverDisplayName(server);
+  useEffect(() => {
+    if (!renaming) setMachineName(resolvedMachineName);
+  }, [renaming, resolvedMachineName]);
+
+
+  useEffect(() => { onAccounts(server.id, snapshot.profiles); }, [onAccounts, server.id, snapshot.profiles]);
 
   const unavailable = snapshot.reachability === 'unreachable';
   const mainSessions = mainFleetSessions(snapshot.sessions);
@@ -480,17 +529,6 @@ function FleetServerGroup({
   const visibleSessions = sortFleetSessions(candidateSessions);
   const activeCount = mainSessions.length;
 	const reachabilityLabel = fleetReachabilityLabel(server, snapshot.reachability);
-  const profileSummary = snapshot.profiles.reduce<Record<'claude' | 'codex', string[]>>(
-    (summary, profile) => {
-      summary[profile.tool].push(profile.name);
-      return summary;
-    },
-    { claude: [], codex: [] }
-  );
-  const profileLabels = [
-    profileSummary.claude.length > 0 ? `Claude: ${profileSummary.claude.join(', ')}` : '',
-    profileSummary.codex.length > 0 ? `Codex: ${profileSummary.codex.join(', ')}` : ''
-  ].filter(Boolean);
   const platform = platformFor(server, snapshot.health);
   const platformText = platformLabel(platform);
   const fullVersion = snapshot.health?.version;
@@ -553,13 +591,23 @@ function FleetServerGroup({
 		<FleetTransportSummary server={server} platformText={platformText} />
         {snapshot.health?.system?.arch ? <span>{snapshot.health.system.arch}</span> : null}
         <span className="is-version">{version ? `Sessions ${version}` : 'Version unavailable'}</span>
-        {profileLabels.length > 0 ? <span title={profileLabels.join(' · ')}>{snapshot.profiles.length} {snapshot.profiles.length === 1 ? 'account' : 'accounts'}</span> : null}
       </div>
       {versionState ? (
         <div className={`fleet-version-notice is-${versionState.tone}`} title={versionState.fullDetail}>
           <strong>{versionState.title}</strong>
           <span>{versionState.detail}</span>
         </div>
+      ) : null}
+
+      {!unavailable && !server.directoryOnly && snapshot.sessionsLoaded ? (
+        <FleetMachineAccounts
+          serverId={server.id}
+          machineName={displayMachineName}
+          profiles={snapshot.profiles}
+          elsewhere={accountsElsewhere}
+          onOpenSession={onOpenSession}
+          onReload={(profiles) => setSnapshot((current) => ({ ...current, profiles }))}
+        />
       ) : null}
 
       <FleetSessionList
