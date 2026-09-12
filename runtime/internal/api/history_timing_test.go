@@ -351,7 +351,8 @@ func max64(value, floor int64) int64 {
 
 // The first listing after a restart pays for what this process has not seen
 // yet. Warming at startup is the difference between a person waiting for that
-// and a daemon doing it while nobody is looking.
+// and a daemon doing it while nobody is looking — so long as the daemon is not
+// doing it *beside* the person, which is what the warm now stands aside for.
 func TestWarmHistoryRunsBeforeAnybodyAsks(t *testing.T) {
 	daemon, manager := newTimingDaemon(t)
 	defer manager.Close()
@@ -360,6 +361,7 @@ func TestWarmHistoryRunsBeforeAnybodyAsks(t *testing.T) {
 	// The warm is a goroutine on purpose: a daemon must serve immediately, and
 	// a very large history must not hold the listener closed. What this asserts
 	// is that it completes and that a listing after it still answers.
+	time.Sleep(historyWarmGrace + 200*time.Millisecond)
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		response := serve(t, daemon, http.MethodGet, "/api/history?timing=1", nil, "127.0.0.1:4321", nil)

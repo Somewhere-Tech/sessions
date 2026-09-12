@@ -6,6 +6,7 @@ import (
 	"log"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/backup"
@@ -53,21 +54,25 @@ type Server struct {
 	tailnetIP            *tailnetIPListener
 	backups              *backup.Service
 	integrationEndpoints *integrations.Service
-	usage                *usage.Service
-	smartSearch          *smartsearch.Service
-	deliveries           *delivery.Store
-	identity             machineIdentity
-	identityError        error
-	account              *fleetaccount.Manager
-	accountError         error
-	relayConnector       *relay.Connector
-	relayMu              sync.RWMutex
-	relayDirectoryBase   string
-	relayConnected       bool
-	relayWake            chan struct{}
-	submits              *sessionMutexes
-	continuationJobs     *continuationJobStore
-	lanFallbackLog       sync.Once
+	// historyAsked counts the full history listings this process has served, so
+	// the startup warm can tell "nobody is waiting" from "somebody is waiting
+	// right now, on the work I am about to duplicate".
+	historyAsked       atomic.Int64
+	usage              *usage.Service
+	smartSearch        *smartsearch.Service
+	deliveries         *delivery.Store
+	identity           machineIdentity
+	identityError      error
+	account            *fleetaccount.Manager
+	accountError       error
+	relayConnector     *relay.Connector
+	relayMu            sync.RWMutex
+	relayDirectoryBase string
+	relayConnected     bool
+	relayWake          chan struct{}
+	submits            *sessionMutexes
+	continuationJobs   *continuationJobStore
+	lanFallbackLog     sync.Once
 }
 
 func (s *Server) logLANFallbackOnce(fallbacks []fleetendpoint.Candidate) {

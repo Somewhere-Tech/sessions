@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/somewhere-tech/sessions/runtime/internal/background"
 	"log"
 	"os"
 	"path/filepath"
@@ -30,6 +31,13 @@ func (m *Manager) RunDiscoveryLoop() {
 	}
 	lastReportedError := ""
 	run := func() {
+		// The first pass is startup and logs its own line, with stages. Every
+		// pass after it is maintenance nobody asked for, and says so.
+		var pass *background.Pass
+		if !m.Startup().Loading() {
+			pass = background.Start("discovery")
+		}
+		defer pass.Done()
 		m.refreshPendingRestores()
 		if err := m.Discover(m.ctx); err != nil && !errors.Is(err, context.Canceled) {
 			message := err.Error()

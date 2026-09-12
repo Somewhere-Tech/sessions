@@ -39,6 +39,7 @@ cmd/sessionsd internal/state
 cmd/sessionsd internal/usage
 cmd/sessionsd internal/winprocess
 internal/api internal/agentcall
+internal/api internal/background
 internal/api internal/backup
 internal/api internal/codexapp
 internal/api internal/delivery
@@ -52,8 +53,8 @@ internal/api internal/localnetwork
 internal/api internal/migrate
 internal/api internal/project
 internal/api internal/proto
-internal/api internal/relay
 internal/api internal/recovery
+internal/api internal/relay
 internal/api internal/search
 internal/api internal/session
 internal/api internal/smartsearch
@@ -95,6 +96,7 @@ internal/relaycmd internal/relay
 internal/search internal/integrations
 internal/search internal/state
 internal/session internal/ansi
+internal/session internal/background
 internal/session internal/claudep
 internal/session internal/codexapp
 internal/session internal/ipc

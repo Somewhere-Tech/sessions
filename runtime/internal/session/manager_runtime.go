@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/somewhere-tech/sessions/runtime/internal/background"
 	"log"
 	"os"
 	"path/filepath"
@@ -152,6 +153,7 @@ func (m *Manager) activityLoop() {
 		case <-m.ctx.Done():
 			return
 		case <-m.ticker.C:
+			pass := background.Start("activity")
 			m.mu.Lock()
 			runtimes := make([]*runtimeSession, 0, len(m.runtimes))
 			for _, runtime := range m.runtimes {
@@ -163,6 +165,7 @@ func (m *Manager) activityLoop() {
 			}
 			m.sampleResources()
 			m.hibernateIdleMirrors()
+			pass.Done()
 		}
 	}
 }
@@ -195,6 +198,7 @@ func (m *Manager) hibernateIdleMirrors() {
 	m.mirrorSwept = now
 	quiet := m.mirrorQuiet
 	m.mirrorSweepM.Unlock()
+	defer background.Start("mirror-hibernate").Done()
 	m.registry.HibernateIdleMirrors(quiet)
 }
 
@@ -232,6 +236,9 @@ func (m *Manager) sampleResources() {
 	}
 	m.resourceSampled = now
 	m.resourceMu.Unlock()
+	// Reading the process table is the one part of a tick that talks to the
+	// operating system about every session at once.
+	defer background.Start("resource-sample").Done()
 
 	infos := m.registry.List(false)
 	roots := make(map[string]int, len(infos))
@@ -505,54 +512,19 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 	if info.Kind == state.KindCodexAppServer || info.Kind == state.KindClaudeStructured {
 		return
 	}
+	// Attaching a watcher resolves which provider transcript belongs to this
+	// session, which means reading the provider's directory. One of these per
+	// re-attached session is a plausible shape for a machine that is busy long
+	// after it says it is ready, so it is counted under its own name.
+	defer background.Start("provider-watch").Done()
 	var watcher *watch.FileWatcher
 	switch info.Tool {
 	case state.ToolClaude:
-		projectsDir := ""
-		if info.ConfigDir != "" {
-			projectsDir = filepath.Join(info.ConfigDir, "projects")
-		}
-		// The provider owns this transcript and prunes it on its own
-		// schedule, so the watcher keeps Sessions' own copy as it reads.
-		// Without it a pruned conversation is simply gone: cat, source,
-		// search, and usage all resolve through the same provider path.
-		created, err := watch.WatchSessionFile(watch.ClaudeWatcherOptions{
-			CWD: info.Cwd, ClaudeSessionID: extractClaudeSessionID(info.Args), ProjectsDir: projectsDir,
-			SessionID:  info.ID,
-			MirrorPath: watch.TranscriptMirrorPath(r.manager.config.RunnerStateDir, info.ID),
-		})
-		if err != nil {
-			return
-		}
-		watcher = created
+		watcher = r.claudeWatcher(info)
 	case state.ToolCodex:
-		sessionsDir := ""
-		if info.ConfigDir != "" {
-			sessionsDir = filepath.Join(info.ConfigDir, "sessions")
-		}
-		watcherArgs := info.Args
-		requireInputMatch := true
-		if providerargs.IsConversationUUID(info.ConversationID) {
-			// The watcher is not launching Codex, so this synthetic resume argv is
-			// only an exact provider-id lookup. Persisting the binding means a
-			// daemon restart can rebuild Conversation without waiting for another
-			// user message or guessing between same-folder rollouts.
-			watcherArgs = []string{"resume", info.ConversationID}
-			requireInputMatch = false
-		}
-		watcher = watch.WatchCodexRollout(watch.CodexWatcherOptions{
-			CWD: info.Cwd, Args: watcherArgs, CreatedAt: time.UnixMilli(info.CreatedAt), SessionsDir: sessionsDir,
-			RequireInputMatch: requireInputMatch,
-		})
-		if requireInputMatch && strings.TrimSpace(info.Description) != "" {
-			// The desktop stores its initial request as the session description
-			// before delivery. On recovery that exact authored text is evidence,
-			// not a timestamp guess: the resolver binds only when one provider
-			// rollout contains the same user message. CLI descriptions which are
-			// merely prose match nothing and remain safely unbound until input.
-			watcher.ExpectInput(info.Description)
-		}
-	default:
+		watcher = codexWatcher(info)
+	}
+	if watcher == nil {
 		return
 	}
 	r.mu.Lock()
@@ -595,6 +567,57 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 	}) {
 		watcher.Close()
 	}
+}
+
+// claudeWatcher follows the transcript Claude owns. The provider prunes it on
+// its own schedule, so the watcher keeps Sessions' own copy as it reads:
+// without it a pruned conversation is simply gone, and cat, source, search and
+// usage all resolve through the same provider path.
+func (r *runtimeSession) claudeWatcher(info state.SessionInfo) *watch.FileWatcher {
+	projectsDir := ""
+	if info.ConfigDir != "" {
+		projectsDir = filepath.Join(info.ConfigDir, "projects")
+	}
+	created, err := watch.WatchSessionFile(watch.ClaudeWatcherOptions{
+		CWD: info.Cwd, ClaudeSessionID: extractClaudeSessionID(info.Args), ProjectsDir: projectsDir,
+		SessionID:  info.ID,
+		MirrorPath: watch.TranscriptMirrorPath(r.manager.config.RunnerStateDir, info.ID),
+	})
+	if err != nil {
+		return nil
+	}
+	return created
+}
+
+// codexWatcher follows the rollout Codex writes.
+func codexWatcher(info state.SessionInfo) *watch.FileWatcher {
+	sessionsDir := ""
+	if info.ConfigDir != "" {
+		sessionsDir = filepath.Join(info.ConfigDir, "sessions")
+	}
+	watcherArgs := info.Args
+	requireInputMatch := true
+	if providerargs.IsConversationUUID(info.ConversationID) {
+		// The watcher is not launching Codex, so this synthetic resume argv is
+		// only an exact provider-id lookup. Persisting the binding means a
+		// daemon restart can rebuild Conversation without waiting for another
+		// user message or guessing between same-folder rollouts.
+		watcherArgs = []string{"resume", info.ConversationID}
+		requireInputMatch = false
+	}
+	watcher := watch.WatchCodexRollout(watch.CodexWatcherOptions{
+		CWD: info.Cwd, Args: watcherArgs, CreatedAt: time.UnixMilli(info.CreatedAt), SessionsDir: sessionsDir,
+		RequireInputMatch: requireInputMatch,
+	})
+	if requireInputMatch && strings.TrimSpace(info.Description) != "" {
+		// The desktop stores its initial request as the session description
+		// before delivery. On recovery that exact authored text is evidence,
+		// not a timestamp guess: the resolver binds only when one provider
+		// rollout contains the same user message. CLI descriptions which are
+		// merely prose match nothing and remain safely unbound until input.
+		watcher.ExpectInput(info.Description)
+	}
+	return watcher
 }
 
 // bindCodexWatcher makes an exact watcher resolution durable. The resolver

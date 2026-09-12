@@ -2331,6 +2331,16 @@ has read the runner directory. The phase never returns to `loading`: later
 passes are maintenance, not startup. A daemon too old to send the object is
 `ready` by omission, which is what every caller assumed before it existed.
 
+`GET /api/health/deep` carries an additive `background` object: pass name to
+`{"runs":N,"ms":W,"cpu_ms":C}` for every piece of work the daemon does on its
+own initiative (`discovery`, `history-warm`, `runner-sweep`, `activity`,
+`resource-sample`, `mirror-hibernate`, `provider-watch`). `cpu_ms` is the
+process's CPU time over each pass's window, not the pass's alone — Go has no
+per-goroutine CPU clock — so on a busy daemon it is an upper bound. Pass names
+are diagnostic, not a contract: a daemon may add or rename one. A pass that runs
+longer than a second also logs `[background] <name> took Ns (process cpu Ms)`,
+and one still running after five seconds says so while it runs.
+
 **While `phase` is `loading`, a session missing from `/api/sessions` has not
 been re-attached yet — it is not evidence the session is gone.** A client that
 distinguishes them must wait rather than report the session unknown; the CLI

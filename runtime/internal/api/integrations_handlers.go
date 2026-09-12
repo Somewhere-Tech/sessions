@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/somewhere-tech/sessions/runtime/internal/background"
 	"log"
 	"net/http"
 	"strconv"
@@ -40,20 +41,16 @@ func (s *Server) handleIntegrationsRoute(response http.ResponseWriter, request *
 
 	switch {
 	case path == "/api/history":
+		if request.URL.Query().Get("summary") != "true" {
+			// A full listing does the work the warm exists to do. Counting it
+			// is how the warm knows to stand aside; a summary listing counts
+			// nothing, so it does not count here either.
+			s.historyAsked.Add(1)
+		}
 		s.sendHistoryListing(response, request, corsOrigin, live, timer)
 		return true
 	case path == "/api/errors":
-		since, err := errorsSince(request)
-		if err != nil {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-			return true
-		}
-		feed, err := s.integrationEndpoints.ErrorFeed(since)
-		if err != nil {
-			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
-			return true
-		}
-		s.sendJSON(response, http.StatusOK, feed, corsOrigin)
+		s.sendErrorFeed(response, request, corsOrigin)
 		return true
 	}
 
@@ -221,6 +218,22 @@ func (s *Server) sendHistoryListing(
 	timer.logIfSlow("listing")
 }
 
+// sendErrorFeed answers /api/errors: what went wrong, since when the caller
+// asked about.
+func (s *Server) sendErrorFeed(response http.ResponseWriter, request *http.Request, corsOrigin string) {
+	since, err := errorsSince(request)
+	if err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	feed, err := s.integrationEndpoints.ErrorFeed(since)
+	if err != nil {
+		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	s.sendJSON(response, http.StatusOK, feed, corsOrigin)
+}
+
 // refreshIntegrations tells the integrations service what is running before it
 // answers anything, which is what keeps a listing's rows in step with the live
 // sessions rather than a poll behind them.
@@ -265,6 +278,30 @@ func (s *Server) liveSessions(timer *stageTimer) []state.SessionInfo {
 
 var _ listTimer = (*sessionruntime.Manager)(nil)
 
+const (
+	// historyWarmGrace is how long the warm gives a person to ask first. A
+	// client that is already open asks within a second of the daemon starting;
+	// after this, nobody is waiting and the warm is free work.
+	historyWarmGrace = 3 * time.Second
+	historyWarmPoll  = 100 * time.Millisecond
+)
+
+// waitForQuietHistory reports whether the warm should run at all. It stands
+// aside for a real request rather than racing it: the two do the same work, and
+// doing it twice at once is how a 0.3 s listing became a 4.0 s one.
+func (s *Server) waitForQuietHistory() bool {
+	deadline := time.Now().Add(historyWarmGrace)
+	for {
+		if s.historyAsked.Load() > 0 {
+			return false
+		}
+		if time.Now().After(deadline) {
+			return true
+		}
+		time.Sleep(historyWarmPoll)
+	}
+}
+
 // WarmHistory pays the first listing's cost before anybody asks for it.
 //
 // The history store's first pass counts and indexes what it has not seen since
@@ -279,8 +316,17 @@ var _ listTimer = (*sessionruntime.Manager)(nil)
 // work itself, exactly as it does today.
 func (s *Server) WarmHistory(logf func(string, ...any)) {
 	go func() {
+		// Whoever asks first does the work. The warm exists so that nobody has
+		// to wait for it, and a warm that runs beside the first request makes
+		// that request slower instead — on the owner's MacBook, a first listing
+		// cost 4.0 s beside the warm against 0.3 s without it.
+		if !s.waitForQuietHistory() {
+			return
+		}
+		pass := background.Start("history-warm")
 		started := time.Now()
 		_, _ = s.integrationEndpoints.History(s.registry.List(true))
+		pass.Done()
 		if took := time.Since(started); took > slowListingThreshold && logf != nil {
 			logf("[history] warmed the listing cache in %s", round(took))
 		}

@@ -17,7 +17,7 @@ go runtime/internal/recovery/report.go Engine.Report 170
 go runtime/cmd/sessions/search.go app.cmdSearch 168
 go runtime/internal/session/manager_provenance.go Manager.Create 161
 go runtime/cmd/sessions/move.go app.cmdMove 154
-go runtime/internal/api/integrations_handlers.go Server.handleIntegrationsRoute 137
+go runtime/internal/api/integrations_handlers.go Server.handleIntegrationsRoute 133
 go runtime/internal/api/ws.go Server.handleMux 149
 go runtime/cmd/sessions/history.go app.collectConversations 148
 go runtime/cmd/sessions/status.go app.writeStatusCard 145
@@ -52,7 +52,6 @@ go runtime/cmd/sessions/conversation.go app.cmdLast 95
 go runtime/cmd/sessions/source.go app.cmdSource 95
 go runtime/internal/api/files.go Server.handleFSList 95
 go runtime/internal/recovery/adopt.go finishAdoptionAnnotations 95
-go runtime/internal/session/manager_runtime.go runtimeSession.startWatcher 95
 go runtime/internal/migrate/workspace.go PrepareWorkspace 94
 go runtime/internal/recovery/mutate.go Reopen 92
 go runtime/internal/session/retention.go Manager.GCClosed 92

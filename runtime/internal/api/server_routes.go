@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/somewhere-tech/sessions/runtime/internal/background"
 	"io"
 	"log"
 	"math"
@@ -143,9 +144,13 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 					"current": proto.ProtocolVersion, "minimum": proto.MinimumCompatibleVersion, "maximum": proto.MaximumCompatibleVersion,
 				},
 			},
-			"discovering":     s.registry.IsDiscovering(),
-			"sessionsLoaded":  len(s.registry.List(true)),
-			"startup":         s.startupHealth(),
+			"discovering":    s.registry.IsDiscovering(),
+			"sessionsLoaded": len(s.registry.List(true)),
+			"startup":        s.startupHealth(),
+			// What the daemon has done on its own initiative, per named pass.
+			// A burst that is happening right now can be read here rather than
+			// inferred from a fan.
+			"background":      background.Report(),
 			"restore":         restore,
 			"runnerArtifacts": s.runnerArtifactHealth(),
 			"pprof":           s.pprofHealth(),
