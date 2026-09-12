@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
 	sessionruntime "github.com/somewhere-tech/sessions/runtime/internal/session"
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 const (
@@ -28,20 +30,17 @@ func (s *Server) handleIntegrationsRoute(response http.ResponseWriter, request *
 		s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
 		return true
 	}
-	for _, info := range s.registry.List(true) {
-		if session, ok := s.registry.Get(info.ID); ok {
-			if err := s.integrationEndpoints.TrackSession(session); err != nil {
-				log.Printf("[integrations] track runner %s: %v", info.ID, err)
-			}
-		}
-	}
-	if err := s.integrationEndpoints.ObserveFailures(s.registry.List(true)); err != nil {
-		log.Printf("[integrations] observe runner failures: %v", err)
-	}
+	timer := newStageTimer()
+	// One live listing per request. This used to be three — the tracking loop,
+	// the failure observation, and the listing itself each asked the registry
+	// again — and every one of them re-folds the ledger and re-probes every
+	// runner. On a cold daemon that was most of the twelve seconds.
+	live := s.liveSessions(timer)
+	s.refreshIntegrations(live, timer)
 
 	switch {
 	case path == "/api/history":
-		s.sendHistoryListing(response, request, corsOrigin)
+		s.sendHistoryListing(response, request, corsOrigin, live, timer)
 		return true
 	case path == "/api/errors":
 		since, err := errorsSince(request)
@@ -173,6 +172,9 @@ type historyListResponse struct {
 	// it, the cheap view (the one a UI or agent polls) would report a torn
 	// history exactly like a clean one.
 	TranscriptsUnread bool `json:"transcripts_unread,omitempty"`
+	// Timing is where this listing spent its time, in milliseconds per stage.
+	// Present only when the request carried ?timing=1; see docs/http-api.md.
+	Timing map[string]int64 `json:"timing,omitempty"`
 	// UncountedSessions is how many rows carry a message_count that is not a
 	// count. The summary view answers with whatever counts are already cached
 	// and declines to parse the rest, so it is usually partly counted rather
@@ -191,17 +193,97 @@ type historyListResponse struct {
 // HistoryStore.list returns a nil error unconditionally, so History and
 // SearchSessions do too. The 500 branches that used to stand here were the
 // last trace of the old wholesale-failure behaviour and were unreachable.
-func (s *Server) sendHistoryListing(response http.ResponseWriter, request *http.Request, corsOrigin string) {
+func (s *Server) sendHistoryListing(
+	response http.ResponseWriter, request *http.Request, corsOrigin string,
+	live []state.SessionInfo, timer *stageTimer,
+) {
 	archived := s.archivedSessionIDs(request.Context())
+	timer.mark("archived")
+	listing := historyListResponse{}
 	if request.URL.Query().Get("summary") == "true" {
-		sessions, _ := s.integrationEndpoints.SearchSessions(s.registry.List(true))
+		sessions, _ := s.integrationEndpoints.SearchSessions(live)
+		timer.mark("store")
 		markArchived(sessions, archived)
-		s.sendJSON(response, http.StatusOK, historySummaryListing(sessions), corsOrigin)
-		return
+		listing = historySummaryListing(sessions)
+	} else {
+		history, _ := s.integrationEndpoints.History(live)
+		timer.mark("store")
+		markArchived(history.Sessions, archived)
+		listing = historyListResponse{HistoryResponse: history}
 	}
-	history, _ := s.integrationEndpoints.History(s.registry.List(true))
-	markArchived(history.Sessions, archived)
-	s.sendJSON(response, http.StatusOK, historyListResponse{HistoryResponse: history}, corsOrigin)
+	// A caller that asked for the breakdown gets the same numbers the log line
+	// carries. It is opt-in because it is diagnosis, not part of a listing.
+	if request.URL.Query().Get("timing") == "1" {
+		listing.Timing = timer.breakdown()
+	}
+	s.sendJSON(response, http.StatusOK, listing, corsOrigin)
+	timer.mark("encode")
+	timer.logIfSlow("listing")
+}
+
+// refreshIntegrations tells the integrations service what is running before it
+// answers anything, which is what keeps a listing's rows in step with the live
+// sessions rather than a poll behind them.
+func (s *Server) refreshIntegrations(live []state.SessionInfo, timer *stageTimer) {
+	for _, info := range live {
+		if session, ok := s.registry.Get(info.ID); ok {
+			if err := s.integrationEndpoints.TrackSession(session); err != nil {
+				log.Printf("[integrations] track runner %s: %v", info.ID, err)
+			}
+		}
+	}
+	timer.mark("track")
+	if err := s.integrationEndpoints.ObserveFailures(live); err != nil {
+		log.Printf("[integrations] observe runner failures: %v", err)
+	}
+	timer.mark("observe")
+}
+
+// liveSessions lists the sessions once and records where that time went. A
+// runtime that can break its own listing down reports ledger, restore-marker
+// and process-probe time separately, which is the difference between "the
+// listing was slow" and knowing which of them to fix.
+type listTimer interface {
+	ListTimed(bool) ([]state.SessionInfo, sessionruntime.ListTiming)
+}
+
+func (s *Server) liveSessions(timer *stageTimer) []state.SessionInfo {
+	runtime, ok := s.registry.(listTimer)
+	if !ok {
+		live := s.registry.List(true)
+		timer.mark("live")
+		return live
+	}
+	live, timing := runtime.ListTimed(true)
+	timer.markFor("ledger", timing.Ledger)
+	timer.markFor("restores", timing.Restores)
+	timer.markFor("probes", timing.Reality)
+	timer.mark("live")
+	return live
+}
+
+var _ listTimer = (*sessionruntime.Manager)(nil)
+
+// WarmHistory pays the first listing's cost before anybody asks for it.
+//
+// The history store's first pass counts and indexes what it has not seen since
+// this process started; measured against the owner's own directories that is
+// 0.75 s against 0.16 s for every listing after it. Doing it at startup rather
+// than inside the first request is the difference between a person waiting and
+// a daemon working while nobody is looking.
+//
+// It runs in the background on purpose: a daemon must serve immediately, and a
+// machine with a very large history would otherwise hold the listener closed
+// for as long as the scan takes. A request that arrives first simply does the
+// work itself, exactly as it does today.
+func (s *Server) WarmHistory(logf func(string, ...any)) {
+	go func() {
+		started := time.Now()
+		_, _ = s.integrationEndpoints.History(s.registry.List(true))
+		if took := time.Since(started); took > slowListingThreshold && logf != nil {
+			logf("[history] warmed the listing cache in %s", round(took))
+		}
+	}()
 }
 
 type archivedLanesService interface {

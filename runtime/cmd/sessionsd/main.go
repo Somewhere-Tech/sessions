@@ -125,6 +125,10 @@ func main() {
 	// running. The sweep removes nothing for a session that is live, unknown,
 	// or starting; see Manager.SweepStaleRunnerArtifacts.
 	manager.SweepStaleRunnerArtifacts(context.Background())
+	// The first history listing after a restart pays for everything this
+	// process has not seen yet. Start that work now, in the background, so it
+	// is finished — or at least under way — before anybody asks for a listing.
+	handler.WarmHistory(log.Printf)
 	go manager.RunDiscoveryLoop()
 	serveErrors := make(chan error, 1)
 	go func() {

@@ -389,9 +389,34 @@ func (m *Manager) Config() state.Config      { return m.config }
 func (m *Manager) Uptime() time.Duration     { return time.Since(m.started) }
 func (m *Manager) IsDiscovering() bool       { return m.registry.IsDiscovering() }
 func (m *Manager) List(includeExited bool) []state.SessionInfo {
+	infos, _ := m.ListTimed(includeExited)
+	return infos
+}
+
+// ListTiming is where a listing spent its time. It exists because a twelve
+// second first listing on the owner's machine could not be attributed from
+// outside this function: the store was measured at 0.38 s, and the rest was
+// here. Durations only — no ids, no paths — so the breakdown can be logged.
+type ListTiming struct {
+	// Ledger is the projection fold. It is the cold cost after a restart: the
+	// projection is incremental, so the first caller pays for the whole ledger
+	// and every later one pays for what has happened since.
+	Ledger time.Duration
+	// Restores reads the paused-after-reboot markers; Reality probes the
+	// processes of runners the daemon has lost contact with.
+	Restores time.Duration
+	Reality  time.Duration
+}
+
+// ListTimed is List with the breakdown. Callers that can report it use this;
+// everything else keeps calling List.
+func (m *Manager) ListTimed(includeExited bool) ([]state.SessionInfo, ListTiming) {
 	ctx := context.Background()
+	var timing ListTiming
 	infos := m.registry.List(includeExited)
+	ledgerStart := time.Now()
 	states, err := m.ledgerStates(ctx)
+	timing.Ledger = time.Since(ledgerStart)
 	if err != nil {
 		log.Printf("[ledger] read session list: %v", err)
 	}
@@ -401,9 +426,13 @@ func (m *Manager) List(includeExited bool) []state.SessionInfo {
 	// clothes. withDurableClosed adds ended records only when they were asked
 	// for.
 	infos = m.withDurableClosedStates(infos, states, includeExited)
+	restoreStart := time.Now()
 	infos = m.withPendingRestores(infos)
+	timing.Restores = time.Since(restoreStart)
+	realityStart := time.Now()
 	infos = m.withRunnerReality(infos)
-	return m.withProvenanceStates(infos, states)
+	timing.Reality = time.Since(realityStart)
+	return m.withProvenanceStates(infos, states), timing
 }
 
 func (m *Manager) withRunnerReality(infos []state.SessionInfo) []state.SessionInfo {

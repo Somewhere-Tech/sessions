@@ -17,7 +17,7 @@ go runtime/internal/recovery/report.go Engine.Report 170
 go runtime/cmd/sessions/search.go app.cmdSearch 168
 go runtime/internal/session/manager_provenance.go Manager.Create 161
 go runtime/cmd/sessions/move.go app.cmdMove 154
-go runtime/internal/api/integrations_handlers.go Server.handleIntegrationsRoute 140
+go runtime/internal/api/integrations_handlers.go Server.handleIntegrationsRoute 137
 go runtime/internal/api/ws.go Server.handleMux 149
 go runtime/cmd/sessions/history.go app.collectConversations 148
 go runtime/cmd/sessions/status.go app.writeStatusCard 145

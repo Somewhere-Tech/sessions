@@ -2322,6 +2322,16 @@ minus those records — and indices are assigned over the records that decoded.
 `unreadable_sessions`; [`docs/INTEGRATIONS.md`](../../docs/INTEGRATIONS.md) is
 the field-level contract.
 
+`GET /api/history?timing=1` adds an additive `timing` object to the response:
+stage name to milliseconds (`ledger_ms`, `restores_ms`, `probes_ms`, `live_ms`,
+`track_ms`, `observe_ms`, `archived_ms`, `store_ms`, `encode_ms`) plus
+`total_ms`. Stage names are diagnostic, not a contract: a daemon may add or
+rename one, and a reader must treat any key it does not recognize as another
+stage. It carries durations only — no paths, ids or titles — so it can be
+pasted into a bug report. The same numbers are logged as one line whenever a
+listing exceeds two seconds. Without the parameter the field is absent, which
+is what every existing client sees.
+
 Native search viewing first requests
 `GET /api/history/<id>/window?format=json&start=N&end=M`; `end` is exclusive.
 One response spans at most 500 original message positions; omitting `end`
