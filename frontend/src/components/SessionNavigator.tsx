@@ -32,8 +32,8 @@ import { useProjects } from '../hooks/useProjects';
 import { buildInboxLayout, buildProviderFaultNotices, type ProviderFaultNotice, type SessionGrouping } from '../lib/inboxSections';
 import { InboxSections, ProviderFaultBanners } from './InboxSections';
 import { useFleetProjects } from '../hooks/useFleetProjects';
-import { groupCollaborators, isSavedCollaborator } from '../lib/projectCollaborators';
-import { ProjectCollaborators } from './ProjectCollaborators';
+import { groupAgents, isSavedAgent } from '../lib/projectAgents';
+import { ProjectAgents } from './ProjectAgents';
 
 const ContinueElsewhereButton = lazy(() => import('./ContinueElsewhereButton').then((module) => ({ default: module.ContinueElsewhereButton })));
 
@@ -399,7 +399,7 @@ export function SessionNavigator({
     if (!sessionMatchesWindowScope(session)) return false;
     if (primary === 'needs' && !sessionNeedsYou(session)) return false;
     if (primary === 'working' && (!session.working || session.exited)) return false;
-    if (primary === 'ended' && !isSavedCollaborator(session)) return false;
+    if (primary === 'ended' && !isSavedAgent(session)) return false;
     const normalized = normalizeProvider(session.tool);
     if (provider !== 'all' && (provider === 'shell' ? session.tool !== 'terminal' : normalized !== provider)) return false;
     if (project !== 'all' && projectName(session) !== project) return false;
@@ -418,8 +418,8 @@ export function SessionNavigator({
   const projectSnapshots = fleetSnapshots.map((snapshot) => snapshot.server.id === activeMachineId
     ? { ...snapshot, sessions }
     : snapshot);
-  const collaboratorGroups = groupCollaborators(projectSnapshots, fleetProjects, false, matches);
-  const savedGroups = groupCollaborators(projectSnapshots, fleetProjects, true, matches);
+  const agentGroups = groupAgents(projectSnapshots, fleetProjects, false, matches);
+  const savedGroups = groupAgents(projectSnapshots, fleetProjects, true, matches);
   // Project membership comes from the daemon; the inbox groups the single
   // machine's live rows by it and folds recent finished ones per project.
   const projectLookup = useProjects(navigatorSessions.map((session) => session.id), !showingAllMachines);
@@ -836,17 +836,17 @@ export function SessionNavigator({
         {showingAllMachines ? <ProviderFaultBanners notices={providerFaultNotices} onOpen={openProviderFault} /> : null}
         {showingAllMachines && primary !== 'ended' ? <div className="session-tree-group session-fleet-scope-group">
           <button type="button" className="session-tree-group-head" onClick={() => setRunningOpen((current) => !current)}>
-            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Collaborators</span>
+            <span className="session-group-disclosure"><DisclosureChevron open={runningOpen} /> Agents</span>
           </button>
           {runningOpen ? (
             <>
-              <ProjectCollaborators groups={collaboratorGroups} activeMachineId={activeMachineId}
+              <ProjectAgents groups={agentGroups} activeMachineId={activeMachineId}
                 renderLocal={(row) => renderNode(row.session)} onOpen={onOpenMachineSession}
                 onAdd={onAddProjectAgent ? (row) => onAddProjectAgent(row.server.id, row.session.cwd, { ...row.session.tags }) : undefined} />
-              {fleetSnapshots.some((snapshot) => snapshot.loading) ? <div className="session-tree-empty is-compact">Loading collaborators…</div> : null}
+              {fleetSnapshots.some((snapshot) => snapshot.loading) ? <div className="session-tree-empty is-compact">Loading agents…</div> : null}
               {incompleteProjects ? <p role="status" className="session-tree-empty is-compact">Some project names could not be refreshed. Known agents remain visible, grouped by folder where needed.</p> : null}
               {fleetSnapshots.some((snapshot) => snapshot.error) ? <div className="session-tree-empty is-compact">Some computers haven’t answered. Known projects stay visible.</div> : null}
-              {collaboratorGroups.length === 0 && fleetSnapshots.every((snapshot) => !snapshot.loading && !snapshot.error)
+              {agentGroups.length === 0 && fleetSnapshots.every((snapshot) => !snapshot.loading && !snapshot.error)
                 ? <div className="session-tree-empty is-compact">Add an agent to start working together. Saved conversations are under Resume.</div>
                 : null}
             </>
@@ -859,7 +859,7 @@ export function SessionNavigator({
           {endedOpen ? (
             <>
               <p className="session-tree-empty is-compact">Saved conversations, including agents that need reconnecting. Opening one does not restart it.</p>
-              <ProjectCollaborators groups={savedGroups.map((group) => ({ ...group, rows: showAllEnded ? group.rows : group.rows.slice(0, 3) }))} activeMachineId={activeMachineId}
+              <ProjectAgents groups={savedGroups.map((group) => ({ ...group, rows: showAllEnded ? group.rows : group.rows.slice(0, 3) }))} activeMachineId={activeMachineId}
                 renderLocal={(row) => renderNode(row.session, true)} onOpen={onOpenMachineSession} />
               <button type="button" className="session-all-ended" onClick={onContinue}>Find and resume any conversation →</button>
             </>

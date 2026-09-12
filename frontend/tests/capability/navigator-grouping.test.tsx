@@ -15,7 +15,7 @@ import type { SessionInfo } from '../../src/types';
 
 const GROUPING_KEY = 'sessions:navigator-grouping';
 // This person is looking at one computer: the inbox with its project sections,
-// not the all-machines collaborator view.
+// not the all-machines agent view.
 const MACHINE_SCOPE_KEY = 'sessions:projects-machine-scope';
 const LATER = Date.now() - 60_000;
 const EARLIER = LATER - 3_600_000;

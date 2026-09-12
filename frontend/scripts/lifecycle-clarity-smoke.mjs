@@ -91,8 +91,8 @@ assert.match(navigator, /Start related session…/);
 assert.match(navigator, /Close tab <small>keeps running<\/small>/);
 assert.match(navigator, /filter\(\(session\) => !isAgentLedChild\(session\)\)/);
 assert.doesNotMatch(navigator, /className="session-helper-summary"/);
-// Helpers stay folded away. Only a collaborator's own request for input belongs
-// in its row; a helper needing its manager is not automatically a user decision.
+// Helpers stay folded away. Only an agent's own request for input belongs in
+// its row; a helper needing its manager is not automatically a user decision.
 assert.match(navigator, /session-nav-rollup/);
 assert.doesNotMatch(navigator, /lanesNeedingYou/);
 assert.match(navigator, /sessionNeedsYou\(session\) && session\.idleDetail/);

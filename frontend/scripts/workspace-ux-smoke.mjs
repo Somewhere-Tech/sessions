@@ -58,7 +58,7 @@ assert.match(navigator, /onSelect=\{selectMachineScope\}/,
   'the computer filter must still change the navigator\'s machine scope');
 assert.match(navigator, /onSelect\(configured\.id\)/,
   'connected computers must remain visible as one-click session filters');
-assert.match(await source('src/components/ProjectCollaborators.tsx'), /onOpen\(server\.id, session\.id\)/,
+assert.match(await source('src/components/ProjectAgents.tsx'), /onOpen\(server\.id, session\.id\)/,
   'an aggregate row must retain its machine scope when opened');
 assert.match(fleetSessions, /listServerSessions\(server, controller\.signal\)/,
   'the aggregate inbox must query each already-configured machine directly');
