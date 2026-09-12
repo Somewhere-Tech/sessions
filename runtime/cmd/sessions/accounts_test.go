@@ -169,3 +169,84 @@ func TestAccountsRefusesAnIncompleteRequest(t *testing.T) {
 		}
 	}
 }
+
+// A subscription is signed into once per machine, so adding one has to be
+// possible on the machine that needs it. The request goes through the local
+// daemon's fleet relay — the same route every other --machine verb uses — and
+// carries nothing local to this caller.
+func TestAccountsAddOnAnotherMachineLandsOnThatMachine(t *testing.T) {
+	var paths []string
+	var sessionBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		paths = append(paths, request.Method+" "+request.URL.Path)
+		switch {
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/api/profiles"):
+			var body map[string]string
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			_ = json.NewEncoder(response).Encode(map[string]any{"profile": map[string]any{
+				"tool": body["tool"], "name": body["name"], "label": body["label"],
+				"path": "/state/profiles/" + body["tool"] + "/" + body["name"], "signed_in": false,
+				"sessions": []any{}, "last_used": 0,
+			}})
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/api/sessions"):
+			_ = json.NewDecoder(request.Body).Decode(&sessionBody)
+			_ = json.NewEncoder(response).Encode(map[string]any{"id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SESSIONS_HOST", server.URL)
+	if _, err := saveMachine(home, savedMachine{
+		Alias: "mini", MachineID: "machine-mini", Name: "Mini", Endpoint: "http://10.0.0.2:8787", Transport: "nearby",
+	}, "device-secret"); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"accounts", "add", "work", "--tool", "claude", "--label", "Work — team plan", "--machine", "mini"},
+		strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("accounts add --machine exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	// Both halves of the guided login landed on the machine that was named.
+	want := []string{
+		"POST /api/fleet/machine-mini/api/profiles",
+		"POST /api/fleet/machine-mini/api/sessions",
+	}
+	if strings.Join(paths, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests = %#v, want them relayed to the target machine", paths)
+	}
+	// Nothing local to this caller travels with it. A working directory from
+	// here need not exist over there, and the target daemon has its own default.
+	if _, sent := sessionBody["cwd"]; sent {
+		t.Fatalf("the create carried this caller's working directory: %#v", sessionBody)
+	}
+	if sessionBody["profile"] != "work" || sessionBody["cmd"] != "claude" {
+		t.Fatalf("login session = %#v, want claude in the work account's home", sessionBody)
+	}
+	// And it says where all this happened, so the follow-up command is right.
+	for _, fragment := range []string{"on mini", "--machine mini send"} {
+		if !strings.Contains(stdout.String(), fragment) {
+			t.Errorf("output lacks %q:\n%s", fragment, stdout.String())
+		}
+	}
+}
+
+// A machine nobody has approved is a usage error, not a silent local add.
+func TestAccountsAddRefusesAnUnknownMachine(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"accounts", "add", "work", "--tool", "claude", "--machine", "nowhere"},
+		strings.NewReader(""), &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("accounts add accepted an unknown machine: %q", stdout.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("a refused add wrote to stdout: %q", stdout.String())
+	}
+}

@@ -35,18 +35,33 @@ func (a *app) cmdAccounts(args []string) error {
 	case "list":
 		return a.cmdProfiles(args[1:])
 	default:
-		return fail(1, "usage: sessions accounts [list | add <name> --tool claude|codex [--label TEXT] | forget <name> --tool claude|codex]")
+		return fail(1, "usage: sessions accounts [list | add <name> --tool claude|codex [--label TEXT] [--machine NAME] | forget <name> --tool claude|codex]")
 	}
 }
 
 // cmdAccountsAdd registers the account and opens the provider's own login in a
 // session on the target machine. The login runs where the person can see it —
 // Sessions prints what the provider prints and never handles the credential.
+//
+// --machine names the computer the account belongs to. A subscription is signed
+// into per machine, so adding one on the mini from the laptop has to be a
+// normal thing to ask for: the request goes through the same fleet relay every
+// other --machine verb uses, and nothing local to this caller travels with it —
+// least of all a working directory that need not exist over there.
 func (a *app) cmdAccountsAdd(args []string) error {
 	tool, _ := pluck(&args, "--tool")
 	label, _ := pluck(&args, "--label")
+	machine, hasMachine := pluck(&args, "--machine")
 	if len(args) != 1 || args[0] == "" || (tool != "claude" && tool != "codex") {
-		return fail(1, "usage: sessions accounts add <name> --tool claude|codex [--label TEXT]")
+		return fail(1, "usage: sessions accounts add <name> --tool claude|codex [--label TEXT] [--machine NAME]")
+	}
+	where := ""
+	if hasMachine {
+		alias, err := a.useAccountMachine(machine)
+		if err != nil {
+			return err
+		}
+		where = alias
 	}
 	name := args[0]
 	var created struct {
@@ -73,20 +88,47 @@ func (a *app) cmdAccountsAdd(args []string) error {
 		return err
 	}
 	if a.wantJSON {
-		return writeJSON(a.stdout, map[string]any{
+		answer := map[string]any{
 			"account": created.Profile, "session": info.ID, "signed_in": created.Profile.SignedIn,
-		}, true)
+		}
+		if where != "" {
+			answer["machine"] = where
+		}
+		return writeJSON(a.stdout, answer, true)
 	}
-	fmt.Fprintf(a.stdout, "account %s/%s registered at %s\n", tool, name, created.Profile.Path)
-	fmt.Fprintf(a.stdout, "opened session %s to sign in\n", prefixString(info.ID, 8))
+	on := ""
+	if where != "" {
+		on = " on " + where
+	}
+	fmt.Fprintf(a.stdout, "account %s/%s registered at %s%s\n", tool, name, created.Profile.Path, on)
+	fmt.Fprintf(a.stdout, "opened session %s to sign in%s\n", prefixString(info.ID, 8), on)
+	reach := prefixString(info.ID, 8)
+	scope := ""
+	if where != "" {
+		scope = "--machine " + where + " "
+	}
 	if tool == "claude" {
-		fmt.Fprintf(a.stdout, "run `sessions send %s /login` and follow what it prints; Sessions never sees the credential\n", prefixString(info.ID, 8))
+		fmt.Fprintf(a.stdout, "run `sessions %ssend %s /login` and follow what it prints; Sessions never sees the credential\n", scope, reach)
 	} else {
-		fmt.Fprintf(a.stdout, "watch it with `sessions snap %s`: choose \"Sign in with ChatGPT\" and open the URL it prints\n", prefixString(info.ID, 8))
+		fmt.Fprintf(a.stdout, "watch it with `sessions %ssnap %s`: choose \"Sign in with ChatGPT\" and open the URL it prints\n", scope, reach)
 	}
 	fmt.Fprintln(a.stdout,
 		"check the account in the browser before confirming; `sessions accounts` then reports its login file as present")
 	return nil
+}
+
+// useAccountMachine points the rest of `accounts add` at an approved machine,
+// and says what to do when the name is not one.
+func (a *app) useAccountMachine(reference string) (string, error) {
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		return "", fail(1, "--machine needs the name of an approved machine; `sessions machines` lists them")
+	}
+	alias, err := a.useMachine(reference)
+	if err != nil {
+		return "", fail(1, "%s", err)
+	}
+	return alias, nil
 }
 
 func (a *app) cmdAccountsForget(args []string) error {

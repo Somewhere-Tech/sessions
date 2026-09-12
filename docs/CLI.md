@@ -187,19 +187,22 @@ Examples:
 
 ```text
 Usage:
-  sessions accounts [list | add <name> --tool claude|codex [--label TEXT] | forget <name> --tool claude|codex]
+  sessions accounts [list | add <name> --tool claude|codex [--label TEXT] [--machine NAME] | forget <name> --tool claude|codex]
 
 list and add second Claude or ChatGPT accounts
 
 A second subscription lives in its own provider home with its own login and history; a session picks one with --profile, and delegated lanes inherit their manager's. `accounts` with no arguments is `sessions profiles`.
 
-`accounts add <name> --tool claude|codex` registers the home, records the label you give it, and opens a session on this machine running that provider inside it so the login happens in front of you: Claude through `/login`, Codex through its Sign in with ChatGPT choice. Sessions prints what the provider prints and never handles the credential, the URL, or the code. Check the account in your browser before confirming; the account then reports its login file as present, which means the provider wrote its own sign-in file into that home — the only thing Sessions inspects. It is not a check that the login works, and it says nothing about which account it belongs to.
+`accounts add <name> --tool claude|codex` registers the home, records the label you give it, and opens a session running that provider inside it so the login happens in front of you: Claude through `/login`, Codex through its Sign in with ChatGPT choice. Sessions prints what the provider prints and never handles the credential, the URL, or the code. Check the account in your browser before confirming; the account then reports its login file as present, which means the provider wrote its own sign-in file into that home — the only thing Sessions inspects. It is not a check that the login works, and it says nothing about which account it belongs to.
 
 `accounts forget <name> --tool claude|codex` removes the account from this machine's list and leaves the provider home in place, naming it so you can review or delete it yourself. Adding the same name again re-registers it with its login intact. Subscription logins are the only supported form; there is no API-key path here.
+
+--machine NAME adds the account on another approved computer, through the same fleet relay every other --machine verb uses; for this verb it may also follow the command. A subscription is signed into once per machine, so the sign-in session opens over there; watch it with `sessions --machine NAME snap <id>`. Nothing local to this computer is sent with the request, including a working directory that need not exist there.
 
 Examples:
   sessions accounts
   sessions accounts add work --tool claude --label 'Work — team plan'
+  sessions accounts add work --tool claude --machine mini
   sessions accounts forget work --tool claude
 
 --json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.

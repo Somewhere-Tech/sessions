@@ -198,6 +198,8 @@ intact. Sessions has no command that deletes a provider home.
 
 **From the CLI.** `sessions accounts` lists them with labels and a LOGIN-FILE
 column carrying the same weak fact,
-`sessions accounts add <name> --tool claude|codex [--label TEXT]` performs the
-same guided login headlessly, and `sessions accounts forget <name> --tool
-claude|codex` unregisters one. `sessions profiles` remains the same listing.
+`sessions accounts add <name> --tool claude|codex [--label TEXT] [--machine
+NAME]` performs the same guided login headlessly — with `--machine` it is
+relayed to that approved computer, and nothing local to the caller is sent with
+it — and `sessions accounts forget <name> --tool claude|codex` unregisters one.
+`sessions profiles` remains the same listing.

@@ -85,19 +85,38 @@ func (a *app) useQualifiedHistoryReference(value *string) (string, error) {
 		}
 		client, err = newAPIClient("127.0.0.1", a.port, tokenPath, true)
 		alias = "local"
+		if err != nil {
+			return "", err
+		}
+		if a.api != nil {
+			a.api.close()
+		}
+		a.api = client
+		*value = historyID
+		return alias, nil
+	}
+	alias, err = a.useMachine(alias)
+	if err != nil {
+		return "", err
+	}
+	*value = historyID
+	return alias, nil
+}
+
+// useMachine points the rest of this command at an approved machine, the way
+// `--machine NAME` does before the command word: through the local daemon's
+// fleet relay, so the saved device credential stays where it was saved. With
+// --direct it dials that machine's endpoint itself.
+func (a *app) useMachine(reference string) (string, error) {
+	machine, err := loadSavedMachine(a.home, reference)
+	if err != nil {
+		return "", err
+	}
+	var client *apiClient
+	if a.direct {
+		client, err = newAPIClient(machine.Endpoint, "", savedMachineTokenPath(a.home, machine.MachineID), false)
 	} else {
-		machine, machineErr := loadSavedMachine(a.home, alias)
-		if machineErr != nil {
-			return "", machineErr
-		}
-		if a.direct {
-			client, err = newAPIClient(
-				machine.Endpoint, "", savedMachineTokenPath(a.home, machine.MachineID), false,
-			)
-		} else {
-			client, err = a.api.withFleetRelay(machine)
-		}
-		alias = machine.Alias
+		client, err = a.api.withFleetRelay(machine)
 	}
 	if err != nil {
 		return "", err
@@ -106,8 +125,7 @@ func (a *app) useQualifiedHistoryReference(value *string) (string, error) {
 		a.api.close()
 	}
 	a.api = client
-	*value = historyID
-	return alias, nil
+	return machine.Alias, nil
 }
 
 func (a *app) approvedFleetTargets() ([]fleetTarget, error) {
