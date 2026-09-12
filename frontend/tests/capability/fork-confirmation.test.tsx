@@ -102,7 +102,7 @@ describe('capability: confirm a conversation fork', () => {
     expect(screen.getByText('Permissions: Ask me')).toBeInTheDocument();
     expect(await screen.findByText('2 messages, about 10 tokens')).toBeInTheDocument();
     expect(screen.getByText(/Tool output, file changes, attachments, sign-in details/)).toBeInTheDocument();
-    expect(screen.getByText('The new collaborator starts only when you press Start.')).toBeInTheDocument();
+    expect(screen.getByText('The new agent starts only when you press Start.')).toBeInTheDocument();
     expect(daemon.requests.filter((request) => request.path === '/api/recovery/fork')).toHaveLength(0);
 
     await user.click(screen.getByRole('button', { name: 'Start Claude (Fable 5)' }));

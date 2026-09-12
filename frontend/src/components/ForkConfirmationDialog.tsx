@@ -131,7 +131,7 @@ export function ForkConfirmationDialog({
     <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
       <section className="dialog dialog-wide paid-start-dialog collaborator-dialog" role="dialog" aria-modal="true" aria-labelledby="fork-confirmation-title">
         <header className="dialog-header">
-          <div><span className="dialog-kicker">Work together</span><h2 id="fork-confirmation-title">Add collaborator</h2></div>
+          <div><span className="dialog-kicker">Work together</span><h2 id="fork-confirmation-title">Add agent</h2></div>
           <button type="button" className="dialog-close" aria-label="Close" disabled={busy} onClick={onClose}>×</button>
         </header>
         <PaidStartPlan
@@ -139,11 +139,11 @@ export function ForkConfirmationDialog({
           plan={plan}
           title={session.name?.trim() || session.description?.trim() || 'Conversation copy'}
           sizeLine={context.mode === 'conversation' ? sizeLine : undefined}
-          intro={`${paidStartProviderName(plan.destination)} joins as an independent collaborator${context.mode === 'conversation' && point ? ' with history through the message you chose' : ''}.`}
+          intro={`${paidStartProviderName(plan.destination)} joins as an independent agent${context.mode === 'conversation' && point ? ' with history through the message you chose' : ''}.`}
           sourceNote={session.exited ? 'The saved original stays unchanged.' : 'The original conversation keeps running.'}
           copyNote={context.mode === 'briefing' ? 'Only the reviewed briefing is provided initially. The original history stays available for specific lookups.' : 'Only your messages and the agent’s replies are copied. Tool output, file changes, attachments, sign-in details, usage totals, and the agent’s behind-the-scenes records stay out.'}
           disabled={busy}
-          assurance="The new collaborator starts only when you press Start."
+          assurance="The new agent starts only when you press Start."
         ><CollaboratorContext value={context} source={session} disabled={busy} /></PaidStartPlan>
         {context.mode === 'conversation' && measured.error ? <div className="dialog-error" role="alert">{measured.error}</div> : null}
         {error ? <div className="dialog-error" role="alert">{error}</div> : null}
