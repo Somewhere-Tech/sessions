@@ -2363,6 +2363,21 @@ stage name to milliseconds (`ledger_ms`, `restores_ms`, `probes_ms`, `live_ms`,
 ledger-derived stages were served from the projection cached against the
 ledger's own high-water sequence, which is exact rather than timed: the cache is
 recomputed on the first read after any event is appended, and never otherwise.
+The ledger stage is broken down further, because a cache hit that still costs
+half a second is not a cache that failed: `ledger_hwm_ms` is the high-water
+query, `ledger_wait_ms` is time spent behind another caller's fold,
+`ledger_fold_ms` is the fold itself (absent or zero on a hit), and
+`ledger_conn_wait_ms` is how much of the read the ledger's connection pool spent
+queueing behind other users of its single connection. These explain the
+`ledger_ms` stage and are not added to the total. `archived_same_snapshot` says
+the archived set was answered about the same ledger snapshot the session list
+read, rather than by asking the ledger where it is a second time; when it is
+false the archived stage read the mark itself. `store_cards_hit` and
+`store_cards_read` count the provider cards this listing served from its
+retained per-file fingerprints against the ones it had to open the conversation
+file to rebuild, so a slow store stage can be attributed to re-reads rather than
+to contention.
+
 Values are therefore not all numbers — a reader must switch on the type or on
 the `_ms` suffix. Stage names are diagnostic, not a contract: a daemon may add or
 rename one, and a reader must treat any key it does not recognize as another

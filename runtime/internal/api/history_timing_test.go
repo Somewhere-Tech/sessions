@@ -381,3 +381,33 @@ func TestWarmHistoryRunsBeforeAnybodyAsks(t *testing.T) {
 	}
 	t.Fatal("a listing after the warm was still slow")
 }
+
+// From the Mini, 11 September: `ledger_cached: true` beside `ledger_ms: 654`.
+// A hit folds nothing, so the listing has to be able to say what the 654 was.
+func TestACachedLedgerStageSaysWhatItWasMadeOf(t *testing.T) {
+	daemon, manager, _ := newTimingDaemonWithLedger(t)
+	defer manager.Close()
+
+	timing := timeListing(t, daemon)
+	if cached, ok := timing["ledger_cached"].(bool); !ok || !cached {
+		t.Fatalf("a listing over an unchanged ledger reported ledger_cached=%#v", timing["ledger_cached"])
+	}
+	// The high-water read is the one thing a hit always pays for, so it is
+	// always reported — including when it rounds to zero milliseconds.
+	if _, ok := timing["ledger_hwm_ms"]; !ok {
+		t.Fatalf("the timing document does not say what the ledger stage was made of: %#v", timing)
+	}
+	// A hit that folded is a contradiction; a hit's fold time must be absent
+	// or zero, never a number the operator has to explain.
+	if fold, ok := timing["ledger_fold_ms"]; ok && fold != float64(0) {
+		t.Fatalf("a cached listing reported a fold of %#v", fold)
+	}
+	// And the archived set is answered about the same snapshot the session list
+	// read, rather than by asking the ledger where it is a second time.
+	if same, ok := timing["archived_same_snapshot"].(bool); !ok || !same {
+		t.Fatalf("archived_same_snapshot = %#v, want the listing's own snapshot", timing["archived_same_snapshot"])
+	}
+	if archived := milliseconds(t, timing, "archived_ms"); archived > 50 {
+		t.Fatalf("the archived stage cost %dms after being handed the snapshot", archived)
+	}
+}

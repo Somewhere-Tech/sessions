@@ -78,6 +78,7 @@ func (h *HistoryStore) Resumable(path string, info os.FileInfo) (watch.Resumable
 		cached.size != info.Size() || cached.modTimeNano != info.ModTime().UnixNano() {
 		return watch.ResumableSession{}, false
 	}
+	h.cardsHit.Add(1)
 	h.cacheClock++
 	cached.used = h.cacheClock
 	h.cache[path] = cached
@@ -89,6 +90,9 @@ func (h *HistoryStore) Resumable(path string, info os.FileInfo) (watch.Resumable
 }
 
 func (h *HistoryStore) StoreResumable(path string, info os.FileInfo, session watch.ResumableSession) {
+	// Storing a card is what a re-read ends with: the scan opened the file
+	// because the fingerprint it had did not describe it.
+	h.cardsRead.Add(1)
 	stored := session
 	stored.SourcePath = ""
 	h.cacheMu.Lock()

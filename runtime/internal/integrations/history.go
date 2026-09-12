@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/backup"
@@ -297,7 +298,22 @@ type historyCacheEntry struct {
 	used      uint64
 }
 
+// CardCounts is how a listing got the provider cards it showed: served from
+// the fingerprints this process kept (and the file it persists across restarts),
+// or read back out of the conversation file because that file had changed.
+//
+// The MacBook's first listing after four separate restarts on 11 September cost
+// between 0.3 s and 4.0 s in the store, with the same persisted cache each
+// time. A cache miss and contention produce the same slow number, and until a
+// listing says which it was, the only way to tell them apart is to guess.
+type CardCounts struct {
+	Hit  int64
+	Read int64
+}
+
 type HistoryStore struct {
+	cardsHit         atomic.Int64
+	cardsRead        atomic.Int64
 	options          HistoryOptions
 	cacheMu          sync.Mutex
 	cacheClock       uint64
@@ -321,6 +337,12 @@ func NewHistoryStore(options HistoryOptions) *HistoryStore {
 	store := &HistoryStore{options: options, cache: make(map[string]historyCacheEntry)}
 	store.loadPersistedCache()
 	return store
+}
+
+// CardCounts is the running total since this process started; callers
+// difference it around the work they are measuring.
+func (h *HistoryStore) CardCounts() CardCounts {
+	return CardCounts{Hit: h.cardsHit.Load(), Read: h.cardsRead.Load()}
 }
 
 func (h *HistoryStore) List(live []state.SessionInfo) (HistoryResponse, error) {

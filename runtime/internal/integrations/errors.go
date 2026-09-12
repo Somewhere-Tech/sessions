@@ -340,6 +340,10 @@ func NewService(options ServiceOptions) *Service {
 	}
 }
 
+// HistoryCardCounts reports the store's cumulative card hits and re-reads, so a
+// listing can say which kind of slow it was.
+func (s *Service) HistoryCardCounts() CardCounts { return s.history.CardCounts() }
+
 func (s *Service) History(live []state.SessionInfo) (HistoryResponse, error) {
 	return s.history.List(live)
 }

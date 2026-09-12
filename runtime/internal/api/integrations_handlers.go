@@ -36,7 +36,7 @@ func (s *Server) handleIntegrationsRoute(response http.ResponseWriter, request *
 	// the failure observation, and the listing itself each asked the registry
 	// again — and every one of them re-folds the ledger and re-probes every
 	// runner. On a cold daemon that was most of the twelve seconds.
-	live := s.liveSessions(timer)
+	live, mark := s.liveSessions(timer)
 	s.refreshIntegrations(live, timer)
 
 	switch {
@@ -47,7 +47,7 @@ func (s *Server) handleIntegrationsRoute(response http.ResponseWriter, request *
 			// nothing, so it does not count here either.
 			s.historyAsked.Add(1)
 		}
-		s.sendHistoryListing(response, request, corsOrigin, live, timer)
+		s.sendHistoryListing(response, request, corsOrigin, live, mark, timer)
 		return true
 	case path == "/api/errors":
 		s.sendErrorFeed(response, request, corsOrigin)
@@ -192,11 +192,12 @@ type historyListResponse struct {
 // last trace of the old wholesale-failure behaviour and were unreachable.
 func (s *Server) sendHistoryListing(
 	response http.ResponseWriter, request *http.Request, corsOrigin string,
-	live []state.SessionInfo, timer *stageTimer,
+	live []state.SessionInfo, mark sessionruntime.LedgerMark, timer *stageTimer,
 ) {
-	archived := s.archivedSessionIDs(request.Context())
+	archived := s.archivedSessionIDs(request.Context(), mark, timer)
 	timer.mark("archived")
 	listing := historyListResponse{}
+	cards := s.integrationEndpoints.HistoryCardCounts()
 	if request.URL.Query().Get("summary") == "true" {
 		sessions, _ := s.integrationEndpoints.SearchSessions(live)
 		timer.mark("store")
@@ -208,6 +209,12 @@ func (s *Server) sendHistoryListing(
 		markArchived(history.Sessions, archived)
 		listing = historyListResponse{HistoryResponse: history}
 	}
+	// How this listing got its provider cards. A store stage of four seconds
+	// means one thing when every card came from the persisted fingerprints and
+	// another when four hundred conversation files had to be opened again.
+	after := s.integrationEndpoints.HistoryCardCounts()
+	timer.note("store_cards_hit", after.Hit-cards.Hit)
+	timer.note("store_cards_read", after.Read-cards.Read)
 	// A caller that asked for the breakdown gets the same numbers the log line
 	// carries. It is opt-in because it is diagnosis, not part of a listing.
 	if request.URL.Query().Get("timing") == "1" {
@@ -260,20 +267,27 @@ type listTimer interface {
 	ListTimed(bool) ([]state.SessionInfo, sessionruntime.ListTiming)
 }
 
-func (s *Server) liveSessions(timer *stageTimer) []state.SessionInfo {
+func (s *Server) liveSessions(timer *stageTimer) ([]state.SessionInfo, sessionruntime.LedgerMark) {
 	runtime, ok := s.registry.(listTimer)
 	if !ok {
 		live := s.registry.List(true)
 		timer.mark("live")
-		return live
+		return live, sessionruntime.LedgerMark{}
 	}
 	live, timing := runtime.ListTimed(true)
 	timer.markFor("ledger", timing.Ledger)
 	timer.note("ledger_cached", timing.LedgerCached)
+	// What the ledger stage was made of. A hit that still costs half a second
+	// is not a cache that failed; it is a query waiting for a connection, and
+	// these three numbers are the difference.
+	timer.detail("ledger_hwm", timing.LedgerHighWater)
+	timer.detail("ledger_wait", timing.LedgerWait)
+	timer.detail("ledger_fold", timing.LedgerFold)
+	timer.detail("ledger_conn_wait", timing.LedgerConnWait)
 	timer.markFor("restores", timing.Restores)
 	timer.markFor("probes", timing.Reality)
 	timer.mark("live")
-	return live
+	return live, timing.Mark
 }
 
 var _ listTimer = (*sessionruntime.Manager)(nil)
@@ -335,6 +349,7 @@ func (s *Server) WarmHistory(logf func(string, ...any)) {
 
 type archivedLanesService interface {
 	ArchivedSessionIDs(context.Context) ([]string, error)
+	ArchivedSessionIDsAt(context.Context, sessionruntime.LedgerMark) ([]string, bool, error)
 }
 
 // The manager is what answers this in production. Asserting it here means a
@@ -346,12 +361,13 @@ var _ archivedLanesService = (*sessionruntime.Manager)(nil)
 // runtime cannot say. A failure to read is logged and answered as none: an
 // unmarked row is what every client already handles, and inventing the flag
 // either way would be a claim about somebody's history that nothing checked.
-func (s *Server) archivedSessionIDs(ctx context.Context) []string {
+func (s *Server) archivedSessionIDs(ctx context.Context, mark sessionruntime.LedgerMark, timer *stageTimer) []string {
 	manager, ok := s.registry.(archivedLanesService)
 	if !ok {
 		return nil
 	}
-	ids, err := manager.ArchivedSessionIDs(ctx)
+	ids, reused, err := manager.ArchivedSessionIDsAt(ctx, mark)
+	timer.note("archived_same_snapshot", reused)
 	if err != nil {
 		log.Printf("[integrations] read archived sessions: %v", err)
 		return nil

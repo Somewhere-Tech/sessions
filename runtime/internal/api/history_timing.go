@@ -35,6 +35,10 @@ type stageTimer struct {
 	// stages was served from a cache, so a slow one can be told from a stale
 	// one without guessing from the numbers.
 	notes map[string]any
+	// details are durations inside a stage, reported but never added to the
+	// total: "the ledger stage took 654 ms and 640 of them were the high-water
+	// query" is one stage and two facts, not two stages.
+	details map[string]time.Duration
 }
 
 type stage struct {
@@ -83,6 +87,19 @@ func (t *stageTimer) markFor(name string, took time.Duration) {
 	t.stages = append(t.stages, stage{name: name, took: took})
 }
 
+// detail records what a stage was made of. It is pure reporting: unlike mark
+// and markFor it does not move the cursor, because the time it names is already
+// counted inside the stage it explains.
+func (t *stageTimer) detail(name string, took time.Duration) {
+	if t == nil || took <= 0 {
+		return
+	}
+	if t.details == nil {
+		t.details = make(map[string]time.Duration, 4)
+	}
+	t.details[name] += took
+}
+
 func (t *stageTimer) total() time.Duration {
 	if t == nil {
 		return 0
@@ -113,6 +130,9 @@ func (t *stageTimer) breakdown() map[string]any {
 	for _, entry := range t.stages {
 		result[entry.name+"_ms"] = entry.took.Milliseconds()
 	}
+	for name, took := range t.details {
+		result[name+"_ms"] = took.Milliseconds()
+	}
 	for name, value := range t.notes {
 		result[name] = value
 	}
@@ -140,7 +160,25 @@ func (t *stageTimer) logIfSlow(what string) {
 	for _, entry := range ordered {
 		parts = append(parts, fmt.Sprintf("%s %s", entry.name, round(entry.took)))
 	}
-	log.Printf("[history] %s took %s: %s%s", what, round(total), strings.Join(parts, ", "), suffix)
+	log.Printf("[history] %s took %s: %s%s%s", what, round(total), strings.Join(parts, ", "), t.detailLine(), suffix)
+}
+
+// detailLine explains the stages that have an explanation, so the log line a
+// person pastes carries the same answer the timing document does.
+func (t *stageTimer) detailLine() string {
+	if len(t.details) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(t.details))
+	for name := range t.details {
+		names = append(names, name)
+	}
+	sort.SliceStable(names, func(left, right int) bool { return t.details[names[left]] > t.details[names[right]] })
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s %s", name, round(t.details[name])))
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }
 
 func round(value time.Duration) string {

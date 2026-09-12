@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // CurrentStateReader returns a detached projection of committed ledger state.
@@ -33,6 +34,19 @@ func (s *Store) HighWaterMark(ctx context.Context) (int64, error) {
 	}
 	return mark, nil
 }
+
+// ConnectionWaitReader reports how long callers have queued for the ledger's
+// single connection. The store keeps one connection so its pragmas stay put,
+// which means every read shares it with every writer: when a listing says its
+// high-water read took half a second, this is how to tell "the query is slow"
+// from "the writers had the connection".
+type ConnectionWaitReader interface {
+	ConnectionWait() time.Duration
+}
+
+// ConnectionWait is the pool's own cumulative wait, since the process started.
+// Callers difference it around the work they are measuring.
+func (s *Store) ConnectionWait() time.Duration { return s.db.Stats().WaitDuration }
 
 type currentProjection struct {
 	mu    sync.Mutex

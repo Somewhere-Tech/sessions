@@ -414,6 +414,18 @@ type ListTiming struct {
 	// reads the log and one that reads a single number to learn it has not
 	// changed.
 	LedgerCached bool
+	// LedgerHighWater, LedgerWait and LedgerFold are what Ledger was made of.
+	// A hit pays the first two and not the third, which is the difference the
+	// Mini's "ledger_cached: true, ledger_ms: 654" could not express.
+	LedgerHighWater time.Duration
+	LedgerWait      time.Duration
+	LedgerFold      time.Duration
+	// LedgerConnWait is the part of this listing the ledger's connection pool
+	// spent queueing behind other users of its single connection.
+	LedgerConnWait time.Duration
+	// Mark is the ledger snapshot this listing describes, so a caller can ask a
+	// second question about the same snapshot without a second query.
+	Mark LedgerMark
 	// Restores reads the paused-after-reboot markers; Reality probes the
 	// processes of runners the daemon has lost contact with.
 	Restores time.Duration
@@ -427,9 +439,15 @@ func (m *Manager) ListTimed(includeExited bool) ([]state.SessionInfo, ListTiming
 	var timing ListTiming
 	infos := m.registry.List(includeExited)
 	ledgerStart := time.Now()
-	states, cached, err := m.ledgerStatesCached(ctx)
+	answer, err := m.readLedger(ctx)
+	states, cached := answer.states, answer.cached
 	timing.LedgerCached = cached
 	timing.Ledger = time.Since(ledgerStart)
+	timing.LedgerHighWater = answer.timing.HighWater
+	timing.LedgerWait = answer.timing.Wait
+	timing.LedgerFold = answer.timing.Fold
+	timing.LedgerConnWait = answer.timing.ConnWait
+	timing.Mark = answer.mark
 	if err != nil {
 		log.Printf("[ledger] read session list: %v", err)
 	}

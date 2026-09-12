@@ -125,6 +125,23 @@ func (m *Manager) ArchivedSessionIDs(ctx context.Context) ([]string, error) {
 	return m.archivedLaneIDs(ctx)
 }
 
+// ArchivedSessionIDsAt answers about the ledger snapshot a caller already read,
+// and says whether it could. One listing asks two questions of the ledger — the
+// session list and the archived set — and reading the high-water mark twice
+// made the second one pay for a query on the connection every writer shares.
+// Passing the mark from the first read makes the second a map lookup, and makes
+// both answers describe the same ledger rather than straddling an event.
+func (m *Manager) ArchivedSessionIDsAt(ctx context.Context, at LedgerMark) ([]string, bool, error) {
+	if m.ledgerReader == nil {
+		return nil, false, errors.New("retention ledger is unavailable")
+	}
+	if ids, _, ok := m.archivedLaneIDsAt(at); ok {
+		return ids, true, nil
+	}
+	ids, err := m.archivedLaneIDs(ctx)
+	return ids, false, err
+}
+
 func (m *Manager) GCClosed(ctx context.Context, cutoffMS int64, dryRun bool) (RetentionResult, error) {
 	result := RetentionResult{DryRun: dryRun, CutoffMS: cutoffMS, Items: []RetentionItem{}}
 	if cutoffMS <= 0 {
