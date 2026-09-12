@@ -3,6 +3,7 @@
 cmd/sessions internal/ansi
 cmd/sessions internal/backup
 cmd/sessions internal/codexapp
+cmd/sessions internal/cpuprofile
 cmd/sessions internal/delivery
 cmd/sessions internal/discovery
 cmd/sessions internal/fleetaccount
@@ -32,6 +33,7 @@ cmd/sessions-runner internal/providerfault
 cmd/sessions-runner internal/state
 cmd/sessions-runner internal/winconpty
 cmd/sessionsd internal/api
+cmd/sessionsd internal/background
 cmd/sessionsd internal/ledger
 cmd/sessionsd internal/relaycmd
 cmd/sessionsd internal/session
@@ -65,6 +67,7 @@ internal/api internal/usage
 internal/api internal/verdict
 internal/api internal/watch
 internal/api internal/webassets
+internal/background internal/cpuprofile
 internal/backup internal/providerargs
 internal/backup internal/state
 internal/backup internal/watch

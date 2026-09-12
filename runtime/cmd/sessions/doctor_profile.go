@@ -4,28 +4,23 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
-	pprofprofile "github.com/google/pprof/profile"
+	"github.com/somewhere-tech/sessions/runtime/internal/cpuprofile"
 )
 
-type cpuProfileFrame struct {
-	Symbol  string  `json:"symbol"`
-	FlatMS  float64 `json:"flat_ms"`
-	Percent float64 `json:"percent"`
-}
-
+// The frame shape and the summariser live in internal/cpuprofile, so the
+// daemon's own burst profile and this command say the same thing about the
+// same bytes.
 type cpuProfileReport struct {
-	Path   string            `json:"path"`
-	Frames []cpuProfileFrame `json:"top_frames"`
+	Path   string             `json:"path"`
+	Frames []cpuprofile.Frame `json:"top_frames"`
 }
 
 func parseDoctorArgs(args []string) (time.Duration, error) {
@@ -45,7 +40,7 @@ func parseDoctorArgs(args []string) (time.Duration, error) {
 func (a *app) captureCPUProfile(deep any, duration time.Duration) (*cpuProfileReport, error) {
 	address := pprofAddress(deep)
 	if address == "" {
-		return nil, fail(2, "sessionsd CPU profiling is off; restart the daemon with SESSIONS_PPROF=127.0.0.1:6060")
+		return nil, fail(2, "sessionsd CPU profiling is off (SESSIONS_PPROF=off); restart the daemon without it, or with SESSIONS_PPROF=127.0.0.1:6060")
 	}
 	if !profileAddressIsLoopback(address) {
 		return nil, fail(2, "sessionsd reported a non-loopback pprof address; refusing to connect")
@@ -69,7 +64,7 @@ func (a *app) captureCPUProfile(deep any, duration time.Duration) (*cpuProfileRe
 	if err != nil {
 		return nil, fail(2, "read sessionsd CPU profile: %v", err)
 	}
-	frames, err := topCPUFrames(encoded, 10)
+	frames, err := cpuprofile.TopFrames(encoded, 10)
 	if err != nil {
 		return nil, fail(2, "decode sessionsd CPU profile: %v", err)
 	}
@@ -127,52 +122,6 @@ func writeCPUProfile(encoded []byte) (string, error) {
 	return path, file.Close()
 }
 
-func topCPUFrames(encoded []byte, limit int) ([]cpuProfileFrame, error) {
-	profile, err := pprofprofile.ParseData(encoded)
-	if err != nil {
-		return nil, err
-	}
-	valueIndex := cpuValueIndex(profile)
-	values := make(map[string]int64)
-	var total int64
-	for _, sample := range profile.Sample {
-		if valueIndex >= len(sample.Value) || len(sample.Location) == 0 {
-			continue
-		}
-		value := sample.Value[valueIndex]
-		total += value
-		values[leafSymbol(sample.Location[0])] += value
-	}
-	frames := make([]cpuProfileFrame, 0, len(values))
-	for symbol, value := range values {
-		percent := 0.0
-		if total > 0 {
-			percent = float64(value) * 100 / float64(total)
-		}
-		frames = append(frames, cpuProfileFrame{Symbol: symbol, FlatMS: float64(value) / 1e6, Percent: percent})
-	}
-	sort.Slice(frames, func(i, j int) bool { return frames[i].FlatMS > frames[j].FlatMS })
-	return frames[:min(limit, len(frames))], nil
-}
-
-func cpuValueIndex(profile *pprofprofile.Profile) int {
-	for index, sampleType := range profile.SampleType {
-		if sampleType.Type == "cpu" || sampleType.Unit == "nanoseconds" {
-			return index
-		}
-	}
-	return max(0, len(profile.SampleType)-1)
-}
-
-func leafSymbol(location *pprofprofile.Location) string {
-	for _, line := range location.Line {
-		if line.Function != nil && line.Function.Name != "" {
-			return line.Function.Name
-		}
-	}
-	return fmt.Sprintf("0x%x", location.Address)
-}
-
 func writeCPUProfileReport(writer io.Writer, report *cpuProfileReport) {
 	if report == nil {
 		return
@@ -180,9 +129,7 @@ func writeCPUProfileReport(writer io.Writer, report *cpuProfileReport) {
 	fmt.Fprintf(writer, "CPU profile: %s\n", report.Path)
 	fmt.Fprintln(writer, "Top 10 CPU frames:")
 	for _, frame := range report.Frames {
-		fmt.Fprintf(writer, "  %8s %6.2f%%  %s\n",
-			(time.Duration(math.Round(frame.FlatMS*1e6)) * time.Nanosecond).Round(time.Millisecond),
-			frame.Percent, frame.Symbol)
+		fmt.Fprintf(writer, "  %8s %6.2f%%  %s\n", frame.Duration(), frame.Percent, frame.Symbol)
 	}
 	fmt.Fprintln(writer)
 }

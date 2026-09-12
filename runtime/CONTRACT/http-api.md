@@ -2331,6 +2331,22 @@ has read the runner directory. The phase never returns to `loading`: later
 passes are maintenance, not startup. A daemon too old to send the object is
 `ready` by omission, which is what every caller assumed before it existed.
 
+`GET /api/health/deep` reports the profile listener as
+`pprof: {"enabled":true,"address":"127.0.0.1:<port>"}`. It is **on by default**,
+bound to loopback on a port the operating system chooses, and
+`SESSIONS_PPROF=off` turns it off. What it serves is the Go runtime's own
+`net/http/pprof` handlers — stack traces, heap and goroutine counters — to
+loopback only: no session content, no conversation, no credential, and nothing
+reachable from another machine. A client must refuse to connect to a
+non-loopback address even if the daemon reports one.
+
+With profiling on, a daemon that stays above 80% of one core for twenty seconds
+*after* it reports `ready` writes one 30-second CPU profile to
+`<state>/profiles/burst-<UTC timestamp>.pprof` — the newest three are kept,
+under a total cap — and logs
+`[burst] 30.0s profile: top frames — a 41%, b 22%, c 9% (saved to …)`. At most
+one capture per ten minutes. The line carries symbol names and percentages only.
+
 `GET /api/health/deep` carries an additive `background` object: pass name to
 `{"runs":N,"ms":W,"cpu_ms":C}` for every piece of work the daemon does on its
 own initiative (`discovery`, `history-warm`, `runner-sweep`, `activity`,

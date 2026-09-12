@@ -994,6 +994,7 @@ daily driver's ledger and sweep the daily driver's runner plists (`docs/DEV.md`)
 | Global idle hook | `<user config root>/hooks.json` | `runtime/internal/state/config.go` |
 | Backup configuration and encryption key | `<user config root>/{backup.json,backup.key}` | `runtime/internal/backup/config.go`, `runtime/internal/backup/encrypt.go` |
 | Runner LaunchAgents on macOS | `~/Library/LaunchAgents/tech.somewhere.sessions.runner.<id>.plist` | `runtime/internal/state/registry.go` |
+| Self-taken CPU profiles | `<state>/profiles/burst-<UTC timestamp>.pprof`, written when the daemon stays above 80% of one core for 20 s after it reports ready; newest three kept, total capped, one capture per ten minutes, and none at all when `SESSIONS_PPROF=off` | `runtime/internal/background/burst.go` |
 | Client cold-start cache (the app's own storage, not the daemon's) | `localStorage`, one key per machine: `sessions:cache:v4:<machine-id>` plus the `sessions:cache:v4-last` pointer. Bounded to the newest 300 rows of the fields a first frame draws — no transcripts, sizes, pids, model/effort, worktree or ending bookkeeping — and written only when those bytes change, at most once per machine every 30 s, flushed when the tab is hidden or closing. Safe to delete: the next listing refills it | `frontend/src/store/sessionCache.ts` |
 
 The event log is persistent and trims toward its lower bound after crossing its

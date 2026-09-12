@@ -56,17 +56,38 @@ notes are intentionally kept out of the public source tree.
 
 ## Profiling sessionsd
 
-CPU profiling is disabled by default. Set `SESSIONS_PPROF` to a loopback IP and
-port before starting `sessionsd` to expose the standard Go `net/http/pprof`
-handlers on a separate listener:
+CPU profiling is on by default, bound to `127.0.0.1` on a port the operating
+system chooses; `sessions doctor` reads the address out of
+`GET /api/health/deep` (`pprof.address`). It exposes the standard Go
+`net/http/pprof` handlers — the runtime's own stack traces, heap and goroutine
+counters — and nothing else: no session content, no conversation, no
+credential, and nothing reachable from another machine.
+
+Set `SESSIONS_PPROF` to pin the port, or to `off` to disable it:
 
 ```sh
-SESSIONS_PPROF=127.0.0.1:6060 sessionsd
+SESSIONS_PPROF=127.0.0.1:6060 sessionsd   # a fixed port
+SESSIONS_PPROF=off sessionsd              # no profile listener at all
 ```
 
 Non-loopback, wildcard, and hostname addresses are refused. The profile
 listener is deliberately separate from the product API and must not be exposed
 through LAN or tailnet routing.
+
+With profiling on, the daemon also profiles its own bursts. When process CPU
+stays above 80% of one core for twenty seconds *after* startup has finished, it
+writes one 30-second profile to `<state>/profiles/burst-<UTC timestamp>.pprof`
+and logs what dominated it:
+
+```text
+[burst] 30.0s profile: top frames — api.(*Server).ServeHTTP 41%, integrations.(*HistoryStore).describe 22%, ledger.applyLaneEvent 9% (saved to /Users/you/.local/state/sessions/profiles/burst-20260912T030058Z.pprof)
+```
+
+The newest three profiles are kept under a total cap, at most one capture every
+ten minutes. Open one with `go tool pprof <file>`. `GET /api/health/deep` also
+carries `routes`: the busiest route shapes of the last five minutes with their
+count, total and maximum wall time, so "the app asked for /api/sessions four
+hundred times" is a number rather than a theory.
 
 With profiling enabled, the local CLI can capture the daemon without needing a
 Go toolchain. It writes the raw profile to the current directory and prints the

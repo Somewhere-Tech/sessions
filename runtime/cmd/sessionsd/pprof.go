@@ -34,10 +34,21 @@ func daemonConfig() (state.Config, *pprofListener) {
 	return config, profiler
 }
 
+// defaultPprofAddress is a loopback listener on a port the operating system
+// chooses. It is on by default because the alternative — asking somebody to
+// restart the daemon with an environment variable after the burst they wanted
+// to profile has passed — is not an answer. What it exposes is the Go runtime's
+// own stack traces and counters, to loopback only: no session content, no
+// conversation, no credential, and nothing reachable from another machine.
+const defaultPprofAddress = "127.0.0.1:0"
+
 func startPprof(raw string) (*pprofListener, error) {
 	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	if strings.EqualFold(raw, "off") || strings.EqualFold(raw, "0") || strings.EqualFold(raw, "false") {
 		return nil, nil
+	}
+	if raw == "" {
+		raw = defaultPprofAddress
 	}
 	host, port, err := net.SplitHostPort(raw)
 	if err != nil {

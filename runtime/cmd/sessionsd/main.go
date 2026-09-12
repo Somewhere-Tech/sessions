@@ -11,11 +11,13 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/api"
+	"github.com/somewhere-tech/sessions/runtime/internal/background"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/relaycmd"
 	"github.com/somewhere-tech/sessions/runtime/internal/session"
@@ -130,6 +132,7 @@ func main() {
 	// is finished — or at least under way — before anybody asks for a listing.
 	handler.WarmHistory(log.Printf)
 	go manager.RunDiscoveryLoop()
+	defer startBurstWatch(config, manager)()
 	serveErrors := make(chan error, 1)
 	go func() {
 		log.Printf("sessionsd listening on http://%s", config.ListenAddress())
@@ -140,8 +143,7 @@ func main() {
 	defer startAutomaticServices(handler, remotePreview)()
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	cleanupPlatformStop := watchPlatformStop(stop)
-	defer cleanupPlatformStop()
+	defer watchPlatformStop(stop)()
 	select {
 	case sig := <-stop:
 		log.Printf("sessionsd: %s received, shutting down", sig)
@@ -153,6 +155,23 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("sessionsd shutdown: %v", err)
 	}
+}
+
+// startBurstWatch has the daemon watch its own CPU. When it stays busy long
+// after it said it was ready — the Mini's 150 seconds at 100-170% — it profiles
+// itself and logs what the top frames were, because by the time anybody could
+// ask, the burst is over. Off when profiling is off.
+func startBurstWatch(config state.Config, manager *session.Manager) func() {
+	if config.PprofAddress == "" {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go background.WatchBurst(ctx, background.BurstOptions{
+		Dir:   filepath.Join(config.StateRoot, "profiles"),
+		Ready: func() bool { return !manager.Startup().Loading() },
+		Logf:  log.Printf,
+	})
+	return cancel
 }
 
 func closeLedger(store *ledger.Store) {
