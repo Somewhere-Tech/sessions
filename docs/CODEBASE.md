@@ -990,7 +990,7 @@ daily driver's ledger and sweep the daily driver's runner plists (`docs/DEV.md`)
 | Fleet-search peer health cache (CLI-local, best effort) | `<user state root>/fleet-search-health.json`, so Windows gets `%LOCALAPPDATA%\Sessions\state`; written only by the CLI, holding the last failure and a five-minute cooldown per approved peer | `runtime/cmd/sessions/fleet.go` |
 | Windows supervisor identity | `%LOCALAPPDATA%\Sessions\state\supervisor.json` | `runtime/cmd/sessionsd/supervisor_windows.go` |
 | Files uploaded to a session | `~/.local/state/sessions/uploads/<stem>-<8 hex><ext>`; an explicit `SESSIONS_STATE_DIR` keeps them inside that scratch state | `runtime/internal/api/files.go` |
-| Lane ledger | `<user state root>/ledger/lanes.sqlite3`; an existing `~/Library/Application Support/sessions/ledger/lanes.sqlite3` is adopted rather than abandoned | `runtime/internal/ledger/store.go` |
+| Lane ledger | `<user state root>/ledger/lanes.sqlite3`; an existing `~/Library/Application Support/sessions/ledger/lanes.sqlite3` is adopted rather than abandoned. Indexes are additive and built on the first open that has them — a build over an existing ledger logs `[ledger] building index … over N events took …`, about 300 ms for a quarter of a million events | `runtime/internal/ledger/store.go` |
 | Global idle hook | `<user config root>/hooks.json` | `runtime/internal/state/config.go` |
 | Backup configuration and encryption key | `<user config root>/{backup.json,backup.key}` | `runtime/internal/backup/config.go`, `runtime/internal/backup/encrypt.go` |
 | Runner LaunchAgents on macOS | `~/Library/LaunchAgents/tech.somewhere.sessions.runner.<id>.plist` | `runtime/internal/state/registry.go` |

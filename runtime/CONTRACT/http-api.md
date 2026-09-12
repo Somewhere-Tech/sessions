@@ -2331,6 +2331,12 @@ has read the runner directory. The phase never returns to `loading`: later
 passes are maintenance, not startup. A daemon too old to send the object is
 `ready` by omission, which is what every caller assumed before it existed.
 
+The lane ledger's schema gains indexes additively. A daemon that opens a ledger
+written before an index existed builds it once, on that open, and logs
+`[ledger] building index <names> over <N> events took <duration>` — a quarter of
+a million events is about 300 ms. No event is rewritten and no reader has to
+know: an index is how a question is answered, never part of what is recorded.
+
 `GET /api/health/deep` reports the profile listener as
 `pprof: {"enabled":true,"address":"127.0.0.1:<port>"}`. It is **on by default**,
 bound to loopback on a port the operating system chooses, and
