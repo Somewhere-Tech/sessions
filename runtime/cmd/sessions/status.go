@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -66,6 +65,10 @@ type statusOutput struct {
 	UnreachableReason string                   `json:"unreachable_reason,omitempty"`
 	UnreachableSince  *int64                   `json:"unreachable_since_ms,omitempty"`
 	RunnerGone        bool                     `json:"runner_gone,omitempty"`
+	// gitMissing is not part of the document: `git` is already null when there
+	// are no facts, and a caller has nothing different to do about the reason.
+	// The card says it because a person on a fresh machine does.
+	gitMissing bool
 }
 
 func (a *app) cmdStatus(args []string) error {
@@ -79,10 +82,7 @@ func (a *app) cmdStatus(args []string) error {
 	current := &record.value
 	id := current.ID
 
-	git, err := inspectGit(current.Cwd)
-	if err != nil {
-		return fail(2, "inspect git in %s: %s", current.Cwd, err)
-	}
+	git, gitMissing := inspectGit(current.Cwd)
 	latest, err := a.latestVerdict(id)
 	if err != nil {
 		return err
@@ -113,7 +113,7 @@ func (a *app) cmdStatus(args []string) error {
 		DescriptionSource: current.DescriptionSource, Record: "session", Tool: toolOfSession(*current),
 		State: state, Cwd: current.Cwd, Profile: current.Profile, ConfigDir: current.ConfigDir,
 		WorktreePath: current.WorktreePath, Branch: current.Branch, Base: current.Base, SourceRepo: current.SourceRepo,
-		Git: git, LastVerdict: summary,
+		Git: git, gitMissing: gitMissing, LastVerdict: summary,
 		LastActivityAt: lastActivityTime.Format(time.RFC3339Nano),
 		CreatedAt:      formatStatusTime(createdAt),
 		AgeMS:          max(now.UnixMilli()-createdAt, 0),
@@ -262,24 +262,33 @@ func (a *app) latestVerdict(id string) (*verdictprotocol.Record, error) {
 	return &record, nil
 }
 
-func inspectGit(cwd string) (*gitStatus, error) {
+// inspectGit reads the git facts status decorates a session with. They are
+// decoration: a machine without git still has sessions, and a status command
+// that refuses to answer because an optional tool is missing has turned a
+// missing nicety into a broken verb. Verified on a Linux container, where
+// `sessions status <id>` failed outright with
+// `inspect git in /: exec: "git": executable file not found in $PATH`.
+//
+// Every outcome that is not "here are the facts" returns no facts and no error.
+// missing reports the one case worth saying out loud, so the card can say why
+// the line is empty rather than leaving a bare dash.
+func inspectGit(cwd string) (status *gitStatus, missing bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil, true
+	}
 	probe := exec.CommandContext(ctx, "git", "-C", cwd, "rev-parse", "--is-inside-work-tree")
 	probeOutput, err := probe.Output()
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, false
 	}
 	if strings.TrimSpace(string(probeOutput)) != "true" {
-		return nil, nil
+		return nil, false
 	}
 	rootOutput, err := exec.CommandContext(ctx, "git", "-C", cwd, "rev-parse", "--show-toplevel").Output()
 	if err != nil {
-		return nil, err
+		return nil, false
 	}
 	root := strings.TrimSpace(string(rootOutput))
 	if home, homeErr := os.UserHomeDir(); homeErr == nil {
@@ -287,13 +296,13 @@ func inspectGit(cwd string) (*gitStatus, error) {
 		absCWD, cwdAbsErr := filepath.Abs(cwd)
 		absRoot, rootAbsErr := filepath.Abs(root)
 		if homeAbsErr == nil && cwdAbsErr == nil && rootAbsErr == nil && absHome == absRoot && absCWD == absRoot {
-			return nil, nil
+			return nil, false
 		}
 	}
 	command := exec.CommandContext(ctx, "git", "-C", cwd, "status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--", ".")
 	encoded, err := command.Output()
 	if err != nil {
-		return nil, err
+		return nil, false
 	}
 	result := &gitStatus{}
 	for _, line := range strings.Split(strings.TrimSuffix(string(encoded), "\n"), "\n") {
@@ -309,7 +318,7 @@ func inspectGit(cwd string) (*gitStatus, error) {
 	if result.Head == "(initial)" {
 		result.Head = ""
 	}
-	return result, nil
+	return result, false
 }
 
 func formatStatusTime(milliseconds int64) string {
@@ -427,7 +436,11 @@ func (a *app) writeStatusCard(output statusOutput, current session, lastActivity
 		}
 	}
 	if output.Git == nil {
-		if _, err := fmt.Fprintln(a.stdout, "  git      -"); err != nil {
+		line := "  git      -"
+		if output.gitMissing {
+			line = "  git      not installed"
+		}
+		if _, err := fmt.Fprintln(a.stdout, line); err != nil {
 			return err
 		}
 	} else {
