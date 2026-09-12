@@ -25,12 +25,12 @@ const limits = {
   // on screen, and the evidence line that shows the provider's own words. CSS
   // cannot be lazily loaded out of this entry, and the alternative was styling
   // a new affordance by reusing rules that mean something else.
-  // entryJavaScript was raised once, on 2026-09-11, by a measured 2.1 KB
-  // (489,814 → 491,900, with the build landing at 491,833): the harness-content
-  // classifier (lib/harnessContent.ts) and the transcript, search and composer
-  // changes that use it. It cannot be deferred — the navigator's last-message
-  // line runs it on first paint, before any lazy chunk could load.
-  entryJavaScript: 491_900,
+  // Lowered on 2026-09-11 from 491,900 to the measured 445,080 plus a little
+  // headroom, after the conversation pane (RemoteView and everything only it
+  // pulls in) moved behind a lazy boundary. Two ratchets in two days had gone
+  // the other way; the boundary gave back 46,753 bytes — far more than they
+  // took — because nothing draws a conversation before a session is opened.
+  entryJavaScript: 446_000,
   entryCSS: 280_341,
   // Deferred code may grow as the product gains secondary surfaces, but no
   // one interaction should have to download an oversized lazy chunk.

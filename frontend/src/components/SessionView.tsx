@@ -1,7 +1,7 @@
-import { Suspense, lazy, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTerminal } from '../hooks/useTerminal';
 import { useSessionSidebar } from '../hooks/useSessionSidebar';
-import { RemoteView, type ProviderFaultView } from './RemoteView';
+import type { ProviderFaultView } from './RemoteView';
 import type { SessionInfo } from '../types';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import { useSessions } from '../store/sessions';
@@ -18,6 +18,11 @@ import { SessionArchiveButton } from './SessionArchiveButton';
 import { ClaudeRuntimeControl } from './ClaudeRuntimeControl';
 import { observedSessionModel } from '../lib/sessionModelLabel';
 const SessionHistoryView = lazy(() => import('./SessionHistoryView').then((module) => ({ default: module.SessionHistoryView })));
+// The conversation pane is the heaviest thing this view renders, and nothing
+// draws it before a session is opened — the navigator paints first. Behind a
+// lazy boundary it stops being entry weight for a person who has not opened one
+// yet. Its type comes through a type-only import, which is erased.
+const RemoteView = lazy(() => import('./RemoteView').then((module) => ({ default: module.RemoteView })));
 import { classifySession } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
@@ -99,6 +104,15 @@ function TerminalProviderFault({ session, onOpenTerminal }: { session: SessionIn
         evidence={session.failureEvidence} retry={session.retry} rich={false}
         placement="banner" onOpenTerminal={onOpenTerminal}
       />
+    </div>
+  );
+}
+
+// The conversation pane, with the boundary its lazily loaded contents need.
+function ConversationPane({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <div className="session-remote-pane">
+      <Suspense fallback={<LoadingShell label="Loading this conversation" />}>{children}</Suspense>
     </div>
   );
 }
@@ -749,7 +763,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             </>
           )}
         </div>
-        <div className="session-remote-pane">
+        <ConversationPane>
           <RemoteView
             sessionId={sessionId}
             events={term.claudeEvents}
@@ -788,7 +802,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             lostConversation={lostConversation && session ? { providerName: session.tool === 'codex' ? 'Codex' : 'Claude', onResume: onContinueConversation ? () => onContinueConversation(session) : undefined, onClose: () => endSession(session.id, 'Closed after Sessions confirmed the runner was gone.') } : undefined}
             statusLabel={statusLabel}
           />
-        </div>
+        </ConversationPane>
         <div className="session-details-pane">
           {session ? <SessionDetails session={session} allSessions={allSessions} onEnd={endSession} onResume={onResume} /> : null}
         </div>
