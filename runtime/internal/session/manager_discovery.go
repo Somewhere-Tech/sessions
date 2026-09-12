@@ -79,6 +79,10 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 	defer m.discoveryMu.Unlock()
 	m.registry.MarkDiscovering(true)
 	defer m.registry.MarkDiscovering(false)
+	// The first pass is startup: it is what a person restarting the daemon is
+	// waiting for, and the only one that reports progress.
+	passStarted := time.Now()
+	defer m.finishStartup()
 
 	processes, snapshotOK := m.processSnapshot(ctx)
 	candidates, deadArtifacts := m.orphanPlistCandidates(processes, snapshotOK)
@@ -90,12 +94,15 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 			delete(deadArtifacts, id)
 		}
 	}
+	m.startup.record("scan", time.Since(passStarted))
 	artifactIDs, err := state.RunnerArtifactIDs(m.config.RunnerStateDir)
 	if err != nil {
 		return fmt.Errorf("read runner state directory: %w", err)
 	}
+	m.startup.setTotal(len(artifactIDs))
 	if err == nil {
 		for _, id := range artifactIDs {
+			m.startup.advance()
 			if existing, exists := m.registry.Get(id); exists && !existing.Info().Unreachable {
 				continue
 			}
@@ -128,7 +135,10 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 			// still take the conservative attach-first path below.
 			identityAlive := m.runnerAliveWithSnapshot(id, metadata.Info, processes, snapshotOK)
 			if metadata.Info.PID > 0 && !identityAlive {
-				if m.attachDiscovered(ctx, probe, metadata) {
+				deadStarted := time.Now()
+				attached := m.attachDiscovered(ctx, probe, metadata)
+				m.startup.record("attach", time.Since(deadStarted))
+				if attached {
 					delete(candidates, id)
 					continue
 				}
@@ -137,6 +147,7 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 				continue
 			}
 			connected := false
+			attachStarted := time.Now()
 			for attempt := 0; attempt < m.options.DiscoveryRetries; attempt++ {
 				runner, attachErr := m.launcher.Attach(ctx, probe)
 				if attachErr == nil {
@@ -150,6 +161,7 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 					return ctx.Err()
 				}
 			}
+			m.startup.record("attach", time.Since(attachStarted))
 			if connected {
 				delete(candidates, id)
 				continue
@@ -175,6 +187,7 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 	if !options.Force && len(ids) > DefaultDiscoveryBatch {
 		ids = ids[:DefaultDiscoveryBatch]
 	}
+	retireStarted := time.Now()
 	var cleanupErrors []error
 	retired := 0
 	for _, id := range ids {
@@ -188,7 +201,10 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 		}
 	}
 	m.recordArtifactSweep(retired, len(allIDs)-retired)
+	m.startup.record("retire", time.Since(retireStarted))
+	ledgerStarted := time.Now()
 	m.reconcileLedger(ctx)
+	m.startup.record("ledger", time.Since(ledgerStarted))
 	return errors.Join(cleanupErrors...)
 }
 

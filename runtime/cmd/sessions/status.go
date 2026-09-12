@@ -208,23 +208,31 @@ func statusDocument(raw json.RawMessage, output statusOutput) (map[string]json.R
 }
 
 func (a *app) resolveStatusRecord(idOrPrefix string) (sessionRecord, error) {
-	records, err := a.fetchSessionRecords(true)
-	if err != nil {
-		return sessionRecord{}, err
+	deadline := a.now().Add(startupWaitBudget)
+	for {
+		records, err := a.fetchSessionRecords(true)
+		if err != nil {
+			return sessionRecord{}, err
+		}
+		sessions := make([]session, 0, len(records))
+		for _, record := range records {
+			sessions = append(sessions, record.value)
+		}
+		candidates := candidatesForSessions(a, sessions)
+		id, found, resolveErr := resolveIDPrefix(idOrPrefix, "session", "sessions ls", candidates)
+		if resolveErr != nil {
+			return sessionRecord{}, resolveErr
+		}
+		if found {
+			return records[candidateIndex(id, candidates)], nil
+		}
+		// A daemon that is still loading has not reached this session yet.
+		// Saying it does not exist is the answer that sent a teammate looking
+		// for a lane that was running the whole time.
+		if !a.waitForLoadingDaemon(deadline) {
+			return sessionRecord{}, fail(1, "%s", unknownSessionMessage(idOrPrefix))
+		}
 	}
-	sessions := make([]session, 0, len(records))
-	for _, record := range records {
-		sessions = append(sessions, record.value)
-	}
-	candidates := candidatesForSessions(a, sessions)
-	id, found, resolveErr := resolveIDPrefix(idOrPrefix, "session", "sessions ls", candidates)
-	if resolveErr != nil {
-		return sessionRecord{}, resolveErr
-	}
-	if !found {
-		return sessionRecord{}, fail(1, "%s", unknownSessionMessage(idOrPrefix))
-	}
-	return records[candidateIndex(id, candidates)], nil
 }
 
 func (a *app) resolveStatusSession(idOrPrefix string) (*session, error) {

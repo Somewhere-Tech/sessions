@@ -145,6 +145,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			},
 			"discovering":     s.registry.IsDiscovering(),
 			"sessionsLoaded":  len(s.registry.List(true)),
+			"startup":         s.startupHealth(),
 			"restore":         restore,
 			"runnerArtifacts": s.runnerArtifactHealth(),
 			"pprof":           s.pprofHealth(),
@@ -453,7 +454,33 @@ func (s *Server) plainHealth(request *http.Request) map[string]any {
 		},
 		"discovering":    s.registry.IsDiscovering(),
 		"sessionsLoaded": len(s.registry.List(true)),
+		"startup":        s.startupHealth(),
 		"restore":        restore,
+	}
+}
+
+// startupService is implemented by a runtime that knows how far through its
+// first discovery pass it is.
+type startupService interface {
+	Startup() sessionruntime.StartupState
+}
+
+// startupHealth says whether this daemon can yet answer for every session it
+// has. A daemon that is still loading is not one that has lost your work, and
+// until this existed there was no way for a caller to tell those apart: a
+// `sessions wait` during the Mini's three-minute re-attach answered "no live
+// session matches" for a lane that was running the whole time.
+//
+// A runtime that cannot report it reads as ready, which is what every caller
+// assumed before this field existed.
+func (s *Server) startupHealth() map[string]any {
+	state := sessionruntime.StartupState{Phase: sessionruntime.StartupReady}
+	if reporter, ok := s.registry.(startupService); ok {
+		state = reporter.Startup()
+	}
+	return map[string]any{
+		"phase": state.Phase, "loaded": state.Loaded,
+		"total": state.Total, "startedAt": state.StartedAt,
 	}
 }
 

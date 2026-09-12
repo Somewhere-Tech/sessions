@@ -173,9 +173,12 @@ type Manager struct {
 	// ledgerCache holds what the ledger says, for as long as the ledger has not
 	// said anything new. See ledger_cache.go.
 	ledgerCache ledgerCache
-	usage       UsageRecorder
-	notify      func(PushPayload)
-	listModels  func(context.Context, string) ([]codexapp.Model, error)
+	// startup is how far through its first discovery pass this daemon is. See
+	// startup.go: a daemon that is still loading is not one that lost your work.
+	startup    *startupProgress
+	usage      UsageRecorder
+	notify     func(PushPayload)
+	listModels func(context.Context, string) ([]codexapp.Model, error)
 
 	deathMu             sync.Mutex
 	laneDeaths          map[string]laneDeathBurst
@@ -344,6 +347,7 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 			})
 		}
 	}
+	manager.startup = newStartupProgress()
 	manager.initializeRuntimeState(ctx)
 	manager.ticker = time.NewTicker(selected.ActivityInterval)
 	manager.startWorker(manager.activityLoop)

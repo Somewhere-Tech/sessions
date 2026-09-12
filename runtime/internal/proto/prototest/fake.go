@@ -21,6 +21,10 @@ type Launcher struct {
 	WakeErr error
 	PID     int
 	Err     error
+	// AttachDelay makes re-attachment slow on purpose, which is the only way
+	// to test what a daemon says while it is still loading: on the owner's
+	// Mini, 593 runners took about three minutes to re-attach.
+	AttachDelay time.Duration
 }
 
 func NewLauncher() *Launcher {
@@ -46,6 +50,12 @@ func (l *Launcher) Launch(_ context.Context, request proto.LaunchRequest) (proto
 }
 
 func (l *Launcher) Attach(_ context.Context, info proto.RunnerInfo) (proto.Runner, error) {
+	l.mu.Lock()
+	delay := l.AttachDelay
+	l.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	runner, ok := l.Runners[info.ID]

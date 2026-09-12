@@ -226,6 +226,23 @@ func pluckWorktreeOptions(args *[]string) (bool, string, error) {
 	return worktree, base, nil
 }
 
+// worktreeSourceCwd is the folder a worktree is cut from: the caller's own
+// directory unless one was named, always absolute.
+func worktreeSourceCwd(cwd string) (string, error) {
+	if cwd == "" {
+		resolved, err := os.Getwd()
+		if err != nil {
+			return "", fail(1, "resolve worktree source cwd: %s", err)
+		}
+		return resolved, nil
+	}
+	resolved, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fail(1, "resolve worktree source cwd: %s", err)
+	}
+	return resolved, nil
+}
+
 func (a *app) cmdNew(args []string) error {
 	if err := a.configureCreateOwner(&args); err != nil {
 		return err
@@ -438,15 +455,11 @@ func (a *app) cmdNew(args []string) error {
 		}
 	}
 	if body.Worktree {
-		if body.Cwd == "" {
-			body.Cwd, err = os.Getwd()
-		} else {
-			body.Cwd, err = filepath.Abs(body.Cwd)
-		}
-		if err != nil {
-			return fail(1, "resolve worktree source cwd: %s", err)
+		if body.Cwd, err = worktreeSourceCwd(body.Cwd); err != nil {
+			return err
 		}
 	}
+	a.announceStartupOnce()
 	var info map[string]any
 	if err := a.postJSON("/api/sessions", body, &info, 2); err != nil {
 		return err

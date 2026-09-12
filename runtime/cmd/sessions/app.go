@@ -133,24 +133,27 @@ type app struct {
 	stdout io.Writer
 	stderr io.Writer
 
-	output         *countingWriter
-	args           []string
-	sub            string
-	host           string
-	port           string
-	wantJSON       bool
-	exitCode       int
-	home           string
-	now            func() time.Time
-	sleep          func(time.Duration)
-	api            *apiClient
-	explicitTarget bool
-	direct         bool
-	listModels     func(context.Context) ([]codexapp.Model, error)
-	runUpdate      func(context.Context, bool) (nativeUpdateResult, error)
-	cliIsCurrent   func(string) bool
-	attachSupport  func(context.Context, supportAttachmentRequest) (supportAttachmentReceipt, error)
-	commands       []commandSpec
+	output   *countingWriter
+	args     []string
+	sub      string
+	host     string
+	port     string
+	wantJSON bool
+	exitCode int
+	home     string
+	now      func() time.Time
+	// announcedStartupWait keeps the "still loading" notice to once per
+	// command, however many times a lookup has to ask again.
+	announcedStartupWait bool
+	sleep                func(time.Duration)
+	api                  *apiClient
+	explicitTarget       bool
+	direct               bool
+	listModels           func(context.Context) ([]codexapp.Model, error)
+	runUpdate            func(context.Context, bool) (nativeUpdateResult, error)
+	cliIsCurrent         func(string) bool
+	attachSupport        func(context.Context, supportAttachmentRequest) (supportAttachmentReceipt, error)
+	commands             []commandSpec
 }
 
 func explainAPIClientNetworkError(client *apiClient, err error) error {

@@ -188,14 +188,22 @@ func (a *app) sessionLabel(value session) string {
 }
 
 func (a *app) resolveSessionID(idOrPrefix string) (string, error) {
-	id, found, err := a.matchSessionID(idOrPrefix)
-	if err != nil {
-		return "", err
+	deadline := a.now().Add(startupWaitBudget)
+	for {
+		id, found, err := a.matchSessionID(idOrPrefix)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			return id, nil
+		}
+		// A daemon that is still loading has not said this session is gone; it
+		// has not got to it yet. Saying "no live session matches" here is what
+		// sent a teammate looking for a lane that was running the whole time.
+		if !a.waitForLoadingDaemon(deadline) {
+			return "", fail(1, "%s", unknownSessionMessage(idOrPrefix))
+		}
 	}
-	if !found {
-		return "", fail(1, "%s", unknownSessionMessage(idOrPrefix))
-	}
-	return id, nil
 }
 
 func (a *app) matchSessionID(idOrPrefix string) (string, bool, error) {

@@ -2322,6 +2322,20 @@ minus those records — and indices are assigned over the records that decoded.
 `unreadable_sessions`; [`docs/INTEGRATIONS.md`](../../docs/INTEGRATIONS.md) is
 the field-level contract.
 
+`GET /api/health` carries an additive `startup` object:
+`{"phase":"loading"|"ready","loaded":N,"total":M,"startedAt":<epoch ms>}`.
+`loading` means the daemon's first discovery pass is still running and it cannot
+yet answer for every session it has; `loaded`/`total` are the runner records
+that pass has dealt with against the ones it found, and `total` is 0 until it
+has read the runner directory. The phase never returns to `loading`: later
+passes are maintenance, not startup. A daemon too old to send the object is
+`ready` by omission, which is what every caller assumed before it existed.
+
+**While `phase` is `loading`, a session missing from `/api/sessions` has not
+been re-attached yet — it is not evidence the session is gone.** A client that
+distinguishes them must wait rather than report the session unknown; the CLI
+does, bounded by each command's own timeout.
+
 A session whose runner is gone carries `lostReason` — one of
 `machine rebooted`, `runner exited`, `daemon lost contact` — and `lostAt`, the
 moment it names. Both are additive and omitted when the daemon cannot say: a

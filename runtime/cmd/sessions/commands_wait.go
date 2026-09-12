@@ -243,6 +243,19 @@ type waitProbe struct {
 	idleMS        int64
 }
 
+// probeLoadingDaemon answers for a target that is not in the listing while the
+// daemon is still loading. It has not said the session is gone; it has not
+// reached it yet. Answering "gone" here is what gave a teammate rc 4 for a lane
+// that was running the whole time, three minutes into a restart with 593
+// sessions. The command's own timeout still bounds the wait.
+func (a *app) probeLoadingDaemon() (waitProbe, bool) {
+	if !a.daemonStartup().loading() {
+		return waitProbe{}, false
+	}
+	a.announceStartupOnce()
+	return waitProbe{human: "waiting for sessionsd to finish loading", humanToStderr: true}, true
+}
+
 // probeSessionWait decides, from one session-list snapshot, whether a session
 // target has finished waiting. `wait <id>` and the fan-out join share it so the
 // two can never drift into disagreeing about what idle means.
@@ -255,6 +268,9 @@ func (a *app) probeSessionWait(tracker *waitTracker, sessions []session, idle ti
 		}
 	}
 	if current == nil {
+		if probe, waiting := a.probeLoadingDaemon(); waiting {
+			return probe
+		}
 		// A target that vanished is the outcome a delegating agent most
 		// needs to distinguish, and it used to report ok:true and exit 0 —
 		// so every loop written as `if rc == 0` treated a dead delegate as

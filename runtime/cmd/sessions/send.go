@@ -426,7 +426,7 @@ func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, _ bool,
 		}
 	}
 	if baseline == nil {
-		return sendResult{}, fail(1, "%s", unknownSessionMessage(id))
+		return sendResult{}, a.missingSessionError(id)
 	}
 	sourceSessionID = a.sourceSessionOnSelectedDaemon(sessions, sourceSessionID)
 	tool := toolOfSession(*baseline)
@@ -826,7 +826,7 @@ func (a *app) sendExplicitOperation(id, text, sourceID, operationID string, time
 		}
 	}
 	if baseline == nil {
-		return sendResult{}, fail(1, "%s", unknownSessionMessage(id))
+		return sendResult{}, a.missingSessionError(id)
 	}
 	if steer && (!baseline.MessageSubmit || toolOfSession(*baseline) != "codex") {
 		return sendResult{}, fail(1, "Steer now requires an updated structured Codex runner. Nothing was sent; keep this draft or send an ordinary follow-up.")

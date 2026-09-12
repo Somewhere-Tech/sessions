@@ -76,6 +76,7 @@ func (a *app) cmdDoctor(args []string) error {
 	if deepMap, ok := deep.(map[string]any); ok {
 		fmt.Fprintf(a.stdout, "daemon: %s sessions, discovering=%s, uptime=%ss\n\n",
 			jsonScalar(deepMap["sessionsLoaded"]), jsonScalar(deepMap["discovering"]), jsonScalar(deepMap["uptimeSec"]))
+		writeDoctorStartup(a.stdout, deepMap["startup"])
 		writeDoctorRestoreHealth(a.stdout, deepMap["restore"])
 		writeDoctorArtifactHealth(a.stdout, deepMap["runnerArtifacts"])
 		writeDoctorTailscale(a.stdout, deepMap["tailscale"])
@@ -155,6 +156,28 @@ func writeDoctorArtifactHealth(writer io.Writer, value any) {
 		return
 	}
 	fmt.Fprintf(writer, "runner artifacts: %.0f stale set(s) retired; %.0f pending bounded cleanup\n\n", retired, pending)
+}
+
+// writeDoctorStartup says whether this daemon can yet answer for every session
+// it has. A daemon that is still loading is not one that lost your work, and a
+// doctor that does not distinguish them sends a person looking for sessions
+// that are simply not attached yet.
+func writeDoctorStartup(writer io.Writer, value any) {
+	startup, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	phase, _ := startup["phase"].(string)
+	if phase != "loading" {
+		return
+	}
+	loaded, _ := startup["loaded"].(float64)
+	total, _ := startup["total"].(float64)
+	if total > 0 {
+		fmt.Fprintf(writer, "startup: still loading sessions (%.0f of %.0f); a session missing from this list may simply not be attached yet\n\n", loaded, total)
+		return
+	}
+	fmt.Fprint(writer, "startup: still loading sessions; a session missing from this list may simply not be attached yet\n\n")
 }
 
 func writeDoctorRestoreHealth(writer io.Writer, value any) {
