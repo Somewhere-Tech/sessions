@@ -432,6 +432,7 @@ func (m *Manager) ListTimed(includeExited bool) ([]state.SessionInfo, ListTiming
 	realityStart := time.Now()
 	infos = m.withRunnerReality(infos)
 	timing.Reality = time.Since(realityStart)
+	infos = withLostReason(infos, states, bootAtMS())
 	return m.withProvenanceStates(infos, states), timing
 }
 

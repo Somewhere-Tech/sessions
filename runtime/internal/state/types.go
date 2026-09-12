@@ -174,7 +174,14 @@ type SessionInfo struct {
 	// process probe found no process belonging to this session. It is derived
 	// for listings and never turns Exited true, because a missing process still
 	// supplies no exit status.
-	RunnerGone             bool   `json:"runnerGone,omitempty"`
+	RunnerGone bool `json:"runnerGone,omitempty"`
+	// LostReason says why a runner is gone, and LostAtMS when. A session shown
+	// as "lost" with nothing else is a dead end: after the owner's MacBook
+	// rebooted, seven sessions read that way and the daemon knew perfectly well
+	// that the machine had restarted under them. One of:
+	// "machine rebooted", "runner exited", "daemon lost contact".
+	LostReason             string `json:"lostReason,omitempty"`
+	LostAtMS               int64  `json:"lostAt,omitempty"`
 	ClaudeCustomTitle      string `json:"claudeCustomTitle,omitempty"`
 	ClaudeAITitle          string `json:"claudeAiTitle,omitempty"`
 	OnIdle                 string `json:"onIdle,omitempty"`

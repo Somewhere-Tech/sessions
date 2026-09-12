@@ -131,7 +131,7 @@ func TestFaultClearsWhenItsEvidenceScrollsAway(t *testing.T) {
 	session.SetProviderFault("claude", providerfault.Fault{
 		Kind: providerfault.KindAuth, Detail: "Claude is not logged in",
 		Evidence: "⏺ API Error: 401 authentication_error",
-	}, 100)
+	}, time.Now().UnixMilli())
 
 	// The screen has moved on: the error line is gone and no login UI replaced
 	// it. Nothing supports the claim any more.
@@ -147,7 +147,7 @@ func TestFaultStaysWhileItsEvidenceIsStillOnScreen(t *testing.T) {
 	session.SetProviderFault("claude", providerfault.Fault{
 		Kind: providerfault.KindAuth, Detail: "Claude is not logged in",
 		Evidence: "⏺ API Error: 401 authentication_error",
-	}, 100)
+	}, time.Now().UnixMilli())
 
 	clearFaultWithoutEvidence(session, IdleClassification{Outcome: IdleBlocked},
 		"⏺ API Error: 401 authentication_error\n> \n")
@@ -163,7 +163,7 @@ func TestFailedTurnWithoutEvidenceRecordsNoProviderFault(t *testing.T) {
 
 	classification, _ := applyProviderOutcome(session, IdleClassification{
 		Outcome: IdleError, Line: "Error: unauthorized while calling the deploy API",
-	}, "", 200)
+	}, "", time.Now().UnixMilli())
 
 	if session.Info().FailureKind != "" {
 		t.Fatalf("a failed turn with no provider evidence recorded %q", session.Info().FailureKind)

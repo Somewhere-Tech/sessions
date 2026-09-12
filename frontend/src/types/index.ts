@@ -166,6 +166,11 @@ export interface SessionInfo {
   // runner process is gone. Unlike a transient disconnect, this is recoverable
   // only by continuing the saved provider conversation in a new runtime.
   runnerGone?: boolean;
+  // Why the runner is gone, and when. A session shown as "lost" with nothing
+  // else is a dead end: after the owner's MacBook rebooted, seven sessions read
+  // that way while the daemon knew the machine had restarted under them.
+  lostReason?: 'machine rebooted' | 'runner exited' | 'daemon lost contact' | string;
+  lostAt?: number;
   // Claude-side session titles, surfaced from the JSONL by sessionsd.
   // claudeCustomTitle: set by Claude's /rename slash command.
   // claudeAiTitle: Claude's own auto-generated summary.

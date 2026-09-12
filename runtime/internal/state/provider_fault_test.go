@@ -67,3 +67,26 @@ func TestNativeClaudeAPIErrorProjectsProviderFault(t *testing.T) {
 		t.Fatalf("native Claude fault = %#v", info)
 	}
 }
+
+// History replay hands a fresh runner every failure that conversation ever
+// had, each carrying its original timestamp. A lane that started cleanly a
+// minute ago must not open showing last week's outage as its current state.
+func TestAFaultOlderThanTheLaneIsNotTheLanesFault(t *testing.T) {
+	const started = 1_757_000_000_000
+	session := &Session{info: SessionInfo{Tool: ToolClaude, CreatedAt: started}}
+
+	session.SetProviderFault("claude", providerfault.Fault{
+		Kind: "provider-unavailable", Detail: "Claude API overloaded",
+	}, started-86_400_000)
+	if info := session.Info(); info.FailureKind != "" {
+		t.Fatalf("a fault from before this lane existed was recorded: %#v", info.FailureKind)
+	}
+
+	// The same fault, during this lane, is this lane's.
+	session.SetProviderFault("claude", providerfault.Fault{
+		Kind: "provider-unavailable", Detail: "Claude API overloaded",
+	}, started+5_000)
+	if info := session.Info(); info.FailureKind != "provider-unavailable" {
+		t.Fatalf("a fault during this lane was dropped: %#v", info)
+	}
+}

@@ -23,7 +23,7 @@ const SessionHistoryView = lazy(() => import('./SessionHistoryView').then((modul
 // lazy boundary it stops being entry weight for a person who has not opened one
 // yet. Its type comes through a type-only import, which is erased.
 const RemoteView = lazy(() => import('./RemoteView').then((module) => ({ default: module.RemoteView })));
-import { classifySession } from '../lib/sessionStatus';
+import { classifySession, lostSessionNote } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
 import { MachineMark } from './MachineMark';
@@ -105,6 +105,18 @@ function TerminalProviderFault({ session, onOpenTerminal }: { session: SessionIn
         placement="banner" onOpenTerminal={onOpenTerminal}
       />
     </div>
+  );
+}
+
+// What the header says about the session itself: the last thing said, and —
+// when the runner is gone — why it is gone and what to do about it.
+function SessionHeaderNotes({ session }: { session: SessionInfo }): JSX.Element {
+  const lost = lostSessionNote(session);
+  return (
+    <>
+      <SessionLastMessage session={session} />
+      {lost ? <span className="session-last-message is-fault" role="status">{lost}</span> : null}
+    </>
   );
 }
 
@@ -561,7 +573,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             ) : <h1>Session</h1>}
             <span className={`session-live-pill${statusTone}`}>{statusLabel}</span>
             {session ? <AccountBadge session={session} className="is-session-head" /> : null}
-            {session ? <SessionLastMessage session={session} /> : null}
+            {session ? <SessionHeaderNotes session={session} /> : null}
             {session ? (
               <span className="session-runtime-anchor">
                 <span

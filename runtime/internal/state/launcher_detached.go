@@ -39,6 +39,9 @@ type DetachedLauncher struct {
 	// forgotten as soon as the process is seen to exit, so a reaped pid the
 	// kernel has handed to something else can never be mistaken for a runner.
 	started map[string]int
+	// exited is how a runner ended, for a launch that is still waiting on its
+	// socket. Cleared when the same session starts again.
+	exited map[string]string
 }
 
 func NewDetachedLauncher(config Config) *DetachedLauncher {
@@ -108,6 +111,9 @@ func (l *DetachedLauncher) Preflight(request proto.LaunchRequest) error {
 			l.describe(), l.config.RunnerPath,
 		)
 	}
+	if err := runnableCwd(request.Info.Cwd); err != nil {
+		return err
+	}
 	if _, ok := runnerCommandPath(request.Info.Cmd, request.Info.Cwd, request.Env["PATH"]); !ok {
 		return fmt.Errorf(
 			"session command %q is not executable in the Sessions runner PATH used by %s; install it under ~/.local/bin or /usr/local/bin, or choose another agent",
@@ -131,7 +137,7 @@ func (l *DetachedLauncher) Launch(ctx context.Context, request proto.LaunchReque
 	}
 	return waitForRunner(ctx, func() (proto.Runner, error) {
 		return l.Attach(ctx, request.Info)
-	}, paths.Socket)
+	}, paths.Socket, l.waitOptions(request.Info.ID))
 }
 
 // start runs one runner detached from this daemon and records its pid.
@@ -167,10 +173,28 @@ func (l *DetachedLauncher) start(id string, spec launchSpec) error {
 		return err
 	}
 	go func() {
-		_ = command.Wait()
+		err := command.Wait()
+		l.recordExit(id, err)
 		l.forgetPID(id, pid)
 	}()
 	return nil
+}
+
+// waitOptions lets the wait end the moment the process does. This launcher
+// started the runner, so "it exited" is a fact it holds rather than something
+// to infer from sixty seconds of silence.
+func (l *DetachedLauncher) waitOptions(id string) waitOptions {
+	return waitOptions{
+		RunnerStateDir: l.config.RunnerStateDir, ID: id,
+		Stopped: func() (string, bool) { return l.exitOf(id) },
+	}
+}
+
+func (l *DetachedLauncher) exitOf(id string) (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	reason, ok := l.exited[id]
+	return reason, ok
 }
 
 func (l *DetachedLauncher) Attach(ctx context.Context, info proto.RunnerInfo) (proto.Runner, error) {
@@ -223,7 +247,7 @@ func (l *DetachedLauncher) wakeFrom(
 	}
 	return waitForRunner(ctx, func() (proto.Runner, error) {
 		return l.Attach(ctx, proto.RunnerInfo{ID: id, SocketPath: paths.Socket})
-	}, paths.Socket)
+	}, paths.Socket, l.waitOptions(id))
 }
 
 // Reap ends the runner this daemon started for id and removes the files that
@@ -251,6 +275,21 @@ func (l *DetachedLauncher) Reap(id string) error {
 	return errors.Join(reapErrors...)
 }
 
+// recordExit remembers how a runner ended, so a launch still waiting for its
+// socket can stop and say so instead of waiting out the deadline.
+func (l *DetachedLauncher) recordExit(id string, err error) {
+	reason := "exited"
+	if err != nil {
+		reason = "exited (" + err.Error() + ")"
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.exited == nil {
+		l.exited = make(map[string]string)
+	}
+	l.exited[id] = reason
+}
+
 func (l *DetachedLauncher) remember(id string, pid int) {
 	if pid <= 0 {
 		return
@@ -261,6 +300,7 @@ func (l *DetachedLauncher) remember(id string, pid int) {
 		l.started = make(map[string]int)
 	}
 	l.started[id] = pid
+	delete(l.exited, id)
 }
 
 func (l *DetachedLauncher) forget(id string) (int, bool) {

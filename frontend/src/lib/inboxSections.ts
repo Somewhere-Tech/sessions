@@ -1,5 +1,5 @@
 import type { SessionInfo } from '../types';
-import { classifySession, sessionHasProviderFault, sessionNeedsYou } from './sessionStatus';
+import { classifySession, lostSessionNote, sessionHasProviderFault, sessionNeedsYou } from './sessionStatus';
 
 // The inbox is organized by attention, then by the work a session belongs to.
 // This module is the pure part: given the sessions in scope and the project
@@ -110,6 +110,10 @@ function isNotConnected(session: SessionInfo): boolean {
 // A one-line reason for the not-connected fold, in the person's words.
 export function notConnectedReason(session: SessionInfo): string {
   if (session.unreachableReason === 'restart-restore-pending') return 'paused after restart · open it or send a message to wake it';
+  // The daemon knows why, when it knows. "runner is gone" is what to say when
+  // nothing more is recorded, not instead of what is.
+  const lost = lostSessionNote(session);
+  if (lost) return lost.toLocaleLowerCase();
   if (session.runnerGone) return 'runner is gone · provider conversation is saved';
   if (session.pid && session.pid > 0) return 'reconnecting to its runner';
   return 'its machine or runner is offline';

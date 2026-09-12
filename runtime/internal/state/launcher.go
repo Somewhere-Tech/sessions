@@ -72,11 +72,31 @@ func (l *LaunchdLauncher) Preflight(request proto.LaunchRequest) error {
 			runtime.GOOS, LauncherEnvVar, err,
 		)
 	}
+	if err := runnableCwd(request.Info.Cwd); err != nil {
+		return err
+	}
 	if _, ok := runnerCommandPath(request.Info.Cmd, request.Info.Cwd, request.Env["PATH"]); !ok {
 		return fmt.Errorf(
 			"session command %q is not executable in the Sessions runner PATH; install it under ~/.local/bin, Homebrew, /usr/local/bin, or choose another agent",
 			request.Info.Cmd,
 		)
+	}
+	return nil
+}
+
+// runnableCwd refuses a launch whose working directory is gone, by name,
+// before anything is started. A deleted worktree used to surface sixty seconds
+// later as a socket timeout, which named neither the directory nor the cause.
+func runnableCwd(cwd string) error {
+	if strings.TrimSpace(cwd) == "" {
+		return nil
+	}
+	info, err := os.Stat(cwd)
+	if err != nil {
+		return fmt.Errorf("the session's working directory %s is not there: %w", cwd, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("the session's working directory %s is not a directory", cwd)
 	}
 	return nil
 }
@@ -135,17 +155,25 @@ func (l *LaunchdLauncher) Attach(ctx context.Context, info proto.RunnerInfo) (pr
 }
 
 func (l *LaunchdLauncher) waitAndAttach(ctx context.Context, info proto.RunnerInfo) (proto.Runner, error) {
-	return waitForRunner(ctx, func() (proto.Runner, error) { return l.Attach(ctx, info) }, info.SocketPath)
+	return waitForRunner(ctx, func() (proto.Runner, error) { return l.Attach(ctx, info) }, info.SocketPath,
+		waitOptions{RunnerStateDir: l.config.RunnerStateDir, ID: info.ID})
 }
 
-// waitForRunner dials until the runner has published its socket. Every
-// launcher needs it, because starting a runner and reaching one are separate
-// events on every platform: the supervisor or the process starts, and some
-// milliseconds later the socket exists.
+// waitForRunner dials until the runner has published its socket, and stops
+// early when the runner has already failed. Every launcher needs it, because
+// starting a runner and reaching one are separate events on every platform:
+// the supervisor or the process starts, and some milliseconds later the socket
+// exists.
+//
+// stopped is how a launcher that owns the process says "it is not coming":
+// waiting the full deadline for a process that exited two seconds ago taught
+// the owner nothing except that Sessions was not watching. Whether it stops
+// early or runs out of time, the failure is reported with the runner's own
+// words from its log rather than as a bare socket timeout.
 func waitForRunner(
-	ctx context.Context, dial func() (proto.Runner, error), socketPath string,
+	ctx context.Context, dial func() (proto.Runner, error), socketPath string, options waitOptions,
 ) (proto.Runner, error) {
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(options.deadline())
 	var lastErr error
 	for {
 		runner, err := dial()
@@ -153,8 +181,13 @@ func waitForRunner(
 			return runner, nil
 		}
 		lastErr = err
+		if options.Stopped != nil {
+			if reason, done := options.Stopped(); done {
+				return nil, options.failure(socketPath, reason, lastErr)
+			}
+		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("runner did not create socket within 60s: %s: %w", socketPath, lastErr)
+			return nil, options.failure(socketPath, "", lastErr)
 		}
 		select {
 		case <-ctx.Done():
@@ -162,6 +195,34 @@ func waitForRunner(
 		case <-time.After(30 * time.Millisecond):
 		}
 	}
+}
+
+// waitOptions is what a launcher knows about the runner it is waiting for.
+type waitOptions struct {
+	RunnerStateDir string
+	ID             string
+	// Stopped reports that the process is gone, with whatever it said on the
+	// way out. A launcher that does not own the process leaves it nil.
+	Stopped func() (string, bool)
+	// Deadline overrides the default wait. Zero means the default.
+	Deadline time.Duration
+}
+
+func (o waitOptions) deadline() time.Duration {
+	if o.Deadline > 0 {
+		return o.Deadline
+	}
+	return 60 * time.Second
+}
+
+func (o waitOptions) failure(socketPath, exitReason string, lastErr error) error {
+	if cause := startupFailure(o.RunnerStateDir, o.ID); cause != "" {
+		return fmt.Errorf("session %s did not start: %s", o.ID, cause)
+	}
+	if exitReason != "" {
+		return fmt.Errorf("session %s did not start: the runner %s before publishing its socket", o.ID, exitReason)
+	}
+	return fmt.Errorf("runner did not create socket within %s: %s: %w", o.deadline(), socketPath, lastErr)
 }
 
 // Wake restarts a runner that stayed paused after a reboot: renew its

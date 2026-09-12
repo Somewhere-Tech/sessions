@@ -2322,6 +2322,16 @@ minus those records — and indices are assigned over the records that decoded.
 `unreadable_sessions`; [`docs/INTEGRATIONS.md`](../../docs/INTEGRATIONS.md) is
 the field-level contract.
 
+A session whose runner is gone carries `lostReason` — one of
+`machine rebooted`, `runner exited`, `daemon lost contact` — and `lostAt`, the
+moment it names. Both are additive and omitted when the daemon cannot say: a
+machine that cannot read its own boot time reports `daemon lost contact`, which
+is what such a daemon knows, rather than guessing a reboot. `POST
+/api/recovery/adopt` follows a source's `reopened_as` chain to its newest link
+and resumes that; when the newest link is still running it answers 409 naming
+the session to open instead, and `force:true` continues from the record as
+given.
+
 `GET /api/history?timing=1` adds an additive `timing` object to the response:
 stage name to milliseconds (`ledger_ms`, `restores_ms`, `probes_ms`, `live_ms`,
 `track_ms`, `observe_ms`, `archived_ms`, `store_ms`, `encode_ms`) plus

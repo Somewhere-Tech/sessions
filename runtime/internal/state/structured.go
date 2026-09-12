@@ -122,6 +122,14 @@ func numericStatus(value any) int {
 // provider outage as the agent's reply. The fault travels in its own fields,
 // which is where a caller that wants to show it reads it.
 func (s *Session) setProviderFaultLocked(provider string, fault providerfault.Fault, at int64) {
+	// A fault older than this lane is somebody else's fault. Replaying a
+	// provider's history into a fresh runner hands it every failure that
+	// conversation ever had, each carrying its original timestamp; without
+	// this, a lane that started cleanly a minute ago could open showing an
+	// outage from last week as its current state.
+	if at > 0 && s.info.CreatedAt > 0 && at < s.info.CreatedAt {
+		return
+	}
 	s.info.FailureKind = fault.Kind
 	s.info.FailureDetail = fault.Detail
 	s.info.FailureProvider = provider

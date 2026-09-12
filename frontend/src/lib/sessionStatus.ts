@@ -200,9 +200,43 @@ export function classifySession(session: SessionInfo, options: ClassifyOptions =
     degraded: isDegradedSession(session),
     needsYou: state === 'needs-you',
     finished: state === 'ended' || state === 'finished',
+    // A lost session is not coming back on its own — unlike a runner the
+    // daemon is still reconnecting to — so it is worth surfacing. The reason
+    // is what distinguishes the two; without one this stays as it was.
     wantsAttention: state === 'needs-recovery' || state === 'needs-you' || state === 'failed'
       || state === 'provider-down' || state === 'auth-needed' || state === 'limited'
+      || Boolean(session.lostReason)
   };
+}
+
+/**
+ * Why a lost session is lost, in one sentence, with what to do about it.
+ *
+ * "Lost" on its own is a dead end: the founder's seven sessions after a reboot
+ * said nothing more, though the daemon knew the machine had restarted under
+ * them. Empty when the session is not lost, so a surface can render it or not
+ * without asking a second question.
+ */
+export function lostSessionNote(session: SessionInfo): string {
+  if (!session.lostReason) return '';
+  const when = session.lostAt ? ` ${relativeWhen(session.lostAt)}` : '';
+  switch (session.lostReason) {
+    case 'machine rebooted':
+      return `Lost when this machine restarted${when} · Resume to continue`;
+    case 'runner exited':
+      return `The agent's process ended${when} · Resume to continue`;
+    default:
+      return `Sessions lost contact with this agent${when} · Resume to continue`;
+  }
+}
+
+function relativeWhen(at: number): string {
+  const minutes = Math.round((Date.now() - at) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
 }
 
 export function sessionHasProviderFault(session: SessionInfo): boolean {

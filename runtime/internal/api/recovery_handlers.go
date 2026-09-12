@@ -124,14 +124,26 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		}
 		resolveOptions := recovery.AdoptionOptions{}
 		if sourceIndex >= 0 {
-			candidate := sourceCandidates[sourceIndex]
-			if candidate.ReopenedAs != "" && candidate.ReopenedAs != body.RepairLaneID {
+			// A person resuming a conversation means the conversation. Follow
+			// the successors to the newest one and resume that, rather than
+			// refusing because this record was continued once already.
+			target := resolveResumeTarget(sourceCandidates, sourceCandidates[sourceIndex], body.RepairLaneID)
+			if target.Refusal != "" && !body.Force {
 				s.sendJSON(response, http.StatusConflict, map[string]any{
-					"error":  "source session is already linked to successor " + candidate.ReopenedAs + "; no session was started",
-					"laneId": candidate.ReopenedAs,
+					"error": target.Refusal + "; no session was started", "laneId": target.Session.ID,
 				}, corsOrigin)
 				return
 			}
+			if len(target.Followed) > 0 && !body.Force {
+				for index, candidate := range sourceCandidates {
+					if candidate.ID == target.Session.ID {
+						sourceIndex = index
+						body.SourceSessionID = candidate.ID
+						break
+					}
+				}
+			}
+			candidate := sourceCandidates[sourceIndex]
 			if candidate.ConfigDir != "" {
 				if candidate.Tool == "claude-code" {
 					resolveOptions.ClaudeProjectsDir = filepath.Join(candidate.ConfigDir, "projects")
@@ -167,15 +179,22 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 				}
 			}
 			if sourceIndex >= 0 && source == nil {
-				candidate := sourceCandidates[sourceIndex]
-				if candidate.ReopenedAs != "" && candidate.ReopenedAs != body.RepairLaneID {
+				target := resolveResumeTarget(sourceCandidates, sourceCandidates[sourceIndex], body.RepairLaneID)
+				if target.Refusal != "" && !body.Force {
 					s.sendJSON(response, http.StatusConflict, map[string]any{
-						"error":  "source session is already linked to successor " + candidate.ReopenedAs + "; no session was started",
-						"laneId": candidate.ReopenedAs,
+						"error": target.Refusal + "; no session was started", "laneId": target.Session.ID,
 					}, corsOrigin)
 					return
 				}
-				source = adoptSourceFromSession(candidate)
+				if len(target.Followed) > 0 && !body.Force {
+					for index, candidate := range sourceCandidates {
+						if candidate.ID == target.Session.ID {
+							sourceIndex = index
+							break
+						}
+					}
+				}
+				source = adoptSourceFromSession(sourceCandidates[sourceIndex])
 			}
 			// A title/history-id resume can discover its source record only after
 			// History resolves it. Carry that record's private provider root into

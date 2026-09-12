@@ -11,6 +11,7 @@ import {
   classifySession,
   endedAtLabel,
   endedSummary,
+  lostSessionNote,
   sessionNeedsYou
 } from '../lib/sessionStatus';
 import {
@@ -578,6 +579,7 @@ export function SessionNavigator({
     const parent = currentParentID ? sessions.find((candidate) => candidate.id === currentParentID) : null;
     const resumedFrom = session.resumedFrom ? sessions.find((candidate) => candidate.id === session.resumedFrom) : null;
     const label = resolvedSessionLabel(session);
+    const lostNote = lostSessionNote(session);
     return (
       <div className="session-tree-node" key={session.id}>
         <div
@@ -612,11 +614,8 @@ export function SessionNavigator({
           {isPinned(session) ? <span className="manager-pin is-pinned" title="Pinned" aria-label="Pinned">📌</span> : null}
           <span className="session-nav-copy">
             <span className="session-nav-title">{label}</span>
-            {sessionNeedsYou(session) && session.idleDetail ? <span className="session-nav-rollup">{session.idleDetail}</span> : null}
-            <SessionLastMessage session={session} />
-            {end ? <span className={`session-nav-ended is-${end.tone}`}>{end.label}</span> : null}
-            {resumedFrom ? <span className="session-nav-parent">Resumed from {resolvedSessionLabel(resumedFrom)}</span> : null}
-            {endedFlat && parent ? <span className="session-nav-parent">Under {resolvedSessionLabel(parent)}</span> : null}
+            <SessionRowLines session={session} end={end} lostNote={lostNote}
+              resumedFrom={resumedFrom} under={endedFlat ? parent : null} />
             <SessionRowMeta
               provider={providerName}
               machine={machine}
@@ -625,7 +624,7 @@ export function SessionNavigator({
             />
           </span>
           {selectingEnded && session.exited ? <span className={`session-row-check${selectedEnded.has(session.id) ? ' is-selected' : ''}`} aria-hidden>{selectedEnded.has(session.id) ? '✓' : ''}</span> : null}
-          {!selectingEnded && end && canContinueSession(session) ? (
+          {!selectingEnded && (end || lostNote) && canContinueSession(session) ? (
             <button
               type="button"
               className="session-row-continue"
@@ -1016,6 +1015,28 @@ function MachineScopeFilter({ machines, scope, showingAll, onSelect }: {
         </button>
       ))}
     </div></details>
+  );
+}
+
+// Everything the row says under its title, in the order a person reads it:
+// what it is waiting for, what was last said, how it ended or how it was lost,
+// and where it came from.
+function SessionRowLines({ session, end, lostNote, resumedFrom, under }: {
+  session: SessionInfo;
+  end: { label: string; tone: string } | null;
+  lostNote: string;
+  resumedFrom?: SessionInfo | null;
+  under?: SessionInfo | null;
+}): JSX.Element {
+  return (
+    <>
+      {sessionNeedsYou(session) && session.idleDetail ? <span className="session-nav-rollup">{session.idleDetail}</span> : null}
+      <SessionLastMessage session={session} />
+      {end ? <span className={`session-nav-ended is-${end.tone}`}>{end.label}</span> : null}
+      {lostNote ? <span className="session-nav-ended is-attention">{lostNote}</span> : null}
+      {resumedFrom ? <span className="session-nav-parent">Resumed from {resolvedSessionLabel(resumedFrom)}</span> : null}
+      {under ? <span className="session-nav-parent">Under {resolvedSessionLabel(under)}</span> : null}
+    </>
   );
 }
 
