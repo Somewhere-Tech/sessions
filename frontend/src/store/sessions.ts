@@ -7,6 +7,13 @@ import {
   sessionMatchesWindowScope
 } from '../lib/windowScope';
 import { reconcileDurableTabLabels } from '../lib/tabLabels';
+import {
+  cacheMachineSessions,
+  lastCachedMachine,
+  migrateLegacyCaches,
+  readMachineCache,
+  type CachedMachine
+} from './sessionCache';
 
 const windowScope = readWindowScope();
 
@@ -158,133 +165,14 @@ interface SessionsState {
 
 // LocalStorage cache so the PWA can render the familiar tab strip
 // instantly on cold-start before the WS / refresh round-trip lands.
-// We only stash what the UI needs to draw a plausible first frame —
-// not the full SessionInfo (working/lastDataAt are stale within
-// seconds anyway). On refresh() the live data overwrites everything.
-const CACHE_KEY = 'sessions:sessions-cache:v3';
-const LEGACY_CACHE_KEY = 'sessions:sessions-cache:v2';
-
-interface CachedSession {
-  id: string;
-  name?: string;
-  description?: string;
-  tags?: Record<string, string>;
-  cmd: string;
-  args: string[];
-  cwd: string;
-  cols: number;
-  rows: number;
-  createdAt: number;
-  pid: number;
-  runnerProtocol?: number;
-  runnerVersion?: string;
-  tool: SessionInfo['tool'];
-  kind?: string;
-  model?: string;
-  effort?: string;
-  fast?: boolean;
-  conversationId?: string;
-  profile?: string;
-  configDir?: string;
-  worktreePath?: string;
-  branch?: string;
-  base?: string;
-  sourceRepo?: string;
-  parentSessionId?: string;
-  delegationKind?: 'user' | 'agent';
-  displayParentSessionId?: string;
-  setAsideAt?: number | null;
-  pinned?: boolean;
-  creatorKind?: string;
-  creatorId?: string;
-  creatorAncestry?: string[];
-  rootCreatorKind?: string;
-  rootCreatorId?: string;
-  provenanceStatus?: string;
-  reopenedAs?: string;
-  resumedFrom?: string;
-  movedToEndpoint?: string;
-  movedToSessionId?: string;
-  movedFromEndpoint?: string;
-  movedFromSessionId?: string;
-  endedByKind?: string;
-  endedById?: string;
-  endedByName?: string;
-  endedByClient?: string;
-  endReason?: string;
-  endOperationId?: string;
-  working?: boolean;
-  lastDataAt?: number;
-  lastUserMessageAt?: number | null;
-  lastHumanMessageAt?: number | null;
-  lastAgentMessageAt?: number | null;
-  idleReason?: SessionInfo['idleReason'];
-  idleDetail?: string;
-  idleSince?: number | null;
-  lastSummary?: string;
-  exited?: boolean;
-  exitCode?: number | null;
-  exitSignal?: string | null;
-  exitReason?: string;
-  exitedAt?: number | null;
-  // Cache Claude-side titles so the PWA cold-start renders the correct
-  // tab label without a flash-of-wrong-name before live data arrives.
-  claudeCustomTitle?: string;
-  claudeAiTitle?: string;
-}
-
-interface CachedSessionEnvelope {
-  serverId: string;
-  sessions: CachedSession[];
-  activeId: string | null;
-}
-
-interface CachedSessionMachine {
-  sessions: CachedSession[];
-  activeId: string | null;
-}
-
-interface CachedSessionFleet {
-  version: 3;
-  lastServerId: string | null;
-  machines: Record<string, CachedSessionMachine>;
-}
-
-function emptyCache(): CachedSessionFleet {
-  return { version: 3, lastServerId: null, machines: {} };
-}
-
-function readCacheFile(): CachedSessionFleet {
-  try {
-    const raw = window.localStorage.getItem(CACHE_KEY);
-    const parsed = raw ? JSON.parse(raw) as CachedSessionFleet : null;
-    if (parsed?.version === 3 && parsed.machines && typeof parsed.machines === 'object') {
-      return parsed;
-    }
-
-    // Migrate the previous single-machine cache without ever relabelling it
-    // as another computer. The first v3 write keeps this entry alongside the
-    // other machines the user visits.
-    const legacyRaw = window.localStorage.getItem(LEGACY_CACHE_KEY);
-    const legacy = legacyRaw ? JSON.parse(legacyRaw) as CachedSessionEnvelope : null;
-    if (legacy && typeof legacy.serverId === 'string' && Array.isArray(legacy.sessions)) {
-      return {
-        version: 3,
-        lastServerId: legacy.serverId,
-        machines: {
-          [legacy.serverId]: { sessions: legacy.sessions, activeId: legacy.activeId }
-        }
-      };
-    }
-  } catch {
-    // Corrupt or unavailable localStorage is equivalent to an empty cache.
-  }
-  return emptyCache();
-}
+// The stored shape, its bounds and its write discipline live in
+// ./sessionCache; this file is about turning a stored row back into a
+// SessionInfo the UI can draw. On refresh() the live data overwrites
+// everything within about a second.
 
 function hydrateCachedMachine(
   serverId: string,
-  cached: CachedSessionMachine | undefined
+  cached: CachedMachine | null
 ): { serverId: string; sessions: SessionInfo[]; activeId: string | null } {
   try {
     if (!cached || !Array.isArray(cached.sessions)) {
@@ -293,7 +181,14 @@ function hydrateCachedMachine(
     const sessions: SessionInfo[] = filterSessionsForWindow(cached.sessions
         .map((c) => ({
           ...c,
-          args: Array.isArray(c.args) ? c.args : [],
+          // Fields the cache no longer carries, because no first frame draws
+          // them. The live listing fills them in.
+          cmd: c.cmd ?? '',
+          args: [],
+          cwd: c.cwd ?? '',
+          cols: 0,
+          rows: 0,
+          pid: 0,
           // Fill the live fields with neutral defaults — they'll be
           // overwritten by refresh() within ~1s of boot. We don't
           // pretend to know whether the cached session is still
@@ -304,9 +199,8 @@ function hydrateCachedMachine(
           lastHumanMessageAt: c.lastHumanMessageAt ?? null,
           lastAgentMessageAt: c.lastAgentMessageAt ?? null,
           exited: c.exited ?? false,
-          exitCode: c.exitCode ?? null,
-          exitSignal: c.exitSignal ?? null,
-          exitReason: c.exitReason,
+          exitCode: null,
+          exitSignal: null,
           exitedAt: c.exitedAt ?? null
         })), windowScope);
     const savedActiveId = cached.activeId;
@@ -320,90 +214,16 @@ function hydrateCachedMachine(
 }
 
 function readCache(serverId?: string): { serverId: string | null; sessions: SessionInfo[]; activeId: string | null } {
-  const cache = readCacheFile();
-  const target = serverId ?? cache.lastServerId;
+  const target = serverId ?? lastCachedMachine();
   if (!target) return { serverId: null, sessions: [], activeId: null };
-  return hydrateCachedMachine(target, cache.machines[target]);
+  return hydrateCachedMachine(target, readMachineCache(target));
 }
 
 function writeCache(serverId: string | null, sessions: SessionInfo[], activeId: string | null): void {
-  if (!serverId) return;
-  try {
-    const stripped: CachedSession[] = sessions.map((s) => ({
-      id: s.id,
-      name: s.name,
-      description: s.description,
-      tags: s.tags,
-      cmd: s.cmd,
-      args: s.args,
-      cwd: s.cwd,
-      cols: s.cols,
-      rows: s.rows,
-      createdAt: s.createdAt,
-      pid: s.pid,
-      runnerProtocol: s.runnerProtocol,
-      runnerVersion: s.runnerVersion,
-      tool: s.tool,
-      kind: s.kind,
-      model: s.model,
-      effort: s.effort,
-      fast: s.fast,
-      conversationId: s.conversationId,
-      profile: s.profile,
-      configDir: s.configDir,
-      worktreePath: s.worktreePath,
-      branch: s.branch,
-      base: s.base,
-      sourceRepo: s.sourceRepo,
-      parentSessionId: s.parentSessionId,
-      delegationKind: s.delegationKind,
-      displayParentSessionId: s.displayParentSessionId,
-      setAsideAt: s.setAsideAt,
-      pinned: s.pinned,
-      creatorKind: s.creatorKind,
-      creatorId: s.creatorId,
-      creatorAncestry: s.creatorAncestry,
-      rootCreatorKind: s.rootCreatorKind,
-      rootCreatorId: s.rootCreatorId,
-      provenanceStatus: s.provenanceStatus,
-      reopenedAs: s.reopenedAs,
-      resumedFrom: s.resumedFrom,
-      movedToEndpoint: s.movedToEndpoint,
-      movedToSessionId: s.movedToSessionId,
-      movedFromEndpoint: s.movedFromEndpoint,
-      movedFromSessionId: s.movedFromSessionId,
-      endedByKind: s.endedByKind,
-      endedById: s.endedById,
-      endedByName: s.endedByName,
-      endedByClient: s.endedByClient,
-      endReason: s.endReason,
-      endOperationId: s.endOperationId,
-      working: s.working,
-      lastDataAt: s.lastDataAt,
-      lastUserMessageAt: s.lastUserMessageAt,
-      lastHumanMessageAt: s.lastHumanMessageAt,
-      lastAgentMessageAt: s.lastAgentMessageAt,
-      idleReason: s.idleReason,
-      idleDetail: s.idleDetail,
-      idleSince: s.idleSince,
-      lastSummary: s.lastSummary,
-      exited: s.exited,
-      exitCode: s.exitCode,
-      exitSignal: s.exitSignal,
-      exitReason: s.exitReason,
-      exitedAt: s.exitedAt,
-      // Persist titles so they survive a PWA cold-start without flashing.
-      claudeCustomTitle: s.claudeCustomTitle,
-      claudeAiTitle: s.claudeAiTitle
-    }));
-    const cache = readCacheFile();
-    cache.lastServerId = serverId;
-    cache.machines[serverId] = { sessions: stripped, activeId };
-    window.localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
-  } catch {
-    // quota / private mode — drop the cache silently
-  }
+  cacheMachineSessions(serverId, sessions, activeId);
 }
+
+migrateLegacyCaches();
 
 const initial = readCache();
 

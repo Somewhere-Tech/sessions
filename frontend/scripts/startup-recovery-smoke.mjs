@@ -8,6 +8,7 @@ const lifecycle = fs.readFileSync(new URL('../../src-tauri/src/lifecycle.rs', im
 const app = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 const recovery = fs.readFileSync(new URL('../src/components/MachineRecoveryNotice.tsx', import.meta.url), 'utf8');
 const sessionsStore = fs.readFileSync(new URL('../src/store/sessions.ts', import.meta.url), 'utf8');
+const sessionCache = fs.readFileSync(new URL('../src/store/sessionCache.ts', import.meta.url), 'utf8');
 
 function requireSource(source, pattern, message) {
   if (!pattern.test(source)) throw new Error(message);
@@ -48,8 +49,13 @@ if (/sessionsError && !sessionsHydrated[\s\S]{0,500}<ConnectScreen/.test(app)) {
 }
 requireSource(sessionsStore, /serverId: string \| null/,
   'the session cache must record which machine produced its rows');
-requireSource(sessionsStore, /machines: Record<string, CachedSessionMachine>/,
+// One key per machine now, rather than one value holding them all: the claim
+// is the same — a machine's last-known rows are its own — and it is kept by
+// where the rows are written rather than by a field inside one blob.
+requireSource(sessionCache, /const KEY_PREFIX = 'sessions:cache:v4:'/,
   'the cache must retain independent last-known rows for every configured machine');
+requireSource(sessionCache, /function keyFor\(serverId: string\): string \{\s*return KEY_PREFIX \+ serverId;/,
+  'each machine must be cached under its own key');
 requireSource(sessionsStore, /if \(get\(\)\.serverId !== serverId\) return/,
   'in-flight session refreshes must not cross machine scopes');
 
