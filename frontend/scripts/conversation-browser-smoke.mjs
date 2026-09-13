@@ -108,6 +108,15 @@ localStorage.removeItem('sessions:search-state:v3');
     'the browser to list conversations with no query typed and nothing clicked'
   );
 
+  // The standalone history mark uses the same black source art as the badge.
+  // Both need dark-theme treatment; the unfiltered mark was black on black.
+  await page.waitForSelector('.parser-icon-img[alt="OpenAI"]');
+  const iconFilter = () => page.$eval('.parser-icon-img[alt="OpenAI"]', (icon) => getComputedStyle(icon).filter);
+  assert.notEqual(await iconFilter(), 'none', 'Codex history mark remains visible in dark mode');
+  await page.$eval('[data-theme]', (root) => root.setAttribute('data-theme', 'light'));
+  assert.equal(await iconFilter(), 'none', 'light mode retains the original dark mark');
+  await page.$eval('[data-theme]', (root) => root.setAttribute('data-theme', 'dark'));
+
   const shot = async (name) => {
     if (!process.env.CONVERSATION_BROWSER_SCREENSHOT) return;
     await page.screenshot({ path: screenshot.replace(/\.png$/, `-${name}.png`), fullPage: true, captureBeyondViewport: false });

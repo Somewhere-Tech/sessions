@@ -272,7 +272,8 @@
 .provider-mark.is-claude { background: color-mix(in srgb, #d97757 13%, var(--bg-elev-2)); }
 .provider-mark.is-claude img { display: block; width: 78%; height: 78%; max-width: none; object-fit: contain; }
 .provider-mark-openai { display: block; width: 70%; height: 70%; object-fit: contain; opacity: .85; }
-[data-theme="dark"] .provider-mark-openai { filter: invert(85%) sepia(19%) saturate(1026%) hue-rotate(121deg) brightness(101%) contrast(88%); }
+[data-theme="dark"] .provider-mark-openai,
+[data-theme="dark"] .parser-icon-img[alt="OpenAI"] { filter: invert(85%) sepia(19%) saturate(1026%) hue-rotate(121deg) brightness(101%) contrast(88%); }
 .provider-mark.is-shell { width: 38px; height: 38px; border-color: color-mix(in srgb, var(--ok) 30%, var(--border)); background: color-mix(in srgb, var(--ok) 9%, var(--bg-elev-2)); color: var(--ok); font: 600 18px var(--font-mono); }
 .provider-badge .provider-mark { border-radius: 5px; }
 .machine-mark {
