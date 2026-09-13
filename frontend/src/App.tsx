@@ -345,10 +345,15 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   const chooseHowToContinue = useCallback((
     session: SessionInfo,
     destinationProvider?: 'claude' | 'codex',
-    runtimeMode?: 'rich' | 'terminal'
+    runtimeMode?: 'rich' | 'terminal',
+    serverId?: string
   ): void => {
     if (!destinationProvider && !runtimeMode) {
-      void resumeSelected(session);
+      if (serverId) {
+        useServers.getState().setActive(serverId);
+        setServerScope(serverId);
+      }
+      void resumeSelected(session, serverId);
       return;
     }
     setDialogOpen({
@@ -358,7 +363,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       destinationProvider,
       runtimeMode
     });
-  }, [resumeSelected]);
+  }, [resumeSelected, setServerScope]);
   const forkSession = useCallback(async (
     session: SessionInfo,
     destinationProvider: 'claude' | 'codex',

@@ -33,9 +33,9 @@ import { buildInboxLayout, buildProviderFaultNotices, type ProviderFaultNotice, 
 import { InboxSections, ProviderFaultBanners } from './InboxSections';
 import { useFleetProjects } from '../hooks/useFleetProjects';
 import { groupAgents, isSavedAgent } from '../lib/projectAgents';
-import { ProjectAgents } from './ProjectAgents';
 
 const ContinueElsewhereButton = lazy(() => import('./ContinueElsewhereButton').then((module) => ({ default: module.ContinueElsewhereButton })));
+const ProjectAgents = lazy(() => import('./ProjectAgents').then((module) => ({ default: module.ProjectAgents })));
 
 type PrimaryFilter = 'all' | 'needs' | 'working' | 'ended';
 type ProviderFilter = 'all' | 'claude' | 'codex' | 'shell';
@@ -169,7 +169,7 @@ interface Props {
   onNew: () => void;
   onAddProjectAgent?: (serverId: string, cwd: string, tags: Record<string, string>) => void;
   onContinue: () => void;
-  onResumeSession: (session: SessionInfo, destinationProvider?: 'claude' | 'codex') => void;
+  onResumeSession: (session: SessionInfo, destinationProvider?: 'claude' | 'codex', runtimeMode?: 'rich' | 'terminal', serverId?: string) => void;
   onForkSession: (session: SessionInfo, destinationProvider: 'claude' | 'codex') => Promise<void>;
   onStartLinked: (sessionId: string) => void;
   openSessionIds: string[];
@@ -840,9 +840,9 @@ export function SessionNavigator({
           </button>
           {runningOpen ? (
             <>
-              <ProjectAgents groups={agentGroups} activeMachineId={activeMachineId}
+              <Suspense fallback={<div className="session-tree-empty is-compact">Loading agents…</div>}><ProjectAgents groups={agentGroups} activeMachineId={activeMachineId}
                 renderLocal={(row) => renderNode(row.session)} onOpen={onOpenMachineSession}
-                onAdd={onAddProjectAgent ? (row) => onAddProjectAgent(row.server.id, row.session.cwd, { ...row.session.tags }) : undefined} />
+                onAdd={onAddProjectAgent ? (row) => onAddProjectAgent(row.server.id, row.session.cwd, { ...row.session.tags }) : undefined} /></Suspense>
               {fleetSnapshots.some((snapshot) => snapshot.loading) ? <div className="session-tree-empty is-compact">Loading agents…</div> : null}
               {incompleteProjects ? <p role="status" className="session-tree-empty is-compact">Some project names could not be refreshed. Known agents remain visible, grouped by folder where needed.</p> : null}
               {fleetSnapshots.some((snapshot) => snapshot.error) ? <div className="session-tree-empty is-compact">Some computers haven’t answered. Known projects stay visible.</div> : null}
@@ -859,8 +859,8 @@ export function SessionNavigator({
           {endedOpen ? (
             <>
               <p className="session-tree-empty is-compact">Saved conversations, including agents that need reconnecting. Opening one does not restart it.</p>
-              <ProjectAgents groups={savedGroups.map((group) => ({ ...group, rows: showAllEnded ? group.rows : group.rows.slice(0, 3) }))} activeMachineId={activeMachineId}
-                renderLocal={(row) => renderNode(row.session, true)} onOpen={onOpenMachineSession} />
+              <Suspense fallback={<div className="session-tree-empty is-compact">Loading saved conversations…</div>}><ProjectAgents groups={savedGroups.map((group) => ({ ...group, rows: showAllEnded ? group.rows : group.rows.slice(0, 3) }))} activeMachineId={activeMachineId}
+                renderLocal={(row) => renderNode(row.session, true)} onOpen={onOpenMachineSession} onResume={(row) => onResumeSession(row.session, undefined, undefined, row.server.id)} /></Suspense>
               <button type="button" className="session-all-ended" onClick={onContinue}>Find and resume any conversation →</button>
             </>
           ) : null}
