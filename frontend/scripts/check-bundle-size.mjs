@@ -30,7 +30,9 @@ const limits = {
   // pulls in) moved behind a lazy boundary. Two ratchets in two days had gone
   // the other way; the boundary gave back 46,753 bytes — far more than they
   // took — because nothing draws a conversation before a session is opened.
-  entryJavaScript: 446_000,
+  // Reviewed 2026-09-13: reply/queue truth fixes measure 446,005 bytes.
+  // Keep 95 bytes of headroom rather than obscure ordering logic to save five.
+  entryJavaScript: 446_100,
   entryCSS: 280_341,
   // Deferred code may grow as the product gains secondary surfaces, but no
   // one interaction should have to download an oversized lazy chunk.
