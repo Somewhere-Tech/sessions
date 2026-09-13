@@ -849,15 +849,17 @@ function SessionViewRouter(props: Props): JSX.Element {
   // this on every parent render, and the deps below already name the only
   // values the effect reads.
   const { onStatusChange } = props;
+  const savedTool = session?.tool;
+  const savedOnly = Boolean(session && (session.exited || session.runnerGone || session.unreachableReason === 'restart-restore-pending'));
   useEffect(() => {
-    if (!session?.exited || !onStatusChange) return;
+    if (!savedOnly || !onStatusChange) return;
     onStatusChange({
       isWorking: false,
-      parserIcon: session.tool === 'claude-code' ? '🟠' : session.tool === 'codex' ? '🟢' : '⬛',
-      parserName: session.tool === 'claude-code' ? 'Claude' : session.tool === 'codex' ? 'Codex' : 'Terminal',
+      parserIcon: savedTool === 'claude-code' ? '🟠' : savedTool === 'codex' ? '🟢' : '⬛',
+      parserName: savedTool === 'claude-code' ? 'Claude' : savedTool === 'codex' ? 'Codex' : 'Terminal',
       terminalStatus: 'closed'
     });
-  }, [onStatusChange, session?.exited, session?.tool]);
+  }, [onStatusChange, savedOnly, savedTool]);
   if (!session && !hydrated) return <LoadingShell label="Loading this session" />;
   if (!session) {
     return (
@@ -869,7 +871,7 @@ function SessionViewRouter(props: Props): JSX.Element {
       </div>
     );
   }
-  if (session.exited) {
+  if (savedOnly) {
     return (
       <Suspense fallback={null}>
         <SessionHistoryView session={session} onResume={props.onResume} onFork={props.onFork} onCloseView={props.onCloseView} onOpenSession={props.onOpenSession} onBack={props.onBack} />

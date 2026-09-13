@@ -32,6 +32,6 @@ export default defineConfig({
     // Fail loudly rather than silently passing an empty run.
     passWithNoTests: false,
     restoreMocks: true,
-    css: false
+    css: true
   }
 });

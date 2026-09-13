@@ -1,8 +1,7 @@
 // CAPABILITY: unavailable provider conversations and provider-owned terminal
 // choices say exactly what the person can do next.
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen, waitFor } from '@testing-library/react';
 import { SessionView } from '../../src/components/SessionView';
 import { effectiveSessionView, preferNextSessionView } from '../../src/lib/sessionViewPreference';
 import { classifySnapshotComposerState } from '../../src/lib/detectMultiChoice';
@@ -52,7 +51,7 @@ describe('capability: lost and waiting state truth', () => {
     expect(effectiveSessionView('remote', false, false)).toBe('terminal');
   });
 
-  it('shows one lost-conversation recovery card with consistent surrounding state', async () => {
+  it('shows a lost conversation as explicit read-only history', async () => {
     const lost = makeSession({
       id: 'lost-codex',
       name: 'Lost recovery demo',
@@ -71,34 +70,22 @@ describe('capability: lost and waiting state truth', () => {
     lost.unreachableReason = 'runner-lost';
     lost.runnerGone = true;
     await useSessions.getState().refresh();
-    const continueConversation = vi.fn();
-    const user = userEvent.setup();
+    const resume = vi.fn();
 
     const { container } = render(
       <Workbench>
-        <SessionView sessionId={lost.id} isActive onContinueConversation={continueConversation} />
+        <SessionView sessionId={lost.id} isActive onResume={resume} />
       </Workbench>
     );
 
-    const card = await screen.findByRole('group', { name: 'Lost conversation recovery' });
-    expect(screen.getAllByRole('group', { name: 'Lost conversation recovery' })).toHaveLength(1);
-    expect(within(card).getByText('The runner is gone. Your Codex conversation is saved.')).toBeInTheDocument();
+    expect(await screen.findByText('Lost')).toBeInTheDocument();
+    expect(screen.getByText('Viewing does not resume or send anything.')).toBeInTheDocument();
     const view = container.querySelector<HTMLElement>('.session-view');
     expect(view).not.toBeNull();
-    expect(view!.querySelector('.session-live-pill')).toHaveTextContent('Not connected');
-    expect(view!.querySelector('.sidebar-run-state')).toHaveTextContent('Not connected');
-    expect(within(view!).queryByText('Terminal unavailable')).not.toBeInTheDocument();
-    const composer = within(view!).getByRole('textbox');
-    expect(composer).toBeDisabled();
-    expect(composer).toHaveAttribute('placeholder', 'This session is not connected, so messages cannot be sent.');
-    expect(within(view!).queryByText('Ready')).not.toBeInTheDocument();
-
-    await user.click(within(card).getByRole('button', { name: 'Resume conversation…' }));
-    expect(continueConversation).toHaveBeenCalledWith(expect.objectContaining({ id: lost.id }));
+    expect(view).toHaveClass('view-history');
+    expect(resume).not.toHaveBeenCalled();
     expect(daemon.adopted).toEqual([]);
-
-    await user.click(within(card).getByRole('button', { name: 'Close' }));
-    await waitFor(() => expect(daemon.ended).toEqual([lost.id]));
+    expect(daemon.ended).toEqual([]);
   });
 
   it('maps the appearance snapshot to needs-you and keeps its question in the inbox', async () => {

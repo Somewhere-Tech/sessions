@@ -6,7 +6,7 @@ import { useSessions } from '../store/sessions';
 import type { SessionInfo } from '../types';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import { SessionDetails } from './SessionDetails';
-import { canContinueSession, continuationSession, endedAtLabel, endedSummary } from '../lib/sessionStatus';
+import { canContinueSession, continuationSession, endedAtLabel, endedSummary, lostSessionNote } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
 import { SessionArchiveButton } from './SessionArchiveButton';
@@ -15,6 +15,16 @@ import { ConversationForkButton } from './ConversationForkButton';
 
 const INITIAL_PREVIEW_MESSAGES = 60;
 const MAX_PREVIEW_MESSAGES = 400;
+
+function savedRecoverySummary(session: SessionInfo, allSessions: SessionInfo[]) {
+  const paused = session.unreachableReason === 'restart-restore-pending';
+  const lost = Boolean(session.runnerGone);
+  const recoveryReason = lost ? lostSessionNote(session) : paused ? 'Paused after this computer restarted.' : '';
+  const end = recoveryReason
+    ? { label: lost ? 'Runner lost' : 'Paused after restart', detail: recoveryReason, tone: 'attention' }
+    : endedSummary(session, allSessions);
+  return { paused, lost, recoveryReason, end };
+}
 
 interface Props {
   session: SessionInfo;
@@ -56,11 +66,11 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
     : session.parentSessionId;
   const parent = displayParentID ? allSessions.find((item) => item.id === displayParentID) : null;
   const provider = normalizeProvider(session.tool);
-  const end = endedSummary(session, allSessions);
+  const { paused, lost, recoveryReason, end } = savedRecoverySummary(session, allSessions);
   const continuation = continuationSession(session, allSessions);
   const hasContinuation = Boolean(continuation || session.reopenedAs || session.movedToSessionId);
   const continuationIsLive = Boolean(continuation && !continuation.exited);
-  const lifecycleLabel = continuationIsLive ? 'Continued · live' : hasContinuation ? 'Continued' : 'Ended';
+  const lifecycleLabel = continuationIsLive ? 'Continued · live' : hasContinuation ? 'Continued' : lost ? 'Lost' : paused ? 'Paused' : 'Ended';
   const endInitiator = session.endedByKind === 'session' && session.endedById
     ? allSessions.find((item) => item.id === session.endedById)
     : null;
@@ -188,7 +198,7 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
       </header>
       <div className="session-toolbar">
         {supportsConversation ? <div className="view-toggle is-content-switch"><button type="button" className="view-toggle-btn is-active">Conversation</button></div> : <span className="history-shell-label">Shell session</span>}
-        <span className="status-text">{hasContinuation ? `Original runtime ended ${endedAtLabel(session)} · ${continuationIsLive ? 'live continuation' : 'continued elsewhere'}` : `Ended ${endedAtLabel(session)} · read-only history`}</span>
+        <span className="status-text">{recoveryReason ? `${recoveryReason} Read-only history.` : hasContinuation ? `Original runtime ended ${endedAtLabel(session)} · ${continuationIsLive ? 'live continuation' : 'continued elsewhere'}` : `Ended ${endedAtLabel(session)} · read-only history`}</span>
         {onFork && provider ? (
           <ConversationForkButton
             active={forkMode}
@@ -222,7 +232,7 @@ export function SessionHistoryView({ session, onResume, onFork, onCloseView, onO
                 {endInitiator && onOpenSession ? (
                   <button type="button" className="session-ended-actor" onClick={() => onOpenSession(endInitiator.id)}>{end.label}</button>
                 ) : <strong>{end.label}</strong>}
-                <span>{endedAtLabel(session)}</span>
+                <span>{recoveryReason ? 'Runtime not contacted' : endedAtLabel(session)}</span>
               </div>
               <p>{end.detail}</p>
               <p className="session-ended-read-only">{continuationIsLive ? 'You are viewing the original runtime. Open the live continuation to send a message.' : 'Viewing does not resume or send anything.'}</p>

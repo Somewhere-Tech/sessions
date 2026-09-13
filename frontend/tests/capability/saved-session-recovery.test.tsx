@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ProjectAgents } from '../../src/components/ProjectAgents';
+import { SessionView } from '../../src/components/SessionView';
+import '../../src/styles/globals.css';
 import { useExactResume } from '../../src/hooks/useExactResume';
 import { installFakeDaemon, makeSession, useFakeMachines, type FakeMachine } from './fake-daemon';
 import type { AgentProject } from '../../src/lib/projectAgents';
@@ -59,6 +61,10 @@ describe('capability: recently closed recovery stays exact and explicit', () => 
       server: expect.objectContaining({ id: 'paired-mini' }),
       session: expect.objectContaining({ id: 'paused-on-mini', conversationId: 'provider-conversation-exact' })
     }));
+    const resumeButton = screen.getByRole('button', { name: /^Resume/ });
+    expect(resumeButton).toBeVisible();
+    expect(resumeButton).not.toHaveClass('session-row-continue');
+    expect(getComputedStyle(resumeButton).minHeight).toBe('44px');
   });
 
   it('shows an honest fallback for unavailable hosts and sessions without provider history', async () => {
@@ -69,6 +75,39 @@ describe('capability: recently closed recovery stays exact and explicit', () => 
     rerender(<SavedRows groups={savedGroup({ resumable: false })} onOpen={() => {}} onResume={() => {}} />);
     expect(screen.queryByRole('button', { name: /^Resume/ })).not.toBeInTheDocument();
     expect(await screen.findByText('No resumable provider conversation is available.')).toBeInTheDocument();
+  });
+
+  it('explains when the conversation already continued elsewhere', async () => {
+    const groups = savedGroup({ resumable: false });
+    groups[0]!.rows[0]!.session.reopenedAs = 'new-session';
+    render(<SavedRows groups={groups} onOpen={() => {}} onResume={() => {}} />);
+    expect(await screen.findByText(/Continued elsewhere/)).toBeInTheDocument();
+    expect(screen.queryByText(/No resumable provider conversation/)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['Paused', { unreachable: true, unreachableReason: 'restart-restore-pending' }],
+    ['Lost', { runnerGone: true, lostReason: 'runner disappeared' }]
+  ] as const)('renders a non-exited %s session as read-only history without live transport', async (label, state) => {
+    const session = makeSession({ id: `saved-${label.toLowerCase()}`, name: `${label} work`, tool: 'codex', ...state });
+    const machine: FakeMachine = { id: 'local', name: 'This Mac', host: 'localhost', port: 8787, isDefault: true, sessions: [session] };
+    const daemon = installFakeDaemon([machine]);
+    useFakeMachines([machine], 'local');
+    let socketCount = 0;
+    globalThis.WebSocket = class {
+      constructor() {
+        socketCount += 1;
+        throw new Error('saved history must not open live transport');
+      }
+    } as unknown as typeof WebSocket;
+
+    render(<SessionView sessionId={session.id} isActive />);
+
+    expect(await screen.findByText(label)).toBeInTheDocument();
+    expect(await screen.findByText(/Read-only history/)).toBeInTheDocument();
+    expect(screen.getByText(/Viewing does not resume or send anything/)).toBeInTheDocument();
+    expect(socketCount).toBe(0);
+    expect(daemon.requests.every((request) => request.method === 'GET')).toBe(true);
   });
 
   it('keeps a paired-host resume error visible', async () => {
