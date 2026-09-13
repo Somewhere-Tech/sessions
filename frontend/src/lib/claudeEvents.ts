@@ -26,7 +26,7 @@
 
 import type { ClaudeSessionEvent, DispatchMessage, ToolCall } from '../types';
 import { previewToolInput } from './toolPreview';
-import { harnessLine, splitHarnessContent } from './harnessContent';
+import { harnessLine, isHarnessOnly, splitHarnessContent } from './harnessContent';
 
 interface AnthropicContentBlock {
   type: string;
@@ -766,7 +766,7 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
     if (ev.type === 'queue-operation') {
       const op = (ev as Record<string, unknown>).operation;
       const text = (ev as Record<string, unknown>).content;
-      if (op !== 'enqueue' || typeof text !== 'string' || !text.trim()) continue;
+      if (op !== 'enqueue' || typeof text !== 'string' || !text.trim() || isHarnessOnly(text)) continue;
       const trimmed = text.trim();
       if (queuedContents.has(trimmed)) continue;
       flushPendingTools();

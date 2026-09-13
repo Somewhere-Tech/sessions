@@ -10,10 +10,10 @@ import { isHarnessOnly, splitHarnessContent } from './harnessContent';
 // so an outage read as the agent's reply; and the timestamp beside it came from
 // whatever the session last did, not from the message being shown.
 //
-// The daemon stamps who spoke and when at the input boundary
-// (`lastHumanMessageAt`, `lastAgentMessageAt`) and records a failure with its
-// own time. Those three are the only facts about ordering, so they decide what
-// is newest, and the text is shown only for the side it belongs to.
+// The daemon stamps who sent input and when (`lastHumanMessageAt`,
+// `lastAgentMessageAt`), records a failure with its own time, and publishes a
+// completed assistant result with `idleSince`. Those facts decide what is
+// newest, and the text is shown only for the side it belongs to.
 
 export type LastMessageKind = 'agent' | 'you' | 'fault' | 'none';
 
@@ -73,7 +73,7 @@ export function lastMessage(session: SessionInfo, sending?: string): LastMessage
 
   // A fault is the newest thing that happened only if it happened after both
   // sides last spoke. It is never presented as a message.
-  if (faultAt > 0 && faultAt >= humanAt && faultAt >= agentInputAt && faultAt >= replyAt) {
+  if (faultAt > 0 && faultAt >= Math.max(humanAt, agentInputAt, replyAt)) {
     return {
       kind: 'fault', speaker: '', text: firstLine(session.failureDetail) || 'The provider reported a problem.',
       at: faultAt, awaitingReply: false

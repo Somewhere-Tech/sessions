@@ -146,7 +146,7 @@ describe('capability: a queued send waits on the composer, not in the record', (
     })).not.toBeInTheDocument();
   }, 20_000);
 
-  it('clears a harness-only queue only after provider history contains it', () => {
+  it('keeps a delivered harness event without projecting its queue operation', () => {
     const queued = (text: string, timestamp: string): ClaudeSessionEvent => ({
       type: 'queue-operation', operation: 'enqueue', content: text, timestamp
     } as unknown as ClaudeSessionEvent);
@@ -155,8 +155,7 @@ describe('capability: a queued send waits on the composer, not in the record', (
     } as ClaudeSessionEvent);
 
     const pending = eventsToMessages([queued(TASK_NOTIFICATION, AT)]);
-    expect(pending).toHaveLength(1);
-    expect(pending[0]).toMatchObject({ pendingQueue: true, content: TASK_NOTIFICATION });
+    expect(pending).toHaveLength(0);
 
     const confirmed = eventsToMessages([
       queued(TASK_NOTIFICATION, AT),
@@ -191,6 +190,31 @@ describe('capability: a queued send waits on the composer, not in the record', (
 
     expect(messages.filter((message) => message.pendingQueue)).toHaveLength(1);
     expect(messages.find((message) => message.pendingQueue)?.content).toBe('Background task finished');
+  });
+
+  it('never presents a harness-only queue operation as a pending human send', () => {
+    const detailedNotification = [
+      '<task-notification>',
+      '<task-id>bfk299a3b</task-id>',
+      '<tool-use-id>toolu_01LfG4XYrMMfvyGfA7zswSLj</tool-use-id>',
+      '<output-file>/private/tmp/tasks/bfk299a3b.output</output-file>',
+      '<status>completed</status>',
+      '<summary>Monitor "Opus worker git progress" stream ended</summary>',
+      '</task-notification>'
+    ].join('\n');
+    const machinery = {
+      type: 'queue-operation', operation: 'enqueue', content: detailedNotification, timestamp: AT
+    } as unknown as ClaudeSessionEvent;
+    const quotedByPerson = {
+      type: 'queue-operation', operation: 'enqueue',
+      content: `Why did this appear? ${detailedNotification}`, timestamp: '2026-09-11T18:01:00Z'
+    } as unknown as ClaudeSessionEvent;
+
+    expect(eventsToMessages([machinery])).toHaveLength(0);
+    expect(eventsToMessages([quotedByPerson])[0]).toMatchObject({
+      pendingQueue: true,
+      content: `Why did this appear? ${detailedNotification}`
+    });
   });
 
 });
