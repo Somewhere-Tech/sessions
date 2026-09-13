@@ -4,6 +4,8 @@ Sessions for Android is a client-only Tauri 2 application. It uses the same
 React application as macOS and Windows, but it does not install `sessionsd`,
 start agent CLIs, or host runners on the phone. Work stays on Sessions computers;
 the Android app talks to its paired host, which can relay the host's approved fleet.
+The Android platform bundle configuration excludes desktop runtime executables
+from the APK; verify the built archive as well as its package identity.
 
 ## Product shape
 
