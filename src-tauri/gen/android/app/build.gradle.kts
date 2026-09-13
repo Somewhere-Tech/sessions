@@ -34,8 +34,12 @@ android {
     }
     buildTypes {
         getByName("debug") {
-            applicationIdSuffix = if (sessionsTestApp) ".local" else ".debug"
+            // Tauri owns and rewrites this assignment before each Android build.
+            // Keep its configured default literal here, then apply the opt-in
+            // test identity through the Gradle setter that Tauri leaves alone.
+            applicationIdSuffix = ".debug"
             if (sessionsTestApp) {
+                setApplicationIdSuffix(".local")
                 manifestPlaceholders["sessionsAppLabel"] = "Sessions Test"
             }
             manifestPlaceholders["usesCleartextTraffic"] = "true"

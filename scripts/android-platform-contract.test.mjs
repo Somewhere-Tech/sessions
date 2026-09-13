@@ -14,9 +14,12 @@ test('Android local test packaging is explicit and leaves normal builds unchange
 
   assert.match(gradle, /gradleProperty\("sessionsTestApp"\)\.orNull == "true"/);
   assert.match(gradle, /applicationId = "tech\.somewhere\.sessions"/);
-  assert.match(gradle, /applicationIdSuffix = if \(sessionsTestApp\) "\.local" else "\.debug"/);
+  assert.match(gradle, /applicationIdSuffix = "\.debug"/,
+    'Tauri must retain the normal debug suffix it regenerates before a build');
+  assert.match(gradle, /if \(sessionsTestApp\) \{\s*setApplicationIdSuffix\("\.local"\)/,
+    'the opt-in suffix must use a setter that survives Tauri regeneration');
   assert.match(gradle, /manifestPlaceholders\["sessionsAppLabel"\] = "Sessions"/);
-  assert.match(gradle, /if \(sessionsTestApp\) \{\s*manifestPlaceholders\["sessionsAppLabel"\] = "Sessions Test"/);
+  assert.match(gradle, /if \(sessionsTestApp\) \{[\s\S]*?manifestPlaceholders\["sessionsAppLabel"\] = "Sessions Test"/);
   assert.equal((gradle.match(/applicationIdSuffix\s*=/g) ?? []).length, 1,
     'the existing debug build type must remain the only application ID suffix');
   assert.doesNotMatch(gradle, /productFlavors|flavorDimensions/,
@@ -27,6 +30,12 @@ test('Android local test packaging is explicit and leaves normal builds unchange
   const baseID = gradle.match(/applicationId = "([^"]+)"/)?.[1];
   assert.equal(`${baseID}.debug`, 'tech.somewhere.sessions.debug');
   assert.equal(`${baseID}.local`, 'tech.somewhere.sessions.local');
+  const afterTauriRewrite = gradle.replace(
+    /applicationIdSuffix\s*=\s*[^\n]+/,
+    'applicationIdSuffix = ".debug"'
+  );
+  assert.match(afterTauriRewrite, /setApplicationIdSuffix\("\.local"\)/,
+    'Tauri rewriting its direct assignment must not remove the local override');
   assert.match(workflow, /npm run test:android-package/,
     'the Android packaging workflow must keep this contract gated');
 });
