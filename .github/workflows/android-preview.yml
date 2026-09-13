@@ -70,6 +70,7 @@ jobs:
 
       - name: Verify the shared client
         run: |
+          npm run test:android-package
           npm --prefix frontend run typecheck
           npm --prefix frontend run build
           # Browser behavior is gated by the canonical CI workflow. Ubuntu

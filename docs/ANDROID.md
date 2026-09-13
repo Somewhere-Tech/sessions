@@ -69,6 +69,21 @@ npx tauri android init --ci        # only when src-tauri/gen/android is absent
 npx tauri android build --debug --apk --target aarch64 --ci
 ```
 
+To build a local test app alongside the published Android preview, opt into the
+separate package identity through a Gradle project property:
+
+```sh
+ORG_GRADLE_PROJECT_sessionsTestApp=true \
+  npx tauri android build --debug --apk --target aarch64 --ci
+```
+
+That debug-only switch produces `tech.somewhere.sessions.local` with the
+launcher label **Sessions Test**. Without it, debug builds remain
+`tech.somewhere.sessions.debug` and release builds remain
+`tech.somewhere.sessions`; the Android task and APK output path do not change.
+Before installing, verify the built APK with `aapt dump badging` rather than
+assuming that a package intended to be side by side has the expected identity.
+
 The installable debug APK is:
 
 ```text
