@@ -74,7 +74,8 @@ separate package identity through a Gradle project property:
 
 ```sh
 ORG_GRADLE_PROJECT_sessionsTestApp=true \
-  npx tauri android build --debug --apk --target aarch64 --ci
+  npx tauri android build --debug --apk --target aarch64 --ci \
+  --config '{"bundle":{"android":{"debugApplicationIdSuffix":".local"}}}'
 ```
 
 That debug-only switch produces `tech.somewhere.sessions.local` with the
