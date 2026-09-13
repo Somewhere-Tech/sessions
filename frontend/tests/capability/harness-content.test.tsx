@@ -145,12 +145,34 @@ describe('capability: a queued send waits on the composer, not in the record', (
       selector: '.remote-bubble-content'
     })).not.toBeInTheDocument();
   }, 20_000);
+
+  it('clears a harness-only queue only after provider history contains it', () => {
+    const queued = (text: string, timestamp: string): ClaudeSessionEvent => ({
+      type: 'queue-operation', operation: 'enqueue', content: text, timestamp
+    } as unknown as ClaudeSessionEvent);
+    const delivered = (text: string, uuid: string, timestamp: string): ClaudeSessionEvent => ({
+      type: 'user', uuid, timestamp, message: { role: 'user', content: text }
+    } as ClaudeSessionEvent);
+
+    const pending = eventsToMessages([queued(TASK_NOTIFICATION, AT)]);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ pendingQueue: true, content: TASK_NOTIFICATION });
+
+    const confirmed = eventsToMessages([
+      queued(TASK_NOTIFICATION, AT),
+      delivered(TASK_NOTIFICATION, 'notification-delivered', '2026-09-11T18:01:00Z')
+    ]);
+    expect(confirmed.some((message) => message.pendingQueue)).toBe(false);
+    expect(confirmed).toHaveLength(1);
+    expect(confirmed[0]!.systemEvent?.detail).toContain('<task-notification>');
+  });
+
 });
 
 describe('capability: the inbox line never quotes machinery', () => {
   it('does not present a harness block as the agent\'s reply', () => {
     const session = Object.assign(makeSession({ id: 'inbox', tool: 'claude-code' }), {
-      lastAgentMessageAt: Date.parse(AT),
+      idleReason: 'completed', idleSince: Date.parse(AT),
       lastSummary: SYSTEM_REMINDER
     }) as SessionInfo;
 
@@ -161,7 +183,7 @@ describe('capability: the inbox line never quotes machinery', () => {
 
   it('keeps a real summary that happens to trail a reminder', () => {
     const session = Object.assign(makeSession({ id: 'inbox-2', tool: 'claude-code' }), {
-      lastAgentMessageAt: Date.parse(AT),
+      idleReason: 'completed', idleSince: Date.parse(AT),
       lastSummary: `Release notes are ready.\n\n${SYSTEM_REMINDER}`
     }) as SessionInfo;
 

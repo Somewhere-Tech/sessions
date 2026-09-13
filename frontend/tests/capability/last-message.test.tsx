@@ -31,13 +31,22 @@ describe('capability: what a session says its last message is', () => {
       ['codex-app-server', 'codex'], ['lane', 'lane'], ['', 'terminal']
     ] as Array<[string, SessionInfo['tool']]>) {
       const session = sessionOfKind(kind, tool, {
-        lastHumanMessageAt: EARLIER, lastAgentMessageAt: LATER,
+        lastHumanMessageAt: EARLIER, idleReason: 'completed', idleSince: LATER,
         lastSummary: 'Implementation is ready for review.'
       });
       expect(lastMessageLine(session), `${kind || 'pty'}/${tool}`)
         .toBe('Agent: Implementation is ready for review.');
       expect(lastMessage(session).at, `${kind || 'pty'}/${tool}`).toBe(LATER);
     }
+  });
+
+  it('does not mistake input relayed by another agent for an assistant reply', () => {
+    const relayed = sessionOfKind('lane', 'claude-code', {
+      lastAgentMessageAt: LATER,
+      lastSummary: 'An older completed result.'
+    });
+    expect(lastMessageLine(relayed)).toBe('');
+    expect(lastMessage(relayed).kind).toBe('none');
   });
 
   // The case the founder hit: the person sent something and the agent has not
@@ -58,7 +67,7 @@ describe('capability: what a session says its last message is', () => {
   // A provider outage is not something the agent said.
   it('shows a fault after the last reply as a fault', () => {
     const faulted = sessionOfKind('codex-app-server', 'codex', {
-      lastHumanMessageAt: EARLIER, lastAgentMessageAt: LATER,
+      lastHumanMessageAt: EARLIER, idleReason: 'completed', idleSince: LATER,
       lastSummary: 'Implementation is ready for review.',
       failureKind: 'provider-unavailable',
       failureDetail: 'Codex API unavailable (503, overloaded)',
@@ -77,17 +86,29 @@ describe('capability: what a session says its last message is', () => {
   // A fault that happened before the agent's last reply is old news.
   it('keeps the agent reply when the fault came first', () => {
     const recovered = sessionOfKind('claude-structured', 'claude-code', {
-      lastHumanMessageAt: EARLIER, lastAgentMessageAt: LATEST,
+      lastHumanMessageAt: EARLIER, idleReason: 'completed', idleSince: LATEST,
       lastSummary: 'Recovered and finished the change.',
       failureKind: 'provider-unavailable', failureDetail: 'was overloaded', failureAt: LATER
     });
     expect(lastMessageLine(recovered)).toBe('Agent: Recovered and finished the change.');
   });
 
+  it('uses a finished reply after the human send, but not a stale summary during a new turn', () => {
+    const finished = sessionOfKind('claude-structured', 'claude-code', {
+      lastHumanMessageAt: EARLIER, idleReason: 'completed', idleSince: LATER,
+      lastSummary: 'The handoff is complete.'
+    });
+    expect(lastMessageLine(finished)).toBe('Agent: The handoff is complete.');
+    expect(lastMessage(finished)).toMatchObject({ at: LATER, awaitingReply: false });
+
+    const nextTurn = { ...finished, idleReason: undefined, idleSince: null, working: true };
+    expect(lastMessageLine(nextTurn)).toBe('You sent a message · working');
+  });
+
   // A send this client has made and not seen acknowledged is not a delivery.
   it('labels an unconfirmed send as unconfirmed', () => {
     const session = sessionOfKind('claude-structured', 'claude-code', {
-      lastAgentMessageAt: LATER, lastSummary: 'Older result.'
+      idleReason: 'completed', idleSince: LATER, lastSummary: 'Older result.'
     });
     expect(lastMessageLine(session, 'check the release notes')).toBe('You: check the release notes · sending…');
     expect(lastMessage(session, 'check the release notes').awaitingReply).toBe(true);

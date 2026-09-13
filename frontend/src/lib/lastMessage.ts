@@ -62,36 +62,40 @@ export function lastMessage(session: SessionInfo, sending?: string): LastMessage
   }
 
   const humanAt = session.lastHumanMessageAt ?? 0;
-  const agentAt = session.lastAgentMessageAt ?? 0;
+  // lastAgentMessageAt is input another Sessions agent relayed into this
+  // session, not the provider assistant's reply time. An idle result publishes
+  // the assistant's summary and its time together; new input clears that idle
+  // result while deliberately retaining the older summary.
+  const agentInputAt = session.lastAgentMessageAt ?? 0;
+  const summary = spokenLine(session.lastSummary);
+  const replyAt = session.lastSummary && session.idleReason !== 'failed'
+    ? session.idleSince ?? 0
+    : 0;
   const faultAt = session.failureKind ? session.failureAt ?? 0 : 0;
 
   // A fault is the newest thing that happened only if it happened after both
   // sides last spoke. It is never presented as a message.
-  if (faultAt > 0 && faultAt >= humanAt && faultAt >= agentAt) {
+  if (faultAt > 0 && faultAt >= humanAt && faultAt >= agentInputAt && faultAt >= replyAt) {
     return {
       kind: 'fault', speaker: '', text: firstLine(session.failureDetail) || 'The provider reported a problem.',
       at: faultAt, awaitingReply: false
     };
   }
 
-  if (humanAt > agentAt) {
+  if (replyAt > 0 && replyAt >= humanAt && replyAt >= agentInputAt) {
+    return { kind: 'agent', speaker: 'Agent', text: summary, at: replyAt, awaitingReply: false };
+  }
+
+  if (humanAt > agentInputAt) {
     // The person spoke last. Their text is not in the session record — what is
     // true is that they sent something and no answer has arrived.
     return { kind: 'you', speaker: 'You', text: '', at: humanAt, awaitingReply: true };
   }
 
-  if (agentAt > 0) {
-    return {
-      kind: 'agent', speaker: 'Agent', text: spokenLine(session.lastSummary),
-      at: agentAt, awaitingReply: false
-    };
-  }
-
   // Nothing has been stamped in either direction. A summary with no time behind
   // it is still the last thing the agent produced, and it is shown without
   // claiming to be newer than anything.
-  const summary = spokenLine(session.lastSummary);
-  if (summary) {
+  if (summary && !agentInputAt) {
     return { kind: 'agent', speaker: 'Agent', text: summary, at: session.lastDataAt ?? 0, awaitingReply: false };
   }
   return { kind: 'none', speaker: '', text: '', at: 0, awaitingReply: false };
