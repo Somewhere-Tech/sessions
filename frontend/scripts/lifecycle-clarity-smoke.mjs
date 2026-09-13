@@ -190,7 +190,7 @@ assert.match(input, /Your draft is kept here and was not sent or queued/);
 assert.match(input, /reason instanceof MessageDeliveryError && reason.deliveryStatus !== 'not-delivered' \? 'Delivery not confirmed' : 'Message not sent'/,
   'An uncertain receipt must not claim the message was definitely not sent');
 assert.match(input, /Your draft is still here/);
-assert.ok(input.includes("await submitMessage('\\x1b[200~' + text + '\\x1b[201~')"));
+assert.ok(input.includes("await submitMessage('\\x1b[200~' + submittedText + '\\x1b[201~')"));
 assert.doesNotMatch(mux, /return msg\.type === 'input' \|\|/);
 assert.match(mux, /Sessions is reconnecting\. Your message was not sent\./);
 assert.doesNotMatch(remote, />retry<\/button>/);

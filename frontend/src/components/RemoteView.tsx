@@ -73,6 +73,7 @@ function FaultCard({ sessionId, fault, rich, onOpenTerminal }: {
 
 interface Props {
   sessionId: string;
+  draftMachineId?: string;
   // Provider-neutral structured history. Claude supplies JSONL records;
   // Codex supplies normalized rollout or app-server notifications.
   events: ClaudeSessionEvent[];
@@ -137,7 +138,7 @@ interface Props {
 // cycle.
 
 export function RemoteView({
-  sessionId,
+  sessionId, draftMachineId,
   events,
   historyPending,
   sendConfirmed,
@@ -586,7 +587,7 @@ export function RemoteView({
           steerMessage={steerMessage}
           connected={connected}
           sendAvailable={sendAvailable}
-          sessionId={sessionId}
+          sessionId={sessionId} draftMachineId={draftMachineId}
           onSubmitting={prepareSend}
           onSubmitted={recordSent}
           recoverDraft={recoverDraft}

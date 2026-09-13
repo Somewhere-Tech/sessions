@@ -3,6 +3,7 @@ import { uploadFile } from '../api/sessionsd';
 import type { SessionTool } from '../types';
 import { ComposerModelControl } from './ComposerModelControl';
 import { MessageDeliveryError } from '../lib/messageDelivery';
+import { useDurableDraft } from '../hooks/useDurableDraft';
 
 interface Props {
   // Acknowledged sender from useTerminal. Failed sends leave the draft visible
@@ -21,6 +22,7 @@ interface Props {
   // session's uploads dir to use (so user types in the path of their
   // dropped file as a result of drag-drop).
   sessionId: string;
+  draftMachineId?: string;
   // Fires AFTER bytes leave (immediately after submit). Used by the
   // parent to render an optimistic "pending" message in the Sessions
   // view so the user sees their message land instantly, instead of
@@ -83,7 +85,7 @@ export function InputBar({
   steerMessage,
   connected,
   sendAvailable = connected,
-  sessionId,
+  sessionId, draftMachineId,
   onSubmitting,
   onSubmitted,
   recoverDraft,
@@ -97,7 +99,8 @@ export function InputBar({
   onRename,
   onContinueInTerminal
 }: Props): JSX.Element {
-  const [text, setText] = useState('');
+  const draft = useDurableDraft(draftMachineId ?? 'local', sessionId);
+  const { text, setText, clearAcknowledged, key: draftKey, warning: draftWarning } = draft;
   // 'idle' | 'sent' — sent briefly turns the Send button green so the
   // user can see the bytes left this client. The button text stays
   // "Send" the entire time; the green flash IS the feedback. (No ✓
@@ -147,13 +150,14 @@ export function InputBar({
     handledRecoveryKeysRef.current.add(key);
     restoredDraftRef.current = { key, text: recoverDraft.text };
     setText(recoverDraft.text);
-  }, [recoverDraft, text]);
+  }, [recoverDraft, setText, text]);
 
   const submit = async (steer = Boolean(provider === 'codex' && providerWorking && steerMessage)): Promise<void> => {
     if (!sendAvailable || submitInFlightRef.current) return;
     setUploadError(null); // clear any lingering upload error on submit
     setComposerNotice(null);
-    const trimmed = text.trim();
+    const submittedText = text, submittedDraftKey = draftKey;
+    const trimmed = submittedText.trim();
 
     if (richSession && /^\/rename(?:\s|$)/i.test(trimmed)) {
       const name = trimmed.replace(/^\/rename(?:\s+|$)/i, '').trim();
@@ -175,7 +179,7 @@ export function InputBar({
       }
       try {
         await onRename(name);
-        setText('');
+        clearAcknowledged(submittedText, submittedDraftKey);
         restoredDraftRef.current = null;
         setFeedback('sent');
         window.setTimeout(() => setFeedback('idle'), 500);
@@ -221,20 +225,20 @@ export function InputBar({
     setSubmitting(true);
     const submittedToActiveCodex = provider === 'codex' && providerWorking;
     // Capture before IO: provider history can arrive before the HTTP receipt.
-    const baseline = text ? onSubmitting?.(text) : undefined;
+    const baseline = submittedText ? onSubmitting?.(submittedText) : undefined;
     try {
-      if (text) {
+      if (submittedText) {
         // The daemon chooses acknowledged whole-message control when the
         // runner supports it, or serializes the legacy terminal paste/Enter.
         // The composer never retries either path as a second send.
-        if (steer && steerMessage) await steerMessage(text);
-        else await submitMessage('\x1b[200~' + text + '\x1b[201~');
+        if (steer && steerMessage) await steerMessage(submittedText);
+        else await submitMessage('\x1b[200~' + submittedText + '\x1b[201~');
       } else {
         // Empty buffer — just an Enter, e.g. to accept a y/n prompt.
         await send('\r');
       }
-      if (text && onSubmitted) onSubmitted(text, submittedToActiveCodex, baseline);
-      setText('');
+      if (submittedText && onSubmitted) onSubmitted(submittedText, submittedToActiveCodex, baseline);
+      clearAcknowledged(submittedText, submittedDraftKey);
       restoredDraftRef.current = null;
       setFeedback('sent');
       window.setTimeout(() => setFeedback('idle'), 500);
@@ -302,7 +306,7 @@ export function InputBar({
           ta.setSelectionRange(pos, pos);
         });
       } else {
-        setText((t) => (t && !t.endsWith(' ') ? t + ' ' : t) + paths.join(' ') + ' ');
+        setText((current) => (current && !current.endsWith(' ') ? current + ' ' : current) + paths.join(' ') + ' ');
       }
     } catch (err) {
       setUploadError((err as Error).message);
@@ -383,6 +387,7 @@ export function InputBar({
           >×</button>
         </div>
       ) : null}
+      {draftWarning ? <div className="input-bar-upload-state is-error" role="alert">{draftWarning}</div> : null}
       {composerNotice && (composerNotice.kind !== 'busy' || providerWorking) ? (
         <div className={`input-composer-notice is-${composerNotice.tone}`} role={composerNotice.tone === 'error' ? 'alert' : 'status'}>
           <div>
@@ -454,7 +459,7 @@ export function InputBar({
           placeholder={sendAvailable
             ? `Message ${provider === 'codex' ? 'Codex' : 'Claude'} — Enter sends, Shift+Enter for newline`
             : 'This session is not connected, so messages cannot be sent.'}
-          disabled={!sendAvailable || submitting}
+          disabled={!sendAvailable}
           rows={Math.min(6, Math.max(1, text.split('\n').length))}
           autoCapitalize="sentences"
           autoCorrect="on"

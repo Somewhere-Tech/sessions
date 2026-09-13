@@ -777,7 +777,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
         </div>
         <ConversationPane>
           <RemoteView
-            sessionId={sessionId}
+            sessionId={sessionId} draftMachineId={getActiveServer().id}
             events={term.claudeEvents}
             historyPending={term.historyPending}
             sendConfirmed={sendConfirmedInput}
