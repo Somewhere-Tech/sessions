@@ -105,6 +105,18 @@ describe('capability: what a session says its last message is', () => {
     expect(lastMessageLine(nextTurn)).toBe('You sent a message · working');
   });
 
+  it('does not elevate an old summary when a later turn needs input or recovery', () => {
+    for (const idleReason of ['needs-input', 'needs-recovery'] as const) {
+      const blocked = sessionOfKind('claude-structured', 'claude-code', {
+        lastHumanMessageAt: LATER,
+        idleReason: idleReason as SessionInfo['idleReason'], idleSince: LATEST,
+        lastSummary: 'An older completed result.'
+      });
+      expect(lastMessageLine(blocked), idleReason).toBe('You sent a message · no reply yet');
+      expect(lastMessage(blocked).awaitingReply, idleReason).toBe(true);
+    }
+  });
+
   // A send this client has made and not seen acknowledged is not a delivery.
   it('labels an unconfirmed send as unconfirmed', () => {
     const session = sessionOfKind('claude-structured', 'claude-code', {

@@ -167,6 +167,32 @@ describe('capability: a queued send waits on the composer, not in the record', (
     expect(confirmed[0]!.systemEvent?.detail).toContain('<task-notification>');
   });
 
+  it('keeps an unmatched queue pending when identical queued input follows it', () => {
+    const queued = (timestamp: string): ClaudeSessionEvent => ({
+      type: 'queue-operation', operation: 'enqueue', content: 'repeat this', timestamp
+    } as unknown as ClaudeSessionEvent);
+    const messages = eventsToMessages([queued(AT), queued('2026-09-11T18:01:00Z')]);
+
+    // Claude can repeat queue-operation records. Neither is provider history
+    // confirmation, so dedup may collapse them but must not erase the wait.
+    expect(messages.filter((message) => message.pendingQueue)).toHaveLength(1);
+    expect(messages[0]?.content).toBe('repeat this');
+  });
+
+  it('does not let an unrelated harness event confirm human queued text', () => {
+    const queued = {
+      type: 'queue-operation', operation: 'enqueue', content: 'Background task finished', timestamp: AT
+    } as unknown as ClaudeSessionEvent;
+    const harness = {
+      type: 'user', uuid: 'different-harness', timestamp: '2026-09-11T18:01:00Z',
+      message: { role: 'user', content: TASK_NOTIFICATION }
+    } as ClaudeSessionEvent;
+    const messages = eventsToMessages([queued, harness]);
+
+    expect(messages.filter((message) => message.pendingQueue)).toHaveLength(1);
+    expect(messages.find((message) => message.pendingQueue)?.content).toBe('Background task finished');
+  });
+
 });
 
 describe('capability: the inbox line never quotes machinery', () => {

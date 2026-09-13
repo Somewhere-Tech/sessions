@@ -814,7 +814,7 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
     if (!m.queued) return true;
     for (let j = i + 1; j < out.length; j++) {
       const other = out[j];
-      if ((other?.role === 'user' ? other.content : other?.systemEvent?.detail)?.trim() === m.content.trim()) {
+      if ((other?.role === 'user' && !other.queued ? other.content : other?.systemEvent?.detail)?.trim() === m.content.trim()) {
         return false;
       }
     }
