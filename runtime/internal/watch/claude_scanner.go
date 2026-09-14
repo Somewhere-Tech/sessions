@@ -305,19 +305,35 @@ func ScanResumableConversationsCached(
 	}
 
 	// A provider may create more than one rollout file when the same logical
-	// conversation is resumed. Keep only the newest physical source per
-	// provider identity so the picker never presents duplicate cards.
-	byIdentity := make(map[string]ResumableSession, len(out))
+	// conversation is resumed. Keep the copy with the latest provider-recorded
+	// activity per identity so copied filesystem timestamps cannot choose a
+	// stale source or make the picker present duplicate cards.
+	type identityCandidate struct {
+		session     ResumableSession
+		activity    time.Time
+		hasActivity bool
+	}
+	identityCounts := make(map[string]int, len(out))
+	for _, session := range out {
+		identityCounts[session.Tool+":"+session.SessionID]++
+	}
+	byIdentity := make(map[string]identityCandidate, len(out))
 	for _, session := range out {
 		key := session.Tool + ":" + session.SessionID
+		activity, hasActivity := time.Time{}, false
+		if session.Tool == "codex" && identityCounts[key] > 1 {
+			activity, hasActivity = ConversationRecordedActivity(session.SourcePath)
+		}
 		current, exists := byIdentity[key]
-		if !exists || session.ModifiedAt > current.ModifiedAt {
-			byIdentity[key] = session
+		newerRecord := hasActivity && (!current.hasActivity || activity.After(current.activity))
+		newerFallback := hasActivity == current.hasActivity && !hasActivity && session.ModifiedAt > current.session.ModifiedAt
+		if !exists || newerRecord || newerFallback {
+			byIdentity[key] = identityCandidate{session: session, activity: activity, hasActivity: hasActivity}
 		}
 	}
 	out = out[:0]
-	for _, session := range byIdentity {
-		out = append(out, session)
+	for _, candidate := range byIdentity {
+		out = append(out, candidate.session)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].ModifiedAt != out[j].ModifiedAt {

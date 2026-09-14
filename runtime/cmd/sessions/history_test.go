@@ -96,6 +96,27 @@ func runHistoryCLI(t *testing.T, daemon *historyFixtureDaemon, args ...string) (
 	return stdout.String(), stderr.String(), code
 }
 
+func TestHistoryReferenceResolvesBareProviderUUIDOnExplicitMachine(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const providerID = "01a0726c-ac6e-7e52-aa1e-0ca475c112e0"
+	session := conversationAt("provider:codex:"+providerID, "desktop work", "codex", "/w/sessions", 4, time.Now())
+	session.ProviderSessionID = providerID
+	daemon := newHistoryFixtureDaemon(t, nil, []conversationFixture{{session: session}})
+	application, err := newApp([]string{"--host", daemon.server.URL}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(application.close)
+
+	resolved, err := application.resolveHistoryReference(providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Reference != session.ID || resolved.Session.ProviderSessionID != providerID {
+		t.Fatalf("resolution = %+v, want namespaced history id %q", resolved, session.ID)
+	}
+}
+
 // runFleetHistoryCLI browses the approved fleet rather than one pinned daemon:
 // --host only supplies the local endpoint, exactly as fleetSearchApp does for
 // search, and the peer comes from the saved machine registry under home.

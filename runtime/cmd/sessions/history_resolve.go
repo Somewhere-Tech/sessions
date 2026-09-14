@@ -34,10 +34,12 @@ func (a *app) resolveHistoryReference(value string) (historyResolution, error) {
 	if alias, id, qualified := splitQualifiedHistoryReference(value); qualified {
 		return historyResolution{Reference: value, Alias: alias, Session: integrations.HistorySession{ID: id}}, nil
 	}
-	// Explicit endpoint callers already chose the machine. Preserve the old
-	// zero-round-trip path for canonical ids while still resolving friendly
-	// names through that daemon.
-	if a.explicitTarget && looksLikeHistoryID(value) {
+	// Explicit endpoint callers already chose the machine. Namespaced history
+	// ids can go straight to that daemon, but a bare UUID is ambiguous: it can
+	// be either a Sessions id or a provider-owned conversation id. Resolve the
+	// latter through the listing instead of sending an id the history API does
+	// not expose.
+	if a.explicitTarget && looksLikeNamespacedHistoryID(value) {
 		return historyResolution{Reference: value, Alias: "local", Session: integrations.HistorySession{ID: value}}, nil
 	}
 
@@ -81,15 +83,7 @@ func (a *app) resolveHistoryReference(value string) (historyResolution, error) {
 		}
 		successes++
 		for _, session := range outcome.history.Sessions {
-			rank := 0
-			switch {
-			case session.ID == value:
-				rank = 3
-			case strings.EqualFold(strings.TrimSpace(session.Name), value):
-				rank = 2
-			case strings.HasPrefix(strings.ToLower(session.ID), strings.ToLower(value)):
-				rank = 1
-			}
+			rank := historyReferenceRank(session, value)
 			if rank == 0 {
 				continue
 			}
@@ -107,6 +101,12 @@ func (a *app) resolveHistoryReference(value string) (historyResolution, error) {
 		return historyResolution{}, fail(2, "no approved Sessions machine answered while looking for %q", value)
 	}
 	if len(candidates) == 0 {
+		// Older daemons may not list managed rows even though their UUID routes
+		// still work. Preserve that direct compatibility after giving a bare
+		// provider UUID the chance to resolve to its namespaced history row.
+		if a.explicitTarget && looksLikeHistoryID(value) {
+			return historyResolution{Reference: value, Alias: "local", Session: integrations.HistorySession{ID: value}}, nil
+		}
 		return historyResolution{}, fail(1, "no saved conversation named %q was found on the approved fleet", value)
 	}
 	bestRank := 0
@@ -133,8 +133,22 @@ func (a *app) resolveHistoryReference(value string) (historyResolution, error) {
 	return best[0].historyResolution, nil
 }
 
+func historyReferenceRank(session integrations.HistorySession, value string) int {
+	switch {
+	case session.ID == value || session.ProviderSessionID == value:
+		return 3
+	case strings.EqualFold(strings.TrimSpace(session.Name), value):
+		return 2
+	case strings.HasPrefix(strings.ToLower(session.ID), strings.ToLower(value)) ||
+		strings.HasPrefix(strings.ToLower(session.ProviderSessionID), strings.ToLower(value)):
+		return 1
+	default:
+		return 0
+	}
+}
+
 func looksLikeHistoryID(value string) bool {
-	if strings.HasPrefix(value, "provider-history:") || strings.HasPrefix(value, "provider:") {
+	if looksLikeNamespacedHistoryID(value) {
 		return true
 	}
 	if len(value) != 36 {
@@ -152,4 +166,8 @@ func looksLikeHistoryID(value string) bool {
 		}
 	}
 	return true
+}
+
+func looksLikeNamespacedHistoryID(value string) bool {
+	return strings.HasPrefix(value, "provider-history:") || strings.HasPrefix(value, "provider:")
 }

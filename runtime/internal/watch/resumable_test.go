@@ -54,16 +54,18 @@ func TestScanResumableConversationsIncludesCodexAndDeduplicatesRollouts(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := string(meta) + "\n" + string(injected) + "\n" + string(message) + "\n"
-	older := filepath.Join(root, "rollout-old.jsonl")
-	newer := filepath.Join(root, "rollout-new.jsonl")
-	if err := os.WriteFile(older, []byte(first), 0o600); err != nil {
+	oldActivity := `{"timestamp":"2026-07-22T08:10:00Z","type":"event_msg","payload":{"type":"task_complete"}}`
+	newActivity := `{"timestamp":"2026-07-22T09:10:00Z","type":"event_msg","payload":{"type":"task_complete"}}`
+	base := string(meta) + "\n" + string(injected) + "\n" + string(message) + "\n"
+	older := filepath.Join(root, "rollout-2026-07-22T08-00-00-"+id+".jsonl")
+	newer := filepath.Join(root, "rollout-2026-07-22T09-00-00-"+id+"_22222222-2222-4222-8222-222222222222.jsonl")
+	if err := os.WriteFile(older, []byte(base+oldActivity+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(newer, []byte(first), 0o600); err != nil {
+	if err := os.WriteFile(newer, []byte(base+newActivity+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chtimes(older, mustTime(t, "2026-07-22T08:00:00Z"), mustTime(t, "2026-07-22T08:00:00Z")); err != nil {
+	if err := os.Chtimes(older, mustTime(t, "2026-07-22T10:00:00Z"), mustTime(t, "2026-07-22T10:00:00Z")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(newer, mustTime(t, "2026-07-22T09:00:00Z"), mustTime(t, "2026-07-22T09:00:00Z")); err != nil {
@@ -76,7 +78,7 @@ func TestScanResumableConversationsIncludesCodexAndDeduplicatesRollouts(t *testi
 	}
 	got := conversations[0]
 	if got.Tool != "codex" || got.SessionID != id || got.Cwd != cwd || got.Origin != "Codex Desktop" ||
-		got.FirstUserMessage != "Improve the Sessions handoff" {
+		got.FirstUserMessage != "Improve the Sessions handoff" || got.SourcePath != newer {
 		t.Fatalf("codex conversation = %#v", got)
 	}
 }
