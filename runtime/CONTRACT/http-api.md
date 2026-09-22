@@ -2736,6 +2736,46 @@ entries are evicted on their expiry timer even without another lookup.
 
 ## Go runtime extensions: history views
 
+### Incremental conversation reads
+
+`GET /api/history/:id/read?cursor=<opaque>&limit=20` is an authenticated,
+read-only addition. `sessions read` exposes the same contract. No cursor starts
+at the beginning; `limit` is 1–100 message fragments (default 20).
+The response contains `conversation`, `messages`, `next_cursor`, and `has_more`.
+It never saves a reader position or acknowledges another reader's messages.
+Keep the input cursor until the response has been processed; retries start at
+the same position, although newly appended output may now also be available.
+
+The view includes readable user/assistant text and provider faults. Tool
+records do not consume the message limit; use the existing transcript/raw
+routes for tool details. Text is bounded to 64 KiB per response. Large messages
+are returned in UTF-8-safe fragments with `byte_offset` and `continued:true`
+until complete; no omitted suffix is consumed. A page scans up to 8 MiB of
+source records plus at most one 8 MiB boundary record, even if none contain
+readable text. `has_more:true` therefore also permits an empty intermediate
+page. An incomplete final JSONL record sets `pending_record:true`; it is not
+consumed and the caller should retry later, not busy-loop. Malformed complete
+records are counted in `skipped_records`. Known damaged mirrors expose
+`mirror_damaged` and `mirror_detail`.
+
+Cursors identify the provider conversation when known, otherwise the retained
+Sessions identity, and carry byte positions, not timestamps. Reopening the
+same conversation with an identical transcript does not invalidate the cursor.
+The append-only reader verifies a bounded file-prefix anchor and the full
+record at its previous read boundary. Truncation or replacement detected there
+returns 409 `HISTORY_CHANGED` and never silently starts over. This is not a
+whole-file integrity audit: edits confined to already-read middle records are
+not detected. Rewritten/compacted histories require explicit reconciliation;
+there is no claim that edited streaming messages can be merged automatically.
+
+Malformed or wrong-conversation cursors return 400 `INVALID_CURSOR`; missing
+or prompt-index-only history returns 404 `CONVERSATION_UNAVAILABLE`. A source
+record exceeding 8 MiB returns 413 `RECORD_TOO_LARGE`, without advancing, and
+directs the caller to the raw transcript. Read failures return a non-success
+status rather than an empty successful page. Existing history routes and
+runner protocols are unchanged. Automatic per-reader bookmarks are not part
+of this first cursor API.
+
 The existing authenticated `GET /api/history/<id>` route remains complete by
 default. The transcript response assigns a stable zero-based `index` to every
 normalized message.

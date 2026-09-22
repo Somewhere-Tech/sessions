@@ -265,6 +265,12 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions recall", "sessions recall 00000000-0000-4000-8000-000000000001 --raw"}, run: (*app).cmdRecall,
 	},
 	{
+		name: "read", usage: "read <[machine::]name-or-id> [--cursor CURSOR] [--limit 1..100]",
+		summary: "read a bounded conversation page, then only what follows", group: dailyCommandGroup, localJSON: true,
+		longHelp: "Read user/assistant text and provider errors from a saved conversation, starting at the beginning. Pass next_cursor from a successful read to get only what follows. Each caller keeps its own cursor; reads never acknowledge or consume another reader's history. Retrying the same cursor replays the same position. Pages contain at most 100 message fragments and 64 KiB of text. has_more means continue paging; pending_record means retry later for a partial provider record. Changed history is an explicit error, not an empty success. Tool details remain available through transcript/raw. Automatic per-reader bookmarks are not yet provided.",
+		examples: []string{"sessions --json read my-worker --limit 20", "sessions --json read my-worker --cursor <next_cursor>"}, run: (*app).cmdRead,
+	},
+	{
 		name: "source", usage: "source <[machine::]name-or-id> [--text | --raw]",
 		summary: "locate or read a saved conversation", group: dailyCommandGroup, localJSON: true,
 		longHelp: "Resolve a durable Sessions title, full id, id prefix, or machine::history-id across every approved machine. With no read flag, show the authoritative provider-owned JSONL path, provider, machine, workspace, size, and exact follow-up commands. --text streams the normalized user and agent conversation; --raw streams the untouched provider source. Ambiguous titles are never guessed. Sessions does not create or modify a transcript copy.",

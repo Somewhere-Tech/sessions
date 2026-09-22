@@ -75,6 +75,7 @@ Daily workflows:
   kill                     terminate sessions or lanes
   recover                  inspect or reopen recoverable sessions
   recall                   inspect integration recall data
+  read                     read a bounded conversation page, then only what follows
   source                   locate or read a saved conversation
   snap                     print the current terminal buffer
   tail                     print or follow recent terminal lines
@@ -971,6 +972,23 @@ Show the integration-backed recall view, optionally for one full session id. --r
 Examples:
   sessions recall
   sessions recall 00000000-0000-4000-8000-000000000001 --raw
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions read`
+
+```text
+Usage:
+  sessions read <[machine::]name-or-id> [--cursor CURSOR] [--limit 1..100]
+
+read a bounded conversation page, then only what follows
+
+Read user/assistant text and provider errors from a saved conversation, starting at the beginning. Pass next_cursor from a successful read to get only what follows. Each caller keeps its own cursor; reads never acknowledge or consume another reader's history. Retrying the same cursor replays the same position. Pages contain at most 100 message fragments and 64 KiB of text. has_more means continue paging; pending_record means retry later for a partial provider record. Changed history is an explicit error, not an empty success. Tool details remain available through transcript/raw. Automatic per-reader bookmarks are not yet provided.
+
+Examples:
+  sessions --json read my-worker --limit 20
+  sessions --json read my-worker --cursor <next_cursor>
 
 --json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
