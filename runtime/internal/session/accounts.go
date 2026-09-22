@@ -11,9 +11,9 @@ import (
 )
 
 // A profile is a second subscription: its own provider home, its own login, its
-// own history. What the daemon can say about one without reading a credential
-// is exactly two things — the name the person gave it, and whether the provider
-// has written its login state into that home yet.
+// own history. Sessions does not read credentials: directory markers remain a
+// presence-only observation, while an explicit account check asks the provider
+// to report its signed-in identity and records when that check happened.
 //
 // The label lives beside the profile directory rather than inside it, because
 // the directory is the provider's own home and nothing of ours belongs in it.
@@ -21,8 +21,9 @@ import (
 // person's second subscription is not something to delete on a button press.
 
 type accountSidecar struct {
-	Label   string `json:"label,omitempty"`
-	Removed bool   `json:"removed,omitempty"`
+	Identity *AccountIdentity `json:"identity,omitempty"`
+	Label    string           `json:"label,omitempty"`
+	Removed  bool             `json:"removed,omitempty"`
 }
 
 // signedInMarkers are the files each provider writes when a login completes.
@@ -84,8 +85,13 @@ func profileSignedIn(path, tool string) bool {
 
 // CreateAccount registers a named provider home so a person can log a second
 // subscription into it. It creates the directory and records the label; the
-// login itself happens in a session, in front of the person, in that home.
+// account-login helper then signs in with the provider inside that home.
 func (m *Manager) CreateAccount(tool, name, label string) (ProfileStatus, error) {
+	m.accountMetadataMu.Lock()
+	defer m.accountMetadataMu.Unlock()
+	if name == "" {
+		name = "acct-" + newAccountLoginID()
+	}
 	if err := state.ValidateProfileName(name); err != nil {
 		return ProfileStatus{}, err
 	}
@@ -127,6 +133,8 @@ func (m *Manager) CreateAccount(tool, name, label string) (ProfileStatus, error)
 // history; unregistering is a decision about a list, and deleting it would be a
 // decision about someone's account.
 func (m *Manager) ForgetAccount(tool, name string) error {
+	m.accountMetadataMu.Lock()
+	defer m.accountMetadataMu.Unlock()
 	if err := state.ValidateProfileName(name); err != nil {
 		return err
 	}

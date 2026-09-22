@@ -112,6 +112,29 @@ describe('capability: accounts are a first-class choice', () => {
 });
 
 describe('capability: adding an account is a guided login', () => {
+  it('signs in from the launcher without creating a login chat or losing the first request', async () => {
+    const machines = fleet();
+    const daemon = installFakeDaemon(machines);
+    useFakeMachines(machines, 'local');
+    const user = userEvent.setup();
+    render(<NewSessionDialog onClose={() => {}} onStarted={() => {}}
+      projectSeed={{ serverId: 'local', cwd: '/project', tags: {} }} />);
+    const account = await screen.findByLabelText('Account');
+    const add = within(account).getByRole('option', { name: /Add an account/ }) as HTMLOptionElement;
+    await user.selectOptions(account, add.value);
+    await user.type(screen.getByLabelText('First request (optional)'), 'Keep this request for the real chat');
+    await user.click(screen.getByRole('button', { name: 'Sign in to Claude' }));
+    await screen.findByLabelText('Claude confirmation code');
+    expect(screen.getByRole('button', { name: 'Start session' })).toBeDisabled();
+    await user.type(screen.getByLabelText('Claude confirmation code'), 'fixture-code{Enter}');
+    expect(await within(screen.getByRole('region', { name: 'Sign in to account' })).findByText('second@example.test')).toBeVisible();
+    expect(daemon.created).toHaveLength(0);
+    await user.click(screen.getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect((account as HTMLSelectElement).value).toBe('acct-fixture'));
+    expect(screen.getByRole('button', { name: 'Start session' })).toBeEnabled();
+    expect(screen.getByLabelText('First request (optional)')).toHaveValue('Keep this request for the real chat');
+    expect(daemon.created).toHaveLength(0);
+  });
   it('registers the home, opens the provider sign-in, and never offers an API key', async () => {
     const machines = fleet();
     const daemon: FakeDaemon = installFakeDaemon(machines);
@@ -128,28 +151,33 @@ describe('capability: adding an account is a guided login', () => {
     );
 
     await user.click(screen.getByRole('button', { name: 'Add account' }));
-    await user.type(screen.getByLabelText('Account name'), 'second');
+    expect(screen.queryByLabelText('Account name')).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Account label'), 'Second plan');
-    expect(screen.getByText(/no API-key path/i)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Add and sign in' }));
+    expect(screen.getByText(/No API key needed/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
 
     // The account was registered on this computer…
     await waitFor(() => expect(daemon.machines[0]!.profiles?.some(
-      (account) => account.name === 'second' && account.label === 'Second plan'
+      (account) => account.name === 'acct-fixture' && account.label === 'Second plan'
     )).toBe(true));
     // …and the provider's own login was opened in that account's home.
-    await waitFor(() => expect(opened).toHaveLength(1));
+    await screen.findByRole('button', { name: 'Continue to Claude' });
+    expect(opened).toHaveLength(0);
     // The request itself, not the fixture's summary of it: the login session
     // has to be created inside that account's home.
     const create = daemon.requests.filter(
-      (request) => request.method === 'POST' && request.path === '/api/sessions'
+      (request) => request.method === 'POST' && request.path === '/api/account-logins'
     ).pop();
-    const createBody = create?.body as { profile?: string; cmd?: string } | undefined;
-    expect(createBody?.profile).toBe('second');
-    expect(createBody?.cmd).toBe('claude');
+    const createBody = create?.body as { profile?: string; tool?: string } | undefined;
+    expect(createBody?.profile).toBe('acct-fixture');
+    expect(createBody?.tool).toBe('claude');
+    expect(daemon.created).toHaveLength(0);
 
     // The person is told to check which account they are signing in as.
-    expect(await screen.findByText(/check which account you are signing in as/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Check that you choose the account/i)).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Claude confirmation code'), 'fixture-code');
+    await user.click(screen.getByRole('button', { name: 'Connect account' }));
+    expect(await screen.findByText('second@example.test')).toBeVisible();
   }, 20_000);
 
   it('says only what it can see: whether a login file is there', async () => {
@@ -165,7 +193,7 @@ describe('capability: adding an account is a guided login', () => {
     );
     // Presence of a provider's sign-in file is the whole fact. "Signed in"
     // would claim a working login Sessions has never checked.
-    expect(screen.getByText('No login file yet')).toBeInTheDocument();
+    expect(screen.getByText('Identity not checked')).toBeInTheDocument();
     expect(screen.queryByText(/Not signed in/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
   }, 20_000);
@@ -222,9 +250,9 @@ describe('capability: a session says which account it is on', () => {
         onReload={() => {}}
       />
     );
-    const state = screen.getByText('Login file present');
+    const state = screen.getByText('Identity not checked');
     expect(state).toBeInTheDocument();
-    expect(state.title).toMatch(/cannot tell you whether that login still works/);
+    expect(state.title).toMatch(/confirm who is signed in/);
     expect(screen.queryByText('Signed in')).not.toBeInTheDocument();
   }, 20_000);
 
@@ -238,7 +266,7 @@ describe('capability: a session says which account it is on', () => {
     const realFetch = globalThis.fetch;
     let creates = 0;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).includes('/api/sessions') && (init?.method ?? 'GET') === 'POST') {
+      if (String(input).endsWith('/api/account-logins') && (init?.method ?? 'GET') === 'POST') {
         creates += 1;
         return new Response(JSON.stringify({ error: 'no runner is available' }), {
           status: 503, headers: { 'content-type': 'application/json' }
@@ -280,7 +308,7 @@ describe('capability: a session says which account it is on', () => {
     const realFetch = globalThis.fetch;
     let creates = 0;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).includes('/api/sessions') && (init?.method ?? 'GET') === 'POST') {
+      if (String(input).endsWith('/api/account-logins') && (init?.method ?? 'GET') === 'POST') {
         creates += 1;
         // Slow enough that a second click lands while the first is unfinished.
         await new Promise((resolve) => setTimeout(resolve, 400));
@@ -300,7 +328,8 @@ describe('capability: a session says which account it is on', () => {
     const signIn = screen.getByRole('button', { name: 'Sign in' });
     await user.click(signIn);
     await user.click(signIn);
-    await waitFor(() => expect(opened).toHaveLength(1), { timeout: 5_000 });
+    await screen.findByRole('button', { name: 'Continue to Claude' });
+    expect(opened).toHaveLength(0);
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(creates).toBe(1);
     globalThis.fetch = realFetch;

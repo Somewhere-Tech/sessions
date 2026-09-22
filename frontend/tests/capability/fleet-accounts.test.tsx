@@ -58,14 +58,13 @@ describe('capability: each computer says which accounts it has', () => {
     // The label the owner typed, the provider, and the only account fact
     // Sessions has ever checked: whether a login file is there.
     expect(within(alpha).getByText('Work ChatGPT')).toBeVisible();
-    expect(within(alpha).getAllByText('Login file present').length).toBe(1);
-    expect(within(alpha).getByText('No login file yet')).toBeVisible();
+    expect(within(alpha).getAllByText('Identity not checked').length).toBe(2);
     expect(within(alpha).queryByText('Signed in')).not.toBeInTheDocument();
 
     // Beta has its own account, and does not borrow Alpha's.
     const beta = cardFor('Beta');
     expect(within(beta).getByText('Shared build box')).toBeVisible();
-    expect(within(beta).queryByText('Login file present')?.textContent).toBe('Login file present');
+    expect(within(beta).getByText('Identity not checked')).toBeVisible();
     // Beta's account appears on Alpha only as the offer to log in there too —
     // never as an account Alpha has.
     expect(within(alpha).getByText('Shared build box').closest('.fleet-account')?.className)
@@ -87,7 +86,7 @@ describe('capability: each computer says which accounts it has', () => {
     });
     // The offer carries the account's own label, and never claims Beta has it.
     expect(within(beta).getByText('Work — team plan')).toBeVisible();
-    expect(within(beta).getAllByText('Login file present').length).toBe(1);
+    expect(within(beta).getAllByText('Identity not checked').length).toBe(1);
     // Alpha is missing Beta's account, so exactly one offer appears there.
     const alpha = cardFor('Alpha');
     expect(within(alpha).getAllByRole('button', { name: 'Log in here too' }).length).toBe(1);
@@ -117,15 +116,15 @@ describe('capability: each computer says which accounts it has', () => {
     expect(lastRequest(daemon, '/api/profiles')?.origin).toBe(BETA_ORIGIN);
 
     // And the provider's own sign-in was opened on Beta, in that account's home.
-    const created = lastRequest(daemon, '/api/sessions');
+    const created = lastRequest(daemon, '/api/account-logins');
     expect(created?.origin).toBe(BETA_ORIGIN);
     expect((created?.body as { profile?: string; cmd?: string }).profile).toBe('work');
-    expect((created?.body as { cmd?: string }).cmd).toBe('claude');
-    expect(opened.map((entry) => entry.serverId)).toEqual(['beta']);
+    expect((created?.body as { tool?: string }).tool).toBe('claude');
+    expect(opened).toEqual([]);
 
     // The same instruction Settings gives, naming the computer it happened on.
-    expect(await within(beta).findByText(/check which account you are signing in as/i)).toBeInTheDocument();
-    expect(within(beta).getByText(/the session Sessions just opened on Beta/)).toBeInTheDocument();
+    expect(await within(beta).findByText(/Check that you choose the account/i)).toBeInTheDocument();
+    expect(within(beta).getByRole('heading', { name: /Sign in to Claude on Beta/ })).toBeInTheDocument();
     // Nothing was created on the machine this window is connected to.
     expect(daemon.requests.filter(
       (request) => request.method === 'POST' && request.origin === ALPHA_ORIGIN && request.path === '/api/profiles'
@@ -165,13 +164,12 @@ describe('capability: Settings manages accounts on any computer', () => {
     await user.selectOptions(screen.getByLabelText('Computer'), 'beta');
     await waitFor(() => expect(screen.getByText('Shared build box')).toBeVisible());
     await user.click(screen.getByRole('button', { name: 'Add account' }));
-    await user.type(screen.getByLabelText('Account name'), 'second');
     await user.type(screen.getByLabelText('Account label'), 'Second plan');
-    await user.click(screen.getByRole('button', { name: 'Add and sign in' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
 
-    await waitFor(() => expect(machines[1]!.profiles?.some((account) => account.name === 'second')).toBe(true));
+    await waitFor(() => expect(machines[1]!.profiles?.some((account) => account.name === 'acct-fixture')).toBe(true));
     expect(lastRequest(daemon, '/api/profiles')?.origin).toBe(BETA_ORIGIN);
-    expect(lastRequest(daemon, '/api/sessions')?.origin).toBe(BETA_ORIGIN);
-    expect(machines[0]!.profiles?.some((account) => account.name === 'second')).toBe(false);
+    expect(lastRequest(daemon, '/api/account-logins')?.origin).toBe(BETA_ORIGIN);
+    expect(machines[0]!.profiles?.some((account) => account.name === 'acct-fixture')).toBe(false);
   }, 20_000);
 });

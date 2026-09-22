@@ -554,6 +554,7 @@ export interface AccountProfileSession {
 }
 
 export interface AccountProfile {
+  identity?: { email: string; plan?: string; organization?: string; checked_at: number };
   tool: 'claude' | 'codex';
   name: string;
   path: string;

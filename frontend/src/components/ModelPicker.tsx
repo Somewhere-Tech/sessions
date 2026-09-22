@@ -25,7 +25,8 @@ interface Props {
 }
 
 export const CLAUDE_MODEL_OPTIONS: ModelPickerOption[] = [
-  { id: 'claude-fable-5', label: 'Fable 5', description: 'Fast, capable everyday work' },
+  { id: 'claude-fable-5-1', label: 'Fable 5.1', description: 'Demanding reasoning and long-running work' },
+  { id: 'claude-opus-5-5', label: 'Opus 5.5', description: 'Complex coding and reasoning' },
   { id: 'opus', label: 'Opus (alias)', description: 'Deep reasoning; follows the Claude CLI alias' },
   { id: 'sonnet', label: 'Sonnet', description: 'Balanced speed and reasoning' },
   { id: 'haiku', label: 'Haiku', description: 'Fast, lightweight tasks' }

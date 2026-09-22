@@ -68,7 +68,7 @@ func (s *Server) StartFleetAccount(ctx context.Context, logf func(string, ...any
 func (s *Server) handleFleetAccountRoute(
 	response http.ResponseWriter, request *http.Request, corsOrigin string,
 ) bool {
-	if !strings.HasPrefix(request.URL.Path, "/api/account") {
+	if request.URL.Path != "/api/account" && !strings.HasPrefix(request.URL.Path, "/api/account/") {
 		return false
 	}
 	if !s.requireLocalPrincipal(response, request, corsOrigin, "Somewhere account administration") {

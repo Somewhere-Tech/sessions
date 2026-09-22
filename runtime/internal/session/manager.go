@@ -153,8 +153,11 @@ func (e *ConversationMovedError) Error() string {
 }
 
 type Manager struct {
-	config   state.Config
-	launcher proto.RunnerLauncher
+	accountLoginMu    sync.Mutex
+	accountMetadataMu sync.Mutex
+	accountLogins     map[string]*accountLoginOperation
+	config            state.Config
+	launcher          proto.RunnerLauncher
 	// wakeMu serializes WakePaused so two first messages cannot kick one
 	// runner twice.
 	wakeMu   sync.Mutex

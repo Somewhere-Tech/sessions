@@ -170,7 +170,8 @@ func claudeModelOptions(configuredDefault, configuredEffort string) []codexapp.M
 		{ReasoningEffort: "max", Description: "Maximum available reasoning"},
 	}
 	models := []codexapp.Model{
-		{ID: "claude-fable-5", Model: "claude-fable-5", DisplayName: "Fable 5", Description: "Fast, capable everyday work"},
+		{ID: "claude-fable-5-1", Model: "claude-fable-5-1", DisplayName: "Fable 5.1", Description: "Demanding reasoning and long-running work"},
+		{ID: "claude-opus-5-5", Model: "claude-opus-5-5", DisplayName: "Opus 5.5", Description: "Complex coding and reasoning"},
 		{ID: "opus", Model: "opus", DisplayName: "Opus", Description: "Deep reasoning"},
 		{ID: "sonnet", Model: "sonnet", DisplayName: "Sonnet", Description: "Balanced speed and reasoning"},
 		{ID: "haiku", Model: "haiku", DisplayName: "Haiku", Description: "Fast, lightweight tasks"},

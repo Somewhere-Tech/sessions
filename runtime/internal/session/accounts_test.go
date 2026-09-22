@@ -114,7 +114,7 @@ func TestAccountsRefuseNamesAndProvidersThatAreNotOne(t *testing.T) {
 	root := t.TempDir()
 	manager, _, _ := newWorktreeTestManager(t, root)
 	for _, test := range []struct{ tool, name string }{
-		{"claude", "Work"}, {"claude", ""}, {"shell", "work"}, {"", "work"},
+		{"claude", "Work"}, {"shell", "work"}, {"", "work"},
 		{"claude", "../escape"},
 	} {
 		if _, err := manager.CreateAccount(test.tool, test.name, ""); err == nil {

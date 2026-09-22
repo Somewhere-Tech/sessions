@@ -713,11 +713,41 @@ compatibility with clients that already read it.
 ### `POST /api/profiles`
 
 Auth required. Body is `{"tool":"claude"|"codex","name":"<1-32 lowercase
-letters, digits or hyphens>","label":"<optional>"}`. Creates the provider home
+letters, digits or hyphens>","label":"<optional>"}`. An omitted or empty name
+generates a private account ID, so the UI requires no technical profile name. Creates the provider home
 if it is absent, records the label, and answers `{"profile":{…}}` with the same
 shape as the listing. It performs no login: the provider's own sign-in happens
-afterwards in a session created with that `profile`, where the person can see
-it. An invalid name or tool is `400`.
+afterwards through the account-login operations below. An invalid name or tool is `400`.
+
+### Provider account sign-in
+
+Local clients and paired host administrators can use these routes; anonymous
+open-access clients receive 403, including for reads. Responses are `no-store`.
+
+- `POST /api/account-logins` with `{"tool":"claude"|"codex","profile":"name"}`
+  starts or returns the active sign-in for an existing account.
+- `GET /api/account-logins/:id` returns its current state.
+- `POST /api/account-logins/:id` with `{"code":"…"}` submits a Claude
+  confirmation code. It is passed directly to the provider, never persisted.
+- `DELETE /api/account-logins/:id` cancels only the owned authentication helper,
+  not a session, and never logs an account out or removes its credentials.
+
+States are `opening`, `waiting`, `connected`, `failed`, `expired`, `cancelled`.
+The response includes `id`, `tool`, `profile`, `state`, `expires_at`, and while
+waiting a provider `url` and optional ChatGPT device `code`. On completion,
+`identity` contains provider-reported `email`, optional `plan` and `organization`,
+and `checked_at` milliseconds. This reports identity at check time, not remaining
+usage or a guarantee that future inference will succeed. The identity is also
+included in profile listings when known; legacy `signed_in` remains unchanged.
+
+Helpers have a ten-minute lifetime, run in the selected provider home and never
+create an agent conversation. Claude uses `auth login --claudeai` and
+`auth status --json`; Codex uses a private stdio app-server with
+`account/login/start` device authorization and `account/read`. Only the provider
+stores or refreshes credentials. Login codes and URLs are memory-only; after a
+daemon restart start again. A known signed-in profile is checked without logging
+it out or replacing it. Profiles remain host-local; signing in on another host
+does not transfer credentials between computers.
 
 ### `DELETE /api/profiles/:tool/:name`
 

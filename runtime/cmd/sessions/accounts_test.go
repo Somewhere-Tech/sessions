@@ -35,7 +35,7 @@ func accountsDaemon(t *testing.T, created *map[string]string, sessionBody *map[s
 				"path": "/state/profiles/" + body["tool"] + "/" + body["name"], "signed_in": false,
 				"sessions": []any{}, "last_used": 0,
 			}})
-		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions":
+		case request.Method == http.MethodPost && request.URL.Path == "/api/account-logins":
 			var body map[string]any
 			_ = json.NewDecoder(request.Body).Decode(&body)
 			*sessionBody = body
@@ -83,8 +83,8 @@ func TestAccountsAddRegistersTheHomeAndOpensTheProvidersLogin(t *testing.T) {
 		args    int
 		hint    string
 	}{
-		{"claude", "claude", 0, "/login"},
-		{"codex", "codex", 1, "Sign in with ChatGPT"},
+		{"claude", "claude", 0, "login-status"},
+		{"codex", "codex", 0, "login-status"},
 	} {
 		t.Run(test.tool, func(t *testing.T) {
 			var created map[string]string
@@ -102,7 +102,7 @@ func TestAccountsAddRegistersTheHomeAndOpensTheProvidersLogin(t *testing.T) {
 			if created["tool"] != test.tool || created["name"] != "work" || created["label"] != "Work — team plan" {
 				t.Fatalf("registered account = %#v", created)
 			}
-			if sessionBody["cmd"] != test.command || sessionBody["profile"] != "work" {
+			if sessionBody["tool"] != test.command || sessionBody["profile"] != "work" {
 				t.Fatalf("login session = %#v", sessionBody)
 			}
 			// No working directory from this caller: with --machine the session
@@ -155,7 +155,6 @@ func TestAccountsRefusesAnIncompleteRequest(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, args := range [][]string{
 		{"accounts", "add", "work"},
-		{"accounts", "add", "--tool", "claude"},
 		{"accounts", "add", "work", "--tool", "shell"},
 		{"accounts", "forget", "work"},
 		{"accounts", "nonsense"},
@@ -189,7 +188,7 @@ func TestAccountsAddOnAnotherMachineLandsOnThatMachine(t *testing.T) {
 				"path": "/state/profiles/" + body["tool"] + "/" + body["name"], "signed_in": false,
 				"sessions": []any{}, "last_used": 0,
 			}})
-		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/api/sessions"):
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/api/account-logins"):
 			_ = json.NewDecoder(request.Body).Decode(&sessionBody)
 			_ = json.NewEncoder(response).Encode(map[string]any{"id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"})
 		default:
@@ -216,7 +215,7 @@ func TestAccountsAddOnAnotherMachineLandsOnThatMachine(t *testing.T) {
 	// Both halves of the guided login landed on the machine that was named.
 	want := []string{
 		"POST /api/fleet/machine-mini/api/profiles",
-		"POST /api/fleet/machine-mini/api/sessions",
+		"POST /api/fleet/machine-mini/api/account-logins",
 	}
 	if strings.Join(paths, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests = %#v, want them relayed to the target machine", paths)
@@ -226,11 +225,11 @@ func TestAccountsAddOnAnotherMachineLandsOnThatMachine(t *testing.T) {
 	if _, sent := sessionBody["cwd"]; sent {
 		t.Fatalf("the create carried this caller's working directory: %#v", sessionBody)
 	}
-	if sessionBody["profile"] != "work" || sessionBody["cmd"] != "claude" {
+	if sessionBody["profile"] != "work" || sessionBody["tool"] != "claude" {
 		t.Fatalf("login session = %#v, want claude in the work account's home", sessionBody)
 	}
 	// And it says where all this happened, so the follow-up command is right.
-	for _, fragment := range []string{"on mini", "--machine mini send"} {
+	for _, fragment := range []string{"on mini", "--machine mini accounts login-status"} {
 		if !strings.Contains(stdout.String(), fragment) {
 			t.Errorf("output lacks %q:\n%s", fragment, stdout.String())
 		}

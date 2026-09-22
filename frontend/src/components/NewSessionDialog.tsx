@@ -18,6 +18,7 @@ import { sessionLabel, sessionTitleFromPrompt } from '../lib/tabLabels';
 import { ProviderMark } from './ProviderBadge';
 import { MachineMark } from './MachineMark';
 import { CLAUDE_MODEL_OPTIONS, ModelPicker, type ModelPickerOption } from './ModelPicker';
+import { InlineAccountSignIn } from './InlineAccountSignIn';
 
 interface ToolDef {
   id: NewSessionTool;
@@ -85,7 +86,6 @@ function AgentMark({ tool, size = 38 }: { tool: NewSessionTool; size?: number })
 }
 
 const NEW_PROFILE = '__new_profile__';
-const PROFILE_NAME = /^[a-z0-9-]{1,32}$/;
 
 function providerForTool(tool: NewSessionTool): 'claude' | 'codex' | null {
   return tool === 'claude-code' ? 'claude' : tool === 'codex' ? 'codex' : null;
@@ -206,7 +206,7 @@ function AccountChoice(
           ) : null}
           {profiles.map((profile) => (
             <option key={`${profile.tool}:${profile.name}`} value={profile.name}>
-              {accountLabel(profile)}{profile.name === inherited ? ' · from this session' : ''}{profile.signed_in ? '' : ' · needs sign-in'}
+              {accountLabel(profile)}{profile.name === inherited ? ' · from this session' : ''}{profile.identity || profile.signed_in ? '' : ' · needs sign-in'}
             </option>
           ))}
           <option value={NEW_PROFILE}>Add an account…</option>
@@ -216,45 +216,6 @@ function AccountChoice(
   );
 }
 
-
-// Naming a new account, and the one thing worth saying about an existing one
-// that has no provider login yet.
-function NewAccountField(
-  { adding, name, valid, needsLogin, onName }: {
-    adding: boolean;
-    name: string;
-    valid: boolean;
-    needsLogin: boolean;
-    onName: (value: string) => void;
-  }
-): JSX.Element | null {
-  if (adding) {
-    return (
-      <div className="field account-profile-field">
-        <span className="field-label">Name this account</span>
-        <input
-          className="field-input"
-          value={name}
-          onChange={(event) => onName(event.target.value.toLowerCase())}
-          placeholder="work or personal"
-          maxLength={32}
-          pattern="[a-z0-9-]{1,32}"
-          autoFocus
-          aria-invalid={!valid}
-          aria-label="Account name"
-        />
-        <span className="field-help">
-          This opens the provider&rsquo;s own login in its own home, so the account keeps its own history.
-          Check which account you are signing into in the browser before confirming.
-        </span>
-      </div>
-    );
-  }
-  if (needsLogin) {
-    return <div className="field-help account-needs-login">This account has no provider login yet; the session will open its sign-in.</div>;
-  }
-  return null;
-}
 
 export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSession = null, embedded = false, projectSeed = null }: Props): JSX.Element {
   const create = useSessions((s) => s.create);
@@ -299,7 +260,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   // A delegate starts on its manager's account; anyone else starts on the one
   // this project used last on this computer.
   const [accountTouched, setAccountTouched] = useState(false);
-  const [newProfile, setNewProfile] = useState('');
   const [busy, setBusy] = useState(false);
   // State disables the button on the next render; this ref closes the smaller
   // same-tick window in which Enter plus a click could create two runtimes.
@@ -324,9 +284,9 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     : profileChoice === NEW_PROFILE
       ? 'Add an account'
       : profileChoice;
-  const selectedProfile = profileChoice === NEW_PROFILE ? newProfile.trim() : profileChoice;
-  const profileValid = profileChoice !== NEW_PROFILE || PROFILE_NAME.test(selectedProfile);
-  const requiresProviderLogin = profileChoice === NEW_PROFILE;
+  const selectedProfile = profileChoice === NEW_PROFILE ? '' : profileChoice;
+  const requiresProviderLogin = profileChoice === NEW_PROFILE || Boolean(profileTool && selectedProfile && accountNeedsLogin(profiles, profileTool, selectedProfile));
+  const profileValid = !requiresProviderLogin;
   const selectedMachine = configuredMachines.find((machine) => machine.id === machineId)
     ?? configuredMachines[0]
     ?? null;
@@ -380,7 +340,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const parentSessionId = parentSession?.id ?? null;
   useEffect(() => {
     setProfileChoice(inheritedProfileChoice);
-    setNewProfile('');
     setAccountTouched(false);
   }, [inheritedProfileChoice, parentSessionId]);
 
@@ -471,7 +430,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     if (startInFlightRef.current) return;
     startInFlightRef.current = true;
     if (!profileValid) {
-      setError('Profile names use 1–32 lowercase letters, numbers, or hyphens.');
+      setError('Finish account sign-in before starting this chat.');
       startInFlightRef.current = false;
       return;
     }
@@ -508,10 +467,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         description: task.trim() || undefined,
         tags,
         profile: selectedProfile || undefined,
-        // A newly isolated provider home starts in its login flow. Readiness
-        // cannot distinguish that prompt from the agent composer, so never
-        // inject an initial task until the user has authenticated explicitly.
-        waitReady: task.trim().length > 0 && !requiresProviderLogin,
+        waitReady: task.trim().length > 0,
         claude: tool === 'claude-code' ? resolvedClaudeOptions : undefined,
         creatorSessionId: parentSession?.id,
         delegationKind: parentSession ? 'user' : undefined
@@ -524,11 +480,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       }
       onStarted(info.id);
       if (task.trim()) {
-        if (requiresProviderLogin) {
-          setCreatedWithDeliveryError(info.id);
-          setError(`Session ${info.id.slice(0, 8)} started in the provider login flow. Finish authentication first, then send the request shown above from Conversation. Sessions will not queue or paste it into a login prompt.`);
-          return;
-        }
         try {
           await submitInitialRequest(info.id, task.trim(), machineId);
         } catch (reason) {
@@ -651,13 +602,12 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
               </button>
             </div>
           </div>
-          {profileTool ? (
-            <NewAccountField
-              adding={profileChoice === NEW_PROFILE}
-              name={newProfile}
-              valid={profileValid}
-              needsLogin={Boolean(selectedProfile) && profileChoice !== NEW_PROFILE && accountNeedsLogin(profiles, profileTool, selectedProfile)}
-              onName={setNewProfile}
+          {profileTool && requiresProviderLogin ? (
+            <InlineAccountSignIn
+              key={`${machineId}:${profileTool}:${profileChoice}`}
+              tool={profileTool} serverId={machineId}
+              account={toolProfiles.find((profile) => profile.name === selectedProfile)}
+              onReload={setProfiles} onConnected={setProfileChoice}
             />
           ) : null}
           <div className="field launcher-task-field launcher-composer input-composer">

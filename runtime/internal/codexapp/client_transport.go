@@ -201,6 +201,10 @@ func (c *Client) handleServerRequest(message wireMessage) {
 }
 
 func (c *Client) handleNotification(method string, params json.RawMessage) {
+	if method == "account/login/completed" {
+		c.recordAccountLoginCompletion(params)
+		return
+	}
 	parsed, err := parseServerEvent(method, params)
 	if err != nil {
 		return

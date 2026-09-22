@@ -1,0 +1,18 @@
+/* Loaded with account controls, not on the first-screen entry path. */
+.accounts-list > div.accounts-row { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 16px 0; }
+.accounts-identity, .accounts-meta { display: grid; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
+.accounts-identity strong { font-size: 14px; }
+.accounts-meta { text-align: right; }
+.accounts-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+.accounts-ready { color: var(--ok, #48aa99); }
+.accounts-pending { color: var(--fg-faint); }
+.accounts-machine { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.accounts-add { display: grid; gap: 10px; }
+.accounts-add label { display: grid; gap: 4px; font-size: 12px; }
+.accounts-add input, .accounts-add select, .accounts-signing-in input { width: 100%; min-width: 0; min-height: 44px; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-base); color: var(--fg); font: inherit; }
+.accounts-signing-in { display: grid; gap: 14px; }
+.accounts-signing-in h2, .accounts-signing-in p { margin: 0; }
+.account-confirmation, .accounts-signing-in label { display: grid; gap: 10px; font-size: 14px; }
+.accounts-signing-in .btn { min-height: 44px; justify-self: start; }
+.account-device-code { display: block; margin-top: 10px; font-size: 20px; letter-spacing: 0.08em; }
+.accounts-add-actions { display: flex; gap: 8px; }

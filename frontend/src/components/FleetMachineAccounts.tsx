@@ -86,9 +86,11 @@ export function FleetMachineAccounts(
       {login.signingInFor ? (
         <SigningInCard
           account={login.signingInFor}
+          operation={login.operation}
           busy={login.busy}
           machineName={machineName}
-          onCheck={() => void login.reload()}
+          onCode={login.submitCode}
+          onCancel={login.cancel}
           onDone={login.finishSignIn}
         />
       ) : null}

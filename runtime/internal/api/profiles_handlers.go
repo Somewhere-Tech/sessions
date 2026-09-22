@@ -15,7 +15,7 @@ type profileService interface {
 
 // accountService registers and unregisters the named provider homes a second
 // subscription lives in. Creating one is a directory and a label; the login
-// itself happens in a session the person can watch.
+// itself happens through a bounded provider-owned authentication helper.
 type accountService interface {
 	CreateAccount(tool, name, label string) (sessionruntime.ProfileStatus, error)
 	ForgetAccount(tool, name string) error
@@ -23,6 +23,9 @@ type accountService interface {
 }
 
 func (s *Server) handleProfilesRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
+	if s.handleAccountLoginRoute(response, request, corsOrigin) {
+		return true
+	}
 	if strings.HasPrefix(request.URL.Path, "/api/profiles/") {
 		return s.handleAccountRoute(response, request, corsOrigin)
 	}

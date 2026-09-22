@@ -94,6 +94,16 @@ directory and answers
 
 ## Files
 
+### `profiles/<tool>/<name>.account.json`
+
+An optional mode-0600 sidecar beside the provider-owned home records the user's
+`label`, `removed` flag, and optional last checked `identity` (email, plan,
+organization, checked_at milliseconds). It contains no provider credential.
+Older clients may ignore `identity`. Provider sign-in helpers are memory-only
+and expire after ten minutes; they do not create runner artifacts or sessions.
+Named subscription launches discard ambient provider authentication overrides
+before assigning their private `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
+
 ### `token`
 
 Exactly 64 lowercase hexadecimal characters representing 32 random bytes. It is

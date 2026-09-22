@@ -12,6 +12,12 @@ type profileSession struct {
 }
 
 type profileStatus struct {
+	Identity *struct {
+		Email        string `json:"email"`
+		Plan         string `json:"plan,omitempty"`
+		Organization string `json:"organization,omitempty"`
+		CheckedAt    int64  `json:"checked_at"`
+	} `json:"identity,omitempty"`
 	Tool     string           `json:"tool"`
 	Name     string           `json:"name"`
 	Path     string           `json:"path"`
@@ -28,6 +34,8 @@ func (a *app) cmdAccounts(args []string) error {
 		return a.cmdProfiles(nil)
 	}
 	switch args[0] {
+	case "login", "login-status", "login-cancel", "login-code":
+		return a.cmdAccountLogin(args[0], args[1:])
 	case "add":
 		return a.cmdAccountsAdd(args[1:])
 	case "forget", "remove":
@@ -39,9 +47,8 @@ func (a *app) cmdAccounts(args []string) error {
 	}
 }
 
-// cmdAccountsAdd registers the account and opens the provider's own login in a
-// session on the target machine. The login runs where the person can see it —
-// Sessions prints what the provider prints and never handles the credential.
+// cmdAccountsAdd registers the account and starts its bounded provider sign-in
+// on the target machine. No agent conversation is created.
 //
 // --machine names the computer the account belongs to. A subscription is signed
 // into per machine, so adding one on the mini from the laptop has to be a
@@ -52,8 +59,8 @@ func (a *app) cmdAccountsAdd(args []string) error {
 	tool, _ := pluck(&args, "--tool")
 	label, _ := pluck(&args, "--label")
 	machine, hasMachine := pluck(&args, "--machine")
-	if len(args) != 1 || args[0] == "" || (tool != "claude" && tool != "codex") {
-		return fail(1, "usage: sessions accounts add <name> --tool claude|codex [--label TEXT] [--machine NAME]")
+	if len(args) > 1 || (tool != "claude" && tool != "codex") {
+		return fail(1, "usage: sessions accounts add [name] --tool claude|codex [--label TEXT] [--machine NAME]")
 	}
 	where := ""
 	if hasMachine {
@@ -63,33 +70,25 @@ func (a *app) cmdAccountsAdd(args []string) error {
 		}
 		where = alias
 	}
-	name := args[0]
+	name := ""
+	if len(args) == 1 {
+		name = args[0]
+	}
 	var created struct {
 		Profile profileStatus `json:"profile"`
 	}
 	if err := a.postJSON("/api/profiles", map[string]string{"tool": tool, "name": name, "label": label}, &created, 2); err != nil {
 		return err
 	}
-	command := "claude"
-	loginArgs := []string{}
-	if tool == "codex" {
-		command, loginArgs = "codex", []string{"login"}
-	}
-	var info struct {
-		ID string `json:"id"`
-	}
-	// No working directory: the daemon that runs this session chooses its own
-	// default, as `sessions new` without --cwd does. Sending this caller's home
-	// would name a directory that need not exist on the machine being asked.
-	if err := a.postJSON("/api/sessions", createSessionRequest{
-		Cmd: command, Args: loginArgs, Profile: name,
-		Name: "sign in: " + name, Description: "provider login for the " + tool + " account " + name,
-	}, &info, 2); err != nil {
+	var login map[string]any
+	if err := a.postJSON("/api/account-logins", map[string]string{
+		"tool": tool, "profile": created.Profile.Name,
+	}, &login, 2); err != nil {
 		return err
 	}
 	if a.wantJSON {
 		answer := map[string]any{
-			"account": created.Profile, "session": info.ID, "signed_in": created.Profile.SignedIn,
+			"account": created.Profile, "login": login,
 		}
 		if where != "" {
 			answer["machine"] = where
@@ -100,20 +99,13 @@ func (a *app) cmdAccountsAdd(args []string) error {
 	if where != "" {
 		on = " on " + where
 	}
-	fmt.Fprintf(a.stdout, "account %s/%s registered at %s%s\n", tool, name, created.Profile.Path, on)
-	fmt.Fprintf(a.stdout, "opened session %s to sign in%s\n", prefixString(info.ID, 8), on)
-	reach := prefixString(info.ID, 8)
+	fmt.Fprintf(a.stdout, "account %s/%s registered at %s%s\n", tool, created.Profile.Name, created.Profile.Path, on)
 	scope := ""
 	if where != "" {
 		scope = "--machine " + where + " "
 	}
-	if tool == "claude" {
-		fmt.Fprintf(a.stdout, "run `sessions %ssend %s /login` and follow what it prints; Sessions never sees the credential\n", scope, reach)
-	} else {
-		fmt.Fprintf(a.stdout, "watch it with `sessions %ssnap %s`: choose \"Sign in with ChatGPT\" and open the URL it prints\n", scope, reach)
-	}
-	fmt.Fprintln(a.stdout,
-		"check the account in the browser before confirming; `sessions accounts` then reports its login file as present")
+	fmt.Fprintf(a.stdout, "check sign-in with `sessions %saccounts login-status %v`\n", scope, login["id"])
+	fmt.Fprintln(a.stdout, "check the account in the browser before confirming; Sessions will report the provider's account identity")
 	return nil
 }
 

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { fetchProfiles, forgetAccount, type AccountProfile } from '../api/sessionsd';
 import { accountLabel } from '../lib/accountChoice';
 import { serverDisplayName, useServers } from '../lib/servers';
-import { ACCOUNT_NAME, AccountLoginState, SigningInCard, useGuidedAccountLogin } from './AccountSignIn';
+import { AccountLoginState, SigningInCard, useGuidedAccountLogin } from './AccountSignIn';
 
 // Accounts on one computer: a second Claude or ChatGPT subscription, its own
 // provider home, its own history. Adding one is a guided login rather than a
@@ -17,7 +17,7 @@ interface Props {
   profiles: AccountProfile[];
   machineName: string;
   serverId?: string;
-  /** Opening the login session is how the person sees the provider's own flow. */
+  /** Kept for callers shared with other settings panels; sign-in opens no chat. */
   onOpenSession?: (sessionId: string) => void;
   onReload?: (profiles: AccountProfile[]) => void;
 }
@@ -99,10 +99,6 @@ export function AccountsPanel({ profiles, machineName, serverId, onOpenSession, 
           machineName={viewingHome ? undefined : targetName}
           onCancel={() => { setStage('idle'); login.setMessage(null); }}
           onAdd={(tool, name, label) => {
-            if (!ACCOUNT_NAME.test(name)) {
-              login.setMessage('Use 1–32 lowercase letters, digits, or hyphens.');
-              return;
-            }
             void login.addAccount(tool, name, label).then((added) => { if (added) setStage('idle'); });
           }}
         />
@@ -111,9 +107,11 @@ export function AccountsPanel({ profiles, machineName, serverId, onOpenSession, 
       {login.signingInFor ? (
         <SigningInCard
           account={login.signingInFor}
+          operation={login.operation}
           busy={login.busy}
           machineName={viewingHome ? undefined : targetName}
-          onCheck={() => void login.reload()}
+          onCode={login.submitCode}
+          onCancel={login.cancel}
           onDone={login.finishSignIn}
         />
       ) : null}
@@ -162,8 +160,7 @@ function useMachineAccounts(targetId: string, isHome: boolean): {
 function AccountsFootnote(): JSX.Element {
   return (
     <p className="field-help">
-      Removing an account only takes it off this list. Its provider home — the login and the history —
-      is left in place for you to review or delete yourself.
+      Removing an account keeps its saved chats and sign-in on this computer.
     </p>
   );
 }
@@ -174,10 +171,8 @@ function AccountsIntroduction({ machineName }: { machineName: string }): JSX.Ele
       <span className="settings-kicker">Subscriptions on {machineName}</span>
       <h1>Accounts</h1>
       <p>
-        Each account is a separate Claude or ChatGPT login with its own history. Sessions never reads a
-        credential: an account has the name you give it, and Sessions reports only whether the file a
-        provider writes when it signs in is present in that account&rsquo;s home — not whether that login
-        still works, and not which account it belongs to.
+        Add your Claude and ChatGPT accounts, then choose one when starting a chat.
+        Sign-in happens with the provider. Each account stays separate on this computer.
       </p>
     </>
   );
@@ -195,16 +190,21 @@ function AccountsList(
     <div className="settings-profile-list accounts-list">
       {profiles.map((account) => (
         <div key={`${account.tool}:${account.name}`} className="accounts-row">
+          <div className="accounts-identity">
           <span className={`profile-provider is-${account.tool}`}>{account.tool === 'claude' ? 'Claude' : 'Codex'}</span>
           <strong>{accountLabel(account)}</strong>
-          <small className="accounts-name">{account.name}</small>
           <AccountLoginState account={account} />
+          </div>
+          <div className="accounts-meta">
           <small>{account.sessions.length} active session{account.sessions.length === 1 ? '' : 's'}</small>
           <small>{account.last_used > 0 ? `Last used ${new Date(account.last_used).toLocaleDateString()}` : 'Never used'}</small>
-          {account.signed_in ? null : (
-            <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => onSignIn(account)}>Sign in</button>
-          )}
+          </div>
+          <div className="accounts-actions">
+          <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => onSignIn(account)}>
+            {account.identity || account.signed_in ? 'Check account' : 'Sign in'}
+          </button>
           <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => onForget(account)}>Remove</button>
+          </div>
         </div>
       ))}
       {profiles.length === 0 ? <p>No second account on this computer yet.</p> : null}
@@ -221,7 +221,6 @@ function AddAccountForm(
   }
 ): JSX.Element {
   const [tool, setTool] = useState<'claude' | 'codex'>('claude');
-  const [name, setName] = useState('');
   const [label, setLabel] = useState('');
   return (
     <div className="settings-card accounts-add">
@@ -230,36 +229,25 @@ function AddAccountForm(
         <span>Provider</span>
         <select value={tool} onChange={(event) => setTool(event.currentTarget.value as 'claude' | 'codex')} aria-label="Provider">
           <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
+          <option value="codex">ChatGPT / Codex</option>
         </select>
       </label>
       <label>
-        <span>Name on this computer</span>
-        <input
-          value={name}
-          onChange={(event) => setName(event.currentTarget.value.toLowerCase())}
-          placeholder="work or personal"
-          maxLength={32}
-          aria-label="Account name"
-        />
-      </label>
-      <label>
-        <span>Label</span>
+        <span>Nickname (optional)</span>
         <input
           value={label}
           onChange={(event) => setLabel(event.currentTarget.value)}
-          placeholder="Work — team plan"
+          placeholder="Work or personal"
           maxLength={64}
           aria-label="Account label"
         />
       </label>
       <p className="field-help">
-        Sessions opens the provider&rsquo;s own sign-in in this account&rsquo;s home.
-        Subscription logins only — there is no API-key path here.
+        We&rsquo;ll show which account connected after you sign in. No API key needed.
       </p>
       <div className="accounts-add-actions">
-        <button type="button" className="btn btn-primary" disabled={busy} onClick={() => onAdd(tool, name.trim().toLowerCase(), label.trim())}>
-          {busy ? 'Adding…' : 'Add and sign in'}
+        <button type="button" className="btn btn-primary" disabled={busy} onClick={() => onAdd(tool, '', label.trim())}>
+          {busy ? 'Preparing…' : 'Continue'}
         </button>
         <button type="button" className="btn btn-ghost" disabled={busy} onClick={onCancel}>Cancel</button>
       </div>

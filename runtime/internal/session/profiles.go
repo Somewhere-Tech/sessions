@@ -18,9 +18,10 @@ type ProfileSession struct {
 }
 
 type ProfileStatus struct {
-	Tool string `json:"tool"`
-	Name string `json:"name"`
-	Path string `json:"path"`
+	Identity *AccountIdentity `json:"identity,omitempty"`
+	Tool     string           `json:"tool"`
+	Name     string           `json:"name"`
+	Path     string           `json:"path"`
 	// Label is what the person called this account when they added it. It is
 	// never read out of a provider's files: an account has the name its owner
 	// typed, or none.
@@ -86,7 +87,8 @@ func (m *Manager) Profiles(ctx context.Context) ([]ProfileStatus, error) {
 			}
 			key := tool + "\x00" + entry.Name()
 			profiles[key] = &ProfileStatus{
-				Tool: tool, Name: entry.Name(), Path: path, Label: sidecar.Label,
+				Identity: sidecar.Identity,
+				Tool:     tool, Name: entry.Name(), Path: path, Label: sidecar.Label,
 				SignedIn: profileSignedIn(path, tool),
 				Sessions: make([]ProfileSession, 0), LastUsed: lastUsed,
 			}

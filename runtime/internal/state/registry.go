@@ -224,13 +224,7 @@ func (r *Registry) CreateWithLifecycle(
 		Env:  r.runnerEnvironment(runnerInfo, request.Env),
 	}
 	if profile != "" {
-		envKey := "CODEX_HOME"
-		if tool == ToolClaude {
-			envKey = "CLAUDE_CONFIG_DIR"
-		}
-		launchRequest.Env[envKey] = configDir
-		launchRequest.Env["RUNNER_PROFILE"] = profile
-		launchRequest.Env["RUNNER_CONFIG_DIR"] = configDir
+		configureProfileEnvironment(launchRequest.Env, tool, profile, configDir)
 	}
 	if kind == KindClaudeStructured {
 		// Structured Claude is intentionally subscription-authenticated. Never

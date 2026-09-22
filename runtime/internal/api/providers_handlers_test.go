@@ -104,8 +104,23 @@ func TestProviderStatusIncludesModelChoicesOnlyWhenRequested(t *testing.T) {
 	}
 	withModels := serve(t, daemon.handler, http.MethodGet, "/api/providers?include_models=1", nil, "127.0.0.1:1", nil)
 	if withModels.Code != http.StatusOK ||
-		!strings.Contains(withModels.Body.String(), `"displayName":"Fable 5"`) ||
+		!strings.Contains(withModels.Body.String(), `"displayName":"Fable 5.1"`) ||
+		!strings.Contains(withModels.Body.String(), `"model":"claude-opus-5-5"`) ||
 		!strings.Contains(withModels.Body.String(), `"displayName":"GPT Next"`) {
 		t.Fatalf("provider models status=%d body=%s", withModels.Code, withModels.Body.String())
+	}
+}
+
+func TestClaudeModelChoicesPreserveAnExplicitOlderDefault(t *testing.T) {
+	models := claudeModelOptions("claude-fable-5", "high")
+	if models[0].Model != "claude-fable-5" || !models[0].IsDefault {
+		t.Fatal("silently upgraded a saved model")
+	}
+	found := map[string]bool{}
+	for _, model := range models {
+		found[model.Model] = true
+	}
+	if !found["claude-fable-5-1"] || !found["claude-opus-5-5"] {
+		t.Fatal("current model choices missing")
 	}
 }

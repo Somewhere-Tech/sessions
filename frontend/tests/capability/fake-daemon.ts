@@ -19,6 +19,7 @@
 // empty `unhandled` is telling you about the product.
 import { useServers, type ServerConfig } from '../../src/lib/servers';
 import { useSessions } from '../../src/store/sessions';
+import type { AccountLogin } from '../../src/api/sessionsd/accountLogin';
 import type { DirectoryCandidate, SessionInfo, StructuredSessionEvent } from '../../src/types';
 import type {
   ContinuationJob,
@@ -95,6 +96,7 @@ export interface FakeMachine {
 
 /** One second subscription on a machine: a provider home with a name. */
 export interface FakeAccount {
+  identity?: AccountLogin['identity'];
   tool: 'claude' | 'codex';
   name: string;
   path?: string;
@@ -303,6 +305,7 @@ function fakeContinuationJob(machine: FakeMachine, body: unknown): ContinuationJ
  * lib/servers + the sessions store so the mounted components address it.
  */
 export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
+  const logins = new Map<string, AccountLogin>();
   const byOrigin = new Map<string, FakeMachine>();
   for (const machine of machines) byOrigin.set(originOf(machine), machine);
   const continuationIndexes = new Map<string, number>();
@@ -635,7 +638,7 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       // own login later, which is what `signed_in` reports.
       const request = body as { tool: 'claude' | 'codex'; name: string; label?: string };
       const account: FakeAccount = {
-        tool: request.tool, name: request.name, label: request.label,
+        tool: request.tool, name: request.name || 'acct-fixture', label: request.label,
         path: `/state/profiles/${request.tool}/${request.name}`,
         signed_in: false, sessions: [], last_used: 0
       };
@@ -643,6 +646,29 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
         (existing) => !(existing.tool === account.tool && existing.name === account.name)
       ), account];
       return jsonResponse({ profile: account });
+    }
+    if (path === '/api/account-logins' && method === 'POST') {
+      const request = body as { tool: 'claude' | 'codex'; profile: string };
+      const id = `${machine.id}-${request.tool}-${request.profile}`;
+      const operation: AccountLogin = {
+        id, ...request, state: 'waiting', expires_at: Date.now() + 600_000,
+        url: request.tool === 'claude' ? 'https://claude.com/cai/oauth/authorize?state=fixture' : 'https://auth.openai.com/codex/device',
+        code: request.tool === 'codex' ? 'TEST-CODE' : undefined
+      };
+      logins.set(id, operation);
+      return jsonResponse(operation);
+    }
+    if (path.startsWith('/api/account-logins/')) {
+      const operation = logins.get(path.slice('/api/account-logins/'.length));
+      if (!operation) return jsonResponse({ error: 'sign-in is no longer available; start again' }, 400);
+      if (method === 'DELETE') operation.state = 'cancelled';
+      if (method === 'POST') {
+        operation.state = 'connected';
+        operation.identity = { email: 'second@example.test', plan: 'max', checked_at: Date.now() };
+        const account = machine.profiles?.find((candidate) => candidate.tool === operation.tool && candidate.name === operation.profile);
+        if (account) account.identity = operation.identity;
+      }
+      return jsonResponse(operation);
     }
     const accountRoute = /^\/api\/profiles\/([^/]+)\/([^/]+)$/.exec(path);
     if (accountRoute && method === 'DELETE') {

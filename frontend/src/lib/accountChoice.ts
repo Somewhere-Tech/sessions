@@ -48,7 +48,7 @@ export function rememberAccount(
  * the name they gave the home, and never anything read out of a credential.
  */
 export function accountLabel(profile: AccountProfile): string {
-  return profile.label?.trim() || profile.name;
+  return profile.label?.trim() || profile.identity?.email || profile.name;
 }
 
 /** The same, for a name with no profile record to hand (a session's own). */
@@ -60,5 +60,5 @@ export function accountLabelOf(profiles: AccountProfile[], provider: AccountProv
 /** An account that exists but has no provider login yet is worth saying so. */
 export function accountNeedsLogin(profiles: AccountProfile[], provider: AccountProvider, name: string): boolean {
   const match = profiles.find((profile) => profile.tool === provider && profile.name === name);
-  return Boolean(match && !match.signed_in);
+  return Boolean(match && !match.identity && !match.signed_in);
 }
