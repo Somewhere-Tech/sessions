@@ -207,7 +207,7 @@ export function SessionNavigator({
   const remoteMachines = useMemo(() => configuredMachines.filter((server) => server.id !== activeMachineId), [configuredMachines, activeMachineId]);
   const remoteSnapshots = useFleetSessions(remoteMachines, showingAllMachines);
   const activeError = useSessions((state) => state.error);
-  const activeLoading = useSessions((state) => state.loading);
+  const activeLoading = useSessions((state) => state.loading && !state.hydrated);
   const fleetSnapshots = configuredMachines.map((server) => server.id === activeMachineId
     ? { server, sessions, loading: activeLoading, error: activeError }
     : remoteSnapshots.find((snapshot) => snapshot.server.id === server.id) ?? { server, sessions: [], loading: true, error: null });
