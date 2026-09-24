@@ -198,7 +198,7 @@ describe('capability: adding an account is a guided login', () => {
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
   }, 20_000);
 
-  it('removing an account says the provider home was left behind', async () => {
+  it('removing an account explains that saved chats and sign-in are unchanged', async () => {
     const machines = fleet();
     installFakeDaemon(machines);
     useFakeMachines(machines, 'local');
@@ -211,9 +211,9 @@ describe('capability: adding an account is a guided login', () => {
       />
     );
     await user.click(screen.getByRole('button', { name: 'Remove' }));
-    const note = await screen.findByText(/no longer listed/);
-    expect(note.textContent).toContain('/state/profiles/claude/work');
-    expect(note.textContent).toMatch(/review/);
+    const note = await screen.findByText(/was removed from this list/);
+    expect(note.textContent).toContain('Work — team plan');
+    expect(note.textContent).toMatch(/saved chats and sign-in are unchanged/);
   }, 20_000);
 });
 

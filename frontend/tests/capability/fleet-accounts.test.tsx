@@ -132,7 +132,7 @@ describe('capability: each computer says which accounts it has', () => {
   }, 20_000);
 });
 
-describe('capability: Settings manages accounts on any computer', () => {
+describe('capability: Accounts manages sign-ins on any computer', () => {
   it('switches computers and reads that machine’s accounts', async () => {
     const machines = fleet();
     installFakeDaemon(machines);
@@ -151,7 +151,8 @@ describe('capability: Settings manages accounts on any computer', () => {
     await waitFor(() => expect(screen.getByText('Shared build box')).toBeVisible());
     // Alpha's account is not shown as if it were Beta's.
     expect(screen.queryByText('Work — team plan')).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /On Beta/ })).toBeVisible();
+    expect(screen.getByLabelText('Computer')).toHaveDisplayValue('Beta');
+    expect(screen.getByRole('list', { name: 'Accounts on Beta' })).toBeVisible();
   }, 20_000);
 
   it('adds an account on the computer that was chosen, not the connected one', async () => {
