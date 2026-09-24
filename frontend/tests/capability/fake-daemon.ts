@@ -63,6 +63,8 @@ export interface FakeMachine {
   }>;
   /** The accounts this machine holds, as GET /api/profiles reports them. */
   profiles?: FakeAccount[];
+  /** Answer account renames the way an open-access peer is answered. */
+  accountRenameForbidden?: boolean;
   directories?: DirectoryCandidate[];
   providers?: ProviderStatus[];
   codexModels?: SessionModelOption[];
@@ -671,6 +673,23 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       return jsonResponse(operation);
     }
     const accountRoute = /^\/api\/profiles\/([^/]+)\/([^/]+)$/.exec(path);
+    if (accountRoute && method === 'PUT') {
+      // The daemon's own rule: only a nickname changes, and it is checked.
+      const [, tool, name] = accountRoute;
+      if (machine.accountRenameForbidden) {
+        return jsonResponse({ error: 'renaming an account requires a local or paired Sessions client' }, 403);
+      }
+      const label = String((body as { label?: string })?.label ?? '').trim();
+      if ([...label].length > 64 || /\p{Cc}/u.test(label)) {
+        return jsonResponse({ error: 'an account nickname can be at most 64 characters' }, 400);
+      }
+      const account = machine.profiles?.find((existing) => existing.tool === tool && existing.name === name);
+      if (!account) return jsonResponse({ error: `unknown account ${tool}/${name}` }, 400);
+      account.label = label || undefined;
+      return jsonResponse({ profile: {
+        path: `/state/profiles/${tool}/${name}`, signed_in: false, sessions: [], last_used: 0, ...account
+      } });
+    }
     if (accountRoute && method === 'DELETE') {
       const [, tool, name] = accountRoute;
       machine.profiles = (machine.profiles ?? []).filter(

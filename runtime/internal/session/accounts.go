@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
@@ -34,6 +36,28 @@ type accountSidecar struct {
 var signedInMarkers = map[string][]string{
 	"claude": {".credentials.json", "credentials.json"},
 	"codex":  {"auth.json"},
+}
+
+// MaxAccountLabelLength is the longest nickname, in characters, an account
+// keeps. The add form has always stopped at this length; the daemon now says so
+// too, so a label from the CLI and one from the app follow the same rule.
+const MaxAccountLabelLength = 64
+
+// ValidateAccountLabel accepts any printable nickname up to the length limit.
+// An empty label is allowed and means the account has no nickname.
+func ValidateAccountLabel(label string) error {
+	if !utf8.ValidString(label) {
+		return errors.New("an account nickname must be readable text")
+	}
+	if utf8.RuneCountInString(label) > MaxAccountLabelLength {
+		return fmt.Errorf("an account nickname can be at most %d characters", MaxAccountLabelLength)
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return errors.New("an account nickname cannot contain line breaks, tabs, or control characters")
+		}
+	}
+	return nil
 }
 
 func accountSidecarPath(root, tool, name string) string {
@@ -98,6 +122,9 @@ func (m *Manager) CreateAccount(tool, name, label string) (ProfileStatus, error)
 	if tool != "claude" && tool != "codex" {
 		return ProfileStatus{}, errors.New("an account belongs to claude or codex")
 	}
+	if err := ValidateAccountLabel(label); err != nil {
+		return ProfileStatus{}, err
+	}
 	if m.config.UserStateRoot == "" {
 		return ProfileStatus{}, errors.New("accounts require a configured Sessions user state root")
 	}
@@ -125,6 +152,43 @@ func (m *Manager) CreateAccount(tool, name, label string) (ProfileStatus, error)
 		Tool: tool, Name: name, Path: path, Label: sidecar.Label,
 		SignedIn: profileSignedIn(path, tool),
 		Sessions: make([]ProfileSession, 0), LastUsed: lastUsed,
+	}, nil
+}
+
+// RenameAccount changes only the nickname a person gave an account. The account
+// ID, its provider home, its login and its history stay exactly where they are;
+// an empty label clears the nickname. A forgotten account is not renamed back
+// onto the list: that is what adding it again is for.
+func (m *Manager) RenameAccount(tool, name, label string) (ProfileStatus, error) {
+	m.accountMetadataMu.Lock()
+	defer m.accountMetadataMu.Unlock()
+	if err := state.ValidateProfileName(name); err != nil {
+		return ProfileStatus{}, err
+	}
+	if tool != "claude" && tool != "codex" {
+		return ProfileStatus{}, errors.New("an account belongs to claude or codex")
+	}
+	if err := ValidateAccountLabel(label); err != nil {
+		return ProfileStatus{}, err
+	}
+	if m.config.UserStateRoot == "" {
+		return ProfileStatus{}, errors.New("accounts require a configured Sessions user state root")
+	}
+	path := filepath.Join(m.config.UserStateRoot, "profiles", tool, name)
+	info, err := os.Stat(path)
+	sidecar := readAccountSidecar(m.config.UserStateRoot, tool, name)
+	if err != nil || !info.IsDir() || sidecar.Removed {
+		return ProfileStatus{}, fmt.Errorf("unknown account %s/%s; `sessions accounts` lists the accounts on this computer", tool, name)
+	}
+	sidecar.Label = label
+	if err := writeAccountSidecar(m.config.UserStateRoot, tool, name, sidecar); err != nil {
+		return ProfileStatus{}, fmt.Errorf("save account nickname: %w", err)
+	}
+	return ProfileStatus{
+		Identity: sidecar.Identity,
+		Tool:     tool, Name: name, Path: path, Label: sidecar.Label,
+		SignedIn: profileSignedIn(path, tool),
+		Sessions: make([]ProfileSession, 0), LastUsed: info.ModTime().UnixMilli(),
 	}, nil
 }
 

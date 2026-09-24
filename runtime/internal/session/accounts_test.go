@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -120,6 +121,79 @@ func TestAccountsRefuseNamesAndProvidersThatAreNotOne(t *testing.T) {
 		if _, err := manager.CreateAccount(test.tool, test.name, ""); err == nil {
 			t.Errorf("CreateAccount(%q, %q) was accepted", test.tool, test.name)
 		}
+	}
+}
+
+// Renaming changes the nickname and nothing else: the account keeps its ID,
+// its provider home, its login state, its checked identity and its history.
+func TestRenamingAnAccountKeepsEverythingButItsNickname(t *testing.T) {
+	root := t.TempDir()
+	manager, _, _ := newWorktreeTestManager(t, root)
+	created, err := manager.CreateAccount("claude", "work", "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := filepath.Join(created.Path, "projects", "chat.jsonl")
+	if err := os.MkdirAll(filepath.Dir(history), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{history: "{}\n", filepath.Join(created.Path, ".credentials.json"): "{}"} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	identity := &AccountIdentity{Email: "me@example.com", Plan: "max", CheckedAt: 1}
+	if err := writeAccountSidecar(manager.config.UserStateRoot, "claude", "work", accountSidecar{Identity: identity, Label: "Work"}); err != nil {
+		t.Fatal(err)
+	}
+
+	renamed, err := manager.RenameAccount("claude", "work", "Team plan ✦")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Name != "work" || renamed.Path != created.Path || renamed.Label != "Team plan ✦" || !renamed.SignedIn ||
+		renamed.Identity == nil || renamed.Identity.Email != "me@example.com" {
+		t.Fatalf("renamed account = %#v", renamed)
+	}
+	listed := accountNamed(t, manager, "claude", "work")
+	if listed.Label != "Team plan ✦" || listed.Identity == nil || listed.Identity.Email != "me@example.com" {
+		t.Fatalf("listed after rename = %#v, want the new nickname persisted with the identity", listed)
+	}
+	if raw, err := os.ReadFile(history); err != nil || string(raw) != "{}\n" {
+		t.Fatalf("renaming touched the account history: %q %v", raw, err)
+	}
+
+	cleared, err := manager.RenameAccount("claude", "work", "")
+	if err != nil || cleared.Label != "" || accountNamed(t, manager, "claude", "work").Label != "" {
+		t.Fatalf("clearing the nickname = %#v %v", cleared, err)
+	}
+}
+
+func TestRenamingRefusesUnknownAccountsAndUnreadableNicknames(t *testing.T) {
+	root := t.TempDir()
+	manager, _, _ := newWorktreeTestManager(t, root)
+	if _, err := manager.CreateAccount("codex", "personal", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{strings.Repeat("a", MaxAccountLabelLength+1), "two\nlines", "tab\there", "\xff"} {
+		if _, err := manager.RenameAccount("codex", "personal", label); err == nil {
+			t.Errorf("RenameAccount accepted %q", label)
+		}
+		if _, err := manager.CreateAccount("codex", "other", label); err == nil {
+			t.Errorf("CreateAccount accepted label %q", label)
+		}
+	}
+	if _, err := manager.RenameAccount("codex", "personal", strings.Repeat("é", MaxAccountLabelLength)); err != nil {
+		t.Errorf("a %d-character nickname was refused: %v", MaxAccountLabelLength, err)
+	}
+	if _, err := manager.RenameAccount("claude", "personal", "x"); err == nil {
+		t.Error("renaming an account that does not exist was accepted")
+	}
+	if err := manager.ForgetAccount("codex", "personal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.RenameAccount("codex", "personal", "x"); err == nil {
+		t.Error("renaming a forgotten account put it back on the list")
 	}
 }
 

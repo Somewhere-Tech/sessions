@@ -3,14 +3,12 @@ import {
   fetchAISettings,
   fetchClaudeSettings,
   fetchOnboardingState,
-  fetchProfiles,
   fetchProviderStatuses,
   updateAISettings,
   updateClaudeSettings,
   updateOnboardingPreference,
   updateProvider,
   type AIProvider,
-  type AccountProfile,
   type ProviderStatus
 } from '../api/sessionsd';
 import type { ClaudeSettings } from '../types';
@@ -30,11 +28,10 @@ import { copyText } from '../lib/copyText';
 import { sizeLabel, type TextSize } from '../lib/textSize';
 const ConnectionsView = lazy(() => import('./ConnectionsView').then((module) => ({ default: module.ConnectionsView })));
 import type { ThemeMode } from './ProductSidebar';
-import { AccountsPanel } from './AccountsPanel';
 import { SomewhereCard } from './SomewhereCard';
 import { useSessions } from '../store/sessions';
 
-type Section = 'general' | 'agents' | 'accounts' | 'fleet' | 'cloud' | 'notifications' | 'support';
+type Section = 'general' | 'agents' | 'fleet' | 'cloud' | 'notifications' | 'support';
 
 interface Props {
   clientOnly?: boolean;
@@ -80,7 +77,6 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
   const [delegationBusy, setDelegationBusy] = useState(false);
   const [delegationAvailable, setDelegationAvailable] = useState(true);
   const [delegationMessage, setDelegationMessage] = useState<string | null>(null);
-  const [profiles, setProfiles] = useState<AccountProfile[]>([]);
   const [updateInfo, setUpdateInfo] = useState<NativeUpdateInfo | null>(null);
   const [updateProgress, setUpdateProgress] = useState<NativeUpdateProgress | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -97,9 +93,6 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetchProfiles(controller.signal).then(setProfiles).catch(() => {
-      if (!controller.signal.aborted) setProfiles([]);
-    });
     void fetchProviderStatuses(controller.signal).then(setProviderStatuses).catch(() => {
       if (!controller.signal.aborted) setProviderStatuses([]);
     });
@@ -304,7 +297,6 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
         {[
           ['general', 'General'],
           ['agents', 'Agents & models'],
-          ['accounts', 'Accounts & profiles'],
           ['fleet', 'Fleet'],
           ['cloud', 'Cloud & backup'],
           ['notifications', 'Notifications & updates'],
@@ -345,8 +337,6 @@ export function SettingsView({ clientOnly = false, hostName, theme, onThemeChang
             onDelegatedAccess={saveDelegatedAccess}
             onClaudeDraft={setClaudeSettings}
           />
-        ) : section === 'accounts' ? (
-          <AccountsPanel profiles={profiles} machineName={machineName} onReload={setProfiles} />
         ) : section === 'fleet' ? (
           <Suspense fallback={<p role="status">Loading connections…</p>}><ConnectionsView clientOnly={clientOnly} hostName={machineName} /></Suspense>
         ) : section === 'cloud' ? (

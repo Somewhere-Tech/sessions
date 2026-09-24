@@ -5,7 +5,7 @@ import { DaemonResponseError } from '../api/sessionsd/core';
 import { openExternalURL } from '../lib/tauriBridge';
 import '../styles/accounts.css';
 
-const pending = (operation: AccountLogin | null): boolean => operation?.state === 'opening' || operation?.state === 'waiting';
+export const loginPending = (operation: AccountLogin | null): boolean => operation?.state === 'opening' || operation?.state === 'waiting';
 
 export function useGuidedAccountLogin({ serverId, onReload }: {
   serverId?: string;
@@ -42,7 +42,7 @@ export function useGuidedAccountLogin({ serverId, onReload }: {
           return;
         }
         setOperation(next);
-        if (!pending(next)) return;
+        if (!loginPending(next)) return;
       } catch (error) {
         if (!active) return;
         if (error instanceof DaemonResponseError && error.status < 500) {
@@ -148,8 +148,8 @@ export function SigningInCard({ account, operation, busy, machineName, onCode, o
     </> : null}
     {operation?.message ? <p role="status">{operation.message}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
-    <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => { if (pending(operation)) void onCancel(); else onDone(); }}>
-      {pending(operation) ? 'Cancel sign-in' : connected ? 'Done' : 'Close'}
+    <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => { if (loginPending(operation)) void onCancel(); else onDone(); }}>
+      {loginPending(operation) ? 'Cancel sign-in' : connected ? 'Done' : 'Close'}
     </button>
   </div>;
 }

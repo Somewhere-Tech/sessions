@@ -718,6 +718,18 @@ generates a private account ID, so the UI requires no technical profile name. Cr
 if it is absent, records the label, and answers `{"profile":{…}}` with the same
 shape as the listing. It performs no login: the provider's own sign-in happens
 afterwards through the account-login operations below. An invalid name or tool is `400`.
+A label is at most 64 characters and may not contain line breaks, tabs or other
+control characters; an invalid label is `400`.
+
+### `PUT /api/profiles/:tool/:name`
+
+Local clients and paired host administrators only; anonymous open-access
+clients receive 403. Body is `{"label":"<nickname>"}` with the same label rule
+as creation; an empty label clears the nickname and a missing `label` is `400`.
+Changes only the nickname: the account name, provider home, sign-in state,
+recorded identity and history are unchanged. Answers `{"profile":{…}}` with the
+listing shape (`sessions` is empty in this answer). An unknown or forgotten
+account is `400`; renaming does not re-register a forgotten account.
 
 ### Provider account sign-in
 

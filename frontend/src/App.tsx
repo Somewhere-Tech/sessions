@@ -9,6 +9,7 @@ const ForkConfirmationDialog = lazy(() => import('./components/ForkConfirmationD
 const FleetView = lazy(() => import('./components/FleetView').then((module) => ({ default: module.FleetView })));
 const UsageDashboard = lazy(() => import('./components/UsageDashboard').then((module) => ({ default: module.UsageDashboard })));
 const DailyView = lazy(() => import('./components/DailyView').then((module) => ({ default: module.DailyView })));
+const AccountsView = lazy(() => import('./components/AccountsView').then((module) => ({ default: module.AccountsView })));
 const SettingsView = lazy(() => import('./components/SettingsView').then((module) => ({ default: module.SettingsView })));
 const SearchView = lazy(() => import('./components/SearchView').then((module) => ({ default: module.SearchView })));
 const ConnectScreen = lazy(() => import('./components/ConnectScreen').then((module) => ({ default: module.ConnectScreen })));
@@ -72,7 +73,7 @@ function readSingleModeParams(): { sessionId: string } | null {
 // (active-machine monitor tiles).
 // Persisted per-window in localStorage so each window remembers its
 // last choice. Grid is best when N ≥ 2 and the window is wide.
-type LayoutMode = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'settings' | 'feedback' | 'connections' | 'grid';
+type LayoutMode = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'accounts' | 'settings' | 'feedback' | 'connections' | 'grid';
 // Shared empty list for "the loaded sessions belong to a different machine".
 // A `[]` literal in that position is a new array identity on every render,
 // which made every memo, callback, and effect derived from the session list
@@ -84,7 +85,7 @@ const THEME_KEY = 'sessions:theme:v1';
 function readStoredLayout(): LayoutMode {
   try {
     const v = window.localStorage.getItem(LAYOUT_KEY);
-    if (v === 'home' || v === 'tabs' || v === 'today' || v === 'fleet' || v === 'search' || v === 'usage' || v === 'settings' || v === 'feedback' || v === 'connections' || v === 'grid') return v;
+    if (v === 'home' || v === 'tabs' || v === 'today' || v === 'fleet' || v === 'search' || v === 'usage' || v === 'accounts' || v === 'settings' || v === 'feedback' || v === 'connections' || v === 'grid') return v;
   } catch { /* ignore */ }
   return 'tabs';
 }
@@ -830,6 +831,8 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             /></Suspense>
         ) : effectiveLayout === 'usage' ? (
           <Suspense fallback={null}><UsageDashboard /></Suspense>
+        ) : effectiveLayout === 'accounts' ? (
+          <Suspense fallback={null}><AccountsView key={activeServerId ?? ''} hostName={machine} serverId={activeServerId ?? undefined} /></Suspense>
         ) : effectiveLayout === 'settings' || effectiveLayout === 'feedback' || effectiveLayout === 'connections' ? (
           <Suspense fallback={null}><SettingsView clientOnly={nativeClientOnly} hostName={machine} theme={theme}
               onThemeChange={setTheme}

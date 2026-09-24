@@ -40,6 +40,16 @@ func accountsDaemon(t *testing.T, created *map[string]string, sessionBody *map[s
 			_ = json.NewDecoder(request.Body).Decode(&body)
 			*sessionBody = body
 			_ = json.NewEncoder(response).Encode(map[string]any{"id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"})
+		case request.Method == http.MethodPut && strings.HasPrefix(request.URL.Path, "/api/profiles/"):
+			var body map[string]string
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			parts := strings.Split(strings.TrimPrefix(request.URL.Path, "/api/profiles/"), "/")
+			*created = map[string]string{"rename": request.URL.Path, "label": body["label"]}
+			_ = json.NewEncoder(response).Encode(map[string]any{"profile": map[string]any{
+				"tool": parts[0], "name": parts[1], "label": body["label"],
+				"path": "/state/profiles/" + parts[0] + "/" + parts[1], "signed_in": false,
+				"sessions": []any{}, "last_used": 0,
+			}})
 		case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/api/profiles/"):
 			_ = json.NewEncoder(response).Encode(map[string]any{
 				"ok": true, "forgotten": strings.TrimPrefix(request.URL.Path, "/api/profiles/"),
@@ -147,6 +157,32 @@ func TestAccountsForgetLeavesTheHomeAndSaysWhere(t *testing.T) {
 	}
 }
 
+// Rename sends the nickname to the daemon and answers with the account, whose
+// ID and home are the ones it already had.
+func TestAccountsRenameAsksTheDaemonAndAnswersInJSON(t *testing.T) {
+	var created map[string]string
+	var sessionBody map[string]any
+	server := accountsDaemon(t, &created, &sessionBody)
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "--json", "accounts", "rename", "work", "--tool", "claude", "--label", "Team plan"},
+		strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("accounts rename exit=%d stderr=%q", code, stderr.String())
+	}
+	if created["rename"] != "/api/profiles/claude/work" || created["label"] != "Team plan" {
+		t.Fatalf("rename request = %#v", created)
+	}
+	var answer profileStatus
+	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
+		t.Fatalf("rename JSON %q: %v", stdout.String(), err)
+	}
+	if answer.Name != "work" || answer.Label != "Team plan" || answer.Path != "/state/profiles/claude/work" {
+		t.Fatalf("rename answer = %#v", answer)
+	}
+}
+
 func TestAccountsRefusesAnIncompleteRequest(t *testing.T) {
 	var created map[string]string
 	var sessionBody map[string]any
@@ -157,6 +193,8 @@ func TestAccountsRefusesAnIncompleteRequest(t *testing.T) {
 		{"accounts", "add", "work"},
 		{"accounts", "add", "work", "--tool", "shell"},
 		{"accounts", "forget", "work"},
+		{"accounts", "rename", "work", "--tool", "claude"},
+		{"accounts", "rename", "--tool", "claude", "--label", "x"},
 		{"accounts", "nonsense"},
 	} {
 		var stdout, stderr bytes.Buffer

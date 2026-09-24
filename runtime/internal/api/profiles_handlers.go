@@ -19,6 +19,7 @@ type profileService interface {
 type accountService interface {
 	CreateAccount(tool, name, label string) (sessionruntime.ProfileStatus, error)
 	ForgetAccount(tool, name string) error
+	RenameAccount(tool, name, label string) (sessionruntime.ProfileStatus, error)
 	AccountHomePath(tool, name string) string
 }
 
@@ -84,13 +85,17 @@ func (s *Server) handleAccountRoute(response http.ResponseWriter, request *http.
 		s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "unknown account"}, corsOrigin)
 		return true
 	}
-	if request.Method != http.MethodDelete {
+	if request.Method != http.MethodDelete && request.Method != http.MethodPut {
 		s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
 		return true
 	}
 	service, ok := s.registry.(accountService)
 	if !ok {
 		s.sendJSON(response, http.StatusNotImplemented, map[string]any{"error": "accounts are unavailable"}, corsOrigin)
+		return true
+	}
+	if request.Method == http.MethodPut {
+		s.handleRenameAccount(response, request, corsOrigin, service, parts[0], parts[1])
 		return true
 	}
 	if err := service.ForgetAccount(parts[0], parts[1]); err != nil {
@@ -106,4 +111,30 @@ func (s *Server) handleAccountRoute(response http.ResponseWriter, request *http.
 		"note":      "the provider home was left in place for manual review",
 	}, corsOrigin)
 	return true
+}
+
+// handleRenameAccount serves PUT /api/profiles/<tool>/<name>: a new nickname
+// for an existing account, and nothing else about it.
+func (s *Server) handleRenameAccount(
+	response http.ResponseWriter, request *http.Request, corsOrigin string,
+	service accountService, tool, name string,
+) {
+	principal, ok := request.Context().Value(authPrincipalContextKey{}).(authPrincipal)
+	if !ok || !principalMayUpdateProvider(principal) {
+		s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "renaming an account requires a local or paired Sessions client"}, corsOrigin)
+		return
+	}
+	var body struct {
+		Label *string `json:"label"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Label == nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": `send {"label":"<nickname>"}; an empty label clears it`}, corsOrigin)
+		return
+	}
+	profile, err := service.RenameAccount(tool, name, strings.TrimSpace(*body.Label))
+	if err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	s.sendJSON(response, http.StatusOK, map[string]any{"profile": profile}, corsOrigin)
 }

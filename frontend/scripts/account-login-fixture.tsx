@@ -9,11 +9,13 @@ const machines: FakeMachine[] = [{ id: 'local', name: 'This Mac', host: 'localho
 const daemon = installFakeDaemon(machines);
 useFakeMachines(machines);
 Object.assign(window, { accountDaemon: daemon });
-document.documentElement.dataset.theme = 'dark';
+const theme = new URLSearchParams(location.search).get('theme') === 'light' ? 'light' : 'dark';
+document.documentElement.dataset.theme = theme;
 function Fixture(): JSX.Element {
   const [profiles, setProfiles] = useState<AccountProfile[]>([]);
-  return <main style={{ maxWidth: 760, margin: '0 auto', padding: 16 }}>
+  // The app's own theme scope, so light mode uses the product's light tokens.
+  return <div className="operations-shell text-size-s" data-theme={theme} style={{ height: 'auto', minHeight: '100dvh', display: 'block' }}>
     <AccountsPanel profiles={profiles} machineName="This Mac" onReload={setProfiles} />
-  </main>;
+  </div>;
 }
 createRoot(document.getElementById('root')!).render(<Fixture />);

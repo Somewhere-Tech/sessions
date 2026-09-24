@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
-type MobileLayout = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'settings' | 'connections';
+type MobileLayout = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'accounts' | 'settings' | 'connections';
 
 interface Props {
   layoutMode: MobileLayout;
@@ -25,6 +25,7 @@ export function MobileNav({
   const sheetRef = useRef<HTMLDivElement>(null);
   const moreActive = layoutMode === 'fleet'
     || layoutMode === 'usage'
+    || layoutMode === 'accounts'
     || layoutMode === 'settings'
     || layoutMode === 'connections';
 
@@ -69,6 +70,7 @@ export function MobileNav({
             <div className="mobile-more-grid">
               <MoreDestination title="Fleet" detail="Computers and remote agents" icon={<FleetIcon />} onClick={() => go('fleet')} />
               <MoreDestination title="Usage" detail="Tokens, cost, and projects" icon={<UsageIcon />} onClick={() => go('usage')} />
+              <MoreDestination title="Accounts" detail="Claude and ChatGPT sign-ins" icon={<AccountsIcon />} onClick={() => go('accounts')} />
               <MoreDestination title="Settings" detail="Agents, access, and appearance" icon={<SettingsIcon />} onClick={() => go('settings')} />
               <MoreDestination title="Connections" detail="Pair and manage machines" icon={<ConnectionsIcon />} onClick={() => go('connections')} />
             </div>
@@ -131,5 +133,6 @@ function SearchIcon(): JSX.Element { return <Icon><circle cx="11" cy="11" r="7"/
 function MoreIcon(): JSX.Element { return <Icon><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></Icon>; }
 function FleetIcon(): JSX.Element { return <Icon><rect x="4" y="3" width="16" height="7" rx="2"/><rect x="4" y="14" width="16" height="7" rx="2"/><path d="M8 6.5h.01M8 17.5h.01"/></Icon>; }
 function UsageIcon(): JSX.Element { return <Icon><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></Icon>; }
+function AccountsIcon(): JSX.Element { return <Icon><circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></Icon>; }
 function SettingsIcon(): JSX.Element { return <Icon><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.5 1A8 8 0 0 0 15 6l-.4-2.6h-4L10 6a8 8 0 0 0-1.4.8l-2.4-1-2 3.5 2 1.6a7 7 0 0 0 0 2.1l-2 1.6 2 3.4 2.4-1A8 8 0 0 0 10 18l.5 2.6h4L15 18a8 8 0 0 0 1.4-.8l2.5 1 2-3.5-2-1.6a7 7 0 0 0 .1-1.1Z"/></Icon>; }
 function ConnectionsIcon(): JSX.Element { return <Icon><path d="M8.5 15.5 6 18a3 3 0 0 1-4-4l4-4a3 3 0 0 1 4 0"/><path d="m15.5 8.5 2.5-2.5a3 3 0 0 1 4 4l-4 4a3 3 0 0 1-4 0"/><path d="m8 16 8-8"/></Icon>; }

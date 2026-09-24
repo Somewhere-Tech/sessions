@@ -38,12 +38,14 @@ func (a *app) cmdAccounts(args []string) error {
 		return a.cmdAccountLogin(args[0], args[1:])
 	case "add":
 		return a.cmdAccountsAdd(args[1:])
+	case "rename":
+		return a.cmdAccountsRename(args[1:])
 	case "forget", "remove":
 		return a.cmdAccountsForget(args[1:])
 	case "list":
 		return a.cmdProfiles(args[1:])
 	default:
-		return fail(1, "usage: sessions accounts [list | add <name> --tool claude|codex [--label TEXT] [--machine NAME] | forget <name> --tool claude|codex]")
+		return fail(1, "usage: sessions accounts [list | add <name> --tool claude|codex [--label TEXT] [--machine NAME] | rename <name> --tool claude|codex --label TEXT | forget <name> --tool claude|codex]")
 	}
 }
 
@@ -121,6 +123,32 @@ func (a *app) useAccountMachine(reference string) (string, error) {
 		return "", fail(1, "%s", err)
 	}
 	return alias, nil
+}
+
+// cmdAccountsRename changes an account's nickname. The account ID, provider
+// home, login and history are untouched; --label "" clears the nickname.
+func (a *app) cmdAccountsRename(args []string) error {
+	tool, _ := pluck(&args, "--tool")
+	label, hasLabel := pluck(&args, "--label")
+	if len(args) != 1 || args[0] == "" || (tool != "claude" && tool != "codex") || !hasLabel {
+		return fail(1, "usage: sessions accounts rename <name> --tool claude|codex --label TEXT")
+	}
+	var answer struct {
+		Profile profileStatus `json:"profile"`
+	}
+	path := "/api/profiles/" + tool + "/" + escapeID(args[0])
+	if err := a.putJSON(path, map[string]string{"label": label}, &answer, 2); err != nil {
+		return err
+	}
+	if a.wantJSON {
+		return writeJSON(a.stdout, answer.Profile, true)
+	}
+	if answer.Profile.Label == "" {
+		_, err := fmt.Fprintf(a.stdout, "%s/%s has no nickname now\n", tool, answer.Profile.Name)
+		return err
+	}
+	_, err := fmt.Fprintf(a.stdout, "%s/%s is now called %q\n", tool, answer.Profile.Name, answer.Profile.Label)
+	return err
 }
 
 func (a *app) cmdAccountsForget(args []string) error {

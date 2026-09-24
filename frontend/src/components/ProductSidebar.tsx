@@ -10,7 +10,7 @@ import {
 import { fetchProviderStatuses, updateProvider, type ProviderStatus } from '../api/sessionsd';
 import { serverDisplayName, useServers } from '../lib/servers';
 
-export type ProductView = 'home' | 'tabs' | 'today' | 'search' | 'fleet' | 'usage' | 'settings' | 'feedback';
+export type ProductView = 'home' | 'tabs' | 'today' | 'search' | 'fleet' | 'usage' | 'accounts' | 'settings' | 'feedback';
 export type ThemeMode = 'dark' | 'light';
 
 interface Props {
@@ -28,6 +28,7 @@ const ITEMS: Array<{ id: ProductView; label: string; icon: ReactNode }> = [
   { id: 'search', label: 'Search', icon: <SearchIcon /> },
   { id: 'fleet', label: 'Fleet', icon: <FleetIcon /> },
   { id: 'usage', label: 'Usage', icon: <UsageIcon /> },
+  { id: 'accounts', label: 'Accounts', icon: <AccountsIcon /> },
   { id: 'settings', label: 'Settings', icon: <SettingsIcon /> }
 ];
 
@@ -218,5 +219,6 @@ function SessionsIcon(): JSX.Element { return <Icon><rect x="3" y="4" width="18"
 function SearchIcon(): JSX.Element { return <Icon><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></Icon>; }
 function FleetIcon(): JSX.Element { return <Icon><rect x="4" y="3" width="16" height="7" rx="2"/><rect x="4" y="14" width="16" height="7" rx="2"/><path d="M8 6.5h.01M8 17.5h.01"/></Icon>; }
 function UsageIcon(): JSX.Element { return <Icon><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></Icon>; }
+function AccountsIcon(): JSX.Element { return <Icon><circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></Icon>; }
 function FeedbackIcon(): JSX.Element { return <Icon><path d="M4 5.5h16v11H9l-5 4v-15Z"/><path d="M8 9h8M8 13h5"/></Icon>; }
 function SettingsIcon(): JSX.Element { return <Icon><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.6v-.1A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3V9.6h.1A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.13.38.34.72.6 1 .3.3.68.5 1.1.6h.1v4h-.1A1.7 1.7 0 0 0 19.4 15Z"/></Icon>; }

@@ -1,6 +1,7 @@
 # Add another Claude or ChatGPT account
 
-In **Settings → Accounts**, choose the computer that will run your chats.
+Open **Accounts** in the sidebar (on a phone, **More → Accounts**), then choose
+the computer that will run your chats.
 
 1. Choose **Add account** and select **Claude** or **ChatGPT / Codex**.
 2. Optionally give it a nickname such as **Work**. Choose **Continue**.
@@ -23,6 +24,13 @@ logging an already connected account out. This is not a check of remaining usage
 Accounts are local to each computer. To use a subscription on another computer,
 select that computer and sign in there too. Credentials are not copied through
 the fleet. You can complete the browser steps from another device.
+
+Each row leads with the account's nickname, or with the verified email when it
+has none. **Verified** means the provider reported that identity at the date
+shown; **Identity not checked** means Sessions has not asked the provider yet,
+even if a login file is present. **Rename** changes only the nickname on that
+computer (up to 64 characters; leave it empty to clear it). The account's
+sign-in, history and chats are unchanged.
 
 If sign-in expires or the host restarts, choose **Sign in** again. If you chose
 the wrong browser account, add another account and select the intended login on

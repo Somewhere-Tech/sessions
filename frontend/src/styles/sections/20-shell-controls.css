@@ -468,10 +468,10 @@
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0a0a0a;
+  color: var(--accent-contrast);
   font-weight: 600;
 }
-.btn-primary:hover { filter: brightness(1.08); background: var(--accent); border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn-secondary {
   border-color: var(--border-strong);
   background: var(--bg-elev-2);

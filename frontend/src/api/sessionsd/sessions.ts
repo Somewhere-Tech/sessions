@@ -590,6 +590,24 @@ export async function createAccount(
 }
 
 /**
+ * Change only an account's nickname on the machine that holds it. The account
+ * ID, provider home, sign-in and history stay as they are; an empty label
+ * clears the nickname.
+ */
+export async function renameAccount(
+  tool: 'claude' | 'codex', name: string, label: string, serverId?: string
+): Promise<AccountProfile> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(
+    server,
+    `${httpBaseForServer(server)}/api/profiles/${encodeURIComponent(tool)}/${encodeURIComponent(name)}`,
+    { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ label }) }
+  );
+  const body = await json<{ profile: AccountProfile }>(r);
+  return body.profile;
+}
+
+/**
  * Take an account off this machine's list. The provider home stays: it holds a
  * real subscription's login and history, and the answer names it.
  */

@@ -32,6 +32,7 @@ const VIEW_ACTIONS: Array<{ view: ProductView; label: string; detail: string; ke
   { view: 'search', label: 'Conversation history', detail: 'Browse or search every Claude and Codex conversation', keywords: 'resume recall history search find codex claude' },
   { view: 'fleet', label: 'Fleet', detail: 'Machines and sessions across your network', keywords: 'computers mac windows linux' },
   { view: 'usage', label: 'Usage', detail: 'Tokens, cost, projects, and tags', keywords: 'budget tokens cost' },
+  { view: 'accounts', label: 'Accounts', detail: 'Claude and ChatGPT accounts on each computer', keywords: 'subscription profile sign in login rename nickname chatgpt claude' },
   { view: 'settings', label: 'Settings', detail: 'Agents, connections, updates, and appearance', keywords: 'preferences configuration' },
   { view: 'feedback', label: 'Send feedback', detail: 'Share an idea or report a problem', keywords: 'support bug issue' }
 ];

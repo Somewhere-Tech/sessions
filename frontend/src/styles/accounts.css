@@ -1,13 +1,36 @@
 /* Loaded with account controls, not on the first-screen entry path. */
-.accounts-list > div.accounts-row { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 16px 0; }
-.accounts-identity, .accounts-meta { display: grid; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
-.accounts-identity strong { font-size: 14px; }
-.accounts-meta { text-align: right; }
-.accounts-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+.accounts-view { height: 100%; overflow: auto; }
+.accounts-intro h1 { margin: 7px 0; font-size: 28px; letter-spacing: -.045em; }
+.accounts-intro p { margin: 0 0 22px; color: var(--fg-dim); font-size: 14px; line-height: 1.55; }
+.accounts-card { display: grid; gap: 12px; }
+.accounts-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.accounts-card-head h2 { margin: 0; }
+.accounts-machine { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-dim); }
+.accounts-machine select { min-height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-base); color: var(--fg); font: inherit; }
+.accounts-machine-name { color: var(--fg-dim); font-size: 12px; }
+.accounts-list { display: grid; margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.accounts-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; grid-template-areas: "mark identity status" "mark actions actions"; align-items: center; gap: 4px 12px; padding: 12px 14px; border-top: 1px solid var(--border); background: var(--bg-elev-1); }
+.accounts-row:first-child { border-top: 0; }
+.accounts-row > .provider-mark { grid-area: mark; align-self: start; }
+.accounts-identity { grid-area: identity; display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.accounts-identity strong { font-size: 14px; color: var(--fg); }
+.accounts-details, .accounts-activity { color: var(--fg-dim); font-size: 12px; }
+.accounts-activity { color: var(--fg-faint); }
+.accounts-row-error { padding-left: 6px; border-left: 2px solid var(--danger); color: var(--fg); font-size: 12px; }
+.accounts-status { grid-area: status; justify-self: end; padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--fg-dim); font-size: 12px; white-space: nowrap; }
+.accounts-status.is-verified { border-color: var(--accent-border-soft); background: var(--accent-bg-soft); color: var(--fg); }
+.accounts-actions { grid-area: actions; display: flex; flex-wrap: wrap; gap: 4px; margin-left: -8px; }
+.accounts-actions .btn { min-height: 32px; padding: 4px 8px; font-size: 12px; }
+.accounts-remove { color: var(--fg-dim); }
+.accounts-rename { display: flex; flex-wrap: wrap; gap: 6px; }
+.accounts-rename input { flex: 1 1 180px; min-width: 0; min-height: 36px; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-base); color: var(--fg); font: inherit; }
+.accounts-rename .btn { min-height: 36px; }
+.accounts-empty { margin: 0; color: var(--fg-dim); font-size: 13px; }
+.accounts-add-button { justify-self: start; }
 .accounts-ready { color: var(--ok, #48aa99); }
 .accounts-pending { color: var(--fg-faint); }
-.accounts-machine { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .accounts-add { display: grid; gap: 10px; }
+.accounts-add h2 { margin: 0; }
 .accounts-add label { display: grid; gap: 4px; font-size: 12px; }
 .accounts-add input, .accounts-add select, .accounts-signing-in input { width: 100%; min-width: 0; min-height: 44px; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-base); color: var(--fg); font: inherit; }
 .accounts-signing-in { display: grid; gap: 14px; }
@@ -16,3 +39,12 @@
 .accounts-signing-in .btn { min-height: 44px; justify-self: start; }
 .account-device-code { display: block; margin-top: 10px; font-size: 20px; letter-spacing: 0.08em; }
 .accounts-add-actions { display: flex; gap: 8px; }
+.accounts-add-actions .btn { min-height: 44px; }
+
+@media (max-width: 560px) {
+  .accounts-row { grid-template-areas: "mark identity" "mark status" "mark actions"; grid-template-columns: 32px minmax(0, 1fr); }
+  .accounts-status { justify-self: start; }
+  .accounts-actions .btn { min-height: 44px; }
+  .accounts-machine { width: 100%; }
+  .accounts-machine select { flex: 1; min-height: 44px; }
+}

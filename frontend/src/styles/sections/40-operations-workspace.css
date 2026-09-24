@@ -42,6 +42,7 @@
   --fg-faint: #69727f;
   --accent: #0b7f75;
   --accent-hover: #06645d;
+  --accent-contrast: #ffffff;
   --accent-glow: rgba(15, 143, 131, 0.14);
   --accent-bg-soft: rgba(15, 143, 131, 0.07);
   --accent-bg-medium: rgba(15, 143, 131, 0.11);

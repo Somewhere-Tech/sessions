@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -16,6 +18,7 @@ type fakeAccounts struct {
 	sessionService
 	created   []sessionruntime.ProfileStatus
 	forgotten []string
+	renamed   []string
 	createErr error
 	forgetErr error
 }
@@ -38,6 +41,14 @@ func (f *fakeAccounts) ForgetAccount(tool, name string) error {
 	}
 	f.forgotten = append(f.forgotten, tool+"/"+name)
 	return nil
+}
+
+func (f *fakeAccounts) RenameAccount(tool, name, label string) (sessionruntime.ProfileStatus, error) {
+	if err := sessionruntime.ValidateAccountLabel(label); err != nil {
+		return sessionruntime.ProfileStatus{}, err
+	}
+	f.renamed = append(f.renamed, tool+"/"+name+"="+label)
+	return sessionruntime.ProfileStatus{Tool: tool, Name: name, Label: label, Sessions: []sessionruntime.ProfileSession{}}, nil
 }
 
 func (f *fakeAccounts) AccountHomePath(tool, name string) string {
@@ -99,9 +110,9 @@ func TestAccountRoutesRefuseWhatTheyCannotDo(t *testing.T) {
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("invalid body = %d", bad.Code)
 	}
-	wrongMethod := serve(t, daemon.handler, http.MethodPut, "/api/profiles/claude/work", nil, "127.0.0.1:1", nil)
+	wrongMethod := serve(t, daemon.handler, http.MethodPatch, "/api/profiles/claude/work", nil, "127.0.0.1:1", nil)
 	if wrongMethod.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("PUT on an account = %d", wrongMethod.Code)
+		t.Fatalf("PATCH on an account = %d", wrongMethod.Code)
 	}
 	// The listing still answers, unchanged.
 	listing := serve(t, daemon.handler, http.MethodGet, "/api/profiles", nil, "127.0.0.1:1", nil)
@@ -126,5 +137,60 @@ func TestProfileListingCarriesLabelAndSignedIn(t *testing.T) {
 	}
 	if wire["label"] != "Work" || wire["signed_in"] != true {
 		t.Fatalf("profile on the wire = %#v", wire)
+	}
+}
+
+// Renaming is an account decision: only this computer or a paired host
+// administrator may make it, and the handler passes the trimmed nickname on.
+func TestRenamingAnAccountRequiresAuthority(t *testing.T) {
+	for _, principal := range []authPrincipal{{}, {Local: true}, {HostAdmin: true}} {
+		accounts := &fakeAccounts{}
+		server := &Server{registry: accounts}
+		request := httptest.NewRequest(http.MethodPut, "/api/profiles/claude/work", strings.NewReader(`{"label":"  Team  "}`))
+		request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, principal))
+		response := httptest.NewRecorder()
+		if !server.handleProfilesRoute(response, request, "") {
+			t.Fatal("route not handled")
+		}
+		allowed := principal.Local || principal.HostAdmin
+		if !allowed && (response.Code != http.StatusForbidden || len(accounts.renamed) != 0) {
+			t.Fatalf("open-access rename = %d, renamed %v", response.Code, accounts.renamed)
+		}
+		if allowed && (response.Code != http.StatusOK || len(accounts.renamed) != 1 || accounts.renamed[0] != "claude/work=Team") {
+			t.Fatalf("authorized rename = %d %s, renamed %v", response.Code, response.Body.String(), accounts.renamed)
+		}
+	}
+}
+
+func TestRenamingAnAccountExplainsABadRequest(t *testing.T) {
+	for _, body := range []string{`not json`, `{}`, `{"label":"line\nbreak"}`} {
+		accounts := &fakeAccounts{}
+		server := &Server{registry: accounts}
+		request := httptest.NewRequest(http.MethodPut, "/api/profiles/claude/work", strings.NewReader(body))
+		request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, authPrincipal{Local: true}))
+		response := httptest.NewRecorder()
+		server.handleProfilesRoute(response, request, "")
+		if response.Code != http.StatusBadRequest || len(accounts.renamed) != 0 {
+			t.Fatalf("rename with %s = %d, renamed %v", body, response.Code, accounts.renamed)
+		}
+	}
+}
+
+// Through the whole server, a loopback client is local and may rename.
+func TestLocalClientRenamesAnAccountThroughTheServer(t *testing.T) {
+	daemon := newTestDaemon(t)
+	accounts := &fakeAccounts{sessionService: daemon.registry}
+	daemon.handler.registry = accounts
+	response := serve(t, daemon.handler, http.MethodPut, "/api/profiles/codex/personal",
+		strings.NewReader(`{"label":"Personal"}`), "127.0.0.1:1", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("rename = %d %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Profile sessionruntime.ProfileStatus `json:"profile"`
+	}
+	decodeBody(t, response, &body)
+	if body.Profile.Name != "personal" || body.Profile.Label != "Personal" {
+		t.Fatalf("renamed account = %#v", body.Profile)
 	}
 }
