@@ -62,6 +62,7 @@
 }
 .session-start-note.is-progress { color: var(--fg-dim); }
 .session-start-note.is-fault { color: var(--warn, #d08a3a); font-weight: 600; }
+[data-theme="light"] .session-start-note.is-fault { color: #805300; }
 .session-start-note-action {
   flex: none;
   padding: 1px 8px;

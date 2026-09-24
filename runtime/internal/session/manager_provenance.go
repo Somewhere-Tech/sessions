@@ -518,7 +518,8 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 func (m *Manager) finishCreate(ctx context.Context, id string, request state.CreateSessionRequest) (state.SessionInfo, error) {
 	session, ok := m.registry.Get(id)
 	if !ok {
-		return state.SessionInfo{}, fmt.Errorf("created session %s was not registered", id)
+		return state.SessionInfo{}, &state.StartCreateFailedError{OperationID: request.OperationID, SessionID: id,
+			Err: fmt.Errorf("created session %s was not registered", id)}
 	}
 	runtime := m.manage(session)
 	runtime.expectProviderInput(request.InitialInput)
@@ -557,7 +558,8 @@ func (m *Manager) replayStart(ctx context.Context, request state.CreateSessionRe
 			continue
 		}
 		if wanted := state.CommandTool(request.Cmd); (wanted == state.ToolClaude || wanted == state.ToolCodex) && lane.Tool != string(wanted) {
-			return state.SessionInfo{}, true, fmt.Errorf("operation_id %s already created %s session %s; use a new operation id for different work", request.OperationID, lane.Tool, lane.LaneID)
+			return state.SessionInfo{}, true, &state.StartCreateReplayError{OperationID: request.OperationID, SessionID: lane.LaneID,
+				Reason: "belongs to a different provider; inspect the existing session and use a new operation id for different work"}
 		}
 		session, live := m.registry.Get(lane.LaneID)
 		if !live || session.Info().Exited {

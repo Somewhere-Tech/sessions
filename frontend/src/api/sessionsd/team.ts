@@ -1,4 +1,5 @@
 import { apiFetch, httpBase, json } from './core';
+import type { StartReceipt } from '../../types';
 
 export type TeamMemberState = 'ended' | 'needs-you' | 'working' | 'failed' | 'not-started' | 'idle' | 'lost' | 'unreachable' | 'needs-recovery';
 
@@ -26,6 +27,7 @@ export interface CheckoutWarning {
 }
 
 export interface TeamMember {
+  start?: StartReceipt;
   id: string;
   name?: string;
   tool: string;

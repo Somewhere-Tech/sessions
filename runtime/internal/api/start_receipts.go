@@ -46,8 +46,11 @@ func (s *Server) withStartReceipt(info state.SessionInfo) state.SessionInfo {
 // submitted under that id; an unreadable one proves nothing at all and says so
 // instead of being mistaken for either.
 func (s *Server) startPrompt(operationID string) *state.StartPrompt {
-	if operationID == "" || s.deliveries == nil {
+	if operationID == "" {
 		return nil
+	}
+	if s.deliveries == nil {
+		return &state.StartPrompt{Status: state.StartPromptUnreadable, Reason: "Delivery records are unavailable; inspect the conversation before retrying."}
 	}
 	if _, running := s.deliveriesInFlight.Load(operationID); running {
 		return &state.StartPrompt{Status: state.StartPromptSending}

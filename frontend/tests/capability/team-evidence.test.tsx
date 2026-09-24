@@ -33,11 +33,12 @@ describe('delegation evidence', () => {
   it('labels tests, artifacts and commits as agent-reported', async () => {
     const user = userEvent.setup();
     render(<TeamEvidence session={makeSession({ id: 'worker' })} member={{ ...member, handoff: {
-      source: 'agent-reported', outcome: 'done', push: 'not-pushed', summary: 'Fixed delivery',
+      source: 'agent-reported', at: '2026-09-24T10:00:00Z', outcome: 'done', push: 'not-pushed', summary: 'Fixed delivery',
       commits: ['abc123'], tests: ['go test passed'], artifacts: ['report.md'], remaining: ['native check']
     } }} />);
     await user.click(screen.getByText('Handoff · done'));
     expect(screen.getByText(/not independently verified/)).toBeVisible();
+    expect(document.querySelector('time')).toHaveAttribute('datetime', '2026-09-24T10:00:00Z');
     for (const value of ['abc123', 'go test passed', 'report.md', 'native check', 'Not pushed']) {
       expect(screen.getByText(value)).toBeVisible();
     }

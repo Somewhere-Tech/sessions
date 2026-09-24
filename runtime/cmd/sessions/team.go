@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 // teamMember mirrors the compact fact set the daemon returns for one lane a
@@ -14,24 +16,25 @@ import (
 // design; a manager watches its workers here without pulling their
 // conversations into its own context.
 type teamMember struct {
-	ID       string        `json:"id"`
-	Name     string        `json:"name,omitempty"`
-	Tool     string        `json:"tool"`
-	Cwd      string        `json:"cwd,omitempty"`
-	Relation string        `json:"relation"`
-	Depth    int           `json:"depth"`
-	State    string        `json:"state"`
-	NeedsYou bool          `json:"needs_you"`
-	Working  bool          `json:"working"`
-	Exited   bool          `json:"exited"`
-	Summary  string        `json:"summary,omitempty"`
-	Waiting  string        `json:"waiting,omitempty"`
-	Reason   string        `json:"reason,omitempty"`
-	Recovery string        `json:"recovery_command,omitempty"`
-	Branch   string        `json:"branch,omitempty"`
-	Worktree string        `json:"worktree_path,omitempty"`
-	Handoff  *teamHandoff  `json:"handoff,omitempty"`
-	Checkout *teamCheckout `json:"checkout_warning,omitempty"`
+	ID       string              `json:"id"`
+	Name     string              `json:"name,omitempty"`
+	Tool     string              `json:"tool"`
+	Cwd      string              `json:"cwd,omitempty"`
+	Relation string              `json:"relation"`
+	Depth    int                 `json:"depth"`
+	State    string              `json:"state"`
+	NeedsYou bool                `json:"needs_you"`
+	Working  bool                `json:"working"`
+	Exited   bool                `json:"exited"`
+	Summary  string              `json:"summary,omitempty"`
+	Waiting  string              `json:"waiting,omitempty"`
+	Reason   string              `json:"reason,omitempty"`
+	Recovery string              `json:"recovery_command,omitempty"`
+	Branch   string              `json:"branch,omitempty"`
+	Worktree string              `json:"worktree_path,omitempty"`
+	Handoff  *teamHandoff        `json:"handoff,omitempty"`
+	Checkout *teamCheckout       `json:"checkout_warning,omitempty"`
+	Start    *state.StartReceipt `json:"start,omitempty"`
 }
 
 type teamListing struct {

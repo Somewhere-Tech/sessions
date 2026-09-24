@@ -12,7 +12,8 @@ import userEvent from '@testing-library/user-event';
 import { NewSessionDialog } from '../../src/components/NewSessionDialog';
 import { ProviderFaultCard } from '../../src/components/ProviderFaultCard';
 import { startNotice } from '../../src/lib/startReceipt';
-import { recordedPromptOperationId, startOperationIds, withStartOperation } from '../../src/lib/startOperation';
+import { recordedPromptOperationId, startFailureMessage, startOperationIds, withStartOperation } from '../../src/lib/startOperation';
+import { DaemonResponseError } from '../../src/api/sessionsd/core';
 import type { StartReceipt } from '../../src/types';
 import { Workbench } from './harness';
 import { installFakeDaemon, makeSession, useFakeMachines, type FakeMachine } from './fake-daemon';
@@ -95,6 +96,16 @@ describe('capability: a start that fails halfway is not started twice', () => {
 });
 
 describe('capability: start operation ids', () => {
+  it('keeps a failed launch identifiable without promising old runtimes deduplicate retries', () => {
+    const id = '90000000-0000-4000-8000-000000000001';
+    const known = new DaemonResponseError(500, JSON.stringify({ session_id: id, error: 'Runner did not start' }), '');
+    expect(startFailureMessage(known)).toContain(`sessions status ${id}`);
+    expect(startFailureMessage(known)).toContain('Runner did not start');
+    expect(startFailureMessage(new Error('Connection lost'))).toContain('may already exist');
+    expect(startFailureMessage(new Error('Connection lost'))).toContain('older runtime may create a duplicate');
+    expect(startFailureMessage(new DaemonResponseError(400, 'runner failed', ''))).toContain('may already exist');
+  });
+
   it('reuse ids only for the identical request, and prefer the recorded first-request id on replay', () => {
     const first = startOperationIds(null, 'a');
     expect(startOperationIds(first, 'a')).toBe(first);

@@ -52,10 +52,11 @@ type teamMember struct {
 	UpdatedAt int64        `json:"updated_at,omitempty"`
 	// Branch and WorktreePath say where a lane's work is when it has its own
 	// worktree, so a manager knows what to diff or merge without opening it.
-	Branch       string           `json:"branch,omitempty"`
-	WorktreePath string           `json:"worktree_path,omitempty"`
-	Handoff      *handoffReceipt  `json:"handoff,omitempty"`
-	Checkout     *checkoutWarning `json:"checkout_warning,omitempty"`
+	Branch       string              `json:"branch,omitempty"`
+	WorktreePath string              `json:"worktree_path,omitempty"`
+	Handoff      *handoffReceipt     `json:"handoff,omitempty"`
+	Checkout     *checkoutWarning    `json:"checkout_warning,omitempty"`
+	Start        *state.StartReceipt `json:"start,omitempty"`
 }
 
 // teamListing answers "what am I responsible for". Self is the caller; parent
@@ -85,6 +86,8 @@ func teamState(info state.SessionInfo) string {
 		return "lost"
 	case info.Unreachable:
 		return "unreachable"
+	case info.FailureKind != "":
+		return "failed"
 	case info.IdleReason == state.IdleReasonNeedsInput:
 		return "needs-you"
 	case info.Working:
@@ -125,8 +128,8 @@ func teamMemberFrom(info state.SessionInfo, relation teamRelation, depth int) te
 	member := teamMember{
 		ID: info.ID, Name: info.Name, Tool: string(info.Tool), Cwd: info.Cwd,
 		Relation: relation, Depth: depth, State: teamState(info),
-		NeedsYou: info.IdleReason == state.IdleReasonNeedsInput,
-		Working:  info.Working, Exited: info.Exited,
+		NeedsYou: teamNeedsInput(info),
+		Working:  teamState(info) == "working", Exited: info.Exited,
 		Summary: truncateBudget(info.LastSummary, teamSummaryBudget),
 		Waiting: truncateBudget(info.IdleDetail, teamSummaryBudget),
 		Reason:  reason, Recovery: recovery,
@@ -202,7 +205,7 @@ func teamFor(sessions []state.SessionInfo, callerID string) (teamListing, bool) 
 		}
 		relation := teamRelationChild
 		listing.Members = append(listing.Members, teamMemberFrom(info, relation, current.depth))
-		if info.IdleReason == state.IdleReasonNeedsInput && !info.Exited {
+		if teamNeedsInput(info) {
 			listing.NeedsInput++
 		}
 		for _, next := range childrenOf[current.id] {
@@ -268,6 +271,7 @@ func (s *Server) handleTeamRoute(response http.ResponseWriter, request *http.Req
 		return true
 	}
 	s.attachTeamReceipts(&listing)
+	s.attachTeamStarts(&listing, infos)
 	attachCheckoutWarnings(request.Context(), &listing, infos)
 	if err := s.teamChanges.apply(caller, request.URL.Query().Get("since"), &listing, time.Now()); err != nil {
 		if errors.Is(err, errTeamCursor) {

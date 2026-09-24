@@ -726,6 +726,11 @@ reuse a baseline. An invalid cursor returns 409 with code
 misleading empty delta. Teams over 512 members must be queried at a smaller
 manager. Durable-ledger read failure returns 503, not a partial successful list.
 
+Members also carry the projected `start` receipt when their creation recorded
+one. Delivery progress participates in deltas. `needs_input` includes provider
+authentication failures, approvals and first requests needing inspection or
+resubmission; a stale working hint does not override a provider fault.
+
 Each member may carry `handoff`, with `source` (`not-reported` or
 `agent-reported`), verdict `seq`, `at`, `outcome`, `summary`, known `workspace`
 and `branch`, `commits`, `push`, `tests`, `artifacts`, and `remaining`. `push`

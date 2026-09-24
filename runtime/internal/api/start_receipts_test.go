@@ -20,6 +20,16 @@ const (
 	apiPromptOperation = "5c000000-0000-4000-8000-000000000002"
 )
 
+func TestUnavailableDeliveryStoreDoesNotProveNothingWasSent(t *testing.T) {
+	server := &Server{}
+	info := server.withStartReceipt(state.SessionInfo{ID: "worker", Start: &state.StartReceipt{
+		OperationID: apiStartOperation, PromptOperationID: apiPromptOperation,
+	}})
+	if info.Start.Phase != state.StartPhasePromptUnknown || info.Start.Prompt.Retry || info.Start.Recovery.Action != state.StartRecoveryInspect {
+		t.Fatalf("missing delivery store implied safe resend: %+v", info.Start)
+	}
+}
+
 type startDaemon struct {
 	testDaemon
 	manager *sessionruntime.Manager

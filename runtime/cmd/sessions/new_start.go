@@ -101,7 +101,7 @@ const (
 )
 
 // createFailure is the structured answer for a create that did not return a
-// usable session. Outcome says what is known: refused (nothing was created),
+// usable session. Outcome says what is known: refused (no session id returned),
 // already-created or created-not-started (session_id names the session), or
 // unknown (the answer was lost; a session may exist).
 type createFailure struct {
@@ -139,7 +139,7 @@ func (a *app) postCreate(body createSessionRequest) (map[string]any, *createFail
 	case failure.SessionID != "":
 		failure.Outcome, failure.Next = createOutcomeNotStarted, fmt.Sprintf("session %s was recorded before its launch failed; inspect it with `sessions status %s` before creating another", failure.SessionID, failure.SessionID)
 	case response.status >= 400 && response.status < 500:
-		failure.Outcome, failure.Next = createOutcomeRefused, "nothing was created; fix the request and run it again"
+		failure.Outcome, failure.Next = createOutcomeRefused, "the daemon refused this request without a session id; inspect existing sessions before retrying if this followed an earlier start attempt or used an older daemon"
 	}
 	return nil, failure
 }

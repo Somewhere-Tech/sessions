@@ -55,3 +55,15 @@ func TestEmptyTeamPrintsScopedNextCheck(t *testing.T) {
 		t.Fatalf("missing scoped recovery command: %s", &out)
 	}
 }
+
+func TestHandoffClaimsCannotEmitTerminalControls(t *testing.T) {
+	var out bytes.Buffer
+	a := &app{stdout: &out}
+	receipt := &teamHandoff{Source: "agent-reported", Summary: "\x1b[2Jfake", Tests: []string{"\x1b[31mPASS"}}
+	if err := a.writeTeamChangesFooter(teamListing{Members: []teamMember{{ID: "worker", Handoff: receipt}}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsRune(out.String(), '\x1b') {
+		t.Fatalf("untrusted handoff emitted terminal control: %q", out.String())
+	}
+}

@@ -19,7 +19,7 @@ import { ProviderMark } from './ProviderBadge';
 import { MachineMark } from './MachineMark';
 import { CLAUDE_MODEL_OPTIONS, ModelPicker, type ModelPickerOption } from './ModelPicker';
 import { InlineAccountSignIn } from './InlineAccountSignIn';
-import { firstRequestFailureMessage, recordedPromptOperationId, startOperationIds, withStartOperation, type StartOperationIds } from '../lib/startOperation';
+import { firstRequestFailureMessage, recordedPromptOperationId, startFailureMessage, startOperationIds, withStartOperation, type StartOperationIds } from '../lib/startOperation';
 
 interface ToolDef {
   id: NewSessionTool;
@@ -493,7 +493,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       }
       onClose();
     } catch (err) {
-      setError((err as Error).message);
+      setError(startFailureMessage(err));
     } finally {
       setBusy(false);
       startInFlightRef.current = false;

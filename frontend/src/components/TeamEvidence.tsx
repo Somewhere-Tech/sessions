@@ -1,10 +1,12 @@
 import type { TeamMember } from '../api/sessionsd';
 import type { SessionInfo } from '../types';
+import { StartReceiptNote } from './StartReceiptNote';
 import '../styles/team-handoff.css';
 
 export function TeamEvidence({ member, session }: { member?: TeamMember; session: SessionInfo }): JSX.Element {
   const receipt = member?.handoff;
   return <>
+    <StartReceiptNote session={{ ...session, start: member?.start ?? session.start }} />
     {session.branch ? <p className="subagent-branch" title={session.worktreePath}>
       {session.exited ? 'Kept branch ' : 'On branch '}<code>{session.branch}</code>
     </p> : null}
@@ -16,6 +18,9 @@ export function TeamEvidence({ member, session }: { member?: TeamMember; session
       <p>{receipt.source === 'agent-reported'
         ? 'Reported by the agent; not independently verified by Sessions.'
         : 'No handoff reported yet. A finished turn does not prove the task is complete.'}</p>
+      {receipt.at && Number.isFinite(Date.parse(receipt.at)) ? <p>Reported <time dateTime={receipt.at}>
+        {new Date(receipt.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+      </time></p> : null}
       {receipt.summary ? <p>{receipt.summary}</p> : null}
       <dl>
         <dt>Work lives in</dt><dd>{receipt.workspace || 'Not recorded'}</dd>

@@ -38,6 +38,16 @@ func openStartLedger(t *testing.T, root string) *ledger.Store {
 	return store
 }
 
+func TestFinishCreateFailurePreservesKnownSessionID(t *testing.T) {
+	root := t.TempDir()
+	manager := startReplayManager(t, root, prototest.NewLauncher(), openStartLedger(t, root))
+	_, err := manager.finishCreate(context.Background(), "known-session", state.CreateSessionRequest{OperationID: testStartOperation})
+	var partial *state.StartCreateFailedError
+	if !errors.As(err, &partial) || partial.SessionID != "known-session" || partial.OperationID != testStartOperation {
+		t.Fatalf("lost created session identity: %v", err)
+	}
+}
+
 // A caller that lost the create response retries with the same operation id.
 // It must get the session the first request made, not a second runtime.
 func TestCreateWithSameOperationIDReturnsTheFirstSession(t *testing.T) {
