@@ -68,7 +68,7 @@ export function AccountsPanel({ profiles, machineName, serverId, onOpenSession, 
 
       <div className="settings-card accounts-card">
         <div className="accounts-card-head">
-          <h2>{viewingHome ? 'On this computer' : `On ${targetName}`}</h2>
+          <h2>Accounts added in Sessions</h2>
           <ComputerPicker
             value={targetId ?? home}
             machineName={targetName}
@@ -81,6 +81,7 @@ export function AccountsPanel({ profiles, machineName, serverId, onOpenSession, 
         {elsewhere.error ? <p className="settings-message" role="status">{elsewhere.error}</p> : null}
         {elsewhere.loading ? <p role="status">Reading the accounts on {targetName}…</p> : (
           <AccountsList
+            key={requestId ?? home}
             profiles={accounts}
             machineName={targetName}
             busy={login.busy || signInPending}
@@ -132,8 +133,8 @@ function accountEdits(login: GuidedLogin, requestId: string | undefined) {
   const forget = async (account: AccountProfile): Promise<void> => {
     login.setBusy(true);
     try {
-      const answer = await forgetAccount(account.tool, account.name, requestId);
-      login.setMessage(`${accountTitle(account)} is no longer listed. Its provider home was left at ${answer.home} for you to review.`);
+      await forgetAccount(account.tool, account.name, requestId);
+      login.setMessage(`${accountTitle(account)} was removed from this list. Its saved chats and sign-in are unchanged.`);
       await login.reload();
     } catch (error) {
       login.setMessage(error instanceof Error ? error.message : 'Sessions could not remove that account.');
@@ -222,8 +223,7 @@ function AccountsIntroduction(): JSX.Element {
     <header className="accounts-intro">
       <h1>Accounts</h1>
       <p>
-        Add your Claude and ChatGPT accounts, then choose one when starting a chat.
-        Sign-in happens with the provider. Each account stays separate on its computer.
+        Choose which account your agents use. Each sign-in stays separate on its computer.
       </p>
     </header>
   );
@@ -288,7 +288,7 @@ function AccountRow(
   ].filter(Boolean).join(' · ');
   const activity = [
     account.sessions.length > 0 ? `${account.sessions.length} active` : null,
-    account.last_used > 0 ? `Last used ${new Date(account.last_used).toLocaleDateString()}` : 'Not used yet'
+    account.last_used > 0 ? `Last used ${new Date(account.last_used).toLocaleDateString()}` : null
   ].filter(Boolean).join(' · ');
 
   return (
@@ -309,7 +309,7 @@ function AccountRow(
           />
         ) : <strong id={titleId}>{title}</strong>}
         <span className="accounts-details">{details}</span>
-        <span className="accounts-activity">{activity}</span>
+        {activity ? <span className="accounts-activity">{activity}</span> : null}
         {error ? <span className="accounts-row-error" role="alert">{error}</span> : null}
       </div>
       <AccountStatus account={account} />

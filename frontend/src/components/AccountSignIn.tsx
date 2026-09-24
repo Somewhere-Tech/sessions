@@ -20,8 +20,12 @@ export function useGuidedAccountLogin({ serverId, onReload }: {
   const currentHost = useRef(serverId);
   currentHost.current = serverId;
   const reload = useCallback(async (): Promise<void> => {
-    try { onReload?.(await fetchProfiles(undefined, serverId)); }
-    catch (error) { setMessage(error instanceof Error ? error.message : 'Could not refresh accounts.'); }
+    try {
+      const profiles = await fetchProfiles(undefined, serverId);
+      if (currentHost.current === serverId) onReload?.(profiles);
+    } catch (error) {
+      if (currentHost.current === serverId) setMessage(error instanceof Error ? error.message : 'Could not refresh accounts.');
+    }
   }, [serverId, onReload]);
   const refreshRef = useRef(reload);
   refreshRef.current = reload;
