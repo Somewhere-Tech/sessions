@@ -5,6 +5,7 @@
 // plan was left. The same subscription signed in on two Macs read as two
 // accounts, and there was no way to see its limits without opening the
 // provider's own app.
+import { StrictMode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -119,7 +120,7 @@ describe('capability: one account, one allowance, on every computer it is signed
     machines[1]!.accountUsage = false;
     const { list } = await openAccounts(machines);
     const claude = rowFor(list, 'Claude Max');
-    expect(await within(claude).findByText(/Claude does not offer a supported way to read usage/)).toBeVisible();
+    expect(await within(claude).findByText('Claude usage is not connected in Sessions yet. Check Claude for your current limits.')).toBeVisible();
     expect(within(claude).queryByRole('meter')).not.toBeInTheDocument();
     expect(await screen.findByText('Update Sessions on Beta to see usage from it.')).toBeVisible();
     // Alpha still reads the shared account; Beta's missing reading is coverage.
@@ -160,5 +161,30 @@ describe('capability: one account, one allowance, on every computer it is signed
     expect(screen.queryByText(/Beta did not answer/)).not.toBeInTheDocument();
     const team = rowFor(list, 'Team plan');
     expect(within(team).getByRole('meter', { name: /5-hour limit used/ })).toHaveAttribute('aria-valuenow', '55');
+  });
+
+  // The app mounts under React.StrictMode, which sets effects up, cleans them
+  // up and sets them up again. Answers that arrive after that must still land.
+  it('reads other computers and usage under StrictMode, as the app mounts it', async () => {
+    const machines = fleet();
+    installFakeDaemon(machines);
+    useFakeMachines(machines, 'alpha');
+    render(<StrictMode><AccountsView hostName="Alpha" serverId="alpha" /></StrictMode>);
+    const list = await screen.findByRole('list', { name: 'Accounts' });
+    expect(await within(list).findByText('Beta personal', { selector: 'strong' })).toBeVisible();
+    const team = rowFor(list, 'Team plan');
+    await waitFor(() => expect(within(team).getByRole('meter', { name: /5-hour limit used/ })).toHaveAttribute('aria-valuenow', '55'));
+  });
+
+  it('asks a computer that did not answer for its accounts again on refresh', async () => {
+    const machines = fleet();
+    machines[1]!.reachable = false;
+    const { list, user } = await openAccounts(machines);
+    expect(await screen.findByText('Beta did not answer, so its accounts are not shown.')).toBeVisible();
+    machines[1]!.reachable = true;
+    await user.click(screen.getByRole('button', { name: 'Refresh usage' }));
+    expect(await within(list).findByText('Beta personal', { selector: 'strong' })).toBeVisible();
+    expect(screen.queryByText('Beta did not answer, so its accounts are not shown.')).not.toBeInTheDocument();
+    await waitFor(() => expect(within(screen.getByRole('list', { name: 'Computers for Team plan' })).getByText('Beta')).toBeVisible());
   });
 });

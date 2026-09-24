@@ -132,10 +132,19 @@ func TestAccountUsageDeadlineReportsPendingAndKeepsReading(t *testing.T) {
 	}
 }
 
-// A failed read keeps the last good reading beside it, marked stale; it never
-// becomes signed out or zero usage. A provider that reports no sign-in does
-// clear it: that reading belonged to a sign-in that is gone.
-func TestAccountUsageFailureKeepsLastReadingAsStale(t *testing.T) {
+func failedUsage(email string) AccountUsage {
+	result := AccountUsage{State: AccountUsageUnavailable, Message: "Codex could not read this account's usage. Refresh to try again."}
+	if email != "" {
+		result.Identity = &AccountIdentity{Email: email, CheckedAt: 2}
+	}
+	return result
+}
+
+// A failed read keeps the last good reading beside it, marked stale, only when
+// the same read showed the same account still signed in; it never becomes
+// signed out or zero usage. Without that proof the answer is unknown, and a
+// provider that reports no sign-in clears the reading altogether.
+func TestAccountUsageFailureKeepsLastReadingOnlyForTheSameAccount(t *testing.T) {
 	var next atomic.Value
 	next.Store(availableUsage(42))
 	manager, clock := usageManager(t, func(ctx context.Context, tool, home string) AccountUsage {
@@ -144,23 +153,127 @@ func TestAccountUsageFailureKeepsLastReadingAsStale(t *testing.T) {
 	if _, err := manager.CreateAccount("codex", "work", ""); err != nil {
 		t.Fatal(err)
 	}
-	if usage, _ := manager.AccountUsage(context.Background(), "", "", false); usage[0].State != AccountUsageAvailable || usage[0].Stale {
-		t.Fatalf("first reading = %#v", usage[0])
+	read := func() AccountUsage {
+		t.Helper()
+		clock.advance(accountUsageTTL)
+		usage, err := manager.AccountUsage(context.Background(), "", "", false)
+		if err != nil || len(usage) != 1 {
+			t.Fatalf("usage = %#v, %v", usage, err)
+		}
+		return usage[0]
 	}
-	next.Store(AccountUsage{State: AccountUsageUnavailable, Message: "Codex did not start. Refresh to try again."})
-	clock.advance(accountUsageTTL)
-	usage, _ := manager.AccountUsage(context.Background(), "", "", false)
-	got := usage[0]
+	if got := read(); got.State != AccountUsageAvailable || got.Stale {
+		t.Fatalf("first reading = %#v", got)
+	}
+	next.Store(failedUsage("A@example.test"))
+	got := read()
 	if got.State != AccountUsageUnavailable || !got.Stale || got.ReadAt != 1 || len(got.Buckets) != 1 || got.Buckets[0].Windows[0].UsedPercent != 42 {
-		t.Fatalf("failed read = %#v, want unavailable with the stale reading", got)
+		t.Fatalf("failed read of the same account = %#v, want the stale reading", got)
 	}
-	if got.CheckedAt != clock.read().UnixMilli() {
-		t.Fatalf("checked_at = %d, want the failed attempt's time", got.CheckedAt)
+	if got.CheckedAt != clock.read().UnixMilli() || got.Identity == nil || got.Identity.CheckedAt != 2 {
+		t.Fatalf("stale reading lost its attribution: %#v", got)
+	}
+	// A read that failed before the provider said who is signed in proves nothing.
+	next.Store(failedUsage(""))
+	if got = read(); got.Stale || len(got.Buckets) != 0 || got.Identity != nil {
+		t.Fatalf("failed read without an identity = %#v, want unknown", got)
 	}
 	next.Store(AccountUsage{State: AccountUsageSignedOut, Message: "signed out"})
+	if got = read(); got.State != AccountUsageSignedOut || len(got.Buckets) != 0 || got.Stale {
+		t.Fatalf("signed-out read = %#v, want no leftover reading", got)
+	}
+}
+
+// Another account signed into the same home must never inherit the previous
+// account's quota, even when its own read fails; and the old reading does not
+// come back afterwards.
+func TestAccountUsageIdentitySwapClearsTheOldReading(t *testing.T) {
+	var next atomic.Value
+	next.Store(availableUsage(42))
+	manager, clock := usageManager(t, func(ctx context.Context, tool, home string) AccountUsage {
+		return next.Load().(AccountUsage)
+	})
+	if _, err := manager.CreateAccount("codex", "work", ""); err != nil {
+		t.Fatal(err)
+	}
+	if usage, _ := manager.AccountUsage(context.Background(), "", "", false); usage[0].State != AccountUsageAvailable {
+		t.Fatalf("first reading = %#v", usage[0])
+	}
+	next.Store(failedUsage("b@example.test"))
 	clock.advance(accountUsageTTL)
-	if usage, _ = manager.AccountUsage(context.Background(), "", "", false); usage[0].State != AccountUsageSignedOut || len(usage[0].Buckets) != 0 || usage[0].Stale {
-		t.Fatalf("signed-out read = %#v, want no leftover reading", usage[0])
+	usage, _ := manager.AccountUsage(context.Background(), "", "", false)
+	if usage[0].Stale || len(usage[0].Buckets) != 0 || usage[0].Identity.Email != "b@example.test" {
+		t.Fatalf("failed read of another account = %#v, want no quota from the first account", usage[0])
+	}
+	next.Store(failedUsage("a@example.test"))
+	clock.advance(accountUsageTTL)
+	if usage, _ = manager.AccountUsage(context.Background(), "", "", false); usage[0].Stale || len(usage[0].Buckets) != 0 {
+		t.Fatalf("cleared reading came back = %#v", usage[0])
+	}
+	for _, other := range []*AccountIdentity{
+		{Email: "a@example.test", Organization: "Other org"},
+		{Email: "a@example.test", AccountID: "ws-2"},
+	} {
+		good := availableUsage(1)
+		failed := failedUsage("")
+		failed.Identity = other
+		if got := withLastReading(failed, &good); got.Stale {
+			t.Fatalf("identity %#v inherited %#v", other, good.Identity)
+		}
+	}
+}
+
+// A sign-in, recheck or removal through Sessions discards every earlier
+// reading of that home. A read that started before is fenced off: it answers
+// its own waiters as unknown and never reaches the cache, so the refresh floor
+// cannot hand the previous sign-in's quota to the next request.
+func TestAccountUsageInvalidationFencesAnEarlierRead(t *testing.T) {
+	var reads atomic.Int32
+	release := make(chan struct{})
+	manager, _ := usageManager(t, func(ctx context.Context, tool, home string) AccountUsage {
+		if reads.Add(1) == 1 {
+			<-release
+			return availableUsage(42)
+		}
+		fresh := availableUsage(7)
+		fresh.Identity = &AccountIdentity{Email: "b@example.test", CheckedAt: 3}
+		return fresh
+	})
+	if _, err := manager.CreateAccount("codex", "work", ""); err != nil {
+		t.Fatal(err)
+	}
+	early := make(chan AccountUsage, 1)
+	go func() {
+		usage, _ := manager.AccountUsage(context.Background(), "", "", false)
+		early <- usage[0]
+	}()
+	for reads.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	// Re-adding the account (like a completed sign-in) invalidates this home.
+	if _, err := manager.CreateAccount("codex", "work", ""); err != nil {
+		t.Fatal(err)
+	}
+	usage, _ := manager.AccountUsage(context.Background(), "", "", true)
+	if reads.Load() != 2 || usage[0].State != AccountUsageAvailable || usage[0].Buckets[0].Windows[0].UsedPercent != 7 {
+		t.Fatalf("read after invalidation = %#v (reads %d), want a new read", usage[0], reads.Load())
+	}
+	close(release)
+	if late := <-early; late.State != AccountUsageUnavailable || len(late.Buckets) != 0 || !strings.Contains(late.Message, "changed") {
+		t.Fatalf("fenced read = %#v, want unknown", late)
+	}
+	if usage, _ = manager.AccountUsage(context.Background(), "", "", true); usage[0].Buckets[0].Windows[0].UsedPercent != 7 || reads.Load() != 2 {
+		t.Fatalf("cache after the late read = %#v (reads %d)", usage[0], reads.Load())
+	}
+	// Removing the account discards its reading too.
+	if err := manager.ForgetAccount("codex", "work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CreateAccount("codex", "work", ""); err != nil {
+		t.Fatal(err)
+	}
+	if manager.AccountUsage(context.Background(), "", "", false); reads.Load() != 3 {
+		t.Fatalf("reads = %d after removal, want a new read", reads.Load())
 	}
 }
 
@@ -181,8 +294,8 @@ func TestAccountUsageListsOnlyRegisteredAccounts(t *testing.T) {
 	if err != nil || len(usage) != 1 || usage[0].Tool != "claude" {
 		t.Fatalf("usage = %#v, %v; want only the listed Claude account", usage, err)
 	}
-	// Claude offers no supported usage read, and the answer says so plainly.
-	if usage[0].State != AccountUsageUnsupported || usage[0].CheckedAt != 0 || !strings.Contains(usage[0].Message, "does not offer") {
+	// Claude usage is not connected yet, and the answer says so plainly.
+	if usage[0].State != AccountUsageUnsupported || usage[0].CheckedAt != 0 || !strings.Contains(usage[0].Message, "not connected in Sessions yet") {
 		t.Fatalf("claude usage = %#v", usage[0])
 	}
 	if _, err := manager.AccountUsage(context.Background(), "codex", "gone", false); err == nil || !strings.Contains(err.Error(), "sessions accounts") {
@@ -208,7 +321,7 @@ func (f fakeUsageClient) ReadRateLimits(context.Context) (codexapp.RateLimits, e
 func pointer[T any](value T) *T { return &value }
 
 func TestCodexUsageKeepsBucketsSeparateAndResetsInMilliseconds(t *testing.T) {
-	chatgpt := &codexapp.Account{Type: "chatgpt", Email: "a@example.test", PlanType: "team", ChatgptAccountID: "ws-1"}
+	chatgpt := &codexapp.Account{Type: "chatgpt", Email: "a@example.test", PlanType: "team"}
 	usage := readCodexUsage(context.Background(), fakeUsageClient{account: chatgpt, limits: codexapp.RateLimits{
 		Legacy: &codexapp.RateLimitSnapshot{Primary: &codexapp.RateLimitWindow{UsedPercent: 99}},
 		ByLimitID: map[string]codexapp.RateLimitSnapshot{
@@ -219,7 +332,7 @@ func TestCodexUsageKeepsBucketsSeparateAndResetsInMilliseconds(t *testing.T) {
 			},
 		},
 	}})
-	if usage.State != AccountUsageAvailable || usage.Identity == nil || usage.Identity.AccountID != "ws-1" || usage.ReadAt == 0 {
+	if usage.State != AccountUsageAvailable || usage.Identity == nil || usage.Identity.AccountID != "" || usage.Identity.Email != "a@example.test" || usage.ReadAt == 0 {
 		t.Fatalf("usage = %#v", usage)
 	}
 	if len(usage.Buckets) != 2 || usage.Buckets[0].LimitID != "codex" || usage.Buckets[1].LimitID != "other" {

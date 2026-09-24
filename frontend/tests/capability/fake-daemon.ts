@@ -644,7 +644,7 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
         accounts: (machine.profiles ?? []).map((account): AccountUsage => ({
           tool: account.tool, name: account.name, label: account.label,
           ...(account.tool === 'claude'
-            ? { state: 'unsupported', message: 'Claude does not offer a supported way to read usage, so Sessions does not show it.' }
+            ? { state: 'unsupported', message: 'Claude usage is not connected in Sessions yet. Check Claude for your current limits.' }
             : { state: 'unavailable', message: 'The provider has not answered yet; refresh in a moment.' }),
           ...readings[`${account.tool}/${account.name}`]
         })),

@@ -554,9 +554,10 @@ export interface AccountProfileSession {
 }
 
 /**
- * What the provider reported at its last check. `account_id` is its own stable
- * account or workspace identifier, present only when the provider reports one;
- * an email alone cannot prove which workspace an allowance belongs to.
+ * What the provider reported at its last check. `account_id` is reserved for a
+ * provider's own stable account or workspace identifier; no supported provider
+ * reports one yet, and an email alone cannot prove which workspace an allowance
+ * belongs to.
  */
 export interface AccountIdentity {
   account_id?: string;

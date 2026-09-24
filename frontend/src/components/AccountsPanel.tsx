@@ -15,7 +15,8 @@ import { ProviderMark } from './ProviderBadge';
 // sign-in there, and no credential ever moves between computers.
 //
 // Two computers' homes are one row only when the provider reported the same
-// account ID for both. A matching email alone is mentioned, not merged.
+// account ID for both. No supported provider reports one yet, so today each
+// computer's home is its own row; a matching email is mentioned, not merged.
 //
 // One flow at a time: the add form and the sign-in card never share the page,
 // so a finished sign-in is not left above a new, unrelated form.

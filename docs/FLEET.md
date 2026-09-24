@@ -173,9 +173,11 @@ it is **Connected on**, each with its own sign-in state and its own **Check
 account**, **Rename** and **Remove**. **Add on <computer>** runs the same guided
 login on a computer that lacks the account; nothing is copied between
 computers. Homes on different computers become one row only when the provider
-reported the same account ID for both. An email alone does not prove that two
-homes share a workspace or organization, so those stay separate rows with a note
-that the same email appears elsewhere. **Add account** has a **Computer** choice,
+reported the same account ID for both. No supported provider reports such an
+ID today, so the same subscription signed in on two computers currently shows
+as two rows: an email alone does not prove that two homes share a workspace or
+organization, so those rows stay separate with a note that the same email
+appears elsewhere. **Add account** has a **Computer** choice,
 so a second subscription can be set up on the machine that needs it without
 pointing the whole app at that machine first.
 
@@ -184,11 +186,13 @@ private home, for the account's rate limits (`account/rateLimits/read`), with no
 model turn. Each limit is its own meter with its used percentage and reset time,
 and limits are never added together. When several computers read the same
 account, the freshest reading is shown with the computer and time it came from.
-A computer that fails or does not answer keeps the last reading visible and
-marked stale, never as signed out or zero, and a computer that could not be
-reached is named at the top of the page. Claude Code offers no supported usage
-read, so Claude accounts say so rather than showing a guess. An older Codex
-without the method asks to be updated.
+A computer that fails or does not answer is never shown as signed out or zero:
+it keeps the last reading, marked stale, when the provider still reports the
+same account, and otherwise says usage is unknown. A computer that could not
+be reached is named at the top of the page. Claude usage is not connected in
+Sessions yet, so Claude accounts say so and point to Claude for current limits
+rather than showing a guess. An older Codex without the method asks to be
+updated.
 
 **Adding one.** Settings › Accounts → **Add account** asks for a provider, a
 short name for the home, and a label for you to recognise it by. Sessions

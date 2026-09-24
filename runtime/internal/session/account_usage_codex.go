@@ -12,13 +12,13 @@ import (
 
 // readProviderUsage is the supported reading for each provider. Only Codex
 // offers one: its app-server answers account/rateLimits/read for the signed-in
-// ChatGPT account. Claude Code offers no supported usage read, and Sessions
-// does not scrape one from its files, endpoints or status line.
+// ChatGPT account. Claude usage is not connected in Sessions yet; Sessions does
+// not scrape it from Claude's files, endpoints or status line in the meantime.
 func readProviderUsage(ctx context.Context, tool, home string) AccountUsage {
 	if tool != "codex" {
 		return AccountUsage{
 			State:   AccountUsageUnsupported,
-			Message: "Claude does not offer a supported way to read usage, so Sessions does not show it. Claude shows your usage in its own app.",
+			Message: "Claude usage is not connected in Sessions yet. Check Claude for your current limits.",
 		}
 	}
 	executable, err := exec.LookPath("codex")
@@ -52,7 +52,7 @@ func readCodexUsage(ctx context.Context, client codexUsageClient) AccountUsage {
 	if account.Type != "chatgpt" {
 		return AccountUsage{State: AccountUsageUnsupported, CheckedAt: checked, Message: "This account uses an API key, which has no ChatGPT plan allowance to show."}
 	}
-	identity := &AccountIdentity{AccountID: account.ChatgptAccountID, Email: account.Email, Plan: account.PlanType, CheckedAt: checked}
+	identity := &AccountIdentity{Email: account.Email, Plan: account.PlanType, CheckedAt: checked}
 	limits, err := client.ReadRateLimits(ctx)
 	checked = time.Now().UnixMilli()
 	if codexapp.MethodUnsupported(err) {

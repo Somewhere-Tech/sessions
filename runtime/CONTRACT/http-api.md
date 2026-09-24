@@ -792,11 +792,15 @@ daemon restart start again. A known signed-in profile is checked without logging
 it out or replacing it. Profiles remain host-local; signing in on another host
 does not transfer credentials between computers.
 
-The identity may also carry `account_id`, the provider's own stable account or
-workspace identifier, **only** when the provider reports one. Current Codex
-app-server versions report `email` and `plan` alone. An email does not prove
-which workspace or organization an allowance belongs to, so clients must not
-treat two homes with the same email and no shared `account_id` as one account.
+`account_id` is reserved for a provider's own stable account or workspace
+identifier and is **not populated today**: no supported provider reports one
+(Codex `account/read` gives `email` and `plan`; Claude `auth status` gives
+`email`, plan and organization name). An email does not prove which workspace
+or organization an allowance belongs to, so clients must not treat two homes
+with the same email and no shared `account_id` as one account. Cross-computer
+grouping of one subscription is therefore an unresolved limitation until a
+verified provider source exists; Sessions will not derive an identifier from
+credentials or tokens.
 
 ### `GET /api/account-usage`
 
@@ -812,11 +816,17 @@ it, or one account with `?tool=claude|codex&name=<name>`:
 - `available`: `buckets` are the provider's reading at `read_at`.
 - `signed_out`: the provider reported no sign-in in that home at `checked_at`.
 - `unsupported`: the provider, its version, or its sign-in kind offers no
-  supported usage read. Claude Code has none; an older Codex without
-  `account/rateLimits/read` and API-key sign-ins also answer this way.
+  supported usage read in Sessions. Claude usage is not connected in Sessions
+  yet; an older Codex without `account/rateLimits/read` and API-key sign-ins
+  also answer this way.
 - `unavailable`: the read failed, timed out, or has not answered yet. `message`
-  says what to do next. When an earlier reading exists it is returned with
-  `stale: true` and its own `read_at`; `checked_at` is the failed attempt.
+  says what to do next. An earlier reading is returned with `stale: true` and
+  its own `read_at` only when this attempt's provider-reported `identity`
+  matches the account that reading was taken for (email, `organization` and
+  `account_id`); otherwise no buckets are returned. `checked_at` is the failed
+  attempt. A sign-in, recheck, re-add or removal through Sessions discards every
+  earlier reading of that home, and a read that started before it answers as
+  `unavailable` without buckets and is not cached.
 
 Every bucket is a separate metered limit and must not be added to another.
 `windows` holds the provider's `primary` and `secondary` windows when present;

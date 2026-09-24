@@ -6,8 +6,9 @@ import type { AccountProfile } from '../src/api/sessionsd';
 import { installFakeDaemon, useFakeMachines, type FakeMachine } from '../tests/capability/fake-daemon';
 
 // Two computers: one ChatGPT team account both report under the same provider
-// account ID, an email-only account on each, a failed read with a stale
-// reading, a signed-out home, and a Claude account with no supported usage read.
+// account ID (a contract fixture: no provider reports such an ID today), an
+// email-only account on each, a failed read with a stale
+// reading, a signed-out home, and a Claude account whose usage is not connected yet.
 const HOUR = 60 * 60_000;
 const now = Date.now();
 const team = (checked: number) => ({ account_id: 'ws-team', email: 'team@example.test', plan: 'team', checked_at: checked });

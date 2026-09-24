@@ -15,9 +15,12 @@ import (
 )
 
 type AccountIdentity struct {
-	// AccountID is the provider's own stable account or workspace identifier,
-	// present only when the provider reports one. Two homes are the same
-	// allowance only when they share it; an email alone cannot prove that.
+	// AccountID is reserved for a provider's own stable account or workspace
+	// identifier. No provider Sessions supports reports one today: Codex
+	// account/read and Claude auth status give an email and plan. Two homes are
+	// the same allowance only when they share an AccountID; an email alone
+	// cannot prove that, so homes on different computers stay unresolved until
+	// a verified source exists. Never derive it from a credential or token.
 	AccountID    string `json:"account_id,omitempty"`
 	Email        string `json:"email"`
 	Plan         string `json:"plan,omitempty"`
@@ -143,6 +146,9 @@ func (m *Manager) runAccountLogin(ctx context.Context, op *accountLoginOperation
 	defer op.cancel()
 	s := op.snapshot()
 	identity, err := loginProviderAccount(ctx, s.Tool, home, op)
+	// Whatever the outcome, the provider may have changed who is signed in
+	// here; no earlier usage reading of this home can be trusted to match.
+	m.accountUsage.invalidate(s.Tool, s.Profile)
 	if err == nil {
 		m.accountMetadataMu.Lock()
 		sidecar := readAccountSidecar(m.config.UserStateRoot, s.Tool, s.Profile)

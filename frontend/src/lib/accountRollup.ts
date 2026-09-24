@@ -8,7 +8,8 @@ import type { AccountIdentity, AccountProfile, AccountUsage } from '../api/sessi
 // not enough: one person can belong to several ChatGPT workspaces or Claude
 // organizations under one email, each with its own allowance. Homes without a
 // shared provider ID therefore stay separate rows, and a matching email is only
-// mentioned, never merged.
+// mentioned, never merged. No supported provider reports such an ID today, so
+// until a verified source exists every computer's home is its own row.
 //
 // Usage is never added across computers. Every computer reads the same
 // provider allowance, so the freshest reading wins and the others are coverage.

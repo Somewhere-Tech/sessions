@@ -71,7 +71,7 @@ function missingReason(placements: AccountPlacement[], tool: 'claude' | 'codex')
     return 'Update Sessions on this account’s computers to see its usage.';
   }
   if (placements.some((placement) => placement.usageGap === 'pending')) return 'Reading usage…';
-  if (tool === 'claude') return 'Claude does not offer a supported way to read usage.';
+  if (tool === 'claude') return 'Claude usage is not connected in Sessions yet. Check Claude for your current limits.';
   return 'Usage is not known right now. Refresh to try again.';
 }
 

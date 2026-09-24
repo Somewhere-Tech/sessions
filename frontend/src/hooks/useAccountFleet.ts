@@ -32,8 +32,13 @@ export function useAccountFleet({ homeId, homeName, homeProfiles, onHomeReload }
   }, [servers, homeId, homeName]);
   const [state, setState] = useState<Record<string, MachineState>>({});
   const [refreshing, setRefreshing] = useState(false);
+  // Set on every setup, not only at creation: StrictMode sets effects up,
+  // cleans them up and sets them up again, and answers must still land after.
   const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; }, []);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
   const patch = useCallback((id: string, next: Partial<MachineState>): void => {
     if (!alive.current) return;
     setState((current) => ({ ...current, [id]: { ...current[id], ...next } }));
@@ -91,15 +96,22 @@ export function useAccountFleet({ homeId, homeName, homeProfiles, onHomeReload }
     void readUsage(id, true);
   }, [patch, homeId, onHomeReload, readUsage]);
 
-  /** Ask every reachable computer's providers again. */
+  /**
+   * Ask every computer's providers again. A computer that did not answer
+   * before is first asked for its accounts again, so it returns without
+   * leaving the page.
+   */
   const refreshUsage = useCallback(async (): Promise<void> => {
     setRefreshing(true);
     try {
-      await Promise.all(computers.map((computer) => readUsage(computer.id, true)));
+      await Promise.all(computers.map(async (computer) => {
+        if (state[computer.id]?.profilesError) await readProfiles(computer.id);
+        await readUsage(computer.id, true);
+      }));
     } finally {
       if (alive.current) setRefreshing(false);
     }
-  }, [computers, readUsage]);
+  }, [computers, readUsage, readProfiles, state]);
 
   return { machines, accept, reloadComputer, refreshUsage, refreshing };
 }

@@ -137,6 +137,8 @@ func (m *Manager) CreateAccount(tool, name, label string) (ProfileStatus, error)
 	}
 	sidecar := readAccountSidecar(m.config.UserStateRoot, tool, name)
 	sidecar.Removed = false
+	// Adding a name again may reach a home signed into something else now.
+	m.accountUsage.invalidate(tool, name)
 	if label != "" {
 		sidecar.Label = label
 	}
@@ -214,6 +216,7 @@ func (m *Manager) ForgetAccount(tool, name string) error {
 	}
 	sidecar := readAccountSidecar(m.config.UserStateRoot, tool, name)
 	sidecar.Removed = true
+	m.accountUsage.invalidate(tool, name)
 	return writeAccountSidecar(m.config.UserStateRoot, tool, name, sidecar)
 }
 

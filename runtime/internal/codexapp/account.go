@@ -39,11 +39,6 @@ type Account struct {
 	Type     string `json:"type"`
 	Email    string `json:"email"`
 	PlanType string `json:"planType"`
-	// ChatgptAccountID is the provider's own ChatGPT account (workspace)
-	// identifier, when account/read reports one. Current app-server versions
-	// report only email and plan, and an email alone cannot say which workspace
-	// a subscription belongs to; absence is normal and must stay unresolved.
-	ChatgptAccountID string `json:"chatgptAccountId,omitempty"`
 }
 
 type AccountLogin struct {

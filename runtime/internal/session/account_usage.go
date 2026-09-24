@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,8 +16,11 @@ import (
 // starts a model turn.
 //
 // A reading is a fact about one moment. A read that fails, times out, or is not
-// offered by a provider says so, and keeps the last good reading beside it as
-// stale rather than turning into "signed out" or "no usage".
+// offered by a provider says so. It keeps the last good reading beside it as
+// stale only when the same read showed the same account still signed in;
+// otherwise the answer is unknown rather than another account's quota. A
+// sign-in, recheck or removal through Sessions discards every earlier reading
+// of that home, including one still in flight.
 
 const (
 	// accountUsageTTL is how long a reading answers repeat requests before the
@@ -94,6 +98,10 @@ type accountUsageEntry struct {
 	lastGood  *AccountUsage
 	fetchedAt time.Time
 	inflight  chan struct{}
+	// invalidated fences a read that started before the home's sign-in
+	// changed: its answer reaches only the callers already waiting on it, as
+	// unknown, and is never cached.
+	invalidated bool
 }
 
 type accountUsageCache struct {
@@ -149,6 +157,19 @@ func (m *Manager) AccountUsage(ctx context.Context, tool, name string, refresh b
 	return results, nil
 }
 
+// invalidate discards every reading of one home after its sign-in changed. A
+// read still in flight is fenced off; the next request starts a new one, so the
+// refresh floor cannot answer with the previous sign-in's quota.
+func (c *accountUsageCache) invalidate(tool, name string) {
+	key := tool + "/" + name
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.entries[key]; entry != nil {
+		entry.invalidated = true
+		delete(c.entries, key)
+	}
+}
+
 // forget drops readings for accounts no longer listed, so the cache is bounded
 // by the accounts this computer actually has.
 func (c *accountUsageCache) forget(listed []ProfileStatus) {
@@ -170,6 +191,8 @@ func (c *accountUsageCache) get(ctx, parent context.Context, profile ProfileStat
 	c.mu.Lock()
 	if c.entries == nil {
 		c.entries = make(map[string]*accountUsageEntry)
+	}
+	if c.slots == nil {
 		c.slots = make(chan struct{}, accountUsageParallel)
 	}
 	entry := c.entries[key]
@@ -230,6 +253,19 @@ func (c *accountUsageCache) fetch(parent context.Context, entry *accountUsageEnt
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	entry.result, entry.fetchedAt = settleUsage(entry, result), c.clock()
+	close(entry.inflight)
+	entry.inflight = nil
+}
+
+// settleUsage decides what one finished read means for this home's history.
+func settleUsage(entry *accountUsageEntry, result AccountUsage) AccountUsage {
+	if entry.invalidated {
+		return AccountUsage{
+			Tool: result.Tool, Name: result.Name, State: AccountUsageUnavailable, CheckedAt: result.CheckedAt,
+			Message: "This account's sign-in changed while it was being read. Refresh to read it again.",
+		}
+	}
 	switch result.State {
 	case AccountUsageAvailable:
 		good := result
@@ -239,11 +275,13 @@ func (c *accountUsageCache) fetch(parent context.Context, entry *accountUsageEnt
 		// earlier reading belonged to a sign-in that is gone.
 		entry.lastGood = nil
 	default:
+		if entry.lastGood != nil && result.Identity != nil && !sameAccount(result.Identity, entry.lastGood.Identity) {
+			// Another account is signed in here now: the old quota is not its.
+			entry.lastGood = nil
+		}
 		result = withLastReading(result, entry.lastGood)
 	}
-	entry.result, entry.fetchedAt = result, c.clock()
-	close(entry.inflight)
-	entry.inflight = nil
+	return result
 }
 
 // pendingUsage answers a caller whose deadline arrived first.
@@ -255,16 +293,24 @@ func pendingUsage(entry *accountUsageEntry, profile ProfileStatus) AccountUsage 
 	return withLastReading(result, entry.lastGood)
 }
 
-// withLastReading keeps an earlier reading beside a failed one, marked stale.
+// withLastReading keeps an earlier reading beside a failed one, marked stale,
+// only when this attempt showed the same account the reading was taken for.
+// Without that proof the answer stays unknown. The reading keeps its own
+// read_at; Identity is the matching account this attempt reported.
 func withLastReading(result AccountUsage, good *AccountUsage) AccountUsage {
-	if good == nil {
+	if good == nil || !sameAccount(result.Identity, good.Identity) {
 		return result
 	}
 	result.Buckets, result.ReadAt, result.Stale = good.Buckets, good.ReadAt, true
-	if result.Identity == nil {
-		result.Identity = good.Identity
-	}
 	return result
+}
+
+// sameAccount is true only when both identities are known and agree on every
+// field that tells accounts apart.
+func sameAccount(left, right *AccountIdentity) bool {
+	return left != nil && right != nil && left.Email != "" &&
+		strings.EqualFold(left.Email, right.Email) &&
+		left.AccountID == right.AccountID && left.Organization == right.Organization
 }
 
 func labelled(result AccountUsage, profile ProfileStatus) AccountUsage {

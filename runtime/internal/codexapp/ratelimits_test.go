@@ -27,9 +27,9 @@ func TestRateLimitReadKeepsBucketsAndNullableFields(t *testing.T) {
 	if request["method"] != "account/read" || request["params"].(map[string]any)["refreshToken"] != false {
 		t.Fatalf("usage identity read asked for a token refresh: %v", request)
 	}
-	client.handleResponse(wireMessage{ID: json.RawMessage(`1`), Result: json.RawMessage(`{"account":{"type":"chatgpt","email":"a@example.test","planType":"team","chatgptAccountId":"ws-1"}}`)})
-	if account := <-accounts; account == nil || account.ChatgptAccountID != "ws-1" {
-		t.Fatalf("account = %#v, want the reported account id", account)
+	client.handleResponse(wireMessage{ID: json.RawMessage(`1`), Result: json.RawMessage(`{"account":{"type":"chatgpt","email":"a@example.test","planType":"team"}}`)})
+	if account := <-accounts; account == nil || account.Email != "a@example.test" {
+		t.Fatalf("account = %#v, want the reported identity", account)
 	}
 
 	limits := make(chan RateLimits, 1)

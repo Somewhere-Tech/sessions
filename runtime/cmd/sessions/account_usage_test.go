@@ -34,7 +34,7 @@ func usageDaemon(t *testing.T, queries *[]string) *httptest.Server {
 				"message": "Codex did not start. Refresh to try again.",
 				"buckets": []any{map[string]any{"limit_id": "codex", "windows": []any{map[string]any{"kind": "primary", "used_percent": 70}}}},
 			},
-			map[string]any{"tool": "claude", "name": "home", "state": "unsupported", "message": "Claude does not offer a supported way to read usage."},
+			map[string]any{"tool": "claude", "name": "home", "state": "unsupported", "message": "Claude usage is not connected in Sessions yet. Check Claude for your current limits."},
 		}})
 	}))
 }
@@ -51,7 +51,7 @@ func TestAccountsUsageShowsEachLimitAndItsFreshness(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, fragment := range []string{"codex/work", "12%", "40%", "5h0m0s", "codex_other", "3%", "unavailable (stale)", "70%", "unsupported", "Claude does not offer", "never added"} {
+	for _, fragment := range []string{"codex/work", "12%", "40%", "5h0m0s", "codex_other", "3%", "unavailable (stale)", "70%", "unsupported", "not connected in Sessions yet", "never added"} {
 		if !strings.Contains(out, fragment) {
 			t.Errorf("usage output lacks %q:\n%s", fragment, out)
 		}

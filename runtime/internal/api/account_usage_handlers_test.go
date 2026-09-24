@@ -32,7 +32,7 @@ func (f *fakeAccountUsage) AccountUsage(ctx context.Context, tool, name string, 
 		Tool: "codex", Name: "work", State: sessionruntime.AccountUsageAvailable, CheckedAt: 5, ReadAt: 5,
 		Buckets: []sessionruntime.AccountUsageBucket{{LimitID: "codex", Windows: []sessionruntime.AccountUsageWindow{{Kind: "primary", UsedPercent: 30}}}},
 	}, {
-		Tool: "claude", Name: "home", State: sessionruntime.AccountUsageUnsupported, Message: "Claude does not offer a supported way to read usage",
+		Tool: "claude", Name: "home", State: sessionruntime.AccountUsageUnsupported, Message: "Claude usage is not connected in Sessions yet. Check Claude for your current limits.",
 	}}, nil
 }
 

@@ -97,9 +97,7 @@ func readCodexIdentity(ctx context.Context, client *codexapp.Client) (*AccountId
 	if account.Type != "chatgpt" || account.Email == "" {
 		return nil, errors.New("sign in with a ChatGPT subscription")
 	}
-	return &AccountIdentity{
-		AccountID: account.ChatgptAccountID, Email: account.Email, Plan: account.PlanType, CheckedAt: time.Now().UnixMilli(),
-	}, nil
+	return &AccountIdentity{Email: account.Email, Plan: account.PlanType, CheckedAt: time.Now().UnixMilli()}, nil
 }
 
 func readClaudeIdentity(ctx context.Context, executable, home string, env []string) (*AccountIdentity, error) {
