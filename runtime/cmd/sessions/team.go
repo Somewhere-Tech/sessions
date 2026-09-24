@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,29 +14,36 @@ import (
 // design; a manager watches its workers here without pulling their
 // conversations into its own context.
 type teamMember struct {
-	ID       string `json:"id"`
-	Name     string `json:"name,omitempty"`
-	Tool     string `json:"tool"`
-	Cwd      string `json:"cwd,omitempty"`
-	Relation string `json:"relation"`
-	Depth    int    `json:"depth"`
-	State    string `json:"state"`
-	NeedsYou bool   `json:"needs_you"`
-	Working  bool   `json:"working"`
-	Exited   bool   `json:"exited"`
-	Summary  string `json:"summary,omitempty"`
-	Waiting  string `json:"waiting,omitempty"`
-	Reason   string `json:"reason,omitempty"`
-	Recovery string `json:"recovery_command,omitempty"`
-	Branch   string `json:"branch,omitempty"`
-	Worktree string `json:"worktree_path,omitempty"`
+	ID       string        `json:"id"`
+	Name     string        `json:"name,omitempty"`
+	Tool     string        `json:"tool"`
+	Cwd      string        `json:"cwd,omitempty"`
+	Relation string        `json:"relation"`
+	Depth    int           `json:"depth"`
+	State    string        `json:"state"`
+	NeedsYou bool          `json:"needs_you"`
+	Working  bool          `json:"working"`
+	Exited   bool          `json:"exited"`
+	Summary  string        `json:"summary,omitempty"`
+	Waiting  string        `json:"waiting,omitempty"`
+	Reason   string        `json:"reason,omitempty"`
+	Recovery string        `json:"recovery_command,omitempty"`
+	Branch   string        `json:"branch,omitempty"`
+	Worktree string        `json:"worktree_path,omitempty"`
+	Handoff  *teamHandoff  `json:"handoff,omitempty"`
+	Checkout *teamCheckout `json:"checkout_warning,omitempty"`
 }
 
 type teamListing struct {
+	Caller     string       `json:"-"`
 	Self       *teamMember  `json:"self,omitempty"`
 	Parent     *teamMember  `json:"parent,omitempty"`
 	Members    []teamMember `json:"members"`
 	NeedsInput int          `json:"needs_input"`
+	NextCursor string       `json:"next_cursor,omitempty"`
+	Delta      bool         `json:"delta"`
+	Total      int          `json:"total"`
+	Removed    []string     `json:"removed,omitempty"`
 }
 
 // cmdTeam shows the lanes a caller is responsible for: its parent and its
@@ -43,8 +51,12 @@ type teamListing struct {
 // caller is the SESSIONS_SESSION_ID of the invoking lane, or an explicit id so
 // a person can inspect any lane's team.
 func (a *app) cmdTeam(args []string) error {
+	since, hasSince := pluck(&args, "--since")
+	if hasSince && strings.TrimSpace(since) == "" {
+		return fail(1, "--since needs the next_cursor from the previous team response")
+	}
 	if removeFirst(&args, "--all") {
-		if len(args) > 0 {
+		if len(args) > 0 || hasSince {
 			return fail(1, "usage: sessions team --all")
 		}
 		return a.cmdTeamAll()
@@ -70,6 +82,9 @@ func (a *app) cmdTeam(args []string) error {
 	lane = resolved
 
 	path := "/api/lanes/mine?lane=" + escapeID(lane)
+	if hasSince {
+		path += "&since=" + url.QueryEscape(since)
+	}
 	var listing teamListing
 	if err := a.getJSON(path, &listing); err != nil {
 		return err
@@ -77,6 +92,7 @@ func (a *app) cmdTeam(args []string) error {
 	if a.wantJSON {
 		return writeJSON(a.stdout, listing, true)
 	}
+	listing.Caller = lane
 	return a.writeTeam(listing)
 }
 
@@ -87,8 +103,13 @@ func (a *app) writeTeam(listing teamListing) error {
 		}
 	}
 	if len(listing.Members) == 0 {
-		_, err := io.WriteString(a.stdout, "no lanes delegated from this session\n")
-		return err
+		if listing.Delta {
+			return a.writeTeamChangesFooter(listing)
+		}
+		if _, err := io.WriteString(a.stdout, "no lanes delegated from this session\n"); err != nil {
+			return err
+		}
+		return a.writeTeamChangesFooter(listing)
 	}
 	branches := false
 	for _, member := range listing.Members {
@@ -137,7 +158,7 @@ func (a *app) writeTeam(listing teamListing) error {
 			return err
 		}
 	}
-	return nil
+	return a.writeTeamChangesFooter(listing)
 }
 
 func (a *app) teamLine(member teamMember) string {

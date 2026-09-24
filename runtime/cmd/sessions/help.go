@@ -144,9 +144,9 @@ var commandTable = []commandSpec{
 		examples: []string{"sessions lanes", "sessions lanes --mine", "sessions lanes --subtree 0123abcd --direct"}, run: (*app).cmdLanes,
 	},
 	{
-		name: "team", usage: "team [lane-id] | team --all",
+		name: "team", usage: "team [lane-id] [--since CURSOR] | team --all",
 		summary: "show the lanes a manager delegated and their state", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Show the lanes one manager is responsible for: its own parent, if any, and its delegated descendants, each with a compact state and the last line of work. Visibility follows responsibility — a lane sees only its parent and its own descendants, never other projects — and every row carries a short summary rather than a transcript, so a manager can watch its workers without pulling their conversations into context. The calling lane is SESSIONS_SESSION_ID; pass a lane id to inspect any lane's team. Rows waiting on a decision and lanes whose runners are lost are called out with the command that resolves them.\n\n--all is the view from the top: every session that has delegated lanes, with how many are working, lost, or waiting on you, so a person sees across all their managers without opening any of them.",
+		longHelp: "Show the lanes one manager is responsible for: its own parent, if any, and its delegated descendants, each with a compact state and the last line of work. The calling lane is SESSIONS_SESSION_ID; pass a lane id to inspect any lane's team. Rows waiting on a decision and lanes whose runners are lost are called out with the command that resolves them.\n\nUse --since with the previous response's next_cursor to return only changed members, including their latest agent-reported handoff, new blockers and shared-checkout warnings. Save the returned next_cursor for the next check. This is a comparison of observed snapshots, not every intervening event; polling never sends a message. A missing, evicted, or expired cursor fails explicitly: read a fresh baseline without --since. Cursors are scoped to a manager and this daemon, kept for at most 24 hours in a bounded cache, and do not survive restart. --since cannot be combined with --all.\n\nHandoffs report commits, tests, artifacts and remaining work only when the producer emits verdict meta.handoff. Missing evidence is not success. Shared-checkout warnings are advisory, not an exclusive write lock.\n\n--all is the view from the top: every session that has delegated lanes, with how many are working, lost, or waiting on you.",
 		examples: []string{"sessions team", "sessions team 0123abcd", "sessions --json team 0123abcd", "sessions team --all"}, run: (*app).cmdTeam,
 	},
 	{
@@ -309,7 +309,7 @@ var commandTable = []commandSpec{
 	{
 		name: "verdict", usage: "verdict <id> | verdict emit <id> [JSON]",
 		summary: "read or emit an explicit producer verdict", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Print the latest verdict for a session or lane. verdict emit appends a schemaVersion 1 verdict, reading JSON from the argument or standard input.",
+		longHelp: "Print the latest verdict for a session or lane. verdict emit appends a schemaVersion 1 verdict, reading JSON from the argument or standard input.\n\nTo leave a handoff receipt, include meta.handoff with summary (string), commits/tests/artifacts/remaining (arrays of strings), and push (pushed, not-pushed, or unknown). sessions team and the delegated-work panel show it as agent-reported, not independently verified. Name exact tests and their outcome, commit hashes and artifact paths. Do not report an inferred push or skipped test as success. Emitting a verdict does not end the session.",
 		examples: []string{"sessions verdict 0123abcd", "sessions --json verdict emit 0123abcd '{\"schemaVersion\":1,\"verdict\":\"pass\",\"findings\":[]}'"}, run: (*app).cmdVerdict,
 	},
 	{

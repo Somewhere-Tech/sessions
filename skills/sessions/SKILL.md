@@ -47,6 +47,24 @@ the orientation you cannot get from a command list.
 4. **If the daemon is unreachable, nothing was observed.** That is not the same
    as "the work failed". Report it as unknown.
 
+## Check work and leave a handoff
+
+Use `sessions team --json` to inspect all your delegates in one compact read.
+Keep its `next_cursor`; the next `sessions team --since <cursor> --json`
+returns only changed members. An expired or lost baseline is an error, not
+evidence that nothing changed. This compares observations, not every event
+between them. Do not repeatedly pull whole conversations just to check status.
+
+When finishing delegated work, emit a verdict with `meta.handoff` describing
+what changed, exact commit hashes, push status, tests and their outcomes,
+artifact paths, and remaining work. Read `sessions help verdict` for the
+format. These are your attributed claims, not independent verification by
+Sessions. Missing evidence remains unknown. A finished turn is not proof that
+the assignment is done, and a receipt does not authorize ending the runtime.
+
+Shared-checkout warnings identify possible collisions, not ownership. Use
+separate worktrees or coordinate explicitly; never reset another lane's edits.
+
 ## When something is not in the help
 
 Ask the user. This tool changes quickly, and a plausible guess that happens to

@@ -1,0 +1,9 @@
+.team-handoff { margin-top: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; overflow-wrap: anywhere; }
+.team-handoff summary { cursor: pointer; color: var(--fg); font-weight: 500; }
+.team-handoff p, .team-handoff dd, .team-handoff li { color: var(--fg-dim); font-size: 12px; line-height: 1.5; }
+.team-handoff dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 8px 0; }
+.team-handoff dt, .team-handoff-section strong { font-size: 12px; font-weight: 500; }
+.team-handoff dd { margin: 0; }
+.team-handoff-section { margin-top: 8px; }
+.team-handoff-section ul { margin: 4px 0; padding-left: 18px; }
+.team-checkout-warning { color: var(--warning, #c99b35); font-size: 12px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }

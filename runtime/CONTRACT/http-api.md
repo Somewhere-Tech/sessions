@@ -685,6 +685,37 @@ carries `reason` and `recovery_command`; the command is
 `members` sorts by `depth`, then `updated_at` descending; `needs_input` counts
 live members waiting on a decision.
 
+The response additionally carries `next_cursor`, `delta`, `total`, and
+`removed`. Pass `since=<next_cursor>` to compare with that observation: only
+changed members are returned, `self`/`parent` are omitted, and `removed` names
+members no longer in this team (not necessarily completed). `needs_input` and
+`total` still cover the entire team. The comparison includes state, summary,
+handoff and checkout warnings, not incidental terminal-output timestamps. It
+is not a lossless intervening-event feed. Reads never send agent messages.
+Cursors are manager- and daemon-scoped, retained in a 128-baseline cache for
+up to 24 hours and invalidated by restart or eviction. Unchanged observations
+reuse a baseline. An invalid cursor returns 409 with code
+`TEAM_BASELINE_REQUIRED` and a fresh-baseline instruction; it never returns a
+misleading empty delta. Teams over 512 members must be queried at a smaller
+manager. Durable-ledger read failure returns 503, not a partial successful list.
+
+Each member may carry `handoff`, with `source` (`not-reported` or
+`agent-reported`), verdict `seq`, `at`, `outcome`, `summary`, known `workspace`
+and `branch`, `commits`, `push`, `tests`, `artifacts`, and `remaining`. `push`
+defaults to `unknown`; arrays are omitted when unreported. Reports come from
+the existing verdict's `meta.handoff` object, not guesses from prose. Claims
+are not independently verified. Each array is capped at 12 entries of 240
+bytes; summaries at 600 bytes. `detail` names damaged/unreadable reports.
+
+`checkout_warning` is advisory: `path`, `sessions` sharing that checkout,
+optional measured `dirty`, and instructional `detail`. Inspections are local,
+read-only and bounded to 64 distinct working directories and two seconds per
+request. They include untracked files, resolve checkout roots through Git and
+symlinks, and exclude known ended/gone sessions. Unknown writer capability is
+not treated as read-only. Absence of a warning is not proof of exclusive access
+or a clean checkout: external processes and directories outside the bound may
+not be covered. Sessions neither blocks nor resets these checkouts.
+
 ### `GET /api/profiles`
 
 Auth required. A profile is one account: a separate provider home with its own

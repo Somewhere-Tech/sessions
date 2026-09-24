@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
@@ -49,8 +52,10 @@ type teamMember struct {
 	UpdatedAt int64        `json:"updated_at,omitempty"`
 	// Branch and WorktreePath say where a lane's work is when it has its own
 	// worktree, so a manager knows what to diff or merge without opening it.
-	Branch       string `json:"branch,omitempty"`
-	WorktreePath string `json:"worktree_path,omitempty"`
+	Branch       string           `json:"branch,omitempty"`
+	WorktreePath string           `json:"worktree_path,omitempty"`
+	Handoff      *handoffReceipt  `json:"handoff,omitempty"`
+	Checkout     *checkoutWarning `json:"checkout_warning,omitempty"`
 }
 
 // teamListing answers "what am I responsible for". Self is the caller; parent
@@ -62,6 +67,10 @@ type teamListing struct {
 	Parent     *teamMember  `json:"parent,omitempty"`
 	Members    []teamMember `json:"members"`
 	NeedsInput int          `json:"needs_input"`
+	NextCursor string       `json:"next_cursor"`
+	Delta      bool         `json:"delta"`
+	Total      int          `json:"total"`
+	Removed    []string     `json:"removed"`
 }
 
 // teamState collapses the lifecycle flags into one word a caller can branch on
@@ -242,13 +251,41 @@ func (s *Server) handleTeamRoute(response http.ResponseWriter, request *http.Req
 		}, corsOrigin)
 		return true
 	}
-	listing, ok := teamFor(s.registry.List(true), caller)
+	infos, err := s.teamSnapshot(request.Context())
+	if err != nil {
+		s.sendJSON(response, http.StatusServiceUnavailable, map[string]any{"error": "Could not read delegated work: " + err.Error()}, corsOrigin)
+		return true
+	}
+	listing, ok := teamFor(infos, caller)
 	if !ok {
 		s.sendJSON(response, http.StatusNotFound, map[string]any{
 			"error": "no session matches " + caller + " on this machine",
 		}, corsOrigin)
 		return true
 	}
+	if len(listing.Members) > teamMemberMax {
+		s.sendJSON(response, http.StatusRequestEntityTooLarge, map[string]any{"error": "team exceeds 512 members; inspect a smaller manager's team"}, corsOrigin)
+		return true
+	}
+	s.attachTeamReceipts(&listing)
+	attachCheckoutWarnings(request.Context(), &listing, infos)
+	if err := s.teamChanges.apply(caller, request.URL.Query().Get("since"), &listing, time.Now()); err != nil {
+		if errors.Is(err, errTeamCursor) {
+			s.sendJSON(response, http.StatusConflict, map[string]any{"error": err.Error(), "code": "TEAM_BASELINE_REQUIRED"}, corsOrigin)
+		} else {
+			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": "Could not record team checkpoint; retry the read"}, corsOrigin)
+		}
+		return true
+	}
 	s.sendJSON(response, http.StatusOK, listing, corsOrigin)
 	return true
+}
+
+func (s *Server) teamSnapshot(ctx context.Context) ([]state.SessionInfo, error) {
+	if strict, ok := s.registry.(interface {
+		TeamSnapshot(context.Context) ([]state.SessionInfo, error)
+	}); ok {
+		return strict.TeamSnapshot(ctx)
+	}
+	return s.registry.List(true), nil
 }

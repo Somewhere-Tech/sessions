@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { fetchTeam, type TeamListing, type TeamMember } from '../api/sessionsd';
 import { classifySession } from '../lib/sessionStatus';
 import { sessionActivityAt, subagentNeedsReview } from '../lib/workingSet';
@@ -8,6 +8,7 @@ import { normalizeProvider, ProviderMark } from './ProviderBadge';
 import { copyText } from '../lib/copyText';
 import { AccountBadge } from './AccountBadge';
 import { lastMessageLine } from '../lib/lastMessage';
+const TeamEvidence = lazy(() => import('./TeamEvidence').then((module) => ({ default: module.TeamEvidence })));
 
 interface Props {
   manager: SessionInfo;
@@ -41,7 +42,7 @@ function purpose(session: SessionInfo): string {
   const summary = session.lastSummary?.trim().split('\n')[0];
   if (summary) return summary;
   const workspace = session.cwd.split('/').filter(Boolean).pop();
-  return workspace ? `Working in ${workspace}` : 'No purpose recorded yet.';
+  return workspace ? `Workspace: ${workspace}` : 'No purpose recorded yet.';
 }
 
 // lastLine is what a lane most recently said or is waiting for, in one line.
@@ -221,12 +222,7 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
                 {provider ? <ProviderMark provider={provider} size={24} /> : <span className="subagent-shell" title="Shell">⌘</span>}
               </div>
               <p>{purpose(session)}</p>
-              {session.branch ? (
-                <p className="subagent-branch" title={session.worktreePath ? `Worktree at ${session.worktreePath}` : undefined}>
-                  {session.exited ? 'Kept branch ' : 'On branch '}<code>{session.branch}</code>
-                  {session.exited ? ' · once merged, `sessions worktrees clean` removes its worktree' : ''}
-                </p>
-              ) : null}
+              <Suspense fallback={null}><TeamEvidence member={teamMember} session={session} /></Suspense>
               {recentLine && recentLine !== purpose(session) ? (
                 <p className={`subagent-last${needsAttention ? ' is-attention' : ''}`}>{needsAttention ? 'Waiting: ' : ''}{recentLine}</p>
               ) : null}
