@@ -34,6 +34,9 @@ type waitOutcome struct {
 	Summary    string               `json:"summary,omitempty"`
 	Lane       *laneManifest        `json:"lane,omitempty"`
 	Condition  *waitConditionDetail `json:"condition,omitempty"`
+	// Start is the session's delegated-start receipt when it has one, so the
+	// answer says whether the first request was ever delivered.
+	Start *state.StartReceipt `json:"start,omitempty"`
 }
 
 // waitConditionDetail carries what only a --until condition can report.
@@ -61,6 +64,12 @@ const (
 	waitReasonExited = "exited"
 	// waitReasonSatisfied is a --until condition that was observed.
 	waitReasonSatisfied = "satisfied"
+	// The first request of a session created with a start receipt never
+	// provably arrived. An idle session in that state has not finished
+	// anything, so waiting reports it instead of a successful idle.
+	waitReasonPromptNotSent      = "prompt-not-sent"
+	waitReasonPromptNotDelivered = "prompt-not-delivered"
+	waitReasonPromptUnknown      = "prompt-unknown"
 )
 
 const (
@@ -130,7 +139,8 @@ func waitExitStatus(reason string) error {
 	switch reason {
 	case waitReasonTimeout:
 		return status(exitWaitTimeout)
-	case waitReasonGone, waitReasonFailed, "provider-unavailable", "rate-limited", "auth", "other":
+	case waitReasonGone, waitReasonFailed, "provider-unavailable", "rate-limited", "auth", "other",
+		waitReasonPromptNotSent, waitReasonPromptNotDelivered, waitReasonPromptUnknown:
 		return status(exitTargetUnavailable)
 	default:
 		return nil
@@ -143,7 +153,8 @@ func waitReasonSeverity(reason string) int {
 	switch reason {
 	case waitReasonGone:
 		return 4
-	case waitReasonFailed, "provider-unavailable", "rate-limited", "auth", "other":
+	case waitReasonFailed, "provider-unavailable", "rate-limited", "auth", "other",
+		waitReasonPromptNotSent, waitReasonPromptNotDelivered, waitReasonPromptUnknown:
 		return 3
 	case waitReasonTimeout:
 		return 2
@@ -282,8 +293,8 @@ func (a *app) probeSessionWait(tracker *waitTracker, sessions []session, idle ti
 			Session: tracker.ref.id,
 		}, human: "gone"}
 	}
-	if stopped := stoppedSessionWait(*current); stopped != nil {
-		return *stopped
+	if early := earlySessionWait(tracker, *current); early != nil {
+		return *early
 	}
 	idleFor := time.Duration(0)
 	working := current.Working || current.Retry != nil
@@ -329,6 +340,7 @@ func (a *app) probeSessionWait(tracker *waitTracker, sessions []session, idle ti
 		Working:    current.Working,
 		IdleMS:     idleFor.Milliseconds(),
 		IdleReason: current.IdleReason,
+		Start:      current.Start,
 	}
 	if includeSummary {
 		outcome.Summary = current.LastSummary
@@ -337,16 +349,22 @@ func (a *app) probeSessionWait(tracker *waitTracker, sessions []session, idle ti
 	return probe
 }
 
+// stoppedSessionWait answers a wait that longer waiting cannot help. A
+// provider fault is reported whatever the idle reason says: a login screen
+// that appears before any turn is still an authentication failure, never an
+// idle session.
 func stoppedSessionWait(current session) *waitProbe {
-	if current.Working || current.Retry != nil || (current.IdleReason != state.IdleReasonNeedsInput && current.IdleReason != state.IdleReasonFailed) {
+	if current.Working || current.Retry != nil {
 		return nil
 	}
+	if current.FailureKind == "" && current.IdleReason != state.IdleReasonNeedsInput && current.IdleReason != state.IdleReasonFailed {
+		return undeliveredStartWait(current)
+	}
 	reason := waitReasonNeedsInput
-	if current.IdleReason == state.IdleReasonFailed {
+	if current.FailureKind != "" {
+		reason = current.FailureKind
+	} else if current.IdleReason == state.IdleReasonFailed {
 		reason = waitReasonFailed
-		if current.FailureKind != "" {
-			reason = current.FailureKind
-		}
 	}
 	message := current.LastSummary
 	if current.IdleReason == state.IdleReasonNeedsInput && current.IdleDetail != "" {
@@ -355,11 +373,83 @@ func stoppedSessionWait(current session) *waitProbe {
 	if message == "" {
 		message = current.IdleReason
 	}
+	if current.FailureKind != "" && current.FailureDetail != "" {
+		message = current.FailureDetail
+	}
 	return &waitProbe{outcome: &waitOutcome{
 		OK: reason == waitReasonNeedsInput, Kind: waitKindSession, Reason: reason,
 		Session: current.ID, Working: false, IdleReason: current.IdleReason,
-		Detail: current.IdleDetail, Summary: current.LastSummary,
-	}, human: fmt.Sprintf("%s — %s", reason, message), humanToStderr: reason != waitReasonNeedsInput}
+		Detail: current.IdleDetail, Summary: current.LastSummary, Start: current.Start,
+	}, human: fmt.Sprintf("%s — %s%s", reason, message, startNextStep(current.Start)), humanToStderr: reason != waitReasonNeedsInput}
+}
+
+// undeliveredStartWait reports a session whose first request never provably
+// arrived. It is not idle-and-done; it has not started.
+func undeliveredStartWait(current session) *waitProbe {
+	if current.Start == nil || current.Start.Prompt == nil {
+		return nil
+	}
+	reason := ""
+	switch current.Start.Phase {
+	case state.StartPhasePromptNotDelivered:
+		reason = waitReasonPromptNotDelivered
+	case state.StartPhasePromptUnknown:
+		reason = waitReasonPromptUnknown
+	case state.StartPhaseCreated:
+		if current.Start.Prompt.Status == state.StartPromptNotSent {
+			reason = waitReasonPromptNotSent
+		}
+	}
+	if reason == "" {
+		return nil
+	}
+	return &waitProbe{outcome: &waitOutcome{
+		OK: false, Kind: waitKindSession, Reason: reason, Session: current.ID,
+		IdleReason: current.IdleReason, Detail: current.Start.Evidence, Start: current.Start,
+	}, human: fmt.Sprintf("%s — %s%s", reason, current.Start.Evidence, startNextStep(current.Start)), humanToStderr: true}
+}
+
+// earlySessionWait answers before any idle timing: a stop that waiting cannot
+// help, or a delegated start that has not provably begun. For the latter no
+// amount of quiet is a finished session; only work, a blocker, loss or the
+// timeout ends the wait.
+func earlySessionWait(tracker *waitTracker, current session) *waitProbe {
+	if stopped := stoppedSessionWait(current); stopped != nil {
+		return stopped
+	}
+	if startAwaitsWork(current) {
+		tracker.notWorkingSince = time.Time{}
+		return &waitProbe{working: current.Working}
+	}
+	return nil
+}
+
+// startAwaitsWork reports a first request that is being delivered, or was
+// accepted without any provider turn observed after it. An earlier completed
+// turn does not count: the daemon only projects completed from an idle
+// outcome newer than the delivery.
+func startAwaitsWork(current session) bool {
+	if current.Start == nil || current.Start.Prompt == nil {
+		return false
+	}
+	switch current.Start.Phase {
+	case state.StartPhasePromptDelivered:
+		return true
+	case state.StartPhaseCreated:
+		return current.Start.Prompt.Status == state.StartPromptSending
+	}
+	return false
+}
+
+func startNextStep(start *state.StartReceipt) string {
+	if start == nil || start.Recovery == nil {
+		return ""
+	}
+	next := "\n  next: " + start.Recovery.Detail
+	if start.Recovery.Command != "" {
+		next += " (" + start.Recovery.Command + ")"
+	}
+	return next
 }
 
 func positiveInt(raw, label string) (int, error) {

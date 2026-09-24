@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	verdictprotocol "github.com/somewhere-tech/sessions/runtime/internal/verdict"
 )
 
@@ -338,7 +339,7 @@ func (a *app) writeStatusCard(output statusOutput, current session, lastActivity
 	if label == "" {
 		label = prefixString(output.ID, 8)
 	}
-	if _, err := fmt.Fprintf(a.stdout, "%s  %s\n", label, output.State); err != nil {
+	if _, err := fmt.Fprintf(a.stdout, "%s  %s\n", label, statusHeadline(output.State, current)); err != nil {
 		return err
 	}
 	kind := current.Kind
@@ -480,14 +481,50 @@ func writeStatusStateLines(writer io.Writer, current session) error {
 		yesOrNo(current.Working), yesOrNo(current.Exited)); err != nil {
 		return err
 	}
-	if current.FailureKind == "" {
+	if current.FailureKind != "" {
+		failure := current.FailureKind
+		if current.FailureDetail != "" {
+			failure += " — " + terminalSafe(current.FailureDetail)
+		}
+		if _, err := fmt.Fprintf(writer, "  failure  %s\n", failure); err != nil {
+			return err
+		}
+	}
+	return writeStatusStartLines(writer, current.Start)
+}
+
+// statusHeadline keeps the runtime state word and, when the work is blocked,
+// says so first: a signed-out provider reading as "idle" is how a blocked
+// delegate got mistaken for a finished one. The JSON state stays the runtime
+// axis; failureKind and start carry the task.
+func statusHeadline(runtimeState string, current session) string {
+	blockedBy := current.FailureKind
+	if blockedBy == "" && current.Start != nil && current.Start.Phase == state.StartPhaseBlocked {
+		blockedBy = current.Start.BlockedBy
+	}
+	if blockedBy == "" || current.Exited {
+		return runtimeState
+	}
+	return fmt.Sprintf("BLOCKED (%s) — runtime %s", blockedBy, runtimeState)
+}
+
+// writeStatusStartLines shows how far delegated work got, from the daemon's
+// start receipt, and the one next step that cannot duplicate it.
+func writeStatusStartLines(writer io.Writer, start *state.StartReceipt) error {
+	if start == nil || start.Phase == "" {
 		return nil
 	}
-	failure := current.FailureKind
-	if current.FailureDetail != "" {
-		failure += " — " + terminalSafe(current.FailureDetail)
+	if _, err := fmt.Fprintf(writer, "  start    %s — %s\n", start.Phase, terminalSafe(start.Evidence)); err != nil {
+		return err
 	}
-	_, err := fmt.Fprintf(writer, "  failure  %s\n", failure)
+	if start.Recovery == nil {
+		return nil
+	}
+	next := terminalSafe(start.Recovery.Detail)
+	if start.Recovery.Command != "" {
+		next += " (" + terminalSafe(start.Recovery.Command) + ")"
+	}
+	_, err := fmt.Fprintf(writer, "  next     %s\n", next)
 	return err
 }
 

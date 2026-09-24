@@ -49,6 +49,29 @@
 }
 .session-last-message.is-fault { color: var(--warn, #d08a3a); }
 .session-last-message.is-you { color: var(--fg-faint); }
+/* How far a delegated start provably got. Progress is calm; a first request
+   that did not provably arrive, or a login the provider refused, is a fault. */
+.session-start-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.session-start-note.is-progress { color: var(--fg-dim); }
+.session-start-note.is-fault { color: var(--warn, #d08a3a); font-weight: 600; }
+.session-start-note-action {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
 .settings-cloud-page { width: min(980px, calc(100% - 48px)); }
 .settings-cloud-page .somewhere-hub { margin-top: 22px; }
 .support-draft { display: grid; gap: 7px; }

@@ -43,8 +43,11 @@ type Record struct {
 	Retry        bool   `json:"retry"`
 	Reason       string `json:"reason,omitempty"`
 	Acceptance   string `json:"acceptance,omitempty"`
-	CreatedAtMS  int64  `json:"created_at_ms"`
-	UpdatedAtMS  int64  `json:"updated_at_ms"`
+	// Attempts counts executions after the first. Only a refusal proven to
+	// have sent nothing (not-delivered with retry) may be executed again.
+	Attempts    int   `json:"attempts,omitempty"`
+	CreatedAtMS int64 `json:"created_at_ms"`
+	UpdatedAtMS int64 `json:"updated_at_ms"`
 }
 
 type Store struct {
@@ -79,6 +82,12 @@ func ValidateOperationID(value string) error {
 // same operation already exists, created is false and the stored result is
 // returned. Reusing an id for different content or a different target is
 // rejected rather than silently deduplicating the wrong message.
+//
+// The one exception is a refusal Sessions proved happened before any input
+// reached the provider (not-delivered with retry:true). Its receipt promises
+// that sending the same operation again is safe, so asking again executes it
+// again: the record returns to pending and created is true. Every other
+// outcome, and above all unknown, is only ever read back, never re-executed.
 func (s *Store) Begin(operationID, sessionID, content string, mode ...string) (record Record, created bool, err error) {
 	if err := ValidateOperationID(operationID); err != nil {
 		return Record{}, false, err
@@ -130,7 +139,16 @@ func (s *Store) Begin(operationID, sessionID, content string, mode ...string) (r
 	if existing.SessionID != wanted.SessionID || existing.ContentHash != wanted.ContentHash || existing.ContentBytes != wanted.ContentBytes || existing.Mode != wanted.Mode {
 		return Record{}, false, errors.New("operation_id is already assigned to a different message")
 	}
-	return existing, false, nil
+	if existing.Status != StatusNotDelivered || !existing.Retry || existing.Delivered {
+		return existing, false, nil
+	}
+	existing.Status, existing.Retry, existing.Reason, existing.Acceptance = StatusPending, false, "", ""
+	existing.Attempts++
+	existing.UpdatedAtMS = now
+	if err := writeAtomic(path, existing); err != nil {
+		return Record{}, false, err
+	}
+	return existing, true, nil
 }
 
 func (s *Store) Get(operationID string) (Record, error) {

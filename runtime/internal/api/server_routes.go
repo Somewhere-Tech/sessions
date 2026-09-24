@@ -231,7 +231,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	}
 	if path == "/api/sessions" && request.Method == http.MethodGet {
 		includeExited := request.URL.Query().Get("include_exited") == "1"
-		s.sendJSON(response, http.StatusOK, map[string]any{"sessions": s.registry.List(includeExited)}, corsOrigin)
+		s.sendJSON(response, http.StatusOK, map[string]any{"sessions": s.withStartReceipts(s.registry.List(includeExited))}, corsOrigin)
 		return
 	}
 	if path == "/api/sessions/end-batch" && request.Method == http.MethodPost {
@@ -341,27 +341,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/sessions" && request.Method == http.MethodPost {
-		var body state.CreateSessionRequest
-		if err := readJSON(request, &body); err != nil {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-			return
-		}
-		if err := captureCreatorHeaders(request, &body); err != nil {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-			return
-		}
-		info, err := s.registry.Create(request.Context(), body)
-		if err != nil {
-			status := http.StatusBadRequest
-			var live *sessionruntime.ConversationLiveError
-			var moved *sessionruntime.ConversationMovedError
-			if errors.As(err, &live) || errors.As(err, &moved) {
-				status = http.StatusConflict
-			}
-			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
-			return
-		}
-		s.sendJSON(response, http.StatusCreated, info, corsOrigin)
+		s.handleCreateSession(response, request, corsOrigin)
 		return
 	}
 	if path == "/api/claude-sessions" && request.Method == http.MethodGet {
@@ -962,6 +942,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 				s.sendDeliveryRecord(response, s.reconcileLateAcceptance(record), true, corsOrigin)
 				return
 			}
+			defer s.beginDeliveryInFlight(body.OperationID)()
 		}
 		if !ok {
 			if suffix == "/submit" {

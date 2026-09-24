@@ -178,6 +178,7 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `delegation_kind` | `"user" \| "agent"`, optional | presentation provenance for a child session: explicitly started by the user or created by its parent agent |
 | `permissions` | `"constrained" \| "full"`, optional | daemon-resolved access class for this runtime; provider-specific approval and sandbox arguments remain visible in `args` |
 | `lifecycle` | `"task" \| "session"`, optional | caller-declared runtime intent; it never authorizes Sessions to infer that a final response means the runtime should end |
+| `start` | object, optional | delegated-start receipt, present only for a session created with `operation_id` or `prompt_operation_id`; see [Start receipts](#start-receipts). It describes the task, never process liveness, which stays in `exited`, `unreachable` and `runnerGone` |
 
 Exited sessions remain in the daemon map for 30 seconds. They are omitted from
 the default list but can be requested with `include_exited=1` during that grace
@@ -573,6 +574,8 @@ Auth required. Every request field is optional:
 | `providerTerminal` | boolean | explicit escape hatch for an agent-created Claude child that needs the interactive provider terminal; otherwise newly attributed agent children use the structured Claude runtime |
 | `permissions` | `"inherit" \| "constrained" \| "full"` | optional requested access; `inherit` requires a parent, and a child cannot exceed its parent unless the user explicitly enabled autonomous delegated work |
 | `lifecycle` | `"task" \| "session"` | optional runtime intent; all sessions, including agent-created children, default to `session`; callers must explicitly request a bounded `task` |
+| `operation_id` | string | optional lowercase UUID v4 create idempotency key, recorded in the ledger before launch; a repeat returns the session it created |
+| `prompt_operation_id` | string | optional lowercase UUID v4, different from `operation_id`: the `/submit` operation id the caller will use for the first request, recorded so the start receipt can follow it |
 
 `RUNNER_*`, `NODE_OPTIONS`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, and
 `LD_PRELOAD` caller keys are stripped. User-created Claude/Codex sessions are
@@ -595,6 +598,28 @@ machine (`sessionruntime.ConversationMovedError`), the daemon returns
 `409 {"error":"<message>"}` so a client can distinguish a guard from bad
 input. Creating a session invokes the platform runner supervisor; there is no
 unmanaged create path in the normative implementation.
+
+`operation_id` makes creation idempotent. The daemon serializes creates and
+looks the id up in the lane ledger before any side effect. A repeat whose
+session is live (including unreachable) returns **200** with that session's
+`SessionInfo`, `start.replayed:true`, and the recorded `prompt_operation_id`;
+nothing is launched. A repeat whose session has ended, whose launch failed, or
+that this daemon has not re-attached yet after a restart returns
+`409 {"error":"<message>","operation_id":"<id>","session_id":"<session>"}`
+rather than starting the same work again. A repeat for a different Claude or
+Codex tool is 400. A malformed id is 400, and a daemon without ledger access
+refuses `operation_id` with 400 because it cannot keep the promise. Requests
+without an operation id behave exactly as before, except for one failure that
+now keeps its session: the ledger records a session before its runner
+launches, so a launch that fails after that point returns
+`500 {"error":"<message>","session_id":"<session>","operation_id":"<id, when sent>","recovery":{"action":"inspect","command":"sessions status <session>","detail":"..."}}`
+instead of a bare 400. A runner may still have started; inspect the session
+before creating another.
+
+A client that did not get a create answer cannot tell whether a session
+exists. It can look for `start.operation_id` in `GET /api/sessions`, and only a
+daemon that echoed the id back in an earlier `start` object is known to replay
+it; an older daemon ignores `operation_id` and would start a second session.
 
 When a `task` worker produces a successful final response and becomes idle,
 the daemon records the normal durable end boundary and closes its runtime. Its
@@ -643,9 +668,11 @@ Auth required. Accepts the same body as `POST /api/sessions` and forces
 `kind` to `lane`; a body whose `kind` is anything else is
 `400 {"error":"lane kind must be \"lane\""}`. `cmd` is mandatory for a lane
 (`400 {"error":"lane command is required"}`). Creator headers are captured
-exactly as for `POST /api/sessions`. Success is 201 with a bare `SessionInfo`.
-Every other create failure is `400 {"error":"<message>"}`; this route does not
-map the live/moved conversation guards to 409.
+exactly as for `POST /api/sessions`. Success is 201 with a bare `SessionInfo`; an `operation_id` replay is 200 or
+409, and a launch that fails after the session was recorded is the same
+structured 500, exactly as for `POST /api/sessions`. Every other create failure is
+`400 {"error":"<message>"}`; this route does not map the live/moved
+conversation guards to 409.
 
 ### `GET /api/lanes/:id/manifest`
 
@@ -1396,6 +1423,64 @@ runner input may have happened is `unknown` or `text-delivered` with
 `retry:false`; an automated caller must inspect the receipt instead of creating
 a new operation. This conservative boundary prevents a lost HTTP response from
 turning into a duplicate provider writer.
+
+A same-id submit of a `not-delivered` receipt with `retry:true` executes the
+operation again (the receipt returns to `pending`, then records the new
+outcome, `duplicate:false`), because that receipt proved nothing reached the
+provider. Every other stored outcome — `accepted`, `unknown`,
+`text-delivered`, and a refusal without `retry` — is returned with
+`duplicate:true` and nothing is sent.
+
+### Start receipts
+
+Starting delegated work is two operations — create the session, then submit its
+first request — and either can fail after the other succeeded. For a session
+created with an operation id, every `SessionInfo` projection served by
+`GET /api/sessions`, `GET /api/lanes`, and the create routes carries `start`:
+
+```json
+{"operation_id":"<uuid>","prompt_operation_id":"<uuid>","phase":"prompt-unknown",
+ "prompt":{"status":"unknown","retry":false,"reason":"...","at":1757000000000},
+ "evidence":"Sessions cannot prove whether the first request arrived: ...",
+ "evidence_source":"delivery-receipt",
+ "recovery":{"action":"inspect","command":"sessions last <id> --role user","detail":"..."}}
+```
+
+`phase` is one of `created`, `prompt-not-delivered`, `prompt-unknown`,
+`prompt-delivered`, `working`, `completed`, or `blocked`, each claimed only
+from its own evidence:
+
+- `blocked` comes first whenever the session carries a provider fault
+  (`blocked_by` is its `failureKind`; `auth` names the `connect-account`
+  recovery), a pending approval (`approval`; answered, never granted, by
+  Sessions), or a live `needs-input` question. The fault is reported as
+  recorded and never cleared by the projection.
+- `prompt.status` is the first request's receipt as
+  `GET /api/message-deliveries` reports it, plus `not-sent` (no receipt exists,
+  so nothing was submitted under that id; `retry:true`), `sending` (this daemon
+  is executing it now), and `unreadable` (the receipt exists but could not be
+  read; the read error is the `reason`, and it is never taken for `not-sent`).
+  `not-sent` and `sending` are phase `created`; `not-delivered` is
+  `prompt-not-delivered`; `unknown`, `text-delivered` and `unreadable` are
+  `prompt-unknown` and stay so whatever else the session does: a later user
+  turn or activity may belong to another message, so only the receipt itself
+  (including the runner acknowledgment reconciled by
+  `GET /api/message-deliveries`) can settle it.
+- After delivery, `working` requires the session's own activity signal
+  (`evidence_source` `provider-events` for structured runtimes, `terminal` for
+  terminal sessions); `completed` requires a `completed` idle outcome no older
+  than the delivery; otherwise the phase stays `prompt-delivered`. An accepted
+  HTTP submit alone is never `working`.
+- A session created with `operation_id` but no first request reads `created`
+  until activity is observed.
+
+`recovery.action` is `send-prompt`, `inspect`, `connect-account`, `answer`,
+`retry-turn`, `wait`, or `start-new`, with an optional exact `command` and a
+`detail` sentence. Nothing in the projection resends, approves, or clears
+anything. Resending is offered only where the receipt proved nothing arrived.
+The operation ids come from the ledger's `created` event and the prompt state
+from `delivery-operations/`, so the receipt is rebuilt after a daemon restart;
+only `sending` is process-local and becomes `unknown` after a crash.
 
 ### `POST /api/sessions/:id/approve`
 

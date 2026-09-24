@@ -106,7 +106,8 @@ function reconcileSessions(prev: SessionInfo[], fresh: SessionInfo[]): SessionIn
       old.runnerVersion === f.runnerVersion &&
       old.claudeCustomTitle === f.claudeCustomTitle &&
       old.claudeAiTitle === f.claudeAiTitle &&
-      tagsEqual(old.tags, f.tags)
+      tagsEqual(old.tags, f.tags) &&
+      startEqual(old.start, f.start)
     ) {
       return old;
     }
@@ -117,6 +118,16 @@ function reconcileSessions(prev: SessionInfo[], fresh: SessionInfo[]): SessionIn
   // (App, SessionTabs, GridView) don't re-render at all on an idle 3s poll.
   if (next.length === prev.length && next.every((s, i) => s === prev[i])) return prev;
   return next;
+}
+
+// A replayed create (same operation id) returns a session this list may
+// already hold; it replaces that row rather than duplicating it.
+function withoutSession(sessions: SessionInfo[], id: string): SessionInfo[] {
+  return sessions.filter((existing) => existing.id !== id);
+}
+
+function startEqual(left: SessionInfo['start'], right: SessionInfo['start']): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
 function arrayEqual(left: string[] | undefined, right: string[] | undefined): boolean {
@@ -286,7 +297,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
     set((s) => {
       if (s.serverId !== serverId) return s;
       if (!sessionMatchesWindowScope(info, windowScope)) return s;
-      const sessions = [...s.sessions, info];
+      const sessions = [...withoutSession(s.sessions, info.id), info];
       writeCache(s.serverId, sessions, info.id);
       return { sessions, activeId: info.id };
     });

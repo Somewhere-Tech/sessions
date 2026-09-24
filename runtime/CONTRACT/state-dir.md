@@ -190,7 +190,13 @@ reason, optional `mode` (`steer`; omitted for ordinary sends), optional
 creation/update times. It deliberately does not store the message
 body. A `pending` file left by a crash is treated as `unknown` and must not be
 retried automatically. Reusing an operation id with different content or a
-different target or send mode is refused. This directory follows `SESSIONS_STATE_DIR` so an
+different target or send mode is refused. The one record a same-id submit
+executes again is a `not-delivered` refusal with `retry:true` — Sessions proved
+nothing reached the provider — which returns to `pending` and gains an
+additive `attempts` count; every other status is only read back. A session's
+first request uses one of these receipts under the `prompt_operation_id`
+recorded in the lane ledger's `created` event (with the create
+`start_operation_id`), which is how its start receipt survives a restart. This directory follows `SESSIONS_STATE_DIR` so an
 isolated daemon cannot read or write the installed daemon's receipts.
 
 ### `idle/<id>`

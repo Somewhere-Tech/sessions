@@ -694,9 +694,11 @@ async function readDeliveryResponse(response: Response): Promise<MessageDelivery
 // fromSessionId records another lane as the author of the message, the way
 // `sessions send --from` does, so a hand-back reads in the manager's history
 // as coming from the lane rather than from the person.
-export async function submitMessage(sessionId: string, data: string, serverId?: string, fromSessionId?: string, mode?: 'steer'): Promise<void> {
+export async function submitMessage(sessionId: string, data: string, serverId?: string, fromSessionId?: string, mode?: 'steer', knownOperationId?: string): Promise<void> {
   const server = requestedServer(serverId);
-  const operationId = randomUUID();
+  // A caller that recorded the id beforehand (a session's first request) makes
+  // a retry of this exact message read its receipt instead of sending twice.
+  const operationId = knownOperationId ?? randomUUID();
   let receipt: MessageDeliveryReceipt | { ok: true };
   try {
     const response = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/submit`, {

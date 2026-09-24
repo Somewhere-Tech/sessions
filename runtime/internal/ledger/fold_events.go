@@ -54,6 +54,8 @@ func applyCreatedEvent(state *LaneState, event Event) {
 		state.CreatorKind = payload.CreatorKind
 		state.CreatorID = payload.CreatorID
 		state.DelegationKind = payload.DelegationKind
+		state.StartOperationID = payload.StartOperationID
+		state.PromptOperationID = payload.PromptOperationID
 	}
 }
 

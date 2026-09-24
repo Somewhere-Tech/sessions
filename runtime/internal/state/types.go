@@ -152,6 +152,10 @@ type SessionInfo struct {
 	// It is derived from the lane's structured stream, so it survives a
 	// daemon restart as long as the runner is still holding the request.
 	PendingApproval *ApprovalPrompt `json:"pendingApproval,omitempty"`
+	// Start is the delegated-start receipt for a session created with an
+	// operation id: created, first request delivered, working, completed or
+	// blocked, each with its evidence and one safe recovery. See start.go.
+	Start *StartReceipt `json:"start,omitempty"`
 	// Exited means Sessions reaped a real status for this session's process:
 	// an exit code, a signal, or a user-requested end that completed. It is
 	// never set because the daemon lost contact. Losing a socket says nothing
@@ -287,17 +291,23 @@ type CreateSessionRequest struct {
 	// InitialInput is a provider-authored first request already present in Args.
 	// It is a watcher binding hint, not a second input to deliver, and is never
 	// persisted separately from the provider transcript.
-	InitialInput string            `json:"initialInput,omitempty"`
-	Cwd          string            `json:"cwd,omitempty"`
-	Cols         int               `json:"cols,omitempty"`
-	Rows         int               `json:"rows,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`
-	Name         string            `json:"name,omitempty"`
-	Description  string            `json:"description,omitempty"`
-	Tags         map[string]string `json:"tags,omitempty"`
-	Profile      string            `json:"profile,omitempty"`
-	Worktree     bool              `json:"worktree,omitempty"`
-	Base         string            `json:"base,omitempty"`
+	InitialInput string `json:"initialInput,omitempty"`
+	// OperationID makes creation idempotent: a second request with the same id
+	// returns the session the first one created instead of starting another.
+	// PromptOperationID is the delivery operation id the caller will use for
+	// the first request, recorded so the start receipt can follow it.
+	OperationID       string            `json:"operation_id,omitempty"`
+	PromptOperationID string            `json:"prompt_operation_id,omitempty"`
+	Cwd               string            `json:"cwd,omitempty"`
+	Cols              int               `json:"cols,omitempty"`
+	Rows              int               `json:"rows,omitempty"`
+	Env               map[string]string `json:"env,omitempty"`
+	Name              string            `json:"name,omitempty"`
+	Description       string            `json:"description,omitempty"`
+	Tags              map[string]string `json:"tags,omitempty"`
+	Profile           string            `json:"profile,omitempty"`
+	Worktree          bool              `json:"worktree,omitempty"`
+	Base              string            `json:"base,omitempty"`
 	// NoWorktree declines the worktree an agent-created child would otherwise
 	// get by default, so a lane can deliberately share its manager's checkout.
 	NoWorktree bool   `json:"noWorktree,omitempty"`

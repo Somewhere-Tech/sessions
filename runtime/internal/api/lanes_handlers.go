@@ -52,7 +52,7 @@ func (s *Server) handleLanesRoute(response http.ResponseWriter, request *http.Re
 	if request.URL.Path == "/api/lanes" {
 		switch request.Method {
 		case http.MethodGet:
-			listed := s.registry.List(true)
+			listed := s.withStartReceipts(s.registry.List(true))
 			lanes := make([]laneView, 0, len(listed))
 			for _, info := range listed {
 				if info.Kind != state.KindLane {
@@ -75,26 +75,7 @@ func (s *Server) handleLanesRoute(response http.ResponseWriter, request *http.Re
 			}, corsOrigin)
 			return true
 		case http.MethodPost:
-			var body state.CreateSessionRequest
-			if err := readJSON(request, &body); err != nil {
-				s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-				return true
-			}
-			if err := captureCreatorHeaders(request, &body); err != nil {
-				s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-				return true
-			}
-			if body.Kind != "" && body.Kind != state.KindLane {
-				s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "lane kind must be \"lane\""}, corsOrigin)
-				return true
-			}
-			body.Kind = state.KindLane
-			info, err := s.registry.Create(request.Context(), body)
-			if err != nil {
-				s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-				return true
-			}
-			s.sendJSON(response, http.StatusCreated, info, corsOrigin)
+			s.handleCreateLane(response, request, corsOrigin)
 			return true
 		default:
 			s.sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}, corsOrigin)
@@ -142,4 +123,33 @@ func validLaneID(id string) bool {
 		}
 	}
 	return true
+}
+
+// handleCreateLane serves POST /api/lanes: the session create body with kind
+// forced to lane. Only an operation id whose session is no longer running maps
+// to 409 here; the live/moved conversation guards stay 400 on this route.
+func (s *Server) handleCreateLane(response http.ResponseWriter, request *http.Request, corsOrigin string) {
+	var body state.CreateSessionRequest
+	if err := readJSON(request, &body); err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	if err := captureCreatorHeaders(request, &body); err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	if body.Kind != "" && body.Kind != state.KindLane {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "lane kind must be \"lane\""}, corsOrigin)
+		return
+	}
+	body.Kind = state.KindLane
+	info, err := s.registry.Create(request.Context(), body)
+	if err != nil && s.sendStartFailure(response, err, corsOrigin) {
+		return
+	}
+	if err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	s.sendCreatedSession(response, info, corsOrigin)
 }

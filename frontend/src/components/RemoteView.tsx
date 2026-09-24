@@ -45,6 +45,7 @@ export interface ProviderFaultView {
   /** The provider's own line the claim rests on. */
   evidence?: string;
   retry?: ProviderRetry;
+  onConnectAccount?: () => void;
 }
 
 export interface LostConversationView {
@@ -67,6 +68,7 @@ function FaultCard({ sessionId, fault, rich, onOpenTerminal }: {
     <ProviderFaultCard
       sessionId={sessionId} failureKind={fault.kind} detail={fault.detail}
       evidence={fault.evidence} retry={fault.retry} rich={rich} onOpenTerminal={onOpenTerminal}
+      onConnectAccount={fault.onConnectAccount}
     />
   );
 }

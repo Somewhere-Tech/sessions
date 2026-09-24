@@ -12,13 +12,14 @@ import {
 import { readNewSessionDefaults, type NewSessionTool } from '../lib/newSessionDefaults';
 import { accountLabel, accountNeedsLogin, rememberAccount, rememberedAccount } from '../lib/accountChoice';
 import { TagEditor } from './TagEditor';
-import type { ClaudeSessionOptions, DirectoryCandidate, SessionInfo } from '../types';
+import type { ClaudeSessionOptions, CreateSessionRequest, DirectoryCandidate, SessionInfo } from '../types';
 import { getActiveServer, isLocalServer, serverDisplayName, useServers } from '../lib/servers';
 import { sessionLabel, sessionTitleFromPrompt } from '../lib/tabLabels';
 import { ProviderMark } from './ProviderBadge';
 import { MachineMark } from './MachineMark';
 import { CLAUDE_MODEL_OPTIONS, ModelPicker, type ModelPickerOption } from './ModelPicker';
 import { InlineAccountSignIn } from './InlineAccountSignIn';
+import { firstRequestFailureMessage, recordedPromptOperationId, startOperationIds, withStartOperation, type StartOperationIds } from '../lib/startOperation';
 
 interface ToolDef {
   id: NewSessionTool;
@@ -97,8 +98,8 @@ function inheritedProfile(parent: SessionInfo | null, tool: NewSessionTool): str
   return providerForTool(parentTool) === providerForTool(tool) ? parent.profile : '';
 }
 
-async function submitInitialRequest(sessionId: string, text: string, serverId: string): Promise<void> {
-  await submitMessage(sessionId, `\x1b[200~${text}\x1b[201~`, serverId);
+async function submitInitialRequest(sessionId: string, text: string, serverId: string, operationId: string): Promise<void> {
+  await submitMessage(sessionId, `\x1b[200~${text}\x1b[201~`, serverId, undefined, undefined, operationId);
 }
 
 interface Props {
@@ -264,6 +265,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   // State disables the button on the next render; this ref closes the smaller
   // same-tick window in which Enter plus a click could create two runtimes.
   const startInFlightRef = useRef(false);
+  const startIdsRef = useRef<StartOperationIds | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [createdWithDeliveryError, setCreatedWithDeliveryError] = useState<string | null>(null);
   useEffect(() => {
@@ -452,7 +454,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         permissionMode: claudeModeFor(access),
         ...(claudeSafeMode ? { remoteControl: 'off', chrome: 'off', somewhereMcp: 'inherit' } : {})
       };
-      const info = await create({
+      const request: CreateSessionRequest = {
         cmd,
         args,
         kind: tool === 'codex' && runtimeMode === 'rich'
@@ -471,20 +473,21 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         claude: tool === 'claude-code' ? resolvedClaudeOptions : undefined,
         creatorSessionId: parentSession?.id,
         delegationKind: parentSession ? 'user' : undefined
-      }, machineId);
-      // Open the durable record before attempting prompt delivery. Permission
-      // dialogs and provider readiness are runtime concerns; they must not
-      // strand a successfully-created session behind the launcher.
+      };
+      const ids = startIdsRef.current = startOperationIds(startIdsRef.current, JSON.stringify([machineId, request]));
+      const info = await create(withStartOperation(request, ids, Boolean(task.trim())), machineId);
+      // Open the durable record before prompt delivery; permission dialogs and
+      // provider readiness must not strand a created session behind the launcher.
       if (profileTool && !parentSession) {
         rememberAccount(machineId, profileTool, cwd.trim(), selectedProfile);
       }
       onStarted(info.id);
       if (task.trim()) {
         try {
-          await submitInitialRequest(info.id, task.trim(), machineId);
+          await submitInitialRequest(info.id, task.trim(), machineId, recordedPromptOperationId(info, ids.prompt));
         } catch (reason) {
           setCreatedWithDeliveryError(info.id);
-          setError(`Session ${info.id.slice(0, 8)} started, but Sessions could not confirm its first request: ${(reason as Error).message}. Open the session and inspect the terminal before typing anything else; the request may be waiting for one Enter.`);
+          setError(firstRequestFailureMessage(info.id, reason));
           return;
         }
       }

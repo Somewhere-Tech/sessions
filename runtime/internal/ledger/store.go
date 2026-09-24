@@ -428,6 +428,7 @@ func (w boundaryWriter) RecordCreated(ctx context.Context, value Created) error 
 		ResumeArgv: append([]string{}, value.ResumeArgv...),
 		LaneUUID:   value.LaneUUID, ProviderUUID: value.ProviderUUID,
 		CreatorKind: value.CreatorKind, CreatorID: value.CreatorID, DelegationKind: value.DelegationKind,
+		StartOperationID: value.StartOperationID, PromptOperationID: value.PromptOperationID,
 	}
 	return w.store.append(ctx, EventCreated, value.Meta, payload, false)
 }
@@ -903,6 +904,8 @@ type createdPayload struct {
 	CreatorKind       CreatorKind       `json:"creator_kind"`
 	CreatorID         string            `json:"creator_id"`
 	DelegationKind    string            `json:"delegation_kind,omitempty"`
+	StartOperationID  string            `json:"start_operation_id,omitempty"`
+	PromptOperationID string            `json:"prompt_operation_id,omitempty"`
 }
 
 type providerPayload struct {

@@ -73,6 +73,7 @@ type Server struct {
 	relayConnected     bool
 	relayWake          chan struct{}
 	submits            *sessionMutexes
+	deliveriesInFlight sync.Map
 	continuationJobs   *continuationJobStore
 	lanFallbackLog     sync.Once
 	teamChanges        teamChanges

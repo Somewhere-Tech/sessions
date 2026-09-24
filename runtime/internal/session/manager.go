@@ -650,6 +650,7 @@ func (m *Manager) recordCreated(ctx context.Context, prepared state.PreparedSess
 		Base: prepared.WorktreeBase, SourceRepo: prepared.SourceRepo,
 		ResumeArgv: resumeArgv, LaneUUID: info.ID, ProviderUUID: providerUUID,
 		CreatorKind: creatorKind, CreatorID: creatorID, DelegationKind: prepared.DelegationKind,
+		StartOperationID: prepared.StartOperationID, PromptOperationID: prepared.PromptOperationID,
 	}); err != nil {
 		return fmt.Errorf("record lane creation before launch: %w", err)
 	}

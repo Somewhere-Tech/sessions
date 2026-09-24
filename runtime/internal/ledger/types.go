@@ -116,6 +116,11 @@ type Created struct {
 	CreatorKind       CreatorKind
 	CreatorID         string
 	DelegationKind    string
+	// StartOperationID is the caller's create idempotency key and
+	// PromptOperationID the delivery operation for its first request. They
+	// are identifiers only; the request text never enters the ledger.
+	StartOperationID  string
+	PromptOperationID string
 }
 
 type UserKill struct {

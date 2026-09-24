@@ -23,6 +23,8 @@ type LaneState struct {
 	CreatorKind              CreatorKind
 	CreatorID                string
 	DelegationKind           string
+	StartOperationID         string
+	PromptOperationID        string
 	CreatedAtMS              int64
 	LastEventAtMS            int64
 	LastActivityAtMS         int64

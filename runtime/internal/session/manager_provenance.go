@@ -207,12 +207,8 @@ func (m *Manager) withProvenanceStates(infos []state.SessionInfo, states []ledge
 		infos[index].MovedToSessionID = current.MovedToLaneID
 		infos[index].MovedFromEndpoint = current.MovedFromMachine
 		infos[index].MovedFromSessionID = current.MovedFromLaneID
-		infos[index].EndedByKind = string(current.EndInitiatorKind)
-		infos[index].EndedByID = current.EndInitiatorID
-		infos[index].EndedByName = current.EndInitiatorName
-		infos[index].EndedByClient = current.EndClient
-		infos[index].EndReason = current.EndReason
-		infos[index].EndOperationID = current.EndOperationID
+		applyEndProvenance(&infos[index], current)
+		infos[index].Start = startReceiptIDs(current)
 		if current.CreatorKind == ledger.CreatorSession {
 			infos[index].ParentSessionID = current.CreatorID
 		}
@@ -267,6 +263,24 @@ func (m *Manager) withProvenanceStates(infos []state.SessionInfo, states []ledge
 		}
 	}
 	return infos
+}
+
+func applyEndProvenance(info *state.SessionInfo, lane ledger.LaneState) {
+	info.EndedByKind = string(lane.EndInitiatorKind)
+	info.EndedByID = lane.EndInitiatorID
+	info.EndedByName = lane.EndInitiatorName
+	info.EndedByClient = lane.EndClient
+	info.EndReason = lane.EndReason
+	info.EndOperationID = lane.EndOperationID
+}
+
+// startReceiptIDs carries the recorded start operation ids onto the session.
+// The phase is projected where the delivery receipts live (internal/api).
+func startReceiptIDs(lane ledger.LaneState) *state.StartReceipt {
+	if lane.StartOperationID == "" && lane.PromptOperationID == "" {
+		return nil
+	}
+	return &state.StartReceipt{OperationID: lane.StartOperationID, PromptOperationID: lane.PromptOperationID}
 }
 
 // provenanceParentDead answers whether a child's parent actually ended. Like
@@ -371,6 +385,9 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 	// this lock two concurrent resume requests could both observe no owner.
 	m.bindMu.Lock()
 	defer m.bindMu.Unlock()
+	if replayed, found, err := m.replayStart(ctx, request); found || err != nil {
+		return replayed, err
+	}
 
 	creatorKind, creatorID, err := m.resolveCreator(ctx, request)
 	if err != nil {
@@ -456,12 +473,12 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 		return state.SessionInfo{}, errors.New("--base requires --worktree")
 	}
 
-	creationRecorded := false
+	creationRecorded, recordedID := false, ""
 	beforeLaunch := func(ctx context.Context, prepared state.PreparedSession) error {
 		if err := m.recordCreated(ctx, prepared, creatorKind, creatorID); err != nil {
 			return err
 		}
-		creationRecorded = true
+		creationRecorded, recordedID = true, prepared.Info.ID
 		if takeover == nil {
 			return nil
 		}
@@ -487,20 +504,77 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 					err, preparedWorktree.Path, rollbackErr)
 			}
 		}
+		if creationRecorded {
+			// The session exists in the ledger; its id is the caller's only handle on it.
+			err = &state.StartCreateFailedError{OperationID: request.OperationID, SessionID: recordedID, Err: err}
+		}
 		return state.SessionInfo{}, err
 	}
-	session, ok := m.registry.Get(info.ID)
+	return m.finishCreate(ctx, info.ID, request)
+}
+
+// finishCreate starts managing a session the registry has just launched and
+// answers with its provenance, including any start receipt ids.
+func (m *Manager) finishCreate(ctx context.Context, id string, request state.CreateSessionRequest) (state.SessionInfo, error) {
+	session, ok := m.registry.Get(id)
 	if !ok {
-		return state.SessionInfo{}, fmt.Errorf("created session %s was not registered", info.ID)
+		return state.SessionInfo{}, fmt.Errorf("created session %s was not registered", id)
 	}
 	runtime := m.manage(session)
 	runtime.expectProviderInput(request.InitialInput)
 	if strings.TrimSpace(request.InitialInput) != "" {
-		m.captureFirstMessageDescription(info.ID, request.InitialInput)
-		m.captureFirstMessageDescription(info.ID, "\r")
+		m.captureFirstMessageDescription(id, request.InitialInput)
+		m.captureFirstMessageDescription(id, "\r")
 	}
 	if request.WaitReady {
 		m.waitReady(ctx, runtime)
 	}
 	return m.withProvenance(ctx, []state.SessionInfo{session.Info()})[0], nil
+}
+
+// replayStart returns the session an earlier create with the same operation
+// id produced, so a caller that lost the first response cannot start the same
+// work twice. Create holds bindMu around this lookup and the created-event
+// write, so a concurrent duplicate waits for the first request to be recorded
+// instead of racing it. The ledger is the only durable record of the id; a
+// daemon without one cannot honor the promise and says so.
+func (m *Manager) replayStart(ctx context.Context, request state.CreateSessionRequest) (state.SessionInfo, bool, error) {
+	if err := state.ValidateStartOperationIDs(request.OperationID, request.PromptOperationID); err != nil {
+		return state.SessionInfo{}, false, err
+	}
+	if request.OperationID == "" {
+		return state.SessionInfo{}, false, nil
+	}
+	if m.ledgerReader == nil || m.boundaries == nil {
+		return state.SessionInfo{}, false, errors.New("operation_id needs the Sessions ledger to make creation idempotent, but ledger access is unavailable; restore the daemon ledger, or create without operation_id")
+	}
+	states, err := m.ledgerStates(ctx)
+	if err != nil {
+		return state.SessionInfo{}, false, fmt.Errorf("check create operation %s before starting anything: %w", request.OperationID, err)
+	}
+	for _, lane := range states {
+		if !lane.Created || lane.StartOperationID != request.OperationID {
+			continue
+		}
+		if wanted := state.CommandTool(request.Cmd); (wanted == state.ToolClaude || wanted == state.ToolCodex) && lane.Tool != string(wanted) {
+			return state.SessionInfo{}, true, fmt.Errorf("operation_id %s already created %s session %s; use a new operation id for different work", request.OperationID, lane.Tool, lane.LaneID)
+		}
+		session, live := m.registry.Get(lane.LaneID)
+		if !live || session.Info().Exited {
+			reason := fmt.Sprintf("has ended (`sessions resume %s` continues its conversation)", lane.LaneID)
+			if !live && !lane.RunnerReady && !lane.Attached {
+				reason = "never reported ready, so its launch did not complete"
+			} else if !live && !durablyClosed(lane) {
+				reason = "is not attached to this daemon yet (it may still be reconnecting after a restart; ask again in a moment)"
+			}
+			return state.SessionInfo{}, true, &state.StartCreateReplayError{OperationID: request.OperationID, SessionID: lane.LaneID, Reason: reason}
+		}
+		info := m.withProvenanceStates([]state.SessionInfo{session.Info()}, states)[0]
+		if info.Start == nil {
+			info.Start = &state.StartReceipt{OperationID: lane.StartOperationID, PromptOperationID: lane.PromptOperationID}
+		}
+		info.Start.Replayed = true
+		return info, true, nil
+	}
+	return state.SessionInfo{}, false, nil
 }

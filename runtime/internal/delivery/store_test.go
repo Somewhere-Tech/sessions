@@ -168,3 +168,46 @@ func TestConfirmAcceptedOnlyResolvesUncertaintyAndOnlyWithEvidence(t *testing.T)
 		})
 	}
 }
+
+// A refusal Sessions proved happened before any input reached the provider
+// promises that sending the same operation again is safe. Asking again must
+// therefore execute it again; every other outcome is only ever read back.
+func TestBeginReexecutesOnlyAProvenRefusal(t *testing.T) {
+	store := New(t.TempDir())
+	if _, created, err := store.Begin(testOperationID, "session", "hello"); err != nil || !created {
+		t.Fatalf("first begin = %v %v", created, err)
+	}
+	if _, err := store.Complete(testOperationID, StatusNotDelivered, false, true, "turn active"); err != nil {
+		t.Fatal(err)
+	}
+	again, created, err := store.Begin(testOperationID, "session", "hello")
+	if err != nil || !created || again.Status != StatusPending || again.Attempts != 1 || again.Reason != "" {
+		t.Fatalf("retry of a proven refusal = %+v created %v err %v, want a fresh pending execution", again, created, err)
+	}
+	if _, _, err := store.Begin(testOperationID, "session", "different"); err == nil {
+		t.Fatal("a different message reused a refused operation id")
+	}
+
+	for _, outcome := range []struct {
+		status    Status
+		delivered bool
+		retry     bool
+	}{
+		{StatusUnknown, false, false},
+		{StatusNotDelivered, false, false},
+		{StatusTextOnly, true, false},
+		{StatusAccepted, true, false},
+	} {
+		store := New(t.TempDir())
+		if _, _, err := store.Begin(testOperationID, "session", "hello"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Complete(testOperationID, outcome.status, outcome.delivered, outcome.retry, "x"); err != nil {
+			t.Fatal(err)
+		}
+		record, created, err := store.Begin(testOperationID, "session", "hello")
+		if err != nil || created || record.Status != outcome.status {
+			t.Fatalf("%s: begin again = %+v created %v err %v, want the stored receipt and no execution", outcome.status, record, created, err)
+		}
+	}
+}

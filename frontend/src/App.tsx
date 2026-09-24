@@ -887,8 +887,8 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
                   isActive={s.id === activeId}
                   onStatusChange={s.id === activeId ? setActiveStatus : undefined}
                   onResume={chooseHowToContinue} onContinueConversation={chooseHowToContinue}
-                  onFork={forkSession}
-                  onCloseView={closeTab}
+                  onFork={forkSession} onCloseView={closeTab}
+                  onOpenAccounts={() => setLayoutMode('accounts')}
                   onOpenSession={openSession}
                   onReparent={updateDisplayParent}
                   onBack={isMobile ? () => setMobileSessionDetail(false) : undefined}

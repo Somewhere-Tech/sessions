@@ -152,6 +152,11 @@ export interface SessionInfo {
   // The permission a Rich Codex lane is holding open, when it is not
   // autonomous. Answered with approveSession, never with a reply.
   pendingApproval?: PendingApproval | null;
+  // Delegated-start receipt, present only for sessions created with an
+  // operation id: how far the work provably got, on what evidence, and the one
+  // next step that cannot duplicate it. Process liveness stays on exited /
+  // unreachable; this describes the task.
+  start?: StartReceipt;
   exited: boolean;
   exitCode: number | null;
   exitSignal: string | null;
@@ -232,7 +237,39 @@ export interface SessionInfo {
   endOperationId?: string;
 }
 
+export type StartPhase =
+  | 'created'
+  | 'prompt-not-delivered'
+  | 'prompt-unknown'
+  | 'prompt-delivered'
+  | 'working'
+  | 'completed'
+  | 'blocked';
+
+export interface StartReceipt {
+  operation_id?: string;
+  prompt_operation_id?: string;
+  phase: StartPhase;
+  prompt?: {
+    status: 'not-sent' | 'sending' | 'accepted' | 'not-delivered' | 'unknown' | 'text-delivered' | 'unreadable';
+    acceptance?: string;
+    // True only when Sessions proved nothing reached the provider.
+    retry: boolean;
+    reason?: string;
+    at?: number;
+  };
+  evidence: string;
+  evidence_source: string;
+  blocked_by?: string;
+  recovery?: { action: string; command?: string; detail: string };
+  replayed?: boolean;
+}
+
 export interface CreateSessionRequest {
+  // Create idempotency key and the first request's delivery operation id.
+  // Re-sending the same operation_id returns the session already created.
+  operation_id?: string;
+  prompt_operation_id?: string;
   cmd?: string;
   args?: string[];
   cwd?: string;

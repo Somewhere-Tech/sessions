@@ -23,6 +23,9 @@ const SessionHistoryView = lazy(() => import('./SessionHistoryView').then((modul
 // lazy boundary it stops being entry weight for a person who has not opened one
 // yet. Its type comes through a type-only import, which is erased.
 const RemoteView = lazy(() => import('./RemoteView').then((module) => ({ default: module.RemoteView })));
+// Both render only while something is wrong, so neither belongs on the entry path.
+const ProviderFaultCard = lazy(() => import('./ProviderFaultCard').then((module) => ({ default: module.ProviderFaultCard })));
+const StartReceiptNote = lazy(() => import('./StartReceiptNote').then((module) => ({ default: module.StartReceiptNote })));
 import { classifySession, lostSessionNote } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
@@ -33,7 +36,6 @@ import { ConversationForkButton } from './ConversationForkButton';
 import { agentLedDescendants, isAgentLedChild } from '../lib/workingSet';
 import { handBackMessage } from '../lib/handBack';
 import { SubagentsPanel } from './SubagentsPanel';
-import { ProviderFaultCard } from './ProviderFaultCard';
 import { SessionTitleRename } from './SessionTitleRename';
 
 import type { ActiveStatus } from '../lib/activeStatus';
@@ -63,6 +65,8 @@ interface Props {
   onReparent?: (sessionId: string, parentId: string | null) => Promise<void>;
   onBack?: () => void;
   preferFullTerminal?: boolean;
+  /** Opens Accounts, the safe next step when the provider rejects the login. */
+  onOpenAccounts?: () => void;
 }
 
 // View modes:
@@ -83,11 +87,11 @@ const TERMINAL_NOTICE_ACK_PREFIX = 'sessions:terminal-notice-ack:';
 // even when the user has several Terminal sessions open.
 let terminalNoticeShownThisLaunch = false;
 
-function providerFaultFor(session: SessionInfo | null): ProviderFaultView | undefined {
+function providerFaultFor(session: SessionInfo | null, onConnectAccount?: () => void): ProviderFaultView | undefined {
   return session?.failureKind
     ? {
       kind: session.failureKind, detail: session.failureDetail,
-      evidence: session.failureEvidence, retry: session.retry
+      evidence: session.failureEvidence, retry: session.retry, onConnectAccount
     }
     : undefined;
 }
@@ -95,27 +99,33 @@ function providerFaultFor(session: SessionInfo | null): ProviderFaultView | unde
 // Above the terminal the fault is one line, because the terminal is the thing
 // the card would otherwise offer to open. The full card belongs to the
 // conversation view, where the person cannot see the provider's own screen.
-function TerminalProviderFault({ session, onOpenTerminal }: { session: SessionInfo; onOpenTerminal: () => void }): JSX.Element | null {
+function TerminalProviderFault({ session, onOpenTerminal, onConnectAccount }: { session: SessionInfo; onOpenTerminal: () => void; onConnectAccount?: () => void }): JSX.Element | null {
   if (!session.failureKind) return null;
   return (
     <div className="terminal-provider-fault">
-      <ProviderFaultCard
-        sessionId={session.id} failureKind={session.failureKind} detail={session.failureDetail}
-        evidence={session.failureEvidence} retry={session.retry} rich={false}
-        placement="banner" onOpenTerminal={onOpenTerminal}
-      />
+      <Suspense fallback={null}>
+        <ProviderFaultCard
+          sessionId={session.id} failureKind={session.failureKind} detail={session.failureDetail}
+          evidence={session.failureEvidence} retry={session.retry} rich={false}
+          placement="banner" onOpenTerminal={onOpenTerminal} onConnectAccount={onConnectAccount}
+        />
+      </Suspense>
     </div>
   );
 }
 
 // What the header says about the session itself: the last thing said, and —
 // when the runner is gone — why it is gone and what to do about it.
-function SessionHeaderNotes({ session }: { session: SessionInfo }): JSX.Element {
+function SessionHeaderNotes({ session, onOpenAccounts }: { session: SessionInfo; onOpenAccounts?: () => void }): JSX.Element {
   const lost = lostSessionNote(session);
+  const startPhase = session.start?.phase;
   return (
     <>
       <SessionLastMessage session={session} />
       {lost ? <span className="session-last-message is-fault" role="status">{lost}</span> : null}
+      {startPhase && startPhase !== 'working' && startPhase !== 'completed' ? (
+        <Suspense fallback={null}><StartReceiptNote session={session} onOpenAccounts={onOpenAccounts} /></Suspense>
+      ) : null}
     </>
   );
 }
@@ -166,7 +176,7 @@ function useHandBack(session: SessionInfo | null, onOpenSession?: (id: string) =
 // Own the conversation/terminal view while keeping unchanged session tabs
 // memoized across daemon polls. Structured submits do not depend on a healthy
 // display stream; the daemon's acknowledged control determines their outcome.
-function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onContinueConversation, onFork, onCloseView, onOpenSession, onReparent, onBack, preferFullTerminal = false }: Props): JSX.Element {
+function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onContinueConversation, onFork, onCloseView, onOpenSession, onReparent, onBack, preferFullTerminal = false, onOpenAccounts }: Props): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>(() => readInitialSessionView(sessionId));
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [forkMode, setForkMode] = useState(false);
@@ -573,7 +583,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             ) : <h1>Session</h1>}
             <span className={`session-live-pill${statusTone}`}>{statusLabel}</span>
             {session ? <AccountBadge session={session} className="is-session-head" /> : null}
-            {session ? <SessionHeaderNotes session={session} /> : null}
+            {session ? <SessionHeaderNotes session={session} onOpenAccounts={onOpenAccounts} /> : null}
             {session ? (
               <span className="session-runtime-anchor">
                 <span
@@ -763,7 +773,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               </div>
             </header>
           ) : null}
-          {session ? <TerminalProviderFault session={session} onOpenTerminal={focusTerminal} /> : null}
+          {session ? <TerminalProviderFault session={session} onOpenTerminal={focusTerminal} onConnectAccount={onOpenAccounts} /> : null}
           {!richSession && (
             <>
               <div className="terminal-host" ref={term.containerRef} />
@@ -810,7 +820,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             sendRawInput={richSession ? undefined : sendInput}
             pendingApproval={session?.pendingApproval ?? null}
             onApprove={session ? (decision) => approveSession(session.id, decision) : undefined}
-            providerFault={terminalOnScreen ? undefined : providerFaultFor(session)}
+            providerFault={terminalOnScreen ? undefined : providerFaultFor(session, onOpenAccounts)}
             lostConversation={lostConversation && session ? { providerName: session.tool === 'codex' ? 'Codex' : 'Claude', onResume: onContinueConversation ? () => onContinueConversation(session) : undefined, onClose: () => endSession(session.id, 'Closed after Sessions confirmed the runner was gone.') } : undefined}
             statusLabel={statusLabel}
           />

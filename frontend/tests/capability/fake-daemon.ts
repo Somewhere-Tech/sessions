@@ -103,6 +103,8 @@ export interface FakeMachine {
   /** Optional latency used to expose same-tick duplicate-action races. */
   createDelayMS?: number;
   submitDelayMS?: number;
+  /** Create the session but lose the next create response, as a dropped connection does. */
+  loseNextCreateResponse?: boolean;
 }
 
 /** One second subscription on a machine: a provider home with a name. */
@@ -426,6 +428,11 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
         await new Promise((resolve) => window.setTimeout(resolve, machine.createDelayMS));
       }
       const request = (body ?? {}) as Record<string, unknown>;
+      // Like sessionsd: the same operation id returns the session it already
+      // created (200) instead of starting a second one.
+      const operationId = typeof request.operation_id === 'string' ? request.operation_id : '';
+      const replayed = operationId ? machine.sessions.find((session) => session.start?.operation_id === operationId) : undefined;
+      if (replayed) return jsonResponse({ ...replayed, start: { ...replayed.start!, replayed: true } });
       const created = makeSession({
         id: `created-${machine.sessions.length + 1}`,
         name: typeof request.name === 'string' && request.name ? request.name : 'Untitled session',
@@ -435,8 +442,18 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
         lastDataAt: NOW,
         tool: request.cmd === 'codex' ? 'codex' : request.cmd === 'bash' || request.cmd === 'zsh' ? 'terminal' : 'claude-code'
       });
+      if (operationId) {
+        created.start = {
+          operation_id: operationId, phase: 'created', evidence: 'the session was created', evidence_source: 'delivery-receipt',
+          ...(typeof request.prompt_operation_id === 'string' ? { prompt_operation_id: request.prompt_operation_id } : {})
+        };
+      }
       machine.sessions.push(created);
       daemon.created.push(created);
+      if (machine.loseNextCreateResponse) {
+        machine.loseNextCreateResponse = false;
+        throw new TypeError('Failed to fetch');
+      }
       return jsonResponse(created);
     }
     if (sessionRoute && sessionTail === '' && method === 'DELETE') {

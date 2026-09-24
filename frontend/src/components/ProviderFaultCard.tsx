@@ -22,6 +22,8 @@ interface Props {
    */
   placement?: 'card' | 'banner';
   onOpenTerminal: () => void;
+  /** Opens Accounts. Connecting the account is the safe fix for an auth failure. */
+  onConnectAccount?: () => void;
 }
 
 function retryCountdown(nextAt: number, now: number): number {
@@ -29,7 +31,7 @@ function retryCountdown(nextAt: number, now: number): number {
 }
 
 export function ProviderFaultCard({
-  sessionId, failureKind, detail, evidence, retry, rich, placement = 'card', onOpenTerminal
+  sessionId, failureKind, detail, evidence, retry, rich, placement = 'card', onOpenTerminal, onConnectAccount
 }: Props): JSX.Element {
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState<'retry' | 'stop' | null>(null);
@@ -58,7 +60,7 @@ export function ProviderFaultCard({
   };
 
   const guidance = failureKind === 'auth'
-    ? terminalIsVisible ? 'Log in below' : 'Open the terminal to log in'
+    ? authGuidance(rich, terminalIsVisible, Boolean(onConnectAccount))
     : retry
       ? `Retrying in ${retryCountdown(retry.nextAt, now)}s (attempt ${retry.attempt} of ${retry.max})`
       : rich
@@ -71,6 +73,9 @@ export function ProviderFaultCard({
       <div className="provider-fault-banner" role="status" aria-label="Provider trouble">
         <strong>{text}</strong>
         <span className="provider-fault-banner-hint">{guidance}</span>
+        {failureKind === 'auth' && onConnectAccount ? (
+          <button type="button" className="provider-control-card-action is-primary" onClick={onConnectAccount}>Connect account</button>
+        ) : null}
         {evidence ? <ProviderFaultEvidence evidence={evidence} /> : null}
       </div>
     );
@@ -83,8 +88,11 @@ export function ProviderFaultCard({
       {evidence ? <ProviderFaultEvidence evidence={evidence} /> : null}
       <span className="provider-control-card-hint" aria-live="polite">{guidance}</span>
       <div className="provider-control-card-choices" role="toolbar" aria-label="Provider recovery">
-        {failureKind === 'auth' ? (
-          <button type="button" className="provider-control-card-action is-primary" onClick={onOpenTerminal}>Open Terminal</button>
+        {failureKind === 'auth' && onConnectAccount ? (
+          <button type="button" className="provider-control-card-action is-primary" onClick={onConnectAccount}>Connect account</button>
+        ) : null}
+        {failureKind === 'auth' && (!rich || !onConnectAccount) ? (
+          <button type="button" className={`provider-control-card-action${onConnectAccount ? '' : ' is-primary'}`} onClick={onOpenTerminal}>Open Terminal</button>
         ) : rich ? (
           <button type="button" className="provider-control-card-action is-primary" disabled={busy !== null} onClick={() => void act('retry')}>
             {busy === 'retry' ? 'Retrying…' : 'Retry now'}
@@ -99,6 +107,15 @@ export function ProviderFaultCard({
       {error ? <span className="provider-control-card-hint is-error" role="alert">{error}</span> : null}
     </div>
   );
+}
+
+// Authentication is blocked work, not an idle session. Connecting the account
+// is always safe; a terminal login applies only where the provider's own
+// terminal exists. Sessions never clears the error on the person's behalf.
+function authGuidance(rich: boolean, terminalIsVisible: boolean, canConnect: boolean): string {
+  if (!canConnect) return terminalIsVisible ? 'Log in below' : 'Open the terminal to log in';
+  if (rich) return 'Connect the account, then retry this turn';
+  return terminalIsVisible ? 'Log in below, or connect the account' : 'Connect the account, or open the terminal to log in';
 }
 
 /** What the claim rests on, in the provider's own words. */

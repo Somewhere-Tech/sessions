@@ -235,8 +235,11 @@ assert.match(newSession, /<ModelPicker[\s\S]*options=\{modelOptions\}/);
 assert.match(newSession, /CLAUDE_MODEL_OPTIONS/);
 assert.match(newSession, /launcher-composer-footer/);
 assert.match(newSession, /listNewSessionCodexModels\(controller\.signal, machineId\)/);
-assert.match(newSession, /create\(\{[\s\S]*\}, machineId\)/);
-assert.match(newSession, /submitInitialRequest\(info\.id, task\.trim\(\), machineId\)/);
+assert.match(newSession, /create\(withStartOperation\(request, ids, Boolean\(task\.trim\(\)\)\), machineId\)/);
+// The first request goes to the chosen machine under the operation id recorded
+// at create, so a retry cannot deliver it twice.
+assert.match(newSession, /submitInitialRequest\(info\.id, task\.trim\(\), machineId, recordedPromptOperationId\(info, ids\.prompt\)\)/);
+assert.match(newSession, /startOperationIds\(startIdsRef\.current, JSON\.stringify\(\[machineId, request\]\)\)/);
 assert.match(newSession, /<DirectoryBrowser[\s\S]*serverId=\{machineId\}/);
 assert.doesNotMatch(newSession, /resumeId|sessionsForCwd|--resume/);
 assert.match(newSession, /event\.currentTarget\.form\?\.requestSubmit\(\)/);

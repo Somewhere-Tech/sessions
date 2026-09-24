@@ -55,6 +55,8 @@ type PreparedSession struct {
 	DelegationKind    string
 	Permissions       string
 	Lifecycle         string
+	StartOperationID  string
+	PromptOperationID string
 }
 
 type SessionMetadata struct {
@@ -243,7 +245,7 @@ func (r *Registry) CreateWithLifecycle(
 	prepared := PreparedSession{
 		Info: runnerInfo, Name: strings.TrimSpace(request.Name), Description: description,
 		DescriptionSource: descriptionSource, Tags: tags, Kind: kind, SpecPath: specPath, Tool: tool,
-		Profile: profile, ConfigDir: configDir,
+		Profile: profile, ConfigDir: configDir, StartOperationID: request.OperationID, PromptOperationID: request.PromptOperationID,
 		WorktreePath: request.WorktreePath, WorktreeBranch: request.WorktreeBranch,
 		WorktreeBase: request.WorktreeBase, SourceRepo: request.SourceRepo,
 		DelegationKind: request.DelegationKind, Permissions: request.Permissions, Lifecycle: request.Lifecycle,

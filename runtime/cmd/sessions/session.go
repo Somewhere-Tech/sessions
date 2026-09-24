@@ -12,6 +12,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ansi"
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 type session struct {
@@ -80,27 +81,29 @@ type session struct {
 	// Pointers, so a daemon that never reported these and a session that
 	// genuinely costs nothing stay distinguishable. Rendering turns nil into
 	// "-" and never into 0.
-	MemoryBytes        *uint64         `json:"memoryBytes,omitempty"`
-	CPUPercent         *float64        `json:"cpuPercent,omitempty"`
-	ResourceProcesses  *int            `json:"resourceProcesses,omitempty"`
-	ResourceSampledAt  *int64          `json:"resourceSampledAt,omitempty"`
-	CreatorAncestry    []string        `json:"creator_ancestry,omitempty"`
-	RootCreatorKind    string          `json:"root_creator_kind,omitempty"`
-	RootCreatorID      string          `json:"root_creator_id,omitempty"`
-	ProvenanceStatus   string          `json:"provenance_status,omitempty"`
-	ReopenedAs         string          `json:"reopened_as,omitempty"`
-	ResumedFrom        string          `json:"resumed_from,omitempty"`
-	MovedToEndpoint    string          `json:"moved_to_endpoint,omitempty"`
-	MovedToSessionID   string          `json:"moved_to_session_id,omitempty"`
-	MovedFromEndpoint  string          `json:"moved_from_endpoint,omitempty"`
-	MovedFromSessionID string          `json:"moved_from_session_id,omitempty"`
-	EndedByKind        string          `json:"ended_by_kind,omitempty"`
-	EndedByID          string          `json:"ended_by_id,omitempty"`
-	EndedByName        string          `json:"ended_by_name,omitempty"`
-	EndedByClient      string          `json:"ended_by_client,omitempty"`
-	EndReason          string          `json:"end_reason,omitempty"`
-	EndOperationID     string          `json:"end_operation_id,omitempty"`
-	Extra              json.RawMessage `json:"-"`
+	MemoryBytes        *uint64  `json:"memoryBytes,omitempty"`
+	CPUPercent         *float64 `json:"cpuPercent,omitempty"`
+	ResourceProcesses  *int     `json:"resourceProcesses,omitempty"`
+	ResourceSampledAt  *int64   `json:"resourceSampledAt,omitempty"`
+	CreatorAncestry    []string `json:"creator_ancestry,omitempty"`
+	RootCreatorKind    string   `json:"root_creator_kind,omitempty"`
+	RootCreatorID      string   `json:"root_creator_id,omitempty"`
+	ProvenanceStatus   string   `json:"provenance_status,omitempty"`
+	ReopenedAs         string   `json:"reopened_as,omitempty"`
+	ResumedFrom        string   `json:"resumed_from,omitempty"`
+	MovedToEndpoint    string   `json:"moved_to_endpoint,omitempty"`
+	MovedToSessionID   string   `json:"moved_to_session_id,omitempty"`
+	MovedFromEndpoint  string   `json:"moved_from_endpoint,omitempty"`
+	MovedFromSessionID string   `json:"moved_from_session_id,omitempty"`
+	EndedByKind        string   `json:"ended_by_kind,omitempty"`
+	EndedByID          string   `json:"ended_by_id,omitempty"`
+	EndedByName        string   `json:"ended_by_name,omitempty"`
+	EndedByClient      string   `json:"ended_by_client,omitempty"`
+	EndReason          string   `json:"end_reason,omitempty"`
+	EndOperationID     string   `json:"end_operation_id,omitempty"`
+	// Start is the daemon's delegated-start receipt; see state.StartReceipt.
+	Start *state.StartReceipt `json:"start,omitempty"`
+	Extra json.RawMessage     `json:"-"`
 }
 
 type providerRetry struct {

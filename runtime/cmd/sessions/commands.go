@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
@@ -67,25 +66,27 @@ var constrainedCodexAppServerArgs = []string{
 var toolPresetOrder = []string{"claude", "codex", "shell"}
 
 type createSessionRequest struct {
-	Cmd              string            `json:"cmd,omitempty"`
-	Args             []string          `json:"args,omitempty"`
-	InitialInput     string            `json:"initialInput,omitempty"`
-	Cwd              string            `json:"cwd,omitempty"`
-	Name             string            `json:"name,omitempty"`
-	Description      string            `json:"description,omitempty"`
-	Tags             map[string]string `json:"tags,omitempty"`
-	Profile          string            `json:"profile,omitempty"`
-	Worktree         bool              `json:"worktree,omitempty"`
-	NoWorktree       bool              `json:"noWorktree,omitempty"`
-	Base             string            `json:"base,omitempty"`
-	OnIdle           string            `json:"onIdle,omitempty"`
-	WaitReady        bool              `json:"waitReady,omitempty"`
-	Kind             string            `json:"kind,omitempty"`
-	Force            bool              `json:"force,omitempty"`
-	ProviderTerminal bool              `json:"providerTerminal,omitempty"`
-	DelegationKind   string            `json:"delegationKind,omitempty"`
-	Permissions      string            `json:"permissions,omitempty"`
-	Lifecycle        string            `json:"lifecycle,omitempty"`
+	Cmd               string            `json:"cmd,omitempty"`
+	Args              []string          `json:"args,omitempty"`
+	InitialInput      string            `json:"initialInput,omitempty"`
+	OperationID       string            `json:"operation_id,omitempty"`
+	PromptOperationID string            `json:"prompt_operation_id,omitempty"`
+	Cwd               string            `json:"cwd,omitempty"`
+	Name              string            `json:"name,omitempty"`
+	Description       string            `json:"description,omitempty"`
+	Tags              map[string]string `json:"tags,omitempty"`
+	Profile           string            `json:"profile,omitempty"`
+	Worktree          bool              `json:"worktree,omitempty"`
+	NoWorktree        bool              `json:"noWorktree,omitempty"`
+	Base              string            `json:"base,omitempty"`
+	OnIdle            string            `json:"onIdle,omitempty"`
+	WaitReady         bool              `json:"waitReady,omitempty"`
+	Kind              string            `json:"kind,omitempty"`
+	Force             bool              `json:"force,omitempty"`
+	ProviderTerminal  bool              `json:"providerTerminal,omitempty"`
+	DelegationKind    string            `json:"delegationKind,omitempty"`
+	Permissions       string            `json:"permissions,omitempty"`
+	Lifecycle         string            `json:"lifecycle,omitempty"`
 }
 
 type agentControls struct {
@@ -311,6 +312,9 @@ func (a *app) cmdNew(args []string) error {
 		body.OnIdle = value
 	}
 	body.WaitReady = removeFirst(&args, "--wait-ready")
+	if body.OperationID, err = pluckStartOperationID(&args); err != nil {
+		return err
+	}
 	tool, hasTool := pluck(&args, "--tool")
 	initialInput := ""
 	fullAccess := removeFirst(&args, "--full-access")
@@ -459,29 +463,7 @@ func (a *app) cmdNew(args []string) error {
 			return err
 		}
 	}
-	a.announceStartupOnce()
-	var info map[string]any
-	if err := a.postJSON("/api/sessions", body, &info, 2); err != nil {
-		return err
-	}
-	if strings.TrimSpace(initialInput) != "" {
-		id := strings.TrimSpace(fmt.Sprint(info["id"]))
-		if id == "" {
-			return fail(2, "session was created, but sessionsd did not return its id; first request was not sent")
-		}
-		result, err := a.sendAndConfirm(id, initialInput, 30*time.Second, false)
-		if err != nil {
-			return fail(2, "session %s was created, but its first request was not sent: %s", id, err)
-		}
-		if result.ExitCode != 0 {
-			return fail(2, "session %s was created, but its first request was not confirmed: %s", id, result.Reason)
-		}
-	}
-	if a.wantJSON {
-		return writeJSON(a.stdout, info, true)
-	}
-	_, err = fmt.Fprintln(a.stdout, info["id"])
-	return err
+	return a.createAndStart(body, initialInput)
 }
 
 func codexAppServerEnabled() bool {
