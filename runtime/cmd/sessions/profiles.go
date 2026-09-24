@@ -11,13 +11,17 @@ type profileSession struct {
 	Name string `json:"name,omitempty"`
 }
 
+// profileIdentity is the provider-reported identity at its last check.
+type profileIdentity struct {
+	AccountID    string `json:"account_id,omitempty"`
+	Email        string `json:"email"`
+	Plan         string `json:"plan,omitempty"`
+	Organization string `json:"organization,omitempty"`
+	CheckedAt    int64  `json:"checked_at"`
+}
+
 type profileStatus struct {
-	Identity *struct {
-		Email        string `json:"email"`
-		Plan         string `json:"plan,omitempty"`
-		Organization string `json:"organization,omitempty"`
-		CheckedAt    int64  `json:"checked_at"`
-	} `json:"identity,omitempty"`
+	Identity *profileIdentity `json:"identity,omitempty"`
 	Tool     string           `json:"tool"`
 	Name     string           `json:"name"`
 	Path     string           `json:"path"`
@@ -38,6 +42,8 @@ func (a *app) cmdAccounts(args []string) error {
 		return a.cmdAccountLogin(args[0], args[1:])
 	case "add":
 		return a.cmdAccountsAdd(args[1:])
+	case "usage":
+		return a.cmdAccountsUsage(args[1:])
 	case "rename":
 		return a.cmdAccountsRename(args[1:])
 	case "forget", "remove":
@@ -45,7 +51,7 @@ func (a *app) cmdAccounts(args []string) error {
 	case "list":
 		return a.cmdProfiles(args[1:])
 	default:
-		return fail(1, "usage: sessions accounts [list | add <name> --tool claude|codex [--label TEXT] [--machine NAME] | rename <name> --tool claude|codex --label TEXT | forget <name> --tool claude|codex]")
+		return fail(1, "usage: sessions accounts [list | usage [<name>] [--tool claude|codex] [--refresh] | add <name> --tool claude|codex [--label TEXT] [--machine NAME] | rename <name> --tool claude|codex --label TEXT | forget <name> --tool claude|codex]")
 	}
 }
 

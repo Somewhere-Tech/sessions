@@ -27,6 +27,9 @@ func (s *Server) handleProfilesRoute(response http.ResponseWriter, request *http
 	if s.handleAccountLoginRoute(response, request, corsOrigin) {
 		return true
 	}
+	if s.handleAccountUsageRoute(response, request, corsOrigin) {
+		return true
+	}
 	if strings.HasPrefix(request.URL.Path, "/api/profiles/") {
 		return s.handleAccountRoute(response, request, corsOrigin)
 	}

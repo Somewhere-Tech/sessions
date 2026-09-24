@@ -133,11 +133,10 @@ describe('capability: each computer says which accounts it has', () => {
 });
 
 describe('capability: Accounts manages sign-ins on any computer', () => {
-  it('switches computers and reads that machine’s accounts', async () => {
+  it('shows every computer’s accounts together, each under the computer that holds it', async () => {
     const machines = fleet();
     installFakeDaemon(machines);
     useFakeMachines(machines, 'alpha');
-    const user = userEvent.setup();
     render(
       <AccountsPanel
         profiles={[{ tool: 'claude', name: 'work', label: 'Work — team plan', path: '/state/profiles/claude/work', signed_in: true, sessions: [], last_used: 1 }]}
@@ -145,14 +144,14 @@ describe('capability: Accounts manages sign-ins on any computer', () => {
         onReload={() => {}}
       />
     );
-    expect(screen.getByText('Work — team plan')).toBeVisible();
-
-    await user.selectOptions(screen.getByLabelText('Computer'), 'beta');
-    await waitFor(() => expect(screen.getByText('Shared build box')).toBeVisible());
-    // Alpha's account is not shown as if it were Beta's.
-    expect(screen.queryByText('Work — team plan')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Computer')).toHaveDisplayValue('Beta');
-    expect(screen.getByRole('list', { name: 'Accounts on Beta' })).toBeVisible();
+    expect(screen.getByText('Work — team plan', { selector: 'strong' })).toBeVisible();
+    const shared = await screen.findByRole('list', { name: 'Computers for Shared build box' });
+    // Beta's account is Beta's: it is not shown as if Alpha had it.
+    expect(within(shared).getByText('Beta')).toBeVisible();
+    expect(within(shared).queryByText('Alpha')).not.toBeInTheDocument();
+    const work = screen.getByRole('list', { name: 'Computers for Work — team plan' });
+    expect(within(work).getByText('Alpha')).toBeVisible();
+    expect(within(work).queryByText('Beta')).not.toBeInTheDocument();
   }, 20_000);
 
   it('adds an account on the computer that was chosen, not the connected one', async () => {
@@ -162,9 +161,10 @@ describe('capability: Accounts manages sign-ins on any computer', () => {
     const user = userEvent.setup();
     render(<AccountsPanel profiles={[]} machineName="Alpha" onReload={() => {}} />);
 
-    await user.selectOptions(screen.getByLabelText('Computer'), 'beta');
-    await waitFor(() => expect(screen.getByText('Shared build box')).toBeVisible());
+    await screen.findByRole('list', { name: 'Computers for Shared build box' });
     await user.click(screen.getByRole('button', { name: 'Add account' }));
+    await user.selectOptions(screen.getByLabelText('Computer'), 'beta');
+    expect(screen.getByRole('heading', { name: 'Add an account on Beta' })).toBeInTheDocument();
     await user.type(screen.getByLabelText('Account label'), 'Second plan');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
 
@@ -172,5 +172,28 @@ describe('capability: Accounts manages sign-ins on any computer', () => {
     expect(lastRequest(daemon, '/api/profiles')?.origin).toBe(BETA_ORIGIN);
     expect(lastRequest(daemon, '/api/account-logins')?.origin).toBe(BETA_ORIGIN);
     expect(machines[0]!.profiles?.some((account) => account.name === 'acct-fixture')).toBe(false);
+    expect(await screen.findByRole('heading', { name: /Sign in to Claude on Beta/ })).toBeInTheDocument();
+  }, 20_000);
+
+  it('adds an existing account to another computer through that computer’s own sign-in', async () => {
+    const machines = fleet();
+    const daemon = installFakeDaemon(machines);
+    useFakeMachines(machines, 'alpha');
+    const user = userEvent.setup();
+    render(<AccountsPanel profiles={machines[0]!.profiles!.map((account) => ({ path: '', signed_in: false, sessions: [], last_used: 0, ...account }))} machineName="Alpha" onReload={() => {}} />);
+
+    const work = (await screen.findByText('Work — team plan', { selector: 'strong' })).closest('li') as HTMLElement;
+    await user.click(await within(work).findByRole('button', { name: 'Add on Beta' }));
+    await waitFor(() => expect(machines[1]!.profiles?.some(
+      (account) => account.name === 'work' && account.label === 'Work — team plan'
+    )).toBe(true));
+    expect(lastRequest(daemon, '/api/profiles')?.origin).toBe(BETA_ORIGIN);
+    const login = lastRequest(daemon, '/api/account-logins');
+    expect(login?.origin).toBe(BETA_ORIGIN);
+    expect(login?.body).toEqual({ tool: 'claude', profile: 'work' });
+    expect(await screen.findByRole('heading', { name: /Sign in to Claude on Beta/ })).toBeInTheDocument();
+    // Only the account's name and nickname travel; the request carries no credential.
+    const create = daemon.requests.filter((request) => request.method === 'POST' && request.path === '/api/profiles').pop();
+    expect(Object.keys(create?.body as object).sort()).toEqual(['label', 'name', 'tool']);
   }, 20_000);
 });

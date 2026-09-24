@@ -553,8 +553,21 @@ export interface AccountProfileSession {
   name?: string;
 }
 
+/**
+ * What the provider reported at its last check. `account_id` is its own stable
+ * account or workspace identifier, present only when the provider reports one;
+ * an email alone cannot prove which workspace an allowance belongs to.
+ */
+export interface AccountIdentity {
+  account_id?: string;
+  email: string;
+  plan?: string;
+  organization?: string;
+  checked_at: number;
+}
+
 export interface AccountProfile {
-  identity?: { email: string; plan?: string; organization?: string; checked_at: number };
+  identity?: AccountIdentity;
   tool: 'claude' | 'codex';
   name: string;
   path: string;
@@ -564,6 +577,42 @@ export interface AccountProfile {
   signed_in: boolean;
   sessions: AccountProfileSession[];
   last_used: number;
+}
+
+export interface AccountUsageWindow {
+  kind: 'primary' | 'secondary' | string;
+  used_percent: number;
+  window_minutes?: number;
+  /** Unix milliseconds; absent when the provider did not say. */
+  resets_at?: number;
+}
+
+/** One metered limit. Buckets are separate allowances and are never added. */
+export interface AccountUsageBucket {
+  limit_id?: string;
+  limit_name?: string;
+  plan?: string;
+  reached?: string;
+  windows: AccountUsageWindow[];
+  credits?: { has_credits: boolean; unlimited: boolean; balance?: string };
+}
+
+/**
+ * An account's allowance as its provider reported it on one computer. Only
+ * `available` is a fresh reading; `unavailable` may carry the last good one
+ * marked `stale`.
+ */
+export interface AccountUsage {
+  tool: 'claude' | 'codex';
+  name: string;
+  label?: string;
+  state: 'available' | 'signed_out' | 'unsupported' | 'unavailable';
+  message?: string;
+  checked_at?: number;
+  identity?: AccountIdentity;
+  buckets?: AccountUsageBucket[];
+  read_at?: number;
+  stale?: boolean;
 }
 
 export interface ForgottenAccount {
@@ -628,6 +677,25 @@ async function profilesForServer(server: ServerConfig, signal?: AbortSignal): Pr
   if (r.status === 404 || r.status === 501) return [];
   const body = await json<{ profiles: AccountProfile[] }>(r);
   return body.profiles;
+}
+
+/**
+ * Each account's allowance on one computer, or null when that computer's
+ * Sessions predates usage reads. `refresh` asks the providers again rather than
+ * answering from the daemon's short cache.
+ */
+export async function fetchAccountUsage(
+  serverId: string | undefined, options: { refresh?: boolean; signal?: AbortSignal } = {}
+): Promise<AccountUsage[] | null> {
+  const server = requestedServer(serverId);
+  const query = options.refresh ? '?refresh=1' : '';
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/account-usage${query}`, { signal: options.signal });
+  if (r.status === 404 || r.status === 501) return null;
+  // Only a local or paired client may make providers answer again; any other
+  // client still gets the daemon's latest reading.
+  if (r.status === 403 && options.refresh) return fetchAccountUsage(serverId, { signal: options.signal });
+  const body = await json<{ accounts: AccountUsage[] }>(r);
+  return body.accounts ?? [];
 }
 
 export async function fetchProfiles(signal?: AbortSignal, serverId?: string): Promise<AccountProfile[]> {

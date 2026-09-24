@@ -187,7 +187,7 @@ Examples:
 
 ```text
 Usage:
-  sessions accounts [list | add [name] --tool claude|codex [--label TEXT] [--machine NAME] | login <name> --tool claude|codex | login-status <id> | login-code <id> | login-cancel <id> | rename <name> --tool claude|codex --label TEXT | forget <name> --tool claude|codex]
+  sessions accounts [list | usage [<name>] [--tool claude|codex] [--refresh] | add [name] --tool claude|codex [--label TEXT] [--machine NAME] | login <name> --tool claude|codex | login-status <id> | login-code <id> | login-cancel <id> | rename <name> --tool claude|codex --label TEXT | forget <name> --tool claude|codex]
 
 list and add second Claude or ChatGPT accounts
 
@@ -195,11 +195,12 @@ Each account has a separate provider home and history. Select it with --profile 
 
 `accounts add [name] --tool claude|codex` registers an account and starts a short-lived provider sign-in, not an agent session. Omit name to generate one. `accounts login <name> --tool claude|codex` checks an existing account or starts its sign-in. Both return an operation ID. Use `accounts login-status <id>` for the provider link and ChatGPT device code, then follow the link in your browser. Check which account you choose. For Claude, pipe the confirmation code into `accounts login-code <id>`; do not put codes in command arguments or shell history. `accounts login-cancel <id>` stops only the sign-in helper. Operations expire after ten minutes or a daemon restart.
 
-Completion reports the email and plan returned by the provider. This checks identity, not remaining usage. `accounts rename <name> --tool claude|codex --label TEXT` changes only the nickname; the account ID, provider home, sign-in and history stay as they are, and --label "" clears it. Nicknames are at most 64 characters with no line breaks or control characters. `accounts forget <name> --tool claude|codex` unregisters the account but preserves its provider home, credentials and history. --machine NAME selects another approved computer; for add it may also follow the command. No existing session is ended or logged out.
+Completion reports the email and plan returned by the provider. This checks identity, not remaining usage. `accounts usage` reads each account's allowance from its provider: every metered limit separately with its used percentage, window and reset time, when it was read, and whether it is stale. Codex answers through its own app-server in the account's private home, with no model turn; Claude offers no supported usage read, so its accounts report `unsupported`. A failed or slow read reports `unavailable` with the last good reading marked stale, never signed out or zero. Readings are cached for a minute; --refresh asks again. `accounts usage <name> --tool claude|codex` reads one account. `accounts rename <name> --tool claude|codex --label TEXT` changes only the nickname; the account ID, provider home, sign-in and history stay as they are, and --label "" clears it. Nicknames are at most 64 characters with no line breaks or control characters. `accounts forget <name> --tool claude|codex` unregisters the account but preserves its provider home, credentials and history. --machine NAME selects another approved computer; for add it may also follow the command. No existing session is ended or logged out.
 
 Examples:
   sessions accounts
   sessions accounts add work --tool claude --label 'Work — team plan'
+  sessions accounts usage --json
   sessions accounts add work --tool claude --machine mini
   sessions accounts rename work --tool claude --label 'Team plan'
   sessions accounts forget work --tool claude

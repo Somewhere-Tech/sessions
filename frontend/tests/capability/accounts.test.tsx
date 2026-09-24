@@ -193,9 +193,10 @@ describe('capability: adding an account is a guided login', () => {
     );
     // Presence of a provider's sign-in file is the whole fact. "Signed in"
     // would claim a working login Sessions has never checked.
-    expect(screen.getByText('Identity not checked')).toBeInTheDocument();
+    const pending = screen.getByRole('list', { name: 'Computers for Pending' });
+    expect(within(pending).getByText('Identity not checked')).toBeInTheDocument();
     expect(screen.queryByText(/Not signed in/)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
+    expect(within(pending).getByRole('button', { name: 'Sign in' })).toBeEnabled();
   }, 20_000);
 
   it('removing an account explains that saved chats and sign-in are unchanged', async () => {
@@ -210,7 +211,7 @@ describe('capability: adding an account is a guided login', () => {
         onReload={() => {}}
       />
     );
-    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    await user.click(within(screen.getByRole('list', { name: 'Computers for Work — team plan' })).getByRole('button', { name: 'Remove' }));
     const note = await screen.findByText(/was removed from this list/);
     expect(note.textContent).toContain('Work — team plan');
     expect(note.textContent).toMatch(/saved chats and sign-in are unchanged/);
@@ -250,7 +251,7 @@ describe('capability: a session says which account it is on', () => {
         onReload={() => {}}
       />
     );
-    const state = screen.getByText('Identity not checked');
+    const state = within(screen.getByRole('list', { name: 'Computers for Work' })).getByText('Identity not checked');
     expect(state).toBeInTheDocument();
     expect(state.title).toMatch(/confirm who is signed in/);
     expect(screen.queryByText('Signed in')).not.toBeInTheDocument();
@@ -285,9 +286,11 @@ describe('capability: a session says which account it is on', () => {
       />
     );
 
-    const signIn = screen.getByRole('button', { name: 'Sign in' });
+    // Mac mini's own account is on the page too; this is This Mac's pending one.
+    const pending = await screen.findByRole('list', { name: 'Computers for Pending' });
+    const signIn = within(pending).getByRole('button', { name: 'Sign in' });
     await user.click(signIn);
-    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/no runner is available|could not open/));
+    await waitFor(() => expect(screen.getAllByRole('status').map((node) => node.textContent).join(' ')).toMatch(/no runner is available|could not open/));
     // Not stranded on the signing-in step, and no session was reported.
     expect(screen.queryByText(/Finish signing in/)).not.toBeInTheDocument();
     expect(opened).toEqual([]);
@@ -295,7 +298,7 @@ describe('capability: a session says which account it is on', () => {
     expect(creates).toBe(1);
 
     // And a second click is a second attempt, not a second session per click.
-    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    await user.click(within(pending).getByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(creates).toBe(2));
     globalThis.fetch = realFetch;
   }, 20_000);
@@ -325,7 +328,8 @@ describe('capability: a session says which account it is on', () => {
         onReload={() => {}}
       />
     );
-    const signIn = screen.getByRole('button', { name: 'Sign in' });
+    const pending = await screen.findByRole('list', { name: 'Computers for Pending' });
+    const signIn = within(pending).getByRole('button', { name: 'Sign in' });
     await user.click(signIn);
     await user.click(signIn);
     await screen.findByRole('button', { name: 'Continue to Claude' });

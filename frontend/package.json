@@ -44,6 +44,7 @@
     "test:provider-fault": "node scripts/provider-fault-smoke.mjs",
     "test:webapp": "node scripts/webapp-smoke.mjs",
     "test:account-login": "node scripts/account-login-smoke.mjs",
+    "test:account-usage": "node scripts/account-usage-smoke.mjs",
     "test:capability": "node scripts/run-capability.mjs",
     "test:smoke": "node scripts/run-smoke.mjs"
   },

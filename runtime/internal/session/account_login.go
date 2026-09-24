@@ -15,6 +15,10 @@ import (
 )
 
 type AccountIdentity struct {
+	// AccountID is the provider's own stable account or workspace identifier,
+	// present only when the provider reports one. Two homes are the same
+	// allowance only when they share it; an email alone cannot prove that.
+	AccountID    string `json:"account_id,omitempty"`
 	Email        string `json:"email"`
 	Plan         string `json:"plan,omitempty"`
 	Organization string `json:"organization,omitempty"`

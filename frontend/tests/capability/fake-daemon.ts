@@ -32,7 +32,8 @@ import type {
   ResumableSession,
   SearchMatch,
   SearchResponse,
-  TeamListing
+  TeamListing,
+  AccountUsage
 } from '../../src/api/sessionsd';
 
 export interface FakeMachine {
@@ -65,6 +66,14 @@ export interface FakeMachine {
   profiles?: FakeAccount[];
   /** Answer account renames the way an open-access peer is answered. */
   accountRenameForbidden?: boolean;
+  /**
+   * GET /api/account-usage readings by `tool/name`. Accounts without one answer
+   * the way a daemon does: Claude unsupported, Codex not answered yet. `false`
+   * answers 404, the way a computer running an older Sessions does.
+   */
+  accountUsage?: Record<string, Partial<AccountUsage>> | false;
+  /** Answer `refresh=1` usage reads the way an open-access peer is answered. */
+  accountUsageRefreshForbidden?: boolean;
   directories?: DirectoryCandidate[];
   providers?: ProviderStatus[];
   codexModels?: SessionModelOption[];
@@ -625,6 +634,24 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     }
 
     // ── settings surfaces the views read on mount ───────────────────────
+    if (path === '/api/account-usage' && method === 'GET') {
+      if (machine.accountUsage === false) return jsonResponse({ error: 'not found' }, 404);
+      if (machine.accountUsageRefreshForbidden && url.searchParams.get('refresh') === '1') {
+        return jsonResponse({ error: 'refreshing account usage requires a local or paired Sessions client; omit refresh to read the latest reading' }, 403);
+      }
+      const readings = machine.accountUsage ?? {};
+      return jsonResponse({
+        accounts: (machine.profiles ?? []).map((account): AccountUsage => ({
+          tool: account.tool, name: account.name, label: account.label,
+          ...(account.tool === 'claude'
+            ? { state: 'unsupported', message: 'Claude does not offer a supported way to read usage, so Sessions does not show it.' }
+            : { state: 'unavailable', message: 'The provider has not answered yet; refresh in a moment.' }),
+          ...readings[`${account.tool}/${account.name}`]
+        })),
+        checked_at: NOW,
+        ttl_seconds: 60
+      });
+    }
     if (path === '/api/profiles' && method === 'GET') {
       // Absent fields answer the way the daemon answers them, so a fixture can
       // name an account in one line without describing a whole home.

@@ -47,6 +47,7 @@ const GATE = [
   'workspace-ux',
   'launcher-layout',
   'account-login',
+  'account-usage',
   'session-status',
   'local-network',
   'title-clarity',

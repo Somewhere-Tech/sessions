@@ -158,6 +158,9 @@ type Manager struct {
 	accountLogins     map[string]*accountLoginOperation
 	config            state.Config
 	launcher          proto.RunnerLauncher
+	// accountUsage coalesces and briefly caches provider allowance reads. See
+	// account_usage.go.
+	accountUsage accountUsageCache
 	// wakeMu serializes WakePaused so two first messages cannot kick one
 	// runner twice.
 	wakeMu   sync.Mutex

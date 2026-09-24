@@ -34,7 +34,7 @@ async function openAccounts(fleet = machines()) {
   const daemon = installFakeDaemon(fleet);
   useFakeMachines(fleet, 'local');
   render(<AccountsView hostName="This Mac" serverId="local" />);
-  const list = await screen.findByRole('list', { name: 'Accounts on This Mac' });
+  const list = await screen.findByRole('list', { name: 'Accounts' });
   return { daemon, list, user: userEvent.setup() };
 }
 

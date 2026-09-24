@@ -165,10 +165,30 @@ has — the label its owner typed, the provider, and the same login-file fact �
 and an account another computer has that this one lacks appears there as **Log
 in here too**. That runs the same guided login on the computer whose card it is
 under: the home is registered there, the provider's sign-in opens there, and the
-instruction to check the account in the browser is the same one. Settings ›
-Accounts has a **Computer** switcher over the same list, so a second
-subscription can be set up on the machine that needs it without pointing the
-whole app at that machine first.
+instruction to check the account in the browser is the same one.
+
+**Accounts page.** Accounts lists accounts rather than computers. A row names
+the account, its provider-reported email and plan, its usage, and the computers
+it is **Connected on**, each with its own sign-in state and its own **Check
+account**, **Rename** and **Remove**. **Add on <computer>** runs the same guided
+login on a computer that lacks the account; nothing is copied between
+computers. Homes on different computers become one row only when the provider
+reported the same account ID for both. An email alone does not prove that two
+homes share a workspace or organization, so those stay separate rows with a note
+that the same email appears elsewhere. **Add account** has a **Computer** choice,
+so a second subscription can be set up on the machine that needs it without
+pointing the whole app at that machine first.
+
+**Usage.** For ChatGPT accounts, Sessions asks Codex itself, in that account's
+private home, for the account's rate limits (`account/rateLimits/read`), with no
+model turn. Each limit is its own meter with its used percentage and reset time,
+and limits are never added together. When several computers read the same
+account, the freshest reading is shown with the computer and time it came from.
+A computer that fails or does not answer keeps the last reading visible and
+marked stale, never as signed out or zero, and a computer that could not be
+reached is named at the top of the page. Claude Code offers no supported usage
+read, so Claude accounts say so rather than showing a guess. An older Codex
+without the method asks to be updated.
 
 **Adding one.** Settings › Accounts → **Add account** asks for a provider, a
 short name for the home, and a label for you to recognise it by. Sessions
@@ -201,5 +221,7 @@ column carrying the same weak fact,
 `sessions accounts add <name> --tool claude|codex [--label TEXT] [--machine
 NAME]` performs the same guided login headlessly — with `--machine` it is
 relayed to that approved computer, and nothing local to the caller is sent with
-it — and `sessions accounts forget <name> --tool claude|codex` unregisters one.
+it — `sessions accounts usage [--refresh] [--json]` prints each account's
+limits, when they were read and whether they are stale, and
+`sessions accounts forget <name> --tool claude|codex` unregisters one.
 `sessions profiles` remains the same listing.

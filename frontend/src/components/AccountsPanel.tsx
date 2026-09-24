@@ -1,17 +1,21 @@
-import { useEffect, useId, useState, type FormEvent } from 'react';
-import { fetchProfiles, forgetAccount, renameAccount, type AccountProfile } from '../api/sessionsd';
-import { serverDisplayName, useServers } from '../lib/servers';
+import { useEffect, useState } from 'react';
+import { forgetAccount, renameAccount, type AccountProfile } from '../api/sessionsd';
+import { useAccountFleet } from '../hooks/useAccountFleet';
+import { computersWithout, coverageNotes, groupTitle, rollUpAccounts, type AccountGroup, type AccountPlacement, type MachineAccounts } from '../lib/accountRollup';
+import { useServers } from '../lib/servers';
+import { AccountPlacementRow, AddAccountForm, AddOnComputer } from './AccountRowParts';
 import { loginPending, SigningInCard, useGuidedAccountLogin } from './AccountSignIn';
+import { AccountUsageSummary } from './AccountUsageSummary';
 import { ProviderMark } from './ProviderBadge';
 
-// Accounts on one computer: a second Claude or ChatGPT subscription, its own
-// provider home, its own history. Adding one is a guided login rather than a
-// hidden menu item, and removing one is a decision about this list — never
-// about somebody's subscription.
+// Accounts, one row per account. A subscription's allowance belongs to the
+// provider account, so the row leads with who it is and how much of it is
+// used, then lists the computers it is signed into. Each computer keeps its own
+// sign-in: adding the account to another computer runs the provider's own
+// sign-in there, and no credential ever moves between computers.
 //
-// "One computer" is a choice, not the machine this window happens to be
-// connected to: the switcher here lists the same machines Fleet does, so a
-// second subscription can be set up on the computer that needs it.
+// Two computers' homes are one row only when the provider reported the same
+// account ID for both. A matching email alone is mentioned, not merged.
 //
 // One flow at a time: the add form and the sign-in card never share the page,
 // so a finished sign-in is not left above a new, unrelated form.
@@ -25,86 +29,109 @@ interface Props {
   onReload?: (profiles: AccountProfile[]) => void;
 }
 
-type Stage = 'idle' | 'naming';
+type GuidedLogin = ReturnType<typeof useGuidedAccountLogin>;
 
-export function AccountsPanel({ profiles, machineName, serverId, onOpenSession, onReload }: Props): JSX.Element {
-  const servers = useServers((state) => state.servers);
-  const activeId = useServers((state) => state.activeId);
-  // The machine whose accounts the caller already has in hand. Null target
-  // means that one, whichever it turns out to be once the store has settled.
-  const home = serverId ?? activeId ?? '';
-  const [targetId, setTargetId] = useState<string | null>(null);
-  const [stage, setStage] = useState<Stage>('idle');
-  const viewingHome = targetId === null || targetId === home;
-  const elsewhere = useMachineAccounts(targetId ?? '', viewingHome);
-  const requestId = viewingHome ? serverId : targetId ?? undefined;
-  const target = servers.find((server) => server.id === (targetId ?? home));
-  const targetName = viewingHome ? machineName : target ? serverDisplayName(target, true) : 'that computer';
+/**
+ * The guided sign-in, pointed at whichever computer an action belongs to. The
+ * sign-in hook is bound to one computer, so an action on another computer
+ * switches the target first and runs once the hook has followed.
+ */
+function useTargetedLogin(homeId: string, onProfiles: (id: string, profiles: AccountProfile[]) => void) {
+  const [target, setTarget] = useState(homeId);
+  const [queued, setQueued] = useState<{ serverId: string; run: (login: GuidedLogin) => void } | null>(null);
   const login = useGuidedAccountLogin({
-    serverId: requestId,
-    onOpenSession,
-    onReload: viewingHome ? onReload : elsewhere.replace
+    serverId: target || undefined,
+    onReload: (profiles) => onProfiles(target, profiles)
   });
-  const accounts = viewingHome ? profiles : elsewhere.profiles;
-  const signingIn = login.signingInFor !== null;
-  const signInPending = signingIn && loginPending(login.operation);
+  useEffect(() => {
+    if (!queued || queued.serverId !== target) return;
+    setQueued(null);
+    queued.run(login);
+  }, [queued, target, login]);
+  const on = (serverId: string, run: (login: GuidedLogin) => void): void => {
+    if (login.signingInFor) login.finishSignIn();
+    if (serverId === target) { run(login); return; }
+    setTarget(serverId);
+    setQueued({ serverId, run });
+  };
+  return { login, target, on };
+}
+
+export function AccountsPanel({ profiles, machineName, serverId, onReload }: Props): JSX.Element {
+  const activeId = useServers((state) => state.activeId);
+  const home = serverId ?? activeId ?? '';
+  const fleet = useAccountFleet({ homeId: home, homeName: machineName, homeProfiles: profiles, onHomeReload: onReload });
+  const { login, target, on } = useTargetedLogin(home, (id, list) => fleet.accept(id, list));
+  const [adding, setAdding] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const signInPending = login.signingInFor !== null && loginPending(login.operation);
+  const busy = login.busy || signInPending || editBusy;
+  const groups = rollUpAccounts(fleet.machines);
+  const nameOf = (id: string): string => fleet.machines.find((machine) => machine.serverId === id)?.machineName ?? machineName;
+  const edits = accountEdits(setEditBusy, setNotice, fleet.reloadComputer);
 
   const startAdding = (): void => {
-    // A finished or failed sign-in card is closed, not stacked above the form.
-    if (signingIn) login.finishSignIn();
-    login.setMessage(null);
-    setStage('naming');
+    if (login.signingInFor) login.finishSignIn();
+    login.setMessage(null); setNotice(null);
+    setAdding(true);
   };
-  const signIn = (account: AccountProfile): void => {
-    setStage('idle');
-    void login.startLogin(account);
+  const signIn = (placement: AccountPlacement): void => {
+    setAdding(false); setNotice(null);
+    on(placement.serverId, (current) => void current.startLogin(placement.profile));
   };
-
-  const { forget, rename } = accountEdits(login, requestId);
+  const addOn = (group: AccountGroup, machine: MachineAccounts): void => {
+    const first = group.placements[0]!.profile;
+    setAdding(false); setNotice(null);
+    on(machine.serverId, (current) => void current.addAccount(first.tool, first.name, first.label ?? ''));
+  };
 
   return (
     <section className="settings-page accounts-panel">
       <AccountsIntroduction />
-
       <div className="settings-card accounts-card">
         <div className="accounts-card-head">
           <h2>Accounts added in Sessions</h2>
-          <ComputerPicker
-            value={targetId ?? home}
-            machineName={targetName}
-            onChange={(id) => {
-              if (signingIn) login.finishSignIn();
-              setTargetId(id); setStage('idle'); login.setMessage(null);
-            }}
-          />
-        </div>
-        {elsewhere.error ? <p className="settings-message" role="status">{elsewhere.error}</p> : null}
-        {elsewhere.loading ? <p role="status">Reading the accounts on {targetName}…</p> : (
-          <AccountsList
-            key={requestId ?? home}
-            profiles={accounts}
-            machineName={targetName}
-            busy={login.busy || signInPending}
-            onSignIn={signIn}
-            onRename={rename}
-            onForget={(account) => void forget(account)}
-          />
-        )}
-        {stage === 'idle' && !signInPending ? (
-          <button type="button" className="btn btn-secondary accounts-add-button" onClick={startAdding}>
-            Add account
+          <button type="button" className="btn btn-ghost accounts-refresh" disabled={fleet.refreshing} onClick={() => void fleet.refreshUsage()}>
+            {fleet.refreshing ? 'Reading usage…' : 'Refresh usage'}
           </button>
+        </div>
+        {coverageNotes(fleet.machines).map((note) => <p key={note} className="settings-message" role="status">{note}</p>)}
+        {groups.length === 0 ? (
+          <p className="accounts-empty">
+            {fleet.machines.some((machine) => machine.profiles === null && !machine.profilesError)
+              ? 'Reading accounts…' : 'No second account yet.'}
+          </p>
+        ) : (
+          <ul className="accounts-list" aria-label="Accounts">
+            {groups.map((group) => (
+              <AccountGroupRow
+                key={group.key}
+                group={group}
+                addable={computersWithout(group, fleet.machines)}
+                busy={busy}
+                onSignIn={signIn}
+                onRename={edits.rename}
+                onForget={(placement) => void edits.forget(placement, groupTitle(group))}
+                onAddOn={(machine) => addOn(group, machine)}
+              />
+            ))}
+          </ul>
+        )}
+        {!adding && !signInPending ? (
+          <button type="button" className="btn btn-secondary accounts-add-button" onClick={startAdding}>Add account</button>
         ) : null}
       </div>
 
-      {stage === 'naming' && !signingIn ? (
+      {adding && !login.signingInFor ? (
         <AddAccountForm
           busy={login.busy}
-          machineName={viewingHome ? undefined : targetName}
-          onCancel={() => { setStage('idle'); login.setMessage(null); }}
-          onAdd={(tool, name, label) => {
-            void login.addAccount(tool, name, label).then((added) => { if (added) setStage('idle'); });
-          }}
+          computers={fleet.machines.filter((machine) => !machine.profilesError)}
+          initialComputer={target}
+          onCancel={() => { setAdding(false); login.setMessage(null); }}
+          onAdd={(computer, tool, label) => on(computer, (current) => {
+            void current.addAccount(tool, '', label).then((added) => { if (added) setAdding(false); });
+          })}
         />
       ) : null}
 
@@ -113,7 +140,7 @@ export function AccountsPanel({ profiles, machineName, serverId, onOpenSession, 
           account={login.signingInFor}
           operation={login.operation}
           busy={login.busy}
-          machineName={viewingHome ? undefined : targetName}
+          machineName={target === home ? undefined : nameOf(target)}
           onCode={login.submitCode}
           onCancel={login.cancel}
           onDone={login.finishSignIn}
@@ -121,101 +148,44 @@ export function AccountsPanel({ profiles, machineName, serverId, onOpenSession, 
       ) : null}
 
       {login.message ? <p className="settings-message" role="status">{login.message}</p> : null}
-      <AccountsFootnote />
+      {notice ? <p className="settings-message" role="status">{notice}</p> : null}
+      <p className="field-help">Removing an account keeps its saved chats and sign-in on that computer.</p>
     </section>
   );
 }
 
-type GuidedLogin = ReturnType<typeof useGuidedAccountLogin>;
-
-/** Remove and rename, reported through the same busy state as sign-in. */
-function accountEdits(login: GuidedLogin, requestId: string | undefined) {
-  const forget = async (account: AccountProfile): Promise<void> => {
-    login.setBusy(true);
+/** Remove and rename on the computer that holds the account. */
+function accountEdits(
+  setBusy: (busy: boolean) => void,
+  setNotice: (notice: string | null) => void,
+  reloadComputer: (id: string) => Promise<void>
+) {
+  const forget = async (placement: AccountPlacement, title: string): Promise<void> => {
+    setBusy(true); setNotice(null);
     try {
-      await forgetAccount(account.tool, account.name, requestId);
-      login.setMessage(`${accountTitle(account)} was removed from this list. Its saved chats and sign-in are unchanged.`);
-      await login.reload();
+      await forgetAccount(placement.profile.tool, placement.profile.name, placement.serverId || undefined);
+      setNotice(`${title} was removed from this list on ${placement.machineName}. Its saved chats and sign-in are unchanged.`);
+      await reloadComputer(placement.serverId);
     } catch (error) {
-      login.setMessage(error instanceof Error ? error.message : 'Sessions could not remove that account.');
+      setNotice(error instanceof Error ? error.message : 'Sessions could not remove that account.');
     } finally {
-      login.setBusy(false);
+      setBusy(false);
     }
   };
   // A refused rename is answered in its row, where the person is still typing.
-  const rename = async (account: AccountProfile, label: string): Promise<string | null> => {
-    login.setBusy(true);
+  const rename = async (placement: AccountPlacement, label: string): Promise<string | null> => {
+    setBusy(true);
     try {
-      await renameAccount(account.tool, account.name, label, requestId);
-      await login.reload();
+      await renameAccount(placement.profile.tool, placement.profile.name, label, placement.serverId || undefined);
+      await reloadComputer(placement.serverId);
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : 'Sessions could not rename that account.';
     } finally {
-      login.setBusy(false);
+      setBusy(false);
     }
   };
   return { forget, rename };
-}
-
-function ComputerPicker(
-  { value, machineName, onChange }: { value: string; machineName: string; onChange: (id: string) => void }
-): JSX.Element {
-  const servers = useServers((state) => state.servers);
-  if (servers.length <= 1) return <span className="accounts-machine-name">{machineName}</span>;
-  return (
-    <label className="accounts-machine">
-      <span>Computer</span>
-      <select aria-label="Computer" value={value} onChange={(event) => onChange(event.currentTarget.value)}>
-        {servers.map((server) => (
-          <option key={server.id} value={server.id}>{serverDisplayName(server, true)}</option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-/** The accounts on another computer, read the same way Fleet reads them. */
-function useMachineAccounts(targetId: string, isHome: boolean): {
-  profiles: AccountProfile[];
-  loading: boolean;
-  error: string | null;
-  replace: (profiles: AccountProfile[]) => void;
-} {
-  const [profiles, setProfiles] = useState<AccountProfile[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (isHome) {
-      setProfiles(null);
-      setError(null);
-      return;
-    }
-    const controller = new AbortController();
-    setProfiles(null);
-    setError(null);
-    void fetchProfiles(controller.signal, targetId)
-      .then((list) => { if (!controller.signal.aborted) setProfiles(list); })
-      .catch((reason) => {
-        if (controller.signal.aborted) return;
-        setError(reason instanceof Error ? reason.message : 'That computer did not answer.');
-        setProfiles([]);
-      });
-    return () => controller.abort();
-  }, [targetId, isHome]);
-  return {
-    profiles: profiles ?? [],
-    loading: !isHome && profiles === null && error === null,
-    error,
-    replace: setProfiles
-  };
-}
-
-function AccountsFootnote(): JSX.Element {
-  return (
-    <p className="field-help">
-      Removing an account keeps its saved chats and sign-in on this computer.
-    </p>
-  );
 }
 
 function AccountsIntroduction(): JSX.Element {
@@ -223,215 +193,75 @@ function AccountsIntroduction(): JSX.Element {
     <header className="accounts-intro">
       <h1>Accounts</h1>
       <p>
-        Choose which account your agents use. Each sign-in stays separate on its computer.
+        Choose which account your agents use. Each account shows its usage once, however many computers it is signed into;
+        each computer keeps its own sign-in.
       </p>
     </header>
   );
 }
 
-const providerName = (account: AccountProfile): string => account.tool === 'codex' ? 'ChatGPT' : 'Claude';
+const providerName = (tool: 'claude' | 'codex'): string => tool === 'codex' ? 'ChatGPT' : 'Claude';
 
-/** The one name a row leads with: the nickname, then the verified email. */
-function accountTitle(account: AccountProfile): string {
-  return account.label?.trim() || account.identity?.email || `${providerName(account)} account`;
-}
-
-function AccountsList(
-  { profiles, machineName, busy, onSignIn, onRename, onForget }: {
-    profiles: AccountProfile[];
-    machineName: string;
+function AccountGroupRow(
+  { group, addable, busy, onSignIn, onRename, onForget, onAddOn }: {
+    group: AccountGroup;
+    addable: MachineAccounts[];
     busy: boolean;
-    onSignIn: (account: AccountProfile) => void;
-    onRename: (account: AccountProfile, label: string) => Promise<string | null>;
-    onForget: (account: AccountProfile) => void;
+    onSignIn: (placement: AccountPlacement) => void;
+    onRename: (placement: AccountPlacement, label: string) => Promise<string | null>;
+    onForget: (placement: AccountPlacement) => void;
+    onAddOn: (machine: MachineAccounts) => void;
   }
 ): JSX.Element {
-  if (profiles.length === 0) {
-    return <p className="accounts-empty">No second account on {machineName} yet.</p>;
-  }
-  return (
-    <ul className="accounts-list" aria-label={`Accounts on ${machineName}`}>
-      {profiles.map((account) => (
-        <AccountRow
-          key={`${account.tool}:${account.name}`}
-          account={account}
-          busy={busy}
-          onSignIn={onSignIn}
-          onRename={onRename}
-          onForget={onForget}
-        />
-      ))}
-    </ul>
-  );
-}
-
-function AccountRow(
-  { account, busy, onSignIn, onRename, onForget }: {
-    account: AccountProfile;
-    busy: boolean;
-    onSignIn: (account: AccountProfile) => void;
-    onRename: (account: AccountProfile, label: string) => Promise<string | null>;
-    onForget: (account: AccountProfile) => void;
-  }
-): JSX.Element {
-  const titleId = useId();
-  const [editing, setEditing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const title = accountTitle(account);
-  const nickname = account.label?.trim();
+  const title = groupTitle(group);
+  const nickname = group.placements.some((placement) => placement.profile.label?.trim());
   // The email is secondary only when a nickname leads; otherwise it already is
   // the title, and the provider says what kind of account this is.
   const details = [
-    providerName(account),
-    nickname && account.identity?.email ? account.identity.email : null,
-    account.identity?.plan ? `${account.identity.plan} plan` : null
+    providerName(group.tool),
+    nickname && group.identity?.email ? group.identity.email : null,
+    group.identity?.plan ? `${group.identity.plan} plan` : null
   ].filter(Boolean).join(' · ');
-  const activity = [
-    account.sessions.length > 0 ? `${account.sessions.length} active` : null,
-    account.last_used > 0 ? `Last used ${new Date(account.last_used).toLocaleDateString()}` : null
-  ].filter(Boolean).join(' · ');
-
   return (
-    <li className="accounts-row">
-      <ProviderMark provider={account.tool} size={32} />
+    <li className="accounts-row accounts-group">
+      <ProviderMark provider={group.tool} size={32} />
       <div className="accounts-identity">
-        {editing ? (
-          <NicknameEditor
-            account={account}
-            title={title}
-            busy={busy}
-            onCancel={() => { setEditing(false); setError(null); }}
-            onSave={async (label) => {
-              const failure = await onRename(account, label);
-              setError(failure);
-              if (!failure) setEditing(false);
-            }}
-          />
-        ) : <strong id={titleId}>{title}</strong>}
+        <strong>{title}</strong>
         <span className="accounts-details">{details}</span>
-        {activity ? <span className="accounts-activity">{activity}</span> : null}
-        {error ? <span className="accounts-row-error" role="alert">{error}</span> : null}
+        <AccountMatchNote group={group} />
       </div>
-      <AccountStatus account={account} />
-      {!editing ? (
-        <div className="accounts-actions" role="group" aria-labelledby={titleId}>
-          <button type="button" className="btn btn-ghost" disabled={busy} aria-describedby={titleId} onClick={() => onSignIn(account)}>
-            {account.identity ? 'Check account' : 'Sign in'}
-          </button>
-          <button type="button" className="btn btn-ghost" disabled={busy} aria-describedby={titleId} onClick={() => { setError(null); setEditing(true); }}>
-            Rename
-          </button>
-          <button type="button" className="btn btn-ghost accounts-remove" disabled={busy} aria-describedby={titleId} onClick={() => onForget(account)}>
-            Remove
-          </button>
-        </div>
-      ) : null}
+      <div className="accounts-usage-area"><AccountUsageSummary group={group} label={title} /></div>
+      <div className="accounts-computers">
+        <span className="accounts-computers-heading">Connected on</span>
+        <ul className="accounts-placements" aria-label={`Computers for ${title}`}>
+          {group.placements.map((placement) => (
+            <AccountPlacementRow
+              key={`${placement.serverId}:${placement.profile.tool}:${placement.profile.name}`}
+              placement={placement}
+              title={title}
+              busy={busy}
+              onSignIn={onSignIn}
+              onRename={onRename}
+              onForget={onForget}
+            />
+          ))}
+        </ul>
+        {addable.length > 0 ? <AddOnComputer title={title} provider={providerName(group.tool)} computers={addable} busy={busy} onAdd={onAddOn} /> : null}
+      </div>
     </li>
   );
 }
 
-function NicknameEditor(
-  { account, title, busy, onSave, onCancel }: {
-    account: AccountProfile;
-    title: string;
-    busy: boolean;
-    onSave: (label: string) => Promise<void>;
-    onCancel: () => void;
+function AccountMatchNote({ group }: { group: AccountGroup }): JSX.Element | null {
+  if (group.matchedByProvider && group.placements.length > 1) {
+    return <span className="accounts-activity">One allowance, signed in on {group.placements.length} computers.</span>;
   }
-): JSX.Element {
-  const [draft, setDraft] = useState(account.label ?? '');
-  const submit = (event: FormEvent): void => {
-    event.preventDefault();
-    if (!busy) void onSave(draft.trim());
-  };
-  return (
-    <form className="accounts-rename" onSubmit={submit}>
-      <input
-        value={draft}
-        onChange={(event) => setDraft(event.currentTarget.value)}
-        onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); onCancel(); } }}
-        maxLength={64}
-        placeholder={account.identity?.email ?? 'Work or personal'}
-        aria-label={`Nickname for ${title}`}
-        autoFocus
-      />
-      <button type="submit" className="btn btn-primary" disabled={busy}>Save</button>
-      <button type="button" className="btn btn-ghost" disabled={busy} onClick={onCancel}>Cancel</button>
-    </form>
-  );
-}
-
-/**
- * What Sessions actually knows about the sign-in. A provider-reported identity
- * is a check that happened; a login file on disk is only a file, so it never
- * reads as ready.
- */
-function AccountStatus({ account }: { account: AccountProfile }): JSX.Element {
-  if (account.identity) {
+  if (!group.matchedByProvider && group.sameEmailOn.length > 0) {
     return (
-      <span
-        className="accounts-status is-verified"
-        title={`The provider reported this account on ${new Date(account.identity.checked_at).toLocaleString()}. This does not check remaining usage.`}
-      >
-        Verified {new Date(account.identity.checked_at).toLocaleDateString()}
+      <span className="accounts-activity" title="The provider did not report an account ID, and one email can belong to several workspaces or organizations with separate allowances.">
+        The same email is also listed on {group.sameEmailOn.join(', ')}. Sessions cannot confirm it is the same workspace, so it is shown separately.
       </span>
     );
   }
-  return (
-    <span
-      className="accounts-status"
-      title={account.signed_in
-        ? 'A provider login file is present, but Sessions has not confirmed who is signed in. Check this account to confirm who is signed in.'
-        : 'Check this account to confirm who is signed in.'}
-    >
-      Identity not checked
-    </span>
-  );
-}
-
-function AddAccountForm(
-  { busy, machineName, onAdd, onCancel }: {
-    busy: boolean;
-    machineName?: string;
-    onAdd: (tool: 'claude' | 'codex', name: string, label: string) => void;
-    onCancel: () => void;
-  }
-): JSX.Element {
-  const [tool, setTool] = useState<'claude' | 'codex'>('claude');
-  const [label, setLabel] = useState('');
-  return (
-    <form
-      className="settings-card accounts-add"
-      aria-label="Add an account"
-      onSubmit={(event) => { event.preventDefault(); if (!busy) onAdd(tool, '', label.trim()); }}
-    >
-      <h2>Add an account{machineName ? ` on ${machineName}` : ''}</h2>
-      <label>
-        <span>Provider</span>
-        <select value={tool} onChange={(event) => setTool(event.currentTarget.value as 'claude' | 'codex')} aria-label="Provider">
-          <option value="claude">Claude</option>
-          <option value="codex">ChatGPT / Codex</option>
-        </select>
-      </label>
-      <label>
-        <span>Nickname (optional)</span>
-        <input
-          value={label}
-          onChange={(event) => setLabel(event.currentTarget.value)}
-          placeholder="Work or personal"
-          maxLength={64}
-          aria-label="Account label"
-        />
-      </label>
-      <p className="field-help">
-        We&rsquo;ll show which account connected after you sign in. No API key needed.
-      </p>
-      <div className="accounts-add-actions">
-        <button type="submit" className="btn btn-primary" disabled={busy}>
-          {busy ? 'Preparing…' : 'Continue'}
-        </button>
-        <button type="button" className="btn btn-ghost" disabled={busy} onClick={onCancel}>Cancel</button>
-      </div>
-    </form>
-  );
+  return null;
 }

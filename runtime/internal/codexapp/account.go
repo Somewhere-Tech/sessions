@@ -39,6 +39,11 @@ type Account struct {
 	Type     string `json:"type"`
 	Email    string `json:"email"`
 	PlanType string `json:"planType"`
+	// ChatgptAccountID is the provider's own ChatGPT account (workspace)
+	// identifier, when account/read reports one. Current app-server versions
+	// report only email and plan, and an email alone cannot say which workspace
+	// a subscription belongs to; absence is normal and must stay unresolved.
+	ChatgptAccountID string `json:"chatgptAccountId,omitempty"`
 }
 
 type AccountLogin struct {
@@ -49,10 +54,21 @@ type AccountLogin struct {
 }
 
 func (c *Client) ReadAccount(ctx context.Context) (*Account, error) {
+	return c.readAccount(ctx, true)
+}
+
+// PeekAccount reads the signed-in identity without asking the provider to
+// refresh its token first. A usage read shares its home with running sessions,
+// so it leaves token rotation to the provider's own schedule.
+func (c *Client) PeekAccount(ctx context.Context) (*Account, error) {
+	return c.readAccount(ctx, false)
+}
+
+func (c *Client) readAccount(ctx context.Context, refresh bool) (*Account, error) {
 	var result struct {
 		Account *Account `json:"account"`
 	}
-	err := c.call(ctx, "account/read", map[string]bool{"refreshToken": true}, &result)
+	err := c.call(ctx, "account/read", map[string]bool{"refreshToken": refresh}, &result)
 	return result.Account, err
 }
 

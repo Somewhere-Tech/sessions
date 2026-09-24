@@ -792,6 +792,55 @@ daemon restart start again. A known signed-in profile is checked without logging
 it out or replacing it. Profiles remain host-local; signing in on another host
 does not transfer credentials between computers.
 
+The identity may also carry `account_id`, the provider's own stable account or
+workspace identifier, **only** when the provider reports one. Current Codex
+app-server versions report `email` and `plan` alone. An email does not prove
+which workspace or organization an allowance belongs to, so clients must not
+treat two homes with the same email and no shared `account_id` as one account.
+
+### `GET /api/account-usage`
+
+Auth required. Answers each listed account's allowance as its provider reports
+it, or one account with `?tool=claude|codex&name=<name>`:
+
+```json
+{"accounts":[{"tool":"codex","name":"work","label":"Work","state":"available","checked_at":1790000000000,"read_at":1790000000000,"identity":{"email":"me@example.com","plan":"team","checked_at":1790000000000},"buckets":[{"limit_id":"codex","windows":[{"kind":"primary","used_percent":12,"window_minutes":300,"resets_at":1790018000000},{"kind":"secondary","used_percent":40,"window_minutes":10080}]}]}],"checked_at":1790000000000,"ttl_seconds":60}
+```
+
+`state` is one of:
+
+- `available`: `buckets` are the provider's reading at `read_at`.
+- `signed_out`: the provider reported no sign-in in that home at `checked_at`.
+- `unsupported`: the provider, its version, or its sign-in kind offers no
+  supported usage read. Claude Code has none; an older Codex without
+  `account/rateLimits/read` and API-key sign-ins also answer this way.
+- `unavailable`: the read failed, timed out, or has not answered yet. `message`
+  says what to do next. When an earlier reading exists it is returned with
+  `stale: true` and its own `read_at`; `checked_at` is the failed attempt.
+
+Every bucket is a separate metered limit and must not be added to another.
+`windows` holds the provider's `primary` and `secondary` windows when present;
+`used_percent` is 0-100, `window_minutes` and `resets_at` (Unix milliseconds)
+are omitted when the provider did not report them. Optional `plan`, `reached`
+(the provider's limit-reached reason) and `credits`
+(`{"has_credits","unlimited","balance"}`) are copied when present. `identity`
+is what the provider reported during that read; it is not proof that a future
+request will succeed.
+
+Codex readings come from a private stdio `codex app-server` in the account's
+own provider home, with the same environment as sign-in, calling `account/read`
+without a token refresh and then `account/rateLimits/read`. It starts no thread
+or model turn. Sessions never opens a credential or calls a provider endpoint
+itself. Readings are cached for 60 seconds; concurrent requests share one
+provider read; at most two provider reads run at once; one read is bounded to 25
+seconds, and a request waits at most 20 seconds before reporting the rest as
+`unavailable`. `?refresh=1` skips the cache (not more often than every 10
+seconds per account) and is limited to local clients and paired host
+administrators; anonymous open-access callers receive 403 for it. Responses
+are `no-store`. An unknown or forgotten account is `400`. Implemented by
+[`internal/api/account_usage_handlers.go`](../internal/api/account_usage_handlers.go)
+and [`internal/session/account_usage.go`](../internal/session/account_usage.go).
+
 ### `DELETE /api/profiles/:tool/:name`
 
 Auth required. Unregisters the account from this machine's listing and **leaves
