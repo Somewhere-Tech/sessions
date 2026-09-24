@@ -181,6 +181,7 @@ func (c *accountUsageCache) forget(listed []ProfileStatus) {
 	defer c.mu.Unlock()
 	for key := range c.entries {
 		if !keep[key] {
+			c.entries[key].invalidated = true
 			delete(c.entries, key)
 		}
 	}
@@ -305,10 +306,11 @@ func withLastReading(result AccountUsage, good *AccountUsage) AccountUsage {
 	return result
 }
 
-// sameAccount is true only when both identities are known and agree on every
-// field that tells accounts apart.
+// Email alone cannot distinguish workspaces, even within one provider home
+// when its user signs in outside Sessions. Without a stable ID, keep failed
+// reads unknown instead of carrying another workspace's allowance forward.
 func sameAccount(left, right *AccountIdentity) bool {
-	return left != nil && right != nil && left.Email != "" &&
+	return left != nil && right != nil && left.Email != "" && left.AccountID != "" &&
 		strings.EqualFold(left.Email, right.Email) &&
 		left.AccountID == right.AccountID && left.Organization == right.Organization
 }

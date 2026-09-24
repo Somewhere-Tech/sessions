@@ -822,8 +822,10 @@ it, or one account with `?tool=claude|codex&name=<name>`:
 - `unavailable`: the read failed, timed out, or has not answered yet. `message`
   says what to do next. An earlier reading is returned with `stale: true` and
   its own `read_at` only when this attempt's provider-reported `identity`
-  matches the account that reading was taken for (email, `organization` and
-  `account_id`); otherwise no buckets are returned. `checked_at` is the failed
+  matches the account that reading was taken for (a nonempty stable
+  `account_id`, plus matching email and `organization`); otherwise no buckets
+  are returned. Current email-only Codex identities cannot establish this
+  match after a failed refresh. `checked_at` is the failed
   attempt. A sign-in, recheck, re-add or removal through Sessions discards every
   earlier reading of that home, and a read that started before it answers as
   `unavailable` without buckets and is not cached.

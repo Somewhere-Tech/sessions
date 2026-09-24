@@ -40,7 +40,7 @@ func usageManager(t *testing.T, reader accountUsageReader) (*Manager, *usageCloc
 func availableUsage(percent int) AccountUsage {
 	return AccountUsage{
 		State: AccountUsageAvailable, CheckedAt: 1, ReadAt: 1,
-		Identity: &AccountIdentity{Email: "a@example.test", CheckedAt: 1},
+		Identity: &AccountIdentity{Email: "a@example.test", AccountID: "workspace-a", CheckedAt: 1},
 		Buckets:  []AccountUsageBucket{{LimitID: "codex", Windows: []AccountUsageWindow{{Kind: "primary", UsedPercent: percent}}}},
 	}
 }
@@ -135,7 +135,7 @@ func TestAccountUsageDeadlineReportsPendingAndKeepsReading(t *testing.T) {
 func failedUsage(email string) AccountUsage {
 	result := AccountUsage{State: AccountUsageUnavailable, Message: "Codex could not read this account's usage. Refresh to try again."}
 	if email != "" {
-		result.Identity = &AccountIdentity{Email: email, CheckedAt: 2}
+		result.Identity = &AccountIdentity{Email: email, AccountID: "workspace-a", CheckedAt: 2}
 	}
 	return result
 }
@@ -211,6 +211,7 @@ func TestAccountUsageIdentitySwapClearsTheOldReading(t *testing.T) {
 		t.Fatalf("cleared reading came back = %#v", usage[0])
 	}
 	for _, other := range []*AccountIdentity{
+		{Email: "a@example.test"},
 		{Email: "a@example.test", Organization: "Other org"},
 		{Email: "a@example.test", AccountID: "ws-2"},
 	} {
@@ -220,6 +221,16 @@ func TestAccountUsageIdentitySwapClearsTheOldReading(t *testing.T) {
 		if got := withLastReading(failed, &good); got.Stale {
 			t.Fatalf("identity %#v inherited %#v", other, good.Identity)
 		}
+	}
+}
+
+func TestAccountUsageEmailOnlyCannotProveUnchangedWorkspace(t *testing.T) {
+	good := availableUsage(42)
+	good.Identity.AccountID = ""
+	failed := failedUsage("a@example.test")
+	failed.Identity.AccountID = ""
+	if got := withLastReading(failed, &good); got.Stale || len(got.Buckets) > 0 {
+		t.Fatalf("same email with unknown workspace inherited previous allowance: %#v", got)
 	}
 }
 

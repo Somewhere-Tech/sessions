@@ -194,8 +194,7 @@ function AccountsIntroduction(): JSX.Element {
     <header className="accounts-intro">
       <h1>Accounts</h1>
       <p>
-        Choose which account your agents use. Each account shows its usage once, however many computers it is signed into;
-        each computer keeps its own sign-in.
+        See usage beside each account and where it is available. Each computer keeps its own sign-in.
       </p>
     </header>
   );

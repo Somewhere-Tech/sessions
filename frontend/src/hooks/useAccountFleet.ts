@@ -32,6 +32,7 @@ export function useAccountFleet({ homeId, homeName, homeProfiles, onHomeReload }
   }, [servers, homeId, homeName]);
   const [state, setState] = useState<Record<string, MachineState>>({});
   const [refreshing, setRefreshing] = useState(false);
+  const usageVersions = useRef<Record<string, number>>({});
   // Set on every setup, not only at creation: StrictMode sets effects up,
   // cleans them up and sets them up again, and answers must still land after.
   const alive = useRef(true);
@@ -45,10 +46,12 @@ export function useAccountFleet({ homeId, homeName, homeProfiles, onHomeReload }
   }, []);
 
   const readUsage = useCallback(async (id: string, refresh = false): Promise<void> => {
+    const version = usageVersions.current[id] ?? 0;
     try {
-      patch(id, { usage: await fetchAccountUsage(id || undefined, { refresh }), usageError: undefined });
+      const usage = await fetchAccountUsage(id || undefined, { refresh });
+      if (version === (usageVersions.current[id] ?? 0)) patch(id, { usage, usageError: undefined });
     } catch (reason) {
-      patch(id, { usageError: message(reason, 'That computer did not answer.') });
+      if (version === (usageVersions.current[id] ?? 0)) patch(id, { usageError: message(reason, 'That computer did not answer.') });
     }
   }, [patch]);
 
@@ -91,7 +94,8 @@ export function useAccountFleet({ homeId, homeName, homeProfiles, onHomeReload }
    * again: the reading from before the sign-in no longer describes it.
    */
   const accept = useCallback((id: string, profiles: AccountProfile[]): void => {
-    patch(id, { profiles, profilesError: undefined });
+    usageVersions.current[id] = (usageVersions.current[id] ?? 0) + 1;
+    patch(id, { profiles, profilesError: undefined, usage: undefined, usageError: undefined });
     if (id === homeId) onHomeReload?.(profiles);
     void readUsage(id, true);
   }, [patch, homeId, onHomeReload, readUsage]);

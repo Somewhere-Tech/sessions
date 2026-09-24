@@ -188,7 +188,8 @@ and limits are never added together. When several computers read the same
 account, the freshest reading is shown with the computer and time it came from.
 A computer that fails or does not answer is never shown as signed out or zero:
 it keeps the last reading, marked stale, when the provider still reports the
-same account, and otherwise says usage is unknown. A computer that could not
+same stable account ID, and otherwise says usage is unknown. With today's
+email-only Codex identity, a failed refresh therefore stays unknown. A computer that could not
 be reached is named at the top of the page. Claude usage is not connected in
 Sessions yet, so Claude accounts say so and point to Claude for current limits
 rather than showing a guess. An older Codex without the method asks to be
