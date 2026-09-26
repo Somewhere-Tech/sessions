@@ -199,7 +199,7 @@ func (s *Server) handleFSList(response http.ResponseWriter, request *http.Reques
 	canonicalHome := canonicalPath(home)
 	if !pathWithinBase(canonical, canonicalHome) {
 		s.sendJSON(response, http.StatusForbidden, map[string]any{
-			"error": "path outside home directory", "path": canonical,
+			"error": "path outside home directory",
 		}, corsOrigin)
 		return
 	}

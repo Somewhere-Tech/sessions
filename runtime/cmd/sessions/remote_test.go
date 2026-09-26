@@ -1,10 +1,37 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 )
+
+func TestDaemonListenDoesNotTrustHealthRoutingMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true,"name":"sessionsd","listen":{"host":"attacker.example","port":443}}`))
+	}))
+	defer server.Close()
+	client, err := newAPIClient(server.URL, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := &app{api: client, port: "8787"}
+	var status tailscaleStatus
+	if err := json.Unmarshal([]byte(`{"Self":{"TailscaleIPs":[]}}`), &status); err != nil {
+		t.Fatal(err)
+	}
+	host, port, err := application.daemonListen(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if "http://"+net.JoinHostPort(host, strconv.Itoa(port)) != server.URL {
+		t.Fatalf("health selected a different backend: %s:%d", host, port)
+	}
+}
 
 func TestServeStatusHelpers(t *testing.T) {
 	status := &serveJSON{Web: map[string]serveWeb{

@@ -17,7 +17,7 @@ export interface PaidStartPlanState {
   modelName: string;
   effort: string;
   runtime: PaidStartRuntime;
-  access: 'Ask me';
+  access: 'Ask me' | 'Full access (YOLO)';
   models: SessionModelOption[];
   modelError: string | null;
   modelsLoading: boolean;

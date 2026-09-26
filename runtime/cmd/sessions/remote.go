@@ -398,7 +398,8 @@ func (a *app) daemonListen(status tailscaleStatus) (string, int, error) {
 		target := (&url.URL{Scheme: candidate.scheme, Host: net.JoinHostPort(candidate.host, strconv.Itoa(candidate.port)), Path: "/api/health"}).String()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		request, _ := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-		response, requestErr := http.DefaultClient.Do(request)
+		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		response, requestErr := client.Do(request)
 		if requestErr != nil {
 			cancel()
 			continue
@@ -411,15 +412,13 @@ func (a *app) daemonListen(status tailscaleStatus) (string, int, error) {
 				Port int    `json:"port"`
 			} `json:"listen"`
 		}
-		decodeErr := json.NewDecoder(response.Body).Decode(&health)
+		decodeErr := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&health)
 		response.Body.Close()
 		cancel()
 		if response.StatusCode != 200 || decodeErr != nil || !health.OK || health.Name != "sessionsd" {
 			continue
 		}
-		if health.Listen.Host != "" {
-			return health.Listen.Host, health.Listen.Port, nil
-		}
+		// Public health metadata is not authority to select a different backend.
 		return candidate.host, candidate.port, nil
 	}
 	parts := make([]string, 0, len(candidates))

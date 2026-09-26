@@ -157,15 +157,15 @@ func writeRecoveryPlan(a *app, report recovery.Report, all bool) error {
 		}
 		if all {
 			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				name, lane.Tool, lane.Cwd, recoveryTime(lane.LastActivityAtMS),
-				outcome.status, outcome.reason); err != nil {
+				terminalSafe(name), terminalSafe(lane.Tool), terminalSafe(lane.Cwd), recoveryTime(lane.LastActivityAtMS),
+				outcome.status, terminalSafe(outcome.reason)); err != nil {
 				return err
 			}
 			continue
 		}
 		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			name, lane.Tool, lane.Cwd, recoveryTime(lane.LastActivityAtMS),
-			shellRecipe(outcome.argv)); err != nil {
+			terminalSafe(name), terminalSafe(lane.Tool), terminalSafe(lane.Cwd), recoveryTime(lane.LastActivityAtMS),
+			terminalSafe(shellRecipe(outcome.argv))); err != nil {
 			return err
 		}
 	}

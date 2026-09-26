@@ -117,7 +117,7 @@ async function bootstrap(): Promise<void> {
     // scrubbed) before considering whether this page is a daemon's own
     // non-8787 UI.
     const endpointFragmentPresent = fragment.has('endpoint');
-    if (!pairFragmentPresent && endpointFragmentPresent) {
+    if (!pairFragmentPresent && (endpointFragmentPresent || fragment.has('token'))) {
       await import('./lib/hostedBootstrap').then(({ bootstrapHostedConnection }) => bootstrapHostedConnection());
     }
     if (!pairFragmentPresent && !endpointFragmentPresent) {

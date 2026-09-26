@@ -208,6 +208,13 @@ try {
   assert.deepEqual(unauthorized.pageErrors, []);
   await unauthorized.page.close();
 
+  t.scenario('a token-only fragment is scrubbed even without an endpoint');
+  const tokenOnly = await openCase('reject');
+  await tokenOnly.page.goto(`${origin}/#token=secret-token-only`, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+  await t.waitForSelector(tokenOnly.page, '[data-testid="connect-screen"]', 'the connect picker after scrubbing an incomplete credential link', { timeout: 10_000 });
+  assert.equal(await tokenOnly.page.evaluate(() => window.location.hash), '');
+  await tokenOnly.page.close();
+
   t.scenario('an origin with no daemon falls back to the connect picker');
   const rejected = await openCase('reject');
   await rejected.page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 15_000 });

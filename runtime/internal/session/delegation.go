@@ -58,7 +58,8 @@ func (m *Manager) resolveDelegatedExecution(
 	case state.PermissionsConstrained:
 		request.Permissions = state.PermissionsConstrained
 	default:
-		if isChild && request.DelegationKind == "agent" {
+		// Presentation provenance is not permission authority.
+		if isChild {
 			if autonomous {
 				request.Permissions = state.PermissionsFull
 			} else {
@@ -75,7 +76,6 @@ func (m *Manager) resolveDelegatedExecution(
 	} else {
 		request.Args = applyResolvedPermissions(tool, request.Args, request.Permissions)
 	}
-
 	// Delegated lanes work in their own Sessions-owned worktree unless the
 	// caller declines. Autonomous lanes edit files without asking; giving each
 	// one a branch of its own keeps a manager's checkout intact and makes the

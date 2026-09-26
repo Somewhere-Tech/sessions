@@ -27,10 +27,13 @@ func NewClient(endpoint, token string) (*Client, error) {
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Hostname() == "" {
-		return nil, fmt.Errorf("invalid target endpoint %q", endpoint)
+		return nil, errors.New("invalid target endpoint")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return nil, fmt.Errorf("target endpoint must use http or https")
+	}
+	if parsed.User != nil {
+		return nil, errors.New("target endpoint must not contain credentials; use the saved machine credential")
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
 		return nil, fmt.Errorf("target endpoint must not include a path, query, or fragment")
@@ -45,6 +48,10 @@ func NewClient(endpoint, token string) (*Client, error) {
 // NewRelayClient sends migration requests through a local sessionsd while
 // retaining the real destination endpoint in plans and lineage records.
 func NewRelayClient(relayOrigin, destination, machineID string) (*Client, error) {
+	displayed, err := NewClient(destination, "")
+	if err != nil {
+		return nil, fmt.Errorf("invalid destination: %w", err)
+	}
 	client, err := NewClient(relayOrigin, "")
 	if err != nil {
 		return nil, fmt.Errorf("invalid fleet relay endpoint: %w", err)
@@ -53,7 +60,7 @@ func NewRelayClient(relayOrigin, destination, machineID string) (*Client, error)
 		return nil, fmt.Errorf("invalid fleet relay machine id")
 	}
 	client.endpoint.Path = "/api/fleet/" + machineID
-	client.display = strings.TrimSuffix(destination, "/")
+	client.display = displayed.Endpoint()
 	return client, nil
 }
 

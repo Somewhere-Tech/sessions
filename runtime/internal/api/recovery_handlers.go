@@ -95,8 +95,8 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			}, corsOrigin)
 			return
 		}
-		if body.Permissions != "" && body.Permissions != state.PermissionsConstrained {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "resume permissions must be constrained"}, corsOrigin)
+		if body.Permissions != "" && body.Permissions != state.PermissionsConstrained && body.Permissions != state.PermissionsFull {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "resume permissions must be constrained or full"}, corsOrigin)
 			return
 		}
 		recoveryMutationMu.Lock()
@@ -237,7 +237,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 					source.SourceKind == string(watch.ClaudeMirror)
 			}
 			if restoreFromTranscript {
-				if strings.TrimSpace(body.ClaudePermissionMode) != "" {
+				if strings.TrimSpace(body.ClaudePermissionMode) != "" || body.Permissions == state.PermissionsFull {
 					s.sendJSON(response, http.StatusConflict, map[string]any{
 						"error": "A permission override requires Claude's native resume handle; this conversation can only be restored from its Sessions transcript.",
 					}, corsOrigin)
@@ -322,7 +322,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 				return
 			}
 			if destination != "" && destination != sourceProvider {
-				if strings.TrimSpace(body.ClaudePermissionMode) != "" {
+				if strings.TrimSpace(body.ClaudePermissionMode) != "" || body.Permissions == state.PermissionsFull {
 					s.sendJSON(response, http.StatusBadRequest, map[string]any{
 						"error": "--permissions applies only to a same-provider Claude resume, not a cross-provider copy",
 					}, corsOrigin)

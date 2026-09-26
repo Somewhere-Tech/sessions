@@ -527,7 +527,7 @@ export async function adoptConversation(
   remoteControl?: boolean,
   model?: string,
   effort?: string,
-  permissions?: 'constrained',
+  permissions?: 'constrained' | 'full',
   serverId?: string
 ): Promise<AdoptConversationResult> {
   const server = requestedServer(serverId);

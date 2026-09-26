@@ -1705,8 +1705,11 @@ runtime.
 
 `model` and optional `effort` select the reviewed provider settings for the new
 runtime. `permissions:"constrained"` records and enforces the app's **Ask me**
-access plan; other values are rejected. Omitting these additive fields keeps
-the earlier provider-default behavior for existing clients.
+access plan. An explicit `permissions:"full"` selects full access for a native
+same-provider resume; transcript-only restoration and cross-provider copies
+reject that override. Other values are rejected. The resume dialog defaults
+to Ask me and offers Full access (YOLO) explicitly. Omitting these additive
+fields keeps the earlier provider-default behavior for existing clients.
 
 `claudePermissionMode` is an optional per-launch Claude override using the same
 typed values as `POST /api/sessions` (`inherit`, Claude's constrained modes, or

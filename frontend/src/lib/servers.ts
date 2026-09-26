@@ -593,7 +593,7 @@ export function blockNativeMachineCredentialPersistence(detail: string): void {
 export async function syncNativeAgentMachineAccess(): Promise<void> {
   if (!isTauri()) return;
   const machines = useServers.getState().servers.flatMap((server) => {
-    if (server.isDefault || server.relayMachineId || !server.machineId || !server.token) return [];
+    if (server.isDefault || server.relayMachineId || !server.machineId || !server.deviceId || !server.token) return [];
     return [{
       machineId: server.machineId,
       name: serverDisplayName(server),

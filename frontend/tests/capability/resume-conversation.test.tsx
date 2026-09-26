@@ -89,6 +89,24 @@ describe('capability: resume a conversation', () => {
     expect(rows[0]).toHaveAttribute('data-session-id', resumedLaneId);
   });
 
+  it('lets a person explicitly resume the same conversation with full access', async () => {
+    const machine = localMachine();
+    const daemon = installFakeDaemon([machine]);
+    useFakeMachines([machine]);
+    const user = userEvent.setup();
+    render(<ResumeFlow onResumed={() => {}} />);
+    await user.click(screen.getByRole('button', { name: 'Resume' }));
+    await user.click(await screen.findByRole('button', { name: /Thursday migration plan/ }));
+    const permissions = screen.getByRole('combobox', { name: 'Resume permissions' });
+    expect(permissions).toHaveValue('constrained');
+    await user.selectOptions(permissions, 'full');
+    expect(screen.getByRole('group', { name: 'Start plan' })).toHaveTextContent('Full access (YOLO)');
+    expect(screen.getByText('The agent can run commands and change files without asking.')).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: 'Start Claude (Fable 5)' }));
+    await waitFor(() => expect(daemon.adopted).toEqual([PROVIDER_UUID]));
+    expect(daemon.requests.find((request) => request.path === '/api/recovery/adopt')?.body).toMatchObject({ permissions: 'full' });
+  });
+
   it('resumes an already selected ended conversation without opening a chooser', async () => {
     const ended = makeSession({
       id: 'ended-runtime',

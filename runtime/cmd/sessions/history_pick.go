@@ -128,7 +128,7 @@ func (p *conversationPicker) run() error {
 		// the daemon would reject.
 		if len(row.Resume) == 0 {
 			fmt.Fprintf(p.app.stderr, "sessions: %s cannot be reopened: %s\n",
-				conversationLabel(row), row.Reason)
+				terminalSafe(conversationLabel(row)), terminalSafe(row.Reason))
 			continue
 		}
 		confirmed, err := p.confirm(reader, row)
@@ -154,7 +154,7 @@ func (p *conversationPicker) confirm(reader *bufio.Reader, row conversationRow) 
 		// A live conversation attaches; resume would be refused by the daemon.
 		verb = "Attach to"
 	}
-	fmt.Fprintf(p.app.stderr, "%s %s?\n  %s\n[y/N] ", verb, conversationLabel(row), shellRecipe(row.Resume))
+	fmt.Fprintf(p.app.stderr, "%s %s?\n  %s\n[y/N] ", verb, terminalSafe(conversationLabel(row)), terminalSafe(shellRecipe(row.Resume)))
 	line, err := reader.ReadString('\n')
 	if line == "" {
 		fmt.Fprintln(p.app.stderr)
@@ -174,9 +174,9 @@ func (p *conversationPicker) confirm(reader *bufio.Reader, row conversationRow) 
 // there — no session is created, nothing is marked.
 func (p *conversationPicker) showPreview(index int) error {
 	row := p.rows[index]
-	label := fmt.Sprintf("%d. %s", index+1, conversationName(row))
+	label := fmt.Sprintf("%d. %s", index+1, terminalSafe(conversationName(row)))
 	if len(row.Resume) == 0 {
-		fmt.Fprintf(p.app.stderr, "sessions: no preview for %s: %s\n", label, row.Reason)
+		fmt.Fprintf(p.app.stderr, "sessions: no preview for %s: %s\n", label, terminalSafe(row.Reason))
 		return nil
 	}
 	messages, cached := p.previews[index]
@@ -192,10 +192,10 @@ func (p *conversationPicker) showPreview(index int) error {
 		}
 	}
 	if failed {
-		fmt.Fprintf(p.app.stderr, "sessions: preview unavailable for %s: %s\n", label, failure)
+		fmt.Fprintf(p.app.stderr, "sessions: preview unavailable for %s: %s\n", label, terminalSafe(failure))
 		return nil
 	}
-	if _, err := fmt.Fprintf(p.app.stdout, "\n%s\n  %s\n", label, p.app.conversationMetaLine(row)); err != nil {
+	if _, err := fmt.Fprintf(p.app.stdout, "\n%s\n  %s\n", label, terminalSafe(p.app.conversationMetaLine(row))); err != nil {
 		return err
 	}
 	if len(messages) == 0 {
@@ -205,11 +205,11 @@ func (p *conversationPicker) showPreview(index int) error {
 	}
 	for _, message := range messages {
 		if _, err := fmt.Fprintf(p.app.stdout, "  %-10s %s\n",
-			message.Role, truncateRunes(message.Text, historySnippetRunes)); err != nil {
+			terminalSafe(message.Role), truncateRunes(terminalSafe(message.Text), historySnippetRunes)); err != nil {
 			return err
 		}
 	}
-	_, err := fmt.Fprintf(p.app.stdout, "  %s\n\n", shellRecipe(row.Resume))
+	_, err := fmt.Fprintf(p.app.stdout, "  %s\n\n", terminalSafe(shellRecipe(row.Resume)))
 	return err
 }
 

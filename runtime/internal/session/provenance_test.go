@@ -98,6 +98,16 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 	}); createErr == nil || !strings.Contains(createErr.Error(), "cannot exceed its parent's permissions") {
 		t.Fatalf("child permission escalation err=%v", createErr)
 	}
+	masqueraded, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "codex", Cwd: root, CreatorSessionID: parent.ID, DelegationKind: "user",
+		Args: []string{"--dangerously-bypass-approvals-and-sandbox"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if masqueraded.Permissions != state.PermissionsConstrained || slices.Contains(masqueraded.Args, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("presentation kind bypassed inherited policy: %#v", masqueraded)
+	}
 	if err := state.SaveSettings(config.SettingsPath, state.Settings{
 		Delegation: &state.DelegationSettings{Access: state.DelegatedAccessConsentAutonomous},
 		Onboarding: &state.OnboardingSettings{

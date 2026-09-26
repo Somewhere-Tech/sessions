@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -215,8 +216,8 @@ func TestFSListRejectsTraversal(t *testing.T) {
 			}
 			var body map[string]any
 			decodeBody(t, response, &body)
-			assertExactKeys(t, body, "error", "path")
-			if body["error"] != "path outside home directory" || body["path"] != canonicalOutside {
+			assertExactKeys(t, body, "error")
+			if body["error"] != "path outside home directory" || strings.Contains(response.Body.String(), canonicalOutside) {
 				t.Fatalf("traversal response = %#v", body)
 			}
 		})

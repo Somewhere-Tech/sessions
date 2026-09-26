@@ -237,7 +237,7 @@ export function ResumeActions({
         />
       ) : selected ? (
         <PaidStartPlan
-          plan={plan}
+          plan={{ ...plan, access: !crossProvider && same.permissions === 'full' ? 'Full access (YOLO)' : 'Ask me' }}
           title={title}
           sizeLine={sizeLine}
           intro={crossProvider
@@ -263,7 +263,7 @@ export function ResumeActions({
               onLastMessages={setLastMessages}
               onConfirmed={setConfirmed}
             />
-          ) : null}
+          ) : !selected.transcriptRecovery ? <ResumePermissions value={same.permissions} onChange={same.setPermissions} disabled={Boolean(working)} /> : null}
         </PaidStartPlan>
       ) : null}
       {error ? <div className="dialog-error" role="alert">{error}</div> : null}
@@ -291,6 +291,16 @@ export function ResumeActions({
   );
 }
 
+function ResumePermissions({ value, onChange, disabled }: { value: 'constrained' | 'full'; onChange: (value: 'constrained' | 'full') => void; disabled: boolean }): JSX.Element {
+  return <label className="field-label">Permissions
+    <select aria-label="Resume permissions" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value === 'full' ? 'full' : 'constrained')}>
+      <option value="constrained">Restricted — ask before sensitive actions</option>
+      <option value="full">Full access (YOLO) — skip permission prompts</option>
+    </select>
+    {value === 'full' ? <small>The agent can run commands and change files without asking.</small> : null}
+  </label>;
+}
+
 function useSameProviderResume(
   selected: ResumableSession | null,
   sourceSessionId: string | undefined,
@@ -301,7 +311,9 @@ function useSameProviderResume(
   refresh: () => Promise<void>,
   onResumed: (laneId: string) => void,
   onClose: () => void
-): { busy: boolean; error: string | null; partialResult: AdoptOutcome | null; resume: () => Promise<void>; repair: () => Promise<void> } {
+): { busy: boolean; error: string | null; partialResult: AdoptOutcome | null; resume: () => Promise<void>; repair: () => Promise<void>; permissions: 'constrained' | 'full'; setPermissions: (value: 'constrained' | 'full') => void } {
+  const [permissions, setPermissions] = useState<'constrained' | 'full'>('constrained');
+  useEffect(() => setPermissions('constrained'), [selected?.sessionId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [partialResult, setPartialResult] = useState<AdoptOutcome | null>(null);
@@ -319,7 +331,7 @@ function useSameProviderResume(
         undefined,
         model,
         effort,
-        'constrained'
+        permissions
       );
       await refresh();
       preferNextSessionView(outcome.result.laneId, runtimeMode === 'terminal' && !outcome.result.transcriptRecovery ? 'terminal' : 'remote');
@@ -347,7 +359,7 @@ function useSameProviderResume(
       setBusy(false);
     }
   };
-  return { busy, error, partialResult, resume, repair };
+  return { busy, error, partialResult, resume, repair, permissions, setPermissions };
 }
 
 function useContinuationRun(

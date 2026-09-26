@@ -232,7 +232,10 @@ export async function bootstrapHostedConnection(): Promise<void> {
   if (typeof window === 'undefined' || !window.location.hash) return;
 
   const params = new URLSearchParams(window.location.hash.slice(1));
-  if (!params.has('endpoint')) return;
+  if (!params.has('endpoint')) {
+    if (params.has('token')) scrubFragment();
+    return;
+  }
 
   const endpointValue = params.get('endpoint') ?? '';
   const tokenValue = params.get('token');
