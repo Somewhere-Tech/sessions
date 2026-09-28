@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -252,17 +251,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`)
 		t.Fatal(err)
 	}
 	return store
-}
-
-func processCPUForTest(t *testing.T) time.Duration {
-	t.Helper()
-	var usage syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {
-		t.Fatal(err)
-	}
-	user := time.Duration(usage.Utime.Sec)*time.Second + time.Duration(usage.Utime.Usec)*time.Microsecond
-	system := time.Duration(usage.Stime.Sec)*time.Second + time.Duration(usage.Stime.Usec)*time.Microsecond
-	return user + system
 }
 
 // What the Mini pays once, on the first start that has the index: 263,512
