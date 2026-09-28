@@ -11,6 +11,7 @@ const run = promisify(execFile);
 const { commands, extract, sha256 } = require('../lib/archive.cjs');
 const { release } = require('../lib/install.cjs');
 const { prepare } = require('../scripts/prepare-release.cjs');
+const { testPackedRelease } = require('../scripts/test-packed-release.cjs');
 const packageSource = path.resolve(__dirname, '..');
 
 async function fixture(root, version = '0.2.27') {
@@ -19,7 +20,7 @@ async function fixture(root, version = '0.2.27') {
   await fs.mkdir(source, { recursive: true });
   await fs.mkdir(archives, { recursive: true });
   for (const command of commands) {
-    const script = `#!/bin/sh\nif [ "$1" = --hold ]; then\n  echo $$\n  trap 'exit 0' TERM INT\n  while :; do sleep 1; done\nfi\nprintf '%s\\n' '${command}-${version}' "$@"\nif [ "$1" = --failure ]; then exit 17; fi\n`;
+    const script = `#!/bin/sh\nif [ "$1" = version ]; then echo '${version}'; exit 0; fi\nif [ "$1" = --hold ]; then\n  echo $$\n  trap 'exit 0' TERM INT\n  while :; do sleep 1; done\nfi\nprintf '%s\\n' '${command}-${version}' "$@"\nif [ "$1" = --failure ]; then exit 17; fi\n`;
     await fs.writeFile(path.join(source, command), script, { mode: 0o755 });
   }
   await fs.writeFile(path.join(source, 'LICENSE'), 'Fixture only\n');
@@ -115,6 +116,7 @@ test('actual packed package installs, launches offline, refuses corruption, and 
     return path.join(root, metadata.filename);
   }
   const packed = await pack('0.2.27');
+  await testPackedRelease(packed, path.join(root, 'package-0.2.27/release-manifest.json'), path.join(root, 'archives-0.2.27'));
   await run('npm', ['install', '--global', '--prefix', prefix, '--offline', packed], { env });
   assert.equal(downloadCount, 1);
   const cli = path.join(prefix, 'bin', 'sessions');

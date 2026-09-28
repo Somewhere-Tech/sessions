@@ -58,6 +58,15 @@ if [[ ! "$runtime_build_version" =~ ^[A-Za-z0-9._-]+$ ]]; then
 fi
 
 signing_identity="${SESSIONS_SIGN_IDENTITY:-}"
+signing_mode="${SESSIONS_RUNTIME_SIGN_MODE:-developer-id}"
+timestamp_arguments=(--timestamp)
+if [[ "$signing_mode" == "adhoc" ]]; then
+  signing_identity="-"
+  timestamp_arguments=(--timestamp=none)
+elif [[ "$signing_mode" != "developer-id" ]]; then
+  echo "build-app-runtime: SESSIONS_RUNTIME_SIGN_MODE must be developer-id or adhoc" >&2
+  exit 2
+fi
 if [[ -z "$signing_identity" && -r "$HOME/.config/sessions/sign-identity" ]]; then
   signing_identity="$(head -n1 "$HOME/.config/sessions/sign-identity")"
 fi
@@ -144,7 +153,7 @@ build_one() {
         -o "$output" "./cmd/$binary_name"
     )
   fi
-  codesign --force --timestamp --options runtime \
+  codesign --force "${timestamp_arguments[@]}" --options runtime \
     --identifier "$bundle_identifier" \
     --sign "$signing_identity" "$output"
   codesign --verify --strict "$output"
@@ -215,4 +224,4 @@ verify_installed_binary sessionsd "$sessionsd_sha"
 verify_installed_binary sessions-runner "$runner_sha"
 restore_runtime=0
 
-echo "> Sessions runtime: signed binaries ready in $runtime_dir"
+echo "> Sessions runtime: $signing_mode binaries ready in $runtime_dir"

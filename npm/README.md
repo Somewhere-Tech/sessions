@@ -69,3 +69,21 @@ Publishing requires an npm identity authorized for the `@somewhere-tech` scope.
 Use an npm trusted publishing job with only npm publication authority, after
 the tested release assets are published; do not share application signing keys
 with npm dependency installation or test jobs.
+
+The GitHub release workflow builds and tests without signing keys, signs only
+the verified build artifacts in a separate job, then prepares the npm tarball
+in another job without signing or publication authority. It tests that exact
+tarball's native CLI under scratch state. The GitHub publisher uploads the
+prepared tarball and checksum; it does not publish to the npm registry.
+
+Publishing a tarball can bypass npm lifecycle hooks. Before a separately
+authenticated tarball publication, verify its prepared manifest explicitly:
+
+```sh
+node npm/scripts/verify-release.cjs --manifest /path/to/prepared/release-manifest.json
+npm publish /path/to/somewhere-tech-sessions-0.2.27.tgz --access public
+```
+
+This verifier uses only the reviewed local helper and manifest, then checks
+the official published runtime assets; it does not execute code from the
+tarball. npm scope authentication and release acceptance are still required.

@@ -154,6 +154,9 @@ jobs:
       - name: Verify updater, release, and platform contracts
         run: npm run test:updater-release
 
+      - name: Verify the packed npm installation lifecycle
+        run: npm --prefix npm test
+
       # The native shell had no lint gate at all — `cargo test` compiles it and
       # nothing reads it. Clippy passes clean on this tree today, so `-D warnings`
       # can be enforced from the first run rather than kept as an aspiration.

@@ -15,7 +15,7 @@
     "check:function-length": "node scripts/check-function-length.mjs",
     "check:import-boundaries": "node scripts/check-import-boundaries.mjs",
     "check:structure": "npm run check:function-length && npm run check:import-boundaries",
-    "test:updater-release": "node --test scripts/render-updater-manifest.test.mjs scripts/verify-updater-signature.test.mjs scripts/windows-platform-contract.test.mjs scripts/collect-windows-host-evidence.test.mjs",
+    "test:updater-release": "node --test scripts/render-updater-manifest.test.mjs scripts/verify-updater-signature.test.mjs scripts/windows-platform-contract.test.mjs scripts/collect-windows-host-evidence.test.mjs scripts/release-authority.test.mjs",
     "test:android-package": "node --test scripts/android-platform-contract.test.mjs scripts/android-runtime-resources.test.mjs"
   },
   "devDependencies": {
