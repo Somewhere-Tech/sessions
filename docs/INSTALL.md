@@ -165,17 +165,37 @@ open http://localhost:8787
 
 ### Start on Linux
 
-`sessions install` currently supports macOS launchd only. On Linux, run the
-daemon under your user supervisor or start it in the foreground:
+On a Linux machine running systemd, install the user service:
+
+```sh
+sessions install
+sessions status --json
+```
+
+The unit is `~/.config/systemd/user/sessions.service`. It starts the daemon,
+checks its health, and uses `Restart=on-failure` with `KillMode=process`, so
+stopping the service leaves independently owned runners alive. All three runtime
+binaries are copied to an immutable directory under
+`~/.local/share/sessions/runtime/`, preserving executable paths across package
+updates and removal. Reinstalling stages the new service definition without
+interrupting an active daemon. Apply it explicitly with
+`sessions install --restart-daemon`.
+
+For startup before login and continued service after logout, enable lingering
+for your user (this may require administrator authorization):
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+The installer does not enable lingering or elevate itself. If there is no
+systemd user manager, start the daemon with your own supervisor or in the foreground:
 
 ```sh
 SESSIONS_HOST=127.0.0.1 SESSIONS_PORT=8787 sessionsd
 ```
 
 Then open `http://localhost:8787` and run `sessions token` in another terminal.
-Linux systemd unit installation is not shipped yet: nothing Sessions installs
-supervises the daemon itself on Linux, so how `sessionsd` is started and
-restarted is yours to decide.
 
 #### What supervises a session on Linux and Windows
 
@@ -193,10 +213,12 @@ What that gives you:
   the meantime.
 - **A session does not survive a reboot.** launchd brings a macOS runner back at
   login, where Sessions' own policy decides which sessions resume and which stay
-  paused. Linux and Windows have no such supervisor yet, so after a reboot the
-  runners are gone and their conversations are waiting to be resumed
-  (`sessions resume <id>`, or open the session and send a message). Nothing is
-  lost; nothing restarts on its own.
+  paused. On Linux, the systemd daemon marks retained detached runtimes from a
+  prior boot as paused and keeps their launch settings and event history. It
+  does not rerun commands automatically. Open a retained conversation and send
+  a message to wake it explicitly, or use the saved provider conversation with
+  `sessions resume <id>`. Windows reboot recovery requires separate platform
+  verification.
 - **A crashed runner is not restarted.** launchd restarts one within the same
   boot. On Linux and Windows the session ends and stays readable.
 
@@ -232,6 +254,11 @@ Static install: download and verify the new archive, then replace all three
 binaries together. Restart only `sessionsd`; per-session runner processes are
 separate and continue to own their PTYs.
 
+On Linux, run `sessions install` to stage the new immutable runtime and service
+definition, then `sessions install --restart-daemon` to switch the daemon while
+retaining live runners. The [npm package](../npm/README.md) uses a separate
+immutable cache; npm updates and uninstall do not start or stop runtime processes.
+
 ## Uninstall
 
 There are two removal paths, because there are two things that install.
@@ -242,6 +269,10 @@ development daemon and removes its launchd registration idempotently on macOS:
 ```sh
 sessions uninstall
 ```
+
+On Linux, this removes and disables the systemd user unit while leaving the
+running daemon and runners alive. It preserves state, transcripts, and immutable
+runtime copies. Stop only runtimes you own when you actually intend to end work.
 
 Then use `brew uninstall sessions`, or remove `sessions`, `sessionsd`, and `sessions-runner`
 from the directory where you installed the static archive.

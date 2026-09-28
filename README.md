@@ -56,14 +56,12 @@ sessions install
 open http://localhost:8787
 ```
 
-On Linux and Windows `sessions install` is not available yet: start `sessionsd`
-yourself (see [installation details](docs/INSTALL.md)). Sessions still owns the
-sessions themselves everywhere — each runner is started detached from the
-daemon, so restarting or upgrading `sessionsd` never interrupts work, and the
-next daemon picks the runners up where they were. What Linux and Windows do not
-have yet is supervision across a reboot: launchd brings macOS runners back at
-login, while elsewhere a reboot leaves the conversations paused for you to
-resume. systemd user units are not used yet.
+On Linux, `sessions install` registers and starts a systemd user service.
+Runners are separate processes, so restarting or upgrading the daemon preserves
+their work. After a reboot the service discovers retained conversations as
+paused; resuming one is explicit. Enable user lingering if the daemon must start
+before login and continue after logout. See [installation details](docs/INSTALL.md).
+Windows still requires starting `sessionsd` yourself.
 
 On macOS, `sessions install` registers `sessionsd` as the per-user development LaunchAgent
 `tech.somewhere.sessions.dev.daemon`, starts it, and checks its health. Override the
@@ -71,8 +69,9 @@ label explicitly with `SESSIONS_DAEMON_LABEL` when needed. Direct loopback use i
 zero-setup; LAN and remote clients normally authenticate with the token printed
 by the command. Print it again later with `sessions token`.
 
-Homebrew is the npm-like one-command runtime channel, but it installs native Go
-binaries rather than a Node wrapper. There is no `curl | sh` installer. See
+The [npm distribution](npm/README.md) wraps the same native Go binaries and pins
+their archive and binary checksums. Its checked-in release manifest remains
+unprepared until the matching release assets exist. There is no `curl | sh` installer. See
 [installation details](docs/INSTALL.md) for exact archive names, agent-safe
 downloads, PATH setup, Linux startup, upgrades, and uninstalling.
 

@@ -229,6 +229,13 @@ func (a *app) waitForDaemonPortAvailable(timeout time.Duration) error {
 }
 
 func (a *app) cmdInstall(args []string) error {
+	if runtime.GOOS == "linux" {
+		return a.installLinuxService(args)
+	}
+	return a.installDarwinDaemon(args)
+}
+
+func (a *app) installDarwinDaemon(args []string) error {
 	if len(args) != 0 {
 		return fail(1, "usage: sessions install")
 	}
@@ -309,6 +316,9 @@ func (a *app) cmdInstall(args []string) error {
 }
 
 func (a *app) cmdUninstall(args []string) error {
+	if runtime.GOOS == "linux" {
+		return a.uninstallLinuxService(args)
+	}
 	if len(args) != 0 {
 		return fail(1, "usage: sessions uninstall")
 	}

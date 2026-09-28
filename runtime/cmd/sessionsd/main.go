@@ -19,6 +19,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/api"
 	"github.com/somewhere-tech/sessions/runtime/internal/background"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/relaycmd"
 	"github.com/somewhere-tech/sessions/runtime/internal/session"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
@@ -97,7 +98,7 @@ func main() {
 			log.Printf("close usage ledger: %v", err)
 		}
 	}()
-	manager := session.NewManager(config, state.NewPlatformLauncher(config), session.ManagerOptions{
+	manager := session.NewManager(config, daemonLauncher(config), session.ManagerOptions{
 		Boundaries: ledgerStore.Boundaries(), Observations: ledgerStore.Observations(), LedgerReader: ledgerStore,
 		Retention:     ledgerStore.Retention(),
 		Worktrees:     ledgerStore.Worktrees(),
@@ -155,6 +156,16 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("sessionsd shutdown: %v", err)
 	}
+}
+
+func daemonLauncher(config state.Config) proto.RunnerLauncher {
+	launcher := state.NewPlatformLauncher(config)
+	if recovery, ok := launcher.(interface{ RecoverAfterBoot() error }); ok {
+		if err := recovery.RecoverAfterBoot(); err != nil {
+			log.Fatalf("preserve detached reboot recovery before discovery: %v", err)
+		}
+	}
+	return launcher
 }
 
 // startBurstWatch has the daemon watch its own CPU. When it stays busy long

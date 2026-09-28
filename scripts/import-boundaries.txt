@@ -35,6 +35,7 @@ cmd/sessions-runner internal/winconpty
 cmd/sessionsd internal/api
 cmd/sessionsd internal/background
 cmd/sessionsd internal/ledger
+cmd/sessionsd internal/proto
 cmd/sessionsd internal/relaycmd
 cmd/sessionsd internal/session
 cmd/sessionsd internal/state

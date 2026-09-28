@@ -36,6 +36,7 @@ Exit codes: 0 satisfied · 1 usage · 2 daemon unreachable · 3 timed out ·
 document, including on failure, and its `code` matches the exit status.
 
 Daily workflows:
+  restart                  end one runtime and reopen its exact conversation
   new                      create an interactive session
   profiles                 list Claude and Codex login profiles
   accounts                 list and add second Claude or ChatGPT accounts
@@ -94,9 +95,9 @@ Models and interactive:
   attach                   attach a raw two-way terminal stream
 
 Admin/operational:
-  install                  install and start the development daemon
+  install                  install the per-user daemon service
   relay                    configure or install the optional relay
-  uninstall                stop and remove the development daemon
+  uninstall                remove daemon service integration
   update                   securely update Sessions.app
   pair                     show a one-time device pairing code
   account                  manage the optional Somewhere fleet account
@@ -135,6 +136,23 @@ Global flags:
 Connection flags must precede the command. Arguments after `sessions run --` always belong to the child command.
 
 Run `sessions help <command>` for one command or `sessions docs` for the complete offline reference.
+```
+
+## `sessions restart`
+
+```text
+Usage:
+  sessions restart SESSION --confirm EXACT-RUNTIME-ID --permissions constrained|full [--terminal|--structured] [--remote-control]
+
+end one runtime and reopen its exact conversation
+
+Explicitly end only the confirmed runtime and reopen the same provider conversation, preserving its account profile, model, history and runtime kind. Full access (YOLO) applies only to the replacement, never global defaults. --remote-control selects Claude Terminal and requires existing user consent in Settings. Running work is interrupted. Inspect status first and pass its full runtime UUID to --confirm. Repeating the same source and choices recovers the recorded restart without starting a duplicate. Different choices on an already recorded restart are refused. JSON reports sourceEnded, laneId, partial and error; exit 2 means the operation needs attention. The native app retains its unsent draft; CLI has no composer draft.
+
+Examples:
+  sessions status SESSION
+  sessions --json restart SESSION --confirm EXACT-RUNTIME-ID --permissions full --remote-control
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions new`
@@ -1252,11 +1270,11 @@ Examples:
 
 ```text
 Usage:
-  sessions install
+  sessions install [--restart-daemon]
 
-install and start the development daemon
+install the per-user daemon service
 
-Register the development sessionsd macOS LaunchAgent and start it.
+On Linux, stage immutable runtime binaries and enable a systemd user service. First install starts it; reinstall preserves the running daemon until --restart-daemon explicitly applies the staged version. Daemon restart never stops runners. Boot and logout operation require an explicit loginctl enable-linger USER action. On macOS, register and start the development sessionsd LaunchAgent; --restart-daemon is Linux-only.
 
 Examples:
   sessions install
@@ -1289,9 +1307,9 @@ Examples:
 Usage:
   sessions uninstall
 
-stop and remove the development daemon
+remove daemon service integration
 
-Stop and remove the development sessionsd macOS LaunchAgent.
+On Linux, disable and remove the user service definition while preserving the running daemon, runners, state and immutable binaries. On macOS, stop and remove the development sessionsd LaunchAgent.
 
 Examples:
   sessions uninstall
