@@ -14,7 +14,7 @@ function preserveRestartDraft(machineId: string, source: string, destination: st
   if (draft.warning) throw new Error(draft.warning);
   if (!draft.text) return;
   const saved = saveDraft(draftStorageKey(machineId, destination), draft.text);
-  if (!saved.saved) throw new Error(`${saved.warning} Your draft remains on the original tab. The replacement is already open; copy your draft before opening it.`);
+  if (!saved.saved) throw new Error(`${saved.warning} Your draft remains on the original tab. The replacement is running; copy your draft before opening it.`);
 }
 
 /** A runtime id is the confirmation boundary; never follow a retired row's successor. */
