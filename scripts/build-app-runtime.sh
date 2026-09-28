@@ -32,7 +32,12 @@ done
 app_version="$(node -p "require('$repo_root/package.json').version")"
 source_commit="$(git -C "$repo_root" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
 exact_tag="$(git -C "$repo_root" describe --tags --exact-match HEAD 2>/dev/null || true)"
-if [[ "$exact_tag" == "v$app_version" ]]; then
+development_mode="${SESSIONS_RUNTIME_DEVELOPMENT:-0}"
+if [[ "$development_mode" != "0" && "$development_mode" != "1" ]]; then
+  echo "build-app-runtime: SESSIONS_RUNTIME_DEVELOPMENT must be 0 or 1" >&2
+  exit 2
+fi
+if [[ "$development_mode" == "0" && "$exact_tag" == "v$app_version" ]]; then
   runtime_build_version="$exact_tag"
 else
   runtime_build_version="v${app_version}-dev.g${source_commit}"

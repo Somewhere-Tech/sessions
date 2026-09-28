@@ -6,6 +6,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      build_dev_app:
+        description: Build an ad-hoc Apple Silicon app for local verification
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -170,3 +175,79 @@ jobs:
 
       - name: Verify native shell
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  dev_app:
+    name: Optional Apple Silicon development app
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' && inputs.build_dev_app == true && needs.verify.result == 'success'
+    runs-on: macos-14
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      SESSIONS_RUNTIME_SIGN_MODE: adhoc
+      SESSIONS_RUNTIME_DEVELOPMENT: "1"
+
+    steps:
+      - name: Check out the immutable verified source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify source and native architecture
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          [[ "$(uname -s)/$(uname -m)" == Darwin/arm64 ]] || { echo 'Apple Silicon macOS host required' >&2; exit 1; }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: runtime/go.mod
+          cache: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable, 2026-07-21
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+
+      - name: Build and record the development bundle
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ -z "$(git status --porcelain=v1)" ]] || { echo 'Source changed before build' >&2; exit 1; }
+          npm exec tauri build -- --target aarch64-apple-darwin --bundles app --config '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}'
+          app=src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Sessions.app
+          output="$RUNNER_TEMP/development-app"
+          mkdir "$output"
+          archive="$output/Sessions-development-$SOURCE_SHA-darwin-arm64.zip"
+          ditto -c -k --norsrc --noextattr --noqtn --noacl --keepParent "$app" "$archive"
+          version="$(node -p "require('./package.json').version")"
+          node scripts/development-app-manifest.mjs record "$app" "$archive" "$output/development-app.json" "$SOURCE_SHA" "$WORKFLOW_RUN_ID" "$WORKFLOW_RUN_ATTEMPT" "$version"
+          node scripts/development-app-manifest.mjs verify "$app" "$archive" "$output/development-app.json" "$SOURCE_SHA" "$WORKFLOW_RUN_ID" "$WORKFLOW_RUN_ATTEMPT" "$version"
+          (cd "$output" && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
+
+      - name: Save the development bundle for local verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sessions-development-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-darwin-arm64
+          path: ${{ runner.temp }}/development-app/*
+          if-no-files-found: error
+          retention-days: 7

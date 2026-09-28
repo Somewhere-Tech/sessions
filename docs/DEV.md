@@ -54,6 +54,31 @@ The repository's active package direction is documented in
 boundaries are documented in [`CODEBASE.md`](CODEBASE.md). Historical cutover
 notes are intentionally kept out of the public source tree.
 
+## Development app artifacts
+
+The CI workflow's optional `build_dev_app` dispatch input builds an Apple
+Silicon app after the verification job passes. A separate read-only job checks
+out the workflow's exact commit and uploads an ad-hoc signed ZIP, its SHA-256,
+and `development-app.json`. It has no release credentials and does not publish
+an updater, GitHub release, or npm package. Building does not launch the app.
+
+After downloading, use `scripts/unpack-release-app.py` to extract the ZIP into
+a new directory. Verify it against the source SHA, run ID, and run attempt from
+GitHub, supplied independently of the downloaded receipt:
+
+```sh
+node scripts/development-app-manifest.mjs verify APP ZIP RECEIPT SHA RUN ATTEMPT VERSION
+```
+
+For local signing, retain the original receipt and first verify the original
+artifact. Sign the three nested runtime binaries, then run `refresh-runtime`
+with `APP RECEIPT SHA RUN ATTEMPT VERSION` before signing the outer app. Run
+`verify-local` with those same arguments after the outer signature is complete.
+The refresh derives new binary hashes while preserving
+`vVERSION-dev.gSHA12-bin.FINGERPRINT`. It does not turn the artifact into a
+stable release or notarize it. These helpers inspect files without launching
+the app, daemon, or runners; running the app still requires the isolation above.
+
 ## Profiling sessionsd
 
 CPU profiling is on by default, bound to `127.0.0.1` on a port the operating

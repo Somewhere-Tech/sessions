@@ -14,6 +14,41 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const commit = 'a'.repeat(40);
 const releaseTest = (name, body) => test(name, { skip: process.platform === 'win32' ? 'macOS release helpers are gated on the macOS build host' : false }, body);
 
+releaseTest('development app build is opt-in, verified, immutable, read-only, and explicitly ARM64', async () => {
+  const { stdout } = await run('ruby', ['-rjson', '-ryaml', '-e', 'puts YAML.safe_load(File.read(ARGV[0])).to_json', '.github/workflows/ci.yml'], { cwd: root });
+  const workflow = JSON.parse(stdout);
+  // Ruby YAML 1.1 represents the unquoted GitHub Actions `on` key as true.
+  const trigger = workflow.on || workflow.true;
+  assert.equal(trigger.workflow_dispatch.inputs.build_dev_app.type, 'boolean');
+  assert.equal(trigger.workflow_dispatch.inputs.build_dev_app.default, false);
+  const job = workflow.jobs.dev_app;
+  assert.equal(job.needs, 'verify');
+  assert.equal(job.if, "github.event_name == 'workflow_dispatch' && inputs.build_dev_app == true && needs.verify.result == 'success'");
+  assert.equal(job['runs-on'], 'macos-14');
+  assert.equal(job.permissions.contents, 'read');
+  assert.equal(job.environment, undefined);
+  assert.equal(job.env.SESSIONS_RUNTIME_SIGN_MODE, 'adhoc');
+  assert.equal(job.env.SESSIONS_RUNTIME_DEVELOPMENT, '1');
+  assert.doesNotMatch(JSON.stringify(job), /secrets\.|APPLE_|SIGNING_PRIVATE|GITHUB_TOKEN|npm publish|gh release|notarytool|import.*keychain/);
+  const checkout = job.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
+  assert.equal(checkout.with.ref, '${{ github.sha }}');
+  assert.equal(checkout.with['persist-credentials'], false);
+  const runs = job.steps.map((step) => step.run || '').join('\n');
+  assert.match(runs, /npm ci/);
+  assert.match(runs, /uname -s.*uname -m.*Darwin\/arm64/);
+  assert.match(runs, /tauri build -- --target aarch64-apple-darwin/);
+  assert.match(runs, /createUpdaterArtifacts":false/);
+  assert.match(runs, /target\/aarch64-apple-darwin\/release\/bundle\/macos/);
+  assert.match(runs, /development-app-manifest\.mjs record/);
+  assert.match(runs, /development-app-manifest\.mjs verify/);
+  assert.match(runs, /shasum -a 256/);
+  assert.ok(job.steps.some((step) => step.uses?.startsWith('actions/upload-artifact@')));
+  for (const step of job.steps) if (step.uses) assert.match(step.uses, /@[a-f0-9]{40}$/);
+  const builder = await readFile(join(root, 'scripts/build-app-runtime.sh'), 'utf8');
+  assert.match(builder, /SESSIONS_RUNTIME_DEVELOPMENT:-0/);
+  assert.match(builder, /development_mode" == "0" && "\$exact_tag" == "v\$app_version"/);
+});
+
 releaseTest('release jobs separate dependency execution, signing keys, and publication authority', async () => {
   const { stdout } = await run('ruby', ['-rjson', '-ryaml', '-e', 'puts YAML.safe_load(File.read(ARGV[0])).to_json', '.github/workflows/release.yml'], { cwd: root });
   const workflow = JSON.parse(stdout);
@@ -32,6 +67,10 @@ releaseTest('release jobs separate dependency execution, signing keys, and publi
   const runs = (job) => job.steps.map((step) => step.run || '').join('\n');
   assert.match(runs(build), /npm ci/);
   assert.match(runs(build), /go test/);
+  assert.match(runs(build), /uname -s.*uname -m.*Darwin\/arm64/);
+  assert.match(runs(build), /tauri build -- --target aarch64-apple-darwin/);
+  assert.match(runs(build), /target\/aarch64-apple-darwin\/release\/bundle\/macos/);
+  assert.match(runs(build), /lipo -archs.*== arm64/);
   assert.match(runs(packaging), /test-packed-release\.cjs/);
   assert.doesNotMatch(runs(sign), /\bnpm\s+(ci|install|exec|run|pack)|\bcargo\b|\bgo\s+(build|test)|tauri\s+build|release-app\.sh/);
   assert.doesNotMatch(runs(publish), /\bnpm\s+(ci|install|exec|run|pack)|\bcargo\b|\bgo\s+(build|test)/);
