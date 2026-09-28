@@ -63,6 +63,11 @@ const [
 ]);
 
 const subagents = await source('src/components/SubagentsPanel.tsx');
+const [restartControl, restartDialog, restartAPI] = await Promise.all([
+  source('src/components/RestartConversation.tsx'),
+  source('src/components/RestartConversationDialog.tsx'),
+  source('src/api/sessionsd/restart.ts')
+]);
 
 assert.doesNotMatch(app, /fromTerminalStatus/);
 assert.match(app, /machine=\{machine\} hydrated=\{sessionsHydrated\} error=\{sessionsError\}/);
@@ -155,8 +160,17 @@ assert.match(popout, /mode'\) === 'single'/);
 assert.doesNotMatch(view, /No terminal for this Rich session/);
 assert.match(view, /effectiveSessionView/);
 assert.match(view, /terminalAvailable=\{!richSession\}/);
-assert.match(view, /Continuing the same Claude conversation in Terminal with Remote Control/);
-assert.match(view, /Continuing the same Claude conversation in Terminal for slash commands/);
+// Terminal / Remote Control must review the selected runtime through the same
+// confirmed restart boundary as the toolbar and menu. The browser restart suite
+// drives confirmation, cancellation, draft retention and partial retry.
+assert.match(view, /reviewConversationRestart\(\{ session, onOpen: onOpenSession, initialRemoteControl: enableRemoteControl, initialRuntimeMode: 'terminal' \}\)/);
+assert.match(view, /<RestartConversation session=\{session\} onOpen=\{onOpenSession\}/);
+assert.match(navigator, /<RestartConversation session=\{session\} onOpen=\{onOpen\} appearance="menuitem"/);
+assert.match(app, /<RestartConversationHost \/>/);
+assert.match(restartControl, /lazy\(\(\) => import\('\.\/RestartConversationDialog'\)/);
+assert.match(restartDialog, /This ends only runtime <code>\{session\.id\}<\/code>/);
+assert.match(restartAPI, /confirmSessionId: sourceSessionId/);
+assert.doesNotMatch(view, /await endSession\([\s\S]*?Continuing the same Claude conversation/);
 assert.doesNotMatch(view, /Not available in 0\.2\.7/);
 assert.doesNotMatch(view, /↳ Delegate|resumed from seq/);
 assert.match(view, /This Codex session uses its terminal interface/);

@@ -66,28 +66,30 @@ assert.match(newSession, /A session cannot turn it on by itself/);
 assert.match(resume, /Remote Control follows the explicit choice for the destination machine in Settings/);
 assert.doesNotMatch(resume, /className="resume-remote-control"/);
 
-// "Continue in Terminal with Remote Control" ends a live Rich runtime, which
-// is irreversible. Remote Control itself is a machine-level consent boundary,
-// so that request can only be honored when this machine already opted in. The
-// consent read must therefore happen BEFORE endSession — otherwise the user
-// spends the session and still does not get Remote Control.
+// A live Terminal / Remote Control switch now opens the confirmed restart
+// dialog. The authenticated daemon checks existing consent before termination;
+// neither the toolbar callback nor a per-runtime choice grants machine consent.
 const sessionView = source('src/components/SessionView.tsx');
 const continueInTerminal = sessionView.slice(
   sessionView.indexOf('const continueInTerminal'),
   sessionView.indexOf('const forkFromVisibleMessage')
 );
 assert.ok(continueInTerminal, 'continueInTerminal must exist in SessionView');
-assert.match(continueInTerminal, /fetchOnboardingState/);
-assert.ok(
-  continueInTerminal.indexOf('fetchOnboardingState') < continueInTerminal.indexOf('await endSession'),
-  'the Remote Control consent check must run before the session is ended'
-);
-assert.match(continueInTerminal, /this session is still running/);
-// The resumed session inherits the machine's Settings choice. Passing a
-// per-resume Remote Control argument would be silently ignored — ResumeDialog
-// deliberately has no such input — so it must not be passed at all.
-assert.match(continueInTerminal, /onResume\(session, 'claude', 'terminal'\);/);
-assert.doesNotMatch(continueInTerminal, /onResume\([^)]*enableRemoteControl/);
+assert.match(continueInTerminal, /reviewConversationRestart/);
+assert.match(continueInTerminal, /initialRemoteControl: enableRemoteControl/);
+assert.match(continueInTerminal, /initialRuntimeMode: 'terminal'/);
+assert.doesNotMatch(continueInTerminal, /endSession|onResume\(/);
+const restart = readFileSync(new URL('../../runtime/internal/api/restart_handlers.go', import.meta.url), 'utf8');
+const handleRestart = restart.slice(restart.indexOf('func (s *Server) handleRestart'), restart.indexOf('func restartOperationID'));
+assert.ok(handleRestart.indexOf('s.prepareRestart(body)') < handleRestart.indexOf('s.performRestart('),
+  'restart preflight must finish before performing any termination');
+const prepareRestart = restart.slice(restart.indexOf('func (s *Server) prepareRestart'), restart.indexOf('func (s *Server) restartReceiptPath'));
+assert.match(prepareRestart, /s\.restartRuntimeMode/);
+assert.match(prepareRestart, /RemoteControlConsentEnabled/);
+assert.match(prepareRestart, /enable Remote Control in Settings first; source is still running/);
+assert.doesNotMatch(prepareRestart, /RequestKill|SaveSettings|UpdateSettings/);
+assert.doesNotMatch(restart, /SaveSettings|UpdateSettings/,
+  'a restart must never grant consent or change global permission defaults');
 
 for (const file of [app, api, onboarding, settings, newSession, resume]) {
   assert.doesNotMatch(file, /localStorage.*remote.?control/i);
