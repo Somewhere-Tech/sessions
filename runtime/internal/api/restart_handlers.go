@@ -221,6 +221,10 @@ func (s *Server) performRestart(ctx context.Context, receipt restartReceipt, end
 	})
 	result.LaneID = adopted.LaneID
 	if err != nil {
+		var failed *state.StartCreateFailedError
+		if errors.As(err, &failed) {
+			result.LaneID = failed.SessionID
+		}
 		var replay *state.StartCreateReplayError
 		if errors.As(err, &replay) {
 			result.LaneID = replay.SessionID

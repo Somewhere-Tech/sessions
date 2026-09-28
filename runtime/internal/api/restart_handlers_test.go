@@ -136,7 +136,7 @@ func TestRestartLaunchFailureIsRecoverableWithoutDuplicate(t *testing.T) {
 	}
 	daemon.launcher.Err = nil
 	_, again := postRestart(t, daemon, request)
-	if again.OK || again.LaneID == "" || len(daemon.launcher.Launches) != 1 {
+	if again.OK || first.LaneID == "" || again.LaneID != first.LaneID || len(daemon.launcher.Launches) != 1 {
 		t.Fatalf("retry=%+v launches=%d", again, len(daemon.launcher.Launches))
 	}
 }
