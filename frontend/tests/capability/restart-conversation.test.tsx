@@ -27,6 +27,7 @@ describe('confirmed conversation restart', () => {
     saveDraft(draftStorageKey(machine, source.id), 'My exact unsent draft');
     render(<><RestartConversation session={source} onOpen={onOpen} /><RestartConversationHost /></>);
     await user.click(screen.getByRole('button', { name: 'Restart / change permissions…' }));
+    await screen.findByRole('dialog');
     expect(screen.getByRole('dialog')).toHaveTextContent(source.id);
     expect(screen.getByRole('dialog')).toHaveTextContent('fixture-work');
     expect(screen.getByRole('dialog')).toHaveTextContent('fixture-model');
@@ -51,6 +52,7 @@ describe('confirmed conversation restart', () => {
     }));
     const { rerender } = render(<><RestartConversation session={source} onOpen={onOpen} /><RestartConversationHost /></>);
     await user.click(screen.getByRole('button', { name: 'Restart / change permissions…' }));
+    await screen.findByRole('dialog');
     await user.click(screen.getByRole('button', { name: 'End this runtime and reopen' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('history link needs repair');
     rerender(<><RestartConversation session={{ ...source, exited: true }} onOpen={onOpen} /><RestartConversationHost /></>);
@@ -70,6 +72,7 @@ describe('confirmed conversation restart', () => {
     }));
     render(<><RestartConversation session={source} onOpen={onOpen} /><RestartConversationHost /></>);
     await user.click(screen.getByRole('button', { name: 'Restart / change permissions…' }));
+    await screen.findByRole('dialog');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Restart permissions' }), 'full');
     await user.click(screen.getByRole('button', { name: 'End this runtime and reopen' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('response was lost');
@@ -87,6 +90,7 @@ describe('confirmed conversation restart', () => {
     await user.type(screen.getByRole('textbox', { name: 'Fixture draft' }), 'Keep my newest edits');
     const storage = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Fixture storage full'); });
     await user.click(screen.getByRole('button', { name: 'Restart / change permissions…' }));
+    await screen.findByRole('dialog');
     await user.click(screen.getByRole('button', { name: 'End this runtime and reopen' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('original runtime is still running');
     expect(fetch).not.toHaveBeenCalled();
