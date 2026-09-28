@@ -534,6 +534,7 @@ func isASCIILetter(value byte) bool {
 }
 
 type AdoptOptions struct {
+	OperationID string
 	Force       bool
 	Source      *AdoptSource
 	Events      AdoptionEventReader
@@ -691,7 +692,7 @@ func Adopt(
 	}
 	launchArgs, conversationID := adoptionLaunch(adoption, selected, kind)
 	created, err := creator.Create(ctx, state.CreateSessionRequest{
-		Cmd: adoption.Cmd, Args: launchArgs,
+		Cmd: adoption.Cmd, Args: launchArgs, OperationID: selected.OperationID,
 		Cwd: adoption.Cwd, Name: name, Description: description, Tags: tags,
 		Profile: profile, ConfigDir: configDir, Kind: kind, ConversationID: conversationID,
 		DisplayParentSessionID: displayParent, Force: selected.Force,

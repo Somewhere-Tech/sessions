@@ -1,4 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RestartConversationHost } from './components/RestartConversation';
 import { SessionTabs, type TabStatus } from './components/SessionTabs';
 import { SessionView } from './components/SessionView';
 import { EmptyState } from './components/EmptyState';
@@ -964,6 +965,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
           onStarted={openSession}
         /></Suspense>
       ) : null}
+      <RestartConversationHost />
       {!nativeClientOnly && onboarding && onboarding.supported !== false && !onboarding.complete ? (
         <OnboardingDialog
           machine={machine}

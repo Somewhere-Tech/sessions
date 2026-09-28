@@ -1679,6 +1679,50 @@ candidate is never silently omitted. `status` is `reopened`,
 clears any paused-after-reboot restore record for the source lane. Invalid
 JSON is 400; a ledger open or report failure is 500.
 
+### `POST /api/recovery/restart`
+
+Auth required. Ends exactly one live Claude or Codex runtime and creates a
+replacement for its native provider conversation. It never follows the source's
+successor chain. The request must identify the same full runtime id twice and
+choose permissions explicitly:
+
+```json
+{"sourceSessionId":"<runtime UUID>","confirmSessionId":"<same runtime UUID>","permissions":"full","remoteControl":false,"runtimeMode":"terminal"}
+```
+
+`permissions` is `constrained` or `full` (YOLO). This changes only the
+replacement. `runtimeMode` is optional `rich` or `terminal`; omission retains the
+source's runtime. `remoteControl:true` requires Claude and existing user consent
+in Settings and selects Terminal. The recorded account profile, model, effort,
+name, workspace and native provider conversation identity are retained. The
+provider transcript must still be available before ending the source. Running
+work is interrupted; process memory is not restored. No provider credential or
+machine permission default is changed.
+
+Before termination, the daemon saves the exact source and choices in a private
+restart receipt. Observed source exit is saved separately before creation. A
+missing attachment is not proof of exit: retry reports unconfirmed termination
+and starts no replacement until that exit is observed or its completion receipt
+exists. If a completed source appears live again, a retry refuses to end it.
+Creation uses a deterministic operation id derived from the source runtime and
+the normal write-ahead ledger. Repeating the same choices replays or repairs the
+recorded replacement without creating another runtime. A different set of
+choices for that source returns 409. A recorded failed or unattached launch
+requires inspecting that runtime; a retry does not allocate a fresh runtime.
+The bounded operation continues when its requesting client disconnects.
+
+Success is 200 with `ok:true`, `sourceSessionId`, `sourceEnded:true`, `laneId`,
+`operationId`, and an `adoption` result. A partial or uncertain operation is 202
+with `ok:false`, the same identity fields, `partial:true` when work needs
+attention, and an instructional `error` or partial `adoption`. `sourceEnded`
+reports confirmed exit, and `laneId` identifies the replacement when known.
+Preflight refusal is 409; malformed confirmation or permissions is 400. The CLI
+is `sessions restart SESSION --confirm EXACT-RUNTIME-ID --permissions
+constrained|full [--terminal|--structured] [--remote-control]`; `--json` preserves
+the result and exit 2 reports incomplete work. The native dialog keeps its
+progress after the source row retires, flushes the selected composer draft before
+termination, and copies that unsent text to the replacement before reopening it.
+
 ### `POST /api/recovery/adopt`
 
 Auth required. Resolves one explicit provider conversation and creates its

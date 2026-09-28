@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
-import { draftStorageKey, readDraft, saveDraft } from '../lib/draftStore';
+import { draftStorageKey, readDraft, saveDraft, type DraftFlushDetail } from '../lib/draftStore';
 
 const WRITE_DELAY_MS = 300;
 
@@ -22,10 +22,11 @@ export function useDurableDraft(machineId: string, sessionId: string): {
   const flush = useCallback(() => {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = null;
-    if (!dirtyRef.current) return;
+    if (!dirtyRef.current) return { saved: true };
     const result = saveDraft(keyRef.current, textRef.current);
     dirtyRef.current = !result.saved;
     setWarning(result.warning ?? null);
+    return result;
   }, []);
 
   const setText = useCallback((value: SetStateAction<string>) => {
@@ -59,10 +60,18 @@ export function useDurableDraft(machineId: string, sessionId: string): {
       setTextState(restored.text);
       setWarning(restored.warning ?? null);
     }
-    const onPageHide = (): void => flush();
+    const onPageHide = (): void => { flush(); };
+    const onFlush = (event: Event): void => {
+      const detail = (event as CustomEvent<DraftFlushDetail>).detail;
+      if (!detail || detail.key !== keyRef.current) return;
+      const result = flush();
+      if (!result.saved) detail.warnings.push(result.warning ?? 'The latest draft could not be saved.');
+    };
     window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('sessions:flush-drafts', onFlush);
     return () => {
       window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('sessions:flush-drafts', onFlush);
       flush();
     };
   }, [flush, key]);

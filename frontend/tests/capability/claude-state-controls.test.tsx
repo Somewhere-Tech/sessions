@@ -59,7 +59,7 @@ describe('structured Claude controls', () => {
   it('offers an explicit continuation and reports refusal without retrying', async () => {
     const user = userEvent.setup();
     const onContinue = vi.fn().mockRejectedValue(new Error('Enable Remote Control in Settings first'));
-    render(<ClaudeRuntimeControl working={false} onContinue={onContinue} onRestart={vi.fn()} />);
+    render(<ClaudeRuntimeControl working={false} onContinue={onContinue} />);
     await user.click(screen.getByRole('button', { name: 'Terminal / Remote Control' }));
     expect(onContinue).not.toHaveBeenCalled();
     expect(screen.getByText(/ends the current runtime/)).toBeInTheDocument();
@@ -71,16 +71,10 @@ describe('structured Claude controls', () => {
   it('does not switch a genuinely working runtime', async () => {
     const user = userEvent.setup();
     const onContinue = vi.fn();
-    const onRestart = vi.fn().mockResolvedValue(undefined);
-    render(<ClaudeRuntimeControl working onContinue={onContinue} onRestart={onRestart} />);
+    render(<ClaudeRuntimeControl working onContinue={onContinue} />);
     await user.click(screen.getByRole('button', { name: 'Terminal / Remote Control' }));
     expect(screen.getByRole('button', { name: 'Continue in Terminal' })).toBeDisabled();
     expect(onContinue).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Restart…' }));
-    expect(onRestart).not.toHaveBeenCalled();
-    expect(screen.getByText(/running commands and unsaved process state/)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Interrupt and restart' }));
-    expect(onRestart).toHaveBeenCalledTimes(1);
   });
 
   it('uses observed identity only when no explicit selection exists', () => {

@@ -55,6 +55,7 @@ const GATE = [
   'search-rollup',
   'conversation-browser',
   'resume-partial',
+  'restart-conversation',
   'shared-contracts',
   'working-set',
   'pin',

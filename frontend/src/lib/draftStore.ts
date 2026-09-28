@@ -22,6 +22,15 @@ export function draftStorageKey(machineId: string, sessionId: string): string {
   return `${DRAFT_PREFIX}${encodeURIComponent(machineId)}:${encodeURIComponent(sessionId)}`;
 }
 
+export interface DraftFlushDetail { key: string; warnings: string[] }
+
+// A restart must flush the selected runtime's latest edits before ending it.
+export function flushDraft(key: string): void {
+  const detail: DraftFlushDetail = { key, warnings: [] };
+  window.dispatchEvent(new CustomEvent<DraftFlushDetail>('sessions:flush-drafts', { detail }));
+  if (detail.warnings.length) throw new Error(`${detail.warnings.join(' ')} The original runtime is still running; copy your draft before restarting.`);
+}
+
 function encodedBytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }

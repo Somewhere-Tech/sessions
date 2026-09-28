@@ -5,7 +5,7 @@ import type { ProviderFaultView } from './RemoteView';
 import type { SessionInfo } from '../types';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import { useSessions } from '../store/sessions';
-import { approveSession, fetchOnboardingState, fetchServerHistoryTranscript, submitMessage as submitAttributedMessage, wsMuxUrl } from '../api/sessionsd';
+import { approveSession, fetchServerHistoryTranscript, submitMessage as submitAttributedMessage, wsMuxUrl } from '../api/sessionsd';
 import { classifySnapshotComposerState } from '../lib/detectMultiChoice';
 import { requestSnapshot } from '../lib/wsMux';
 import { SessionDetails } from './SessionDetails';
@@ -16,6 +16,7 @@ import { AccountBadge } from './AccountBadge';
 import { SessionLastMessage } from './SessionLastMessage';
 import { SessionArchiveButton } from './SessionArchiveButton';
 import { ClaudeRuntimeControl } from './ClaudeRuntimeControl';
+import { RestartConversation, reviewConversationRestart } from './RestartConversation';
 import { observedSessionModel } from '../lib/sessionModelLabel';
 const SessionHistoryView = lazy(() => import('./SessionHistoryView').then((module) => ({ default: module.SessionHistoryView })));
 // The conversation pane is the heaviest thing this view renders, and nothing
@@ -412,43 +413,9 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   }, [term.loadEarlierClaudeEventsRef]);
 
   const continueInTerminal = useCallback(async (enableRemoteControl: boolean): Promise<void> => {
-    if (!session || !onResume) {
-      throw new Error('Open Sessions in the main window to continue this chat in Terminal.');
-    }
-    if (!richSession || session.tool !== 'claude-code') {
-      throw new Error('This action is available for Rich Claude sessions.');
-    }
-    if (session.working) {
-      throw new Error('Claude is still working. Wait for this turn to finish; your draft will stay in the composer.');
-    }
-    if (enableRemoteControl) {
-      // Remote Control is a machine-level consent boundary, not a per-session
-      // switch: the resumed Terminal session gets it only because this machine
-      // already opted in (Settings → Claude), and the daemon refuses to start
-      // one otherwise (runtime/internal/session/claude_defaults.go). Check
-      // before the ledgered termination — ending the Rich runtime first would
-      // spend an irreversible action on a request that cannot be honored, and
-      // leave the user with neither the session nor Remote Control.
-      const onboarding = await fetchOnboardingState();
-      if (onboarding.supported !== false && onboarding.remoteControl !== 'enabled') {
-        throw new Error(
-          'This machine keeps Claude sessions local, so nothing was changed and this session is still running. '
-          + 'Turn Remote Control on in Settings → Claude first, then continue in Terminal.'
-        );
-      }
-    }
-    await endSession(
-      session.id,
-      enableRemoteControl
-        ? 'Continuing the same Claude conversation in Terminal with Remote Control.'
-        : 'Continuing the same Claude conversation in Terminal for slash commands.'
-    );
-    // No Remote Control argument: the resumed session inherits this machine's
-    // Settings choice, which the check above has already confirmed. Passing a
-    // per-resume flag here would be ignored — ResumeDialog deliberately has no
-    // such input — and would misrepresent where the decision is made.
-    onResume(session, 'claude', 'terminal');
-  }, [endSession, onResume, richSession, session]);
+    if (!session || !onOpenSession) throw new Error('Open the main Sessions window to restart this conversation.');
+    reviewConversationRestart({ session, onOpen: onOpenSession, initialRemoteControl: enableRemoteControl, initialRuntimeMode: 'terminal' });
+  }, [onOpenSession, session]);
 
   const forkFromVisibleMessage = useCallback(async (
     message: { role: 'user' | 'assistant'; content: string; createdAt: number },
@@ -697,11 +664,9 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             {lostConversation ? 'Terminal unavailable' : effectiveView === 'terminal' && supportsConversation ? 'Hide terminal' : 'Terminal'}
           </button>}
         </div>
+        {session && onOpenSession && !lostConversation ? <RestartConversation session={session} onOpen={onOpenSession} /> : null}
         {richSession && session?.tool === 'claude-code' && onResume && !lostConversation ?
-          <ClaudeRuntimeControl working={session.working} onContinue={continueInTerminal} onRestart={async () => {
-            await endSession(session.id, 'User requested a restart from saved conversation history.');
-            onResume(session, 'claude', 'rich');
-          }} /> : null}
+          <ClaudeRuntimeControl working={session.working} onContinue={continueInTerminal} /> : null}
         {lostConversation ? <span className="session-stream-status" role="status">Runner gone · conversation saved</span> : term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Live updates reconnecting…' : 'Live updates unavailable'}</span> : null}
         {supportsConversation && onFork ? (
           <ConversationForkButton

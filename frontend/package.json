@@ -30,6 +30,7 @@
     "test:surface-truth": "node scripts/surface-truth-smoke.mjs",
     "test:search-rollup": "node scripts/search-rollup-smoke.mjs",
     "test:conversation-browser": "node scripts/conversation-browser-smoke.mjs",
+    "test:restart-conversation": "node scripts/restart-conversation-smoke.mjs",
     "test:resume-partial": "node scripts/resume-partial-smoke.mjs",
     "test:shared-contracts": "node scripts/shared-contracts-smoke.mjs",
     "test:working-set": "node scripts/working-set-smoke.mjs",

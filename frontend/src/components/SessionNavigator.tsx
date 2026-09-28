@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
+import { RestartConversation } from './RestartConversation';
 import type { SessionInfo } from '../types';
 import { resolvedSessionLabel } from '../lib/tabLabels';
 import { readWindowScope, sessionMatchesWindowScope } from '../lib/windowScope';
@@ -676,13 +677,9 @@ export function SessionNavigator({
                 onClick={(event) => event.stopPropagation()}
               >
                 <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.id); }}>{session.exited ? 'View history' : 'Open in tab'}</button>
+                <RestartConversation session={session} onOpen={onOpen} appearance="menuitem" />
                 {openSessionIds.includes(session.id) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onCloseView(session.id); }}>Close tab <small>keeps running</small></button> : null}
                 {/*
-                  * Pin / Unpin — named for the state it moves to, like every
-                  * other verb in this menu. It sits high because this is where
-                  * a person reaches to organize a row, and being absent here is
-                  * what made a shipped feature unreachable.
-                  *
                   * On an ended session the item is shown DISABLED rather than
                   * hidden. The daemon refuses it with 409 in both directions
                   * (`UpdatePinned` checks `Exited` before reading the value),
