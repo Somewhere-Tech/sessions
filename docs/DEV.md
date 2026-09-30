@@ -54,6 +54,21 @@ The repository's active package direction is documented in
 boundaries are documented in [`CODEBASE.md`](CODEBASE.md). Historical cutover
 notes are intentionally kept out of the public source tree.
 
+## Linux runtime acceptance
+
+CI builds the candidate's three Go binaries on an Ubuntu AMD64 host, then runs
+`scripts/linux-runtime-acceptance.mjs RUNTIME_DIR RECEIPT_JSON`. The receipt pins
+binary hashes and records isolated shell creation, observed output, runner and
+child process identity across a daemon restart, and the loopback/authentication
+contract. All four state roots use a short temporary directory. No provider
+credentials are required; this does not prove provider login, OS reboot,
+systemd installation, or installation of a published npm release. The separate
+npm wrapper lifecycle suite uses synthetic executables and local HTTPS fixtures.
+
+For harness development on another Unix host, `SESSIONS_ACCEPTANCE_FIXTURE=1`
+allows running against existing local binaries. Its receipt explicitly records
+the actual platform and cannot count as native Linux AMD64 acceptance.
+
 ## Development app artifacts
 
 The CI workflow's optional `build_dev_app` dispatch input builds an Apple

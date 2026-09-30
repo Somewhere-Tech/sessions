@@ -24,6 +24,53 @@ env:
   GOFLAGS: -buildvcs=false
 
 jobs:
+  linux_amd64:
+    name: Native Linux AMD64 runtime acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify native host and source
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -s)/$(uname -m)" == Linux/x86_64 ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: runtime/go.mod
+          cache-dependency-path: runtime/go.sum
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - name: Build the three candidate runtime binaries
+        working-directory: runtime
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/linux-runtime"
+          for command in sessions sessionsd sessions-runner; do
+            go build -o "$RUNNER_TEMP/linux-runtime/$command" "./cmd/$command"
+          done
+      - name: Exercise native runtime communication, adoption, and authentication
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: node scripts/linux-runtime-acceptance.mjs "$RUNNER_TEMP/linux-runtime" "$RUNNER_TEMP/linux-acceptance.json"
+      - name: Verify offline npm wrapper lifecycle fixtures on Linux
+        run: npm --prefix npm test
+      - name: Preserve the native acceptance receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-amd64-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/linux-acceptance.json
+          if-no-files-found: warn
+
   verify:
     name: Go, frontend, and native shell
     runs-on: macos-14
@@ -178,8 +225,8 @@ jobs:
 
   dev_app:
     name: Optional Apple Silicon development app
-    needs: verify
-    if: github.event_name == 'workflow_dispatch' && inputs.build_dev_app == true && needs.verify.result == 'success'
+    needs: [verify, linux_amd64]
+    if: github.event_name == 'workflow_dispatch' && inputs.build_dev_app == true && needs.verify.result == 'success' && needs.linux_amd64.result == 'success'
     runs-on: macos-14
     timeout-minutes: 45
     permissions:
