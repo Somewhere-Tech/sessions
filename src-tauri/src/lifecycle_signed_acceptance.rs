@@ -49,12 +49,30 @@ impl SignedSource {
                 .map_err(|error| format!("read signed runtime manifest: {error}"))?,
         )
         .map_err(|error| format!("parse signed runtime manifest: {error}"))?;
+        let version = daemon_build_version(&manifest, &version)?;
         Ok(Self {
             runtime,
             version,
             manifest,
         })
     }
+}
+
+fn daemon_build_version(manifest: &RuntimeManifest, app_version: &str) -> LifecycleResult<String> {
+    // The signed manifest adds a binary fingerprint to the daemon's source
+    // label. Local candidates also include their commit; Info.plist only has
+    // the public package version. Keep checking the exact expected daemon.
+    let label = manifest
+        .runtime_version
+        .rsplit_once("-bin.")
+        .map_or(manifest.runtime_version.as_str(), |(label, _)| label);
+    let version = label.strip_prefix('v').unwrap_or(label);
+    if version != app_version && !version.starts_with(&format!("{app_version}-dev.")) {
+        return Err(format!(
+            "runtime label {label} does not belong to app {app_version}"
+        ));
+    }
+    Ok(version.to_string())
 }
 
 struct SignedFixture {
@@ -512,6 +530,25 @@ fn signed_fixture_rejects_non_session_runner_targets() {
     assert!(owned_runner_label("tech.somewhere.sessions.daemon").is_err());
     assert!(owned_runner_label("../../another-session").is_err());
     assert!(owned_runner_label("12345678-1234-1234-1234-123456789abc").is_ok());
+}
+
+#[test]
+fn signed_fixture_checks_exact_stable_and_development_daemon_labels() {
+    let mut manifest = RuntimeManifest {
+        schema_version: 1,
+        runtime_version: "v0.2.28-bin.abc123".to_string(),
+        target: "darwin-arm64".to_string(),
+        binaries: BTreeMap::new(),
+    };
+    assert_eq!(daemon_build_version(&manifest, "0.2.28").unwrap(), "0.2.28");
+    manifest.runtime_version = "v0.2.28-dev.g91e6873-bin.abc123".to_string();
+    assert_eq!(
+        daemon_build_version(&manifest, "0.2.28").unwrap(),
+        "0.2.28-dev.g91e6873"
+    );
+    assert!(daemon_build_version(&manifest, "0.2.29").is_err());
+    manifest.runtime_version = "v0.2.280-dev.g91e6873-bin.abc123".to_string();
+    assert!(daemon_build_version(&manifest, "0.2.28").is_err());
 }
 
 #[test]
