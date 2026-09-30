@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
@@ -27,6 +29,38 @@ type peerDialer struct {
 	stall    map[string]time.Duration
 	delay    map[string]time.Duration // reachable, but answers late
 	start    time.Time
+}
+
+func TestFleetProbesKeepRequestOwnedTransport(t *testing.T) {
+	var requests atomic.Int32
+	peer := healthyPeer(t, "owned-probes", &requests)
+	original := fleetRelayTransport
+	fleetRelayTransport = &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("fixture transport was restored before speculative probes settled")
+	}}
+	defer func() { fleetRelayTransport = original }()
+	dialer := &peerDialer{reachAt: map[string]string{
+		"127.0.0.1:1": peer.Listener.Addr().String(),
+		"127.0.0.1:2": peer.Listener.Addr().String(),
+	}}
+	restore := dialer.install(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	results := newTestDaemon(t).handler.probeFleetCandidates(ctx, []fleetendpoint.Candidate{
+		{Endpoint: "http://127.0.0.1:1"}, {Endpoint: "http://127.0.0.1:2"},
+	}, fleetHostCredential, "owned-probes")
+	// Teardown need not wait for the later route to start: it already owns the
+	// original pointer, and cannot read the restored global transport.
+	restore()
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Errorf("probe %d lost its request-owned transport: %v", result.index, result.err)
+		}
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("owned transport served %d probes, want both", requests.Load())
+	}
 }
 
 type peerAttempt struct {

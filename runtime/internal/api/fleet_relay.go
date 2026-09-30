@@ -275,7 +275,7 @@ func (s *Server) fleetMachineReachability(parent context.Context, machine fleetS
 	if err == nil {
 		// Selection returns the candidate it reached, or the only saved endpoint
 		// without probing it; either way that is the address this row failed at.
-		if err = probeFleetEndpoint(ctx, target, credential, machine.MachineID); err != nil {
+		if err = probeFleetEndpoint(ctx, target, credential, machine.MachineID, fleetRelayTransport); err != nil {
 			err = fleetEndpointError(selected.Endpoint, err)
 		}
 	}
@@ -455,6 +455,9 @@ type fleetProbe struct {
 func (s *Server) probeFleetCandidates(
 	ctx context.Context, candidates []fleetendpoint.Candidate, credential, machineID string,
 ) <-chan fleetProbe {
+	// All speculative workers own the transport selected for this request, even
+	// if a caller returns as soon as the preferred route wins.
+	transport := fleetRelayTransport
 	results := make(chan fleetProbe, len(candidates))
 	settled := make([]chan struct{}, len(candidates))
 	for index := range candidates {
@@ -488,20 +491,20 @@ func (s *Server) probeFleetCandidates(
 			}
 			result <- fleetProbe{
 				index: index, candidate: candidate, target: target,
-				err: probeFleetEndpoint(ctx, target, credential, machineID),
+				err: probeFleetEndpoint(ctx, target, credential, machineID, transport),
 			}
 		}(index, candidate)
 	}
 	return results
 }
 
-func probeFleetEndpoint(ctx context.Context, target *url.URL, credential, machineID string) error {
+func probeFleetEndpoint(ctx context.Context, target *url.URL, credential, machineID string, transport *http.Transport) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String()+"/api/machine", nil)
 	if err != nil {
 		return err
 	}
 	request.Header.Set("Authorization", "Bearer "+credential)
-	response, err := fleetRelayTransport.RoundTrip(request)
+	response, err := transport.RoundTrip(request)
 	if err != nil {
 		return err
 	}

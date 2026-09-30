@@ -39,7 +39,10 @@ try {
   page.on('response', (response) => { if (response.status() >= 400) failed.push(`${response.status()} ${response.url()}`); });
   await page.setViewport({ width: 1100, height: 850 });
   const url = `http://127.0.0.1:${server.address().port}`;
-  const clickText = (text) => page.evaluate((label) => { const button = [...document.querySelectorAll('button')].find((item) => item.textContent === label); if (!button) throw new Error(`missing button ${label}`); button.click(); }, text);
+  const clickText = async (text) => {
+    await page.waitForFunction((label) => [...document.querySelectorAll('button')].some((item) => item.textContent === label && !item.disabled), {}, text);
+    await page.evaluate((label) => { const button = [...document.querySelectorAll('button')].find((item) => item.textContent === label && !item.disabled); if (!button) throw new Error(`missing enabled button ${label}`); button.click(); }, text);
+  };
   await page.goto(url); await page.waitForSelector('textarea');
   await clickText('Restart / change permissions…'); await page.waitForSelector('[role=dialog]');
   const review = await page.$eval('[role=dialog]', (element) => element.textContent);

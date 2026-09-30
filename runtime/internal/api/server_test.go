@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -292,7 +293,7 @@ func (r *pendingRestoreRegistry) PendingRestore(id string) (state.RestorePending
 func (r *pendingRestoreRegistry) RestorePendingCount() int { return len(r.pending) }
 func (r *pendingRestoreRegistry) RetiredRestoreCount() int { return 0 }
 
-func newTestDaemon(t *testing.T) testDaemon {
+func newTestDaemon(t testing.TB) testDaemon {
 	t.Helper()
 	root := t.TempDir()
 	webDir := filepath.Join(root, "frontend", "dist")
@@ -449,6 +450,71 @@ func TestPausedAfterRebootIsDegradedAndEveryReadFailsLoudly(t *testing.T) {
 }
 
 func TestPausedRestoreCacheKeepsListAndHealthResponsiveAtScale(t *testing.T) {
+	manager, handler, reader := pausedRestoreScale(t)
+	states, err := reader.CurrentStates(context.Background())
+	if err != nil || len(states) != 500 {
+		t.Fatalf("seeded ledger states=%d err=%v, want 500", len(states), err)
+	}
+	for range 5 {
+		manager.List(false)
+	}
+	folds, events := reader.folds.Load(), reader.events.Load()
+	for range 20 {
+		infos, timing := manager.ListTimed(false)
+		if len(infos) != 30 || !timing.LedgerCached || timing.LedgerFold != 0 {
+			t.Fatalf("warm listing: records=%d cached=%v fold=%s", len(infos), timing.LedgerCached, timing.LedgerFold)
+		}
+	}
+	if reader.folds.Load() != folds || reader.events.Load() != events {
+		t.Fatal("warm listings read full ledger state/events instead of the cache")
+	}
+	if manager.RestorePendingCount() != 30 || manager.RetiredRestoreCount() != 30 {
+		t.Fatalf("restore counts = pending %d retired %d, want 30 and 30",
+			manager.RestorePendingCount(), manager.RetiredRestoreCount())
+	}
+	assertHealthResponsiveWhileListing(t, handler, manager, reader)
+}
+
+// Wall-clock costs belong in a benchmark, not a race-detector scheduling gate.
+func BenchmarkPausedRestoreWarmList(b *testing.B) {
+	manager, _, _ := pausedRestoreScale(b)
+	manager.List(false)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		manager.List(false)
+	}
+}
+
+type pausedScaleReader struct {
+	*ledger.Store
+	folds   atomic.Int64
+	events  atomic.Int64
+	blocked atomic.Int64
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *pausedScaleReader) CurrentStates(ctx context.Context) ([]ledger.LaneState, error) {
+	r.folds.Add(1)
+	return r.Store.CurrentStates(ctx)
+}
+
+func (r *pausedScaleReader) Events(ctx context.Context, laneID string) ([]ledger.Event, error) {
+	r.events.Add(1)
+	return r.Store.Events(ctx, laneID)
+}
+
+func (r *pausedScaleReader) HighWaterMark(ctx context.Context) (int64, error) {
+	if r.entered != nil && r.blocked.Add(1) <= 10 {
+		r.entered <- struct{}{}
+		<-r.release
+	}
+	return r.Store.HighWaterMark(ctx)
+}
+
+func pausedRestoreScale(t testing.TB) (*sessionruntime.Manager, http.Handler, *pausedScaleReader) {
+	t.Helper()
 	daemon := newTestDaemon(t)
 	store, err := ledger.Open(context.Background(), ledger.Options{
 		Path: filepath.Join(daemon.root, "ledger", "lanes.sqlite3"),
@@ -457,38 +523,19 @@ func TestPausedRestoreCacheKeepsListAndHealthResponsiveAtScale(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	ids := seedPausedRestoreScale(t, daemon, store)
+	seedPausedRestoreScale(t, daemon, store)
+	reader := &pausedScaleReader{Store: store}
 	previousLogOutput := log.Writer()
 	log.SetOutput(io.Discard)
 	manager := sessionruntime.NewManager(daemon.config, daemon.launcher, sessionruntime.ManagerOptions{
-		DisableWatchers: true, ActivityInterval: time.Hour, LedgerReader: store,
+		DisableWatchers: true, ActivityInterval: time.Hour, LedgerReader: reader,
 	})
 	log.SetOutput(previousLogOutput)
 	t.Cleanup(manager.Close)
-	handler := New(daemon.config, manager)
-	for range 5 {
-		manager.List(false)
-	}
-	started := time.Now()
-	for range 20 {
-		manager.List(false)
-	}
-	if average := time.Since(started) / 20; average >= 5*time.Millisecond {
-		t.Fatalf("warm List() average = %s, want under 5ms", average)
-	} else {
-		t.Logf("warm List() average with 500 records and 30 active cached markers: %s", average)
-	}
-	if manager.RestorePendingCount() != 30 || manager.RetiredRestoreCount() != 30 {
-		t.Fatalf("restore counts = pending %d retired %d, want 30 and 30",
-			manager.RestorePendingCount(), manager.RetiredRestoreCount())
-	}
-	assertHealthResponsiveWhileListing(t, handler, manager)
-	if len(ids) != 500 {
-		t.Fatalf("seeded records = %d, want 500", len(ids))
-	}
+	return manager, New(daemon.config, manager), reader
 }
 
-func seedPausedRestoreScale(t *testing.T, daemon testDaemon, store *ledger.Store) []string {
+func seedPausedRestoreScale(t testing.TB, daemon testDaemon, store *ledger.Store) []string {
 	t.Helper()
 	ids := make([]string, 0, 500)
 	for index := range 500 {
@@ -516,35 +563,33 @@ func seedPausedRestoreScale(t *testing.T, daemon testDaemon, store *ledger.Store
 	return ids
 }
 
-func assertHealthResponsiveWhileListing(t *testing.T, handler http.Handler, manager *sessionruntime.Manager) {
+func assertHealthResponsiveWhileListing(t *testing.T, handler http.Handler, manager *sessionruntime.Manager, reader *pausedScaleReader) {
 	t.Helper()
-	stop := make(chan struct{})
+	reader.entered, reader.release = make(chan struct{}, 10), make(chan struct{})
 	var workers sync.WaitGroup
+	defer func() { close(reader.release); workers.Wait() }()
 	for range 10 {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					manager.List(false)
-				}
-			}
+			manager.List(false)
 		}()
 	}
-	time.Sleep(20 * time.Millisecond)
-	started := time.Now()
-	response := serve(t, handler, http.MethodGet, "/api/health", nil, "127.0.0.1:1", nil)
-	elapsed := time.Since(started)
-	close(stop)
-	workers.Wait()
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"retired":30`) ||
-		elapsed >= 100*time.Millisecond {
-		t.Fatalf("health while List() was hammered = status %d in %s, want 200 under 100ms", response.Code, elapsed)
+	for range 10 {
+		<-reader.entered // These ten callers cannot progress; health may do its own indexed read.
 	}
-	t.Logf("/api/health while 10 goroutines hammered List(): %s", elapsed)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- serve(t, handler, http.MethodGet, "/api/health", nil, "127.0.0.1:1", nil) }()
+	var response *httptest.ResponseRecorder
+	select {
+	case response = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("health waited for blocked listing I/O")
+	}
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"retired":30`) ||
+		!strings.Contains(response.Body.String(), `"pending":30`) {
+		t.Fatalf("health while listing I/O was blocked = status %d body=%s", response.Code, response.Body.String())
+	}
 }
 
 // TestConcurrentSubmitKeepsEachMessageWithItsTarget pins the invariant the
