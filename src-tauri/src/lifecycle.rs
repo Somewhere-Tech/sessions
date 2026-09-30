@@ -731,3 +731,7 @@ include!("lifecycle_install.rs");
 include!("lifecycle_service.rs");
 include!("lifecycle_util.rs");
 include!("lifecycle_tests.rs");
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "lifecycle_signed_acceptance.rs"]
+mod signed_acceptance;

@@ -35,9 +35,10 @@
    `<uuid>.sock` name and its separator cost 42 bytes, so `SESSIONS_STATE_DIR`
    itself must stay at or below 61 bytes. A scratch directory nested inside a
    worktree can exceed that; `/tmp/sX/runners` cannot.
-4. **Protect the daily driver.** The only development daemon label is
+4. **Protect the daily driver.** The manual development daemon label is
    `tech.somewhere.sessions.dev.daemon`. Record the live-session baseline before a
-   reload and verify `soak-d2` plus the full baseline afterward.
+   reload and verify `soak-d2` plus the full baseline afterward. Isolated native
+   acceptance fixtures instead generate unique, task-owned scratch labels.
 5. **Keep app and daemon lifetimes separate.** Tauri development may open,
    close, rebuild, or replace Sessions.app. It must not terminate a daemon or
    runner as a side effect. Debug builds use the externally managed development
@@ -70,6 +71,37 @@ allows running against existing local binaries. Its receipt explicitly records
 the actual platform and cannot count as native Linux AMD64 acceptance.
 
 ## Development app artifacts
+
+### Signed macOS runtime acceptance
+
+The ignored native test below exercises production installer functions against
+two independently verified signed app bundles. Keep the receipt outside the
+checkout and use a new filename; the test never overwrites a prior receipt.
+
+```sh
+SESSIONS_ACCEPTANCE_OLD_APP=/absolute/path/old/Sessions.app \
+SESSIONS_ACCEPTANCE_NEW_APP=/absolute/path/new/Sessions.app \
+SESSIONS_ACCEPTANCE_RECEIPT=/absolute/path/evidence/runtime-acceptance.json \
+cargo test --manifest-path src-tauri/Cargo.toml --lib \
+  lifecycle::signed_acceptance::exact_signed_runtime_install_rollback_and_update \
+  -- --ignored --exact --nocapture
+```
+
+It uses a short, complete four-root fixture, a unique launchd service, and one
+owned shell. It verifies runtime hashes/signatures, first installation, failed
+startup rollback, daemon version, and runner/child identity and literal output
+across a successful update. No app or provider is launched. Scratch remote
+automation is disabled and previewed so it cannot reconfigure shared Tailscale
+Serve. Cleanup ends only the owned shell/job and unique daemon before removing
+scratch state; failure retains the private fixture and a bounded log receipt.
+
+Identical runtime inputs are explicitly reported as `same_version_dry_run`,
+not release-upgrade acceptance. Older daemons that ignore Unix arguments use a
+fixture-only smoke exit for that dry run; a real upgrade injects `--version`.
+This does not establish fresh-user GUI onboarding, the GUI updater, provider
+login, reboot recovery, or phone hardware acceptance.
+
+### CI development artifacts
 
 The CI workflow's optional `build_dev_app` dispatch input builds an Apple
 Silicon app after the verification job passes. A separate read-only job checks
