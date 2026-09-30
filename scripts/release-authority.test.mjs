@@ -63,8 +63,12 @@ releaseTest('release jobs separate dependency execution, signing keys, and publi
   assert.equal(workflow.permissions.contents, 'read');
   assert.doesNotMatch(JSON.stringify(workflow.env), /secrets\.|APPLE_|SIGNING_|GITHUB_TOKEN/);
   const { build, sign, package: packaging, publish } = workflow.jobs;
-  assert.equal(build.env.PUPPETEER_CACHE_DIR, '${{ runner.temp }}/puppeteer',
+  assert.equal(build.env.PUPPETEER_CACHE_DIR, '/tmp/sR/puppeteer',
     'dependency installation and isolated-home smoke tests must use the same browser cache');
+  for (const job of Object.values(workflow.jobs)) {
+    assert.doesNotMatch(JSON.stringify(job.env || {}), /\$\{\{\s*runner\./,
+      'runner context is available in step env, not job env');
+  }
   for (const job of [build, sign, packaging]) assert.equal(job.permissions.contents, 'read');
   for (const job of [build, packaging]) {
     assert.equal(job.environment, undefined);
