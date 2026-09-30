@@ -288,9 +288,66 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  linux_acceptance:
+    name: Accept exact packaged Linux AMD64 runtime and npm CLI
+    needs: [build, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the immutable acceptance helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.commit }}
+      - name: Set up Node.js without dependencies
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - name: Download only the producing delivery artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact }}
+          path: ${{ runner.temp }}/delivery
+          merge-multiple: true
+      - name: Verify native host and complete provenance before execution
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          SOURCE_SHA: ${{ needs.build.outputs.commit }}
+          MANIFEST: ${{ needs.package.outputs.manifest }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -s)/$(uname -m)" == Linux/x86_64 ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          node scripts/release-artifacts.mjs verify "$RUNNER_TEMP/delivery" "$VERSION" "$SOURCE_SHA" delivery "$MANIFEST"
+      - name: Unpack the verified exact Linux archive with bounded member validation
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: node scripts/unpack-release-cli.cjs "$RUNNER_TEMP/delivery/cli/sessions_${VERSION}_linux_amd64.tar.gz" "$RUNNER_TEMP/linux-runtime"
+      - name: Exercise exact packaged runtime adoption and authentication
+        env:
+          SOURCE_SHA: ${{ needs.build.outputs.commit }}
+        run: node scripts/linux-runtime-acceptance.mjs "$RUNNER_TEMP/linux-runtime" "$RUNNER_TEMP/linux-release-acceptance.json"
+      - name: Exercise the exact prepared npm tarball offline
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: node npm/scripts/test-packed-release.cjs "$RUNNER_TEMP/delivery/somewhere-tech-sessions-${VERSION}.tgz" "$RUNNER_TEMP/delivery/npm-manifest.json" "$RUNNER_TEMP/delivery/cli" > "$RUNNER_TEMP/linux-npm-acceptance.log" 2>&1
+      - name: Preserve isolated acceptance receipts and bounded diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-release-acceptance-${{ needs.build.outputs.commit }}
+          path: |
+            ${{ runner.temp }}/linux-release-acceptance.json
+            ${{ runner.temp }}/linux-release-acceptance.json.daemon.log
+            ${{ runner.temp }}/linux-npm-acceptance.log
+          if-no-files-found: warn
+          retention-days: 7
+
   publish:
     name: Stage verified draft assets without signing keys or build tools
-    needs: [build, package]
+    needs: [build, package, linux_acceptance]
     runs-on: macos-14
     timeout-minutes: 15
     environment: release

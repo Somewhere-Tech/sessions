@@ -70,7 +70,7 @@ releaseTest('release jobs separate dependency execution, signing keys, and publi
   }
   assert.equal(sign.needs, 'build');
   assert.deepEqual(packaging.needs, ['build', 'sign']);
-  assert.deepEqual(publish.needs, ['build', 'package']);
+  assert.deepEqual(publish.needs, ['build', 'package', 'linux_acceptance']);
   assert.equal(publish.permissions.contents, 'write');
   const runs = (job) => job.steps.map((step) => step.run || '').join('\n');
   assert.match(runs(build), /npm ci/);
@@ -117,6 +117,45 @@ releaseTest('release jobs separate dependency execution, signing keys, and publi
   assert.match(signer, /stapler validate/);
   assert.match(signer, /tar -xzf "\$OUTPUT\/Sessions\.app\.tar\.gz"/);
   assert.match(signer, /stapler validate "\$OUTPUT\/verified-package\/Sessions\.app"/);
+});
+
+releaseTest('draft staging requires native acceptance of the exact packaged Linux delivery', async () => {
+  const { stdout } = await run('ruby', ['-rjson', '-ryaml', '-e', 'puts YAML.safe_load(File.read(ARGV[0])).to_json', '.github/workflows/release.yml'], { cwd: root });
+  const workflow = JSON.parse(stdout);
+  const job = workflow.jobs.linux_acceptance;
+  assert.deepEqual(job.needs, ['build', 'package']);
+  assert.equal(job['runs-on'], 'ubuntu-24.04');
+  assert.equal(job['timeout-minutes'], 15);
+  assert.equal(job.permissions.contents, 'read');
+  assert.equal(job.environment, undefined);
+  const source = '${{ needs.build.outputs.commit }}';
+  const checkout = job.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
+  assert.equal(checkout.with.ref, source);
+  assert.equal(checkout.with['persist-credentials'], false);
+  const downloads = job.steps.filter((step) => step.uses?.startsWith('actions/download-artifact@'));
+  assert.equal(downloads.length, 1);
+  assert.equal(downloads[0].with['artifact-ids'], '${{ needs.package.outputs.artifact }}');
+  const index = (text) => job.steps.findIndex((step) => step.run?.includes(text));
+  const verify = index('release-artifacts.mjs verify');
+  const unpack = index('unpack-release-cli.cjs');
+  const runtime = index('linux-runtime-acceptance.mjs');
+  const npm = index('test-packed-release.cjs');
+  assert.ok(verify >= 0 && unpack > verify && runtime > unpack && npm > runtime);
+  assert.equal(job.steps[verify].env.MANIFEST, '${{ needs.package.outputs.manifest }}');
+  assert.equal(job.steps[verify].env.SOURCE_SHA, source);
+  assert.match(job.steps[verify].run, /Linux\/x86_64/);
+  assert.match(job.steps[verify].run, /git rev-parse HEAD.*SOURCE_SHA/);
+  assert.match(job.steps[verify].run, /delivery "\$MANIFEST"/);
+  assert.match(job.steps[unpack].run, /delivery\/cli\/sessions_\$\{VERSION\}_linux_amd64\.tar\.gz/);
+  assert.equal(job.steps[runtime].env.SOURCE_SHA, source);
+  assert.match(job.steps[npm].run, /delivery\/somewhere-tech-sessions-\$\{VERSION\}\.tgz.*delivery\/npm-manifest\.json.*delivery\/cli/);
+  assert.doesNotMatch(JSON.stringify(job), /secrets\.|SESSIONS_ACCEPTANCE_FIXTURE|setup-go|\bgo (build|test)|npm (ci|publish)|gh release|verify-release\.cjs|https:\/\/github\.com/);
+  const upload = job.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+  assert.equal(upload.if, 'always()');
+  for (const name of ['linux-release-acceptance.json', 'linux-release-acceptance.json.daemon.log', 'linux-npm-acceptance.log']) assert.ok(upload.with.path.includes(name));
+  assert.equal(upload.with['retention-days'], 7);
+  assert.deepEqual(workflow.jobs.publish.needs, ['build', 'package', 'linux_acceptance']);
+  assert.equal(workflow.jobs.publish.if, undefined, 'normal success dependency must not be bypassed');
 });
 
 releaseTest('artifact handoff refuses tampering, foreign source, extra files, and symlinks', async (t) => {

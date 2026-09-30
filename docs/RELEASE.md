@@ -93,7 +93,9 @@ macOS runner it repeats the full source gate and builds without signing
 credentials. Separate jobs verify that producing artifact, sign and notarize
 the existing bytes with step-scoped credentials, prepare and test the exact npm
 tarball without publication authority, and upload the verified delivery to a
-draft GitHub Release. The workflow never publishes the draft, marks it latest,
+draft GitHub Release only after a read-only Ubuntu AMD64 job verifies the
+producing delivery provenance and exercises its exact packaged Linux runtime
+and prepared npm CLI. The workflow never publishes the draft, marks it latest,
 publishes npm, or promotes the hosted updater or website.
 
 Configure these secrets in the GitHub `release` environment:
@@ -164,10 +166,12 @@ checksums verify. Do not deploy a one-file directory: a full static deploy can
 remove the onboarding pages. Read the updater back from production and install
 through Settings → Sessions updates before announcing the release.
 
-Linux archives in the release lane are cross-built. Native candidate CI,
-packed-CLI checks, published npm installation, systemd startup, and reboot
-recovery are separate evidence; test the exact release archives on compatible
-Linux hosts before claiming their operational acceptance. Windows signing,
+Linux archives in the release lane are cross-built, then the exact AMD64
+delivery bytes run on Ubuntu before draft staging. The isolated receipt records
+shell communication, runner survival across daemon restart, and authentication;
+the prepared npm tarball's native CLI is tested offline with the same pinned
+archive. This does not prove ARM64 operation, published npm downloads, provider
+login, systemd startup, or reboot recovery. Windows signing,
 hardware acceptance, and artifact/updater promotion use the separate Windows
 candidate lane. Existing Windows and Android preview links must not be upgraded
 or presented as physical-device accepted by a macOS release.
