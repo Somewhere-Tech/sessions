@@ -15,9 +15,9 @@ func TestCatAndResurrectUseFleetSearchReference(t *testing.T) {
 	var continued string
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch {
-		case request.Method == http.MethodGet && request.URL.Path == "/api/history/"+historyID:
+		case request.Method == http.MethodGet && request.URL.Path == "/api/fleet/machine-mini/api/history/"+historyID:
 			_, _ = io.WriteString(response, "[user]\nRemember the launch.\n")
-		case request.Method == http.MethodPost && request.URL.Path == "/api/recovery/adopt":
+		case request.Method == http.MethodPost && request.URL.Path == "/api/fleet/machine-mini/api/recovery/adopt":
 			var body map[string]any
 			_ = json.NewDecoder(request.Body).Decode(&body)
 			continued, _ = body["historyId"].(string)
@@ -29,6 +29,7 @@ func TestCatAndResurrectUseFleetSearchReference(t *testing.T) {
 	defer server.Close()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SESSIONS_HOST", server.URL)
 	if _, err := saveMachine(home, savedMachine{
 		Alias: "mini", MachineID: "machine-mini", Name: "Mini", Endpoint: server.URL,
 	}, "device-secret"); err != nil {
@@ -70,6 +71,80 @@ func TestCatAcceptsLiveSessionsIDLikeTranscript(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--host", server.URL, "cat", id[:8]}, strings.NewReader(""), &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "Review this.") {
+		t.Fatalf("cat exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestCatPrintsProviderFaultAsError(t *testing.T) {
+	const id = "9cd94e86-2222-4333-8444-555555555556"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{{
+				"id": id, "tool": "codex", "cwd": "/work", "failureKind": "provider-unavailable",
+				"failureDetail": "Codex API unavailable (503, overloaded)", "failureAt": int64(1),
+			}}})
+		case "/api/sessions/" + id + "/events":
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": []map[string]any{{
+				"type": "system", "subtype": "provider_fault", "detail": "Codex API unavailable (503, overloaded)",
+			}}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "cat", id}, strings.NewReader(""), &stdout, &stderr); code != 0 ||
+		stdout.String() != "[error]\nCodex API unavailable (503, overloaded)\n" || stderr.Len() != 0 {
+		t.Fatalf("cat exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestTerminalCatFallsBackToSessionProviderFault(t *testing.T) {
+	const id = "9cd94e86-2222-4333-8444-555555555557"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{{
+				"id": id, "tool": "claude-code", "cwd": "/work", "failureKind": "provider-unavailable",
+				"failureDetail": "Claude API overloaded (529)", "failureAt": int64(1),
+			}}})
+		case "/api/sessions/" + id + "/events":
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": []any{}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "transcript", id}, strings.NewReader(""), &stdout, &stderr); code != 0 ||
+		stdout.String() != "[error]\nClaude API overloaded (529)\n" || stderr.Len() != 0 {
+		t.Fatalf("transcript exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestCatExplainsThatATerminalCodexTranscriptIsStillPending(t *testing.T) {
+	const id = "9cd94e86-2222-4333-8444-555555555555"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{{
+				"id": id, "name": "review", "tool": "codex", "cwd": "/work", "exited": false,
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions/"+id+"/events":
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": []any{}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "cat", id}, strings.NewReader(""), &stdout, &stderr); code != 0 ||
+		stdout.String() != "(waiting for Codex to publish its conversation transcript)\n" || stderr.Len() != 0 {
 		t.Fatalf("cat exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }

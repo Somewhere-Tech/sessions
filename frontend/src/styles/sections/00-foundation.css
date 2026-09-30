@@ -14,6 +14,7 @@
   --fg-faint:   #8c8c8c;   /* text-muted: 5.89:1 on the base */
   --accent:     #2dd4bf;
   --accent-hover: #5eead4;
+  --accent-contrast: #0a0a0a;   /* text on a solid accent fill */
   --accent-glow: rgba(45, 212, 191, 0.18);
   /* Translucent accent washes — never fill at 100% saturation. These
    * tinted surfaces distinguish user bubbles and tool cards without
@@ -270,6 +271,7 @@ button:active:not(:disabled),
   line-height: 1.65;
 }
 .connect-actions,
+.connect-account,
 .connect-pair-link,
 .connect-discovery,
 .connect-remembered,
@@ -280,6 +282,31 @@ button:active:not(:disabled),
   background: rgba(20, 20, 20, 0.88);
   box-shadow: var(--shadow-2);
 }
+.connect-account {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 20px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 18px;
+  border-color: var(--accent-border-soft);
+}
+.connect-account strong,
+.connect-account small { display: block; }
+.connect-account strong { color: var(--fg); font-size: 16px; }
+.connect-account small { margin-top: 4px; color: var(--fg-dim); line-height: 1.4; }
+.connect-account-form,
+.connect-account-actions { display: flex; gap: 8px; align-items: center; }
+.connect-account-form input {
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-base);
+  color: var(--fg);
+}
+.connect-account > .connect-status { grid-column: 1 / -1; margin: 0; color: var(--accent); }
 .connect-discovery {
   margin-bottom: 16px;
   padding: 18px;
@@ -318,7 +345,6 @@ button:active:not(:disabled),
 }
 .connect-pair-link input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .connect-pair-link .connect-submit { width: 100%; }
-.connect-coming-soon { align-self: center; padding: 6px 9px; border: 1px solid var(--accent-border-soft); border-radius: 999px; background: var(--accent-bg-soft); white-space: nowrap; }
 .connect-discovery-heading {
   display: flex;
   align-items: flex-end;
@@ -594,7 +620,10 @@ button:active:not(:disabled),
 }
 
 @media (max-width: 620px) {
-  .connect-screen { padding: 24px 14px 44px; }
+  .connect-screen {
+    padding: calc(24px + env(safe-area-inset-top, 0px)) 14px
+      calc(44px + env(safe-area-inset-bottom, 0px));
+  }
   .connect-kicker { margin-top: 44px; }
   .connect-panel > h1 { font-size: clamp(38px, 13vw, 54px); }
   .connect-form { grid-template-columns: 1fr; padding: 16px; }
@@ -608,6 +637,7 @@ button:active:not(:disabled),
   .connect-peer { grid-template-columns: auto minmax(0, 1fr); }
   .connect-peer > .btn { grid-column: 1 / -1; }
   .connect-pair-link { grid-template-columns: 1fr; }
+
 }
 
 /* App shell — top header / main / mobile-nav stack.

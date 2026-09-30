@@ -5,6 +5,7 @@ import { RemoteView } from '../src/components/RemoteView';
 import type { StructuredSessionEvent } from '../src/types';
 
 const base = { source: 'codex-app-server', conversationId: 'thread-1' } as const;
+const steeringFixture = new URLSearchParams(window.location.search).has('steering');
 const events: StructuredSessionEvent[] = [
   {
     ...base,
@@ -62,6 +63,11 @@ const events: StructuredSessionEvent[] = [
   {
     ...base,
     type: 'codex', subtype: 'item_completed', turnId: 'turn-1',
+    item: { id: 'update-2', type: 'agentMessage', phase: 'commentary', text: 'The desktop fixture passes. I am checking the final response now.' }
+  },
+  {
+    ...base,
+    type: 'codex', subtype: 'item_completed', turnId: 'turn-1',
     item: {
       id: 'answer-1', type: 'agentMessage', phase: 'final_answer',
       text: 'Sessions now has a real Codex conversation view with streaming activity, plans, command output, file diffs, reasoning summaries, context usage, and a safe interrupt control.'
@@ -89,11 +95,13 @@ createRoot(document.getElementById('root')!).render(
         sessionId="fixture-session"
         events={events}
         send={() => {}}
+        submitMessage={async () => {}}
+        steerMessage={steeringFixture ? async () => {} : undefined}
         connected
         hasEarlierClaudeEvents={false}
         loadingEarlierClaudeEvents={false}
         onLoadEarlierClaudeEvents={() => {}}
-        sidebar={sidebar}
+        sidebar={{ ...sidebar, isWorking: steeringFixture }}
         cwd="/Users/example/sessions"
         onOpenTerminal={() => {}}
         provider="codex"

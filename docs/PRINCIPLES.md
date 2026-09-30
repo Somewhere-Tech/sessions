@@ -5,6 +5,51 @@ shell, and command sessions. These principles describe the public product
 contract. Internal decision logs, launch notes, rejected options, and private
 service plans are maintained outside this repository.
 
+## A working team, not a process list
+
+Sessions should feel like working with a small organization: department leads,
+project managers, individual contributors, and temporary teams. Claude, Codex,
+and other providers are ways these collaborators work, not separate silos.
+The user can keep their preferred provider app as their everyday interface.
+Sessions supplies durable conversations, reliable coordination, and clear
+ownership across the computers that run the work.
+
+The default view should match the user's level of responsibility: direct
+collaborators and the individual contributors they explicitly bring forward.
+Talking directly to a contributor must not silently change who delegated the
+work. Temporary direct attention, permanent promotion to a main session, and
+handing work back to a manager are distinct intentions. A handoff should retain
+context and leave an attributable record, without restarting the agent.
+
+Sessions-managed delegated lanes are durable colleagues. A provider's internal
+harness helpers are implementation details with different lifecycle semantics.
+Neither should flood the user's main list. A child needing its manager is not
+automatically a decision for the user. Delegation and escalation should be
+explicit; names or output text are not reliable evidence of an org chart.
+
+The team is separate from its computers. Process liveness is separate from
+whether a conversation deserves the user's attention. Retained and recoverable
+work stays findable without dominating the everyday view or being silently
+deleted. A task board such as Somewhere's tasks records outcomes, ownership,
+decisions, and relationships; Sessions should complement that durable memory,
+not recreate it as another board.
+
+Projects are the primary workspace: a project's collaborators can use different
+providers, computers, and explicitly selected accounts. Those are execution
+details, not separate teams. Account choice must not imply pooled subscriptions
+or silently move a live conversation between identities.
+
+Adding a collaborator and resuming a conversation are different actions. A new
+collaborator can start light with a reviewed briefing and references back to
+the original, or with an explicit authored-conversation copy. Neither should
+stop the source. Resume preserves the original conversation; recently closed
+work stays discoverable outside the everyday collaborator list.
+
+These principles guide the product; they are not a promise that every team
+workflow is already implemented. Usage views should explain observed activity
+and resources, never imply that tokens measure productivity, estimated API cost
+is a subscription bill, or runtime duration equals human time saved.
+
 ## Sessions are durable work
 
 A window is not a process and a process is not a conversation. Closing a tab
@@ -18,12 +63,18 @@ clear native UI. An agent may inspect and operate Sessions with the user's
 authority, but it does not bypass approvals, credentials, or destructive-action
 boundaries.
 
-Delegation is explicit authority, not a loophole. A child inherits its
-manager's exact provider permission mode by default and cannot promote itself.
-The user may opt into autonomous delegated work at the machine level, with that
-choice visible in Settings and applied only to newly created children. Provider
-approval prompts are durable `needs-input` state for users and agents; Sessions
-does not clear them by blindly typing into a terminal.
+Delegation is explicit authority, not a loophole. Agent-created children run
+with autonomous full access by default, because delegated work runs in the
+background and is expected to finish rather than wait on a person for each
+command. The user may narrow this at the machine level so children inherit
+their manager's exact provider permission mode instead; that choice is visible
+in Settings and applies only to newly created children. A child can never widen
+its own access past what the machine allows. Provider approval prompts are
+durable `needs-input` state for users and agents; Sessions does not clear them
+by blindly typing into a terminal. A Rich lane that inherits permissions asks
+through Sessions itself: the request stays open, the lane reads as needing you,
+and the person or the lane that delegated the work answers it. Nothing is
+approved on silence, and the answer is recorded with who gave it.
 
 Agent-created children are durable sessions by default. A final response is not
 proof that the caller is done with the runtime: the child may own a server,
@@ -108,6 +159,13 @@ are not emergencies. Red and blocking confirmation are reserved for meaningful
 danger or irreversible loss. Labels such as Close tab, Set aside, End session,
 Resume, Move, and Archive must describe their actual effect.
 
+Resume on a selected conversation reopens that exact conversation directly,
+retaining its known model, effort, and runtime. Browsing history, changing
+providers, or choosing a different runtime is a separate action; an ordinary
+resume must not reopen
+the conversation chooser or require reselecting a model. Assistant text stays
+visible in the conversation; collapsible tool details must not hide replies.
+
 ## Compatibility over forced lockstep
 
 The app, daemon, CLI, and runners have separate lifetimes. Compatible versions
@@ -117,7 +175,8 @@ session. Protocol ranges, not display-version equality, determine compatibility.
 ## Open local runtime, explicit hosted boundary
 
 The code that runs on a user's device, its local formats, and its versioned
-protocols are buildable from this repository. Optional Somewhere account,
-backup, relay, billing, abuse-control, and hosted-worker services may live in
-private repositories and consume those public contracts. See
+protocols are buildable from this repository. The minimal optional Somewhere
+sign-in and machine directory is open beside it so the account boundary is
+reviewable. Backup, relay, billing, abuse-control, and hosted-worker services
+may live in private repositories and consume those public contracts. See
 [`OPEN_SOURCE_BOUNDARY.md`](OPEN_SOURCE_BOUNDARY.md).

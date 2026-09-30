@@ -20,6 +20,41 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
+func TestLaneStatusDoesNotInferRunningFromMissingManifest(t *testing.T) {
+	const id = "40000000-0000-4000-8000-000000000001"
+	tests := []struct {
+		name      string
+		info      state.SessionInfo
+		completed bool
+		want      laneStatus
+	}{
+		{name: "running", info: state.SessionInfo{ID: id}, want: laneStatus{State: "running"}},
+		{name: "completed manifest", info: state.SessionInfo{ID: id}, completed: true, want: laneStatus{State: "exited"}},
+		{
+			name: "runner gone",
+			info: state.SessionInfo{ID: id, Unreachable: true, UnreachableReason: "runner-lost", RunnerGone: true},
+			want: laneStatus{State: "lost", Reason: "runner process is gone", Command: "sessions kill " + id},
+		},
+		{
+			name: "connection lost but process not proven gone",
+			info: state.SessionInfo{ID: id, Unreachable: true, UnreachableReason: "runner-lost"},
+			want: laneStatus{State: "unreachable", Reason: "runner is not connected"},
+		},
+		{
+			name: "paused after reboot",
+			info: state.SessionInfo{ID: id, Unreachable: true, UnreachableReason: "restart-restore-pending"},
+			want: laneStatus{State: "needs-recovery", Reason: "runner was paused after reboot", Command: "sessions resume " + id},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := laneStatusFrom(test.info, test.completed); got != test.want {
+				t.Fatalf("laneStatusFrom() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestCreateHeadersBecomeValidatedLedgerProvenance(t *testing.T) {
 	root := t.TempDir()
 	config := state.Config{

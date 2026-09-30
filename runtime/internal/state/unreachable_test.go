@@ -97,6 +97,26 @@ func TestReconnectAtomicallyReplacesUnreachableSession(t *testing.T) {
 	}
 }
 
+func TestRemoveUnreachableNeverDropsReconnectedRunner(t *testing.T) {
+	lost, registry, launcher, id := newLostRunnerSession(t)
+	launcher.Runner(id).Emit(proto.Event{Kind: proto.EventRunnerLost})
+	awaitInfo(t, lost, "unreachable", func(info SessionInfo) bool { return info.Unreachable })
+	if !registry.RemoveUnreachable(id) {
+		t.Fatal("unreachable session was not removed after its durable close")
+	}
+	if _, present := registry.Get(id); present {
+		t.Fatal("removed unreachable session stayed registered")
+	}
+
+	_, liveRegistry, _, liveID := newLostRunnerSession(t)
+	if liveRegistry.RemoveUnreachable(liveID) {
+		t.Fatal("RemoveUnreachable removed an attached runner")
+	}
+	if _, present := liveRegistry.Get(liveID); !present {
+		t.Fatal("attached runner disappeared")
+	}
+}
+
 // A real exit still is one, with every exit detail intact.
 func TestRunnerExitIsStillAnExit(t *testing.T) {
 	session, _, launcher, id := newLostRunnerSession(t)

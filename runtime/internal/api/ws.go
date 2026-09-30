@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -87,9 +88,13 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 		_ = peer.connection.Close(websocket.StatusPolicyViolation, "missing sessionId")
 		return
 	}
-	session, ok := s.registry.Get(id)
+	session, ok := s.sessionOnContact(ctx, id)
 	if !ok {
-		_ = peer.send(ctx, map[string]any{"type": "error", "message": "unknown session " + id})
+		if pending, paused := s.pendingRestore(id); paused {
+			_ = peer.send(ctx, pendingRestoreSocketError(id, pending))
+		} else {
+			_ = peer.send(ctx, map[string]any{"type": "error", "message": "unknown session " + id})
+		}
 		_ = peer.connection.Close(websocket.StatusPolicyViolation, "unknown session")
 		return
 	}
@@ -132,7 +137,7 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 				denyWrite(ctx, peer, clientMessage{Type: "input", SessionID: id})
 				continue
 			}
-			s.registry.Input(ctx, id, string(payload))
+			_ = s.writeInputForRoute(ctx, id, string(payload), "/input", state.InputAttribution{}, false)
 			continue
 		}
 		var message clientMessage
@@ -141,7 +146,7 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 				denyWrite(ctx, peer, clientMessage{Type: "input", SessionID: id})
 				continue
 			}
-			s.registry.Input(ctx, id, string(payload))
+			_ = s.writeInputForRoute(ctx, id, string(payload), "/input", state.InputAttribution{}, false)
 			continue
 		}
 		switch message.Type {
@@ -152,7 +157,7 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 				denyWrite(ctx, peer, message)
 				continue
 			}
-			s.registry.Input(ctx, id, message.Data)
+			_ = s.writeInputForRoute(ctx, id, message.Data, "/input", state.InputAttribution{}, false)
 		case "resize":
 			if !writes {
 				denyWrite(ctx, peer, message)
@@ -163,39 +168,15 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 	}
 }
 
-type muxAttachment struct {
-	cancel func()
-}
-
 func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 	ctx, cancel := context.WithCancel(parent)
-	defer cancel()
-	defer peer.connection.CloseNow()
-	attached := make(map[string]muxAttachment)
-	var attachedMu sync.Mutex
-	detach := func(id string) {
-		attachedMu.Lock()
-		entry, ok := attached[id]
-		if ok {
-			delete(attached, id)
-		}
-		attachedMu.Unlock()
-		if ok {
-			entry.cancel()
-		}
-	}
-	defer func() {
-		attachedMu.Lock()
-		entries := make([]muxAttachment, 0, len(attached))
-		for _, entry := range attached {
-			entries = append(entries, entry)
-		}
-		attached = make(map[string]muxAttachment)
-		attachedMu.Unlock()
-		for _, entry := range entries {
-			entry.cancel()
-		}
-	}()
+	work := newMuxWork(ctx, func(ctx context.Context, message clientMessage) { s.handleMuxWork(ctx, peer, message, cancel) })
+	defer work.close()
+	attached := newMuxAttachments()
+	defer attached.close()
+	// Cancel I/O before attachment cleanup, which may need a session lock
+	// currently held by a worker's input. Workers are joined after cleanup.
+	defer func() { cancel(); _ = peer.connection.CloseNow() }()
 
 	for {
 		messageType, payload, err := peer.connection.Read(ctx)
@@ -213,101 +194,22 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 		case "ping":
 			_ = peer.send(ctx, map[string]any{"type": "pong"})
 		case "attach":
-			if message.SessionID == "" {
-				continue
-			}
-			attachedMu.Lock()
-			_, exists := attached[message.SessionID]
-			attachedMu.Unlock()
-			if exists {
-				continue
-			}
-			session, ok := s.registry.Get(message.SessionID)
-			if !ok {
-				_ = peer.send(ctx, map[string]any{
-					"type": "error", "message": "unknown session " + message.SessionID,
-					"sessionId": message.SessionID,
-				})
-				continue
-			}
-			includeOutput := message.OutputReplay == nil || *message.OutputReplay
-			includeClaudeReplay := message.ClaudeReplay == nil || *message.ClaudeReplay
-			includeClaudeLive := message.ClaudeLive == nil || *message.ClaudeLive
-			attachment := session.Attach(state.AttachOptions{
-				LastSeq: message.LastSeq, ClaudeEventsSince: message.ClaudeEventsSince,
-				IncludeClaudeReplay: includeClaudeReplay, InitialReplayCap: 300,
-			})
-			attachedMu.Lock()
-			attached[message.SessionID] = muxAttachment{cancel: attachment.Cancel}
-			attachedMu.Unlock()
-			if err := sendInitial(ctx, peer, session, attachment, message.SessionID, message.LastSeq, includeOutput); err != nil {
-				detach(message.SessionID)
-				continue
-			}
-			if exited, terminal := session.TerminalState(); exited {
-				_ = peer.send(ctx, exitMessage(terminal, message.SessionID))
-				detach(message.SessionID)
-				continue
-			}
-			id := message.SessionID
-			go streamAttachment(ctx, peer, attachment, streamOptions{
-				sessionID: id, includeOutput: includeOutput, includeClaudeLive: includeClaudeLive,
-				onExit: func() { detach(id) }, onUnavailable: func() { detach(id) },
-			})
+			s.handleMuxAttach(ctx, peer, attached, message)
 		case "detach":
 			if message.SessionID != "" {
-				detach(message.SessionID)
+				attached.detach(message.SessionID)
 			}
 		case "snapshot":
 			s.handleMuxSnapshot(ctx, peer, message)
 		case "events":
 			s.handleMuxEvents(ctx, peer, message)
-		case "input":
+		case "input", "submit", "resize":
 			if !writes {
 				denyWrite(ctx, peer, message)
 				continue
 			}
-			written := s.registry.Input(ctx, message.SessionID, message.Data)
-			if message.RequestID != "" {
-				_ = peer.send(ctx, map[string]any{
-					"type": "inputAck", "requestId": message.RequestID,
-					"sessionId": message.SessionID, "ok": written,
-				})
-			}
-		case "submit":
-			if !writes {
-				denyWrite(ctx, peer, message)
-				continue
-			}
-			// Same per-session lock the HTTP submit takes, so the two
-			// transports cannot interleave a message and its Enter on one
-			// session while leaving every other session free to run.
-			unlock := s.submits.lock(message.SessionID)
-			written := s.registry.Input(ctx, message.SessionID, message.Data)
-			if written {
-				timer := time.NewTimer(submitSettleDelay)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					written = false
-				case <-timer.C:
-					written = s.registry.Input(ctx, message.SessionID, "\r")
-				}
-			}
-			unlock()
-			if message.RequestID != "" {
-				_ = peer.send(ctx, map[string]any{
-					"type": "submitAck", "requestId": message.RequestID,
-					"sessionId": message.SessionID, "ok": written,
-				})
-			}
-		case "resize":
-			if !writes {
-				denyWrite(ctx, peer, message)
-				continue
-			}
-			if session, ok := s.registry.Get(message.SessionID); ok {
-				session.Resize(ctx, clampDimension(message.Cols, 40, 500), clampDimension(message.Rows, 10, 200))
+			if !work.enqueue(message) {
+				rejectMuxWork(ctx, peer, message)
 			}
 		}
 	}
@@ -437,8 +339,13 @@ func (s *Server) handleMuxSnapshot(ctx context.Context, peer *wsPeer, message cl
 	if message.RequestID == "" || message.SessionID == "" {
 		return
 	}
-	session, ok := s.registry.Get(message.SessionID)
+	session, ok := s.sessionOnContact(ctx, message.SessionID)
 	if !ok {
+		if pending, paused := s.pendingRestore(message.SessionID); paused {
+			sendRPCError(ctx, peer, message.RequestID,
+				pendingRestoreMessage(message.SessionID, pending), "SESSION_NEEDS_RECREATE", message.SessionID)
+			return
+		}
 		sendRPCError(ctx, peer, message.RequestID, "unknown session "+message.SessionID, "not_found", message.SessionID)
 		return
 	}
@@ -461,8 +368,13 @@ func (s *Server) handleMuxEvents(ctx context.Context, peer *wsPeer, message clie
 	if message.RequestID == "" || message.SessionID == "" {
 		return
 	}
-	session, ok := s.registry.Get(message.SessionID)
+	session, ok := s.sessionOnContact(ctx, message.SessionID)
 	if !ok {
+		if pending, paused := s.pendingRestore(message.SessionID); paused {
+			sendRPCError(ctx, peer, message.RequestID,
+				pendingRestoreMessage(message.SessionID, pending), "SESSION_NEEDS_RECREATE", message.SessionID)
+			return
+		}
 		sendRPCError(ctx, peer, message.RequestID, "unknown session "+message.SessionID, "not_found", message.SessionID)
 		return
 	}
@@ -471,6 +383,22 @@ func (s *Server) handleMuxEvents(ctx context.Context, peer *wsPeer, message clie
 	body["requestId"] = message.RequestID
 	body["sessionId"] = message.SessionID
 	_ = peer.send(ctx, body)
+}
+
+func pendingRestoreMessage(id string, pending state.RestorePending) string {
+	reason := strings.TrimSpace(pending.Reason)
+	if reason == "" {
+		reason = "the runner stayed paused after reboot"
+	}
+	return "session is paused after reboot and could not be restarted in place: " +
+		reason + "; run sessions resume " + id
+}
+
+func pendingRestoreSocketError(id string, pending state.RestorePending) map[string]any {
+	return map[string]any{
+		"type": "error", "code": "SESSION_NEEDS_RECREATE", "sessionId": id,
+		"message": pendingRestoreMessage(id, pending), "action": "sessions resume " + id,
+	}
 }
 
 func sendRPCError(ctx context.Context, peer *wsPeer, requestID, message, code, sessionID string) {

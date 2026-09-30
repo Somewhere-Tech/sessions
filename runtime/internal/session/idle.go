@@ -75,21 +75,22 @@ func (m *Manager) writeIdleSentinel(info state.SessionInfo) {
 	}
 }
 
-func inspectIdle(session *state.Session) (IdleClassification, string) {
+func inspectIdle(session *state.Session) (IdleClassification, string, string) {
 	snapshot, _, err := session.Snapshot(context.Background(), 0)
 	if err != nil {
 		snapshot = ""
 	}
+	info := session.Info()
 	events := session.ClaudeEventLog()
-	classification, authoritative := structuredIdleClassification(session.Info().Kind, events)
+	classification, authoritative := structuredIdleClassification(info.Kind, events)
 	if !authoritative {
-		classification = ClassifySnapshot(snapshot)
+		classification = ClassifySnapshotFor(providerForSession(info), snapshot)
 	}
 	summary := FinalAssistantSummary(events)
 	if summary == "" {
 		summary = mirrorTailSummary(snapshot)
 	}
-	return classification, summary
+	return classification, summary, snapshot
 }
 
 func structuredIdleClassification(kind string, events []json.RawMessage) (IdleClassification, bool) {
@@ -108,10 +109,21 @@ func structuredIdleClassification(kind string, events []json.RawMessage) (IdleCl
 		}
 		switch kind {
 		case state.KindCodexAppServer:
-			if event.Source != codexapp.HistorySource || event.Subtype != "turn_completed" {
+			if event.Source != codexapp.HistorySource {
+				continue
+			}
+			// An approval the runner is holding open is the reason the lane
+			// stopped; it is answered, not replied to.
+			if event.Subtype == "approval_requested" {
+				return IdleClassification{Outcome: IdleBlocked, Line: approvalLine(events[index])}, true
+			}
+			if event.Subtype != "turn_completed" {
 				continue
 			}
 			if strings.EqualFold(event.Status, "completed") {
+				if question, asked := AssistantQuestion(events[:index+1]); asked {
+					return IdleClassification{Outcome: IdleBlocked, Line: question}, true
+				}
 				return IdleClassification{Outcome: IdleDone}, true
 			}
 			return IdleClassification{
@@ -119,10 +131,19 @@ func structuredIdleClassification(kind string, events []json.RawMessage) (IdleCl
 				Line:    structuredFailureDetail(event.Status, event.Error, ""),
 			}, true
 		case state.KindClaudeStructured:
-			if event.Source != claudep.HistorySource || event.Type != "result" {
+			if event.Source != claudep.HistorySource {
+				continue
+			}
+			if event.Type == "system" && event.Subtype == "approval_requested" {
+				return IdleClassification{Outcome: IdleBlocked, Line: approvalLine(events[index])}, true
+			}
+			if event.Type != "result" {
 				continue
 			}
 			if !event.IsError && strings.EqualFold(event.Subtype, "success") {
+				if question, asked := AssistantQuestion(events[:index+1]); asked {
+					return IdleClassification{Outcome: IdleBlocked, Line: question}, true
+				}
 				return IdleClassification{Outcome: IdleDone}, true
 			}
 			return IdleClassification{
@@ -167,18 +188,123 @@ func idleReason(outcome IdleOutcome) string {
 	}
 }
 
+// preTurnInspectInterval bounds how often a quiet, never-started terminal is
+// re-read. A dialog is drawn once; cursor blinks and resizes redraw it, and
+// each redraw is a few bytes that would otherwise trigger a snapshot per tick.
+var preTurnInspectInterval = 500 * time.Millisecond
+
+// inspectPreTurn classifies a provider terminal that has produced output and
+// gone quiet before its first turn. The working-to-idle edge is the normal
+// trigger for classification, but a provider control drawn at launch (Claude's
+// folder-trust dialog, a login prompt) never makes the session "working", so
+// without this the session reads never-started while a real choice is
+// pending, and a message typed into it activates the highlighted option.
+//
+// Only the blocked outcome is recorded. A quiet never-started session is not
+// completed or failed; it is waiting for its first request, and reporting
+// anything else would misstate a lifecycle that has not begun. When the
+// control is answered and the screen no longer shows it, the session returns
+// to never-started so the composer opens again.
+func (r *runtimeSession) inspectPreTurn(recentBytes int) {
+	info := r.session.Info()
+	if info.Exited || info.Working || !supportsTurnLifecycle(info) ||
+		info.Kind == state.KindClaudeStructured || info.Kind == state.KindCodexAppServer {
+		return
+	}
+	if recentBytes >= workingBytesThreshold {
+		return
+	}
+	r.mu.Lock()
+	pending := r.preTurnOutput
+	blocked := r.preTurnBlocked
+	last := r.preTurnInspectedAt
+	r.mu.Unlock()
+	if !pending || time.Since(last) < preTurnInspectInterval {
+		return
+	}
+	if info.IdleReason != state.IdleReasonNeverStarted && !(blocked && info.IdleReason == state.IdleReasonNeedsInput) {
+		return
+	}
+	snapshot, _, err := r.session.Snapshot(context.Background(), 0)
+	if err != nil {
+		return
+	}
+	classification := ClassifySnapshot(snapshot)
+	now := time.Now()
+	r.mu.Lock()
+	r.preTurnOutput = false
+	r.preTurnInspectedAt = now
+	switch {
+	case classification.Outcome == IdleBlocked:
+		r.preTurnBlocked = true
+	case blocked:
+		r.preTurnBlocked = false
+	}
+	r.mu.Unlock()
+	switch {
+	case classification.Outcome == IdleBlocked:
+		r.session.SetIdleResult(state.IdleReasonNeedsInput, classification.Line, "", now.UnixMilli())
+	case blocked:
+		r.session.SetIdleResult(state.IdleReasonNeverStarted, "", "", now.UnixMilli())
+	}
+}
+
 func (m *Manager) handleIdle(session *state.Session, duration time.Duration) IdleClassification {
 	info := session.Info()
 	if info.Exited {
 		return IdleClassification{Outcome: IdleDone}
 	}
-	classification, summary := inspectIdle(session)
+	classification, summary, snapshot := inspectIdle(session)
+	clearFaultWithoutEvidence(session, classification, snapshot)
 	return m.publishIdle(session, duration, classification, summary)
 }
 
-func (m *Manager) handleCompletedTurn(session *state.Session, duration time.Duration) IdleClassification {
+// clearFaultWithoutEvidence retires a terminal-read fault the screen no longer
+// supports. A completed turn already clears one; this is the other way a claim
+// stops being true — the line it was read from scrolled away and no login UI
+// took its place. A fault must never outlive the evidence for it.
+//
+// Structured faults are untouched: they come from the provider's own event
+// stream, which no amount of scrolling contradicts.
+func clearFaultWithoutEvidence(session *state.Session, classification IdleClassification, snapshot string) {
+	if classification.Evidence.proven() {
+		return
+	}
+	info := session.Info()
+	if info.FailureKind == "" || info.FailureEvidence == "" {
+		return
+	}
+	if evidenceStillOnScreen(providerForSession(info), info.FailureEvidence, snapshot) {
+		return
+	}
+	session.ClearProviderFault()
+}
+
+func (m *Manager) handleCompletedTurn(session *state.Session, duration time.Duration, faultAtStart int64) IdleClassification {
+	if classification, failed := terminalProviderFault(session, faultAtStart); failed {
+		return m.publishIdle(session, duration, classification, classification.Line)
+	}
 	summary := FinalAssistantSummary(session.ClaudeEventLog())
 	return m.publishIdle(session, duration, IdleClassification{Outcome: IdleDone}, summary)
+}
+
+func terminalProviderFault(session *state.Session, faultAtStart int64) (IdleClassification, bool) {
+	info := session.Info()
+	if fault, ok := session.ProviderFault(); ok {
+		if info.FailureAt != faultAtStart {
+			return IdleClassification{Outcome: IdleError, Line: fault.Detail}, true
+		}
+		return IdleClassification{}, false
+	}
+	snapshot, _, err := session.Snapshot(context.Background(), 0)
+	if err != nil {
+		return IdleClassification{}, false
+	}
+	classification := ClassifySnapshotFor(providerForSession(info), snapshot)
+	// Only the provider's own words end a turn as a provider failure. An error
+	// line that came from a tool, a command echo, or the agent's prose is an
+	// ordinary failed turn, not an outage or a logged-out provider.
+	return classification, classification.Evidence.proven()
 }
 
 func (m *Manager) publishIdle(session *state.Session, duration time.Duration, classification IdleClassification, summary string) IdleClassification {
@@ -186,13 +312,53 @@ func (m *Manager) publishIdle(session *state.Session, duration time.Duration, cl
 	m.observe(context.Background(), "idle", func(writer ledger.ObservationWriter) error {
 		return writer.RecordIdle(context.Background(), ledger.Observation{Meta: ledger.Meta{LaneID: info.ID}})
 	})
-	session.SetIdleResult(idleReason(classification.Outcome), classification.Line, summary, time.Now().UnixMilli())
+	now := time.Now().UnixMilli()
+	classification, summary = applyProviderOutcome(session, classification, summary, now)
+	session.SetIdleResult(idleReason(classification.Outcome), classification.Line, summary, now)
 	info = session.Info()
 	hookContext := idleHookContext{Summary: summary, Outcome: classification.Outcome, DurationMS: duration.Milliseconds()}
 	m.writeIdleSentinel(info)
 	m.runHook(info.OnIdle, info, hookContext, false)
 	m.runHook(m.hooks.OnIdle, info, hookContext, true)
 	return classification
+}
+
+func applyProviderOutcome(session *state.Session, classification IdleClassification, summary string, at int64) (IdleClassification, string) {
+	if classification.Outcome == IdleDone {
+		session.ClearProviderFault()
+		return classification, summary
+	}
+	if classification.Outcome != IdleError {
+		return classification, summary
+	}
+	fault, ok := session.ProviderFault()
+	if !ok {
+		// The words in the line are not the question; what rendered them is.
+		// This used to run providerfault.Detect over whatever line the generic
+		// error rule had picked, so a grep result quoting our own "not logged
+		// in" matcher became a logged-out provider.
+		if !classification.Evidence.proven() {
+			return classification, summary
+		}
+		fault = classification.Evidence.Fault
+		session.SetProviderFault(providerForSession(session.Info()), fault, at)
+	}
+	classification.Line = fault.Detail
+	return classification, fault.Detail
+}
+
+func providerForSession(info state.SessionInfo) string {
+	if info.Tool == state.ToolClaude {
+		return "claude"
+	}
+	if info.Tool == state.ToolCodex {
+		return "codex"
+	}
+	return ""
+}
+
+func supportsStructuredRetry(info state.SessionInfo) bool {
+	return info.Kind == state.KindCodexAppServer || info.Kind == state.KindClaudeStructured
 }
 
 func (m *Manager) runHook(script string, info state.SessionInfo, hook idleHookContext, timeout bool) {
@@ -245,4 +411,16 @@ func hookEnvironment(info state.SessionInfo, hook idleHookContext) []string {
 		result = append(result, key+"="+value)
 	}
 	return result
+}
+
+func approvalLine(raw json.RawMessage) string {
+	var event struct {
+		Approval struct {
+			Summary string `json:"summary"`
+		} `json:"approval"`
+	}
+	if json.Unmarshal(raw, &event) == nil && strings.TrimSpace(event.Approval.Summary) != "" {
+		return "Allow? " + strings.TrimSpace(event.Approval.Summary)
+	}
+	return "Allow? The lane asked for permission"
 }

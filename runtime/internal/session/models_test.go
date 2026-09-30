@@ -53,10 +53,6 @@ func TestCodexAppServerCreateRejectsInvalidChoiceWithoutLaunching(t *testing.T) 
 		wantError string
 	}{
 		{
-			name: "model", args: []string{"--model", "missing"},
-			wantError: `model "missing" not available; valid: [alpha, beta]`,
-		},
-		{
 			name: "effort", args: []string{"--model", "beta", "-c", `model_reasoning_effort="high"`},
 			wantError: `effort "high" not supported by model "beta"; valid: [medium]`,
 		},
@@ -85,6 +81,36 @@ func TestCodexAppServerCreateRejectsInvalidChoiceWithoutLaunching(t *testing.T) 
 			}
 			if len(launcher.Launches) != 0 {
 				t.Fatalf("invalid choice launched %d runners", len(launcher.Launches))
+			}
+		})
+	}
+}
+
+func TestCodexAppServerCreatePreservesExplicitUnlistedChoice(t *testing.T) {
+	for name, catalog := range map[string][]codexapp.Model{"partial catalog": testCodexCatalog(), "empty catalog": nil} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			launcher := prototest.NewLauncher()
+			manager := NewManager(testConfig(root), launcher, ManagerOptions{
+				ActivityInterval: time.Hour,
+				Notify:           func(PushPayload) {},
+				ListCodexModels: func(context.Context, string) ([]codexapp.Model, error) {
+					return catalog, nil
+				},
+			})
+			t.Cleanup(manager.Close)
+			created, err := manager.Create(context.Background(), state.CreateSessionRequest{
+				Cmd: "codex", Cwd: root, Kind: state.KindCodexAppServer,
+				Args: []string{"--model", "astra-explicit", "-c", `model_reasoning_effort="high"`, "-c", `service_tier="priority"`},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if created.Model != "astra-explicit" || created.Effort != "high" || !created.Fast {
+				t.Fatalf("session controls = model %q effort %q fast %v", created.Model, created.Effort, created.Fast)
+			}
+			if len(launcher.Launches) != 1 || !strings.Contains(strings.Join(launcher.Launches[0].Info.Args, " "), "--model astra-explicit") {
+				t.Fatalf("launches = %#v", launcher.Launches)
 			}
 		})
 	}

@@ -1,6 +1,6 @@
 // Command runner is the long-lived per-session PTY owner used by sessionsd.
-// Its environment variables, state files, and socket protocol intentionally
-// match runtime/testdata/node-runtime/src/runner.ts so either implementation can be swapped alone.
+// Its environment variables, state files, and socket protocol preserve the
+// stable runner contract across daemon and runner releases.
 package main
 
 import (
@@ -45,7 +45,7 @@ const (
 const laneInterruptedNotice = "\r\n[sessions: this lane was stopped by shutdown before its command finished. " +
 	"It was not re-run at the next login; start it again if the work still needs to happen.]\r\n"
 
-var version = "0.2.26"
+var version = "0.2.27"
 
 type config struct {
 	id                string
@@ -65,20 +65,23 @@ type config struct {
 }
 
 type hello struct {
-	ID              string   `json:"id"`
-	Cmd             string   `json:"cmd"`
-	Args            []string `json:"args"`
-	Cwd             string   `json:"cwd"`
-	Cols            int      `json:"cols"`
-	Rows            int      `json:"rows"`
-	CreatedAt       int64    `json:"createdAt"`
-	PID             int      `json:"pid"`
-	CurrentSeq      uint32   `json:"currentSeq"`
-	ProtocolVersion int      `json:"protocolVersion"`
-	RuntimeVersion  string   `json:"runtimeVersion,omitempty"`
-	ConversationID  string   `json:"conversationId,omitempty"`
-	RemoteEndpoint  string   `json:"remoteEndpoint,omitempty"`
-	ClaudeSessionID string   `json:"claudeSessionId,omitempty"`
+	ID              string               `json:"id"`
+	Cmd             string               `json:"cmd"`
+	Args            []string             `json:"args"`
+	Cwd             string               `json:"cwd"`
+	Cols            int                  `json:"cols"`
+	Rows            int                  `json:"rows"`
+	CreatedAt       int64                `json:"createdAt"`
+	PID             int                  `json:"pid"`
+	CurrentSeq      uint32               `json:"currentSeq"`
+	ProtocolVersion int                  `json:"protocolVersion"`
+	RuntimeVersion  string               `json:"runtimeVersion,omitempty"`
+	ConversationID  string               `json:"conversationId,omitempty"`
+	RemoteEndpoint  string               `json:"remoteEndpoint,omitempty"`
+	ClaudeSessionID string               `json:"claudeSessionId,omitempty"`
+	Retry           *proto.ProviderRetry `json:"retry,omitempty"`
+	Turn            *proto.TurnState     `json:"turn,omitempty"`
+	MessageSubmit   bool                 `json:"messageSubmit,omitempty"`
 }
 
 type exitInfo struct {
@@ -250,6 +253,9 @@ func main() {
 }
 
 func run() int {
+	if len(os.Args) > 1 && os.Args[1] == "approval-shim" {
+		return runApprovalShim(os.Args[2:])
+	}
 	cfg, malformedArgs, err := configFromEnv()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "runner:", err)

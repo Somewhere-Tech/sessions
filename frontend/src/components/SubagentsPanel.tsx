@@ -1,9 +1,14 @@
-import { useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { fetchTeam, type TeamListing, type TeamMember } from '../api/sessionsd';
 import { classifySession } from '../lib/sessionStatus';
-import { subagentNeedsReview } from '../lib/workingSet';
+import { sessionActivityAt, subagentNeedsReview } from '../lib/workingSet';
 import { resolvedSessionLabel } from '../lib/tabLabels';
-import type { SessionInfo } from '../types';
+import type { ApprovalDecision, SessionInfo } from '../types';
 import { normalizeProvider, ProviderMark } from './ProviderBadge';
+import { copyText } from '../lib/copyText';
+import { AccountBadge } from './AccountBadge';
+import { lastMessageLine } from '../lib/lastMessage';
+const TeamEvidence = lazy(() => import('./TeamEvidence').then((module) => ({ default: module.TeamEvidence })));
 
 interface Props {
   manager: SessionInfo;
@@ -12,6 +17,12 @@ interface Props {
   onOpen: (sessionId: string) => void;
   onMakeMain: (sessionId: string) => Promise<void>;
   onEnd: (sessionId: string) => Promise<void>;
+  // Hand a lane's result back to its manager: posts the lane's last line of
+  // work into the manager's conversation, attributed to the lane. The lane
+  // keeps running; this is a report, not an end.
+  onHandBack?: (lane: SessionInfo) => Promise<void>;
+  // Answer the permission a lane is holding open without opening it.
+  onApprove?: (lane: SessionInfo, decision: ApprovalDecision) => Promise<void>;
 }
 
 function relativeTime(value: number): string {
@@ -31,30 +42,72 @@ function purpose(session: SessionInfo): string {
   const summary = session.lastSummary?.trim().split('\n')[0];
   if (summary) return summary;
   const workspace = session.cwd.split('/').filter(Boolean).pop();
-  return workspace ? `Working in ${workspace}` : 'No purpose recorded yet.';
+  return workspace ? `Workspace: ${workspace}` : 'No purpose recorded yet.';
 }
 
-function activityAt(session: SessionInfo): number {
-  return Math.max(session.lastDataAt || 0, session.idleSince || 0, session.createdAt || 0);
+// lastLine is what a lane most recently said or is waiting for, in one line.
+function lastLine(session: SessionInfo): string {
+  if (session.idleReason === 'needs-input' && session.idleDetail) return session.idleDetail;
+  return lastMessageLine(session);
 }
 
-export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain, onEnd }: Props): JSX.Element {
+function teamLastLine(member: TeamMember): string {
+  return member.waiting?.trim() || member.summary?.trim() || '';
+}
+
+export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain, onEnd, onHandBack, onApprove }: Props): JSX.Element {
+  const [team, setTeam] = useState<TeamListing | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
+  const [handingBackId, setHandingBackId] = useState<string | null>(null);
+  const [handedBackId, setHandedBackId] = useState<string | null>(null);
   const [endingId, setEndingId] = useState<string | null>(null);
   const [confirmEndId, setConfirmEndId] = useState<string | null>(null);
   const [reviewInactive, setReviewInactive] = useState(false);
   const [copiedCleanupRequest, setCopiedCleanupRequest] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [teamError, setTeamError] = useState<string | null>(null);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    let current = true;
+    setTeam(null);
+    setTeamError(null);
+    // Lanes change while the panel is open, so the team view is re-read on a
+    // short cadence; the session-list rows stay the fallback throughout.
+    const load = (): void => {
+      void fetchTeam(manager.id, controller.signal).then((listing) => {
+        if (current) {
+          setTeam(listing);
+          setTeamError(null);
+        }
+      }).catch((reason: unknown) => {
+        if (!current || controller.signal.aborted) return;
+        // Older daemons do not have the team route. The session-list rows below
+        // remain the compatibility view for an unavailable request.
+        const detail = reason instanceof Error ? reason.message : 'Team details could not be loaded.';
+        if (/sessionsd (404|501):/.test(detail)) return;
+        setTeamError(`Team details could not be refreshed. ${detail}`);
+      });
+    };
+    load();
+    const timer = window.setInterval(load, 10_000);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+      controller.abort();
+    };
+  }, [manager.id]);
   const ordered = [...subagents].sort((left, right) => {
     const leftStatus = classifySession(left);
     const rightStatus = classifySession(right);
     const rank = (status: ReturnType<typeof classifySession>): number => (
       status.needsYou ? 0 : status.state === 'failed' ? 1 : status.state === 'working' ? 2 : status.finished ? 4 : 3
     );
-    return rank(leftStatus) - rank(rightStatus) || activityAt(right) - activityAt(left);
+    return rank(leftStatus) - rank(rightStatus) || sessionActivityAt(right) - sessionActivityAt(left);
   });
   const working = ordered.filter((session) => !session.exited && session.working).length;
-  const needsYou = ordered.filter((session) => classifySession(session).needsYou).length;
+  const needsYou = team?.needs_input ?? ordered.filter((session) => classifySession(session).needsYou).length;
+  const teamById = new Map((team?.members ?? []).map((member) => [member.id, member]));
   const inactive = ordered.filter((session) => subagentNeedsReview(session));
   const visible = reviewInactive ? inactive : ordered;
 
@@ -83,10 +136,38 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
     }
   };
 
+  const handBack = async (session: SessionInfo): Promise<void> => {
+    if (!onHandBack) return;
+    setHandingBackId(session.id);
+    setError(null);
+    try {
+      await onHandBack(session);
+      setHandedBackId(session.id);
+      window.setTimeout(() => setHandedBackId((current) => current === session.id ? null : current), 2400);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not hand this lane back.');
+    } finally {
+      setHandingBackId(null);
+    }
+  };
+
+  const approve = async (session: SessionInfo, decision: ApprovalDecision): Promise<void> => {
+    if (!onApprove) return;
+    setApprovingId(session.id);
+    setError(null);
+    try {
+      await onApprove(session, decision);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The answer did not reach the lane.');
+    } finally {
+      setApprovingId(null);
+    }
+  };
+
   const copyCleanupRequest = async (): Promise<void> => {
     const request = 'Clean up your subagents. End only delegated sessions whose work is complete; leave anything active or uncertain running.';
     try {
-      await navigator.clipboard.writeText(request);
+      if (!await copyText(request)) throw new Error('copy refused');
       setCopiedCleanupRequest(true);
       window.setTimeout(() => setCopiedCleanupRequest(false), 1800);
     } catch {
@@ -99,13 +180,13 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
       <header>
         <div>
           <span>Delegated work</span>
-          <h2 id="subagents-panel-title">Subagents</h2>
+          <h2 id="subagents-panel-title">Lanes</h2>
           <p>{ordered.length} total{working ? ` · ${working} working` : ''}{needsYou ? ` · ${needsYou} need you` : ''}</p>
         </div>
-        <button type="button" aria-label="Close subagents" onClick={onClose}>×</button>
+        <button type="button" aria-label="Close lanes" onClick={onClose}>×</button>
       </header>
       <div className="subagents-manager-note">Work delegated by <strong>{resolvedSessionLabel(manager)}</strong></div>
-      {error ? <div className="subagents-error" role="alert">{error}</div> : null}
+      {error || teamError ? <div className="subagents-error" role="alert">{error ?? teamError}</div> : null}
       {inactive.length > 0 ? (
         <section className="subagents-review-note">
           <div>
@@ -125,20 +206,45 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
       <div className="subagents-list">
         {visible.map((session, index) => {
           const status = classifySession(session);
+          const teamMember = teamById.get(session.id);
+          const recentLine = teamMember ? teamLastLine(teamMember) : lastLine(session);
+          const needsAttention = teamMember?.needs_you ?? status.needsYou;
           const provider = normalizeProvider(session.tool);
+          const activityLabel = relativeTime(sessionActivityAt(session));
           return (
             <article className={`subagent-card ${status.className}`} key={session.id}>
               <div className="subagent-card-head">
                 <span className={`subagent-status ${status.className}`} aria-hidden />
                 <div>
-                  <strong>{index + 1}. {resolvedSessionLabel(session)}</strong>
-                  <small>{status.label}{relativeTime(activityAt(session)) ? ` · ${relativeTime(activityAt(session))}` : ''}</small>
+                  <strong>{index + 1}. {resolvedSessionLabel(session)}<AccountBadge session={session} /></strong>
+                  <small>{status.label}{activityLabel ? ` · ${activityLabel}` : ''}</small>
                 </div>
                 {provider ? <ProviderMark provider={provider} size={24} /> : <span className="subagent-shell" title="Shell">⌘</span>}
               </div>
               <p>{purpose(session)}</p>
+              <Suspense fallback={null}><TeamEvidence member={teamMember} session={session} /></Suspense>
+              {recentLine && recentLine !== purpose(session) ? (
+                <p className={`subagent-last${needsAttention ? ' is-attention' : ''}`}>{needsAttention ? 'Waiting: ' : ''}{recentLine}</p>
+              ) : null}
+              {session.pendingApproval && onApprove ? (
+                <div className="subagent-approval" role="group" aria-label="Permission request">
+                  <span>Asks to {session.pendingApproval.summary.replace(/^Run /, 'run ').replace(/^Change /, 'change ').replace(/^Grant /, 'grant ')}</span>
+                  <span className="subagent-approval-actions">
+                    <button type="button" className="btn btn-secondary" disabled={approvingId !== null} onClick={() => void approve(session, 'allow')}>
+                      {approvingId === session.id ? 'Answering…' : 'Allow'}
+                    </button>
+                    <button type="button" className="btn btn-ghost" disabled={approvingId !== null} onClick={() => void approve(session, 'allow-session')}>Allow for session</button>
+                    <button type="button" className="btn btn-ghost" disabled={approvingId !== null} onClick={() => void approve(session, 'deny')}>Decline</button>
+                  </span>
+                </div>
+              ) : null}
               <div className="subagent-card-actions">
                 <button type="button" className="btn btn-secondary" onClick={() => onOpen(session.id)}>Open</button>
+                {onHandBack && !session.exited ? (
+                  <button type="button" className="btn btn-ghost" disabled={handingBackId !== null} onClick={() => void handBack(session)} title="Post this lane's latest result into the manager's conversation">
+                    {handingBackId === session.id ? 'Handing back…' : handedBackId === session.id ? 'Handed back' : 'Hand back'}
+                  </button>
+                ) : null}
                 <button type="button" className="btn btn-ghost" disabled={movingId !== null} onClick={() => void makeMain(session)}>
                   {movingId === session.id ? 'Moving…' : 'Make main session'}
                 </button>
@@ -159,7 +265,7 @@ export function SubagentsPanel({ manager, subagents, onClose, onOpen, onMakeMain
           );
         })}
       </div>
-      <footer>User-driven sessions are permanent. Subagents stay searchable and resumable after you end them.</footer>
+      <footer>User-driven sessions are permanent. Lanes stay searchable and resumable after you end them.</footer>
     </aside>
   );
 }

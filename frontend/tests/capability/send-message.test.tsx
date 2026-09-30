@@ -177,6 +177,6 @@ describe('capability: send the first message', () => {
     await waitFor(() => expect(daemon.delivered[SESSION_ID]).toEqual([
       'Also verify the Windows package'
     ]));
-    expect(await screen.findByText('submitted after Codex’s next tool call')).toBeInTheDocument();
+    expect(await screen.findByText('Accepted for this turn · may wait for a tool to finish')).toBeInTheDocument();
   });
 });

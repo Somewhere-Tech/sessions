@@ -118,11 +118,10 @@ func TestRealAppServerModelCatalog(t *testing.T) {
 		}
 	}
 	t.Logf("CATALOG %s", mustJSON(t, catalog))
-	const invalid = "sessions-model-that-must-not-exist"
-	if resolved, err := ResolveModelChoice(catalog, ModelChoice{Model: invalid}); err == nil || !strings.Contains(err.Error(), `model "`+invalid+`" not available`) {
-		t.Fatalf("invalid model resolved to %#v with error %v", resolved, err)
-	} else {
-		t.Logf("INVALID_REJECTED %s", err)
+	const unlisted = "sessions-model-that-must-not-exist"
+	choice := ModelChoice{Model: unlisted, Effort: "high", ServiceTier: "priority"}
+	if resolved, err := ResolveModelChoice(catalog, choice); err != nil || resolved != choice {
+		t.Fatalf("explicit unlisted model resolved to %#v with error %v, want %#v", resolved, err, choice)
 	}
 }
 

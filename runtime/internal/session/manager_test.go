@@ -19,6 +19,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto/prototest"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -103,6 +104,66 @@ func TestTerminalCodexTaskCompleteOverridesStaleScreenError(t *testing.T) {
 	}
 }
 
+func TestTerminalTaskCompleteDoesNotOverrideProviderFault(t *testing.T) {
+	root := t.TempDir()
+	launcher := prototest.NewLauncher()
+	manager := NewManager(testConfig(root), launcher, ManagerOptions{
+		DisableWatchers: true, Notify: func(PushPayload) {},
+	})
+	t.Cleanup(manager.Close)
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{Cmd: "codex", Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.setWorking(true)
+	launcher.Runner(created.ID).AddOutput("■ unexpected status 503 Service Unavailable: The server is currently overloaded.\n")
+	awaitCondition(t, func() bool {
+		snapshot, _, snapshotErr := runtime.session.Snapshot(context.Background(), 0)
+		return snapshotErr == nil && strings.Contains(snapshot, "unexpected status 503")
+	})
+	runtime.markTerminalTurnDone()
+	runtime.setWorking(false)
+	info, _ := manager.Get(created.ID)
+	// The fault is recorded as a fault, in its own fields. It is deliberately
+	// not adopted as the agent's last summary: every surface that shows "the
+	// last message" would then report a provider outage as the agent's reply.
+	if got := info.Info(); got.IdleReason != state.IdleReasonFailed ||
+		got.FailureKind != "provider-unavailable" ||
+		got.FailureDetail != "Codex API unavailable (503, overloaded)" ||
+		got.IdleDetail != "Codex API unavailable (503, overloaded)" ||
+		got.LastSummary != "" {
+		t.Fatalf("Codex provider fault outcome = %#v", got)
+	}
+}
+
+func TestLaterSuccessfulTerminalTurnClearsPriorProviderFault(t *testing.T) {
+	root := t.TempDir()
+	launcher := prototest.NewLauncher()
+	manager := NewManager(testConfig(root), launcher, ManagerOptions{DisableWatchers: true, Notify: func(PushPayload) {}})
+	t.Cleanup(manager.Close)
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{Cmd: "codex", Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _ := manager.Get(created.ID)
+	current.SetProviderFault("codex", providerfault.Fault{
+		Kind: providerfault.KindUnavailable, Detail: "Codex API unavailable (503, overloaded)", Status: 503,
+	}, time.Now().UnixMilli())
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.setWorking(true)
+	launcher.Runner(created.ID).AddOutput("Completed successfully.\n")
+	runtime.markTerminalTurnDone()
+	runtime.setWorking(false)
+	if got := current.Info(); got.IdleReason != state.IdleReasonCompleted || got.FailureKind != "" {
+		t.Fatalf("successful later turn retained provider fault = %#v", got)
+	}
+}
+
 func TestCodexAppServerStructuredHistoryAndLifecycleAreAuthoritative(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
@@ -167,6 +228,51 @@ func TestCodexAppServerStructuredHistoryAndLifecycleAreAuthoritative(t *testing.
 	}
 	if !strings.Contains(snapshot, "[user]\nhello") || !strings.Contains(snapshot, "[assistant]\nSTRUCTURED_OK") {
 		t.Fatalf("structured snapshot = %q", snapshot)
+	}
+}
+
+func TestRichRunnerReconnectRestoresExactTurnStateAndConversation(t *testing.T) {
+	root := t.TempDir()
+	id := "00000000-0000-4000-8000-000000000071"
+	info := proto.RunnerInfo{
+		ID: id, Cmd: "codex", Cwd: root, Cols: 120, Rows: 40, PID: 4242,
+		ProtocolVersion: proto.ProtocolVersion, Turn: &proto.TurnState{Working: true},
+	}
+	runner := prototest.NewRunner(info)
+	user, _ := codexapp.UserHistoryEvent("conversation-1", "keep working", time.Unix(1, 0))
+	runner.AddCodexEvent(json.RawMessage(user))
+	phase := "final_answer"
+	assistant, _ := codexapp.HistoryEvent(codexapp.ItemCompleted{
+		ConversationID: "conversation-1", TurnID: "old-turn", CompletedAtMS: 2000,
+		Item: codexapp.ThreadItem{ID: "message-1", Type: "agentMessage", Text: "earlier result", Phase: &phase},
+	}, time.Unix(2, 0))
+	runner.AddCodexEvent(json.RawMessage(assistant))
+	completed, _ := codexapp.HistoryEvent(codexapp.TurnComplete{
+		ConversationID: "conversation-1", TurnID: "old-turn", Status: "completed",
+	}, time.Unix(3, 0))
+	runner.AddCodexEvent(json.RawMessage(completed))
+
+	manager := NewManager(testConfig(root), prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, Notify: func(PushPayload) {},
+	})
+	t.Cleanup(manager.Close)
+	session, err := manager.registry.RegisterMetadata(context.Background(), runner, state.RunnerMetadata{
+		Info: info, Kind: state.KindCodexAppServer,
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.manage(session)
+	got := session.Info()
+	if !got.Working || got.IdleReason != "" || got.IdleSince != nil {
+		t.Fatalf("reconnected Rich state = working %v, idle %q at %v", got.Working, got.IdleReason, got.IdleSince)
+	}
+	snapshot, _, err := session.Snapshot(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(snapshot, "[user]\nkeep working") || !strings.Contains(snapshot, "[assistant]\nearlier result") {
+		t.Fatalf("reconnected structured snapshot = %q", snapshot)
 	}
 }
 
@@ -498,6 +604,10 @@ func (c *rediscoveryConnection) Input(context.Context, string) error {
 	if !c.process.isAlive() {
 		return errors.New("scratch runner exited")
 	}
+	return nil
+}
+
+func (c *rediscoveryConnection) Approve(context.Context, proto.ApprovalControl) error {
 	return nil
 }
 
@@ -1044,16 +1154,16 @@ func TestDescriptionPersistsAndFirstMessageFallbackNeverOverridesExplicit(t *tes
 	}
 }
 
-func TestMassKillGuardRefusesDiscoverySweepBeforeBootout(t *testing.T) {
+func TestDiscoveryRetiresStaleArtifactsInBoundedBatches(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
 	if err := os.MkdirAll(config.LaunchAgentsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-time.Minute)
-	paths := make([]string, 0, DefaultMassKillLimit+1)
-	for i := 0; i < DefaultMassKillLimit+1; i++ {
-		id := "00000000-0000-4000-8000-00000000000" + string(rune('0'+i))
+	paths := make([]string, 0, DefaultDiscoveryBatch+2)
+	for i := 0; i < DefaultDiscoveryBatch+2; i++ {
+		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", i)
 		path := state.RunnerPlistPath(config.LaunchAgentsDir, id)
 		if err := os.WriteFile(path, []byte("scratch"), 0o600); err != nil {
 			t.Fatal(err)
@@ -1065,17 +1175,19 @@ func TestMassKillGuardRefusesDiscoverySweepBeforeBootout(t *testing.T) {
 	}
 	manager := NewManager(config, prototest.NewLauncher(), ManagerOptions{DisableWatchers: true})
 	t.Cleanup(manager.Close)
-	err := manager.Discover(context.Background())
-	var guardErr *MassKillError
-	if !errors.As(err, &guardErr) || guardErr.Count != DefaultMassKillLimit+1 {
-		t.Fatalf("Discover() error = %v, want mass-kill guard for %d", err, DefaultMassKillLimit+1)
+	if err := manager.Discover(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	for _, path := range paths {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("guarded sweep mutated %s: %v", path, err)
+	for index, path := range paths {
+		_, err := os.Stat(path)
+		if index < DefaultDiscoveryBatch && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("batch left %s: %v", path, err)
+		}
+		if index >= DefaultDiscoveryBatch && err != nil {
+			t.Fatalf("batch exceeded its limit and touched %s: %v", path, err)
 		}
 	}
-	if err := manager.DiscoverWithOptions(context.Background(), DiscoverOptions{Force: true}); err != nil {
+	if err := manager.Discover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range paths {
@@ -1341,6 +1453,49 @@ func TestDiscoveryPreservesUnreachableLivePID(t *testing.T) {
 	}
 }
 
+func TestDiscoveryTrustsAnsweringSocketOverReusedPIDEvidence(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(root)
+	if err := os.MkdirAll(config.RunnerStateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "00000000-0000-4000-8000-000000000091"
+	paths := state.For(config.RunnerStateDir, id)
+	if err := os.WriteFile(paths.Socket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteMetadata(paths.Meta, state.Metadata{
+		ID: id, Cmd: "claude", Cwd: root, Cols: 120, Rows: 40,
+		PID: os.Getpid(), SockPath: paths.Socket,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &rediscoveryLauncher{}
+	if _, err := launcher.Launch(context.Background(), proto.LaunchRequest{Info: proto.RunnerInfo{
+		ID: id, Cmd: "claude", Cwd: root, Cols: 120, Rows: 40,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config, launcher, ManagerOptions{
+		DisableWatchers: true, ActivityInterval: time.Hour,
+		ProcessSnapshot: func(context.Context) (map[int]string, error) {
+			return map[int]string{os.Getpid(): "/bin/unrelated"}, nil
+		},
+	})
+	t.Cleanup(manager.Close)
+	if err := manager.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manager.Get(id); !ok {
+		t.Fatal("answering runner was not registered")
+	}
+	for _, path := range []string{paths.Socket, paths.Meta} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("answering runner artifact %s was removed: %v", path, err)
+		}
+	}
+}
+
 func TestDiscoveryRecognizesStructuredRunnerAndPreservesHistory(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
@@ -1487,8 +1642,8 @@ func TestDiscoverySkipsAttachRetriesForDefinitelyDeadRunner(t *testing.T) {
 	if err := manager.Discover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if launcher.attaches != 0 {
-		t.Fatalf("definitely dead runner used %d socket attach attempts, want none", launcher.attaches)
+	if launcher.attaches != 1 {
+		t.Fatalf("definitely dead runner used %d socket attach attempts, want one refusal check", launcher.attaches)
 	}
 	for _, coordinationPath := range []string{paths.Socket, paths.Meta} {
 		if _, err := os.Stat(coordinationPath); !errors.Is(err, os.ErrNotExist) {
@@ -1587,13 +1742,10 @@ func awaitFile(t *testing.T, watcher *fsnotify.Watcher, path string) {
 	}
 }
 
-// The mass-kill guard protects the destructive half of a discovery sweep. It
-// must not also stop the safe half: nothing else records runner_lost, so a
-// refusal that skipped reconciliation left those lanes reported as live in
-// every ledger-derived view and no later sweep could get back under the limit.
-// DiscoverWithOptions{Force:true} is reachable only from tests, so an operator
-// had no way out short of deleting files by hand.
-func TestGuardedDiscoverySweepStillReconcilesLedgerAndExplainsTheRefusal(t *testing.T) {
+// Bounded cleanup must still reconcile every stale lane in the same pass. The
+// limit controls destructive work, not the safe ledger observations that stop
+// missing runners from being presented as connected.
+func TestBoundedDiscoveryStillReconcilesEveryLedgerLane(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(root)
 	if err := os.MkdirAll(config.LaunchAgentsDir, 0o700); err != nil {
@@ -1607,10 +1759,10 @@ func TestGuardedDiscoverySweepStillReconcilesLedgerAndExplainsTheRefusal(t *test
 
 	ctx := context.Background()
 	old := time.Now().Add(-time.Minute)
-	ids := make([]string, 0, DefaultMassKillLimit+1)
-	paths := make([]string, 0, DefaultMassKillLimit+1)
-	for index := 0; index < DefaultMassKillLimit+1; index++ {
-		id := fmt.Sprintf("00000000-0000-4000-8000-00000000000%d", index)
+	ids := make([]string, 0, DefaultDiscoveryBatch+1)
+	paths := make([]string, 0, DefaultDiscoveryBatch+1)
+	for index := 0; index < DefaultDiscoveryBatch+1; index++ {
+		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", index)
 		ids = append(ids, id)
 		path := state.RunnerPlistPath(config.LaunchAgentsDir, id)
 		if err := os.WriteFile(path, []byte("scratch"), 0o600); err != nil {
@@ -1635,15 +1787,16 @@ func TestGuardedDiscoverySweepStillReconcilesLedgerAndExplainsTheRefusal(t *test
 	})
 	t.Cleanup(manager.Close)
 
-	discoverErr := manager.Discover(ctx)
-	var guardErr *MassKillError
-	if !errors.As(discoverErr, &guardErr) || guardErr.Count != DefaultMassKillLimit+1 || guardErr.Limit != DefaultMassKillLimit {
-		t.Fatalf("Discover() error = %v, want a mass-kill refusal for %d candidates", discoverErr, DefaultMassKillLimit+1)
+	if err := manager.Discover(ctx); err != nil {
+		t.Fatal(err)
 	}
-	// The destructive half stays guarded.
-	for _, path := range paths {
-		if _, statErr := os.Stat(path); statErr != nil {
-			t.Fatalf("guarded sweep mutated %s: %v", path, statErr)
+	for index, path := range paths {
+		_, statErr := os.Stat(path)
+		if index < DefaultDiscoveryBatch && !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("bounded sweep left %s: %v", path, statErr)
+		}
+		if index == DefaultDiscoveryBatch && statErr != nil {
+			t.Fatalf("bounded sweep exceeded its limit and touched %s: %v", path, statErr)
 		}
 	}
 	// The safe half still runs.
@@ -1662,17 +1815,75 @@ func TestGuardedDiscoverySweepStillReconcilesLedgerAndExplainsTheRefusal(t *test
 			t.Fatalf("guarded sweep skipped ledger reconciliation for lane %s: %#v", id, reconciled)
 		}
 	}
-	// The refusal names what it refused and what is safe to do next.
-	message := discoverErr.Error()
-	for _, want := range []string{
-		"discovery", "left in place", "sessions kill", fmt.Sprintf("limit %d", DefaultMassKillLimit),
-	} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("mass-kill refusal %q does not mention %q", message, want)
+	retired, pending := manager.ArtifactRetirementHealth()
+	if retired != DefaultDiscoveryBatch || pending != 1 {
+		t.Fatalf("artifact health = retired %d pending %d", retired, pending)
+	}
+	retirementLines := 0
+	for _, event := range events {
+		if event.Type == ledger.EventRunnerArtifactsRetired {
+			retirementLines++
 		}
 	}
-	if strings.Contains(message, "retry with force") {
-		t.Fatalf("discovery refusal points at a force flag no operator surface exposes: %q", message)
+	if retirementLines != DefaultDiscoveryBatch {
+		t.Fatalf("retirement ledger lines = %d, want %d", retirementLines, DefaultDiscoveryBatch)
 	}
-	t.Logf("guarded discovery refusal: %s", message)
+}
+
+func TestPreTurnProviderDialogBecomesNeedsInputWithoutAWorkingEdge(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(root)
+	launcher := prototest.NewLauncher()
+	manager := NewManager(config, launcher, ManagerOptions{DisableWatchers: true, ActivityInterval: time.Hour})
+	t.Cleanup(manager.Close)
+	previousInterval := preTurnInspectInterval
+	preTurnInspectInterval = 0
+	t.Cleanup(func() { preTurnInspectInterval = previousInterval })
+
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{Cmd: "claude", Cwd: root, Name: "trust"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Tool != state.ToolClaude || created.IdleReason != state.IdleReasonNeverStarted {
+		t.Fatalf("created = %#v", created)
+	}
+	manager.mu.Lock()
+	runtime := manager.runtimes[created.ID]
+	manager.mu.Unlock()
+	runtime.tick()
+
+	runner := launcher.Runner(created.ID)
+	dialog := " Accessing workspace:\n\n /tmp/work\n\n Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.\n\n Claude Code'll be able to read, edit, and execute files here.\n\n Security guide\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n"
+	runner.AddOutput(dialog)
+	<-runtime.outputObserved
+	settle := func() state.SessionInfo {
+		for attempt := 0; attempt < 20; attempt++ {
+			runtime.tick()
+			info, _ := manager.Get(created.ID)
+			if info.Info().IdleReason != state.IdleReasonNeverStarted && !info.Info().Working {
+				return info.Info()
+			}
+		}
+		info, _ := manager.Get(created.ID)
+		return info.Info()
+	}
+	info := settle()
+	if info.IdleReason != state.IdleReasonNeedsInput || info.IdleDetail != "Claude is waiting for you to trust this folder" {
+		t.Fatalf("pre-turn dialog classified as %q/%q, want needs-input with the trust line", info.IdleReason, info.IdleDetail)
+	}
+
+	// Answering the dialog replaces it with the composer; the session returns
+	// to never-started so the first request can be sent normally.
+	runner.AddOutput("\x1b[2J\n❯ Try \"fix typecheck errors\"\n\n  ⏸ manual mode on · ? for shortcuts\n")
+	<-runtime.outputObserved
+	for attempt := 0; attempt < 20; attempt++ {
+		runtime.tick()
+		info, _ = func() (state.SessionInfo, bool) { s, ok := manager.Get(created.ID); return s.Info(), ok }()
+		if info.IdleReason == state.IdleReasonNeverStarted {
+			break
+		}
+	}
+	if info.IdleReason != state.IdleReasonNeverStarted || info.IdleDetail != "" {
+		t.Fatalf("answered dialog left %q/%q, want never-started", info.IdleReason, info.IdleDetail)
+	}
 }

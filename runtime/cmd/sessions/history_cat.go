@@ -15,10 +15,19 @@ func (a *app) cmdCat(args []string) error {
 	}
 	reference := args[0]
 	if _, _, qualified := splitQualifiedHistoryReference(reference); !qualified {
-		if id, resolveErr := a.resolveSessionID(reference); resolveErr == nil {
+		id, found, resolveErr := a.matchSessionID(reference)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if found {
 			return a.writeSessionTranscript(id)
 		}
 	}
+	resolution, err := a.resolveHistoryReference(reference)
+	if err != nil {
+		return err
+	}
+	reference = resolution.Reference
 	if _, err := a.useQualifiedHistoryReference(&reference); err != nil {
 		return err
 	}

@@ -1,16 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   fetchAISettings,
-  fetchRecapSettings,
   getPushVapidPublicKey,
   subscribePush,
   unsubscribePush,
   updateAISettings,
-  updateRecapSettings,
   type AIProvider,
-  type AISettings,
-  type RecapProvider,
-  type RecapSettings
+  type AISettings
 } from '../api/sessionsd';
 import { type TextSize, nextSize, sizeLabel } from '../lib/textSize';
 import { useServers } from '../lib/servers';
@@ -25,7 +21,6 @@ import {
 } from '../lib/newSessionDefaults';
 import { ServerSelector } from './ServerSelector';
 import { TagEditor } from './TagEditor';
-import { claimCurrentOriginPairing, claimNativeMachinePairing } from '../lib/hostedBootstrap';
 import {
   checkForNativeUpdate,
   installNativeUpdate,
@@ -35,11 +30,14 @@ import {
 } from '../lib/tauriBridge';
 import { useSessions } from '../store/sessions';
 
-interface Props {
+export interface SettingsMenuProps {
+  clientOnly?: boolean;
+  hostName?: string;
   textSize: TextSize;
   onTextSizeChange: (size: TextSize) => void;
   onNewSession?: () => void;
   onOpenConnections?: () => void;
+  initiallyOpen?: boolean;
 }
 
 const PUSH_ENABLED_KEY = 'sessions:push-enabled';
@@ -86,7 +84,7 @@ async function getPushRegistration(): Promise<ServiceWorkerRegistration> {
 }
 
 // Settings popover anchored to a header button.
-export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenConnections }: Props): JSX.Element {
+export function SettingsMenu({ clientOnly = false, hostName = 'this computer', textSize, onTextSizeChange, onNewSession, onOpenConnections, initiallyOpen = false }: SettingsMenuProps): JSX.Element {
   const activeServerId = useServers((state) => state.activeId);
   const activeServerIsLocal = useServers((state) =>
     state.servers.find((server) => server.id === state.activeId)?.isDefault === true
@@ -95,28 +93,20 @@ export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenC
   const workingAgents = activeServerIsLocal
     ? sessions.filter((session) => !session.exited && session.working).length
     : null;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const [pushEnabled, setPushEnabled] = useState(readPushEnabled);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushMessage, setPushMessage] = useState<string | null>(null);
-  const [pairTicket, setPairTicket] = useState('');
-  const [pairBusy, setPairBusy] = useState(false);
-  const [pairMessage, setPairMessage] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<NativeUpdateInfo | null>(null);
   const [updateProgress, setUpdateProgress] = useState<NativeUpdateProgress | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
-  const [recapSettings, setRecapSettings] = useState<RecapSettings>({ provider: 'off' });
-  const [recapBusy, setRecapBusy] = useState(false);
-  const [recapAvailable, setRecapAvailable] = useState(true);
-  const [recapMessage, setRecapMessage] = useState<string | null>(null);
   const [aiSettings, setAISettings] = useState<AISettings>({ provider: 'codex' });
   const [aiBusy, setAIBusy] = useState(false);
   const [aiAvailable, setAIAvailable] = useState(true);
   const [aiMessage, setAIMessage] = useState<string | null>(null);
   const [sessionDefaults, setSessionDefaults] = useState<NewSessionDefaults>(readNewSessionDefaults);
   const wrapRef = useRef<HTMLDivElement | null>(null);
-  const recapGeneration = useRef(0);
   const aiGeneration = useRef(0);
 
   useEffect(() => {
@@ -130,27 +120,13 @@ export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenC
 
   useEffect(() => {
     if (!isTauri()) return;
-    const nextRecapGeneration = recapGeneration.current + 1;
     const nextAIGeneration = aiGeneration.current + 1;
-    recapGeneration.current = nextRecapGeneration;
     aiGeneration.current = nextAIGeneration;
     const controller = new AbortController();
-    setRecapSettings({ provider: 'off' });
     setAISettings({ provider: 'codex' });
-    setRecapBusy(false);
     setAIBusy(false);
-    setRecapAvailable(true);
     setAIAvailable(true);
-    setRecapMessage(null);
     setAIMessage(null);
-    void fetchRecapSettings(controller.signal)
-      .then((settings) => { if (recapGeneration.current === nextRecapGeneration) setRecapSettings(settings); })
-      .catch(() => {
-        if (!controller.signal.aborted && recapGeneration.current === nextRecapGeneration) {
-          setRecapAvailable(false);
-          setRecapMessage('Daily recaps require a current Sessions runtime.');
-        }
-      });
     void fetchAISettings(controller.signal)
       .then((settings) => { if (aiGeneration.current === nextAIGeneration) setAISettings(settings); })
       .catch(() => {
@@ -175,31 +151,8 @@ export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenC
     });
   };
 
-  const saveRecapSettings = async (next: RecapSettings): Promise<void> => {
-    if (recapBusy || !recapAvailable) return;
-    const previous = recapSettings;
-    const generation = recapGeneration.current + 1;
-    recapGeneration.current = generation;
-    setRecapBusy(true);
-    setRecapMessage(null);
-    setRecapSettings(next);
-    try {
-      const saved = await updateRecapSettings(next);
-      if (recapGeneration.current !== generation) return;
-      setRecapSettings(saved);
-      setRecapMessage(saved.provider === 'off' ? 'Daily model calls are off' : `${saved.provider === 'codex' ? 'Codex' : 'Claude'} will write recaps only when requested`);
-    } catch (error) {
-      if (recapGeneration.current === generation) {
-        setRecapSettings(previous);
-        setRecapMessage(error instanceof Error ? error.message : 'Could not save recap settings');
-      }
-    } finally {
-      if (recapGeneration.current === generation) setRecapBusy(false);
-    }
-  };
-
   const saveAISettings = async (next: AISettings): Promise<void> => {
-    if (aiBusy || !aiAvailable) return;
+    if (clientOnly || aiBusy || !aiAvailable) return;
     const previous = aiSettings;
     const generation = aiGeneration.current + 1;
     aiGeneration.current = generation;
@@ -294,27 +247,6 @@ export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenC
       setPushMessage((err as Error).message);
     } finally {
       setPushBusy(false);
-    }
-  };
-
-  const claimPairTicket = async (): Promise<void> => {
-    if (pairBusy || !pairTicket.trim()) return;
-    setPairBusy(true);
-    setPairMessage(null);
-    try {
-      if (isTauri()) {
-        const { claim, server } = await claimNativeMachinePairing(pairTicket);
-        setPairTicket('');
-        setPairMessage(`Paired with ${server.name} as ${claim.name}`);
-        return;
-      }
-      const claimed = await claimCurrentOriginPairing(pairTicket);
-      setPairTicket('');
-      setPairMessage(`Paired as ${claimed.name}`);
-    } catch (error) {
-      setPairMessage(error instanceof Error ? error.message : 'Pairing failed. Run `sessions pair` again.');
-    } finally {
-      setPairBusy(false);
     }
   };
 
@@ -480,12 +412,13 @@ export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenC
               <div className="settings-menu-divider" />
               <div className="settings-menu-section" aria-label="Smart features">
                 <div className="settings-menu-section-title">Smart features</div>
+                {clientOnly ? <div className="settings-menu-status">Chosen on {hostName}</div> : null}
                 <label className="settings-menu-field">
                   <span>Provider</span>
                   <select
                     className="settings-menu-input"
                     value={aiSettings.provider}
-                    disabled={aiBusy || !aiAvailable}
+                    disabled={clientOnly || aiBusy || !aiAvailable}
                     onChange={(event) => void saveAISettings({ provider: event.currentTarget.value as AIProvider })}
                   >
                     <option value="codex">Codex · recommended</option>
@@ -494,25 +427,6 @@ export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenC
                 </label>
                 <span className="settings-menu-field-hint">Used only when you explicitly submit an AI action. Search sends the natural-language query—not transcripts—then searches the local index. Your CLI chooses its default model.</span>
                 {aiMessage ? <div className="settings-menu-status">{aiMessage}</div> : null}
-              </div>
-              <div className="settings-menu-divider" />
-              <div className="settings-menu-section" aria-label="Daily recap">
-                <div className="settings-menu-section-title">Daily recap</div>
-                <label className="settings-menu-field">
-                  <span>Writer</span>
-                  <select
-                    className="settings-menu-input"
-                    value={recapSettings.provider}
-                    disabled={recapBusy || !recapAvailable}
-                    onChange={(event) => void saveRecapSettings({ ...recapSettings, provider: event.currentTarget.value as RecapProvider })}
-                  >
-                    <option value="off">Off · no model calls</option>
-                    <option value="codex">Codex · recommended</option>
-                    <option value="claude">Claude</option>
-                  </select>
-                </label>
-                <span className="settings-menu-field-hint">One manually requested call, capped at 32 KiB and lowest reasoning effort. Your CLI chooses its default model; full transcripts are never sent.</span>
-                {recapMessage ? <div className="settings-menu-status">{recapMessage}</div> : null}
               </div>
             </>
           ) : null}
@@ -592,44 +506,8 @@ export function SettingsMenu({ textSize, onTextSizeChange, onNewSession, onOpenC
           {/* Server selector — "this machine" + IP picker. Tucked into
               Settings because the user doesn't need to see the host:port
               in the chrome all the time; it only matters when switching
-              between machines. */}
-          <div className="settings-menu-divider" />
-          <div className="settings-menu-section" aria-label="Pair">
-            <div className="settings-menu-section-title">{isTauri() ? 'LAN pairing fallback' : 'Pair this browser'}</div>
-            <div className="settings-menu-status">
-              {isTauri()
-                ? 'Normally use Connections → Find Sessions Macs. Paste a one-time link here only when both devices share a LAN without Tailscale.'
-                : 'Paste the one-time ticket created by `sessions pair` on this machine.'}
-            </div>
-            <div className="settings-menu-field-row">
-              <label className="settings-menu-field">
-                <span>{isTauri() ? 'Pairing link' : 'Ticket'}</span>
-                <input
-                  className="settings-menu-input"
-                  type="text"
-                  value={pairTicket}
-                  onChange={(event) => setPairTicket(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') void claimPairTicket();
-                  }}
-                  placeholder={isTauri() ? 'http://192.168.…/#pair=…' : 'From sessions pair'}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-              <button
-                type="button"
-                className="btn settings-menu-clickable"
-                disabled={pairBusy || !pairTicket.trim()}
-                onClick={() => void claimPairTicket()}
-              >
-                {pairBusy ? 'Pairing…' : isTauri() ? 'Add' : 'Pair'}
-              </button>
-            </div>
-            {pairMessage ? (
-              <div className="settings-menu-status" role="status">{pairMessage}</div>
-            ) : null}
-          </div>
+              between machines. Pairing lives in the Fleet screen and the
+              client-only Connect screen. */}
           <div className="settings-menu-divider" />
           <div className="settings-menu-row settings-menu-server">
             <span className="settings-menu-icon">🖥</span>

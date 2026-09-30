@@ -1,26 +1,26 @@
 class Sessions < Formula
   desc "Durable local Claude Code, Codex, and terminal sessions"
   homepage "https://sessions.somewhere.tech"
-  version "0.2.18"
+  version "0.2.26"
   license "MIT"
 
   on_macos do
     depends_on arch: :arm64
     on_arm do
-      url "https://github.com/somewhere-tech/sessions/releases/download/v0.2.18/sessions_0.2.18_darwin_arm64.tar.gz"
-      sha256 "a10b5a9d4fd4fd0e627a8859987fabec652ea25e15fd37f10f9d82e84dc6688f"
+      url "https://github.com/somewhere-tech/sessions/releases/download/v0.2.26/sessions_0.2.26_darwin_arm64.tar.gz"
+      sha256 "83d2137d4b94bdd0d43df8de5d46afa49d4d13c52f4e5cec9bafe876ee68ed52"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/somewhere-tech/sessions/releases/download/v0.2.18/sessions_0.2.18_linux_arm64.tar.gz"
-      sha256 "fa4f1127e35ba3ca3f21e87582ab0e1cd3900771e4027818efa2d77113f52e9a"
+      url "https://github.com/somewhere-tech/sessions/releases/download/v0.2.26/sessions_0.2.26_linux_arm64.tar.gz"
+      sha256 "cf9112b9e1386dcc51acbd80eac6b410d1204f390c6ac21998428222574ad4fd"
     end
 
     on_intel do
-      url "https://github.com/somewhere-tech/sessions/releases/download/v0.2.18/sessions_0.2.18_linux_amd64.tar.gz"
-      sha256 "14ab0e180668e131c560191b0834d95fd284ebb6b40beb6fb9748859754fc5ae"
+      url "https://github.com/somewhere-tech/sessions/releases/download/v0.2.26/sessions_0.2.26_linux_amd64.tar.gz"
+      sha256 "1ad51e499c54cdbd4ffc6da0afa1f2db27f49013283b9ad04502f12b07b0ded9"
     end
   end
 

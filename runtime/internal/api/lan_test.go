@@ -27,6 +27,50 @@ func (registration *fakeBonjourRegistration) Shutdown() error {
 	return nil
 }
 
+func TestLocalNetworkPermissionObservationPersistsOnDarwin(t *testing.T) {
+	if initialLocalNetworkPermission() == "not-required" {
+		t.Skip("local-network privacy is macOS-specific")
+	}
+	config := state.Config{StateRoot: t.TempDir()}
+	config.UserStateRoot = config.StateRoot
+	config.SettingsPath = config.StateRoot + "/settings.json"
+	identity := machineIdentity{Name: "Permission fixture", ID: "permission-fixture"}
+	listener := newLANListener(config, http.NotFoundHandler(), identity)
+	if got := listener.state().Permission.Status; got != "not-yet-asked" {
+		t.Fatalf("initial permission = %q, want not-yet-asked", got)
+	}
+
+	listener.markPermission("granted")
+	settings, err := state.LoadSettings(config.SettingsPath)
+	if err != nil || settings.LocalNetworkPermission != "granted" {
+		t.Fatalf("saved permission = %q, err=%v", settings.LocalNetworkPermission, err)
+	}
+	restored := newLANListener(config, http.NotFoundHandler(), identity)
+	if got := restored.state().Permission; got.Status != "granted" || got.Message != "" {
+		t.Fatalf("restored permission = %#v", got)
+	}
+}
+
+// Earlier builds wrote "denied" from a transport errno they could not attribute.
+// That guess must not outlive the restart as an assertion about a macOS setting
+// this daemon has no way to read.
+func TestLegacyDeniedObservationIsNotRestoredAsAVerdict(t *testing.T) {
+	if initialLocalNetworkPermission() == "not-required" {
+		t.Skip("local-network privacy is macOS-specific")
+	}
+	config := state.Config{StateRoot: t.TempDir()}
+	config.UserStateRoot = config.StateRoot
+	config.SettingsPath = config.StateRoot + "/settings.json"
+	if err := state.SaveSettings(config.SettingsPath, state.Settings{LocalNetworkPermission: "denied"}); err != nil {
+		t.Fatal(err)
+	}
+	identity := machineIdentity{Name: "Permission fixture", ID: "permission-fixture"}
+	restored := newLANListener(config, http.NotFoundHandler(), identity)
+	if got := restored.state().Permission; got.Status != "not-yet-asked" || got.Reason != "" || got.Message != "" {
+		t.Fatalf("restored permission = %#v, want an unproven state rather than a stored verdict", got)
+	}
+}
+
 func TestLANListenerLifecycleAndAuth(t *testing.T) {
 	daemon := newTestDaemon(t)
 	daemon.config.UserStateRoot = daemon.config.StateRoot
@@ -50,7 +94,7 @@ func TestLANListenerLifecycleAndAuth(t *testing.T) {
 	var advertisedIP net.IP
 	var advertisedPort int
 	registration := &fakeBonjourRegistration{}
-	daemon.handler.lan.advertise = discovery.AdvertiseFunc(func(ip net.IP, port int, _, _ string) (discovery.Registration, error) {
+	daemon.handler.lan.advertise = discovery.AdvertiseFunc(func(ip net.IP, port int, _, _, _, _ string) (discovery.Registration, error) {
 		advertisedIP = ip
 		advertisedPort = port
 		return registration, nil
@@ -201,7 +245,7 @@ func TestLANActiveHostDoesNotWaitForBonjour(t *testing.T) {
 	listener.pickIP = func() (net.IP, error) { return net.ParseIP("127.0.0.1"), nil }
 	advertiseStarted := make(chan struct{})
 	allowAdvertise := make(chan struct{})
-	listener.advertise = func(net.IP, int, string, string) (discovery.Registration, error) {
+	listener.advertise = func(net.IP, int, string, string, string, string) (discovery.Registration, error) {
 		close(advertiseStarted)
 		<-allowAdvertise
 		return &fakeBonjourRegistration{}, nil

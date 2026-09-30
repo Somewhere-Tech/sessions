@@ -36,11 +36,22 @@ struct SessionIdentity {
     pid: Option<u32>,
     #[serde(default)]
     exited: bool,
+    #[serde(default)]
+    unreachable: bool,
+    #[serde(default)]
+    ended_by_kind: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct SessionEnvelope {
     sessions: Vec<SessionIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionReadiness {
+    Reachable,
+    Ended,
+    Unreachable,
 }
 
 fn install_runtime(config: &RuntimeConfig) -> LifecycleResult<(InstallOutcome, String)> {

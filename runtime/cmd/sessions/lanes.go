@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,9 +32,16 @@ type laneManifest struct {
 
 type laneView struct {
 	session
-	Kind     string        `json:"kind"`
-	SpecPath string        `json:"specPath,omitempty"`
-	Manifest *laneManifest `json:"manifest,omitempty"`
+	Kind       string        `json:"kind"`
+	SpecPath   string        `json:"specPath,omitempty"`
+	Manifest   *laneManifest `json:"manifest,omitempty"`
+	LaneStatus *laneStatus   `json:"lane_status,omitempty"`
+}
+
+type laneStatus struct {
+	State   string `json:"state"`
+	Reason  string `json:"reason,omitempty"`
+	Command string `json:"command,omitempty"`
 }
 
 type lanesResponse struct {
@@ -82,24 +90,47 @@ func (a *app) cmdLanes(args []string) error {
 		_, err := io.WriteString(a.stdout, "(no lanes)\n")
 		return err
 	}
-	rows := [][]string{{"ID", "NAME", "DESC", "TOOL", "CWD", "STATE", "EXIT", "DURATION", "PROVENANCE"}}
+	showRecovery := false
+	for _, lane := range response.Lanes {
+		if lane.LaneStatus != nil && (lane.LaneStatus.Reason != "" || lane.LaneStatus.Command != "") {
+			showRecovery = true
+			break
+		}
+	}
+	header := []string{"ID", "NAME", "DESC", "TOOL", "CWD", "STATE", "EXIT", "DURATION", "PROVENANCE"}
+	if showRecovery {
+		header = append(header, "REASON", "ACTION")
+	}
+	rows := [][]string{header}
 	for _, lane := range response.Lanes {
 		name := "-"
 		if strings.TrimSpace(lane.Name) != "" {
 			name = strings.Join(strings.Fields(lane.Name), " ")
 		}
-		state := "running"
+		laneState := "running"
 		exit := "-"
 		duration := "-"
+		if lane.LaneStatus != nil && lane.LaneStatus.State != "" {
+			laneState = lane.LaneStatus.State
+		} else if lane.Manifest != nil {
+			laneState = "exited"
+		} else if lane.UnreachableReason == "restart-restore-pending" {
+			laneState = "needs-recovery"
+		} else if lane.RunnerGone {
+			// Compatibility with a daemon which reports the established
+			// SessionInfo reachability fields but predates lane_status.
+			laneState = "lost"
+		} else if lane.Unreachable {
+			laneState = "unreachable"
+		}
 		if lane.Manifest != nil {
-			state = "exited"
 			exit = strconv.Itoa(lane.Manifest.ExitCode)
 			if lane.Manifest.Signal != nil && *lane.Manifest.Signal != "" {
 				exit += "/" + *lane.Manifest.Signal
 			}
 			duration = formatLaneDuration(lane.Manifest.DurationMS)
 		} else if lane.Exited {
-			state = "exited"
+			laneState = "exited"
 			if lane.ExitCode != nil {
 				exit = strconv.Itoa(*lane.ExitCode)
 			}
@@ -107,10 +138,26 @@ func (a *app) cmdLanes(args []string) error {
 				exit += "/" + *lane.ExitSignal
 			}
 		}
-		rows = append(rows, []string{
+		row := []string{
 			prefixString(lane.ID, 8), name, compactDescription(lane.Description), toolOfSession(lane.session),
-			strings.Replace(lane.Cwd, a.home, "~", 1), state, exit, duration, laneProvenanceLabel(lane),
-		})
+			a.homeRelative(lane.Cwd), laneState, exit, duration, laneProvenanceLabel(lane),
+		}
+		if showRecovery {
+			reason, command := "-", "-"
+			if lane.LaneStatus != nil {
+				if lane.LaneStatus.Reason != "" {
+					reason = lane.LaneStatus.Reason
+				}
+				if lane.LaneStatus.Command != "" {
+					command = lane.LaneStatus.Command
+				}
+			} else if laneState == "lost" {
+				reason = "runner process is gone"
+				command = "sessions kill " + lane.ID
+			}
+			row = append(row, reason, command)
+		}
+		rows = append(rows, row)
 	}
 	return writePaddedRows(a.stdout, rows)
 }
@@ -234,27 +281,28 @@ func filterLaneViews(lanes []laneView, options laneListOptions, daemonUserID str
 }
 
 func resolveSubtreeID(lanes []laneView, idOrPrefix string) (string, error) {
-	candidates := make(map[string]struct{})
+	seen := make(map[string]struct{})
 	for _, lane := range lanes {
-		candidates[lane.ID] = struct{}{}
+		seen[lane.ID] = struct{}{}
 		for _, ancestor := range lane.CreatorAncestry {
-			candidates[ancestor] = struct{}{}
+			seen[ancestor] = struct{}{}
 		}
 	}
-	if _, exact := candidates[idOrPrefix]; exact {
-		return idOrPrefix, nil
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
 	}
-	matches := make([]string, 0, 2)
-	for candidate := range candidates {
-		if strings.HasPrefix(candidate, idOrPrefix) {
-			matches = append(matches, candidate)
-		}
+	slices.Sort(ids)
+	candidates := make([]idCandidate, 0, len(ids))
+	for _, id := range ids {
+		candidates = append(candidates, labeledID(id))
 	}
-	if len(matches) == 1 {
-		return matches[0], nil
+	id, found, err := resolveIDPrefix(idOrPrefix, "session", "sessions lanes", candidates)
+	if err != nil {
+		return "", err
 	}
-	if len(matches) > 1 {
-		return "", fail(1, "ambiguous subtree prefix %q", idOrPrefix)
+	if found {
+		return id, nil
 	}
 	if looksLikeLaneID(idOrPrefix) {
 		// A valid session can legitimately have no lane descendants, in which
@@ -340,11 +388,15 @@ func (a *app) cmdWaitDispatch(args []string) error {
 		if len(request.ids) == 1 && !request.any && !request.all {
 			return a.cmdWait(args)
 		}
-		sessionID, err := a.resolveSessionID(candidate)
+		resolved, err := a.resolveSession(candidate)
 		if err != nil {
 			return err
 		}
-		refs = append(refs, waitTargetRef{id: sessionID})
+		isLane := resolved.Kind == "lane"
+		if isLane {
+			lanes++
+		}
+		refs = append(refs, waitTargetRef{id: resolved.ID, lane: isLane})
 	}
 	if request.idleSeen && lanes == len(refs) {
 		// The value used to be parsed and thrown away, so a caller who asked
@@ -391,8 +443,9 @@ func idsOfWaitRefs(refs []waitTargetRef) []string {
 
 func (a *app) waitForLaneExit(ids []string, timeout time.Duration) (string, laneManifest, error) {
 	conditions := make([]waitcond.Condition, 0, len(ids))
+	restart := waitRestart{app: a}
 	for _, id := range ids {
-		conditions = append(conditions, &laneExitCondition{app: a, id: id})
+		conditions = append(conditions, &laneExitCondition{app: a, id: id, restart: &restart})
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -529,8 +582,9 @@ func parseFanOutWaitArgs(args []string) (fanOutWaitRequest, error) {
 }
 
 type laneExitCondition struct {
-	app *app
-	id  string
+	app     *app
+	id      string
+	restart *waitRestart
 }
 
 func (condition *laneExitCondition) Wait(ctx context.Context) (waitcond.Result, error) {
@@ -539,7 +593,13 @@ func (condition *laneExitCondition) Wait(ctx context.Context) (waitcond.Result, 
 	for {
 		_, statusCode, err := condition.app.fetchLaneManifest(ctx, condition.id)
 		if err != nil {
+			if condition.restart != nil && condition.restart.pause(err, contextDeadline(ctx)) {
+				continue
+			}
 			return waitcond.Result{}, err
+		}
+		if condition.restart != nil {
+			condition.restart.reset()
 		}
 		if statusCode == http.StatusOK {
 			return waitcond.Result{Kind: laneExitKind, Session: condition.id}, nil
@@ -553,6 +613,14 @@ func (condition *laneExitCondition) Wait(ctx context.Context) (waitcond.Result, 
 		case <-ticker.C:
 		}
 	}
+}
+
+func contextDeadline(ctx context.Context) time.Time {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return time.Now()
+	}
+	return deadline
 }
 
 func (a *app) resolveLaneID(idOrPrefix string) (string, bool, error) {
@@ -570,22 +638,16 @@ func (a *app) resolveLaneID(idOrPrefix string) (string, bool, error) {
 	if err := json.Unmarshal(listed.body, &response); err != nil {
 		return "", false, err
 	}
+	candidates := make([]idCandidate, 0, len(response.Lanes))
 	for _, lane := range response.Lanes {
-		if lane.ID == idOrPrefix {
-			return lane.ID, true, nil
-		}
+		candidates = append(candidates, labeledID(lane.ID, lane.Name, toolOfSession(lane.session)))
 	}
-	matches := make([]string, 0, 2)
-	for _, lane := range response.Lanes {
-		if strings.HasPrefix(lane.ID, idOrPrefix) {
-			matches = append(matches, lane.ID)
-		}
+	id, found, resolveErr := resolveIDPrefix(idOrPrefix, "lane", "sessions lanes", candidates)
+	if resolveErr != nil {
+		return "", false, resolveErr
 	}
-	if len(matches) == 1 {
-		return matches[0], true, nil
-	}
-	if len(matches) > 1 {
-		return "", false, fail(1, "ambiguous lane prefix %q", idOrPrefix)
+	if found {
+		return id, true, nil
 	}
 	if looksLikeLaneID(idOrPrefix) {
 		_, statusCode, err := a.fetchLaneManifest(context.Background(), idOrPrefix)

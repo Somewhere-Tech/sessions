@@ -28,7 +28,7 @@ func readStructuredHistoryTail(file *os.File) ([]json.RawMessage, error) {
 	chunks := make([][]byte, 0, 4)
 	totalBytes := 0
 	newlines := 0
-	for position > 0 && newlines <= structuredHistoryLimit {
+	for position > 0 && newlines <= structuredHistoryLimit && totalBytes < proto.MaxStructuredReplayBytes+structuredScannerBuffer {
 		readSize := int64(structuredReadBlock)
 		if position < readSize {
 			readSize = position
@@ -55,6 +55,9 @@ func readStructuredHistoryTail(file *os.File) ([]json.RawMessage, error) {
 	}
 	if position > 0 {
 		if boundary := bytes.IndexByte(window, '\n'); boundary >= 0 {
+			if boundary == len(window)-1 && boundary > structuredScannerBuffer {
+				return nil, fmt.Errorf("structured history record exceeds %d bytes", structuredScannerBuffer)
+			}
 			window = window[boundary+1:]
 		}
 	}
@@ -62,14 +65,13 @@ func readStructuredHistoryTail(file *os.File) ([]json.RawMessage, error) {
 	history := make([]json.RawMessage, 0, min(len(lines), structuredHistoryLimit))
 	for _, candidate := range lines {
 		line := bytes.TrimSpace(candidate)
+		if len(line) > structuredScannerBuffer {
+			return nil, fmt.Errorf("structured history record exceeds %d bytes", structuredScannerBuffer)
+		}
 		if len(line) == 0 || !json.Valid(line) {
 			continue
 		}
-		history = append(history, append(json.RawMessage(nil), line...))
-		if len(history) > structuredHistoryLimit {
-			copy(history, history[len(history)-structuredHistoryLimit:])
-			history = history[:structuredHistoryLimit]
-		}
+		history = retainStructuredEvent(history, line)
 	}
 	if _, err := file.Seek(0, io.SeekEnd); err != nil {
 		return nil, err
@@ -78,11 +80,6 @@ func readStructuredHistoryTail(file *os.File) ([]json.RawMessage, error) {
 }
 
 func retainStructuredEvent(history []json.RawMessage, raw json.RawMessage) []json.RawMessage {
-	cloned := append(json.RawMessage(nil), raw...)
-	if len(history) < structuredHistoryLimit {
-		return append(history, cloned)
-	}
-	copy(history, history[1:])
-	history[len(history)-1] = cloned
-	return history
+	retained, _ := proto.RetainStructuredHistory(history, raw)
+	return retained
 }

@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchServerHealth, listServerProfiles, listServerSessions, type AccountProfile, type ServerHealth } from '../api/sessionsd';
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { daemonErrorDisplay, fetchServerHealth, listServerProfiles, listServerSessions, type AccountProfile, type ServerHealth } from '../api/sessionsd';
+import { LocalNetworkGuide } from './LocalNetworkGuide';
 import { formatServerEndpoint } from '../lib/serverEndpoint';
 import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { tailnetClientID } from '../lib/tailnetClient';
 import {
   discoverNativeNearbyPeers,
   discoverNativeTailnetPeers,
+	isNativeMobileRuntime,
   isTauri,
   requestNativeNearbyAccess,
   requestNativeTailnetAccess,
@@ -19,6 +21,10 @@ import {
   useMachineAccessPairing,
   type PendingMachineAccess as SharedPendingMachineAccess
 } from '../hooks/useMachineAccessPairing';
+import { MachinePlatformIcon } from './MachineMark';
+import { FleetMachineAccounts, accountsMissingOn, type AccountElsewhere } from './FleetMachineAccounts';
+import { refreshDaemonAccountFleet } from '../lib/accountFleet';
+import { collapseConversationRuntimes, isAgentLedChild, isSetAside } from '../lib/workingSet';
 
 const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 5_000;
@@ -35,16 +41,23 @@ interface ServerSnapshot {
   reachability: Reachability;
   health: ServerHealth | null;
   sessions: SessionInfo[];
+  sessionsLoaded: boolean;
   profiles: AccountProfile[];
   sessionsError: string | null;
+  // Why the last health probe failed, as this machine's host explained it. A
+  // snapshot of one attempt, never a standing verdict: the next successful
+  // probe clears it and a newer failure replaces it.
+  unavailableReason: string | null;
 }
 
 const INITIAL_SNAPSHOT: ServerSnapshot = {
   reachability: 'checking',
   health: null,
   sessions: [],
+  sessionsLoaded: false,
   profiles: [],
-  sessionsError: null
+  sessionsError: null,
+  unavailableReason: null
 };
 
 interface FleetViewProps {
@@ -76,20 +89,16 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [discoveredPeers, setDiscoveredPeers] = useState<DiscoveredPeer[] | null>(null);
   const [accessRequest, setAccessRequest] = useState<PendingMachineAccess | null>(null);
-  const [discoveryMessage, setDiscoveryMessage] = useState<string | null>(null);
-  const localServer = servers.find((server) => server.isDefault) ?? servers[0];
-  const localVersion = localServer ? machineVersions[localServer.id] : undefined;
+	const [discoveryMessage, setDiscoveryMessage] = useState<{ text: string; details?: string } | null>(null);
+	const directoryMessage = useAccountFleetDirectory();
+	const localServer = servers.find((server) => server.isDefault) ?? servers[0]; const fleetServers = useFleetMachineSources(servers, discoveredPeers);
+	const discoveryBlocked = !isTauri() ? 'Open Sessions.app › Settings › Fleet for discovery, pairing, and moves.' : accessRequest ? `Waiting for ${accessRequest.label} to approve.` : '';
 
-  const rememberVersion = useCallback((serverId: string, version: string): void => {
-    if (!version) return;
-    setMachineVersions((current) => current[serverId] === version
-      ? current
-      : { ...current, [serverId]: version });
-  }, []);
-
-  const findMachines = async (): Promise<void> => {
+	const rememberVersion = useRememberMachineVersion(setMachineVersions);
+	const accounts = useFleetAccounts(fleetServers);
+  const findMachines = async (showPanel = true): Promise<void> => {
     if (!isTauri() || discoveryBusy || accessRequest) return;
-    setDiscoveryOpen(true);
+    if (showPanel) setDiscoveryOpen(true);
     setDiscoveryBusy(true);
     setDiscoveryMessage(null);
     try {
@@ -119,15 +128,15 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
       const failures = [tailnet, nearby]
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
         .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
-      if (failures.length === 2) setDiscoveryMessage(failures.join(' · '));
-      else if (failures.length === 1 && peers.length === 0) setDiscoveryMessage(failures[0]);
+      if (failures.length > 0) setDiscoveryMessage({ text: 'Some discovery routes did not answer. Check Tailscale or local-network access, then search again.', details: failures.join('\n') });
     } catch (reason) {
       setDiscoveredPeers([]);
-      setDiscoveryMessage(reason instanceof Error ? reason.message : String(reason));
+      setDiscoveryMessage({ text: 'Discovery could not finish. Search again or check connection settings.', details: String(reason) });
     } finally {
       setDiscoveryBusy(false);
     }
   };
+	useEffect(() => { void findMachines(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const requestAccess = async (peer: DiscoveredPeer): Promise<void> => {
     if (!isTauri() || discoveryBusy || accessRequest) return;
@@ -138,9 +147,9 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
         ? await requestNativeNearbyAccess(peer.endpoint, tailnetClientID(), '')
         : await requestNativeTailnetAccess(peer.endpoint, tailnetClientID(), '');
       setAccessRequest({ request, transport: peer.transport, label: peer.name });
-      setDiscoveryMessage(`Request sent to ${peer.name}. Accept it in Sessions on that machine.`);
+      setDiscoveryMessage({ text: `${peer.name} must approve this request.` });
     } catch (reason) {
-      setDiscoveryMessage(reason instanceof Error ? reason.message : String(reason));
+      setDiscoveryMessage({ text: `Could not request access to ${peer.name}. Check that it is online, then try again.`, details: String(reason) });
     } finally {
       setDiscoveryBusy(false);
     }
@@ -153,13 +162,13 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
     select: false,
     onAccepted: (server) => {
       setAccessRequest(null);
-      setDiscoveryMessage(`${server.name} is now in Fleet.`);
+      setDiscoveryMessage({ text: `${server.name} is now in Fleet.` });
     },
     onSettled: (_outcome, text) => {
       setAccessRequest(null);
-      setDiscoveryMessage(text);
+      setDiscoveryMessage({ text });
     },
-    onError: setDiscoveryMessage
+    onError: (details) => setDiscoveryMessage({ text: 'Could not check approval. Check the other computer, then try again.', details })
   });
 
   return (
@@ -167,30 +176,32 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
       <div className="fleet-view-heading">
         <div>
           <h1>Fleet</h1>
-          <p>Every configured machine stays visible here, including when it is offline.</p>
+          <p>Configured machines stay visible, even offline.</p>
         </div>
         <div className="fleet-heading-actions">
           <label className="fleet-history-toggle">
             <input type="checkbox" checked={includeExited} onChange={(event) => setIncludeExited(event.target.checked)} />
-            Show history
+            Show all records
           </label>
           <button
             type="button"
             className="btn fleet-find-machines"
-            disabled={!isTauri() || discoveryBusy || accessRequest !== null}
+            disabled={discoveryBusy || Boolean(discoveryBlocked)}
             onClick={() => void findMachines()}
           >
-            <span aria-hidden>＋</span>{discoveryBusy ? 'Searching…' : 'Find machines'}
+            <span aria-hidden>＋</span>{!isTauri() ? 'Find machines in Sessions.app' : discoveryBusy ? 'Searching…' : 'Find machines'}
           </button>
         </div>
       </div>
+      {discoveryBlocked ? <div className="fleet-permission-banner" role="status">{discoveryBlocked}</div> : null}
+      <LocalNetworkGuide />
       {discoveryOpen ? (
         <section className="fleet-discovery" aria-live="polite">
           <header>
             <div>
               <span>Private device discovery</span>
               <h2>Machines you can connect to</h2>
-              <p>Sessions checks both Tailscale and your nearby network, then shows only verified Sessions runtimes.</p>
+              <p>Sessions checks Tailscale and nearby networks, then verifies each computer.</p>
             </div>
             <div className="fleet-discovery-actions">
               <button type="button" className="btn btn-ghost" disabled={discoveryBusy || accessRequest !== null} onClick={() => void findMachines()}>Search again</button>
@@ -210,7 +221,7 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
                   const peerPlatform = platformFromReportedOS(peer.os) ?? 'server';
                   return (
                     <article key={peer.endpoint}>
-                      <span className={`fleet-platform-mark is-${peerPlatform}`} aria-hidden><PlatformIcon platform={peerPlatform} /></span>
+                      <span className={`fleet-platform-mark is-${peerPlatform}`} aria-hidden><MachinePlatformIcon platform={peerPlatform} /></span>
                       <div>
                         <strong>{peer.name}</strong>
                         <small>{peer.transport === 'tailnet' ? 'Tailscale · encrypted' : 'Nearby · unencrypted'} · {peer.endpoint.replace(/^https?:\/\//, '')}</small>
@@ -223,29 +234,95 @@ export function FleetView({ onOpenSession, onOpenMachine }: FleetViewProps): JSX
                 })}
               </div>
             ) : !discoveryBusy ? (
-              <div className="fleet-discovery-empty">No other Sessions machines answered. Enable Tailscale remote access or trusted-network LAN access on the host, then search again.</div>
+              <div className="fleet-discovery-empty">No machines answered. Enable Tailscale or trusted-network LAN on the host, then search again.</div>
             ) : null
           ) : null}
-          {discoveryMessage ? <div className="fleet-discovery-message">{discoveryMessage}</div> : null}
+          {discoveryMessage ? <FleetDiscoveryMessage message={discoveryMessage} /> : null}
         </section>
       ) : null}
-      <div className="fleet-section-label"><span>Your machines</span><strong>{servers.length} configured</strong></div>
+		<div className="fleet-section-label"><span>Your machines</span><strong>{fleetServers.length} visible</strong></div>
+		{directoryMessage ? <div className="fleet-discovery-message" role="status">Account directory: {directoryMessage}</div> : null}
       <div className="fleet-machine-grid">
-        {servers.map((server) => (
+		{fleetServers.map((server) => (
           <FleetServerGroup
             key={server.id}
             server={server}
             includeExited={includeExited}
-            localVersion={localVersion}
+            localVersion={localServer ? machineVersions[localServer.id] : undefined}
             onVersion={rememberVersion}
+            accountsElsewhere={accounts.missingOn(server.id)} onAccounts={accounts.remember}
             onOpenSession={(sessionId) => onOpenSession(server.id, sessionId)}
             onOpenMachine={() => onOpenMachine(server.id)}
           />
         ))}
-        <CloudFleetCard />
       </div>
     </div>
   );
+}
+
+export function FleetDiscoveryMessage({ message }: { message: { text: string; details?: string } }): JSX.Element {
+  return <div className="fleet-discovery-message">
+    <p role="status">{message.text}</p>
+    {message.details ? <details><summary>Technical details</summary><p>{message.details}</p></details> : null}
+  </div>;
+}
+
+function useRememberMachineVersion(setVersions: Dispatch<SetStateAction<Record<string, string>>>) {
+  return useCallback((serverId: string, version: string): void => {
+    if (!version) return;
+    setVersions((current) => current[serverId] === version ? current : { ...current, [serverId]: version });
+  }, [setVersions]);
+}
+
+/**
+ * What each computer has, gathered from the cards' own polls, so that one card
+ * can say which account another computer has and this one does not.
+ */
+function useFleetAccounts(servers: ServerConfig[]): {
+  remember: (serverId: string, profiles: AccountProfile[]) => void;
+  missingOn: (serverId: string) => AccountElsewhere[];
+} {
+  const [accounts, setAccounts] = useState<Record<string, AccountProfile[]>>({});
+  const remember = useCallback((serverId: string, profiles: AccountProfile[]): void => {
+    // Each card polls; an unchanged answer must not re-render the whole fleet.
+    setAccounts((current) => sameAccounts(current[serverId], profiles) ? current : { ...current, [serverId]: profiles });
+  }, []);
+  const nameOf = (serverId: string): string => {
+    const machine = servers.find((candidate) => candidate.id === serverId);
+    return machine ? serverDisplayName(machine, true) : 'another computer';
+  };
+  return { remember, missingOn: (serverId) => accountsMissingOn(accounts, serverId, nameOf) };
+}
+
+function sameAccounts(left: AccountProfile[] | undefined, right: AccountProfile[]): boolean {
+  return left !== undefined && left.length === right.length && left.every((account, index) => {
+    const other = right[index];
+    return other !== undefined && account.tool === other.tool && account.name === other.name
+      && account.signed_in === other.signed_in && (account.label ?? '') === (other.label ?? '');
+  });
+}
+
+function useAccountFleetDirectory(): string | null {
+	const [message, setMessage] = useState<string | null>(null);
+	useEffect(() => {
+		let stopped = false;
+		const refresh = (): void => {
+			const operation = isNativeMobileRuntime()
+				? import('../lib/clientFleetAccount').then((client) => client.syncClientAccountFleet())
+				: refreshDaemonAccountFleet();
+			void operation
+				.then((errors) => { if (!stopped) setMessage(errors.length > 0 ? errors.join(' · ') : null); })
+				.catch((reason) => { if (!stopped) setMessage(reason instanceof Error ? reason.message : String(reason)); });
+		};
+		refresh();
+		const interval = window.setInterval(refresh, 30_000);
+		return () => { stopped = true; window.clearInterval(interval); };
+	}, []);
+	return message;
+}
+
+function useFleetMachineSources(servers: ServerConfig[], peers: DiscoveredPeer[] | null): ServerConfig[] {
+	return useMemo(() => mergeFleetMachineSources(servers, peers ?? []), [servers, peers]);
 }
 
 function mergeDiscoveredPeers(peers: DiscoveredPeer[]): DiscoveredPeer[] {
@@ -262,63 +339,57 @@ function mergeDiscoveredPeers(peers: DiscoveredPeer[]): DiscoveredPeer[] {
 
 function serverMatchesPeer(server: ServerConfig, endpoint: string): boolean {
   try {
-    return new URL(endpoint).hostname.toLowerCase() === server.host.replace(/^\[|\]$/g, '').toLowerCase();
+		const host = new URL(endpoint).hostname.toLowerCase();
+		const known = [server.host, ...(server.transportCandidates ?? []).map((candidate) => {
+			try { return new URL(candidate.endpoint).hostname; } catch { return ''; }
+		})];
+		return known.some((candidate) => candidate.replace(/^\[|\]$/g, '').toLowerCase() === host);
   } catch {
     return false;
   }
 }
 
-function CloudFleetCard(): JSX.Element {
-  return (
-    <section className="fleet-server-group fleet-cloud-machine is-placeholder" aria-label="Somewhere cloud workspace coming soon">
-      <header className="fleet-machine-header">
-        <span className="fleet-platform-mark is-cloud" aria-hidden><PlatformIcon platform="cloud" /></span>
-        <div className="fleet-server-identity">
-          <div className="fleet-machine-title"><h2>Somewhere VM</h2><span className="fleet-machine-badge">Coming soon</span></div>
-          <span className="fleet-machine-status"><span className="fleet-reachability-dot" aria-hidden />Not configured</span>
-        </div>
-      </header>
-      <div className="fleet-machine-meta"><span>Cloud workspace</span><span>Outbound-only worker</span></div>
-      <div className="fleet-cloud-machine-body">
-        <p>An always-on private computer for your sessions, with provider logins isolated inside its own workspace.</p>
-        <div><span>Cloud usage</span><span>Encrypted backup</span><span>Scoped files</span></div>
-        <button type="button" className="btn" disabled>Set up · coming soon</button>
-      </div>
-    </section>
-  );
+function mergeFleetMachineSources(servers: ServerConfig[], peers: DiscoveredPeer[]): ServerConfig[] {
+	const merged = servers.map((server) => ({
+		...server,
+		sources: server.sources ?? ['saved' as const],
+		transportCandidates: server.transportCandidates ?? serverTransportCandidates(server)
+	}));
+	for (const peer of peers) {
+		const transport = peer.transport === 'nearby' ? 'lan' as const : 'tailnet' as const;
+		const existing = merged.find((server) => serverMatchesPeer(server, peer.endpoint));
+		if (existing) {
+			existing.sources = Array.from(new Set([...(existing.sources ?? []), 'bonjour' as const]));
+			if (!existing.transportCandidates?.some((candidate) => candidate.endpoint === peer.endpoint)) {
+				existing.transportCandidates = [...(existing.transportCandidates ?? []), { endpoint: peer.endpoint, transport }];
+			}
+			continue;
+		}
+		const endpoint = new URL(peer.endpoint);
+		merged.push({
+			id: `bonjour:${peer.endpoint}`, name: peer.name, systemName: peer.name,
+			host: endpoint.hostname, port: Number(endpoint.port), scheme: endpoint.protocol === 'https:' ? 'https' : 'http',
+			isDefault: false, transport, transportCandidates: [{ endpoint: peer.endpoint, transport }],
+			sources: ['bonjour'], directoryOnly: true
+		});
+	}
+	return merged;
 }
 
-function FleetServerGroup({
-  server,
-  includeExited,
-  localVersion,
-  onVersion,
-  onOpenSession,
-  onOpenMachine
-}: {
-  server: ServerConfig;
-  includeExited: boolean;
-  localVersion?: string;
-  onVersion: (serverId: string, version: string) => void;
-  onOpenSession: (sessionId: string) => void;
-  onOpenMachine: () => void;
-}): JSX.Element {
-  const updateServer = useServers((state) => state.updateServer);
-  const localServer = useServers((state) => state.servers.find((candidate) => candidate.isDefault));
+function mainFleetSessions(sessions: SessionInfo[]): SessionInfo[] {
+  return collapseConversationRuntimes(sessions).filter((session) =>
+    !session.exited && !session.unreachable && !session.runnerGone && !isAgentLedChild(session) && !isSetAside(session));
+}
+
+/**
+ * One machine card's own polling loop: health, then sessions and accounts, then
+ * again. Each card owns its loop, so a slow or dead machine cannot delay any
+ * other machine's updates.
+ */
+function useMachineSnapshot(
+  server: ServerConfig, onVersion: (serverId: string, version: string) => void
+): [ServerSnapshot, Dispatch<SetStateAction<ServerSnapshot>>] {
   const [snapshot, setSnapshot] = useState<ServerSnapshot>(INITIAL_SNAPSHOT);
-  const [renaming, setRenaming] = useState(false);
-  const [machineName, setMachineName] = useState(server.customName ?? serverDisplayName(server));
-  const [renameError, setRenameError] = useState<string | null>(null);
-
-  // Depending on the resolved string rather than on three raw fields is what
-  // makes this effect's dependency list honest: `serverDisplayName` reads
-  // customName, systemName, name AND isDefault, so the old list was both
-  // incomplete and unable to satisfy the exhaustive-deps rule.
-  const resolvedMachineName = server.customName ?? serverDisplayName(server);
-  useEffect(() => {
-    if (!renaming) setMachineName(resolvedMachineName);
-  }, [renaming, resolvedMachineName]);
-
   // The poll is keyed on the address it actually dials, not on the server
   // object. `server` gets a new identity whenever ANY field changes, so with
   // `[onVersion, server]` renaming a machine tore the poll down, reset the
@@ -355,14 +426,17 @@ function FleetServerGroup({
         const health = await fetchServerHealth(target, controller.signal);
         if (!stopped) {
           onVersion(target.id, health.version);
-          setSnapshot((current) => ({ ...current, health }));
+          setSnapshot((current) => ({ ...current, health, unavailableReason: null }));
         }
-      } catch {
+      } catch (error) {
         if (!stopped) {
           setSnapshot((current) => ({
             ...current,
             reachability: 'unreachable',
-            sessionsError: null
+            sessionsError: null,
+            // The host says why it could not reach this machine. One line here;
+            // the full body stays on the error for callers that need the rest.
+            unavailableReason: daemonErrorDisplay(error)
           }));
         }
         window.clearTimeout(timeout);
@@ -374,7 +448,8 @@ function FleetServerGroup({
         setSnapshot((current) => ({
           ...current,
           reachability: 'reachable',
-          sessionsError: null
+          sessionsError: null,
+          unavailableReason: null
         }));
       }
 
@@ -384,7 +459,7 @@ function FleetServerGroup({
           listServerProfiles(target, controller.signal).catch(() => [])
         ]);
         if (!stopped) {
-          setSnapshot((current) => ({ ...current, reachability: 'reachable', sessions, profiles, sessionsError: null }));
+          setSnapshot((current) => ({ ...current, reachability: 'reachable', sessions, sessionsLoaded: true, profiles, sessionsError: null }));
         }
       } catch (error) {
         if (!stopped) {
@@ -407,27 +482,53 @@ function FleetServerGroup({
       window.clearTimeout(pollTimer);
     };
   }, [endpointKey, onVersion]);
+  return [snapshot, setSnapshot];
+}
+
+function FleetServerGroup({
+  server,
+  includeExited,
+  localVersion,
+  onVersion,
+  accountsElsewhere,
+  onAccounts,
+  onOpenSession,
+  onOpenMachine
+}: {
+  server: ServerConfig;
+  includeExited: boolean;
+  localVersion?: string;
+  onVersion: (serverId: string, version: string) => void;
+  accountsElsewhere: AccountElsewhere[];
+  onAccounts: (serverId: string, profiles: AccountProfile[]) => void;
+  onOpenSession: (sessionId: string) => void;
+  onOpenMachine: () => void;
+}): JSX.Element {
+  const updateServer = useServers((state) => state.updateServer);
+  const localServer = useServers((state) => state.servers.find((candidate) => candidate.isDefault));
+  const [snapshot, setSnapshot] = useMachineSnapshot(server, onVersion);
+  const [renaming, setRenaming] = useState(false);
+  const [machineName, setMachineName] = useState(server.customName ?? serverDisplayName(server));
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  // Depending on the resolved string rather than on three raw fields is what
+  // makes this effect's dependency list honest: `serverDisplayName` reads
+  // customName, systemName, name AND isDefault, so the old list was both
+  // incomplete and unable to satisfy the exhaustive-deps rule.
+  const resolvedMachineName = server.customName ?? serverDisplayName(server);
+  useEffect(() => {
+    if (!renaming) setMachineName(resolvedMachineName);
+  }, [renaming, resolvedMachineName]);
+
+
+  useEffect(() => { onAccounts(server.id, snapshot.profiles); }, [onAccounts, server.id, snapshot.profiles]);
 
   const unavailable = snapshot.reachability === 'unreachable';
-  const candidateSessions = snapshot.sessions.filter((session) => includeExited || !session.exited);
+  const mainSessions = mainFleetSessions(snapshot.sessions);
+  const candidateSessions = includeExited ? snapshot.sessions : mainSessions;
   const visibleSessions = sortFleetSessions(candidateSessions);
-  const activeCount = snapshot.sessions.filter((session) => !session.exited).length;
-  const reachabilityLabel = snapshot.reachability === 'reachable'
-    ? 'reachable'
-    : snapshot.reachability === 'unreachable'
-    ? 'unreachable'
-    : 'checking';
-  const profileSummary = snapshot.profiles.reduce<Record<'claude' | 'codex', string[]>>(
-    (summary, profile) => {
-      summary[profile.tool].push(profile.name);
-      return summary;
-    },
-    { claude: [], codex: [] }
-  );
-  const profileLabels = [
-    profileSummary.claude.length > 0 ? `Claude: ${profileSummary.claude.join(', ')}` : '',
-    profileSummary.codex.length > 0 ? `Codex: ${profileSummary.codex.join(', ')}` : ''
-  ].filter(Boolean);
+  const activeCount = mainSessions.length;
+	const reachabilityLabel = fleetReachabilityLabel(server, snapshot.reachability);
   const platform = platformFor(server, snapshot.health);
   const platformText = platformLabel(platform);
   const fullVersion = snapshot.health?.version;
@@ -444,7 +545,7 @@ function FleetServerGroup({
     server.isDefault ? 'is-local' : '',
     unavailable ? 'is-unreachable' : ''
   ].filter(Boolean).join(' ');
-  const displayMachineName = serverDisplayName(server, true);
+	const displayMachineName = serverDisplayName(server, true);
   const saveMachineName = async (): Promise<void> => {
     const name = machineName.trim().replace(/\s+/g, ' ').slice(0, 48);
     if (!name) {
@@ -463,7 +564,7 @@ function FleetServerGroup({
   return (
     <section className={cardClasses}>
       <header className="fleet-machine-header">
-        <span className={`fleet-platform-mark is-${platform}`} aria-hidden><PlatformIcon platform={platform} /></span>
+        <span className={`fleet-platform-mark is-${platform}`} aria-hidden><MachinePlatformIcon platform={platform} /></span>
         <div className="fleet-server-identity">
           <div className="fleet-machine-title">
             {renaming ? (
@@ -484,13 +585,12 @@ function FleetServerGroup({
           {renameError ? <span className="fleet-machine-rename-error">{renameError}</span> : null}
           <span className={`fleet-machine-status is-${snapshot.reachability}`}><span className={`fleet-reachability-dot is-${snapshot.reachability}`} aria-hidden />{reachabilityLabel}</span>
         </div>
-        <span className="fleet-machine-count"><strong>{activeCount} live</strong><span>{snapshot.sessions.length} total</span></span>
+        <FleetSessionCount snapshot={snapshot} mainCount={activeCount} />
       </header>
       <div className="fleet-machine-meta" title={`Connected at ${formatServerEndpoint(server)}${fullVersion ? ` · Sessions ${fullVersion}` : ''}`}>
-        <span>{platformText}</span>
+		<FleetTransportSummary server={server} platformText={platformText} />
         {snapshot.health?.system?.arch ? <span>{snapshot.health.system.arch}</span> : null}
         <span className="is-version">{version ? `Sessions ${version}` : 'Version unavailable'}</span>
-        {profileLabels.length > 0 ? <span title={profileLabels.join(' · ')}>{snapshot.profiles.length} {snapshot.profiles.length === 1 ? 'account' : 'accounts'}</span> : null}
       </div>
       {versionState ? (
         <div className={`fleet-version-notice is-${versionState.tone}`} title={versionState.fullDetail}>
@@ -499,39 +599,113 @@ function FleetServerGroup({
         </div>
       ) : null}
 
-      <div className="fleet-session-list">
-        {visibleSessions.map((session) => (
-          <FleetSessionRow
-            key={session.id}
-            session={session}
-            disabled={unavailable || session.exited}
-            onOpen={() => onOpenSession(session.id)}
-          />
-        ))}
-        {visibleSessions.length === 0 ? (
-          <div className="fleet-session-empty">
-            {snapshot.reachability === 'checking'
-              ? 'Checking machine…'
-              : unavailable
-              ? 'Session data unavailable'
-              : snapshot.sessionsError
-              ? snapshot.sessionsError
-              : snapshot.sessions.length > 0
-              ? 'No active sessions — enable Show history to see retained work'
-              : 'No sessions'}
-          </div>
-        ) : null}
-        {snapshot.sessions.length > 0 && snapshot.sessionsError ? (
-          <div className="fleet-session-error">Latest session refresh failed: {snapshot.sessionsError}</div>
-        ) : null}
-      </div>
-      {!unavailable ? (
+      {!unavailable && !server.directoryOnly && snapshot.sessionsLoaded ? (
+        <FleetMachineAccounts
+          serverId={server.id}
+          machineName={displayMachineName}
+          profiles={snapshot.profiles}
+          elsewhere={accountsElsewhere}
+          onOpenSession={onOpenSession}
+          onReload={(profiles) => setSnapshot((current) => ({ ...current, profiles }))}
+        />
+      ) : null}
+
+      <FleetSessionList
+        snapshot={snapshot} sessions={visibleSessions} includeExited={includeExited}
+        unavailable={unavailable} onOpenSession={onOpenSession}
+      />
+		{!unavailable && !server.directoryOnly ? (
         <button type="button" className="fleet-open-machine" onClick={onOpenMachine}>
-          Open all sessions on {displayMachineName} <span aria-hidden>→</span>
+          Open all sessions on {displayMachineName}{visibleSessions.length > (includeExited ? 20 : 6) ? ` · ${visibleSessions.length - (includeExited ? 20 : 6)} more` : ''} <span aria-hidden>→</span>
         </button>
       ) : null}
     </section>
   );
+}
+
+function FleetSessionList({ snapshot, sessions, includeExited, unavailable, onOpenSession }: {
+  snapshot: ServerSnapshot;
+  sessions: SessionInfo[];
+  includeExited: boolean;
+  unavailable: boolean;
+  onOpenSession: (sessionId: string) => void;
+}): JSX.Element {
+  return (
+    <div className="fleet-session-list">
+      {sessions.slice(0, includeExited ? 20 : 6).map((session) => (
+        <FleetSessionRow
+          key={session.id}
+          session={session}
+          disabled={unavailable || session.exited}
+          onOpen={() => onOpenSession(session.id)}
+        />
+      ))}
+      {sessions.length === 0 ? (
+        <div className="fleet-session-empty">
+          {!snapshot.sessionsLoaded && !snapshot.sessionsError && !unavailable
+            ? 'Loading sessions…'
+            : unavailable
+            ? 'Session data unavailable'
+            : snapshot.sessionsError
+            ? snapshot.sessionsError
+            : snapshot.sessions.length > 0
+            ? 'No main sessions connected. Saved and delegated work is available in Show all records.'
+            : 'No sessions'}
+        </div>
+      ) : null}
+      {/* Why this machine is unavailable, in its host's own words. Rendered in
+          the same slot as a failed session refresh so an explained failure and
+          an unexplained one look alike, and neither invents a live session. */}
+      {unavailable && snapshot.unavailableReason ? (
+        <div className="fleet-session-error">{snapshot.unavailableReason}</div>
+      ) : null}
+      {snapshot.sessions.length > 0 && snapshot.sessionsError ? (
+        <div className="fleet-session-error">Latest session refresh failed: {snapshot.sessionsError}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function FleetSessionCount({ snapshot, mainCount }: { snapshot: ServerSnapshot; mainCount: number }): JSX.Element {
+  return <span className="fleet-machine-count">
+    {snapshot.sessionsLoaded ? <>
+      <strong>{mainCount} main {mainCount === 1 ? 'session' : 'sessions'}</strong>
+      <span>{snapshot.sessions.length} saved records</span>
+    </> : <strong>{snapshot.sessionsError || snapshot.reachability === 'unreachable' ? 'Sessions unavailable' : 'Loading sessions…'}</strong>}
+  </span>;
+}
+
+function transportLabel(transport: 'lan' | 'tailnet' | 'tailnet-ip' | 'relay'): string {
+	if (transport === 'lan') return 'LAN';
+	if (transport === 'tailnet') return 'Tailscale HTTPS';
+	if (transport === 'tailnet-ip') return 'Tailscale IP';
+	return 'Relay';
+}
+
+function fleetReachabilityLabel(server: ServerConfig, reachability: Reachability): string {
+	if (server.directoryOnly) return 'needs access';
+	if (reachability === 'reachable') return 'reachable';
+	if (reachability === 'unreachable') return 'unreachable';
+	return 'checking';
+}
+
+function FleetTransportSummary({ server, platformText }: { server: ServerConfig; platformText: string }): JSX.Element {
+	const candidates = server.transportCandidates ?? serverTransportCandidates(server);
+	return <>
+		<span>{platformText}</span>
+		<span title={candidates.map((candidate) => `${transportLabel(candidate.transport)}: ${candidate.endpoint}`).join('\n')}>Routes: {candidates.length > 0 ? candidates.map((candidate) => transportLabel(candidate.transport)).join(', ') : 'none'}</span>
+		<span>Sources: {(server.sources ?? ['saved']).join(', ')}</span>
+		<span>Using: {server.directoryOnly ? 'none' : server.transport ? transportLabel(server.transport) : 'local'}</span>
+	</>;
+}
+
+function serverTransportCandidates(server: ServerConfig): NonNullable<ServerConfig['transportCandidates']> {
+	return [
+		{ endpoint: server.lanEndpoint ?? '', transport: 'lan' as const },
+		{ endpoint: server.tailnetEndpoint ?? '', transport: 'tailnet' as const },
+		{ endpoint: server.tailnetIpEndpoint ?? '', transport: 'tailnet-ip' as const },
+		{ endpoint: server.relayEndpoint ?? '', transport: 'relay' as const }
+	].filter((candidate) => candidate.endpoint !== '');
 }
 
 function machineVersionState(
@@ -582,7 +756,7 @@ function compareReleaseVersions(left: string, right: string): -1 | 0 | 1 | null 
   return 0;
 }
 
-type Platform = 'macos' | 'windows' | 'linux' | 'cloud' | 'server';
+type Platform = 'macos' | 'windows' | 'linux' | 'server';
 
 function platformFromReportedOS(value: string | undefined): Platform | null {
   const reported = value?.toLowerCase() ?? '';
@@ -612,22 +786,6 @@ function shortVersion(version: string | undefined): string {
   if (!version) return '';
   const match = version.trim().match(/^v?(\d+\.\d+\.\d+)/);
   return match ? match[1] : version;
-}
-
-function PlatformIcon({ platform }: { platform: Platform }): JSX.Element {
-  if (platform === 'macos') {
-    return <svg viewBox="0 0 384 512" role="img" aria-label="macOS"><path d="M279.6 258.9c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-72.6-19.7C34.4 131.2 0 170.9 0 252.9c0 24.3 4.4 49.4 13.3 75.8 11.9 34.7 54.7 119.8 99.4 118.4 23.4-.6 40-16.6 70.5-16.6 29.6 0 45 16.6 71.1 16.6 45.1-.6 83.8-78.2 95.1-112.9-60.4-28.5-57.3-73.7-69.8-75.3ZM256.4 94.7c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3Z" /></svg>;
-  }
-  if (platform === 'windows') {
-    return <svg viewBox="0 0 24 24" role="img" aria-label="Windows"><path d="m3 4.6 7.5-1v7.8H3V4.6Zm8.6-1.2L21 2v9.4h-9.4v-8ZM3 12.5h7.5v7.8l-7.5-1v-6.8Zm8.6 0H21V22l-9.4-1.4v-8.1Z" /></svg>;
-  }
-  if (platform === 'linux') {
-    return <svg viewBox="0 0 24 24" role="img" aria-label="Linux"><path d="M12 2c-3.1 0-5 2.8-5 6.8 0 1.4-.5 2.8-1.4 4.2-1.3 2-1.3 4.3-.2 5.8.8 1 2 1.1 3.3.4.9.6 2 1 3.3 1s2.4-.4 3.3-1c1.3.7 2.5.6 3.3-.4 1.2-1.5 1.1-3.8-.2-5.8-.9-1.4-1.4-2.8-1.4-4.2C17 4.8 15.1 2 12 2Zm-2 5.2c-.6 0-1-.6-1-1.3s.4-1.3 1-1.3 1 .6 1 1.3-.4 1.3-1 1.3Zm4 0c-.6 0-1-.6-1-1.3s.4-1.3 1-1.3 1 .6 1 1.3-.4 1.3-1 1.3Zm-2 4.2-2.2-1.6L12 8.6l2.2 1.2L12 11.4Z" /></svg>;
-  }
-  if (platform === 'cloud') {
-    return <svg viewBox="0 0 24 24" role="img" aria-label="Cloud"><path d="M7 19h10a5 5 0 0 0 .8-9.9A6.5 6.5 0 0 0 5.4 7.7 5.7 5.7 0 0 0 7 19Z" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg>;
-  }
-  return <svg viewBox="0 0 24 24" role="img" aria-label="Server"><path d="M4 4h16v6H4V4Zm0 10h16v6H4v-6Z" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M7 7h.01M7 17h.01" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" /></svg>;
 }
 
 function FleetSessionRow({
@@ -674,15 +832,18 @@ function FleetSessionRow({
 // is not re-derived here — only its display order.
 const FLEET_SORT_PRIORITY: Record<SessionStatusState, number> = {
   failed: 0,
-  'needs-you': 1,
-  reconnecting: 2,
-  limited: 3,
-  working: 4,
-  ready: 5,
-  unavailable: 6,
-  'not-started': 7,
-  finished: 8,
-  ended: 9
+  'provider-down': 0,
+  'auth-needed': 0,
+  'needs-recovery': 1,
+  'needs-you': 2,
+  reconnecting: 3,
+  limited: 4,
+  working: 5,
+  ready: 6,
+  unavailable: 7,
+  'not-started': 8,
+  finished: 9,
+  ended: 10
 };
 
 function sortFleetSessions(sessions: SessionInfo[]): SessionInfo[] {

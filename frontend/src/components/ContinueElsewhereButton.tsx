@@ -136,7 +136,7 @@ export function ContinueElsewhereButton({
             {complete ? (
               <div className="continue-elsewhere-complete">
                 <strong>Conversation moved to {machines.find((machine) => machine.alias === selected)?.name || selected}.</strong>
-                <p>The original history remains on {sourceLabel}. Sessions linked it to the new runtime <code>{complete.target_id?.slice(0, 8)}</code>.</p>
+                <p>The original history remains on {sourceLabel}. The new conversation is <code>{complete.target_id?.slice(0, 8)}</code>.</p>
                 {complete.warning ? <p className="dialog-warning">{complete.warning}</p> : null}
                 <button type="button" className="btn btn-primary" onClick={() => setOpen(false)}>Done</button>
               </div>

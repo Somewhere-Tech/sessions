@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -129,20 +128,20 @@ func TestStatusJSONFieldTableAgainstRealScratchSession(t *testing.T) {
 		t.Fatalf("decode status: %v\n%s", err, stdout.String())
 	}
 	t.Logf("status_json=%s", strings.TrimSpace(stdout.String()))
+	// status is the listing record plus what status adds, so its key set grows
+	// with the daemon's. These are the ones status itself owes the caller;
+	// TestStatusJSONCarriesEveryListingField covers the rest.
 	wantKeys := []string{
 		"age_ms", "created_at", "cwd", "description", "description_source", "git", "id",
-		"idle_detail", "idle_reason", "idle_since_ms", "kind", "last_activity_at", "last_summary",
-		"last_verdict", "lifecycle", "name", "permissions", "runner_protocol", "state", "tool",
+		"idle_detail", "idle_reason", "idle_since_ms", "last_activity_at", "last_summary",
+		"last_verdict", "lifecycle", "name", "permissions", "record", "runner_protocol", "state", "tool",
 	}
-	gotKeys := make([]string, 0, len(output))
-	for key := range output {
-		gotKeys = append(gotKeys, key)
+	for _, key := range wantKeys {
+		if _, present := output[key]; !present {
+			t.Fatalf("status is missing %q\n%s", key, stdout.String())
+		}
 	}
-	sort.Strings(gotKeys)
-	if !reflect.DeepEqual(gotKeys, wantKeys) {
-		t.Fatalf("status keys = %v, want %v\n%s", gotKeys, wantKeys, stdout.String())
-	}
-	if output["id"] != info.ID || output["name"] != "status scratch" || output["kind"] != "session" || output["state"] != "needs-you" || output["cwd"] != repo {
+	if output["id"] != info.ID || output["name"] != "status scratch" || output["record"] != "session" || output["state"] != "needs-you" || output["cwd"] != repo {
 		t.Fatalf("status identity/state = %#v", output)
 	}
 	if output["idle_reason"] != state.IdleReasonNeedsInput || output["idle_detail"] != "Approve the filesystem request?" || output["last_summary"] != "Implementation is ready for review." {
@@ -164,8 +163,13 @@ func TestStatusJSONFieldTableAgainstRealScratchSession(t *testing.T) {
 			t.Fatalf("%s = %q: %v", key, output[key], err)
 		}
 	}
+	keys := make([]string, 0, len(output))
+	for key := range output {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 	t.Logf("scratch session=%s field_table=%v git_branch=%s git_head=%s dirty_count=2 verdict=pass seq=1",
-		info.ID, gotKeys, git["branch"], git["head"])
+		info.ID, keys, git["branch"], git["head"])
 }
 
 func gitCommand(t *testing.T, directory string, args ...string) {
@@ -173,5 +177,76 @@ func gitCommand(t *testing.T, directory string, args ...string) {
 	command := exec.Command("git", append([]string{"-C", directory}, args...)...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+}
+
+// Reported from a Linux container with no git: `sessions status <id>` failed
+// outright with `inspect git in /: exec: "git": executable file not found in
+// $PATH`. Git facts decorate a status; a machine without git still has
+// sessions, and a read-only verb that refuses to answer because an optional
+// tool is missing has turned a missing nicety into a broken command.
+func TestStatusAnswersOnAMachineWithoutGit(t *testing.T) {
+	root := t.TempDir()
+	const id = "23000000-0000-4000-8000-00000000000c"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
+				"id": id, "name": "no git here", "cmd": "claude", "args": []string{},
+				"cwd": root, "createdAt": int64(1), "lastDataAt": int64(1), "tool": "claude-code",
+			}}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HOME", root)
+	// No PATH at all: this is the container, not a mocked lookup.
+	t.Setenv("PATH", "")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "status", id[:8]}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("status exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "no git here") {
+		t.Fatalf("status printed no session card: %q", stdout.String())
+	}
+	// The absence is stated rather than left as a bare dash.
+	if !strings.Contains(stdout.String(), "git      not installed") {
+		t.Fatalf("status did not say git is missing: %q", stdout.String())
+	}
+
+	// The JSON document is unchanged: git facts are simply absent, which is
+	// the shape a caller already handles for a directory that is not a repo.
+	stdout.Reset()
+	if code := run([]string{"--host", server.URL, "--json", "status", id[:8]}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("status --json exit=%d stderr=%q", code, stderr.String())
+	}
+	var document map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document["git"] != nil {
+		t.Fatalf("git facts = %#v, want none on a machine without git", document["git"])
+	}
+}
+
+// The read-only verbs that talk only to the daemon must not acquire a
+// dependency on a local binary by accident. This is a source check because the
+// cost of the regression is a verb that dies on a minimal host, which no
+// behavioural test of the working case would catch.
+func TestReadOnlyVerbsDoNotShellOut(t *testing.T) {
+	for _, file := range []string{"sessions.go", "lanes.go", "history.go", "search.go"} {
+		source, err := os.ReadFile(file)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(source, []byte("exec.Command")) {
+			t.Errorf("%s runs a subprocess; a listing verb must answer on a host with nothing installed", file)
+		}
 	}
 }

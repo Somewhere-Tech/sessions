@@ -10,6 +10,8 @@ docs/CLOUD_VM.md
 docs/CUTOVER.md
 docs/CUTOVER_AUDIT_
 docs/RUNBOOKS.md
+docs/reviews/2026-09-03-ui-friction.md
+docs/reviews/2026-09-03-ui-friction/
 ASSESSMENT.md
 AUDIT.md
 BACKFILL_NOTES.md
@@ -88,6 +90,8 @@ docs/CLOUD_VM.md
 docs/CUTOVER.md
 docs/CUTOVER_AUDIT_
 docs/RUNBOOKS.md
+docs/reviews/2026-09-03-ui-friction.md
+docs/reviews/2026-09-03-ui-friction/
 frontend/CONNECT_NOTES.md
 '
 
@@ -122,8 +126,18 @@ EOF
 scan git grep -n -i -E \
   '(^|[^[:alnum:]_])(t3([ -]?code)?|happier|sessions-tmux|spotify)([^[:alnum:]_]|$)' -- \
   ':!.gitignore' \
-  ':!scripts/check-public-tree.sh'
+  ':!scripts/check-public-tree.sh' \
+  ':!docs/NETWORK_SECURITY.md'
 external_design_refs="$scan_output"
+
+# NETWORK_SECURITY names T3 Code only to document the shipped fleet relay's
+# security boundary and the alternatives deliberately excluded from it. Keep
+# every other external product-design reference forbidden in that file, and
+# keep T3 forbidden everywhere else in the public tree.
+scan git grep -n -i -E \
+  '(^|[^[:alnum:]_])(happier|sessions-tmux|spotify)([^[:alnum:]_]|$)' -- \
+  docs/NETWORK_SECURITY.md
+external_design_refs="${external_design_refs}${scan_output}"
 
 # Historical identifiers remain inside the isolated runtime compatibility
 # fixture and the Go migration adapters so Sessions can recover work created

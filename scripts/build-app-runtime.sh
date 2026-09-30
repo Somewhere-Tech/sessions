@@ -32,7 +32,12 @@ done
 app_version="$(node -p "require('$repo_root/package.json').version")"
 source_commit="$(git -C "$repo_root" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
 exact_tag="$(git -C "$repo_root" describe --tags --exact-match HEAD 2>/dev/null || true)"
-if [[ "$exact_tag" == "v$app_version" ]]; then
+development_mode="${SESSIONS_RUNTIME_DEVELOPMENT:-0}"
+if [[ "$development_mode" != "0" && "$development_mode" != "1" ]]; then
+  echo "build-app-runtime: SESSIONS_RUNTIME_DEVELOPMENT must be 0 or 1" >&2
+  exit 2
+fi
+if [[ "$development_mode" == "0" && "$exact_tag" == "v$app_version" ]]; then
   runtime_build_version="$exact_tag"
 else
   runtime_build_version="v${app_version}-dev.g${source_commit}"
@@ -41,14 +46,14 @@ fi
 # immutable runtime identity is derived from the signed binary bytes below,
 # because Developer ID timestamps can change an artifact without changing its
 # source tree.
-source_state="$(git -C "$repo_root" status --porcelain=v1 --untracked-files=all -- runtime frontend src-tauri scripts/build-app-runtime.sh)"
+source_state="$(git -C "$repo_root" status --porcelain=v1 --untracked-files=all -- runtime frontend src-tauri scripts/build-app-runtime.sh scripts/runtime-info.plist.in)"
 if [[ -n "$source_state" ]]; then
   dirty_fingerprint="$({
-    git -C "$repo_root" diff --no-ext-diff --binary HEAD -- runtime frontend src-tauri scripts/build-app-runtime.sh
+    git -C "$repo_root" diff --no-ext-diff --binary HEAD -- runtime frontend src-tauri scripts/build-app-runtime.sh scripts/runtime-info.plist.in
     while IFS= read -r -d '' untracked_path; do
       printf 'untracked:%s\n' "$untracked_path"
       shasum -a 256 "$repo_root/$untracked_path"
-    done < <(git -C "$repo_root" ls-files --others --exclude-standard -z -- runtime frontend src-tauri scripts/build-app-runtime.sh)
+    done < <(git -C "$repo_root" ls-files --others --exclude-standard -z -- runtime frontend src-tauri scripts/build-app-runtime.sh scripts/runtime-info.plist.in)
   } | shasum -a 256 | awk '{print substr($1, 1, 12)}')"
   runtime_build_version="${runtime_build_version}-dirty-main.$dirty_fingerprint"
 fi
@@ -58,6 +63,15 @@ if [[ ! "$runtime_build_version" =~ ^[A-Za-z0-9._-]+$ ]]; then
 fi
 
 signing_identity="${SESSIONS_SIGN_IDENTITY:-}"
+signing_mode="${SESSIONS_RUNTIME_SIGN_MODE:-developer-id}"
+timestamp_arguments=(--timestamp)
+if [[ "$signing_mode" == "adhoc" ]]; then
+  signing_identity="-"
+  timestamp_arguments=(--timestamp=none)
+elif [[ "$signing_mode" != "developer-id" ]]; then
+  echo "build-app-runtime: SESSIONS_RUNTIME_SIGN_MODE must be developer-id or adhoc" >&2
+  exit 2
+fi
 if [[ -z "$signing_identity" && -r "$HOME/.config/sessions/sign-identity" ]]; then
   signing_identity="$(head -n1 "$HOME/.config/sessions/sign-identity")"
 fi
@@ -123,24 +137,29 @@ build_one() {
   local binary_name="$1"
   local build_tags="$2"
   local output="$build_staging/$binary_name"
+  local info_plist="$build_staging/$binary_name-Info.plist"
+  local bundle_identifier="tech.somewhere.sessions.runtime.$binary_name"
+  sed -e "s|@EXECUTABLE@|$binary_name|g" -e "s|@BUNDLE_IDENTIFIER@|$bundle_identifier|g" \
+    "$repo_root/scripts/runtime-info.plist.in" >"$info_plist"
+  local binary_ldflags="$ldflags/$binary_name -linkmode=external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,$info_plist"
   echo "> Sessions runtime: building $binary_name ($runtime_build_version)"
   if [[ -n "$build_tags" ]]; then
     (
       cd "$go_root"
-      CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 GOFLAGS=-buildvcs=false \
-        go build -trimpath -tags "$build_tags" -ldflags "$ldflags/$binary_name" \
+      CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 GOFLAGS=-buildvcs=false \
+        go build -trimpath -tags "$build_tags" -ldflags "$binary_ldflags" \
         -o "$output" "./cmd/$binary_name"
     )
   else
     (
       cd "$go_root"
-      CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 GOFLAGS=-buildvcs=false \
-        go build -trimpath -ldflags "$ldflags/$binary_name" \
+      CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 GOFLAGS=-buildvcs=false \
+        go build -trimpath -ldflags "$binary_ldflags" \
         -o "$output" "./cmd/$binary_name"
     )
   fi
-  codesign --force --timestamp --options runtime \
-    --identifier "tech.somewhere.sessions.runtime.$binary_name" \
+  codesign --force "${timestamp_arguments[@]}" --options runtime \
+    --identifier "$bundle_identifier" \
     --sign "$signing_identity" "$output"
   codesign --verify --strict "$output"
 }
@@ -210,4 +229,4 @@ verify_installed_binary sessionsd "$sessionsd_sha"
 verify_installed_binary sessions-runner "$runner_sha"
 restore_runtime=0
 
-echo "> Sessions runtime: signed binaries ready in $runtime_dir"
+echo "> Sessions runtime: $signing_mode binaries ready in $runtime_dir"

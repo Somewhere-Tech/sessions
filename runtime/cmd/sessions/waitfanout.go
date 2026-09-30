@@ -111,11 +111,22 @@ func (a *app) runWaitJoin(refs []waitTargetRef, idle, timeout time.Duration, inc
 		}
 	}
 	start := a.now()
+	deadline := start.Add(timeout)
+	restart := waitRestart{app: a}
+	attempted := false
+poll:
 	for {
+		if attempted && !a.now().Before(deadline) {
+			return timeoutWaitJoin(trackers, timeout)
+		}
+		attempted = true
 		var sessions []session
 		if needSessions {
 			listed, err := a.listSessions(false)
 			if err != nil {
+				if restart.pause(err, deadline) {
+					continue
+				}
 				return nil, nil, err
 			}
 			sessions = listed
@@ -128,6 +139,9 @@ func (a *app) runWaitJoin(refs []waitTargetRef, idle, timeout time.Duration, inc
 			if tracker.ref.lane {
 				outcome, human, err := a.probeLaneWait(tracker.ref, includeSummary)
 				if err != nil {
+					if restart.pause(err, deadline) {
+						continue poll
+					}
 					return nil, nil, err
 				}
 				if outcome != nil {
@@ -148,32 +162,30 @@ func (a *app) runWaitJoin(refs []waitTargetRef, idle, timeout time.Duration, inc
 				return []waitOutcome{*tracker.outcome}, []string{joinLine(tracker)}, nil
 			}
 		}
+		restart.reset()
 		if pending == 0 {
-			return collectWaitJoin(trackers)
-		}
-		if a.now().Sub(start) >= timeout {
-			for _, tracker := range trackers {
-				if tracker.outcome != nil {
-					continue
-				}
-				kind := waitKindSession
-				if tracker.ref.lane {
-					kind = waitKindLane
-				}
-				tracker.outcome = &waitOutcome{
-					OK:      false,
-					Kind:    kind,
-					Reason:  waitReasonTimeout,
-					Session: tracker.ref.id,
-					Working: tracker.last.working,
-					IdleMS:  tracker.last.idleMS,
-				}
-				tracker.human = fmt.Sprintf("timeout after %dms", timeout.Milliseconds())
-			}
 			return collectWaitJoin(trackers)
 		}
 		a.sleep(waitPollInterval(idle))
 	}
+}
+
+func timeoutWaitJoin(trackers []*waitTracker, timeout time.Duration) ([]waitOutcome, []string, error) {
+	for _, tracker := range trackers {
+		if tracker.outcome != nil {
+			continue
+		}
+		kind := waitKindSession
+		if tracker.ref.lane {
+			kind = waitKindLane
+		}
+		tracker.outcome = &waitOutcome{
+			OK: false, Kind: kind, Reason: waitReasonTimeout, Session: tracker.ref.id,
+			Working: tracker.last.working, IdleMS: tracker.last.idleMS,
+		}
+		tracker.human = fmt.Sprintf("timeout after %dms", timeout.Milliseconds())
+	}
+	return collectWaitJoin(trackers)
 }
 
 func collectWaitJoin(trackers []*waitTracker) ([]waitOutcome, []string, error) {

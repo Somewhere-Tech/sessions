@@ -1,6 +1,5 @@
 // Package proto implements the binary protocol spoken between sessionsd and a
-// per-session runner. The TypeScript implementation in
-// runtime/testdata/node-runtime/src/runnerProtocol.ts preserves the original wire-format authority.
+// per-session runner. CONTRACT/runner-protocol.md is the wire-format authority.
 package proto
 
 import (
@@ -24,7 +23,7 @@ const (
 	// ProtocolVersion is the current daemon/runner wire revision. Version zero
 	// means the legacy HELLO omitted protocolVersion; it remains supported while
 	// immutable pre-1 runners are still alive.
-	ProtocolVersion          = 2
+	ProtocolVersion          = 5
 	MinimumCompatibleVersion = 0
 	MaximumCompatibleVersion = ProtocolVersion
 )
@@ -50,6 +49,14 @@ const (
 	ReplayReq   Type = 0x13
 	Kill        Type = 0x14
 	ModelReq    Type = 0x15
+	// Approve answers an approval a structured runner announced with an
+	// approval_requested event. Protocol v3.
+	Approve Type = 0x16
+	// RetryReq and RetryStop control the retained failed turn in a Rich runner.
+	// Protocol v4. RetryRes acknowledges both controls.
+	RetryReq   Type = 0x17
+	RetryStop  Type = 0x18
+	MessageReq Type = 0x19 // capability-gated semantic message, not terminal bytes
 
 	Hello       Type = 0x20
 	Output      Type = 0x21
@@ -60,6 +67,12 @@ const (
 	// event as JSON. Unknown frames remain safely ignored by older daemons.
 	Structured Type = 0x25
 	ModelRes   Type = 0x26
+	// RetryState publishes the runner-owned automatic retry schedule. A nil
+	// retry clears only the schedule; provider fault state is cleared by a
+	// successful provider turn.
+	RetryState Type = 0x27
+	RetryRes   Type = 0x28
+	MessageRes Type = 0x29
 )
 
 var (

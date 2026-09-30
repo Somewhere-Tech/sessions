@@ -40,6 +40,10 @@ const (
 	CodexEmptyDir       CodexResolveReason = "empty-dir"
 	CodexNoCWDMatch     CodexResolveReason = "no-cwd-match"
 	CodexNoAfterSpawn   CodexResolveReason = "no-after-spawn"
+	// CodexUnclaimed is the strict-window answer when nothing identifies a
+	// rollout as this session's: no thread id, no first message to match,
+	// and no single rollout that started alongside the session.
+	CodexUnclaimed CodexResolveReason = "unclaimed"
 )
 
 // CodexResolution identifies the rollout to follow.
@@ -59,6 +63,18 @@ type CodexResolveOptions struct {
 	SessionsDir   string
 	Now           time.Time
 	ExpectedInput string
+	inputMatcher  func(string, string) bool
+	// ConversationID is the provider thread id Sessions recorded for the
+	// session, when it has one. It identifies the rollout exactly.
+	ConversationID string
+	// StrictStart turns off guessing. A live watcher may follow the newest
+	// rollout in a folder because it will confirm the match against the
+	// first input moments later; a history lookup has no second chance, and
+	// on a shared folder the nearest rollout is usually someone else's
+	// conversation. With StrictStart set, a session with no thread id and no
+	// first message claims a rollout only when exactly one started within
+	// StrictStart of the session, and the full-scan fallback is skipped.
+	StrictStart time.Duration
 }
 
 type rolloutCandidate struct {
@@ -221,7 +237,9 @@ func readCodexFirstLine(path string) (string, error) {
 	}
 	defer file.Close()
 
-	reader := bufio.NewReaderSize(io.LimitReader(file, codexFirstLineBytes), codexFirstLineBytes)
+	// Start small; ReadString still assembles a complete line up to the same
+	// limit. Reserving the whole limit for every metadata scan causes churn.
+	reader := bufio.NewReader(io.LimitReader(file, codexFirstLineBytes))
 	line, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
@@ -281,27 +299,44 @@ func normalizedCodexInput(value string) string {
 }
 
 func rolloutHasCodexUserInput(path, expected string) bool {
+	matched, _ := readCodexUserInput(path, expected)
+	return matched
+}
+
+func readCodexUserInput(path, expected string) (bool, error) {
 	expected = normalizedCodexInput(expected)
 	if expected == "" {
-		return false
+		return false, nil
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(io.LimitReader(file, codexReadByteLimit))
 	scanner.Buffer(make([]byte, 64*1024), codexReadByteLimit)
 	for scanner.Scan() {
-		var record map[string]any
-		if json.Unmarshal(scanner.Bytes(), &record) != nil || record["type"] != "response_item" {
+		// Candidate files can contain megabytes of tool output. Decode only the
+		// message envelope instead of allocating maps and strings for every tool
+		// result on every resolver poll. Content stays permissive for mixed blocks.
+		var record struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Type    string          `json:"type"`
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &record) != nil || record.Type != "response_item" {
 			continue
 		}
-		payload, ok := record["payload"].(map[string]any)
-		if !ok || payload["type"] != "message" || payload["role"] != "user" {
+		if record.Payload.Type != "message" || record.Payload.Role != "user" {
 			continue
 		}
-		content, _ := payload["content"].([]any)
+		var content []any
+		if json.Unmarshal(record.Payload.Content, &content) != nil {
+			continue
+		}
 		var text strings.Builder
 		for _, raw := range content {
 			block, _ := raw.(map[string]any)
@@ -312,19 +347,22 @@ func rolloutHasCodexUserInput(path, expected string) bool {
 			text.WriteString(value)
 		}
 		if normalizedCodexInput(text.String()) == expected {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, scanner.Err()
 }
 
-func resolveCodexInputMatch(matches []rolloutCandidate, expected string) (CodexResolution, bool) {
+func resolveCodexInputMatch(matches []rolloutCandidate, expected string, match func(string, string) bool) (CodexResolution, bool) {
+	if match == nil {
+		match = rolloutHasCodexUserInput
+	}
 	if normalizedCodexInput(expected) == "" {
 		return CodexResolution{}, false
 	}
 	matched := make([]rolloutCandidate, 0, 1)
 	for _, candidate := range matches {
-		if rolloutHasCodexUserInput(candidate.path, expected) {
+		if match(candidate.path, expected) {
 			matched = append(matched, candidate)
 		}
 	}
@@ -392,6 +430,11 @@ func ResolveCodexRolloutPath(options CodexResolveOptions) CodexResolution {
 	if resumed, ok := resolveResumedCodex(root, options.Args); ok {
 		return resumed
 	}
+	if id := strings.TrimSpace(options.ConversationID); id != "" && codexResumeIDPattern.MatchString(id) {
+		if resolved, ok := resolveResumedCodex(root, []string{"resume", id}); ok {
+			return resolved
+		}
+	}
 	targetCWD := normalizeCWD(options.CWD)
 
 	now := options.Now
@@ -426,8 +469,14 @@ func ResolveCodexRolloutPath(options CodexResolveOptions) CodexResolution {
 	}
 
 	if len(matches) > 0 {
-		if resolution, handled := resolveCodexInputMatch(matches, options.ExpectedInput); handled {
+		if resolution, handled := resolveCodexInputMatch(matches, options.ExpectedInput, options.inputMatcher); handled {
 			return resolution
+		}
+		if options.StrictStart > 0 {
+			if len(matches) == 1 && !matches[0].meta.timestamp.After(options.CreatedAt.Add(options.StrictStart)) {
+				return CodexResolution{Path: matches[0].path, Reason: CodexFreshMatch}
+			}
+			return CodexResolution{Reason: CodexUnclaimed, AmbiguousCount: ambiguousCount(len(matches))}
 		}
 		sort.Slice(matches, func(i, j int) bool {
 			if !matches[i].meta.timestamp.Equal(matches[j].meta.timestamp) {
@@ -450,6 +499,9 @@ func ResolveCodexRolloutPath(options CodexResolveOptions) CodexResolution {
 	if sawCWDMatch {
 		return CodexResolution{Reason: CodexNoAfterSpawn}
 	}
+	if options.StrictStart > 0 {
+		return CodexResolution{Reason: CodexUnclaimed}
+	}
 
 	fullScan := make([]rolloutCandidate, 0)
 	for _, file := range listRolloutsRecursive(root) {
@@ -461,7 +513,7 @@ func ResolveCodexRolloutPath(options CodexResolveOptions) CodexResolution {
 	if len(fullScan) == 0 {
 		return CodexResolution{Reason: CodexNoCWDMatch}
 	}
-	if resolution, handled := resolveCodexInputMatch(fullScan, options.ExpectedInput); handled {
+	if resolution, handled := resolveCodexInputMatch(fullScan, options.ExpectedInput, options.inputMatcher); handled {
 		return resolution
 	}
 	sort.Slice(fullScan, func(i, j int) bool {

@@ -1,8 +1,7 @@
 # daemon to runner protocol
 
-This contract was implemented by `runtime/testdata/node-runtime/src/runnerProtocol.ts`,
-`runtime/testdata/node-runtime/src/runner.ts`, `runtime/testdata/node-runtime/src/runnerClient.ts`, and the daemon-side
-registration logic in `runtime/testdata/node-runtime/src/sessions.ts`.
+This contract is implemented by `runtime/internal/proto`, the runner, and the
+daemon-side registration logic.
 
 ## Transport and socket ownership
 
@@ -55,6 +54,10 @@ both current receivers for forward compatibility.
 | daemon -> runner | REPLAY_REQ | `0x13` | 4-byte BE `afterSeq` |
 | daemon -> runner | KILL | `0x14` | empty |
 | daemon -> runner | MODEL_REQ | `0x15` | JSON `{"model":string,"effort":string}` |
+| daemon -> runner | APPROVE | `0x16` | approval decision JSON |
+| daemon -> runner | RETRY_REQ | `0x17` | empty |
+| daemon -> runner | RETRY_STOP | `0x18` | empty |
+| daemon -> runner | MESSAGE_REQ | `0x19` | semantic message JSON, capability-gated |
 | runner -> daemon | HELLO | `0x20` | JSON `RunnerHello` |
 | runner -> daemon | OUTPUT | `0x21` | 4-byte BE `seq`, then UTF-8 chunk |
 | runner -> daemon | EXIT | `0x22` | JSON `{"code":number|null,"signal":string|null,"seq":number}` |
@@ -62,6 +65,9 @@ both current receivers for forward compatibility.
 | runner -> daemon | REPLAY_DONE | `0x24` | empty |
 | runner -> daemon | STRUCTURED | `0x25` | one normalized provider event as JSON |
 | runner -> daemon | MODEL_RES | `0x26` | `{}` or JSON `{"error":string}` |
+| runner -> daemon | RETRY_STATE | `0x27` | JSON `{"retry":object|null}` |
+| runner -> daemon | RETRY_RES | `0x28` | `{}` or JSON `{"error":string}` |
+| runner -> daemon | MESSAGE_RES | `0x29` | correlated message outcome JSON |
 
 ## Runner to daemon frames
 
@@ -80,7 +86,7 @@ Sent immediately on every accepted socket connection:
   "createdAt":1750000000123,
   "pid":43210,
   "currentSeq":42,
-  "protocolVersion":2,
+  "protocolVersion":5,
   "runtimeVersion":"0.2.3"
 }
 ```
@@ -90,11 +96,15 @@ Fields and types are exact:
 - `id`, `cmd`, and `cwd`: strings
 - `args`: string array; this is the configured/original argument array
 - `cols`, `rows`, `createdAt`, `pid`, and `currentSeq`: numbers
-- `protocolVersion`: optional number for compatibility; current runners send 2
+- `protocolVersion`: optional number for compatibility; current runners send 5
 - `runtimeVersion`: optional Sessions release string; legacy runners omit it
+- `retry`: optional live Rich-turn schedule with numeric `attempt`, `max`, and
+  `nextAt`, plus string `kind`; omitted when no automatic retry is pending
+- `turn`: protocol-5 Rich runners send `{"working":true|false}` with the exact
+  current provider-turn state; terminal runners and older Rich runners omit it
 
-Current protocol version is 2. The daemon treats a missing version as 0 and
-accepts versions 0 through 2. It rejects an explicitly unsupported version
+Current protocol version is 5. The daemon treats a missing version as 0 and
+accepts versions 0 through 5. It rejects an explicitly unsupported version
 immediately after HELLO, before replay, input, resize, snapshot, or kill frames.
 This preserves immutable pre-versioned runners without guessing that unknown
 future frame semantics are safe. `createdAt` is the current runner process's
@@ -102,6 +112,12 @@ start time from its metadata object, so it resets on a runner respawn.
 `cols`/`rows` are the live PTY object's current values;
 `currentSeq` is the in-memory log's latest sequence after disk restoration and
 any non-persisted restore notices.
+
+The `turn` value is sampled under the Rich runner's turn mutex for every new
+connection. A replacement daemon uses it ahead of replay-derived lifecycle
+state, so a bounded or not-yet-populated replay cannot make active work look
+finished. Protocols 0 through 4 remain compatible: when `turn` is absent, the
+daemon derives the best available state from structured lifecycle history.
 
 The daemon's `RunnerClient.connect()` requires HELLO within 2,000 ms by default.
 It resolves the connection Promise on HELLO but also exposes HELLO as an event.
@@ -152,12 +168,20 @@ arrival order. An unsolicited response emits a `snapshot` event. Disconnect
 resolves every outstanding waiter with the empty string.
 
 The current HTTP/WS snapshot API normally serializes the daemon-side mirror
-instead; this runner frame remains part of the interop protocol.
+instead; this runner frame remains part of the stable protocol.
 
 ### REPLAY_DONE (`0x24`)
 
 Empty payload. Terminates the OUTPUT sequence generated for one REPLAY_REQ.
 There is no request identifier, so replay requests are expected to be ordered.
+
+Structured-provider replay is a recent in-memory window, not a complete
+transcript. Current runners and daemons retain at most 1,200 events and target
+4 MiB of event payloads per window. The newest individual event is kept whole
+even if larger than that byte target; frame/scanner limits bound that event.
+Eviction advances the daemon's absolute event cursor without deleting history
+from disk. Restoring the runner window reads a bounded tail (the byte target
+plus one scanner-sized record), rather than loading the complete history file.
 
 ### MODEL_RES (`0x26`)
 
@@ -167,12 +191,68 @@ durable metadata. `{"error":"..."}` rejects the change; the daemon leaves its
 exposed model and arguments unchanged. A disconnect or five-second timeout also
 fails the request rather than guessing that it succeeded.
 
+### RETRY_STATE (`0x27`)
+
+Protocol-4 Rich runners publish `{"retry":{"attempt":1,"max":5,
+"nextAt":1788465600000,"kind":"provider-unavailable"}}` when they schedule or
+start a retained failed turn. `{"retry":null}` clears only the schedule; the
+provider fault remains until a successful turn. The current value is also in
+HELLO so a daemon restart cannot lose runner-owned retry state.
+
+### RETRY_RES (`0x28`)
+
+Protocol-4 Rich runners send exactly one response to RETRY_REQ and RETRY_STOP.
+`{}` confirms the control; `{"error":"..."}` explains why it was refused. A
+disconnect or five-second timeout fails the request.
+
 ## Daemon to runner frames
+
+### Semantic messages (additive protocol-5 capability)
+
+Structured runners advertise `messageSubmit:true` in HELLO. Only then may a
+daemon send MESSAGE_REQ with `operation_id`, `text`, and optional `mode` (`auto`
+or `steer`). Text is a single message, including embedded carriage returns;
+it is not processed by the terminal composer. MESSAGE_RES echoes the operation
+id and reports `accepted`, `boundary`, and an optional `error`.
+
+`boundary:"runner"` means the runner accepted a new turn, not that the provider
+has answered. `boundary:"provider"` means Codex acknowledged active-turn
+steering. A failed provider transport can return `boundary:"unknown"`: callers
+must not automatically resend. `accepted:false` without that boundary is a
+known refusal. The daemon records intent before this request and its outcome
+afterward. If disconnected before acknowledgment, delivery remains unknown.
+
+The runner decides and commits before it answers, so MESSAGE_RES may arrive
+after its requesting caller is gone. A daemon must not treat that frame as
+unsolicited: it keeps the acknowledgment against its operation id — bounded, and
+only for operations nobody is waiting on — so a later status read can resolve
+that unknown. Only `accepted:true` with a boundary resolves it; a late refusal
+stays unknown, because a refusal discovered after the fact is not an instruction
+to send the message again.
+
+This is entirely daemon-side and adds no capability: no frame, field, or HELLO
+flag changes, and a runner is never asked to remember or replay anything. The
+retained answer belongs to the daemon's live connection object for that runner,
+so replacing the connection — reconnect, adoption, wake — or restarting the
+daemon discards it. What is lost is only the chance to settle a receipt that is
+still unknown: a receipt already resolved from this evidence is durable and
+stays accepted. A runner that never answers leaves the receipt unknown too.
+
+`steer` requires an active Codex turn; it never silently starts a new turn.
+Claude rejects active-turn messages explicitly. Missing capability uses the
+legacy input path for ordinary sends; explicit steering is refused without
+writing input. The version remains 5: older daemons ignore the additive HELLO
+field and use INPUT; newer daemons never send MESSAGE_REQ to an old runner.
 
 ### INPUT (`0x10`)
 
 Payload bytes are decoded as UTF-8 and passed to `pty.write` when the PTY has not
 exited. After exit they are ignored. No acknowledgement is sent at this layer.
+The daemon and CLI frame legacy provider composer submissions as one bracketed
+paste followed by Enter. An INPUT socket write is not proof that the terminal
+application received the complete message. Legacy provider acceptance requires
+a fresh complete user-history match; no protocol upgrade or runner replacement
+is needed to transmit the paste envelope through existing INPUT frames.
 
 ### MODEL_REQ (`0x15`)
 
@@ -185,6 +265,19 @@ HELLO; a Codex runner also updates its app-server conversation defaults, while
 a Claude runner applies the arguments to its next `claude -p` turn. Protocol
 0/1 and terminal runners never receive model requests. Ordinary terminal input
 behavior is unchanged.
+
+### APPROVE (`0x16`)
+
+Protocol-3 Rich runners accept one approval decision object for the pending
+provider request. The structured history stream publishes the resolved result;
+there is no separate response frame.
+
+### RETRY_REQ (`0x17`) and RETRY_STOP (`0x18`)
+
+Protocol-4 Rich runners retain the exact input from their latest failed turn.
+RETRY_REQ runs the pending attempt now, or starts a fresh manual attempt after
+automatic retries exhausted. RETRY_STOP cancels only a live automatic schedule.
+Both are acknowledged with RETRY_RES. PTY runners never accept these controls.
 
 ### RESIZE (`0x11`)
 
@@ -227,7 +320,7 @@ delayed cleanup path; KILL does not directly close the socket or send an ack.
 For both a newly created runner and startup discovery, sessionsd:
 
 1. connects to the Unix socket and waits up to two seconds for HELLO;
-2. accepts protocol versions 0 through 2 and rejects values outside that range;
+2. accepts protocol versions 0 through 5 and rejects values outside that range;
 3. creates a local 4 MiB EventLog and 5,000-row xterm mirror sized from HELLO;
 4. installs OUTPUT/EXIT/disconnect listeners;
 5. sends REPLAY_REQ with `afterSeq=0`;

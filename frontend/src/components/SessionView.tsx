@@ -1,26 +1,43 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTerminal } from '../hooks/useTerminal';
 import { useSessionSidebar } from '../hooks/useSessionSidebar';
-import { RemoteView } from './RemoteView';
+import type { ProviderFaultView } from './RemoteView';
+import type { SessionInfo } from '../types';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import { useSessions } from '../store/sessions';
-import { fetchOnboardingState, fetchServerHistoryTranscript, wsMuxUrl } from '../api/sessionsd';
+import { approveSession, fetchServerHistoryTranscript, submitMessage as submitAttributedMessage, wsMuxUrl } from '../api/sessionsd';
 import { classifySnapshotComposerState } from '../lib/detectMultiChoice';
 import { requestSnapshot } from '../lib/wsMux';
 import { SessionDetails } from './SessionDetails';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import { getActiveServer, serverDisplayName } from '../lib/servers';
 import { resolvedSessionLabel } from '../lib/tabLabels';
-import { SessionHistoryView } from './SessionHistoryView';
-import { classifySession } from '../lib/sessionStatus';
+import { AccountBadge } from './AccountBadge';
+import { SessionLastMessage } from './SessionLastMessage';
+import { SessionArchiveButton } from './SessionArchiveButton';
+import { ClaudeRuntimeControl } from './ClaudeRuntimeControl';
+import { RestartConversation, reviewConversationRestart } from './RestartConversation';
+import { observedSessionModel } from '../lib/sessionModelLabel';
+const SessionHistoryView = lazy(() => import('./SessionHistoryView').then((module) => ({ default: module.SessionHistoryView })));
+// The conversation pane is the heaviest thing this view renders, and nothing
+// draws it before a session is opened — the navigator paints first. Behind a
+// lazy boundary it stops being entry weight for a person who has not opened one
+// yet. Its type comes through a type-only import, which is erased.
+const RemoteView = lazy(() => import('./RemoteView').then((module) => ({ default: module.RemoteView })));
+// Both render only while something is wrong, so neither belongs on the entry path.
+const ProviderFaultCard = lazy(() => import('./ProviderFaultCard').then((module) => ({ default: module.ProviderFaultCard })));
+const StartReceiptNote = lazy(() => import('./StartReceiptNote').then((module) => ({ default: module.StartReceiptNote })));
+import { classifySession, lostSessionNote } from '../lib/sessionStatus';
 import { sessionMode, sessionModeName, sessionModeShort } from '../lib/sessionMode';
 import { SessionPopOutButton } from './SessionPopOutButton';
 import { MachineMark } from './MachineMark';
-import { readInitialSessionView, writeSessionView, type SessionViewMode } from '../lib/sessionViewPreference';
+import { effectiveSessionView, readInitialSessionView, writeSessionView, type SessionViewMode } from '../lib/sessionViewPreference';
 import { LoadingShell } from './LoadingShell';
 import { ConversationForkButton } from './ConversationForkButton';
-import { agentLedDescendants } from '../lib/workingSet';
+import { agentLedDescendants, isAgentLedChild } from '../lib/workingSet';
+import { handBackMessage } from '../lib/handBack';
 import { SubagentsPanel } from './SubagentsPanel';
+import { SessionTitleRename } from './SessionTitleRename';
 
 import type { ActiveStatus } from '../lib/activeStatus';
 
@@ -35,7 +52,10 @@ interface Props {
     session: import('../types').SessionInfo,
     destinationProvider?: 'claude' | 'codex',
     runtimeMode?: 'rich' | 'terminal'
-  ) => void;
+  ) => void | Promise<void>;
+  // TODO(lane AQ, PaidStartPlan): replace this callback bridge with
+  // AQ's shared confirmation component once that component lands.
+  onContinueConversation?: (session: import('../types').SessionInfo) => void;
   onFork?: (
     session: import('../types').SessionInfo,
     destinationProvider: 'claude' | 'codex',
@@ -46,6 +66,8 @@ interface Props {
   onReparent?: (sessionId: string, parentId: string | null) => Promise<void>;
   onBack?: () => void;
   preferFullTerminal?: boolean;
+  /** Opens Accounts, the safe next step when the provider rejects the login. */
+  onOpenAccounts?: () => void;
 }
 
 // View modes:
@@ -66,18 +88,107 @@ const TERMINAL_NOTICE_ACK_PREFIX = 'sessions:terminal-notice-ack:';
 // even when the user has several Terminal sessions open.
 let terminalNoticeShownThisLaunch = false;
 
-// Owns useTerminal for the active session and exposes a Terminal /
-// Sessions layout. The terminal stream stays the source of truth — its
-// xterm instance stays mounted across mode toggles so the raw terminal
-// is always one click away.
-//
-// memo()'d: all 36 SessionViews stay mounted, and App re-renders every 3s
-// (session poll). Without memo, that parent re-render re-renders every
-// child; with it (plus stable session refs from reconcileSessions), an
-// unchanged session's view skips the poll entirely. Props are all stable
-// per session (sessionId; onStatusChange is setActiveStatus for the active
-// tab and undefined otherwise; isActive flips only on switch).
-function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onFork, onCloseView, onOpenSession, onReparent, onBack, preferFullTerminal = false }: Props): JSX.Element {
+function SessionStreamStatus({ notice, status, lostConversation }: {
+  notice: string | null; status: string; lostConversation: boolean;
+}): JSX.Element | null {
+  const message = lostConversation
+    ? 'Runner gone · conversation saved'
+    : notice ?? (status !== 'open'
+      ? status === 'connecting' || status === 'reconnecting' ? 'Live updates reconnecting…' : 'Live updates unavailable'
+      : null);
+  return message ? <span className="session-stream-status" role="status">{message}</span> : null;
+}
+
+function providerFaultFor(session: SessionInfo | null, onConnectAccount?: () => void): ProviderFaultView | undefined {
+  return session?.failureKind
+    ? {
+      kind: session.failureKind, detail: session.failureDetail,
+      evidence: session.failureEvidence, retry: session.retry, onConnectAccount
+    }
+    : undefined;
+}
+
+// Above the terminal the fault is one line, because the terminal is the thing
+// the card would otherwise offer to open. The full card belongs to the
+// conversation view, where the person cannot see the provider's own screen.
+function TerminalProviderFault({ session, onOpenTerminal, onConnectAccount }: { session: SessionInfo; onOpenTerminal: () => void; onConnectAccount?: () => void }): JSX.Element | null {
+  if (!session.failureKind) return null;
+  return (
+    <div className="terminal-provider-fault">
+      <Suspense fallback={null}>
+        <ProviderFaultCard
+          sessionId={session.id} failureKind={session.failureKind} detail={session.failureDetail}
+          evidence={session.failureEvidence} retry={session.retry} rich={false}
+          placement="banner" onOpenTerminal={onOpenTerminal} onConnectAccount={onConnectAccount}
+        />
+      </Suspense>
+    </div>
+  );
+}
+
+// What the header says about the session itself: the last thing said, and —
+// when the runner is gone — why it is gone and what to do about it.
+function SessionHeaderNotes({ session, onOpenAccounts }: { session: SessionInfo; onOpenAccounts?: () => void }): JSX.Element {
+  const lost = lostSessionNote(session);
+  const startPhase = session.start?.phase;
+  return (
+    <>
+      <SessionLastMessage session={session} />
+      {lost ? <span className="session-last-message is-fault" role="status">{lost}</span> : null}
+      {startPhase && startPhase !== 'working' && startPhase !== 'completed' ? (
+        <Suspense fallback={null}><StartReceiptNote session={session} onOpenAccounts={onOpenAccounts} /></Suspense>
+      ) : null}
+    </>
+  );
+}
+
+// The conversation pane, with the boundary its lazily loaded contents need.
+function ConversationPane({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <div className="session-remote-pane">
+      <Suspense fallback={<LoadingShell label="Loading this conversation" />}>{children}</Suspense>
+    </div>
+  );
+}
+
+// The keys a phone has no room for. Same input path as the terminal itself.
+function MobileTerminalKeys({ onSend }: { onSend: (data: string) => void }): JSX.Element {
+  return (
+    <div className="mobile-terminal-keys" role="toolbar" aria-label="Terminal keys">
+      <button type="button" onClick={() => onSend('\x1b')}>Esc</button>
+      <button type="button" onClick={() => onSend('\x1b\x1b')}>↶ Earlier</button>
+      <button type="button" onClick={() => onSend('\x1b[A')}>↑ Prev</button>
+      <button type="button" onClick={() => onSend('\x1b[B')}>↓ Next</button>
+      <button type="button" onClick={() => onSend('\x03')}>Ctrl-C</button>
+    </div>
+  );
+}
+
+// Report delegated work back to its manager before navigating there.
+function useHandBack(session: SessionInfo | null, onOpenSession?: (id: string) => void): {
+  handingBack: boolean;
+  handBackToManager: (managerId: string) => Promise<void>;
+} {
+  const [handingBack, setHandingBack] = useState(false);
+  // The breakout loop: a lane opened from its manager reports back into the
+  // manager's conversation and returns the person there.
+  const handBackToManager = async (managerId: string): Promise<void> => {
+    if (!session) return;
+    setHandingBack(true);
+    try {
+      await submitAttributedMessage(managerId, handBackMessage(session), undefined, session.id);
+      onOpenSession?.(managerId);
+    } finally {
+      setHandingBack(false);
+    }
+  };
+  return { handingBack, handBackToManager };
+}
+
+// Own the conversation/terminal view while keeping unchanged session tabs
+// memoized across daemon polls. Structured submits do not depend on a healthy
+// display stream; the daemon's acknowledged control determines their outcome.
+function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResume, onContinueConversation, onFork, onCloseView, onOpenSession, onReparent, onBack, preferFullTerminal = false, onOpenAccounts }: Props): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>(() => readInitialSessionView(sessionId));
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [forkMode, setForkMode] = useState(false);
@@ -86,6 +197,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   const sessionViewRef = useRef<HTMLDivElement>(null);
   const terminalModePillRef = useRef<HTMLSpanElement>(null);
   const session = useSessions((s) => s.sessions.find((x) => x.id === sessionId)) ?? null;
+  const { handingBack, handBackToManager } = useHandBack(session, onOpenSession);
   const allSessions = useSessions((s) => s.sessions);
   const endSession = useSessions((s) => s.kill);
   const updateName = useSessions((s) => s.updateName);
@@ -95,30 +207,27 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     [allSessions, session]
   );
   const workingSubagents = subagents.filter((candidate) => !candidate.exited && candidate.working).length;
-
   // Claude and Codex both expose structured conversation history. Codex TUI
   // rollouts use the normalized event adapter; codex-app-server sessions add
   // live deltas, plans, commands, file diffs, reasoning summaries, and usage.
   // Raw shell sessions remain terminal-only.
   const supportsConversation = !session || session.tool === 'claude-code' || session.tool === 'codex';
-  const effectiveView: ViewMode = supportsConversation
-    ? viewMode
-    : 'terminal';
+  const lostConversation = Boolean(session?.runnerGone && supportsConversation);
+  const richSession = Boolean(session && sessionMode(session) === 'rich');
+  const effectiveView: ViewMode = effectiveSessionView(viewMode, supportsConversation, richSession || lostConversation);
   const displayParentID = session?.displayParentSessionId !== undefined
     ? session.displayParentSessionId
     : session?.parentSessionId;
   const parent = displayParentID ? allSessions.find((item) => item.id === displayParentID) : null;
   const provider = normalizeProvider(session?.tool);
-  const richSession = Boolean(session && sessionMode(session) === 'rich');
   const workspaceName = session?.cwd.split('/').filter(Boolean).pop() || 'Workspace';
   const terminalBackedAgent = Boolean(
     session
     && session.tool !== 'terminal'
     && !richSession
+    && !lostConversation
   );
-  // Claude's Conversation view is sourced from its canonical JSONL, not its
-  // screen. Only the Codex PTY compatibility adapter needs the one-time
-  // warning about incomplete terminal interpretation.
+  // Only Codex PTY needs the one-time incomplete-interpretation warning.
   const terminalCompatibilityAgent = Boolean(
     session
     && session.tool === 'codex'
@@ -131,6 +240,10 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     && !preferFullTerminal
     && !richSession
   );
+  // The terminal pane is on screen either as the drawer under the conversation
+  // or as the whole view. Either way the person can see the provider, so the
+  // fault is a line above it rather than a card offering to open it.
+  const terminalOnScreen = terminalDrawerOpen || (effectiveView === 'terminal' && !richSession);
   const terminalWarningKey = session ? `sessions:terminal-runtime-warning:${session.tool}` : '';
   const terminalNoticeAckKey = `${TERMINAL_NOTICE_ACK_PREFIX}${sessionId}`;
   const [terminalWarningDismissed, setTerminalWarningDismissed] = useState(() => {
@@ -149,7 +262,6 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     }
   });
   const [terminalNoticeOpen, setTerminalNoticeOpen] = useState(false);
-
   // Sticky "have we ever needed xterm for this session?" Once true,
   // stays true so toggling Sessions↔Terminal doesn't tear down xterm.
   // Starts true if Terminal is the persisted view; otherwise false
@@ -312,43 +424,9 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   }, [term.loadEarlierClaudeEventsRef]);
 
   const continueInTerminal = useCallback(async (enableRemoteControl: boolean): Promise<void> => {
-    if (!session || !onResume) {
-      throw new Error('Open Sessions in the main window to continue this chat in Terminal.');
-    }
-    if (!richSession || session.tool !== 'claude-code') {
-      throw new Error('This action is available for Rich Claude sessions.');
-    }
-    if (session.working) {
-      throw new Error('Claude is still working. Wait for this turn to finish; your draft will stay in the composer.');
-    }
-    if (enableRemoteControl) {
-      // Remote Control is a machine-level consent boundary, not a per-session
-      // switch: the resumed Terminal session gets it only because this machine
-      // already opted in (Settings → Claude), and the daemon refuses to start
-      // one otherwise (runtime/internal/session/claude_defaults.go). Check
-      // before the ledgered termination — ending the Rich runtime first would
-      // spend an irreversible action on a request that cannot be honored, and
-      // leave the user with neither the session nor Remote Control.
-      const onboarding = await fetchOnboardingState();
-      if (onboarding.supported !== false && onboarding.remoteControl !== 'enabled') {
-        throw new Error(
-          'This machine keeps Claude sessions local, so nothing was changed and this session is still running. '
-          + 'Turn Remote Control on in Settings → Claude first, then continue in Terminal.'
-        );
-      }
-    }
-    await endSession(
-      session.id,
-      enableRemoteControl
-        ? 'Continuing the same Claude conversation in Terminal with Remote Control.'
-        : 'Continuing the same Claude conversation in Terminal for slash commands.'
-    );
-    // No Remote Control argument: the resumed session inherits this machine's
-    // Settings choice, which the check above has already confirmed. Passing a
-    // per-resume flag here would be ignored — ResumeDialog deliberately has no
-    // such input — and would misrepresent where the decision is made.
-    onResume(session, 'claude', 'terminal');
-  }, [endSession, onResume, richSession, session]);
+    if (!session || !onOpenSession) throw new Error('Open the main Sessions window to restart this conversation.');
+    reviewConversationRestart({ session, onOpen: onOpenSession, initialRemoteControl: enableRemoteControl, initialRuntimeMode: 'terminal' });
+  }, [onOpenSession, session]);
 
   const forkFromVisibleMessage = useCallback(async (
     message: { role: 'user' | 'assistant'; content: string; createdAt: number },
@@ -414,7 +492,10 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           snap
           && classifySnapshotComposerState(snap.text).kind !== 'normal-composer'
         );
-        if (present && !lastPickerSeenRef.current) {
+        // A control the conversation view can answer itself (the daemon
+        // reports needs-input and the card shows the choices) does not need
+        // the terminal drawer, which would cover that card.
+        if (present && !lastPickerSeenRef.current && session?.idleReason !== 'needs-input') {
           lastPickerSeenRef.current = true;
           setViewMode('terminal');
           // Tell the user their InputBar draft is safe — RemoteView is
@@ -430,7 +511,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     void tick();
     const id = window.setInterval(() => { void tick(); }, 2000);
     return () => { alive = false; window.clearInterval(id); };
-  }, [sessionId, session?.tool, isActive, effectiveView, terminalBackedAgent]);
+  }, [sessionId, session?.tool, isActive, effectiveView, terminalBackedAgent, session?.idleReason]);
 
   // Auto-clear the picker notice after 4s.
   useEffect(() => {
@@ -462,10 +543,25 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
       <header className="session-active-header">
         {onBack ? <button type="button" className="mobile-session-back" onClick={onBack} aria-label="Back to sessions">‹</button> : null}
         <div className="session-active-copy">
-          {parent ? <span className="session-parent-breadcrumb">{resolvedSessionLabel(parent)} <span>/</span> {session?.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}</span> : null}
+          {parent ? (
+            onOpenSession ? (
+              <button type="button" className="session-parent-breadcrumb" onClick={() => onOpenSession(parent.id)} title={`Back to ${resolvedSessionLabel(parent)}`}>
+                ‹ {resolvedSessionLabel(parent)} <span>/</span> {session && isAgentLedChild(session) ? 'lane' : session?.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}
+              </button>
+            ) : (
+              <span className="session-parent-breadcrumb">{resolvedSessionLabel(parent)} <span>/</span> {session?.displayParentSessionId !== undefined ? 'grouped session' : 'child session'}</span>
+            )
+          ) : null}
           <div className="session-active-title-row">
-            <h1>{session ? resolvedSessionLabel(session) : 'Session'}</h1>
+            {session ? (
+              <SessionTitleRename
+                label={resolvedSessionLabel(session)}
+                onRename={(name) => updateName(session.id, name)}
+              />
+            ) : <h1>Session</h1>}
             <span className={`session-live-pill${statusTone}`}>{statusLabel}</span>
+            {session ? <AccountBadge session={session} className="is-session-head" /> : null}
+            {session ? <SessionHeaderNotes session={session} onOpenAccounts={onOpenAccounts} /> : null}
             {session ? (
               <span className="session-runtime-anchor">
                 <span
@@ -526,13 +622,30 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
                 return next;
               })}
             >
-              <span>Subagents</span>
+              <span>Lanes</span>
               <strong>{subagents.length}</strong>
               {workingSubagents ? <small>· {workingSubagents} working</small> : null}
               <span aria-hidden>›</span>
             </button>
           ) : null}
+          {session && parent && isAgentLedChild(session) && !session.exited && onOpenSession ? (
+            <button
+              type="button"
+              className="btn btn-ghost session-handback-action"
+              disabled={handingBack}
+              title={`Post this lane's latest result into ${resolvedSessionLabel(parent)} and go back to it`}
+              onClick={() => void handBackToManager(parent.id)}
+            >
+              {handingBack ? 'Handing back…' : 'Hand back'}
+            </button>
+          ) : null}
           {session ? <SessionPopOutButton sessionId={session.id} label={resolvedSessionLabel(session)} /> : null}
+          {session ? (
+            <SessionArchiveButton
+              session={session}
+              onArchived={(id) => onCloseView?.(id)}
+            />
+          ) : null}
           {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(sessionId)} title="Close this tab. The agent keeps running and remains in Live.">Close tab</button> : null}
         </div>
       </header>
@@ -542,7 +655,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           {supportsConversation ? (
             <button type="button" className="view-toggle-btn is-active" onClick={() => setViewMode('remote')} title="Structured conversation, activity, plans, and usage">Conversation</button>
           ) : null}
-          <button
+          {!richSession && <button
             type="button"
             className={`view-toggle-btn terminal-drawer-toggle${effectiveView === 'terminal' ? ' is-active' : ''}`}
             onClick={() => {
@@ -556,13 +669,16 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             }}
             aria-expanded={terminalDrawerOpen}
             aria-controls={`terminal-pane-${sessionId}`}
-            disabled={richSession}
-            title={richSession ? 'Rich sessions do not have a terminal stream' : supportsConversation ? 'Show the exact provider terminal' : 'Terminal'}
+            disabled={lostConversation}
+            title={lostConversation ? 'The runner is gone; resume the saved conversation to open a new terminal' : supportsConversation ? 'Show the exact provider terminal' : 'Terminal'}
           >
-            {richSession ? 'No terminal' : effectiveView === 'terminal' && supportsConversation ? 'Hide terminal' : 'Terminal'}
-          </button>
+            {lostConversation ? 'Terminal unavailable' : effectiveView === 'terminal' && supportsConversation ? 'Hide terminal' : 'Terminal'}
+          </button>}
         </div>
-        {term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Live updates reconnecting…' : 'Live updates unavailable'}</span> : null}
+        {session && onOpenSession && !lostConversation ? <RestartConversation session={session} onOpen={onOpenSession} /> : null}
+        {richSession && session?.tool === 'claude-code' && onResume && !lostConversation ?
+          <ClaudeRuntimeControl working={session.working} onContinue={continueInTerminal} /> : null}
+        <SessionStreamStatus notice={term.streamNotice} status={term.status} lostConversation={lostConversation} />
         {supportsConversation && onFork ? (
           <ConversationForkButton
             active={forkMode}
@@ -633,24 +749,11 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               </div>
             </header>
           ) : null}
-          {richSession ? (
-            <div className="rich-terminal-empty">
-              <span>Rich session</span>
-              <h2>No terminal for this Rich session</h2>
-              <p>Sessions is connected through the provider’s structured interface, which makes messages, plans, tool activity, diffs, and Stop more reliable.</p>
-              <p>A Terminal compatibility session would be a separate runtime. Its screen-read status and history can be incomplete or delayed.</p>
-              <small>To switch safely, end this runtime, choose Resume conversation, then select Terminal. Sessions will keep the same provider conversation and preserve this runtime in history.</small>
-            </div>
-          ) : (
+          {session ? <TerminalProviderFault session={session} onOpenTerminal={focusTerminal} onConnectAccount={onOpenAccounts} /> : null}
+          {!richSession && (
             <>
               <div className="terminal-host" ref={term.containerRef} />
-              <div className="mobile-terminal-keys" role="toolbar" aria-label="Terminal keys">
-                <button type="button" onClick={() => sendInput('\x1b')}>Esc</button>
-                <button type="button" onClick={() => sendInput('\x1b\x1b')}>↶ Earlier</button>
-                <button type="button" onClick={() => sendInput('\x1b[A')}>↑ Prev</button>
-                <button type="button" onClick={() => sendInput('\x1b[B')}>↓ Next</button>
-                <button type="button" onClick={() => sendInput('\x03')}>Ctrl-C</button>
-              </div>
+              <MobileTerminalKeys onSend={sendInput} />
               <ScrollToBottomButton
                 visible={!term.terminalAtBottom}
                 onClick={scrollTerminalToBottom}
@@ -658,13 +761,14 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             </>
           )}
         </div>
-        <div className="session-remote-pane">
+        <ConversationPane>
           <RemoteView
-            sessionId={sessionId}
+            sessionId={sessionId} draftMachineId={getActiveServer().id}
             events={term.claudeEvents}
             historyPending={term.historyPending}
             sendConfirmed={sendConfirmedInput}
             submitMessage={submitMessage}
+            steerMessage={session?.tool === 'codex' && session.messageSubmit ? (data) => submitAttributedMessage(sessionId, data, getActiveServer().id, undefined, 'steer') : undefined}
             connected={term.status === 'open'}
             sendAvailable={sendAvailable}
             hasEarlierClaudeEvents={term.hasEarlierClaudeEvents}
@@ -675,7 +779,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             onOpenTerminal={() => setViewMode('terminal')}
             terminalAvailable={!richSession}
             provider={session?.tool ?? 'claude-code'}
-            model={session?.model}
+            model={observedSessionModel(session?.model, term.claudeEvents)}
             effort={session?.effort}
             modelControlSupported={Boolean(richSession && (session?.runnerProtocol ?? 0) >= 2)}
             onConfigureModel={session ? (model, effort) => updateModel(session.id, model, effort) : undefined}
@@ -686,8 +790,17 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             onForkFromMessage={onFork ? forkFromVisibleMessage : undefined}
             forkMode={forkMode}
             onExitForkMode={() => setForkMode(false)}
+            needsInputDetail={session?.idleReason === 'needs-input'
+              ? (session.idleDetail || 'The provider is waiting for a choice.')
+              : null}
+            sendRawInput={richSession ? undefined : sendInput}
+            pendingApproval={session?.pendingApproval ?? null}
+            onApprove={session ? (decision) => approveSession(session.id, decision) : undefined}
+            providerFault={terminalOnScreen ? undefined : providerFaultFor(session, onOpenAccounts)}
+            lostConversation={lostConversation && session ? { providerName: session.tool === 'codex' ? 'Codex' : 'Claude', onResume: onContinueConversation ? () => onContinueConversation(session) : undefined, onClose: () => endSession(session.id, 'Closed after Sessions confirmed the runner was gone.') } : undefined}
+            statusLabel={statusLabel}
           />
-        </div>
+        </ConversationPane>
         <div className="session-details-pane">
           {session ? <SessionDetails session={session} allSessions={allSessions} onEnd={endSession} onResume={onResume} /> : null}
         </div>
@@ -704,6 +817,10 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             }}
             onMakeMain={(childId) => onReparent(childId, null)}
             onEnd={endSession}
+            onApprove={(lane, decision) => approveSession(lane.id, decision)}
+            onHandBack={async (lane) => {
+              await submitAttributedMessage(session.id, handBackMessage(lane), undefined, lane.id);
+            }}
           />
         </div>
       ) : null}
@@ -718,15 +835,17 @@ function SessionViewRouter(props: Props): JSX.Element {
   // this on every parent render, and the deps below already name the only
   // values the effect reads.
   const { onStatusChange } = props;
+  const savedTool = session?.tool;
+  const savedOnly = Boolean(session && (session.exited || session.runnerGone || session.unreachableReason === 'restart-restore-pending'));
   useEffect(() => {
-    if (!session?.exited || !onStatusChange) return;
+    if (!savedOnly || !onStatusChange) return;
     onStatusChange({
       isWorking: false,
-      parserIcon: session.tool === 'claude-code' ? '🟠' : session.tool === 'codex' ? '🟢' : '⬛',
-      parserName: session.tool === 'claude-code' ? 'Claude' : session.tool === 'codex' ? 'Codex' : 'Terminal',
+      parserIcon: savedTool === 'claude-code' ? '🟠' : savedTool === 'codex' ? '🟢' : '⬛',
+      parserName: savedTool === 'claude-code' ? 'Claude' : savedTool === 'codex' ? 'Codex' : 'Terminal',
       terminalStatus: 'closed'
     });
-  }, [onStatusChange, session?.exited, session?.tool]);
+  }, [onStatusChange, savedOnly, savedTool]);
   if (!session && !hydrated) return <LoadingShell label="Loading this session" />;
   if (!session) {
     return (
@@ -738,7 +857,13 @@ function SessionViewRouter(props: Props): JSX.Element {
       </div>
     );
   }
-  if (session.exited) return <SessionHistoryView session={session} onResume={props.onResume} onFork={props.onFork} onCloseView={props.onCloseView} onOpenSession={props.onOpenSession} onBack={props.onBack} />;
+  if (savedOnly) {
+    return (
+      <Suspense fallback={null}>
+        <SessionHistoryView session={session} onResume={props.onResume} onFork={props.onFork} onCloseView={props.onCloseView} onOpenSession={props.onOpenSession} onBack={props.onBack} />
+      </Suspense>
+    );
+  }
   return <SessionViewInner {...props} />;
 }
 

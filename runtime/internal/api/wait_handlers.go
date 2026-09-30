@@ -38,7 +38,7 @@ func (s *Server) handleWaitRoute(response http.ResponseWriter, request *http.Req
 	s.sendJSON(response, http.StatusOK, map[string]any{
 		"session": info.ID,
 		"cwd":     info.Cwd,
-		"working": info.Working,
+		"working": info.Working || info.Retry != nil,
 		"source":  source,
 	}, corsOrigin)
 	return true

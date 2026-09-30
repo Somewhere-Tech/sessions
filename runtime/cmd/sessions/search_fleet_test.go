@@ -46,6 +46,7 @@ func fleetSearchApp(t *testing.T, localURL string, args ...string) (*app, *bytes
 	// The fleet fan-out is the default path; --host only supplies the local
 	// endpoint the test daemon listens on.
 	application.explicitTarget = false
+	application.direct = true
 	return application, stdout, stderr
 }
 

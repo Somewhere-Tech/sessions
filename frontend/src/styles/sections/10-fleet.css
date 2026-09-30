@@ -1,4 +1,27 @@
 /* Fleet view — one independently-polled group per configured sessionsd. */
+.local-network-guide {
+  box-sizing: border-box;
+  max-width: 1120px;
+  margin: 0 auto 20px;
+  padding: clamp(16px, 3vw, 24px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-elev-1);
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.local-network-guide h2 { margin: 0 0 8px; font-size: 18px; line-height: 1.3; }
+.local-network-guide p { margin: 8px 0; max-width: 70ch; }
+.local-network-guide ol { padding-left: 24px; margin: 16px 0; }
+.local-network-guide li { padding: 3px 0 3px 4px; }
+.local-network-guide-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.local-network-guide-actions button { min-height: 44px; white-space: normal; }
+.local-network-guide details { margin-top: 12px; color: var(--fg-dim); }
+.local-network-guide summary { cursor: pointer; }
+.local-network-guide.is-resolved { color: var(--accent); }
+
 .fleet-view {
   box-sizing: border-box;
   height: 100%;
@@ -6,6 +29,17 @@
   overflow-y: auto;
   padding: 22px clamp(14px, 4vw, 48px) 48px;
   background: var(--bg-base);
+}
+
+.fleet-permission-banner {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-elev-1));
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.45;
 }
 .fleet-view-heading {
   display: flex;
@@ -148,7 +182,6 @@
 .fleet-platform-mark.is-macos { color: var(--fg); }
 .fleet-platform-mark.is-windows { color: #60a5fa; }
 .fleet-platform-mark.is-linux { color: #fbbf24; }
-.fleet-platform-mark.is-cloud { color: #a78bfa; background: rgba(129, 92, 246, .07); }
 .fleet-reachability-dot {
   flex: 0 0 auto;
   width: 8px;
@@ -196,7 +229,6 @@
 .fleet-machine-rename button { height: 27px; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-elev-2); color: var(--fg-dim); font-size: 12px; cursor: pointer; }
 .fleet-machine-rename button[type="submit"] { border-color: var(--accent-border-soft); color: var(--accent); }
 .fleet-machine-rename-error { display: block; margin-top: 3px; color: var(--danger) !important; font-size: 12px !important; }
-.fleet-machine-badge { flex: 0 0 auto; padding: 2px 6px; border: 1px solid var(--accent-border-soft); border-radius: 999px; background: var(--accent-bg-soft); color: var(--accent) !important; font-size: 12px !important; font-weight: 650; }
 .fleet-machine-status { display: inline-flex !important; align-items: center; gap: 7px; margin-top: 4px; }
 .fleet-machine-status.is-reachable { color: var(--ok); }
 .fleet-machine-status.is-unreachable { color: var(--danger); font-weight: 600; }
@@ -213,15 +245,12 @@
 .fleet-version-notice.is-older strong { color: #f59e0b; }
 .fleet-version-notice.is-newer { background: color-mix(in srgb, var(--accent) 9%, var(--bg-elev-1)); }
 .fleet-version-notice.is-newer strong { color: var(--accent); }
-.fleet-machine-profiles { padding: 7px 15px; border-bottom: 1px solid var(--border); color: var(--accent); font-size: 12px; }
-.fleet-cloud-machine { border-style: dashed; background: var(--bg-elev-1); }
-.fleet-cloud-machine.is-placeholder { opacity: .5; filter: grayscale(.86); box-shadow: none; }
-.fleet-cloud-machine.is-placeholder .fleet-platform-mark.is-cloud { color: var(--fg-dim); background: var(--bg-base); }
-.fleet-cloud-machine-body { display: grid; gap: 12px; padding: 15px; }
-.fleet-cloud-machine-body p { margin: 0; color: var(--fg-dim); font-size: 12px; line-height: 1.55; }
-.fleet-cloud-machine-body > div { display: flex; flex-wrap: wrap; gap: 5px; }
-.fleet-cloud-machine-body > div span { padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-base); color: var(--fg-dim); font-size: 12px; }
-.fleet-cloud-machine-body .btn { width: fit-content; }
+/* The accounts this computer has, and the ones another computer has first;
+   the meta row above already styles a wrapping strip of pills. */
+.fleet-account { display: inline-flex; align-items: center; gap: 5px; }
+.fleet-account.is-missing { background: none; border: 1px dashed var(--border); }
+.fleet-account .btn { padding: 0 5px; font-size: 12px; }
+.fleet-machine-accounts .accounts-signing-in { flex: 1 0 100%; }
 .fleet-session-list { transition: opacity 120ms ease, filter 120ms ease; }
 .fleet-session-row {
   display: grid;
@@ -290,7 +319,9 @@
 .fleet-session-state.is-reconnecting .fleet-session-state-dot { animation: pulse 1.2s ease-in-out infinite; }
 .fleet-session-state.is-needs-you { color: var(--warn); }
 .fleet-session-state.is-limited { color: var(--warn); }
-.fleet-session-state.is-failed { color: var(--danger); }
+.fleet-session-state.is-failed,
+.fleet-session-state.is-provider-down { color: var(--danger); }
+.fleet-session-state.is-auth-needed { color: var(--warn); }
 .fleet-session-state.is-finished,
 .fleet-session-state.is-ended,
 .fleet-session-state.is-unavailable { color: var(--fg-dim); }
@@ -308,4 +339,15 @@
 @media (max-width: 760px) {
   .fleet-view-heading { align-items: flex-start; flex-direction: column; gap: 12px; }
   .fleet-heading-actions { width: 100%; justify-content: space-between; }
+}
+.fleet-refresh-notice {
+  flex: 0 0 auto;
+  margin: 4px 12px;
+  padding: 6px 10px;
+  max-height: 120px;
+  overflow: auto;
+  border: 1px solid var(--border, #444);
+  border-radius: 8px;
+  background: var(--bg, #181818);
+  font-size: 13px;
 }

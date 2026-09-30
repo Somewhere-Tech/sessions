@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 	"github.com/somewhere-tech/sessions/runtime/internal/migrate"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
@@ -35,21 +36,7 @@ func (a *app) cmdMove(args []string) error {
 	if len(args) != 0 {
 		return fail(1, "unknown move option %s", args[0])
 	}
-	if hasMachine {
-		machine, err := loadSavedMachine(a.home, machineRef)
-		if err != nil {
-			return err
-		}
-		token, err = tokenstore.ReadSecret(savedMachineTokenPath(a.home, machine.MachineID))
-		if err != nil {
-			return fail(2, "read saved credential for %q: %s", machine.Alias, err)
-		}
-		if token == "" {
-			return fail(2, "saved credential for %q is empty; forget and reconnect this machine", machine.Alias)
-		}
-		target = machine.Endpoint
-	}
-	client, err := migrate.NewClient(target, token)
+	client, target, err := a.moveTargetClient(target, token, machineRef, hasMachine)
 	if err != nil {
 		return fail(1, "%s", err)
 	}
@@ -57,7 +44,7 @@ func (a *app) cmdMove(args []string) error {
 	if err != nil {
 		return err
 	}
-	if a.explicitTarget && !a.api.localToken {
+	if a.explicitTarget && (!a.api.localToken || a.api.pathPrefix != "") {
 		return a.moveRemoteSource(context.Background(), id, client, dryRun, allowDirty, terminal)
 	}
 	sessions, err := a.listSessions(true)
@@ -120,11 +107,11 @@ func (a *app) cmdMove(args []string) error {
 	}
 	received, err := client.Receive(ctx, request)
 	if err != nil {
-		return fail(2, "%s", err)
+		return fail(2, "%s", localnetwork.Explain(target, err))
 	}
 	created, err := client.Create(ctx, request)
 	if err != nil {
-		return fail(2, "conversation received but target resume failed: %s", err)
+		return fail(2, "conversation received but target resume failed: %s", localnetwork.Explain(target, err))
 	}
 	result.TargetID = created.Session.ID
 	result.Receive = received
@@ -165,6 +152,39 @@ func (a *app) cmdMove(args []string) error {
 	return err
 }
 
+func (a *app) moveTargetClient(target, token, machineRef string, saved bool) (*migrate.Client, string, error) {
+	if !saved {
+		client, err := migrate.NewClient(target, token)
+		return client, target, err
+	}
+	machine, err := loadSavedMachine(a.home, machineRef)
+	if err != nil {
+		return nil, "", err
+	}
+	if !a.direct {
+		client, err := migrate.NewRelayClient(daemonOrigin(a.api), machine.Endpoint, machine.MachineID)
+		return client, machine.Endpoint, err
+	}
+	token, err = tokenstore.ReadSecret(savedMachineTokenPath(a.home, machine.MachineID))
+	if err != nil {
+		return nil, "", fail(2, "read saved credential for %q: %s", machine.Alias, err)
+	}
+	if token == "" {
+		return nil, "", fail(2, "saved credential for %q is empty; forget and reconnect this machine", machine.Alias)
+	}
+	client, err := migrate.NewClient(machine.Endpoint, token)
+	return client, machine.Endpoint, err
+}
+
+func daemonOrigin(client *apiClient) string {
+	target, err := client.target("")
+	if err != nil {
+		return ""
+	}
+	target.Path, target.RawPath, target.RawQuery = "", "", ""
+	return strings.TrimSuffix(target.String(), "/")
+}
+
 func (a *app) moveRemoteSource(
 	ctx context.Context,
 	id string,
@@ -194,11 +214,11 @@ func (a *app) moveRemoteSource(
 	}
 	received, err := client.Receive(ctx, exported.Request)
 	if err != nil {
-		return fail(2, "%s", err)
+		return fail(2, "%s", localnetwork.Explain(client.Endpoint(), err))
 	}
 	created, err := client.Create(ctx, exported.Request)
 	if err != nil {
-		return fail(2, "conversation received but target resume failed: %s", err)
+		return fail(2, "conversation received but target resume failed: %s", localnetwork.Explain(client.Endpoint(), err))
 	}
 	result.TargetID = created.Session.ID
 	result.Receive = received
@@ -254,6 +274,9 @@ func writeMovePlan(a *app, result migrate.MoveResult) error {
 }
 
 func localEndpoint(a *app) string {
+	if a.api.relayEndpoint != "" {
+		return a.api.relayEndpoint
+	}
 	target, err := a.api.target("")
 	if err != nil {
 		return ""

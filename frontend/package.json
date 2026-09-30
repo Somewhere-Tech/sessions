@@ -1,7 +1,7 @@
 {
   "name": "sessions-frontend",
   "private": true,
-  "version": "0.2.26",
+  "version": "0.2.27",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -19,14 +19,18 @@
     "test:search-conversations": "node scripts/search-conversation-smoke.mjs",
     "test:terminal-renderer": "node scripts/terminal-renderer-smoke.mjs",
     "test:terminal-viewport": "node scripts/terminal-viewport-smoke.mjs",
+    "test:android-mobile": "node scripts/android-mobile-smoke.mjs",
     "test:external-links": "node scripts/external-links-smoke.mjs",
     "test:lifecycle-clarity": "node scripts/lifecycle-clarity-smoke.mjs",
+    "test:launcher-layout": "node scripts/launcher-layout-smoke.mjs",
     "test:workspace-ux": "node scripts/workspace-ux-smoke.mjs",
     "test:session-status": "node scripts/session-status-smoke.mjs",
+    "test:local-network": "node scripts/local-network-guide-smoke.mjs",
     "test:title-clarity": "node scripts/title-clarity-smoke.mjs",
     "test:surface-truth": "node scripts/surface-truth-smoke.mjs",
     "test:search-rollup": "node scripts/search-rollup-smoke.mjs",
     "test:conversation-browser": "node scripts/conversation-browser-smoke.mjs",
+    "test:restart-conversation": "node scripts/restart-conversation-smoke.mjs",
     "test:resume-partial": "node scripts/resume-partial-smoke.mjs",
     "test:shared-contracts": "node scripts/shared-contracts-smoke.mjs",
     "test:working-set": "node scripts/working-set-smoke.mjs",
@@ -38,7 +42,10 @@
     "test:startup-recovery": "node scripts/startup-recovery-smoke.mjs",
     "test:fork-conversation": "node scripts/fork-conversation-smoke.mjs",
     "test:onboarding-consent": "node scripts/onboarding-consent-smoke.mjs",
+    "test:provider-fault": "node scripts/provider-fault-smoke.mjs",
     "test:webapp": "node scripts/webapp-smoke.mjs",
+    "test:account-login": "node scripts/account-login-smoke.mjs",
+    "test:account-usage": "node scripts/account-usage-smoke.mjs",
     "test:capability": "node scripts/run-capability.mjs",
     "test:smoke": "node scripts/run-smoke.mjs"
   },
@@ -48,7 +55,6 @@
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
-    "@xterm/addon-canvas": "^0.7.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/addon-webgl": "^0.18.0",
@@ -80,10 +86,10 @@
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.66.0",
     "vite": "^8.2.1",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "ip-address": "10.4.0",
-    "js-yaml": "4.3.1"
+    "js-yaml": "4.3.2"
   }
 }

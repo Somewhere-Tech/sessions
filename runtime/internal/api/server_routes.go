@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
+	"github.com/somewhere-tech/sessions/runtime/internal/background"
 	"io"
 	"log"
 	"math"
@@ -22,28 +24,33 @@ import (
 )
 
 func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	defer s.routes.begin(request.Method, request.URL.Path)()
 	path := request.URL.Path
 	origin := request.Header.Get("Origin")
 	corsOrigin := ""
-	originAllowed := allowedOrigin(origin, s.config.Host, s.lan.activeHost())
+	if !requestHostIdentifiesListener(request, s.config.Host, s.config.Port, s.lan.activeHost(), s.tailnetIP.activeHost()) {
+		// A verified Tailscale Serve identity is the one supported proxy case:
+		// Serve preserves the tailnet hostname while adding identity headers
+		// that a direct caller cannot safely forge (see tailscaleServeIdentity).
+		if _, ok := tailscaleServeIdentity(request); !ok {
+			s.sendJSON(response, http.StatusMisdirectedRequest, map[string]any{"error": "request host does not identify this Sessions daemon"}, "")
+			return
+		}
+	}
+	originAllowed := allowedOrigin(origin, s.config.Host, s.lan.activeHost(), s.tailnetIP.activeHost())
 	if originAllowed {
 		corsOrigin = origin
 	}
 
-	// CORS controls whether a browser may read a response; it does not stop a
-	// browser from sending a state-changing request. Reject ambient-authority
-	// writes from untrusted browser origins before authentication or route
-	// dispatch. Credential-bearing remote clients remain valid; a hostile page
-	// cannot add Authorization without a preflight that this server rejects.
-	if isStateChangingMethod(request.Method) && origin != "" &&
-		!trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost()) &&
-		strings.TrimSpace(request.Header.Get("Authorization")) == "" {
-		s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
+	if !s.ambientWriteAllowed(response, request, origin) {
 		return
 	}
 
 	if request.Method == http.MethodOptions {
 		s.sendJSON(response, http.StatusNoContent, map[string]any{}, corsOrigin)
+		return
+	}
+	if s.handlePairingFallback(response, request, corsOrigin) {
 		return
 	}
 	if isStaticRequest(path, request.Method) {
@@ -55,39 +62,13 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/health" && request.Method == http.MethodGet {
-		// /api/health stays unauthenticated on purpose: native discovery,
-		// `sessions machines discover`, the updater, and the frontend's
-		// bootstrapCurrentOriginServer all depend on it, the last on the
-		// 200-vs-401 distinction. The selected private IPv4 and port are a
-		// different matter — they map the user's network for anyone who can
-		// reach the port — so that one field is redacted unless the caller
-		// has already proved it belongs here. `lan.enabled` stays visible so
-		// probes can still tell whether the listener is up.
-		lanState := s.lan.state()
-		if !s.mayReadLANEndpoint(request) {
-			lanState.URL = nil
-		}
-		s.sendJSON(response, http.StatusOK, map[string]any{
-			"ok": true, "name": "sessionsd", "version": Version,
-			"listen": map[string]any{"host": s.config.Host, "port": s.config.Port},
-			"lan":    lanState,
-			"access": map[string]any{"open": s.openAccessEnabled()},
-			"system": map[string]any{"os": goruntime.GOOS, "arch": goruntime.GOARCH},
-			"compatibility": map[string]any{
-				"api": map[string]any{
-					"current": apiProtocolVersion, "minimumClient": minimumAPIClient, "maximumClient": maximumAPIClient,
-				},
-				"runner": map[string]any{
-					"current": proto.ProtocolVersion, "minimum": proto.MinimumCompatibleVersion, "maximum": proto.MaximumCompatibleVersion,
-				},
-			},
-			"discovering":    s.registry.IsDiscovering(),
-			"sessionsLoaded": len(s.registry.List(true)),
-			"restore":        s.rebootRestoreHealth(),
-		}, corsOrigin)
+		s.sendJSON(response, http.StatusOK, s.plainHealth(request), corsOrigin)
 		return
 	}
 	if s.handlePairClaimRoute(response, request, corsOrigin) {
+		return
+	}
+	if s.handleFleetAccountClaimRoute(response, request, corsOrigin) {
 		return
 	}
 	if s.handleTailnetAccessPublicRoute(response, request, corsOrigin) {
@@ -118,6 +99,15 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, principal))
+	if s.handleRelayRoute(response, request, corsOrigin) {
+		return
+	}
+	if s.handleFleetRelay(response, request, corsOrigin) {
+		return
+	}
+	if s.handleFleetAccountRoute(response, request, corsOrigin) {
+		return
+	}
 	// Deep health is dispatched after authorization, unlike plain /api/health.
 	// It reports live session UUIDs and host PIDs, so an unauthenticated peer
 	// on the LAN listener or the Tailscale Serve frontend could otherwise
@@ -125,9 +115,13 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	// `sessions doctor`, which reaches the daemon over loopback (or with a
 	// per-device token when targeting another machine).
 	if path == "/api/health/deep" && request.Method == http.MethodGet {
+		restore := s.rebootRestoreHealth()
 		s.sendJSON(response, http.StatusOK, map[string]any{
 			"ok": true, "name": "sessionsd", "version": Version,
-			"access": map[string]any{"open": s.openAccessEnabled()},
+			"status":    restore["status"],
+			"access":    map[string]any{"open": s.openAccessEnabled()},
+			"tailscale": s.tailscaleDeepHealth(),
+			"account":   s.fleetAccountHealth(),
 			"compatibility": map[string]any{
 				"api": map[string]any{
 					"current": apiProtocolVersion, "minimumClient": minimumAPIClient, "maximumClient": maximumAPIClient,
@@ -138,9 +132,17 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			},
 			"discovering":    s.registry.IsDiscovering(),
 			"sessionsLoaded": len(s.registry.List(true)),
-			"restore":        s.rebootRestoreHealth(),
-			"uptimeSec":      int64(math.Round(s.registry.Uptime().Seconds())),
-			"sessions":       s.registry.DeepDiagnostics(),
+			"startup":        s.startupHealth(),
+			// What the daemon has done on its own initiative, per named pass.
+			// A burst that is happening right now can be read here rather than
+			// inferred from a fan.
+			"background":      background.Report(),
+			"routes":          s.routes.report(),
+			"restore":         restore,
+			"runnerArtifacts": s.runnerArtifactHealth(),
+			"pprof":           s.pprofHealth(),
+			"uptimeSec":       int64(math.Round(s.registry.Uptime().Seconds())),
+			"sessions":        s.registry.DeepDiagnostics(),
 		}, corsOrigin)
 		return
 	}
@@ -153,19 +155,14 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": detail}, corsOrigin)
 			return
 		}
-		name, err := os.Hostname()
-		name = truncateMachineName(name)
-		if err != nil || name == "" {
-			name = s.identity.Name
-		}
 		s.sendJSON(response, http.StatusOK, map[string]any{
 			"machine_id": s.identity.ID,
-			"name":       name,
+			"name":       s.identity.Name,
 		}, corsOrigin)
 		return
 	}
 	if path == "/ws" {
-		if !allowedOrigin(origin, s.config.Host, s.lan.activeHost()) {
+		if !allowedOrigin(origin, s.config.Host, s.lan.activeHost(), s.tailnetIP.activeHost()) {
 			s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
 			return
 		}
@@ -178,6 +175,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if s.handleLANRoute(response, request, corsOrigin) {
+		return
+	}
+	if s.handleRemoteRoute(response, request, corsOrigin) {
 		return
 	}
 	if s.handleNotifyRoute(response, request, corsOrigin) {
@@ -231,21 +231,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	}
 	if path == "/api/sessions" && request.Method == http.MethodGet {
 		includeExited := request.URL.Query().Get("include_exited") == "1"
-		s.sendJSON(response, http.StatusOK, map[string]any{"sessions": s.registry.List(includeExited)}, corsOrigin)
-		return
-	}
-	if path == "/api/models/codex" && request.Method == http.MethodGet {
-		catalog, supported := s.registry.(newSessionModelCatalogService)
-		if !supported {
-			s.sendJSON(response, http.StatusNotImplemented, map[string]any{"error": "Codex model choices are not available on this runtime"}, corsOrigin)
-			return
-		}
-		models, err := catalog.CodexModelOptions(request.Context())
-		if err != nil {
-			s.sendJSON(response, http.StatusBadGateway, map[string]any{"error": err.Error()}, corsOrigin)
-			return
-		}
-		s.sendJSON(response, http.StatusOK, map[string]any{"models": models}, corsOrigin)
+		s.sendJSON(response, http.StatusOK, map[string]any{"sessions": s.withStartReceipts(s.registry.List(includeExited))}, corsOrigin)
 		return
 	}
 	if path == "/api/sessions/end-batch" && request.Method == http.MethodPost {
@@ -268,7 +254,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 				s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "session ids must not be empty"}, corsOrigin)
 				return
 			}
-			if _, ok := s.registry.Get(id); !ok {
+			if !sessionCanBeEnded(s.registry, id) {
 				s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "session not found", "id": id}, corsOrigin)
 				return
 			}
@@ -284,12 +270,10 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			return
 		}
 		if err := batch.KillManyAttributed(request.Context(), body.IDs, body.Force, end); err != nil {
-			status := http.StatusInternalServerError
-			var guard *sessionruntime.MassKillError
-			if errors.As(err, &guard) {
-				status = http.StatusConflict
-			}
-			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
+			s.sendSessionEndFailure(
+				response, "every requested session",
+				"run `sessions status <id>` for each session before retrying.", err, corsOrigin,
+			)
 			return
 		}
 		s.sendJSON(response, http.StatusOK, map[string]any{"ok": true, "ids": body.IDs}, corsOrigin)
@@ -313,7 +297,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if s.handleUsageRoute(response, request, corsOrigin) {
 		return
 	}
-	if s.handleRecapRoute(response, request, corsOrigin) {
+	if s.handleDailyRoute(response, request, corsOrigin) {
 		return
 	}
 	if s.handleOnboardingRoute(response, request, corsOrigin) {
@@ -325,17 +309,26 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	if s.handleProvidersRoute(response, request, corsOrigin) {
 		return
 	}
+	if s.handleContinuationRoute(response, request, corsOrigin) {
+		return
+	}
 	if s.handleProfilesRoute(response, request, corsOrigin) {
 		return
 	}
 	if s.handleWorktreesRoute(response, request, corsOrigin) {
 		return
 	}
+	if s.handleProjectsRoute(response, request, corsOrigin) {
+		return
+	}
+	if s.handleTeamRoute(response, request, corsOrigin) {
+		return
+	}
 	if s.handleLanesRoute(response, request, corsOrigin) {
 		return
 	}
 	if path == "/api/recovery" || path == "/api/recovery/reopen" ||
-		path == "/api/recovery/adopt" || path == "/api/recovery/fork" {
+		path == "/api/recovery/restart" || path == "/api/recovery/adopt" || path == "/api/recovery/fork" || path == "/api/recovery/collaborator" || path == "/api/recovery/briefing" {
 		s.handleRecovery(response, request, corsOrigin)
 		return
 	}
@@ -348,27 +341,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/sessions" && request.Method == http.MethodPost {
-		var body state.CreateSessionRequest
-		if err := readJSON(request, &body); err != nil {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-			return
-		}
-		if err := captureCreatorHeaders(request, &body); err != nil {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-			return
-		}
-		info, err := s.registry.Create(request.Context(), body)
-		if err != nil {
-			status := http.StatusBadRequest
-			var live *sessionruntime.ConversationLiveError
-			var moved *sessionruntime.ConversationMovedError
-			if errors.As(err, &live) || errors.As(err, &moved) {
-				status = http.StatusConflict
-			}
-			s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
-			return
-		}
-		s.sendJSON(response, http.StatusCreated, info, corsOrigin)
+		s.handleCreateSession(response, request, corsOrigin)
 		return
 	}
 	if path == "/api/claude-sessions" && request.Method == http.MethodGet {
@@ -396,7 +369,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 
 	id, suffix, matched := sessionRoute(path)
 	if matched {
-		if s.handleVerdictRoute(response, request, id, suffix, corsOrigin) {
+		if s.handleRichControlRoute(response, request, id, suffix, corsOrigin) {
 			return
 		}
 		if s.handleWaitRoute(response, request, id, suffix, corsOrigin) {
@@ -411,15 +384,126 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": path}, corsOrigin)
 }
 
+func (s *Server) runnerArtifactHealth() map[string]int {
+	retired, pending := 0, 0
+	if reporter, ok := s.registry.(artifactRetirementHealthService); ok {
+		retired, pending = reporter.ArtifactRetirementHealth()
+	}
+	return map[string]int{"retired": retired, "pending": pending}
+}
+
+// ambientWriteAllowed reports whether this request may change state.
+//
+// CORS controls whether a browser may read a response; it does not stop a
+// browser from sending a state-changing request. Ambient-authority writes from
+// untrusted browser origins are rejected before authentication or route
+// dispatch. Credential-bearing remote clients remain valid, but the credential
+// must verify: header presence alone is ambient browser input.
+func (s *Server) ambientWriteAllowed(response http.ResponseWriter, request *http.Request, origin string) bool {
+	if !isStateChangingMethod(request.Method) || origin == "" ||
+		trustedAmbientWriteOrigin(origin, s.config.Host, s.config.Port, s.lan.activeHost(), s.tailnetIP.activeHost()) ||
+		sameOriginPairingClaimRequest(request) {
+		return true
+	}
+	verified, err := s.presentedCredential(request)
+	if err != nil {
+		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": "verify request credential: " + err.Error()}, "")
+		return false
+	}
+	if !verified {
+		s.sendJSON(response, http.StatusForbidden, map[string]any{"error": "forbidden origin"}, "")
+		return false
+	}
+	return true
+}
+
+func (s *Server) pprofHealth() map[string]any {
+	return map[string]any{
+		"enabled": s.config.PprofAddress != "",
+		"address": s.config.PprofAddress,
+	}
+}
+
+// plainHealth stays unauthenticated for discovery and bootstrap. The selected
+// LAN address is separately redacted until the caller proves it belongs here.
+func (s *Server) plainHealth(request *http.Request) map[string]any {
+	lanState := s.lan.state()
+	if !s.mayReadLANEndpoint(request) {
+		lanState.URL = nil
+	}
+	restore := s.rebootRestoreHealth()
+	return map[string]any{
+		"ok": true, "name": "sessionsd", "version": Version,
+		"status":    restore["status"],
+		"listen":    map[string]any{"host": s.config.Host, "port": s.config.Port},
+		"lan":       lanState,
+		"tailscale": s.tailscaleHealth(),
+		"account":   s.fleetAccountHealth(),
+		"access":    map[string]any{"open": s.openAccessEnabled()},
+		"system":    map[string]any{"os": goruntime.GOOS, "arch": goruntime.GOARCH},
+		"compatibility": map[string]any{
+			"api": map[string]any{
+				"current": apiProtocolVersion, "minimumClient": minimumAPIClient, "maximumClient": maximumAPIClient,
+			},
+			"runner": map[string]any{
+				"current": proto.ProtocolVersion, "minimum": proto.MinimumCompatibleVersion, "maximum": proto.MaximumCompatibleVersion,
+			},
+		},
+		"discovering":    s.registry.IsDiscovering(),
+		"sessionsLoaded": len(s.registry.List(true)),
+		"startup":        s.startupHealth(),
+		"restore":        restore,
+	}
+}
+
+// startupService is implemented by a runtime that knows how far through its
+// first discovery pass it is.
+type startupService interface {
+	Startup() sessionruntime.StartupState
+}
+
+// startupHealth says whether this daemon can yet answer for every session it
+// has. A daemon that is still loading is not one that has lost your work, and
+// until this existed there was no way for a caller to tell those apart: a
+// `sessions wait` during the Mini's three-minute re-attach answered "no live
+// session matches" for a lane that was running the whole time.
+//
+// A runtime that cannot report it reads as ready, which is what every caller
+// assumed before this field existed.
+func (s *Server) startupHealth() map[string]any {
+	state := sessionruntime.StartupState{Phase: sessionruntime.StartupReady}
+	if reporter, ok := s.registry.(startupService); ok {
+		state = reporter.Startup()
+	}
+	return map[string]any{
+		"phase": state.Phase, "loaded": state.Loaded,
+		"total": state.Total, "startedAt": state.StartedAt,
+	}
+}
+
 func (s *Server) rebootRestoreHealth() map[string]any {
 	pending := 0
 	if reporter, ok := s.registry.(rebootRestoreHealthService); ok {
 		pending = reporter.RestorePendingCount()
 	}
-	return map[string]any{
-		"pending":              pending,
-		"automaticPinnedLimit": state.DefaultPinnedBootRestoreLimit,
+	retired := 0
+	if reporter, ok := s.registry.(retiredRestoreHealthService); ok {
+		retired = reporter.RetiredRestoreCount()
 	}
+	health := map[string]any{
+		"pending":              pending,
+		"retired":              retired,
+		"automaticPinnedLimit": state.DefaultPinnedBootRestoreLimit,
+		"degraded":             pending > 0,
+		"status":               "healthy",
+	}
+	if pending > 0 {
+		health["status"] = "degraded"
+		health["code"] = "SESSION_RESTORE_PENDING"
+		health["message"] = fmt.Sprintf("%d session(s) are paused after reboot and need recovery", pending)
+		health["action"] = "sessions doctor"
+	}
+	return health
 }
 
 func (s *Server) authorized(request *http.Request) (authPrincipal, bool, error) {
@@ -511,6 +595,23 @@ func (s *Server) requireLocalPrincipal(response http.ResponseWriter, request *ht
 
 func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.Request, id, suffix, corsOrigin string) {
 	session, ok := s.registry.Get(id)
+	if !ok && sessionRuntimeRoute(request.Method, suffix) {
+		// First contact wakes a session that stayed paused after a reboot.
+		woken, live, wakeErr := s.wakePausedSession(request.Context(), id)
+		if wakeErr != nil {
+			s.sendJSON(response, http.StatusConflict, map[string]any{
+				"code": "SESSION_NEEDS_RECREATE", "sessionId": id,
+				"error":  "session is paused after reboot and could not be restarted: " + wakeErr.Error(),
+				"action": "sessions resume " + id,
+			}, corsOrigin)
+			return
+		}
+		if live {
+			session, ok = woken, true
+		} else if s.sendPendingRestore(response, id, corsOrigin) {
+			return
+		}
+	}
 	if suffix == "/model-options" && request.Method == http.MethodGet {
 		if !ok {
 			s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "unknown session", "id": id}, corsOrigin)
@@ -726,7 +827,7 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		return
 	}
 	if suffix == "" && request.Method == http.MethodDelete {
-		if !ok {
+		if !ok && !sessionCanBeEnded(s.registry, id) {
 			s.sendJSON(response, http.StatusNotFound, map[string]any{"ok": false}, corsOrigin)
 			return
 		}
@@ -749,7 +850,10 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			err = s.registry.RequestKill(request.Context(), id, request.URL.Query().Get("force") == "1")
 		}
 		if err != nil {
-			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()}, corsOrigin)
+			s.sendSessionEndFailure(
+				response, "session "+id,
+				"run `sessions status "+id+"` before retrying.", err, corsOrigin,
+			)
 			return
 		}
 		s.sendJSON(response, http.StatusOK, map[string]any{"ok": true}, corsOrigin)
@@ -797,10 +901,15 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		s.sendJSON(response, http.StatusOK, s.eventsWindowBody(request.Context(), session, id, since, tail, before), corsOrigin)
 		return
 	}
+	if suffix == "/approve" && request.Method == http.MethodPost {
+		s.handleApprove(response, request, session, ok, id, corsOrigin)
+		return
+	}
 	if (suffix == "/input" || suffix == "/submit") && request.Method == http.MethodPost {
 		var body struct {
 			Data        string `json:"data"`
 			OperationID string `json:"operation_id,omitempty"`
+			Mode        string `json:"mode,omitempty"`
 		}
 		if err := readJSON(request, &body); err != nil {
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
@@ -822,15 +931,18 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 					return
 				}
 			}
-			record, created, beginErr := s.deliveries.Begin(body.OperationID, id, body.Data)
+			record, created, beginErr := s.deliveries.Begin(body.OperationID, id, body.Data, body.Mode)
 			if beginErr != nil {
 				s.sendJSON(response, http.StatusConflict, map[string]any{"error": beginErr.Error(), "operation_id": body.OperationID}, corsOrigin)
 				return
 			}
 			if !created {
-				s.sendDeliveryRecord(response, record, true, corsOrigin)
+				// The same operation, asked again. Never a second execution, and
+				// never a stale unknown when the runner has since answered.
+				s.sendDeliveryRecord(response, s.reconcileLateAcceptance(record), true, corsOrigin)
 				return
 			}
+			defer s.beginDeliveryInFlight(body.OperationID)()
 		}
 		if !ok {
 			if suffix == "/submit" {
@@ -843,7 +955,12 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 			s.sendJSON(response, http.StatusNotFound, map[string]any{"ok": false}, corsOrigin)
 			return
 		}
-		if err := s.writeSessionInput(request.Context(), id, body.Data, attribution, attributed); err != nil {
+		if suffix == "/submit" {
+			if s.handleSubmitControl(response, request, session.Info(), body.Data, body.OperationID, body.Mode, corsOrigin, attribution) {
+				return
+			}
+		}
+		if err := s.writeInputForRoute(request.Context(), id, body.Data, suffix, attribution, attributed); err != nil {
 			if suffix == "/submit" {
 				record, completeErr := s.deliveries.Complete(body.OperationID, delivery.StatusUnknown, false, false, err.Error())
 				if completeErr == nil {
@@ -905,6 +1022,19 @@ func (s *Server) handleSessionRoute(response http.ResponseWriter, request *http.
 		return
 	}
 	s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": request.URL.Path}, corsOrigin)
+}
+
+func sessionRuntimeRoute(method, suffix string) bool {
+	switch suffix {
+	case "/snapshot", "/events", "/model-options":
+		return method == http.MethodGet
+	case "/input", "/submit", "/approve", "/retry", "/retry/stop":
+		return method == http.MethodPost
+	case "/model":
+		return method == http.MethodPut
+	default:
+		return false
+	}
 }
 
 // setCORSHeaders writes the one CORS answer this daemon gives. Every response

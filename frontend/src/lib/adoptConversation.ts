@@ -63,7 +63,7 @@ export async function adoptConversationWithRepair(
   const first = await adoptConversation(...args);
   if (!first.partial || !first.repair) return outcome(first, null);
   try {
-    return outcome(await repairAdoption(first.repair), null);
+    return outcome(await repairAdoption(first.repair, args[9]), null);
   } catch (reason) {
     // Keep the first result: it holds the live lane the user must be taken
     // to. Only the annotations are in doubt, and the caller must show that.

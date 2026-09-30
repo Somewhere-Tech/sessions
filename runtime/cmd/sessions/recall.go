@@ -16,7 +16,7 @@ import (
 func (a *app) cmdRecall(args []string) error {
 	raw := removeFirst(&args, "--raw")
 	if len(args) > 1 || (raw && len(args) == 0) {
-		return fail(1, "usage: sessions recall [<full-session-id> [--raw]]")
+		return fail(1, "usage: sessions recall [<session-id-or-prefix> [--raw]]")
 	}
 	if len(args) == 0 {
 		var history integrations.HistoryResponse
@@ -45,9 +45,16 @@ func (a *app) cmdRecall(args []string) error {
 		return nil
 	}
 
-	id := args[0]
-	if id == "" {
-		return fail(1, "usage: sessions recall [<full-session-id> [--raw]]")
+	if args[0] == "" {
+		return fail(1, "usage: sessions recall [<session-id-or-prefix> [--raw]]")
+	}
+	resolution, err := a.resolveHistoryReference(args[0])
+	if err != nil {
+		return err
+	}
+	id := resolution.Reference
+	if _, err := a.useQualifiedHistoryReference(&id); err != nil {
+		return err
 	}
 	path := "/api/history/" + escapeID(id)
 	if raw {

@@ -12,6 +12,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e
 	github.com/hashicorp/mdns v1.0.7
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/crypto v0.53.0

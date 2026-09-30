@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/delivery"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 )
 
@@ -29,7 +30,7 @@ func TestDecideSendConfirmation(t *testing.T) {
 		exitCode   int
 	}{
 		{"confirmed", sendEvidence{JSONLConfirmed: true}, "confirmed", 0},
-		{"accepted-working", sendEvidence{Working: true}, "accepted", 0},
+		{"working-is-not-complete-message-proof", sendEvidence{Working: true}, "unconfirmed", 2},
 		{"still-in-composer", sendEvidence{TextStillInComposer: true}, "unconfirmed", 1},
 		{"ambiguous", sendEvidence{}, "unconfirmed", 2},
 	}
@@ -64,7 +65,7 @@ func TestClaudeSubmitSequenceMatchesNodeCLI(t *testing.T) {
 			events := []any{}
 			if submitted {
 				events = append(events, map[string]any{
-					"type": "user", "message": map[string]any{"role": "user", "content": text},
+					"type": "user", "message": map[string]any{"role": "user", "content": delivery.MessageText(text)},
 				})
 			}
 			_ = json.NewEncoder(response).Encode(map[string]any{"events": events, "nextIndex": len(events)})
@@ -95,7 +96,7 @@ func TestClaudeSubmitSequenceMatchesNodeCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Confirmed == nil || !*result.Confirmed || result.Text != text {
+	if result.Confirmed == nil || !*result.Confirmed || result.Text != delivery.MessageText(text) {
 		t.Fatalf("result = %+v, want confirmed exact text", result)
 	}
 	if want := []string{text, "\r"}; !reflect.DeepEqual(inputs, want) {
@@ -183,7 +184,7 @@ func TestExplicitSendOperationIsForwardedAndReturned(t *testing.T) {
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if body["operation_id"] != operationID || body["data"] != message {
+			if body["operation_id"] != operationID || body["data"] != "\x1b[200~"+message+"\x1b[201~" {
 				t.Errorf("submit body = %#v", body)
 			}
 			delivered = true
@@ -286,6 +287,9 @@ func TestLiveStatusNeverLooksTerminalBecauseOfLastTurn(t *testing.T) {
 		{name: "failed turn remains live", session: session{IdleReason: "failed"}, want: "idle"},
 		{name: "never started remains live", session: session{IdleReason: "never-started"}, want: "idle"},
 		{name: "approval is actionable", session: session{IdleReason: "needs-input"}, want: "needs-you"},
+		{name: "reboot pause needs recovery", session: session{Unreachable: true, UnreachableReason: "restart-restore-pending"}, want: "needs-recovery"},
+		{name: "lost runner is unreachable", session: session{Unreachable: true, UnreachableReason: "runner-lost"}, want: "unreachable"},
+		{name: "runner proven gone is lost", session: session{Unreachable: true, UnreachableReason: "runner-lost", RunnerGone: true}, want: "lost"},
 		{name: "working wins over last turn", session: session{Working: true, IdleReason: "completed"}, want: "working"},
 		{name: "set aside is organizational", session: session{SetAsideAt: &setAsideAt}, want: "set-aside"},
 		{name: "only exited is terminal", session: session{Exited: true, IdleReason: "completed"}, want: "exited"},
@@ -299,7 +303,23 @@ func TestLiveStatusNeverLooksTerminalBecauseOfLastTurn(t *testing.T) {
 	}
 }
 
-func TestClaudeEnterRetriesRequireTextStillInComposer(t *testing.T) {
+func TestAPIReadFailureMakesRebootPauseActionable(t *testing.T) {
+	id := "11111111-2222-4333-8444-555555555555"
+	err := apiReadFailure("/api/sessions/"+id+"/snapshot", apiResponse{
+		status: http.StatusConflict,
+		body:   []byte(`{"code":"SESSION_NEEDS_RECREATE","error":"paused after reboot","action":"sessions resume ` + id + `"}`),
+	})
+	if exitCode(err) != exitTargetUnavailable {
+		t.Fatalf("exitCode() = %d, want %d; err=%v", exitCode(err), exitTargetUnavailable, err)
+	}
+	for _, fragment := range []string{"SESSION_NEEDS_RECREATE", "paused after reboot", "sessions resume " + id} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("error %q does not contain %q", err, fragment)
+		}
+	}
+}
+
+func TestClaudeAmbiguousSubmitNeverRepeatsEnter(t *testing.T) {
 	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 	const text = "Reply with exactly PONG."
 	tests := []struct {
@@ -307,7 +327,7 @@ func TestClaudeEnterRetriesRequireTextStillInComposer(t *testing.T) {
 		snapshot   string
 		wantEnters int
 	}{
-		{name: "visible text gets two bounded retries", snapshot: "❯ " + text, wantEnters: 3},
+		{name: "visible text does not authorize another Enter", snapshot: "❯ " + text, wantEnters: 1},
 		{name: "cleared composer never retries", snapshot: "❯ ", wantEnters: 1},
 	}
 	for _, test := range tests {
@@ -687,8 +707,15 @@ func TestContinueWithProviderRequestsCrossProviderContinuation(t *testing.T) {
 }
 
 func TestForkCopiesLiveConversationWithoutEndOrForce(t *testing.T) {
+	const sourceID = "12345678-1234-4234-8234-123456789abc"
 	var posted map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == "/api/sessions" {
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{{
+				"id": sourceID, "name": "source lane", "cmd": "codex", "cwd": "/work",
+			}}})
+			return
+		}
 		if request.Method != http.MethodPost || request.URL.Path != "/api/recovery/fork" {
 			http.NotFound(response, request)
 			return
@@ -705,7 +732,7 @@ func TestForkCopiesLiveConversationWithoutEndOrForce(t *testing.T) {
 			"destinationProvider":"codex",
 			"mode":"native-import",
 			"importedMessages":42,
-			"forkedFromSessionId":"source-lane",
+			"forkedFromSessionId":"`+sourceID+`",
 			"sourceUntouched":true
 		}`)
 	}))
@@ -713,12 +740,12 @@ func TestForkCopiesLiveConversationWithoutEndOrForce(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	if code := run(
-		[]string{"--host", server.URL, "fork", "source-lane", "--with", "codex", "--at", "17", "--message-id", "message-hash"},
+		[]string{"--host", server.URL, "fork", sourceID[:8], "--with", "codex", "--at", "17", "--message-id", "message-hash"},
 		strings.NewReader(""), &stdout, &stderr,
 	); code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if posted["sourceSessionId"] != "source-lane" || posted["destinationProvider"] != "codex" ||
+	if posted["sourceSessionId"] != sourceID || posted["destinationProvider"] != "codex" ||
 		posted["sourceMessageIndex"] != float64(17) || posted["sourceMessageId"] != "message-hash" {
 		t.Fatalf("posted body = %#v", posted)
 	}
@@ -726,7 +753,7 @@ func TestForkCopiesLiveConversationWithoutEndOrForce(t *testing.T) {
 		t.Fatalf("fork must not force or end its source: %#v", posted)
 	}
 	if stdout.String() != "forked-lane\n" ||
-		!strings.Contains(stderr.String(), "source source-lane keeps running") {
+		!strings.Contains(stderr.String(), "source "+sourceID+" keeps running") {
 		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
@@ -801,6 +828,13 @@ func TestAdoptPartialSuccessPrintsSafeRepairAndRepairUsesExistingLane(t *testing
 	sourceID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	var posted []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == "/api/sessions" {
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []map[string]any{
+				{"id": laneID, "name": "successor", "cmd": "codex", "cwd": "/work"},
+				{"id": sourceID, "name": "source", "cmd": "codex", "cwd": "/work"},
+			}})
+			return
+		}
 		if request.Method != http.MethodPost || request.URL.Path != "/api/recovery/adopt" {
 			http.NotFound(response, request)
 			return
@@ -842,7 +876,7 @@ func TestAdoptPartialSuccessPrintsSafeRepairAndRepairUsesExistingLane(t *testing
 	stdout.Reset()
 	stderr.Reset()
 	if code := run(
-		[]string{"--host", server.URL, "adopt", provider, "--repair", laneID, "--source", sourceID},
+		[]string{"--host", server.URL, "adopt", provider, "--repair", laneID[:8], "--source", sourceID[:8]},
 		strings.NewReader(""), &stdout, &stderr,
 	); code != 0 {
 		t.Fatalf("repair exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
@@ -939,6 +973,7 @@ func TestDaemonInstallConfigAndPlistWithoutLaunchctl(t *testing.T) {
 		"<string>" + daemonPath + "</string>",
 		"<key>RunAtLoad</key>\n  <true/>",
 		"<key>KeepAlive</key>\n  <true/>",
+		"<key>AssociatedBundleIdentifiers</key>\n  <array>\n    <string>tech.somewhere.sessions</string>",
 		"<key>SESSIONS_HOST</key>\n    <string>127.0.0.1</string>",
 		"<key>SESSIONS_PORT</key>\n    <string>18787</string>",
 		"<key>SESSIONS_RUNNER</key>\n    <string>" + runnerPath + "</string>",
@@ -1029,7 +1064,7 @@ func TestAgentControlTranslation(t *testing.T) {
 	}
 	joined := strings.Join(body.Args, " ")
 	for _, want := range []string{
-		"--sandbox workspace-write", "--ask-for-approval on-request", "--model gpt-5.2-codex",
+		"--sandbox workspace-write", "--ask-for-approval untrusted", "--model gpt-5.2-codex",
 		`model_reasoning_effort="high"`, `service_tier="priority"`,
 	} {
 		if !strings.Contains(joined, want) {
@@ -1051,6 +1086,7 @@ func TestCodexNewSelectsStructuredKindWithRevertibleGate(t *testing.T) {
 		{name: "flag-off", args: []string{"--pty-codex"}, wantArg: "--sandbox"},
 		{name: "full-access-default-rich", args: []string{"--full-access"}, kind: "codex-app-server", wantArg: "--dangerously-bypass-approvals-and-sandbox"},
 		{name: "flag-on-overrides-environment", env: "0", args: []string{"--codex-appserver", "--full-access"}, kind: "codex-app-server", wantArg: "--dangerously-bypass-approvals-and-sandbox"},
+		{name: "constrained-flag-on-overrides-environment", env: "0", args: []string{"--codex-appserver", "--permissions", "constrained"}, kind: "codex-app-server", wantArg: "untrusted"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1107,7 +1143,7 @@ func TestCodexRichNewSendsPositionalRequestImmediately(t *testing.T) {
 				lastUser = int64(2)
 			}
 			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
-				"id": id, "cmd": "codex", "tool": "codex", "lastUserMessageAt": lastUser,
+				"id": id, "cmd": "codex", "tool": "codex", "lastUserMessageAt": lastUser, "kind": "codex-app-server",
 			}}})
 		case httpRequest.Method == http.MethodGet && httpRequest.URL.Path == "/api/sessions/"+id+"/events":
 			events := []any{}
@@ -1151,15 +1187,54 @@ func TestCodexRichNewSendsPositionalRequestImmediately(t *testing.T) {
 	}
 }
 
-func TestCodexAppServerRequiresExplicitFullAccess(t *testing.T) {
+func TestCatIncludesApprovalAuditEvents(t *testing.T) {
+	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/api/sessions":
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{"id": id}}})
+		case "/api/sessions/" + id + "/events":
+			_ = json.NewEncoder(response).Encode(map[string]any{"events": []any{
+				map[string]any{
+					"type": "system", "subtype": "approval_requested", "timestamp": "2026-09-02T00:00:00Z",
+					"approval": map[string]any{"id": "approval-1", "summary": "Run `touch approved.txt`"},
+				},
+				map[string]any{
+					"type": "system", "subtype": "approval_resolved", "timestamp": "2026-09-02T00:00:01Z",
+					"approval": map[string]any{"id": "approval-1", "decision": "allow", "by": "manager-1"},
+				},
+			}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
 	t.Setenv("HOME", t.TempDir())
+
 	var stdout, stderr bytes.Buffer
-	code := run(
-		[]string{"--host", "http://127.0.0.1:1", "new", "--tool", "codex", "--codex-appserver"},
-		strings.NewReader(""), &stdout, &stderr,
-	)
-	if code != 1 || !strings.Contains(stderr.String(), "requires --full-access") {
-		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	if code := run([]string{"--host", server.URL, "--json", "cat", id}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("json cat exit=%d stderr=%q", code, stderr.String())
+	}
+	var turns []messageTurn
+	if err := json.Unmarshal(stdout.Bytes(), &turns); err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 2 || turns[0].Role != "system" || turns[0].Subtype != "approval_requested" ||
+		turns[0].Text != "approval_requested: Run `touch approved.txt`" || turns[0].Approval["id"] != "approval-1" ||
+		turns[1].Subtype != "approval_resolved" || turns[1].Text != "approval_resolved: allow by manager-1" {
+		t.Fatalf("approval turns = %#v", turns)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--host", server.URL, "cat", id}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("text cat exit=%d stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"[system]\napproval_requested: Run `touch approved.txt`", "[system]\napproval_resolved: allow by manager-1"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("cat output missing %q:\n%s", want, stdout.String())
+		}
 	}
 }
 
@@ -1251,7 +1326,7 @@ func TestInheritedClaudeChildSendsItsPositionalRequestThroughStructuredInput(t *
 				lastUser = int64(2)
 			}
 			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
-				"id": id, "cmd": "claude", "tool": "claude-code", "lastUserMessageAt": lastUser,
+				"id": id, "cmd": "claude", "tool": "claude-code", "lastUserMessageAt": lastUser, "kind": "claude-structured",
 			}}})
 		case httpRequest.Method == http.MethodGet && httpRequest.URL.Path == "/api/sessions/"+id+"/events":
 			events := []any{}
@@ -1294,6 +1369,80 @@ func TestInheritedClaudeChildSendsItsPositionalRequestThroughStructuredInput(t *
 	}
 	if want := []string{prompt, "\r"}; !reflect.DeepEqual(inputs, want) {
 		t.Fatalf("input sequence = %q, want %q", inputs, want)
+	}
+}
+
+func TestInheritedNewUsesTheManagersCurrentDirectory(t *testing.T) {
+	const parent = "11111111-2222-4333-8444-555555555555"
+	var request createSessionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, httpRequest *http.Request) {
+		if httpRequest.URL.Path != "/api/sessions" || httpRequest.Method != http.MethodPost {
+			http.NotFound(response, httpRequest)
+			return
+		}
+		if err := json.NewDecoder(httpRequest.Body).Decode(&request); err != nil {
+			t.Errorf("decode create request: %v", err)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusCreated)
+		_, _ = response.Write([]byte(`{"id":"session-1"}`))
+	}))
+	defer server.Close()
+	home := t.TempDir()
+	managerCwd := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SESSIONS_SESSION_ID", parent)
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	t.Chdir(managerCwd)
+
+	var stdout, stderr bytes.Buffer
+	if code := run(
+		[]string{"--host", server.URL, "new", "--tool", "codex", "--name", "greeter", "say hello"},
+		strings.NewReader(""), &stdout, &stderr,
+	); code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if request.Cwd != managerCwd {
+		t.Fatalf("delegated cwd = %q, want manager cwd %q (HOME %q)", request.Cwd, managerCwd, home)
+	}
+	if request.Worktree {
+		t.Fatal("CLI forced a worktree; the daemon should apply the delegated default")
+	}
+}
+
+func TestTerminalCodexCreationCarriesItsPositionalRequestAsAWatcherHint(t *testing.T) {
+	const (
+		id     = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+		prompt = "Audit the terminal transcript binding"
+	)
+	var request createSessionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, httpRequest *http.Request) {
+		if httpRequest.URL.Path != "/api/sessions" || httpRequest.Method != http.MethodPost {
+			http.NotFound(response, httpRequest)
+			return
+		}
+		if err := json.NewDecoder(httpRequest.Body).Decode(&request); err != nil {
+			t.Errorf("decode create request: %v", err)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusCreated)
+		_, _ = response.Write([]byte(`{"id":"` + id + `"}`))
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	if code := run(
+		[]string{"--host", server.URL, "new", "--tool", "codex", "--pty-codex", prompt},
+		strings.NewReader(""), &stdout, &stderr,
+	); code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if request.InitialInput != prompt {
+		t.Fatalf("initial input = %q, want %q", request.InitialInput, prompt)
+	}
+	if !slices.Contains(request.Args, prompt) {
+		t.Fatalf("terminal Codex argv %q lost its positional request", request.Args)
 	}
 }
 

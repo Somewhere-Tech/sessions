@@ -99,6 +99,16 @@ func TestProcessAliveAnswersForThisProcess(t *testing.T) {
 	}
 }
 
+func TestProcessSnapshotContainsThisProcess(t *testing.T) {
+	processes, err := ProcessSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := processes[os.Getpid()]; !ok {
+		t.Fatalf("process snapshot omitted test pid %d", os.Getpid())
+	}
+}
+
 // RunnerAlive is the whole question: this session's runner, not "something at
 // that number". A recycled PID running an unrelated program is not the runner,
 // however alive that program is.

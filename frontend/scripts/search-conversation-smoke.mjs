@@ -27,20 +27,15 @@ assert.match(searchView, /via Sessions/);
 assert.doesNotMatch(searchView, /Your request/);
 assert.doesNotMatch(searchView, /\['ai', 'ranked', 'exact', 'regex'\]/);
 assert.doesNotMatch(searchView, /Enter a Go regular expression/);
-assert.match(searchView, /Resume conversation/);
+assert.match(searchView, /Continue conversation…/);
 assert.match(searchView, /next === 'full'\) window = undefined/);
 assert.match(searchView, /Jump to latest ↓/);
 assert.match(searchView, /search-transcript-latest/);
 assert.match(searchAPI, /provider_session_id\?: string/);
 assert.match(app, /<SearchView[\s\S]*onResumeConversation=/);
-// Continuing from Search goes through the shared adopt-then-repair helper —
-// the same one ResumeDialog uses — so both entry points give the user the
-// same answer about whether the history annotations finished.
-assert.match(app, /adoptConversationWithRepair\(providerSessionId, sourceSessionId, historyId\)/);
-assert.match(app, /setAdoptionNotice\(adoptionWarning\(adopted\)\)/);
-assert.doesNotMatch(app, /console\.warn\('Sessions resumed the conversation/);
-assert.match(app, /result\.transcriptRecovery[\s\S]*\? 'remote'[\s\S]*: 'terminal'/);
-assert.doesNotMatch(app, /onResumeConversation=\{\(serverId,[\s\S]{0,240}setDialogOpen/);
+// Search opens the shared continuation details before it launches an agent.
+assert.match(app, /continueExactConversation[\s\S]*setDialogOpen\(\{[\s\S]*resumeProviderId: providerSessionId/);
+assert.doesNotMatch(app, /adoptConversationWithRepair\(providerSessionId, sourceSessionId, historyId\)/);
 
 const scratch = await mkdtemp(join(tmpdir(), 'sessions-search-smoke-'));
 const output = join(scratch, 'search-conversations.mjs');

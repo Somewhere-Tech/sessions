@@ -22,6 +22,7 @@ type Status = 'connecting' | 'open' | 'reconnecting' | 'closed' | 'error';
 interface UseTerminalResult {
   containerRef: (el: HTMLDivElement | null) => void;
   status: Status;
+  streamNotice: string | null;
   exitInfo: { code: number | null; signal: string | null } | null;
   resumedFromSeq: number | null;
   // Send raw input (text or control bytes) through the live WS. Lets
@@ -70,6 +71,22 @@ const CLAUDE_EVENT_TAIL = 300;
 const CLAUDE_EVENT_PAGE = 300;
 const CLAUDE_EVENT_HELD_CAP = 1200;
 
+function reportTerminalError(
+  msg: Extract<ServerMsg, { type: 'error' }>,
+  term: Pick<import('@xterm/xterm').Terminal, 'writeln'> | null,
+  channel: SessionChannel | null,
+  markMissing: () => void,
+  showNotice: (notice: string) => void
+): void {
+  term?.writeln(`\r\n\x1b[31m[error] ${msg.message}\x1b[0m`);
+  if (msg.code === 'mux_attachment_limit') showNotice(msg.message);
+  // A streaming resource refusal does not mean the underlying runner exited.
+  if (/unknown session/i.test(msg.message)) {
+    markMissing();
+    channel?.detach();
+  }
+}
+
 // Connection model: every session in this window shares ONE multiplexed
 // WebSocket (lib/wsMux) with sessionId-tagged frames. This
 // hook attaches its session to that shared socket and receives exactly
@@ -95,6 +112,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
   const [resumedFromSeq, setResumedFromSeq] = useState<number | null>(null);
   const [claudeEvents, setClaudeEvents] = useState<ClaudeSessionEvent[]>([]);
   const [historyPending, setHistoryPending] = useState(true);
+  const [streamNotice, setStreamNotice] = useState<string | null>(null);
   const [hasEarlierClaudeEvents, setHasEarlierClaudeEvents] = useState(false);
   const [loadingEarlierClaudeEvents, setLoadingEarlierClaudeEvents] = useState(false);
   const containerElRef = useRef<HTMLDivElement | null>(null);
@@ -188,7 +206,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       };
 
       if (mountTerminal) {
-        const [xtermMod, serializeMod, fitMod, webglMod, canvasMod] = await Promise.all([
+        const [xtermMod, serializeMod, fitMod, webglMod] = await Promise.all([
           import('@xterm/xterm'),
           import('@xterm/addon-serialize'),
           import('@xterm/addon-fit'),
@@ -196,7 +214,6 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           // core). Kept in the same lazy chunk. See the loadAddon block
           // after open() — this is THE fix for slow typing.
           import('@xterm/addon-webgl'),
-          import('@xterm/addon-canvas'),
           // CSS side-effect import — Vite injects the stylesheet on resolve.
           // Keeps the CSS in the same lazy chunk as the JS so the initial
           // bundle stays slim. Discard the unused module value via void.
@@ -232,8 +249,10 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           // is thousands of DOM nodes + layout per keystroke (tens of ms of
           // main-thread work = the browser-side echo lag). WebGL/canvas
           // rasterize glyphs to a single canvas with no per-cell DOM or
-          // reflow. MUST load AFTER open(). Chain: webgl → canvas → DOM, all
-          // in try/catch so a missing GPU context degrades safely to the old
+          // reflow. MUST load AFTER open(). WebGL falls back to xterm's DOM
+          // renderer when a GPU context is unavailable, so the 94 KB Canvas
+          // implementation is not downloaded for every terminal as a backup.
+          // Keep setup in try/catch so a missing GPU context degrades to the old
           // behavior instead of blanking the terminal. With the live-session
           // cap (≤3 mounted), the WebGL per-page context limit isn't a risk;
           // term.dispose() (runCleanup) frees the context on unmount.
@@ -244,14 +263,11 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           const renderer = terminalRenderer(isTauri(), navigator.userAgent);
           if (renderer === 'dom') {
             // Retained for explicit future compatibility overrides only.
-          } else if (renderer === 'canvas') {
-            try { term.loadAddon(new canvasMod.CanvasAddon()); } catch { /* stay on DOM */ }
           } else {
             try {
               const webgl = new webglMod.WebglAddon();
               webgl.onContextLoss(() => {
                 try { webgl.dispose(); } catch { /* ignore */ }
-                try { term?.loadAddon(new canvasMod.CanvasAddon()); } catch { /* stay on DOM */ }
               });
               term.loadAddon(webgl);
               repairGpuAfterWrite = () => {
@@ -260,9 +276,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
                   if (term && term.rows > 0) term.refresh(0, term.rows - 1);
                 } catch { /* ordinary rendering continues */ }
               };
-            } catch {
-              try { term.loadAddon(new canvasMod.CanvasAddon()); } catch { /* stay on DOM */ }
-            }
+            } catch { /* stay on DOM */ }
           }
           // onScroll is emitted for provider output, FitAddon, replay, and
           // programmatic restoration as well as for people. Arm it only from
@@ -346,13 +360,16 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       submitMessageRef.current = (data: string): Promise<void> =>
         submitSessionMessage(sessionId, data, activeServerId ?? undefined);
 
-      setExitInfo(null);
-      setResumedFromSeq(null);
-      // Fresh session: start from an empty bounded window. Activation loads
-      // an HTTP tail first; the WS then only replays small race deltas.
-      setClaudeEvents([]);
-      setHasEarlierClaudeEvents(false);
-      setLoadingEarlierClaudeEvents(false);
+      function resetSessionState(): void {
+        setExitInfo(null);
+        setStreamNotice(null);
+        setResumedFromSeq(null);
+        // Activation loads an HTTP tail; WS replay covers small race deltas.
+        setClaudeEvents([]);
+        setHasEarlierClaudeEvents(false);
+        setLoadingEarlierClaudeEvents(false);
+      }
+      resetSessionState();
 
       let ptyExited = false;
       // A runner socket can disappear without the provider process ending.
@@ -538,6 +555,18 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         beforeTerminalMutation();
         try {
           fit.fit();
+          // Android WebView applies the shell's CSS zoom to ordinary DOM but
+          // not to xterm's canvas bitmap. Fit therefore sees the inverse-scale
+          // layout width and leaves about 10% of a default-size phone unused.
+          // Add the columns represented by the shell scale; rows are already
+          // correct, and desktop/iOS never enter this compensation.
+          if (isTauri() && /Android/i.test(navigator.userAgent)) {
+            const container = containerElRef.current;
+            const scale = container
+              ? Number.parseFloat(getComputedStyle(container).getPropertyValue('--interface-scale'))
+              : 1;
+            if (scale > 1) term.resize(Math.floor(term.cols * scale), term.rows);
+          }
         } catch {
           // Fit can throw if the container has zero dims (eg the pane is
           // display:none on an inactive tab). Ignore — when the pane is
@@ -589,9 +618,18 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         }, delay);
       };
 
+      const onError = (msg: Extract<ServerMsg, { type: 'error' }>): void => {
+        reportTerminalError(msg, term, channel, () => {
+          ptyExited = true;
+          setStatus('closed');
+          setExitInfo({ code: null, signal: 'unknown-session' });
+        }, setStreamNotice);
+      };
+
       const onMessage = (msg: ServerMsg): void => {
         if (disposed) return;
         if (msg.type === 'hello') {
+          setStreamNotice(null);
           if (msg.session.unreachable) {
             runnerUnavailable = true;
             setStatus('reconnecting');
@@ -688,18 +726,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           return;
         }
         if (msg.type === 'error') {
-          term?.writeln(`\r\n\x1b[31m[error] ${msg.message}\x1b[0m`);
-          // "unknown session <id>" means this session id doesn't exist
-          // server-side anymore — typically a stale pop-out window
-          // pointing at a session that's since been killed/recreated.
-          // Mark terminally dead so the user sees ONE error message
-          // instead of a reconnect-spam wave.
-          if (/unknown session/i.test(msg.message)) {
-            ptyExited = true;
-            setStatus('closed');
-            setExitInfo({ code: null, signal: 'unknown-session' });
-            channel?.detach();
-          }
+          onError(msg);
           return;
         }
         if (msg.type === 'claudeEvent') {
@@ -760,6 +787,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           return true;
         });
         window.addEventListener('resize', onResize);
+        window.visualViewport?.addEventListener('resize', onResize);
         ro = new ResizeObserver(onResize);
         const c = containerElRef.current;
         if (c) ro.observe(c);
@@ -868,6 +896,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       // outer-effect cleanup invokes this if it's set.
       runCleanup = () => {
         window.removeEventListener('resize', onResize);
+        window.visualViewport?.removeEventListener('resize', onResize);
         ro?.disconnect();
         if (resizeSendTimer !== null) window.clearTimeout(resizeSendTimer);
         clearRunnerReconnect();
@@ -910,6 +939,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
   return {
     containerRef,
     status,
+    streamNotice,
     exitInfo,
     resumedFromSeq,
     sendInputRef,

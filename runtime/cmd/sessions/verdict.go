@@ -87,26 +87,12 @@ func (a *app) resolveSessionOrLaneID(idOrPrefix string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, candidate := range sessions {
-		if candidate.ID == idOrPrefix {
-			return candidate.ID, nil
-		}
+	id, found, resolveErr := resolveIDPrefix(idOrPrefix, "session", "sessions ls", candidatesForSessions(a, sessions))
+	if resolveErr != nil {
+		return "", resolveErr
 	}
-	matches := make([]session, 0)
-	for _, candidate := range sessions {
-		if strings.HasPrefix(candidate.ID, idOrPrefix) {
-			matches = append(matches, candidate)
-		}
-	}
-	if len(matches) == 1 {
-		return matches[0].ID, nil
-	}
-	if len(matches) > 1 {
-		var lines strings.Builder
-		for _, candidate := range matches {
-			fmt.Fprintf(&lines, "  %s  %s\n", prefixString(candidate.ID, 8), a.sessionLabel(candidate))
-		}
-		return "", fail(1, "ambiguous session prefix '%s' — matches:\n%srun `sessions ls`", idOrPrefix, lines.String())
+	if found {
+		return id, nil
 	}
 	if err := verdictprotocol.ValidateID(idOrPrefix); err != nil {
 		return "", fail(1, "%s", err)

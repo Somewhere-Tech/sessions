@@ -21,11 +21,22 @@
 .usage-segmented button.is-active { background: var(--bg-elev-3); color: var(--fg); box-shadow: inset 0 0 0 1px var(--border); }
 .usage-fleet-status { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin: -4px 0 14px; padding: 9px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elev-1); color: var(--fg-dim); font-size: 12px; }
 .usage-fleet-status strong { color: var(--fg); }
-.usage-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.usage-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .usage-kpi { display: flex; min-width: 0; flex-direction: column; gap: 4px; padding: 13px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev-1); }
 .usage-kpi > span { color: var(--fg-faint); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
-.usage-kpi strong { color: var(--fg); font: 600 22px/1.15 var(--font-mono); }
+.usage-kpi strong { color: var(--fg); font: 600 28px/1.2 var(--font-ui); letter-spacing: -.025em; }
 .usage-kpi small { overflow: hidden; color: var(--fg-faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.usage-token-mix { padding: 18px; margin-bottom: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev-1); }
+.usage-token-mix h2 { margin: 0 0 16px; font-size: 15px; }
+.usage-token-mix p { margin: 14px 0 0; color: var(--fg-dim); font-size: 12px; line-height: 1.5; }
+.usage-token-track { display: flex; height: 16px; overflow: hidden; border-radius: 8px; background: var(--bg-base); }
+.usage-token-mix .is-input { background: #818cf8; }
+.usage-token-mix .is-cache { background: var(--accent); }
+.usage-token-mix .is-output { background: #fbbf24; }
+.usage-token-legend { display: flex; gap: 10px 22px; flex-wrap: wrap; margin-top: 14px; font-size: 12px; }
+.usage-token-legend > span { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-dim); }
+.usage-token-legend strong { color: var(--fg); }
+.usage-token-legend i { width: 8px; height: 8px; border-radius: 50%; }
 .usage-panel { overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev-1); }
 .usage-panel > header { display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--bg-elev-2); }
 .usage-panel > header h2 { margin: 0; font-size: 12px; }

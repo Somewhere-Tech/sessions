@@ -277,30 +277,22 @@ func (a *app) resolveWaitTarget(idOrPrefix string) (waitTarget, error) {
 }
 
 func selectWaitTarget(idOrPrefix string, candidates []waitTarget) (waitTarget, error) {
+	ids := make([]idCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if candidate.id == idOrPrefix {
-			if candidate.cwd == "" {
-				return waitTarget{}, fail(1, "session %s has no cwd", candidate.id)
-			}
-			return candidate, nil
-		}
+		ids = append(ids, labeledID(candidate.id, candidate.cwd))
 	}
-	matches := make([]waitTarget, 0, 2)
-	for _, candidate := range candidates {
-		if strings.HasPrefix(candidate.id, idOrPrefix) {
-			matches = append(matches, candidate)
-		}
+	id, found, err := resolveIDPrefix(idOrPrefix, "session", "sessions ls", ids)
+	if err != nil {
+		return waitTarget{}, err
 	}
-	if len(matches) == 1 {
-		if matches[0].cwd == "" {
-			return waitTarget{}, fail(1, "session %s has no cwd", matches[0].id)
-		}
-		return matches[0], nil
-	}
-	if len(matches) == 0 {
+	if !found {
 		return waitTarget{}, fail(1, "%s", unknownSessionMessage(idOrPrefix))
 	}
-	return waitTarget{}, fail(1, "ambiguous session prefix '%s' — run `sessions ls`", idOrPrefix)
+	matched := candidates[candidateIndex(id, ids)]
+	if matched.cwd == "" {
+		return waitTarget{}, fail(1, "session %s has no cwd", matched.id)
+	}
+	return matched, nil
 }
 
 func (a *app) runnerMetadataTargets() ([]waitTarget, error) {

@@ -63,7 +63,10 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 	if parent.Permissions != state.PermissionsConstrained || parent.Lifecycle != state.LifecycleSession {
 		t.Fatalf("root execution policy = permissions %q lifecycle %q", parent.Permissions, parent.Lifecycle)
 	}
-	if child.Permissions != state.PermissionsConstrained || child.Lifecycle != state.LifecycleSession {
+	// Delegated work runs on its own by default: an agent-created child gets
+	// full access unless the machine was set to inheritance. Lifecycle still
+	// defaults to a durable session, never a bounded task.
+	if child.Permissions != state.PermissionsFull || child.Lifecycle != state.LifecycleSession {
 		t.Fatalf("delegated execution policy = permissions %q lifecycle %q", child.Permissions, child.Lifecycle)
 	}
 	userChild, err := manager.Create(context.Background(), state.CreateSessionRequest{
@@ -78,10 +81,32 @@ func TestCreateProvenanceGraphValidationAndDeadParentClassification(t *testing.T
 	if userChild.Lifecycle != state.LifecycleSession {
 		t.Fatalf("user-created child lifecycle = %q, want session", userChild.Lifecycle)
 	}
+	// When the person chose inheritance, a child asking for more than its
+	// constrained parent has is refused; that is the boundary "a child cannot
+	// widen its own access" protects.
+	if err := state.SaveSettings(config.SettingsPath, state.Settings{
+		Delegation: &state.DelegationSettings{Access: state.DelegatedAccessConsentInherited},
+		Onboarding: &state.OnboardingSettings{
+			Version: state.OnboardingCurrentVersion, RemoteControlConsent: state.RemoteControlConsentLocalOnly,
+			DelegatedAccessConsent: state.DelegatedAccessConsentInherited,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, createErr := manager.Create(context.Background(), state.CreateSessionRequest{
 		Cmd: "codex", Cwd: root, CreatorSessionID: parent.ID, Permissions: state.PermissionsFull,
 	}); createErr == nil || !strings.Contains(createErr.Error(), "cannot exceed its parent's permissions") {
 		t.Fatalf("child permission escalation err=%v", createErr)
+	}
+	masqueraded, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "codex", Cwd: root, CreatorSessionID: parent.ID, DelegationKind: "user",
+		Args: []string{"--dangerously-bypass-approvals-and-sandbox"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if masqueraded.Permissions != state.PermissionsConstrained || slices.Contains(masqueraded.Args, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("presentation kind bypassed inherited policy: %#v", masqueraded)
 	}
 	if err := state.SaveSettings(config.SettingsPath, state.Settings{
 		Delegation: &state.DelegationSettings{Access: state.DelegatedAccessConsentAutonomous},

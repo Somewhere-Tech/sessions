@@ -21,9 +21,9 @@ import type { SessionInfo } from '../types';
 //
 // ── Precedence, and why it is in this order ────────────────────────────────
 //
-// 1. unavailable / reconnecting — session.unreachable. When the daemon still
-//    has a process identity it is actively reconnecting. A restored record
-//    with no process identity cannot honestly promise that; it says
+// 1. unavailable / reconnecting — session.unreachable. A runnerGone probe or
+//    a restored record with no process identity cannot honestly promise a
+//    reconnect; it says
 //    "Connection lost" while preserving the saved record and never inventing
 //    an exit. Both outrank stale provenance and activity hints.
 //
@@ -33,7 +33,11 @@ import type { SessionInfo } from '../types';
 //    true of live sessions too (provenanceStatus 'lost'/'invalid' without an
 //    exit frame). Nothing below it may hide it.
 //
-// 2. ended — session.exited. Exit is terminal and it outranks every live
+// 3. provider-down / auth-needed / failed — a provider turn fault. These are
+//    ranked with a crashed runtime because the current turn did not complete,
+//    but they keep their actionable cause and provider-specific wording.
+//
+// 4. ended — session.exited. Exit is terminal and it outranks every live
 //    hint below, because `working` and `idleReason` describe a process that
 //    no longer exists. A dead runtime cannot be waiting for you, so an exited
 //    record whose idleReason was frozen at 'needs-input' reads "Ended"
@@ -42,7 +46,7 @@ import type { SessionInfo } from '../types';
 //    reaches the UI from a cached, adopted, or fleet-snapshot record. Those
 //    are exactly the records that used to make two surfaces disagree.)
 //
-// 3. needs-you — idleReason === 'needs-input'. Deliberately ABOVE `working`,
+// 5. needs-you — idleReason === 'needs-input'. Deliberately ABOVE `working`,
 //    reversing what FleetView/HomeView/SessionNavigator each did before.
 //    docs/PRINCIPLES.md: provider approval prompts "are durable needs-input
 //    state for users and agents", and "cleanup must never hide an unresolved
@@ -57,9 +61,9 @@ import type { SessionInfo } from '../types';
 //    stop_reason 'tool_use' — which is precisely a tool waiting on the user's
 //    approval. That surface used to label a pending approval "Working".
 //
-// 4. working.
+// 6. working.
 //
-// 5. limited — isDegradedSession(). The agent is alive and answering; one
+// 7. limited — isDegradedSession(). The agent is alive and answering; one
 //    optional capability (typically an MCP server) did not start. Per
 //    "Calm, literal lifecycle language" this is not an alarm and it is not a
 //    question, so it must NOT inflate a "Needs you" count — that was the
@@ -67,10 +71,10 @@ import type { SessionInfo } from '../types';
 //    is actively working says so; `degraded` stays exposed on the result for
 //    surfaces that want to badge it alongside.
 //
-// 6. finished — live, idleReason 'completed'. The provider run finished but
+// 8. finished — live, idleReason 'completed'. The provider run finished but
 //    the runtime is still up and resumable.
 //
-// 7. not-started / 8. ready — idle with and without a recorded reason.
+// 9. not-started / 10. ready — idle with and without a recorded reason.
 //
 // Unknown idle state is never escalated: a provider that can recognise a
 // question records needs-input explicitly, and guessing would alarm the user
@@ -80,7 +84,10 @@ import type { SessionInfo } from '../types';
 export type SessionStatusState =
   | 'reconnecting'
   | 'unavailable'
+  | 'needs-recovery'
   | 'failed'
+  | 'provider-down'
+  | 'auth-needed'
   | 'ended'
   | 'needs-you'
   | 'working'
@@ -111,14 +118,17 @@ export interface SessionStatus {
   needsYou: boolean;
   /** Ended cleanly, or live with the provider run completed. */
   finished: boolean;
-  /** needs-you, failed, or limited — worth surfacing above routine work. */
+  /** A recovery, provider, question, crash, or capability issue worth surfacing. */
   wantsAttention: boolean;
 }
 
 const STATE_LABELS: Record<SessionStatusState, string> = {
   reconnecting: 'Connecting…',
   unavailable: 'Not connected',
+  'needs-recovery': 'Needs recovery',
   failed: 'Failed',
+  'provider-down': 'Provider unavailable',
+  'auth-needed': 'Needs login',
   ended: 'Ended',
   'needs-you': 'Needs you',
   working: 'Working',
@@ -131,7 +141,10 @@ const STATE_LABELS: Record<SessionStatusState, string> = {
 const STATE_TONES: Record<SessionStatusState, SessionStatusTone> = {
   reconnecting: 'ready',
   unavailable: 'ended',
+  'needs-recovery': 'needs',
   failed: 'attention',
+  'provider-down': 'attention',
+  'auth-needed': 'needs',
   ended: 'ended',
   'needs-you': 'needs',
   working: 'working',
@@ -152,30 +165,84 @@ export interface ClassifyOptions {
 }
 
 function statusState(session: SessionInfo, options: ClassifyOptions): SessionStatusState {
-  if (session.unreachable) return session.pid && session.pid > 0 ? 'reconnecting' : 'unavailable';
+  if (session.unreachableReason === 'restart-restore-pending') return 'needs-recovery';
+  if (session.unreachable) return !session.runnerGone && session.pid && session.pid > 0 ? 'reconnecting' : 'unavailable';
   if (isCrashedSession(session)) return 'failed';
+  if (session.failureKind === 'auth') return 'auth-needed';
+  if (session.failureKind === 'provider-unavailable' || session.failureKind === 'rate-limited') return 'provider-down';
+  if (session.failureKind === 'other') return 'failed';
   if (session.exited) return 'ended';
   if (session.idleReason === 'needs-input') return 'needs-you';
   if (options.working ?? session.working) return 'working';
   if (isDegradedSession(session)) return 'limited';
   if (session.idleReason === 'completed') return 'finished';
-  if (session.idleReason === 'never-started') return 'not-started';
+  // A replacement runtime has not started a new turn, but the preserved
+  // conversation has already begun. Do not call that conversation new.
+  if (session.idleReason === 'never-started') return session.resumedFrom ? 'ready' : 'not-started';
   return 'ready';
 }
 
 /** The single source of truth for "what state is this session in?". */
 export function classifySession(session: SessionInfo, options: ClassifyOptions = {}): SessionStatus {
   const state = statusState(session, options);
+  const label = state === 'provider-down'
+    ? session.failureKind === 'rate-limited'
+      ? 'Rate limited'
+      : session.failureProvider === 'codex'
+        ? 'Codex unavailable'
+        : session.failureProvider === 'claude'
+          ? 'Claude unavailable'
+          : STATE_LABELS[state]
+    : STATE_LABELS[state];
   return {
     state,
-    label: STATE_LABELS[state],
+    label,
     className: `is-${state}`,
     tone: STATE_TONES[state],
     degraded: isDegradedSession(session),
     needsYou: state === 'needs-you',
     finished: state === 'ended' || state === 'finished',
-    wantsAttention: state === 'needs-you' || state === 'failed' || state === 'limited'
+    // A lost session is not coming back on its own — unlike a runner the
+    // daemon is still reconnecting to — so it is worth surfacing. The reason
+    // is what distinguishes the two; without one this stays as it was.
+    wantsAttention: state === 'needs-recovery' || state === 'needs-you' || state === 'failed'
+      || state === 'provider-down' || state === 'auth-needed' || state === 'limited'
+      || Boolean(session.lostReason)
   };
+}
+
+/**
+ * Why a lost session is lost, in one sentence, with what to do about it.
+ *
+ * "Lost" on its own is a dead end: the founder's seven sessions after a reboot
+ * said nothing more, though the daemon knew the machine had restarted under
+ * them. Empty when the session is not lost, so a surface can render it or not
+ * without asking a second question.
+ */
+export function lostSessionNote(session: SessionInfo): string {
+  if (!session.lostReason) return '';
+  const when = session.lostAt ? ` ${relativeWhen(session.lostAt)}` : '';
+  switch (session.lostReason) {
+    case 'machine rebooted':
+      return `Lost when this machine restarted${when} · Resume to continue`;
+    case 'runner exited':
+      return `The agent's process ended${when} · Resume to continue`;
+    default:
+      return `Sessions lost contact with this agent${when} · Resume to continue`;
+  }
+}
+
+function relativeWhen(at: number): string {
+  const minutes = Math.round((Date.now() - at) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+export function sessionHasProviderFault(session: SessionInfo): boolean {
+  return Boolean(session.failureKind);
 }
 
 /** Convenience predicates. Every one of them defers to classifySession. */
@@ -223,6 +290,7 @@ export function continuationSession(session: SessionInfo, allSessions: SessionIn
 
 export function isDegradedSession(session: SessionInfo): boolean {
   return !session.exited
+    && !session.failureKind
     && session.idleReason === 'failed'
     && session.provenanceStatus !== 'lost'
     && session.provenanceStatus !== 'invalid';

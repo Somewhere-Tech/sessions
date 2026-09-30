@@ -13,8 +13,8 @@ import { readWindowScope } from './windowScope';
 // have multiple — their Mac Mini on Tailscale, their local MacBook, a Fly
 // machine, etc. — and switch between them. The frontend changes its REST/WS
 // base URLs based on whichever server is active. Browser builds persist the
-// complete list in localStorage. Windows native builds keep only non-secret
-// metadata there and hydrate tokens from the signed-in user's DPAPI vault
+// complete list in localStorage. Windows and Apple native builds keep only non-secret
+// metadata there and hydrate tokens from the signed-in user's OS credential vault
 // before the first daemon request.
 
 export interface ServerConfig {
@@ -41,6 +41,23 @@ export interface ServerConfig {
   // Transport scheme.  Defaults to 'http' so existing stored configs
   // (which have no scheme field) continue to work without migration.
   scheme?: 'http' | 'https';
+  transport?: 'lan' | 'tailnet' | 'tailnet-ip' | 'relay';
+  basePath?: string;
+  transportCandidates?: Array<{
+		endpoint: string;
+		transport: 'lan' | 'tailnet' | 'tailnet-ip' | 'relay';
+  }>;
+	sources?: Array<'saved' | 'bonjour' | 'account'>;
+	directoryOnly?: boolean;
+  lanEndpoint?: string;
+  tailnetEndpoint?: string;
+  tailnetIpEndpoint?: string;
+  relayEndpoint?: string;
+  // Client-only viewers reach inherited fleet machines through the one host
+  // they paired with. These runtime-only fields are never persisted: the host
+  // remains the credential owner and refreshes the inherited set.
+  relayParentId?: string;
+  relayMachineId?: string;
 }
 
 function friendlyReportedMachineName(value: string): string {
@@ -133,11 +150,16 @@ function withoutTokens(servers: ServerConfig[]): ServerConfig[] {
   return servers.map(({ token: _token, ...server }) => server);
 }
 
+function persistentServers(servers: ServerConfig[]): ServerConfig[] {
+  return servers.filter((server) => !server.relayMachineId);
+}
+
 function writeServerMetadata(servers: ServerConfig[]): boolean {
   try {
+    const persistent = persistentServers(servers);
     window.localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify(nativeCredentialStoreEnabled ? withoutTokens(servers) : servers)
+      JSON.stringify(nativeCredentialStoreEnabled ? withoutTokens(persistent) : persistent)
     );
     return true;
   } catch {
@@ -146,7 +168,7 @@ function writeServerMetadata(servers: ServerConfig[]): boolean {
 }
 
 function machineCredentials(servers: ServerConfig[]): NativeMachineCredential[] {
-  return servers.flatMap((server) => server.token
+  return servers.flatMap((server) => !server.relayMachineId && server.token
     ? [{ serverId: server.id, token: server.token }]
     : []);
 }
@@ -174,11 +196,11 @@ async function persistServers(servers: ServerConfig[]): Promise<void> {
     .then(async () => {
       const previous = await loadNativeMachineCredentials();
       if (!previous.supported) {
-        throw new Error('The protected Windows machine credential store is unavailable.');
+        throw new Error('The protected machine credential store is unavailable.');
       }
       const stored = await saveNativeMachineCredentials(credentials);
       if (!stored.supported || !credentialsMatch(credentials, stored.credentials)) {
-        throw new Error('Sessions could not verify the protected Windows machine credentials.');
+        throw new Error('Sessions could not verify the protected machine credentials.');
       }
       if (!writeServerMetadata(servers)) {
         try {
@@ -191,7 +213,7 @@ async function persistServers(servers: ServerConfig[]): Promise<void> {
           }
         } catch {
           nativeCredentialStoreBlockedError = new Error(
-            'Sessions could not finish or safely roll back the protected Windows credential update. Reopen the app before changing saved machines.'
+            'Sessions could not finish or safely roll back the protected credential update. Reopen the app before changing saved machines.'
           );
           throw nativeCredentialStoreBlockedError;
         }
@@ -291,10 +313,11 @@ interface ServersStore {
   // blocks all connection attempts until restart so no request can run with
   // missing, stale, or unverified credentials.
   credentialError: string | null;
+  credentialProtection: 'protected' | 'local' | 'unknown';
   addServer: (s: Omit<ServerConfig, 'id' | 'isDefault'>) => Promise<ServerConfig>;
   removeServer: (id: string) => Promise<void>;
   // Patch fields on an existing server (e.g. save a token entered after a
-  // 401, or flip scheme). Windows resolves only after DPAPI persistence.
+  // 401, or flip scheme). Protected native builds resolve only after vault persistence.
   updateServer: (
     id: string,
     updates: Partial<Omit<ServerConfig, 'id' | 'isDefault'>>
@@ -328,6 +351,7 @@ export const useServers = create<ServersStore>((set, get) => ({
   tokenRequiredServerId: null,
   pairingError: null,
   credentialError: null,
+  credentialProtection: 'unknown',
 
   addServer: async (s) => {
     const next: ServerConfig = {
@@ -353,7 +377,7 @@ export const useServers = create<ServersStore>((set, get) => ({
     // removing the final one returns the user to the connection screen.
     const target = state.servers.find((server) => server.id === id);
     if (!target || target.isDefault) return;
-    const servers = state.servers.filter((server) => server.id !== id);
+    const servers = state.servers.filter((server) => server.id !== id && server.relayParentId !== id);
     const activeId = state.activeId === id
       ? (servers.find((server) => server.isDefault) ?? servers[0])?.id ?? null
       : state.activeId;
@@ -519,63 +543,29 @@ function hasStoredServerList(): boolean {
   }
 }
 
-// A non-8787 page may still be the UI served by sessionsd itself (for example
-// its Tailscale HTTPS origin). With no saved configuration, probe that origin
-// and adopt it only when the response identifies a daemon. Static hosted
-// shells fall through unchanged when /api/health is absent or not sessionsd.
-//
-// This used to be a bare `fetch` with its own health test — `ok === true ||
-// typeof name === 'string'` — which is strictly weaker than the client's
-// `validateServerHealth`: it never looked at `compatibility.api`, so a daemon
-// whose API range excludes this client was adopted silently, and the user got
-// whatever confusing failure came next instead of the "Update Sessions on
-// this device or the host" message that every other entry point produces. It
-// now goes through the central client, which injects auth, translates 401,
-// and runs the range check.
-//
-// The import is dynamic on purpose: api/sessionsd.ts imports this module for
-// its server resolution, so a static import would close a module cycle for
-// one startup probe.
-export async function bootstrapCurrentOriginServer(): Promise<void> {
-  if (typeof window === 'undefined') return;
-  if (useServers.getState().servers.length > 0 || hasStoredServerList()) return;
+export function currentOriginBootstrapCandidate(): ServerConfig | null {
+  if (typeof window === 'undefined') return null;
+  if (useServers.getState().servers.length > 0 || hasStoredServerList()) return null;
 
   // The existing 8787 embeddedServer() path remains the fast path and must
   // never wait for a startup probe.
-  if (embeddedServer()) return;
-
-  const { AuthError, ServerCompatibilityError, fetchServerHealth } = await import('../api/sessionsd');
-
-  let tokenRequired = false;
-  try {
-    await fetchServerHealth(currentOriginServer());
-  } catch (error) {
-    if (error instanceof AuthError) {
-      // A daemon that answers 401 has identified itself well enough to adopt;
-      // the token prompt is the next step, not a dead end.
-      tokenRequired = true;
-    } else if (error instanceof ServerCompatibilityError) {
-      // Reachable, definitely sessionsd, and unusable by this client. Adopting
-      // it would hide that; say so on the connect surface instead.
-      useServers.getState().setPairingError(error.message);
-      return;
-    } else {
-      // Unreachable, not a daemon, or an unrecognisable body: a static hosted
-      // shell. Fall through silently exactly as before.
-      return;
-    }
-  }
-
-  await adoptCurrentOriginServer(undefined, tokenRequired);
+  if (embeddedServer()) return null;
+  return currentOriginServer();
 }
 
-// Windows moves legacy plaintext tokens out of WebView localStorage before
+// Protected native builds move legacy plaintext tokens out of WebView localStorage before
 // any bootstrap path can issue a daemon request. The plaintext copy is removed
-// only after the DPAPI-backed native store has saved and read back every token.
+// only after the OS-backed native store has saved and read back every token.
 export async function hydrateNativeMachineCredentials(): Promise<void> {
-  if (!isTauri()) return;
+  if (!isTauri()) {
+    useServers.setState({ credentialProtection: 'local' });
+    return;
+  }
   const native = await loadNativeMachineCredentials();
-  if (!native.supported) return;
+  if (!native.supported) {
+    useServers.setState({ credentialProtection: 'local' });
+    return;
+  }
   nativeCredentialStoreEnabled = true;
 
   const state = useServers.getState();
@@ -597,7 +587,7 @@ export async function hydrateNativeMachineCredentials(): Promise<void> {
   } else {
     writeServerMetadata(servers);
   }
-  useServers.setState({ servers });
+  useServers.setState({ servers, credentialProtection: 'protected' });
 }
 
 export function blockNativeMachineCredentialPersistence(detail: string): void {
@@ -611,11 +601,15 @@ export function blockNativeMachineCredentialPersistence(detail: string): void {
 export async function syncNativeAgentMachineAccess(): Promise<void> {
   if (!isTauri()) return;
   const machines = useServers.getState().servers.flatMap((server) => {
-    if (server.isDefault || !server.machineId || !server.token) return [];
+    if (server.isDefault || server.relayMachineId || !server.machineId || !server.deviceId || !server.token) return [];
     return [{
       machineId: server.machineId,
       name: serverDisplayName(server),
       endpoint: `${server.scheme ?? 'http'}://${server.host}:${server.port}`,
+      ...(server.lanEndpoint ? { lanEndpoint: server.lanEndpoint } : {}),
+      ...(server.tailnetEndpoint ? { tailnetEndpoint: server.tailnetEndpoint } : {}),
+      ...(server.tailnetIpEndpoint ? { tailnetIpEndpoint: server.tailnetIpEndpoint } : {}),
+      ...(server.relayEndpoint ? { relayEndpoint: server.relayEndpoint } : {}),
       ...(server.deviceId ? { deviceId: server.deviceId } : {}),
       token: server.token
     }];

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -90,5 +91,41 @@ func TestRunnerCommandPathUsesRunnerEnvironment(t *testing.T) {
 	}
 	if _, ok := runnerCommandPath("missing-agent", root, userBin+":/usr/bin"); ok {
 		t.Fatal("runnerCommandPath unexpectedly found missing agent")
+	}
+}
+
+func TestLaunchdJobAbsentRecognizesUnloadedService(t *testing.T) {
+	for _, output := range []string{
+		"Boot-out failed: 3: No such process",
+		"Could not find service tech.somewhere.sessions.runner.example",
+	} {
+		if !launchdJobAbsent([]byte(output)) {
+			t.Fatalf("launchdJobAbsent(%q) = false", output)
+		}
+	}
+	if launchdJobAbsent([]byte("operation not permitted")) {
+		t.Fatal("launchd permission failure was treated as an absent job")
+	}
+}
+
+// Reported from a Linux host: every launch failed with
+// `launchctl bootstrap …: executable file not found in $PATH`, which names
+// neither the launcher that assumed launchd nor the platform that has none.
+// Preflight is where a launch is refused, and the refusal has to be readable.
+func TestLaunchdPreflightSaysWhenThisMachineHasNoLaunchd(t *testing.T) {
+	t.Setenv("PATH", filepath.Join(t.TempDir(), "empty"))
+	launcher := NewLaunchdLauncher(Config{RunnerStateDir: t.TempDir()})
+
+	err := launcher.Preflight(proto.LaunchRequest{
+		Info: proto.RunnerInfo{ID: "no-launchd", Cmd: "sh", Cwd: t.TempDir()},
+		Env:  map[string]string{"PATH": "/bin:/usr/bin"},
+	})
+	if err == nil {
+		t.Fatal("Preflight() accepted a launch on a machine with no launchctl")
+	}
+	for _, want := range []string{"launchd", runtime.GOOS, "SESSIONS_LAUNCHER=detached"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Preflight() = %v, want it to mention %q", err, want)
+		}
 	}
 }

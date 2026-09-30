@@ -1,0 +1,7 @@
+{
+  "BackendState": "Running",
+  "Self": {
+    "DNSName": "mac-mini-313.tail61417e.ts.net.",
+    "TailscaleIPs": ["100.100.20.30"]
+  }
+}

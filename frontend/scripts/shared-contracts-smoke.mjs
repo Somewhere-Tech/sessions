@@ -132,27 +132,39 @@ try {
 }
 
 // ── Single-implementation checks ───────────────────────────────────────────
-const [app, resumeDialog, pairingHook, connectScreen, fleetView, connectionsView] = await Promise.all([
+const [app, resumeDialog, resumeActions, paidStartPlan, paidStartHook, forkConfirmation, pairingHook, connectScreen, fleetView, connectionsView] = await Promise.all([
   source('src/App.tsx'),
   source('src/components/ResumeDialog.tsx'),
+  source('src/components/ResumeActions.tsx'),
+  source('src/components/PaidStartPlan.tsx'),
+  source('src/hooks/usePaidStartPlan.ts'),
+  source('src/components/ForkConfirmationDialog.tsx'),
   source('src/hooks/useMachineAccessPairing.ts'),
   source('src/components/ConnectScreen.tsx'),
   source('src/components/FleetView.tsx'),
   source('src/components/ConnectionsView.tsx')
 ]);
 
-for (const [name, surface] of [['App.tsx', app], ['ResumeDialog.tsx', resumeDialog]]) {
-  assert.match(surface, /adoptConversationWithRepair/, `${name} must use the shared adopt path`);
-  assert.doesNotMatch(surface, /\bawait adoptConversation\(/, `${name} must not adopt directly`);
+assert.match(resumeDialog, /<ResumeActions/, 'ResumeDialog.tsx must delegate continuation actions');
+for (const [name, surface] of [['ResumeActions.tsx', resumeActions], ['ForkConfirmationDialog.tsx', forkConfirmation]]) {
+  assert.match(surface, /<PaidStartPlan/, `${name} must use the shared paid-start confirmation`);
+  assert.match(surface, /usePaidStartPlan/, `${name} must use the shared paid-start state`);
 }
-assert.match(app, /setAdoptionNotice\(adoptionWarning\(adopted\)\)/,
-  'App.tsx must put an unfinished adoption on screen, not in the console');
+assert.match(paidStartPlan, /Nothing runs until you press Start/,
+  'the shared paid-start confirmation must make the no-start boundary explicit');
+assert.match(paidStartPlan, /Access policy/,
+  'the shared paid-start confirmation must disclose access');
+assert.match(paidStartHook, /isDefault/,
+  'the shared paid-start hook must preselect the provider default model');
+assert.match(app, /useExactResume\(openSession\)/,
+  'An already selected conversation resumes directly through the scoped resume hook');
+assert.doesNotMatch(app, /\bawait forkConversation\(/,
+  'Forking must still open the shared confirmation');
 assert.doesNotMatch(app, /console\.warn\(['"`]Sessions resumed/,
   'a failed repair must never be downgraded to a console warning');
 
 assert.match(pairingHook, /denied: 'The other machine denied this request\.'/);
 for (const [name, surface] of [
-  ['ConnectScreen.tsx', connectScreen],
   ['FleetView.tsx', fleetView],
   ['ConnectionsView.tsx', connectionsView]
 ]) {
@@ -164,5 +176,9 @@ for (const [name, surface] of [
   // pairing copy is not what this checks.
   assert.doesNotMatch(surface, /at the other Mac/, `${name} must not carry its own expiry wording`);
 }
+assert.match(connectScreen, /scanPairingCode/,
+  'ConnectScreen.tsx must use consent-by-possession pairing');
+assert.doesNotMatch(connectScreen, /claimNative(Machine|Tailnet|Nearby)Access/,
+  'ConnectScreen.tsx must not reintroduce a request/accept poll');
 
 console.log('shared contracts smoke: ok');

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
 
@@ -24,6 +25,18 @@ type apiClient struct {
 	client         *http.Client
 	creatorSession string
 	ownerID        string
+	pathPrefix     string
+	relayEndpoint  string
+}
+
+func (c *apiClient) withFleetRelay(machine savedMachine) (*apiClient, error) {
+	client, err := newAPIClient(c.host, c.port, c.tokenPath, c.localToken)
+	if err != nil {
+		return nil, err
+	}
+	client.pathPrefix = "/api/fleet/" + url.PathEscape(machine.MachineID)
+	client.relayEndpoint = machine.Endpoint
+	return client, nil
 }
 
 type apiResponse struct {
@@ -90,6 +103,7 @@ func (c *apiClient) close() {
 }
 
 func (c *apiClient) target(path string) (*url.URL, error) {
+	path = c.pathPrefix + path
 	if strings.HasPrefix(strings.ToLower(c.host), "http://") || strings.HasPrefix(strings.ToLower(c.host), "https://") {
 		parsed, err := url.Parse(c.host)
 		if err != nil {
@@ -226,7 +240,7 @@ func (c *apiClient) requestWithHeaders(
 	}
 	response, err := c.client.Do(request)
 	if err != nil {
-		return apiResponse{}, err
+		return apiResponse{}, localnetwork.Explain(c.host, err)
 	}
 	defer response.Body.Close()
 	encoded, err := io.ReadAll(response.Body)
@@ -247,7 +261,7 @@ func (a *app) getJSON(path string, target any) error {
 		}
 	}
 	if response.status >= 400 {
-		return fail(2, "%s → %d %s", path, response.status, prefixBytes(response.body, 200))
+		return apiReadFailure(path, response)
 	}
 	if err := json.Unmarshal(response.body, target); err != nil {
 		return err
@@ -319,6 +333,12 @@ func (a *app) delete(path string, body any) (bool, error) {
 		return false, err
 	}
 	if response.status >= 400 && response.status != http.StatusNotFound {
+		var payload struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(response.body, &payload) == nil && payload.Error != "" {
+			return false, fail(2, "%s", payload.Error)
+		}
 		return false, fail(2, "%s → %d", path, response.status)
 	}
 	return response.status == http.StatusOK, nil
@@ -336,9 +356,32 @@ func (a *app) getText(path string) (string, error) {
 		return "", nil
 	}
 	if response.status >= 400 {
-		return "", fail(2, "%s → %d", path, response.status)
+		return "", apiReadFailure(path, response)
 	}
 	return string(response.body), nil
+}
+
+func apiReadFailure(path string, response apiResponse) error {
+	var payload struct {
+		Code   string `json:"code"`
+		Error  string `json:"error"`
+		Action string `json:"action"`
+	}
+	if json.Unmarshal(response.body, &payload) == nil && payload.Error != "" {
+		message := payload.Error
+		if payload.Code != "" {
+			message = payload.Code + ": " + message
+		}
+		if payload.Action != "" {
+			message += "; next: " + payload.Action
+		}
+		code := 2
+		if payload.Code == "SESSION_NEEDS_RECREATE" {
+			code = 4
+		}
+		return fail(code, "%s", message)
+	}
+	return fail(2, "%s → %d %s", path, response.status, prefixBytes(response.body, 200))
 }
 
 func prefixBytes(value []byte, count int) string {

@@ -102,7 +102,7 @@ export function ServerSelector(): JSX.Element {
                 <span className="server-selector-name">{s.name}</span>
                 <span className="server-selector-host">{formatServerEndpoint(s)}</span>
               </button>
-              {!s.isDefault ? (
+              {!s.isDefault && !s.relayMachineId ? (
                 <button
                   type="button"
                   className="server-selector-remove"

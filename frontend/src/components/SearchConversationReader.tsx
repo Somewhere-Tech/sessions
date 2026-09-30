@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { fetchServerHistoryTranscript, type HistoryTranscript } from '../api/sessionsd';
+import { harnessDisplay } from '../lib/harnessContent';
+import { fetchServerHistoryTranscript } from '../api/sessionsd';
 import {
   compactMachineName,
   compactPath,
@@ -10,6 +11,7 @@ import {
 } from '../lib/conversationBrowser';
 import type { ServerConfig } from '../lib/servers';
 import { operationLabel } from '../lib/searchFormatting';
+import { normalizeTranscriptIndexes } from '../lib/searchTranscript';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import type { SelectedConversation } from './SearchView';
 
@@ -187,8 +189,8 @@ export function ConversationReader({
             </div>
             <div className="search-conversation-actions">
               <span>{promptHistoryOnly
-                ? 'Sessions found Claude’s prompt index, but not a full local transcript. Resume restores this exact conversation in its recorded workspace.'
-                : 'Viewing is read-only. Resume opens this exact conversation in a new runtime.'}</span>
+                ? 'Sessions found the requests you sent Claude, but not the full conversation. You can reopen it only if Claude still has it.'
+                : 'Viewing does not change this conversation. Continue lets you choose the agent, model, and amount of history before anything is sent.'}</span>
               {canResume ? (
                 <button
                   type="button"
@@ -198,10 +200,10 @@ export function ConversationReader({
                     selected.serverId,
                     providerSessionID || historyID,
                     managedSourceSessionID(selected.sessionId),
-                    !providerSessionID || promptHistoryOnly ? historyID : undefined
+                    historyID
                   ); }}
                 >
-                  {continuing ? 'Resuming…' : 'Resume conversation'}
+                  {continuing ? 'Opening details…' : 'Continue conversation…'}
                 </button>
               ) : null}
             </div>
@@ -247,7 +249,7 @@ export function ConversationReader({
                     <span>
                       {isAnchor ? <span className="search-match-marker">Match</span> : null}
                       {message.role === 'user'
-                        ? <span className="search-role is-user">{message.author ? `${message.author.name} · via Sessions` : 'You said'}</span>
+                        ? <span className="search-role is-user">{harnessDisplay(message.text, message.author ? `${message.author.name} · via Sessions` : 'You said').speaker}</span>
                         : message.role === 'tool'
                           ? <span className="search-role is-tool">{operationLabel(message.kind)}</span>
                           : provider ? <ProviderBadge provider={provider} compact /> : <span className="search-role">Agent</span>}
@@ -263,7 +265,7 @@ export function ConversationReader({
                       <time>{message.timestamp ? relativeDate(message.timestamp) : ''}</time>
                     </span>
                   </header>
-                  <p>{message.text}</p>
+                  <p>{message.role === 'user' ? harnessDisplay(message.text, 'You said').text : message.text}</p>
                 </article>
               );
             })}
@@ -293,15 +295,4 @@ function ReaderButton({
   children: ReactNode;
 }): JSX.Element {
   return <button type="button" disabled={disabled} className={active ? 'is-active' : ''} onClick={onClick}>{children}</button>;
-}
-
-export function normalizeTranscriptIndexes(transcript: HistoryTranscript): HistoryTranscript {
-  return {
-    ...transcript,
-    messages: transcript.messages.map((message, index) => ({
-      ...message,
-      index: Number.isFinite(message.index) ? message.index : index,
-      id: message.id || `legacy:${Number.isFinite(message.index) ? message.index : index}`
-    }))
-  };
 }

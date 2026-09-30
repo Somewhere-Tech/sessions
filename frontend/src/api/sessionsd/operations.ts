@@ -1,6 +1,7 @@
-import type { ClaudeSessionEvent, CreateSessionRequest, DirectoryCandidate, SessionInfo } from '../../types';
+import type { ClaudeSessionEvent, CreateSessionRequest, DirectoryCandidate, ProviderFailureKind, ProviderRetry, SessionInfo } from '../../types';
 import { getActiveServer, type ServerConfig } from '../../lib/servers';
 import { randomUUID } from '../../lib/uuid';
+import { MessageDeliveryError } from '../../lib/messageDelivery';
 import {
   AuthError,
   apiFetch,
@@ -55,12 +56,89 @@ export interface ProviderStatus {
   latestVersion?: string;
   lastCheckedAt?: string;
   updateAvailable: boolean;
+  models?: SessionModelOption[];
+  modelsError?: string;
 }
 
-export async function fetchProviderStatuses(signal?: AbortSignal): Promise<ProviderStatus[]> {
-  const r = await apiFetch(`${httpBase()}/api/providers`, { signal });
+export async function fetchProviderStatuses(signal?: AbortSignal, includeModels = false): Promise<ProviderStatus[]> {
+  const suffix = includeModels ? '?include_models=1' : '';
+  const r = await apiFetch(`${httpBase()}/api/providers${suffix}`, { signal });
   const body = await featureJSON<{ providers: ProviderStatus[] }>(r, 'Provider status');
   return body.providers;
+}
+
+export interface ContinuationPreview {
+  conversation: string;
+  sourceProvider: 'claude' | 'codex';
+  destinationProvider: 'claude' | 'codex';
+  totalMessageCount: number;
+  messageCount: number;
+  characterCount: number;
+  estimatedTokens: number;
+  thresholdTokens: number;
+  limited: boolean;
+  sourceUntouched: boolean;
+}
+
+export interface ContinuationJobEvent {
+  stage: 'exporting-history' | 'creating-session' | 'provider-starting' | 'first-reply';
+  text: string;
+  at: number;
+}
+
+export interface ContinuationJob {
+  id: string;
+  status: 'running' | 'succeeded' | 'canceled' | 'failed';
+  stage: ContinuationJobEvent['stage'];
+  stageText: string;
+  provider: 'claude' | 'codex';
+  model?: string;
+  modelDisplayName?: string;
+  effort?: string;
+  laneId?: string;
+  preview?: ContinuationPreview;
+  events: ContinuationJobEvent[];
+  error?: string;
+  warning?: string;
+  failureKind?: ProviderFailureKind;
+  failureDetail?: string;
+  retry?: ProviderRetry;
+}
+
+export interface ContinuationRequest {
+  target: string;
+  historyId?: string;
+  sourceSessionId?: string;
+  destinationProvider: 'claude' | 'codex';
+  model?: string;
+  effort?: string;
+  messageLimit?: number;
+  confirmWholeHistory?: boolean;
+}
+
+export async function previewContinuation(request: ContinuationRequest, signal?: AbortSignal): Promise<ContinuationPreview> {
+  const r = await apiFetch(`${httpBase()}/api/recovery/continuation/preview`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request), signal
+  });
+  return json<ContinuationPreview>(r);
+}
+
+export async function startContinuation(request: ContinuationRequest): Promise<ContinuationJob> {
+  const r = await apiFetch(`${httpBase()}/api/recovery/continuation/jobs`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request)
+  });
+  return json<ContinuationJob>(r);
+}
+
+export async function fetchContinuationJob(id: string): Promise<ContinuationJob> {
+  const r = await apiFetch(`${httpBase()}/api/recovery/continuation/jobs/${encodeURIComponent(id)}`);
+  return json<ContinuationJob>(r);
+}
+
+export async function cancelContinuationJob(id: string): Promise<ContinuationJob> {
+  const r = await apiFetch(`${httpBase()}/api/recovery/continuation/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return json<ContinuationJob>(r);
 }
 
 export async function updateProvider(id: ProviderStatus['id']): Promise<{ provider: ProviderStatus; output: string }> {
@@ -116,6 +194,7 @@ export async function updateSessionModel(
 export interface SessionModelOption {
   id: string;
   displayName: string;
+  description?: string;
   hidden: boolean;
   isDefault: boolean;
   defaultReasoningEffort: string;
@@ -126,7 +205,8 @@ export async function listNewSessionCodexModels(signal?: AbortSignal, serverId?:
   const server = requestedServer(serverId);
   const r = await serverFetch(server, `${httpBaseForServer(server)}/api/models/codex`, { signal });
   const body = await featureJSON<{ models?: SessionModelOption[] }>(r, 'Codex model choices');
-  return body.models ?? [];
+  if (!Array.isArray(body.models)) throw new Error('This computer returned an unreadable model list. Update Sessions on that computer.');
+  return body.models;
 }
 
 export async function listSessionModelOptions(sessionId: string): Promise<SessionModelOption[]> {
@@ -220,13 +300,7 @@ export async function fetchUsageForServer(
 	return featureJSON<UsageReport>(r, 'Usage');
 }
 
-export type RecapProvider = 'off' | 'codex' | 'claude';
-
-export interface RecapSettings {
-  provider: RecapProvider;
-}
-
-export interface RecapActivity {
+export interface DailyActivity {
   id: string;
   name: string;
   description?: string;
@@ -248,59 +322,17 @@ export interface RecapActivity {
   providerSessionId?: string;
 }
 
-export interface RecapDocument {
-  date: string;
-  provider: Exclude<RecapProvider, 'off'>;
-  generatedAt: string;
-  inputDigest: string;
-  markdown: string;
-}
-
-export interface RecapDay {
+export interface DailyDay {
   date: string;
   timezone: string;
-  settings: RecapSettings;
-  activities: RecapActivity[];
+  activities: DailyActivity[];
   usage: UsageRow;
-  document: RecapDocument | null;
-  documentStale: boolean;
 }
 
-export async function fetchRecapSettings(signal?: AbortSignal): Promise<RecapSettings> {
-  const r = await apiFetch(`${httpBase()}/api/recap/settings`, { signal });
-  return featureJSON<RecapSettings>(r, 'Daily');
-}
-
-export async function updateRecapSettings(settings: RecapSettings): Promise<RecapSettings> {
-  const r = await apiFetch(`${httpBase()}/api/recap/settings`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(settings)
-  });
-  return featureJSON<RecapSettings>(r, 'Daily');
-}
-
-export async function fetchRecap(date: string, signal?: AbortSignal): Promise<RecapDay> {
+export async function fetchDaily(date: string, signal?: AbortSignal): Promise<DailyDay> {
   const query = new URLSearchParams({ date });
-  const r = await apiFetch(`${httpBase()}/api/recap?${query.toString()}`, { signal });
-  return featureJSON<RecapDay>(r, 'Daily');
-}
-
-export async function fetchRecapDates(signal?: AbortSignal): Promise<string[]> {
-  const r = await apiFetch(`${httpBase()}/api/recap/dates`, { signal });
-  const payload = await featureJSON<{ dates?: unknown }>(r, 'Daily');
-  return Array.isArray(payload.dates)
-    ? payload.dates.filter((date): date is string => typeof date === 'string')
-    : [];
-}
-
-export async function generateRecap(date: string, force = false): Promise<RecapDay> {
-  const r = await apiFetch(`${httpBase()}/api/recap/generate`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ date, force })
-  });
-  return featureJSON<RecapDay>(r, 'Daily');
+  const r = await apiFetch(`${httpBase()}/api/daily?${query.toString()}`, { signal });
+  return featureJSON<DailyDay>(r, 'Daily');
 }
 
 export interface Snapshot {
@@ -395,6 +427,8 @@ export interface ResumableSession {
 export interface ResumableRun {
   sessionId: string;
   name?: string;
+  // "user" for a person, "session" for a lane started by another lane.
+  creatorKind?: string;
   startedAt: number;
   lastActivityAt: number;
   machine?: string;
@@ -490,9 +524,14 @@ export async function adoptConversation(
   historyId?: string,
   destinationProvider?: 'claude' | 'codex',
   runtimeMode?: 'rich' | 'terminal',
-  remoteControl?: boolean
+  remoteControl?: boolean,
+  model?: string,
+  effort?: string,
+  permissions?: 'constrained' | 'full',
+  serverId?: string
 ): Promise<AdoptConversationResult> {
-  const r = await apiFetch(`${httpBase()}/api/recovery/adopt`, {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/recovery/adopt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -501,14 +540,18 @@ export async function adoptConversation(
       historyId,
       destinationProvider,
       runtimeMode,
-      remoteControl
+      remoteControl,
+      model,
+      effort,
+      permissions
     })
   });
   return json<AdoptConversationResult>(r);
 }
 
-export async function repairAdoption(request: AdoptRepairRequest): Promise<AdoptConversationResult> {
-  const r = await apiFetch(`${httpBase()}/api/recovery/adopt`, {
+export async function repairAdoption(request: AdoptRepairRequest, serverId?: string): Promise<AdoptConversationResult> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/recovery/adopt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -524,18 +567,37 @@ export async function repairAdoption(request: AdoptRepairRequest): Promise<Adopt
 export async function forkConversation(
   sourceSessionId: string,
   destinationProvider: 'claude' | 'codex',
-  point?: { index: number; messageId: string }
+  point?: { index: number; messageId: string },
+  model?: string,
+  effort?: string,
+  permissions?: 'constrained',
+  collaborator?: { contextMode: 'briefing' | 'conversation'; briefing?: string; profile: string; name?: string; serverId: string }
 ): Promise<AdoptConversationResult> {
-  const r = await apiFetch(`${httpBase()}/api/recovery/fork`, {
+  const server = requestedServer(collaborator?.serverId);
+  const route = collaborator ? '/api/recovery/collaborator' : '/api/recovery/fork';
+  const r = await serverFetch(server, `${httpBaseForServer(server)}${route}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       sourceSessionId,
       destinationProvider,
+      model,
+      effort,
+      permissions,
+      ...(collaborator ? { contextMode: collaborator.contextMode, briefing: collaborator.briefing, profile: collaborator.profile, name: collaborator.name } : {}),
       ...(point ? { sourceMessageIndex: point.index, sourceMessageId: point.messageId } : {})
     })
   });
   return featureJSON<AdoptConversationResult>(r, 'Conversation copies');
+}
+
+export async function generateConversationBriefing(sourceSessionId: string, point: { index: number; messageId: string } | undefined, serverId: string, signal: AbortSignal): Promise<{ briefing: string }> {
+  const server = requestedServer(serverId);
+  const response = await serverFetch(server, `${httpBaseForServer(server)}/api/recovery/briefing`, {
+    method: 'POST', signal, headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sourceSessionId, ...(point ? { sourceMessageIndex: point.index, sourceMessageId: point.messageId } : {}) })
+  });
+  return featureJSON(response, 'Conversation briefings');
 }
 
 export async function listDirectories(serverId?: string): Promise<DirectoryCandidate[]> {
@@ -607,12 +669,12 @@ interface MessageDeliveryReceipt {
 
 function deliveryError(receipt: MessageDeliveryReceipt): Error {
   if (receipt.status === 'not-delivered' && receipt.retry) {
-    return new Error(receipt.reason || 'The session could not accept the message. It is safe to try again.');
+    return new MessageDeliveryError(receipt.reason || 'The session could not accept the message. It is safe to try again.', 'not-delivered', receipt.operation_id);
   }
   if (receipt.status === 'text-delivered') {
-    return new Error('The message text reached the session, but Sessions could not confirm Enter. Check the conversation before trying again.');
+    return new MessageDeliveryError('The message text reached the session, but Sessions could not confirm Enter. Check the conversation before trying again.', 'text-delivered', receipt.operation_id);
   }
-  return new Error('Sessions could not confirm whether the message arrived. Check the conversation before trying again.');
+  return new MessageDeliveryError('Sessions could not confirm whether the message arrived. Check the conversation before trying again.', 'unknown', receipt.operation_id);
 }
 
 async function readDeliveryResponse(response: Response): Promise<MessageDeliveryReceipt | { ok: true }> {
@@ -629,17 +691,26 @@ async function readDeliveryResponse(response: Response): Promise<MessageDelivery
   throw new Error(`sessionsd ${response.status}: ${detail || response.statusText}`);
 }
 
-export async function submitMessage(sessionId: string, data: string, serverId?: string): Promise<void> {
+// fromSessionId records another lane as the author of the message, the way
+// `sessions send --from` does, so a hand-back reads in the manager's history
+// as coming from the lane rather than from the person.
+export async function submitMessage(sessionId: string, data: string, serverId?: string, fromSessionId?: string, mode?: 'steer', knownOperationId?: string): Promise<void> {
   const server = requestedServer(serverId);
-  const operationId = randomUUID();
-  let response: Response;
+  // A caller that recorded the id beforehand (a session's first request) makes
+  // a retry of this exact message read its receipt instead of sending twice.
+  const operationId = knownOperationId ?? randomUUID();
+  let receipt: MessageDeliveryReceipt | { ok: true };
   try {
-    response = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/submit`, {
+    const response = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/submit`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data, operation_id: operationId })
+      headers: {
+        'content-type': 'application/json',
+        ...(fromSessionId ? { 'X-Sessions-Creator-Session': fromSessionId } : {})
+      },
+      body: JSON.stringify({ data, operation_id: operationId, mode })
     });
-  } catch (initialError) {
+    receipt = await readDeliveryResponse(response);
+  } catch {
     // A broken response does not prove a broken send. Ask the daemon for the
     // durable, content-free receipt before allowing a person or agent to
     // retry and accidentally duplicate the message.
@@ -653,10 +724,10 @@ export async function submitMessage(sessionId: string, data: string, serverId?: 
       throw deliveryError(recovered);
     } catch (receiptError) {
       if (receiptError instanceof AuthError) throw receiptError;
-      throw new Error('The connection changed while sending. Sessions could not confirm delivery, so it did not retry. Check the conversation before sending again.', { cause: initialError });
+      if (receiptError instanceof MessageDeliveryError) throw receiptError;
+      throw new MessageDeliveryError('The connection changed while sending. Sessions could not confirm delivery, so it did not retry. Check the conversation before sending again.', 'unknown', operationId);
     }
   }
-  const receipt = await readDeliveryResponse(response);
   if ('ok' in receipt || receipt.status === 'accepted') return;
   throw deliveryError(receipt);
 }
@@ -764,4 +835,83 @@ export function wsMuxUrl(): string {
 export function muxEndpointKey(): string {
   try { return wsMuxUrl(); }
   catch { return ''; }
+}
+
+export interface ProjectView {
+  id: string;
+  name: string;
+  implicit: boolean;
+  roots: string[];
+  github?: string;
+  somewhere?: string;
+  pinned?: boolean;
+  session_ids: string[];
+  live: number;
+  needs_input: number;
+  updated_at?: number;
+}
+
+// The daemon groups sessions by the work they belong to (a folder, a git
+// checkout with its worktrees, or a Somewhere project). Older daemons have no
+// such route; an empty list means "group by nothing", not an error.
+export async function fetchProjects(signal?: AbortSignal, target?: ServerConfig): Promise<ProjectView[]> {
+  const server = target ?? getActiveServer();
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/projects`, { signal });
+  if (r.status === 404 || r.status === 501) return [];
+  const body = await json<{ projects: ProjectView[] }>(r);
+  return body.projects ?? [];
+}
+
+// approveSession answers the permission a Rich lane is waiting on.
+// fromSessionId attributes the decision to a lane, the way `sessions approve`
+// run inside a manager does; a person deciding passes nothing.
+export async function approveSession(
+  sessionId: string,
+  decision: 'allow' | 'allow-session' | 'deny',
+  serverId?: string,
+  fromSessionId?: string
+): Promise<void> {
+  const server = requestedServer(serverId);
+  const response = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/approve`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(fromSessionId ? { 'X-Sessions-Creator-Session': fromSessionId } : {})
+    },
+    body: JSON.stringify({ decision })
+  });
+  if (!response.ok) {
+    let message = `The lane did not take the answer (HTTP ${response.status}).`;
+    try {
+      const body = await response.json() as { error?: string };
+      if (body.error) message = body.error;
+    } catch {
+      // The status is the message.
+    }
+    throw new Error(message);
+  }
+}
+
+async function postProviderRetryAction(sessionId: string, tail: string): Promise<void> {
+  const response = await apiFetch(
+    `${httpBase()}/api/sessions/${encodeURIComponent(sessionId)}/retry${tail}`,
+    { method: 'POST' }
+  );
+  if (response.ok) return;
+  let message = `Sessions could not change this retry (HTTP ${response.status}).`;
+  try {
+    const body = await response.json() as { error?: string };
+    if (body.error?.trim()) message = body.error;
+  } catch {
+    // The status-based message remains actionable when the body is not JSON.
+  }
+  throw new Error(message);
+}
+
+export async function retryProviderSession(sessionId: string): Promise<void> {
+  await postProviderRetryAction(sessionId, '');
+}
+
+export async function stopProviderRetry(sessionId: string): Promise<void> {
+  await postProviderRetryAction(sessionId, '/stop');
 }

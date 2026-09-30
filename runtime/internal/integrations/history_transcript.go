@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -27,7 +28,8 @@ func (h *HistoryStore) providerConversations() []watch.ResumableSession {
 	if !h.providerCachedAt.IsZero() && now.Sub(h.providerCachedAt) < 2*time.Second {
 		return append([]watch.ResumableSession(nil), h.providerCache...)
 	}
-	h.providerCache = watch.ScanResumableConversationsIn(h.options.ClaudeProjectsDir, h.options.CodexSessionsDir)
+	h.providerCache = watch.ScanResumableConversationsCached(
+		h.options.ClaudeProjectsDir, h.options.CodexSessionsDir, h)
 	h.providerCachedAt = now
 	return append([]watch.ResumableSession(nil), h.providerCache...)
 }
@@ -62,6 +64,46 @@ func (h *HistoryStore) archivedClaudeConversations() []watch.ArchivedClaudeConve
 	h.archiveCache = filtered
 	h.archiveCachedAt = now
 	return append([]watch.ArchivedClaudeConversation(nil), h.archiveCache...)
+}
+
+// Resumable and StoreResumable are the provider scan's side of the same
+// fingerprint discipline the message counts use. A conversation nobody has
+// appended to since it was last described is not opened at all: on a machine
+// holding gigabytes of rollouts, that read is the first listing after a restart.
+func (h *HistoryStore) Resumable(path string, info os.FileInfo) (watch.ResumableSession, bool) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	cached, ok := h.cache[path]
+	if !ok || cached.resumable == nil ||
+		cached.size != info.Size() || cached.modTimeNano != info.ModTime().UnixNano() {
+		return watch.ResumableSession{}, false
+	}
+	h.cardsHit.Add(1)
+	h.cacheClock++
+	cached.used = h.cacheClock
+	h.cache[path] = cached
+	session := *cached.resumable
+	// SourcePath is where this card came from and is not part of what was
+	// stored; a card read back from disk still describes this file.
+	session.SourcePath = path
+	return session, true
+}
+
+func (h *HistoryStore) StoreResumable(path string, info os.FileInfo, session watch.ResumableSession) {
+	// Storing a card is what a re-read ends with: the scan opened the file
+	// because the fingerprint it had did not describe it.
+	h.cardsRead.Add(1)
+	stored := session
+	stored.SourcePath = ""
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	entry := h.entryForFingerprintLocked(path, info)
+	entry.resumable = &stored
+	h.cacheClock++
+	entry.used = h.cacheClock
+	h.cache[path] = entry
+	h.cacheDirty = true
+	h.evictHistoryCacheLocked()
 }
 
 func historyProviderKey(tool, providerID string) string {
@@ -226,7 +268,7 @@ func historySourceFingerprint(path string, info os.FileInfo) string {
 func (h *HistoryStore) messageCount(path, tool string, info os.FileInfo) (int, int, error) {
 	h.cacheMu.Lock()
 	cached, ok := h.cache[path]
-	if ok && cached.size == info.Size() && cached.modTimeNano == info.ModTime().UnixNano() {
+	if ok && cached.counted && cached.size == info.Size() && cached.modTimeNano == info.ModTime().UnixNano() {
 		h.cacheClock++
 		cached.used = h.cacheClock
 		h.cache[path] = cached
@@ -251,11 +293,12 @@ func (h *HistoryStore) messageCount(path, tool string, info os.FileInfo) (int, i
 		return 0, 0, closeErr
 	}
 	h.cacheMu.Lock()
+	entry := h.entryForFingerprintLocked(path, info)
+	entry.count, entry.skipped, entry.counted = count, skipped, true
 	h.cacheClock++
-	h.cache[path] = historyCacheEntry{
-		size: info.Size(), modTimeNano: info.ModTime().UnixNano(),
-		count: count, skipped: skipped, used: h.cacheClock,
-	}
+	entry.used = h.cacheClock
+	h.cache[path] = entry
+	h.cacheDirty = true
 	h.evictHistoryCacheLocked()
 	h.cacheMu.Unlock()
 	return count, skipped, nil
@@ -414,12 +457,16 @@ func normalizeTranscriptReaderSelected(
 		}
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			trimmed := strings.TrimSpace(string(line))
+			// Trim and decode the bytes the reader already produced. Rendering
+			// each record to a string and back cost two full copies of every
+			// line for nothing: the decoder keeps only what it stores, and the
+			// slice is not retained past this iteration.
+			trimmed := bytes.TrimSpace(line)
 			currentIndex := lineIndex
 			lineIndex++
-			if trimmed != "" {
+			if len(trimmed) > 0 {
 				var decoded map[string]any
-				if json.Unmarshal([]byte(trimmed), &decoded) != nil {
+				if json.Unmarshal(trimmed, &decoded) != nil {
 					skipped++
 				} else {
 					if tool == "codex" {
@@ -473,6 +520,15 @@ func transcriptMessageID(message TranscriptMessage) string {
 }
 
 func transcriptMessages(event map[string]any, relayCalls map[string]string) []TranscriptMessage {
+	if event["type"] == "system" && event["subtype"] == "provider_fault" {
+		detail, _ := event["detail"].(string)
+		if strings.TrimSpace(detail) != "" {
+			return []TranscriptMessage{{
+				Role: "error", Kind: "provider_fault", Text: detail,
+				Timestamp: normalizedTimestamp(event["timestamp"]),
+			}}
+		}
+	}
 	message, ok := event["message"].(map[string]any)
 	if !ok {
 		return nil

@@ -23,6 +23,10 @@ agent CLI you want to run separately.
 
 ## Install
 
+This branch targets the **0.2.27 release candidate**, which is not yet published.
+The current public release is 0.2.26; candidate-only behavior below requires a
+candidate build, not the current Homebrew or GitHub download.
+
 Sessions.app is the primary macOS package. The current signed, notarized Apple
 Silicon build is available from
 [GitHub Releases](https://github.com/somewhere-tech/sessions/releases/latest) or
@@ -39,12 +43,13 @@ brew install somewhere-tech/tap/sessions
 sessions install
 ```
 
-Release automation also produces static archives for macOS arm64 and Linux
-arm64/amd64. An agent can fetch an exact immutable version without parsing a
-web page:
+Release automation produces static archives for macOS arm64 and Linux
+arm64/amd64. Once 0.2.27 is published, an agent can fetch that exact immutable
+version without parsing a web page. Until then, use an existing published tag
+or follow the [development build guide](docs/DEV.md):
 
 ```sh
-VERSION=0.1.0
+VERSION=0.2.27 # Requires published v0.2.27 assets; not available yet.
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 gh release download "v${VERSION}" --repo somewhere-tech/sessions \
   --pattern "$ARCHIVE" --pattern "$ARCHIVE.sha256"
@@ -53,17 +58,26 @@ tar -xzf "$ARCHIVE"
 mkdir -p "$HOME/.local/bin"
 install -m 0755 sessions sessionsd sessions-runner "$HOME/.local/bin/"
 sessions install
-open http://localhost:8787
+sessions status --json
 ```
 
-`sessions install` registers `sessionsd` as the per-user development LaunchAgent
+In the 0.2.27 candidate, Linux `sessions install` registers and starts a systemd user service.
+Runners are separate processes, so restarting or upgrading the daemon preserves
+their work. After a reboot the service discovers retained conversations as
+paused; resuming one is explicit. Enable user lingering if the daemon must start
+before login and continue after logout. See [installation details](docs/INSTALL.md).
+Windows still requires starting `sessionsd` yourself.
+
+On macOS, `sessions install` registers `sessionsd` as the per-user development LaunchAgent
 `tech.somewhere.sessions.dev.daemon`, starts it, and checks its health. Override the
 label explicitly with `SESSIONS_DAEMON_LABEL` when needed. Direct loopback use is
 zero-setup; LAN and remote clients normally authenticate with the token printed
 by the command. Print it again later with `sessions token`.
 
-Homebrew is the npm-like one-command runtime channel, but it installs native Go
-binaries rather than a Node wrapper. There is no `curl | sh` installer. See
+The candidate [npm distribution](npm/README.md) wraps the same native Go binaries and pins
+their archive and binary checksums. Its checked-in release manifest remains
+unprepared until the matching release assets exist; this is not a claim that
+0.2.27 is available on npm. There is no `curl | sh` installer. See
 [installation details](docs/INSTALL.md) for exact archive names, agent-safe
 downloads, PATH setup, Linux startup, upgrades, and uninstalling.
 
@@ -81,17 +95,19 @@ surface browses the same conversations `sessions history` does, and typing
 narrows them. Session IDs may be replaced with a unique prefix shown by
 `sessions ls`.
 
-Agents created from a managed parent inherit that parent's exact provider
-permission mode by default. They cannot silently promote themselves to full
-access. An agent-created task worker also closes its runtime after a successful
+Agents created from a managed parent run with autonomous full access by
+default, so delegated work finishes in the background instead of waiting on a
+person for each command; you can narrow this in Settings so children inherit
+their parent's exact provider permission mode. A child can never widen its own
+access past what the machine allows. An agent-created task worker also closes its runtime after a successful
 final response while its transcript, lineage, and workspace remain available.
 If a provider is waiting for approval, `sessions wait` returns `reason:
 needs-input` with the actual prompt instead of pretending that the worker is
 still making progress; `--summary` adds prose but never changes the shape.
 Waiting on a session always answers with one JSON object and an exit code that
 agrees with it: 0 satisfied, 1 usage, 2 daemon unreachable, 3 timed out, 4 the
-target is gone or failed. Users can explicitly opt into autonomous delegated
-work during onboarding or later in Settings.
+target is gone or failed. The delegated-access choice is made during
+onboarding and can be changed later in Settings.
 
 ## The CLI in 60 seconds
 
@@ -156,8 +172,11 @@ record whether the report came from an agent, direct use, or both.
 - [Conversation continuation and cross-provider behavior](docs/CONTINUATION.md)
 - [Open-source and private-service boundary](docs/OPEN_SOURCE_BOUNDARY.md)
 - [Product principles](docs/PRINCIPLES.md)
+- [Lanes: delegated work, approvals, hand-back](docs/LANES.md)
 - [Native app package and lifetime contract](docs/NATIVE_APP.md)
+- [Fleet discovery, pairing, and trust without an account](docs/FLEET.md)
 - [Android client, pairing, and development build](docs/ANDROID.md)
+- [iOS client, pairing, and simulator build](docs/IOS.md)
 - [Broad public roadmap](ROADMAP.md)
 
 ## Notifications and hooks
@@ -202,16 +221,16 @@ sessions doctor
 sessions status <id>
 ```
 
-Daemon logs on macOS are in
-`~/Library/Logs/sessions/tech.somewhere.sessions.dev.daemon.log`. If the web UI cannot
-authenticate, run `sessions token`. See
+The native app's daemon log on macOS is
+`~/Library/Logs/Sessions/sessionsd.log`. A standalone development daemon logs
+to `~/Library/Logs/sessions/tech.somewhere.sessions.dev.daemon.log`. If a client cannot
+authenticate, inspect its saved connection and run `sessions token` on the host
+when an explicit token connection is needed. See
 [installation troubleshooting](docs/INSTALL.md#troubleshooting).
 
 ## Development
 
-The Go runtime is in `runtime/`; Sessions.app is in `src-tauri/`. The frozen
-TypeScript daemon under `runtime/testdata/node-runtime/` remains only as
-compatibility and mini-cutover evidence.
+The Go runtime is in `runtime/`; Sessions.app is in `src-tauri/`.
 
 ```sh
 make -C runtime binaries
@@ -227,4 +246,5 @@ sessions lanes
 ```
 
 See [architecture](ARCHITECTURE.md), [Go port constraints](runtime/ARCHITECTURE.md),
-[Android development](docs/ANDROID.md), and [release instructions](docs/RELEASE.md).
+[Android development](docs/ANDROID.md), [iOS development](docs/IOS.md), and
+[release instructions](docs/RELEASE.md).

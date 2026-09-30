@@ -150,6 +150,54 @@ func TestSessionTablesAddProfileColumnOnlyWhenNeeded(t *testing.T) {
 	}
 }
 
+func TestSessionStateNamesProviderFaultKinds(t *testing.T) {
+	tests := map[string]string{
+		"provider-unavailable": "provider-down",
+		"rate-limited":         "rate-limited",
+		"auth":                 "auth-needed",
+		"other":                "failed",
+	}
+	for kind, want := range tests {
+		if got := sessionState(session{FailureKind: kind}); got != want {
+			t.Fatalf("sessionState(failureKind=%q) = %q, want %q", kind, got, want)
+		}
+	}
+}
+
+func TestSessionStateShowsScheduledRetry(t *testing.T) {
+	now := time.Unix(100, 0)
+	value := session{FailureKind: "provider-unavailable", Retry: &providerRetry{
+		Attempt: 2, Max: 5, NextAt: now.Add(time.Minute).UnixMilli(), Kind: "provider-unavailable",
+	}}
+	if got := sessionStateAt(value, now); got != "retrying (2/5, 60s)" {
+		t.Fatalf("retry state = %q", got)
+	}
+}
+
+func TestSessionTablesDoNotAbbreviateHomeInsideAnotherPathComponent(t *testing.T) {
+	home := "/__sessions_home_for_test__"
+	cwd := "/prefix/__sessions_home_for_test__/project"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		if request.URL.Path != "/api/sessions" {
+			http.NotFound(response, request)
+			return
+		}
+		_, _ = response.Write([]byte(`{"sessions":[{"id":"22000000-0000-4000-8000-000000000001","name":"agent","cmd":"codex","cwd":"` + cwd + `","createdAt":1,"pid":1,"tool":"codex","idleReason":"completed"}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("HOME", home)
+	for _, command := range []string{"list", "ls"} {
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"--host", server.URL, command}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+			t.Fatalf("%s exit=%d stderr=%q", command, code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), cwd) || strings.Contains(stdout.String(), "/prefix~/") {
+			t.Fatalf("%s cwd abbreviation crossed a path boundary: %q", command, stdout.String())
+		}
+	}
+}
+
 func TestWaitReturnsProviderPromptWithoutTerminalBabysitting(t *testing.T) {
 	id := "23000000-0000-4000-8000-000000000001"
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -298,6 +346,34 @@ func TestKillSingleForwardsAgentAttributionReasonAndForce(t *testing.T) {
 	}
 	if requests != 1 || captured.Reason != "Finished delegated work" || captured.OperationID != "" {
 		t.Fatalf("captured single end = %#v requests=%d", captured, requests)
+	}
+}
+
+func TestKillSinglePrintsInstructionalEndConflict(t *testing.T) {
+	target := "23000000-0000-4000-8000-000000000004"
+	t.Setenv("SESSIONS_SESSION_ID", "23000000-0000-4000-8000-000000000099")
+	t.Setenv("SESSIONS_OWNER_ID", "")
+	message := "Sessions could not safely end session " + target +
+		". Check the sessionsd log, then run `sessions status " + target + "` before retrying."
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/lanes":
+			_, _ = response.Write([]byte(`{"lanes":[],"user_creator_id":"uid:424242"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
+			_, _ = response.Write([]byte(`{"sessions":[{"id":"` + target + `","cmd":"/bin/sh"}]}`))
+		case request.Method == http.MethodDelete && request.URL.Path == "/api/sessions/"+target:
+			response.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": false, "error": message})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	stdout, stderr, code := runOwnershipCLI(t, server.URL, "kill", target)
+	if code != 2 || stdout != "" || !strings.Contains(stderr, message) || strings.Contains(stderr, "→ 409") {
+		t.Fatalf("single conflict exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 

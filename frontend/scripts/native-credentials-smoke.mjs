@@ -68,7 +68,10 @@ const legacyServer = {
 async function openCase({
   storedServer,
   nativeCredentials,
-  metadataWriteError = false
+  metadataWriteError = false,
+  nativeLoadError = false,
+  nativeSaveError = false,
+  nativeSaveMismatch = false
 }) {
   const page = await browser.newPage();
   await page.setBypassServiceWorker(true);
@@ -99,19 +102,22 @@ async function openCase({
       invoke: async (command, args = {}) => {
         if (command === 'native_machine_credentials_load') {
           await window.credentialSmokeEvent('credentials-load');
+          // Tauri command errors reject with a string, not a JS Error.
+          if (fixture.nativeLoadError) throw 'Unlock this device or its login Keychain and reopen Sessions.';
           return {
             supported: true,
             credentials: nativeState.credentials.map((credential) => ({ ...credential }))
           };
         }
         if (command === 'native_machine_credentials_save') {
+          if (fixture.nativeSaveError) throw new Error('The protected credential store could not save.');
           const credentials = (args.credentials ?? []).map((credential) => ({ ...credential }));
           nativeState.saveCalls.push(credentials);
           nativeState.credentials = credentials;
           await window.credentialSmokeEvent(`credentials-save-${nativeState.saveCalls.length}`);
           return {
             supported: true,
-            credentials: credentials.map((credential) => ({ ...credential }))
+            credentials: fixture.nativeSaveMismatch ? [] : credentials.map((credential) => ({ ...credential }))
           };
         }
         if (command === 'native_connection_settings') {
@@ -129,7 +135,7 @@ async function openCase({
         throw new Error(`unexpected native command: ${command}`);
       }
     };
-  }, { storedServer, nativeCredentials, metadataWriteError });
+  }, { storedServer, nativeCredentials, metadataWriteError, nativeLoadError, nativeSaveError, nativeSaveMismatch });
 
   await page.setRequestInterception(true);
   page.on('request', (request) => {
@@ -221,6 +227,27 @@ try {
   assert.deepEqual(rolledBack.authorizations, []);
   assert.deepEqual(rolledBack.pageErrors, []);
   await rolledBack.page.close();
+
+  for (const failure of ['nativeLoadError', 'nativeSaveError', 'nativeSaveMismatch']) {
+    t.scenario(`${failure} preserves the legacy token and blocks requests before migration`);
+    const blocked = await openCase({
+      storedServer: legacyServer,
+      nativeCredentials: [],
+      [failure]: true
+    });
+    await t.waitForSelector(blocked.page, '.connect-error', 'the protected credential failure to be visible', { timeout: 10_000 });
+    const metadata = await blocked.page.evaluate(() => JSON.parse(window.localStorage.getItem('sessions:servers') ?? '[]'));
+    if (failure === 'nativeLoadError') {
+      const detail = await blocked.page.$eval('.connect-error', (element) => element.textContent);
+      assert.match(detail, /login Keychain/);
+    }
+    assert.equal(metadata[0].token, legacyServer.token);
+    assert.equal(metadata[0].host, legacyServer.host);
+    assert.equal(metadata[0].id, legacyServer.id);
+    assert.deepEqual(blocked.authorizations, []);
+    assert.deepEqual(blocked.pageErrors, []);
+    await blocked.page.close();
+  }
 
   console.log(JSON.stringify({
     migration: {

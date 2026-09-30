@@ -11,6 +11,31 @@ export const isTauri = (): boolean =>
   typeof window !== 'undefined' &&
   (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== undefined;
 
+type AndroidBackHandler = () => boolean;
+
+interface AndroidBackWindow extends Window {
+  __SESSIONS_ANDROID_BACK__?: () => boolean;
+}
+
+// Tauri's Android activity owns the system Back callback and evaluates this
+// synchronous bridge before allowing Android to finish the activity.
+// Returning false means the UI is at its root and native double-Back-to-exit
+// handling should take over.
+export function registerAndroidBackHandler(handler: AndroidBackHandler): () => void {
+  if (!isTauri() || typeof navigator === 'undefined' || !/Android/i.test(navigator.userAgent)) {
+    return () => {};
+  }
+
+  const nativeWindow = window as AndroidBackWindow;
+  nativeWindow.__SESSIONS_ANDROID_BACK__ = handler;
+
+  return () => {
+    if (nativeWindow.__SESSIONS_ANDROID_BACK__ === handler) {
+      delete nativeWindow.__SESSIONS_ANDROID_BACK__;
+    }
+  };
+}
+
 // Tauri 2: invoke() comes from @tauri-apps/api/core. We dynamic-import so
 // the package is only loaded when actually running inside Tauri (avoids
 // shipping the module to the phone PWA where it'd be dead weight).
@@ -100,6 +125,9 @@ export interface NativeSavedMachine {
   name: string;
   endpoint: string;
   transport: string;
+  lan_endpoint?: string;
+  tailnet_endpoint?: string;
+  tailnet_ip_endpoint?: string;
   device_id: string;
   connected_at: string;
 }
@@ -109,6 +137,10 @@ export interface NativeAgentMachine {
   machineId: string;
   name: string;
   endpoint: string;
+  lanEndpoint?: string;
+  tailnetEndpoint?: string;
+  tailnetIpEndpoint?: string;
+  relayEndpoint?: string;
   deviceId?: string;
   token: string;
 }
@@ -216,6 +248,10 @@ export interface NativePairingClaim {
   deviceId: string;
   token: string;
   name: string;
+  lanEndpoint?: string;
+  tailnetEndpoint?: string;
+  tailnetIpEndpoint?: string;
+  relayEndpoint?: string;
 }
 
 export async function claimNativePairingLink(pairUrl: string): Promise<NativePairingClaim> {
@@ -236,6 +272,9 @@ export interface NativeNearbyPeer {
   address: string;
   port: number;
   transport: 'nearby';
+  lan_endpoint: string;
+  tailnet_endpoint?: string;
+  tailnet_ip_endpoint?: string;
   version: string;
   os: string;
   arch: string;
@@ -249,6 +288,13 @@ export interface NativeMachinePeer {
   name: string;
   os: string;
   transport: 'tailnet' | 'nearby';
+}
+
+export interface NativeMobileBonjourPeer {
+  name: string;
+  host: string;
+  port: number;
+  txt: Record<string, string>;
 }
 
 export interface NativeTailnetRequest {
@@ -272,6 +318,57 @@ export async function discoverNativeTailnetPeers(): Promise<NativeTailnetPeer[]>
 export async function discoverNativeNearbyPeers(): Promise<NativeNearbyPeer[]> {
   if (!isTauri()) throw new Error('Nearby discovery is available in Sessions.app');
   return invoke<NativeNearbyPeer[]>('native_nearby_discover');
+}
+
+export function isNativeMobileRuntime(): boolean {
+  if (!isTauri() || typeof navigator === 'undefined') return false;
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+    || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+}
+
+export function pairingCodeContent(result: unknown): string {
+  if (typeof result !== 'object' || result === null) {
+    throw new Error('That code is not a Sessions pairing link.');
+  }
+  const content = (result as { content?: unknown }).content;
+  if (typeof content !== 'string' || !content.trim() || content.length > 4096) {
+    throw new Error('That code is not a Sessions pairing link.');
+  }
+  const link = content.trim();
+  if (/^sessions:\/\/pair(?:\?|$)/i.test(link)) return link;
+  try {
+    const parsed = new URL(link);
+    const isHTTP = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    const isPairPath = /^\/pair\/[^/]+$/.test(parsed.pathname);
+    if (isHTTP && isPairPath) return link;
+  } catch {
+    // Fall through to one stable scanner error.
+  }
+  throw new Error('That code is not a Sessions pairing link.');
+}
+
+export async function scanPairingCode(): Promise<string> {
+  if (!isNativeMobileRuntime()) {
+    throw new Error('Pairing-code scanning is available in Sessions for iOS and Android');
+  }
+  const core = await import('@tauri-apps/api/core');
+  let permission = (await core.checkPermissions('barcode-scanner') as { camera?: string }).camera;
+  if (permission !== 'granted') {
+    permission = (await core.requestPermissions('barcode-scanner') as { camera?: string }).camera;
+  }
+  if (permission !== 'granted') {
+    throw new Error('Allow camera access, then scan again.');
+  }
+  return pairingCodeContent(await core.invoke('plugin:barcode-scanner|scan', {
+    formats: ['QR_CODE']
+  }));
+}
+
+export async function discoverNativeMobileBonjourPeers(): Promise<NativeMobileBonjourPeer[]> {
+  if (!isNativeMobileRuntime()) {
+    throw new Error('Phone Bonjour discovery is available in Sessions for iOS and Android');
+  }
+  return invoke<NativeMobileBonjourPeer[]>('native_mobile_bonjour_discover');
 }
 
 export async function requestNativeTailnetAccess(
@@ -310,6 +407,30 @@ export async function discoverNativeMachines(): Promise<{
   peers: NativeMachinePeer[];
   errors: string[];
 }> {
+  if (isNativeMobileRuntime()) {
+    try {
+      const nearby = await discoverNativeMobileBonjourPeers();
+      const addressCounts = new Map<string, number>();
+      for (const peer of nearby) {
+        addressCounts.set(peer.host, (addressCounts.get(peer.host) ?? 0) + 1);
+      }
+      return {
+        peers: nearby.map((peer) => ({
+          endpoint: `http://${peer.host}:${peer.port}`,
+          hostname: addressCounts.get(peer.host) === 1 ? peer.host : `${peer.host}:${peer.port}`,
+          name: peer.name,
+          os: '',
+          transport: 'nearby' as const
+        })),
+        errors: []
+      };
+    } catch (reason) {
+      return {
+        peers: [],
+        errors: [reason instanceof Error ? reason.message : String(reason)]
+      };
+    }
+  }
   const [tailnet, nearby] = await Promise.allSettled([
     discoverNativeTailnetPeers(),
     discoverNativeNearbyPeers()
@@ -477,6 +598,12 @@ export async function openSupportPage(kind: SupportPage): Promise<void> {
   const target = supportURLs[kind];
   const opened = window.open(target, '_blank', 'noopener,noreferrer');
   if (!opened) window.location.assign(target);
+}
+
+export async function openLocalNetworkSettings(): Promise<void> {
+  if (!isTauri() || isNativeMobileRuntime()) throw new Error('Open System Settings on the Mac that needs access.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('open_local_network_settings');
 }
 
 export async function openExternalURL(url: string): Promise<void> {

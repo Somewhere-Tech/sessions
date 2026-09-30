@@ -38,6 +38,19 @@ func TestCodexArgumentsDisableToolBearingFeatures(t *testing.T) {
 	}
 }
 
+func TestProfileCallUsesOnlySelectedProviderHome(t *testing.T) {
+	t.Setenv("CODEX_HOME", "/original-codex")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/original-claude")
+	executable := fakeProviderCLI(t, "printf '%s|%s' \"$CODEX_HOME\" \"$CLAUDE_CONFIG_DIR\"\n")
+	got, err := runIsolated(context.Background(), ProviderCodex, "briefing", executable, nil, t.TempDir(), "context", "/selected-account")
+	if err != nil || got != "/selected-account|/original-claude" {
+		t.Fatalf("%q %v", got, err)
+	}
+	if os.Getenv("CODEX_HOME") != "/original-codex" {
+		t.Fatal("changed global account")
+	}
+}
+
 func TestClaudeArgumentsDisableToolsAndPersistence(t *testing.T) {
 	arguments := Arguments(ProviderClaude)
 	if !hasPair(arguments, "--tools", "") || !slices.Contains(arguments, "--strict-mcp-config") ||
@@ -136,8 +149,8 @@ func TestRunIsolatedKeepsOutputWhenOnlyAHelperOutlivesACleanExit(t *testing.T) {
 
 func TestRunIsolatedReportsCLIFailureDetail(t *testing.T) {
 	executable := fakeProviderCLI(t, "echo 'not signed in' >&2\nexit 1\n")
-	_, err := runIsolated(context.Background(), ProviderCodex, "daily recap", executable, nil, t.TempDir(), "prompt")
-	if err == nil || !strings.Contains(err.Error(), "codex daily recap call failed: not signed in") {
+	_, err := runIsolated(context.Background(), ProviderCodex, "smart search", executable, nil, t.TempDir(), "prompt")
+	if err == nil || !strings.Contains(err.Error(), "codex smart search call failed: not signed in") {
 		t.Fatalf("err = %v, want the CLI's own stderr detail", err)
 	}
 }

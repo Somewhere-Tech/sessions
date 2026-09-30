@@ -1,19 +1,54 @@
 import type { UsageEvent, UsageReport, UsageRow, UsageTokens } from '../api/sessionsd';
+import type { PeerReport, PeerStatus } from './fleetPeerBudget';
 
 export interface FleetUsageSource {
   serverId: string;
   serverName: string;
   report?: UsageReport;
   error?: string;
+  /**
+   * Where this machine stands. Absent means the obvious reading of the other
+   * fields: a report is an answer, an error is a machine that could not be
+   * reached, and neither is a machine still being asked.
+   */
+  status?: PeerStatus;
 }
 
 export interface FleetUsageSummary {
   report: UsageReport | null;
   configuredMachines: number;
   reportingMachines: number;
-  unavailableMachines: string[];
+  /**
+   * Every machine that has not contributed a report, each with why. A machine
+   * that has not answered yet is `pending`, and saying anything worse about it
+   * would be a guess about a request that is still in flight.
+   */
+  missingMachines: PeerReport[];
+  /**
+   * The machines that answered in the older shape, without event identities.
+   * Named only once their answers are in hand: before that, nothing is known
+   * about what they can and cannot deduplicate.
+   */
+  olderHostMachines: string[];
   exactDeduplication: boolean;
   duplicatesRemoved: number;
+}
+
+function statusOf(source: FleetUsageSource): PeerStatus {
+  if (source.status) return source.status;
+  if (source.report) return 'answered';
+  return source.error ? 'unreachable' : 'pending';
+}
+
+function missingMachines(sources: FleetUsageSource[]): PeerReport[] {
+  return sources
+    .filter((source) => !source.report)
+    .map((source) => ({
+      serverId: source.serverId,
+      serverName: source.serverName,
+      status: statusOf(source),
+      detail: source.error ?? null
+    }));
 }
 
 const emptyTokens = (): UsageTokens => ({
@@ -111,19 +146,23 @@ function sortRows(rows: UsageRow[], group: UsageReport['group']): UsageRow[] {
 
 export function combineFleetUsage(sources: FleetUsageSource[]): FleetUsageSummary {
   const reports = sources.flatMap((source) => source.report ? [source.report] : []);
-  const unavailableMachines = sources.filter((source) => !source.report).map((source) => source.serverName);
   if (reports.length === 0) {
     return {
       report: null,
       configuredMachines: sources.length,
       reportingMachines: 0,
-      unavailableMachines,
+      missingMachines: missingMachines(sources),
+      // Nothing has answered, so nothing is known about deduplication yet.
+      olderHostMachines: [],
       exactDeduplication: false,
       duplicatesRemoved: 0
     };
   }
 
   const exactDeduplication = reports.every((report) => report.eventsIncluded === true);
+  const olderHostMachines = sources
+    .filter((source) => source.report && source.report.eventsIncluded !== true)
+    .map((source) => source.serverName);
   let rows: UsageRow[];
   let duplicatesRemoved = 0;
   if (exactDeduplication) {
@@ -147,7 +186,10 @@ export function combineFleetUsage(sources: FleetUsageSource[]): FleetUsageSummar
   const first = reports[0];
   const totals = emptyRow('total');
   for (const row of rows) addRow(totals, row);
-  const generatedAt = reports.map((report) => report.generatedAt).sort().at(-1) ?? first.generatedAt;
+  // Indexed from the end rather than the newer accessor for it, which arrived
+  // in iOS 15.4 — later than the iOS this app is built for.
+  const stamps = reports.map((report) => report.generatedAt).sort();
+  const generatedAt = stamps[stamps.length - 1] ?? first.generatedAt;
   return {
     report: {
       ...first,
@@ -166,7 +208,8 @@ export function combineFleetUsage(sources: FleetUsageSource[]): FleetUsageSummar
     },
     configuredMachines: sources.length,
     reportingMachines: reports.length,
-    unavailableMachines,
+    missingMachines: missingMachines(sources),
+    olderHostMachines,
     exactDeduplication,
     duplicatesRemoved
   };

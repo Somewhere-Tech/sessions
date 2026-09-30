@@ -9,11 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
+	"log"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -40,6 +42,10 @@ CREATE TABLE IF NOT EXISTS lane_events (
 );
 CREATE INDEX IF NOT EXISTS lane_events_lane_seq ON lane_events(lane_id, seq);
 CREATE INDEX IF NOT EXISTS lane_events_type_seq ON lane_events(type, seq);
+-- The coalescing probe asks for one lane's newest event of one type. Without
+-- this index that question reads the lane's whole history off disk, which on
+-- the Mini's 71 MB ledger was 94% of a thirty-second CPU profile.
+CREATE INDEX IF NOT EXISTS lane_events_lane_type_at ON lane_events(lane_id, type, at_ms);
 CREATE TRIGGER IF NOT EXISTS lane_events_no_update
 BEFORE UPDATE ON lane_events
 BEGIN
@@ -54,10 +60,87 @@ END;
 
 type Store struct {
 	db               *sql.DB
+	projection       currentProjection
 	path             string
 	clock            func() time.Time
 	newEventID       func() (string, error)
 	activityWindowMS int64
+	coalesce         coalesceMemory
+}
+
+// coalesceMemory is the newest at_ms this process has written or read for one
+// lane and event type — the answer the coalescing probe asks the disk for.
+//
+// From the Mini, 11 September: 94% of a thirty-second CPU profile was that
+// probe, under `observationWriter.RecordActivity` from the per-session observe
+// worker, reading each lane's whole event history off disk for every provider
+// event across 594 re-attached sessions. Indexed, the query is fast; not asked
+// at all, it is free — and for an append-only log whose writer is this process,
+// the newest value is something this process already knows.
+type coalesceMemory struct {
+	mu sync.Mutex
+	// latest is keyed by lane and type. One entry per lane per coalescing
+	// event type, so it is the size of the fleet, not of its history. If a
+	// machine somehow exceeds the bound the whole map is dropped: the next
+	// append per lane asks the database once and fills it again.
+	latest map[string]int64
+	// probes counts the queries this store still had to run, which is what a
+	// fixture measuring this fix reads.
+	probes int64
+}
+
+// coalesceEntryLimit bounds the memory at roughly one entry per lane.
+const coalesceEntryLimit = 50_000
+
+func coalesceKey(laneID string, kind EventType) string {
+	return laneID + "\x00" + string(kind)
+}
+
+// rememberCoalesced records what this process now knows to be the newest event
+// of this kind for this lane.
+func (s *Store) rememberCoalesced(key string, atMS int64) {
+	s.coalesce.mu.Lock()
+	defer s.coalesce.mu.Unlock()
+	if s.coalesce.latest == nil {
+		s.coalesce.latest = make(map[string]int64, 64)
+	}
+	if len(s.coalesce.latest) >= coalesceEntryLimit {
+		s.coalesce.latest = make(map[string]int64, 64)
+	}
+	if current, ok := s.coalesce.latest[key]; !ok || atMS > current {
+		s.coalesce.latest[key] = atMS
+	}
+}
+
+// knownCoalesced is the remembered answer, when it is the same answer the
+// query would give.
+//
+// The query asks for the newest event of this kind *not newer than* this one.
+// When the remembered value is not newer than the event being appended, it is
+// that answer: the log only grows, and this process is its writer. When the
+// event is older than what is remembered — a replayed provider timestamp out of
+// order — the memory cannot stand in for the query, and the query runs.
+//
+// Another process appending to the same ledger can make the memory older than
+// the truth. The cost is one extra activity event inside a window that would
+// have coalesced it, which the fold reads as the same activity; it is never a
+// missing event or a wrong state.
+func (s *Store) knownCoalesced(key string, atMS int64) (int64, bool) {
+	s.coalesce.mu.Lock()
+	defer s.coalesce.mu.Unlock()
+	latest, ok := s.coalesce.latest[key]
+	if !ok || latest > atMS {
+		return 0, false
+	}
+	return latest, true
+}
+
+// CoalesceProbes is how many times this store has had to ask the database for
+// a coalescing window rather than answer from memory.
+func (s *Store) CoalesceProbes() int64 {
+	s.coalesce.mu.Lock()
+	defer s.coalesce.mu.Unlock()
+	return s.coalesce.probes
 }
 
 type boundaryWriter struct{ store *Store }
@@ -65,6 +148,7 @@ type observationWriter struct{ store *Store }
 type migrationWriter struct{ store *Store }
 type retentionWriter struct{ store *Store }
 type attributionWriter struct{ store *Store }
+type worktreeWriter struct{ store *Store }
 
 // DefaultPath resolves the ledger outside Sessions' runner state directory.
 //
@@ -227,10 +311,41 @@ func (s *Store) configure(ctx context.Context, busy time.Duration) error {
 			return fmt.Errorf("configure ledger (%s): %w", statement, err)
 		}
 	}
+	missing, rows := s.missingIndexes(ctx)
+	started := time.Now()
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize ledger schema: %w", err)
 	}
+	// An existing ledger builds a new index once, on the first open that has
+	// it. On a large one that is seconds of disk, and a daemon that goes quiet
+	// for seconds should say why rather than look stuck.
+	if len(missing) > 0 && rows > 0 {
+		log.Printf("[ledger] building index %s over %d events took %s",
+			strings.Join(missing, ", "), rows, time.Since(started).Round(time.Millisecond))
+	}
 	return nil
+}
+
+// missingIndexes is which of the schema's indexes this database does not have
+// yet, and how many events they will be built over.
+func (s *Store) missingIndexes(ctx context.Context) ([]string, int64) {
+	var missing []string
+	for _, name := range []string{"lane_events_lane_seq", "lane_events_type_seq", "lane_events_lane_type_at"} {
+		var found string
+		err := s.db.QueryRowContext(ctx,
+			"SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?", name).Scan(&found)
+		if errors.Is(err, sql.ErrNoRows) {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil, 0
+	}
+	var rows int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM lane_events").Scan(&rows); err != nil {
+		return missing, 0
+	}
+	return missing, rows
 }
 
 func (s *Store) secureFiles() error {
@@ -255,6 +370,8 @@ func (s *Store) Migrations() MigrationWriter { return migrationWriter{store: s} 
 func (s *Store) Retention() RetentionWriter { return retentionWriter{store: s} }
 
 func (s *Store) Attributions() AttributionWriter { return attributionWriter{store: s} }
+
+func (s *Store) Worktrees() WorktreeWriter { return worktreeWriter{store: s} }
 
 func (w boundaryWriter) RecordCreated(ctx context.Context, value Created) error {
 	if value.LaneID == "" {
@@ -311,6 +428,7 @@ func (w boundaryWriter) RecordCreated(ctx context.Context, value Created) error 
 		ResumeArgv: append([]string{}, value.ResumeArgv...),
 		LaneUUID:   value.LaneUUID, ProviderUUID: value.ProviderUUID,
 		CreatorKind: value.CreatorKind, CreatorID: value.CreatorID, DelegationKind: value.DelegationKind,
+		StartOperationID: value.StartOperationID, PromptOperationID: value.PromptOperationID,
 	}
 	return w.store.append(ctx, EventCreated, value.Meta, payload, false)
 }
@@ -483,6 +601,10 @@ func (w observationWriter) RecordRunnerLost(ctx context.Context, value Observati
 	return w.store.observe(ctx, EventRunnerLost, value.Meta, ActorDaemon, emptyPayload{})
 }
 
+func (w observationWriter) RecordRunnerArtifactsRetired(ctx context.Context, value Observation) error {
+	return w.store.observe(ctx, EventRunnerArtifactsRetired, value.Meta, ActorDaemon, emptyPayload{})
+}
+
 func (w observationWriter) RecordReaped(ctx context.Context, value Observation) error {
 	return w.store.observe(ctx, EventReaped, value.Meta, ActorDaemon, emptyPayload{})
 }
@@ -580,6 +702,45 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 	return nil
 }
 
+func (w worktreeWriter) RecordWorktreeCleanRequested(ctx context.Context, value WorktreeCleanRequested) error {
+	if err := validateWorktreeCleanIdentity(value.WorktreePath, value.Branch); err != nil {
+		return fmt.Errorf("record worktree clean requested: %w", err)
+	}
+	if strings.TrimSpace(value.BranchHead) == "" {
+		return errors.New("record worktree clean requested: branch head is required")
+	}
+	if value.Actor == "" {
+		value.Actor = ActorUser
+	}
+	payload := worktreeCleanRequestedPayload{
+		WorktreePath: value.WorktreePath, Branch: value.Branch, BranchHead: value.BranchHead,
+	}
+	return w.store.append(ctx, EventWorktreeCleanRequested, value.Meta, payload, false)
+}
+
+func (w worktreeWriter) RecordWorktreeCleaned(ctx context.Context, value WorktreeCleaned) error {
+	if err := validateWorktreeCleanIdentity(value.WorktreePath, value.Branch); err != nil {
+		return fmt.Errorf("record worktree cleaned: %w", err)
+	}
+	if value.Actor == "" {
+		value.Actor = ActorDaemon
+	}
+	payload := worktreeCleanedPayload{
+		WorktreePath: value.WorktreePath, Branch: value.Branch, BranchRemoved: value.BranchRemoved,
+	}
+	return w.store.append(ctx, EventWorktreeCleaned, value.Meta, payload, false)
+}
+
+func validateWorktreeCleanIdentity(path, branch string) error {
+	if !filepath.IsAbs(path) {
+		return errors.New("worktree path must be absolute")
+	}
+	if strings.TrimSpace(branch) == "" {
+		return errors.New("branch is required")
+	}
+	return nil
+}
+
 func (s *Store) observe(ctx context.Context, kind EventType, meta Meta, actor Actor, payload any) error {
 	if meta.Actor == "" {
 		meta.Actor = actor
@@ -616,24 +777,25 @@ func (s *Store) append(ctx context.Context, kind EventType, meta Meta, payload a
 		return fmt.Errorf("record %s: invalid JSON payload", kind)
 	}
 
+	key := coalesceKey(meta.LaneID, kind)
+	if coalesce {
+		// Decided before a transaction is opened, because the common answer is
+		// "this lane was already active a moment ago" and that answer should
+		// cost nothing at all.
+		skip, err := s.coalesced(ctx, key, kind, meta)
+		if err != nil {
+			return err
+		}
+		if skip {
+			return nil
+		}
+	}
+
 	transaction, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("record %s: begin: %w", kind, err)
 	}
 	defer transaction.Rollback()
-	if coalesce {
-		var latest sql.NullInt64
-		err = transaction.QueryRowContext(ctx,
-			"SELECT MAX(at_ms) FROM lane_events WHERE lane_id = ? AND type = ? AND at_ms <= ?",
-			meta.LaneID, string(kind), meta.AtMS,
-		).Scan(&latest)
-		if err != nil {
-			return fmt.Errorf("record %s: read coalescing window: %w", kind, err)
-		}
-		if latest.Valid && meta.AtMS-latest.Int64 < s.activityWindowMS {
-			return nil
-		}
-	}
 	_, err = transaction.ExecContext(ctx, `
 INSERT INTO lane_events(event_id, lane_id, type, at_ms, actor, schema_version, payload_json)
 VALUES (?, ?, ?, ?, ?, ?, ?)`, eventID, meta.LaneID, string(kind), meta.AtMS, string(meta.Actor), SchemaVersion, string(encoded))
@@ -646,7 +808,37 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, eventID, meta.LaneID, string(kind), meta.AtMS, st
 	if err := s.secureFiles(); err != nil {
 		return fmt.Errorf("record %s: %w", kind, err)
 	}
+	if coalesce {
+		s.rememberCoalesced(key, meta.AtMS)
+	}
 	return nil
+}
+
+// coalesced reports whether this event falls inside the window of one already
+// recorded, from memory when memory can answer and from the database when it
+// cannot. The read is outside the insert's transaction: the table is
+// append-only, so the answer can only grow, and coalescing has always been a
+// de-duplication rather than a constraint.
+func (s *Store) coalesced(ctx context.Context, key string, kind EventType, meta Meta) (bool, error) {
+	if latest, known := s.knownCoalesced(key, meta.AtMS); known {
+		return meta.AtMS-latest < s.activityWindowMS, nil
+	}
+	var latest sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT MAX(at_ms) FROM lane_events WHERE lane_id = ? AND type = ? AND at_ms <= ?",
+		meta.LaneID, string(kind), meta.AtMS,
+	).Scan(&latest)
+	s.coalesce.mu.Lock()
+	s.coalesce.probes++
+	s.coalesce.mu.Unlock()
+	if err != nil {
+		return false, fmt.Errorf("record %s: read coalescing window: %w", kind, err)
+	}
+	if !latest.Valid {
+		return false, nil
+	}
+	s.rememberCoalesced(key, latest.Int64)
+	return meta.AtMS-latest.Int64 < s.activityWindowMS, nil
 }
 
 func (s *Store) Events(ctx context.Context, laneID string) ([]Event, error) {
@@ -712,6 +904,8 @@ type createdPayload struct {
 	CreatorKind       CreatorKind       `json:"creator_kind"`
 	CreatorID         string            `json:"creator_id"`
 	DelegationKind    string            `json:"delegation_kind,omitempty"`
+	StartOperationID  string            `json:"start_operation_id,omitempty"`
+	PromptOperationID string            `json:"prompt_operation_id,omitempty"`
 }
 
 type providerPayload struct {
@@ -734,6 +928,18 @@ type messageRelayedPayload struct {
 	ContentBytes     int           `json:"content_bytes"`
 	NormalizedSHA256 string        `json:"normalized_sha256"`
 	NormalizedBytes  int           `json:"normalized_bytes"`
+}
+
+type worktreeCleanRequestedPayload struct {
+	WorktreePath string `json:"worktree_path"`
+	Branch       string `json:"branch"`
+	BranchHead   string `json:"branch_head"`
+}
+
+type worktreeCleanedPayload struct {
+	WorktreePath  string `json:"worktree_path"`
+	Branch        string `json:"branch"`
+	BranchRemoved bool   `json:"branch_removed"`
 }
 
 // DecodeMessageRelayed validates and expands one durable attribution event.

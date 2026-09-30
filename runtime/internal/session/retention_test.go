@@ -392,3 +392,59 @@ func mustLedgerEvents(t *testing.T, store *ledger.Store) []ledger.Event {
 	}
 	return events
 }
+
+// A session that leaves the list is still in History, and History has to be
+// able to say which rows those are. Nothing but the ledger knows.
+func TestArchivedSessionIDsNamesEveryArchivedLane(t *testing.T) {
+	ctx := context.Background()
+	store, err := ledger.Open(ctx, ledger.Options{Path: filepath.Join(t.TempDir(), "ledger.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	archived := "00000000-0000-4000-8000-0000000000a1"
+	kept := "00000000-0000-4000-8000-0000000000a2"
+	for _, id := range []string{archived, kept} {
+		if err := store.Boundaries().RecordCreated(ctx, ledger.Created{
+			Meta: ledger.Meta{LaneID: id, AtMS: 10}, LaneUUID: id,
+			Tool: string(state.ToolLane), Cwd: t.TempDir(),
+			CreatorKind: ledger.CreatorUser, CreatorID: "uid:501",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Observations().RecordRunnerExited(ctx, ledger.RunnerExit{
+			Meta: ledger.Meta{LaneID: id, AtMS: 100},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manager := NewManager(state.Config{
+		StateRoot:      t.TempDir(),
+		UserStateRoot:  t.TempDir(),
+		RunnerStateDir: t.TempDir(),
+	}, nil, ManagerOptions{
+		ActivityInterval: time.Hour,
+		Boundaries:       store.Boundaries(),
+		Observations:     store.Observations(),
+		Retention:        store.Retention(),
+		LedgerReader:     store,
+		Notify:           func(PushPayload) {},
+	})
+	defer manager.Close()
+
+	if ids, err := manager.ArchivedSessionIDs(ctx); err != nil || len(ids) != 0 {
+		t.Fatalf("archived ids before archiving = %#v, err = %v", ids, err)
+	}
+	if _, err := manager.ArchiveClosed(ctx, []string{archived}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := manager.ArchivedSessionIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != archived {
+		t.Fatalf("archived ids = %#v, want exactly the archived lane %q", ids, archived)
+	}
+}

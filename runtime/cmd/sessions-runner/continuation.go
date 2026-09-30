@@ -16,6 +16,9 @@ func continuationTime(value string) time.Time {
 }
 
 func continuationBridge(continuation state.ContinuationContext) string {
+	if continuation.BriefingOnly {
+		return briefingInstructions(continuation, true)
+	}
 	opening := fmt.Sprintf(
 		"You are continuing work from a %s conversation selected by the user in Sessions.",
 		continuation.SourceProvider,
@@ -42,6 +45,9 @@ func continuationBridge(continuation state.ContinuationContext) string {
 }
 
 func codexContinuationInstructions(continuation state.ContinuationContext) string {
+	if continuation.BriefingOnly {
+		return briefingInstructions(continuation, false)
+	}
 	opening := fmt.Sprintf(
 		"This Codex conversation was explicitly continued by the user from a %s conversation in Sessions.",
 		continuation.SourceProvider,
@@ -65,6 +71,20 @@ func codexContinuationInstructions(continuation state.ContinuationContext) strin
 		shellQuoted(continuation.SourceHistoryID),
 		continuationWorkspaceDetail(continuation),
 	)
+}
+
+func briefingInstructions(continuation state.ContinuationContext, includeText bool) string {
+	instructions := fmt.Sprintf("You are a new collaborator started from a user-reviewed briefing, not a full conversation copy. "+
+		"The original %s conversation remains unchanged and may continue independently. Start from the reviewed briefing. "+
+		"Do not load the entire source transcript automatically. If more evidence is needed, use "+
+		"`sessions --json search <query> --session %s` for a specific lookup. The source history ID is %q. "+
+		"The briefing can omit details; verify important claims against the referenced files or source messages. %s",
+		continuation.SourceProvider, shellQuoted(continuation.SourceHistoryID), continuation.SourceHistoryID,
+		continuationWorkspaceDetail(continuation))
+	if includeText && len(continuation.Messages) == 1 {
+		instructions += "\n\nReviewed briefing:\n" + continuation.Messages[0].Text
+	}
+	return instructions
 }
 
 func continuationWorkspaceDetail(continuation state.ContinuationContext) string {

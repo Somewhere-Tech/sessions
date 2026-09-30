@@ -36,8 +36,8 @@ func TestResolveModelChoice(t *testing.T) {
 			want: ModelChoice{Model: "wire-alpha", Effort: "low"},
 		},
 		{
-			name: "invalid model", choice: ModelChoice{Model: "missing", Effort: "high"},
-			wantError: `model "missing" not available; valid: [alpha, beta]`,
+			name: "explicit model omitted from catalog", choice: ModelChoice{Model: "astra", Effort: "high", ServiceTier: "priority"},
+			want: ModelChoice{Model: "astra", Effort: "high", ServiceTier: "priority"},
 		},
 		{
 			name: "invalid effort cannot downgrade", choice: ModelChoice{Model: "beta", Effort: "high"},
@@ -64,6 +64,14 @@ func TestResolveModelChoice(t *testing.T) {
 				t.Fatalf("ResolveModelChoice() = %#v, %v; want %#v", got, err, test.want)
 			}
 		})
+	}
+}
+
+func TestResolveModelChoicePreservesExplicitChoiceWithEmptyCatalog(t *testing.T) {
+	want := ModelChoice{Model: "astra", Effort: "high", ServiceTier: "priority"}
+	got, err := ResolveModelChoice(nil, want)
+	if err != nil || got != want {
+		t.Fatalf("ResolveModelChoice() = %#v, %v; want %#v", got, err, want)
 	}
 }
 

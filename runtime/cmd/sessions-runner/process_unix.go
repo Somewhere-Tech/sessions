@@ -122,9 +122,8 @@ func (p *unixChildProcess) Wait(headless bool) exitInfo {
 	if processState != nil {
 		if status, ok := processState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 			signalText := strconv.Itoa(int(status.Signal()))
-			// node-pty reports exitCode=0 alongside the numeric signal for a
-			// signal-terminated PTY. Keep that slightly unusual pairing for
-			// byte-level interop with runner.ts.
+			// The stable protocol reports exitCode=0 alongside the numeric signal
+			// for a signal-terminated PTY. Keep that slightly unusual pairing.
 			code := 0
 			if headless {
 				code = 128 + int(status.Signal())

@@ -273,3 +273,70 @@ func runRankedFixture(t *testing.T, fixture *fakeHistory, query, indexPath strin
 	}
 	return result
 }
+
+// A live transcript grows on every turn. Re-inserting the whole conversation
+// on every search cost as much as indexing it from scratch; once the indexed
+// rows are still a prefix of the transcript, only the new messages are added.
+func TestRankedSearchAppendsGrownTranscriptWithoutReinserting(t *testing.T) {
+	fixture := rankedFixture("first marker")
+	indexPath := filepath.Join(t.TempDir(), "search-index.db")
+	if result := runRankedFixture(t, fixture, "first", indexPath); result.Total != 1 {
+		t.Fatalf("initial result = %#v", result)
+	}
+	db, err := openIndex(context.Background(), indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstRow int64
+	if err := db.QueryRow("SELECT rowid FROM messages_v4 WHERE text = 'first marker'").Scan(&firstRow); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	id := fixture.sessions[0].ID
+	fixture.transcript[id] = integrations.TranscriptResponse{Messages: []integrations.TranscriptMessage{
+		{Role: "user", Text: "first marker"},
+		{Role: "assistant", Text: "second marker"},
+	}}
+	if result := runRankedFixture(t, fixture, "second", indexPath); result.Total != 1 {
+		t.Fatalf("grown result = %#v", result)
+	}
+	db, err = openIndex(context.Background(), indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var sameRow int64
+	if err := db.QueryRow("SELECT rowid FROM messages_v4 WHERE text = 'first marker'").Scan(&sameRow); err != nil {
+		t.Fatal(err)
+	}
+	if sameRow != firstRow {
+		t.Fatalf("first message was re-inserted: rowid %d -> %d", firstRow, sameRow)
+	}
+	var rows int
+	if err := db.QueryRow("SELECT count(*) FROM messages_v4 WHERE session_id = ?", id).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 2 {
+		t.Fatalf("indexed rows = %d, want 2", rows)
+	}
+
+	// Editing the prefix, or renaming the session (every row carries the
+	// name), still rebuilds the whole conversation.
+	fixture.sessions[0].Name = "renamed"
+	fixture.transcript[id] = integrations.TranscriptResponse{Messages: []integrations.TranscriptMessage{
+		{Role: "user", Text: "first marker"},
+		{Role: "assistant", Text: "second marker"},
+		{Role: "user", Text: "third marker"},
+	}}
+	if result := runRankedFixture(t, fixture, "third", indexPath); result.Total != 1 {
+		t.Fatalf("renamed result = %#v", result)
+	}
+	var names int
+	if err := db.QueryRow("SELECT count(*) FROM messages_v4 WHERE session_id = ? AND name = 'renamed'", id).Scan(&names); err != nil {
+		t.Fatal(err)
+	}
+	if names != 3 {
+		t.Fatalf("rows carrying the new name = %d, want 3", names)
+	}
+}

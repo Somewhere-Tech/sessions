@@ -8,6 +8,7 @@ import {
   type BackupStatus,
   type SomewhereCLIStatus
 } from '../lib/tauriBridge';
+import { copyText } from '../lib/copyText';
 
 const FALLBACK_INSTALL_COMMAND = 'npm install -g @somewhere-tech/cli';
 
@@ -17,7 +18,7 @@ function lastBackupLabel(value?: string): string {
   return Number.isNaN(date.getTime()) ? value : `Last backup ${date.toLocaleString()}`;
 }
 
-export function SomewhereCard(): JSX.Element {
+export function SomewhereCard({ clientOnly = false, hostName = 'this computer' }: { clientOnly?: boolean; hostName?: string }): JSX.Element {
   const [cli, setCLI] = useState<SomewhereCLIStatus | null>(null);
   const [backup, setBackup] = useState<BackupStatus | null>(null);
   const [project, setProject] = useState('');
@@ -27,6 +28,10 @@ export function SomewhereCard(): JSX.Element {
   const [recoveryPhrase, setRecoveryPhrase] = useState<string | null>(null);
 
   const refresh = useCallback(async (): Promise<void> => {
+    if (clientOnly) {
+      setChecking(false);
+      return;
+    }
     if (!isTauri()) return;
     setChecking(true);
     setMessage(null);
@@ -43,7 +48,7 @@ export function SomewhereCard(): JSX.Element {
       setMessage((current) => current ?? (backupResult.reason instanceof Error ? backupResult.reason.message : 'Could not inspect backup status'));
     }
     setChecking(false);
-  }, []);
+  }, [clientOnly]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -64,7 +69,7 @@ export function SomewhereCard(): JSX.Element {
 
   const copy = async (value: string, success: string): Promise<void> => {
     try {
-      await navigator.clipboard.writeText(value);
+      if (!await copyText(value)) throw new Error('copy refused');
       setMessage(success);
     } catch {
       setMessage(`Copy this value: ${value}`);
@@ -72,7 +77,7 @@ export function SomewhereCard(): JSX.Element {
   };
 
   const enableBackup = async (): Promise<void> => {
-    if (busy || !project.trim()) return;
+    if (clientOnly || busy || !project.trim()) return;
     setBusy('enable');
     setMessage(null);
     try {
@@ -91,7 +96,7 @@ export function SomewhereCard(): JSX.Element {
   };
 
   const backupNow = async (): Promise<void> => {
-    if (busy) return;
+    if (clientOnly || busy) return;
     setBusy('now');
     setMessage(null);
     try {
@@ -115,12 +120,19 @@ export function SomewhereCard(): JSX.Element {
             <span>somewhere.tech</span>
           </a>
           <h2>Your Sessions cloud</h2>
-          <p>Encrypted backup is available now. A dedicated Sessions account space, hosted search, cloud usage, and always-on machines are being designed here before the platform APIs ship.</p>
+          <p>Encrypted backup sends your session data directly to a Somewhere project you control.</p>
         </div>
         <span className="somewhere-live-badge">Backup available now</span>
       </header>
 
-      <div className="somewhere-live-grid">
+      {clientOnly ? (
+        <div className="somewhere-live-grid">
+          <section className="somewhere-backup">
+            <header><div><span>Host-managed backup</span><strong>Chosen on {hostName}</strong></div><span className="somewhere-status-dot" aria-hidden /></header>
+            <p>Backup and Somewhere CLI settings stay on {hostName}. Open Sessions on that computer to view or change them.</p>
+          </section>
+        </div>
+      ) : <div className="somewhere-live-grid">
         <section className={`somewhere-backup${backup?.enabled ? ' is-enabled' : ''}`}>
           <header>
             <div><span>Encrypted backup</span><strong>{backup?.enabled ? 'On' : 'Not configured'}</strong></div>
@@ -147,7 +159,7 @@ export function SomewhereCard(): JSX.Element {
                 Somewhere project
                 <input value={project} onChange={(event) => setProject(event.currentTarget.value)} placeholder="my-sessions-backup" spellCheck={false} disabled={!isTauri() || busy !== null} />
               </label>
-              <small>A dedicated Sessions slot on somewhere.tech is coming soon. For now, choose a project you own.</small>
+              <small>Choose a Somewhere project you own.</small>
               <button type="button" className="btn" disabled={!isTauri() || !cli?.installed || !project.trim() || busy !== null} onClick={() => void enableBackup()}>{busy === 'enable' ? 'Enabling…' : 'Enable encrypted backup'}</button>
             </>
           )}
@@ -163,7 +175,7 @@ export function SomewhereCard(): JSX.Element {
           </div>
           <small>{cli?.detail ?? 'Install the Somewhere CLI, then run somewhere login once.'}</small>
         </section>
-      </div>
+      </div>}
 
       {recoveryPhrase ? (
         <section className="somewhere-recovery" role="status">
@@ -178,23 +190,6 @@ export function SomewhereCard(): JSX.Element {
 
       {message ? <div className="somewhere-message" role="status">{message}</div> : null}
 
-      <div className="somewhere-coming-heading"><span>Account cloud</span><strong>Coming soon</strong></div>
-      <div className="somewhere-coming-grid">
-        <ComingSoon title="Session library" icon="◫">Browse encrypted archives by machine and recover Claude or Codex provider history.</ComingSoon>
-        <ComingSoon title="Hosted search" icon="⌕">Search only the transcripts you explicitly choose to make server-indexable.</ComingSoon>
-        <ComingSoon title="Cloud usage" icon="◒">Keep provider, token, cost, project, and daily rollups centrally without requiring transcript contents.</ComingSoon>
-        <ComingSoon title="Password recovery" icon="◇">Wrap the local encryption key with a password-derived key; Somewhere never stores the password itself.</ComingSoon>
-      </div>
     </section>
-  );
-}
-
-function ComingSoon({ title, icon, children }: { title: string; icon: string; children: string }): JSX.Element {
-  return (
-    <article className="somewhere-coming-card">
-      <span aria-hidden>{icon}</span>
-      <div><strong>{title}</strong><p>{children}</p></div>
-      <small>Coming soon</small>
-    </article>
   );
 }

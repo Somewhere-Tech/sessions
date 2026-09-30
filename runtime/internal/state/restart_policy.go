@@ -13,6 +13,13 @@ import (
 
 const DefaultPinnedBootRestoreLimit = 8
 
+// RecentRestoreWindow is how recently a person must have spoken to an unpinned
+// session for it to come back automatically after a reboot. A session is
+// durable work; the person who was talking to it yesterday expects it to be
+// there, not to find it paused. Pinned roots come back regardless of age.
+// Lanes never restart on their own, and the process ceiling still applies.
+const RecentRestoreWindow = 24 * time.Hour
+
 type RestartPermit struct {
 	BootID      string `json:"boot_id"`
 	CreatedAtMS int64  `json:"created_at_ms"`
@@ -39,9 +46,9 @@ func WriteRestartPermit(path, bootID string) error {
 
 // EvaluateRestartPermit is the runner-side reboot boundary. The permit remains
 // present while a runner is live, so launchd can restart a crash during the
-// same boot. On a new boot, only a deterministic bounded set of pinned session
-// roots is allowed to respawn; every other provider stays stopped and receives
-// a recoverable marker instead.
+// same boot. On a new boot, only a bounded set of the most recently active
+// pinned session roots is allowed to respawn; every other provider stays
+// stopped and receives a recoverable marker instead.
 func EvaluateRestartPermit(paths Paths, currentBootID string, pinnedLimit int) (RestartDecision, error) {
 	if currentBootID == "" {
 		return RestartDecision{Reason: "Sessions could not identify this boot, so it did not restart a provider automatically"}, errors.New("boot id is required")
@@ -61,7 +68,7 @@ func EvaluateRestartPermit(paths Paths, currentBootID string, pinnedLimit int) (
 	if pinnedLimit <= 0 {
 		pinnedLimit = DefaultPinnedBootRestoreLimit
 	}
-	eligible, scanErr := pinnedRestoreIDs(paths.Dir, pinnedLimit)
+	eligible, scanErr := restoreCandidateIDs(paths.Dir, pinnedLimit, time.Now())
 	if scanErr == nil {
 		index := sort.SearchStrings(eligible, paths.ID)
 		if index < len(eligible) && eligible[index] == paths.ID {
@@ -72,9 +79,9 @@ func EvaluateRestartPermit(paths Paths, currentBootID string, pinnedLimit int) (
 			return RestartDecision{Allowed: true, PinnedRestore: true}, nil
 		}
 	}
-	reason := fmt.Sprintf("automatic restore paused after reboot; only the first %d pinned session roots restart automatically", pinnedLimit)
+	reason := fmt.Sprintf("paused after restart; Sessions restarts at most %d sessions automatically (pinned ones, then the ones spoken to in the last 24 hours) — resume this one to continue its conversation", pinnedLimit)
 	if scanErr != nil {
-		reason = "automatic restore paused after reboot because Sessions could not safely select pinned roots: " + scanErr.Error()
+		reason = "paused after restart because Sessions could not safely choose which sessions to restart: " + scanErr.Error() + " — resume this one to continue its conversation"
 	}
 	if err := os.Remove(paths.KeepAlive); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return RestartDecision{Reason: reason}, fmt.Errorf("remove stale runner permit: %w", err)
@@ -106,6 +113,25 @@ func WriteRestorePending(path, sessionID, reason string) error {
 	})
 }
 
+// ReadRestorePending decodes the durable proof that a runner deliberately did
+// not restart on this boot. Callers must not treat the marker as an empty or
+// ended session: the provider process is unavailable and needs an explicit
+// resume/recreate action.
+func ReadRestorePending(path string) (RestorePending, error) {
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		return RestorePending{}, err
+	}
+	var pending RestorePending
+	if err := json.Unmarshal(encoded, &pending); err != nil {
+		return RestorePending{}, err
+	}
+	if strings.TrimSpace(pending.SessionID) == "" {
+		return RestorePending{}, errors.New("restore marker has no session id")
+	}
+	return pending, nil
+}
+
 // CountRestorePending returns the number of runners intentionally left stopped
 // by the reboot budget. An unreadable marker still counts: it is evidence that
 // automatic restoration did not complete, even if its detail cannot be read.
@@ -126,33 +152,68 @@ func CountRestorePending(dir string) (int, error) {
 	return count, nil
 }
 
-func pinnedRestoreIDs(dir string, limit int) ([]string, error) {
+// restoreCandidateIDs chooses which session roots restart automatically on a
+// new boot: pinned roots first, then unpinned roots a person spoke to within
+// RecentRestoreWindow, most recent first, capped at limit. Everything else
+// stays paused with a resumable marker. Lanes are never chosen.
+func restoreCandidateIDs(dir string, limit int, now time.Time) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0)
+	type candidate struct {
+		id       string
+		pinned   bool
+		activity int64
+	}
+	candidates := make([]candidate, 0)
+	cutoff := now.Add(-RecentRestoreWindow).UnixMilli()
 	for _, entry := range entries {
 		id, ok := RunnerIDFromMetadataName(entry.Name())
 		if !ok {
 			continue
 		}
 		metadata, err := ReadRunnerMetadata(filepath.Join(dir, entry.Name()))
-		if err != nil || !metadata.Pinned || metadata.Kind == KindLane {
+		if err != nil || metadata.Kind == KindLane {
 			continue
 		}
-		// A pinned but already-stopped session must not consume one of the
-		// bounded restore slots. The permit is the durable proof that this
-		// runner was actually alive before the reboot.
+		// An already-stopped session must not consume one of the bounded
+		// restore slots. The permit is the durable proof that this runner was
+		// actually alive before the reboot.
 		if _, err := readRestartPermit(For(dir, id).KeepAlive); err != nil {
 			continue
 		}
-		ids = append(ids, id)
+		recentlySpokenTo := metadata.LastHumanMessageAt != nil && *metadata.LastHumanMessageAt >= cutoff
+		if !metadata.Pinned && !recentlySpokenTo {
+			continue
+		}
+		activity := metadata.Info.CreatedAt
+		for _, stamp := range []*int64{metadata.LastHumanMessageAt, metadata.LastAgentMessageAt} {
+			if stamp != nil && *stamp > activity {
+				activity = *stamp
+			}
+		}
+		candidates = append(candidates, candidate{id: id, pinned: metadata.Pinned, activity: activity})
 	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].pinned != candidates[j].pinned {
+			return candidates[i].pinned
+		}
+		if candidates[i].activity == candidates[j].activity {
+			return candidates[i].id < candidates[j].id
+		}
+		return candidates[i].activity > candidates[j].activity
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	ids := make([]string, len(candidates))
+	for index, candidate := range candidates {
+		ids[index] = candidate.id
+	}
+	// EvaluateRestartPermit uses binary search because every runner evaluates
+	// independently. Sort only after selecting by activity.
 	sort.Strings(ids)
-	if len(ids) > limit {
-		ids = ids[:limit]
-	}
 	return ids, nil
 }
 

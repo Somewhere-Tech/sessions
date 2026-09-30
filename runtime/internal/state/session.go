@@ -3,7 +3,6 @@ package state
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -54,10 +53,31 @@ type AttachOptions struct {
 	InitialReplayCap    int
 }
 
+// kindKeepsTerminalMirror reports whether this kind of session is ever read as
+// a terminal screen.
+//
+// A lane is read as its raw output tail and a structured provider as its event
+// log — see Session.snapshot, which answers both before the mirror is reached —
+// so feeding those kinds a terminal emulator built an 8 MiB screen per session
+// to absorb bytes no read path asks for. The kinds listed here are the ones
+// with no such reader; everything else is a PTY somebody looks at.
+func kindKeepsTerminalMirror(kind string) bool {
+	switch kind {
+	case KindLane, KindCodexAppServer, KindClaudeStructured:
+		return false
+	default:
+		return true
+	}
+}
+
 func newSession(ctx context.Context, info proto.RunnerInfo, runner proto.Runner, metadata SessionMetadata) (*Session, error) {
-	terminal, err := mirror.NewSize(info.Cols, info.Rows)
-	if err != nil {
-		return nil, fmt.Errorf("create session mirror: %w", err)
+	var terminal *mirror.Mirror
+	if kindKeepsTerminalMirror(metadata.Kind) {
+		created, err := mirror.NewSize(info.Cols, info.Rows)
+		if err != nil {
+			return nil, fmt.Errorf("create session mirror: %w", err)
+		}
+		terminal = created
 	}
 	tool := classifyTool(info.Cmd)
 	if metadata.Kind == KindLane {
@@ -79,10 +99,12 @@ func newSession(ctx context.Context, info proto.RunnerInfo, runner proto.Runner,
 			Cwd: info.Cwd, Profile: metadata.Profile, ConfigDir: metadata.ConfigDir,
 			Cols: info.Cols, Rows: info.Rows, CreatedAt: info.CreatedAt,
 			PID: info.PID, RunnerProtocol: info.ProtocolVersion, RunnerVersion: info.RuntimeVersion,
-			Tool: tool, LastDataAt: now, OnIdle: metadata.OnIdle,
+			MessageSubmit: info.MessageSubmit,
+			Tool:          tool, LastDataAt: now, OnIdle: metadata.OnIdle,
 			IdleReason: IdleReasonNeverStarted, IdleSince: &now,
 			Model: model, Effort: effort, Fast: fast,
 			ConversationID: info.ConversationID, RemoteEndpoint: info.RemoteEndpoint,
+			Retry:                  cloneRetry(info.Retry),
 			ClaudeSessionID:        info.ClaudeSessionID,
 			ContinuedFromHistoryID: metadata.ContinuedFromHistoryID,
 			ContinuedFromProvider:  metadata.ContinuedFromProvider,
@@ -151,6 +173,8 @@ func (s *Session) applyEvent(event proto.Event) bool {
 		if event.ClaudeActivityAt > s.info.LastDataAt {
 			s.info.LastDataAt = event.ClaudeActivityAt
 		}
+	case proto.EventRetry:
+		s.info.Retry = cloneRetry(event.Retry)
 	case proto.EventRunnerLost:
 		// A lost socket is not an exit. proto.SocketRunner raises this for any
 		// read error at all -- EOF, the 10s deadline, a daemon restart -- and
@@ -204,6 +228,18 @@ func (s *Session) applyEvent(event proto.Event) bool {
 		s.exit = exit
 		terminal = true
 	}
+	s.broadcastEventLocked(event, terminal)
+	if terminal {
+		for id, subscriber := range s.subs {
+			close(subscriber)
+			delete(s.subs, id)
+		}
+	}
+	s.mu.Unlock()
+	return terminal
+}
+
+func (s *Session) broadcastEventLocked(event proto.Event, terminal bool) {
 	for _, subscriber := range s.subs {
 		select {
 		case subscriber <- event:
@@ -225,21 +261,15 @@ func (s *Session) applyEvent(event proto.Event) bool {
 			}
 		}
 	}
-	if terminal {
-		for id, subscriber := range s.subs {
-			close(subscriber)
-			delete(s.subs, id)
-		}
-	}
-	s.mu.Unlock()
-	return terminal
 }
 
 func (s *Session) appendOutputLocked(event proto.OutputEvent) {
 	if event.At == 0 {
 		event.At = time.Now().UnixMilli()
 	}
-	_, _ = s.mirror.Write([]byte(event.Data))
+	if s.mirror != nil {
+		_, _ = s.mirror.Write([]byte(event.Data))
+	}
 	s.outputs = append(s.outputs, event)
 	s.outputSize += len(event.Data)
 	if event.Seq >= s.nextSeq {
@@ -263,7 +293,16 @@ func (s *Session) Info() SessionInfo {
 	info.CPUPercent = cloneFloat64Pointer(s.info.CPUPercent)
 	info.ResourceProcesses = cloneIntPointer(s.info.ResourceProcesses)
 	info.ResourceSampledAt = cloneInt64Pointer(s.info.ResourceSampledAt)
+	info.Retry = cloneRetry(s.info.Retry)
 	return info
+}
+
+func cloneRetry(value *proto.ProviderRetry) *proto.ProviderRetry {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 // ResourceSample is one measurement of what this session costs the machine.
@@ -502,6 +541,12 @@ func (s *Session) snapshot(cols int, includeScrollback bool) (string, uint32, er
 	if s.info.Kind == KindCodexAppServer || s.info.Kind == KindClaudeStructured {
 		return structuredSnapshot(s.claude), seq, nil
 	}
+	if s.mirror == nil {
+		// Every kind above answers from what it does keep. Anything that gets
+		// here is a kind with no terminal screen and no substitute, and saying
+		// so is more use to the caller than an empty one.
+		return "", seq, ErrNoTerminalMirror
+	}
 	if cols > 0 {
 		return s.mirror.ReflowTo(cols), seq, nil
 	}
@@ -516,6 +561,79 @@ func (s *Session) Input(ctx context.Context, data string) bool {
 	defer s.mu.RUnlock()
 	exited := s.info.Exited
 	return !exited && s.runner.Input(ctx, data) == nil
+}
+
+// Approve answers the approval this session's runner is holding open.
+func (s *Session) Approve(ctx context.Context, control proto.ApprovalControl) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.info.Exited {
+		return ErrSessionEnded
+	}
+	if s.info.PendingApproval == nil {
+		return ErrNoPendingApproval
+	}
+	if control.ID == "" {
+		control.ID = s.info.PendingApproval.ID
+	} else if control.ID != s.info.PendingApproval.ID {
+		return fmt.Errorf("%w: %s is waiting, not %s", ErrNoPendingApproval, s.info.PendingApproval.ID, control.ID)
+	}
+	return s.runner.Approve(ctx, control)
+}
+
+func (s *Session) RetryProvider(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.retryEligibilityLocked(false); err != nil {
+		return err
+	}
+	controller := s.runner.(interface{ Retry(context.Context) error })
+	if err := controller.Retry(ctx); err != nil {
+		return fmt.Errorf("retry failed provider turn: %w", err)
+	}
+	return nil
+}
+
+func (s *Session) StopProviderRetry(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.retryEligibilityLocked(true); err != nil {
+		return err
+	}
+	controller := s.runner.(interface{ StopRetry(context.Context) error })
+	if err := controller.StopRetry(ctx); err != nil {
+		return fmt.Errorf("stop provider retry: %w", err)
+	}
+	s.info.Retry = nil
+	return nil
+}
+
+func (s *Session) retryEligibilityLocked(stop bool) error {
+	if s.info.Kind != KindCodexAppServer && s.info.Kind != KindClaudeStructured {
+		return fmt.Errorf("%w: PTY sessions do not retain a failed Rich turn to retry", ErrRetryUnsupported)
+	}
+	if s.info.Exited {
+		return ErrSessionEnded
+	}
+	if s.info.RunnerProtocol < 4 {
+		return fmt.Errorf("%w: runner protocol v%d cannot control provider retries", ErrRunnerProtocol, s.info.RunnerProtocol)
+	}
+	if _, ok := s.runner.(interface {
+		Retry(context.Context) error
+		StopRetry(context.Context) error
+	}); !ok {
+		return ErrRetryUnsupported
+	}
+	if stop && s.info.Retry == nil {
+		return ErrNoRetryScheduled
+	}
+	if !stop && s.info.FailureKind == "" {
+		return ErrNoFailedTurn
+	}
+	if !stop && s.info.Working {
+		return fmt.Errorf("%w; wait for the active turn to finish", ErrSessionWorking)
+	}
+	return nil
 }
 
 // ConfigureModel updates the defaults used by the next structured-provider
@@ -558,9 +676,13 @@ func (s *Session) Resize(ctx context.Context, cols, rows int) bool {
 		return false
 	}
 	s.mu.Lock()
-	if err := s.mirror.Resize(cols, rows); err != nil {
-		s.mu.Unlock()
-		return false
+	// A kind with no terminal screen still records the size its runner was
+	// resized to; there is simply no screen to reflow.
+	if s.mirror != nil {
+		if err := s.mirror.Resize(cols, rows); err != nil {
+			s.mu.Unlock()
+			return false
+		}
 	}
 	s.info.Cols = cols
 	s.info.Rows = rows
@@ -572,14 +694,31 @@ func (s *Session) Kill(ctx context.Context) bool {
 	return s.RequestKill(ctx) == nil
 }
 
-func (s *Session) RequestKill(ctx context.Context) error {
+// HasExited includes the runner's clean terminal observation, which can arrive
+// just before the Session event pump publishes the same fact in SessionInfo.
+// A closed socket without an EXIT frame remains false.
+func (s *Session) HasExited() bool {
 	s.mu.RLock()
 	exited := s.info.Exited
 	s.mu.RUnlock()
 	if exited {
-		return errors.New("session already exited")
+		return true
+	}
+	runner, ok := s.runner.(interface{ HasExited() bool })
+	return ok && runner.HasExited()
+}
+
+func (s *Session) RequestKill(ctx context.Context) error {
+	if s.HasExited() {
+		return nil
 	}
 	if err := s.runner.Kill(ctx); err != nil {
+		// The runner can publish EXIT and close its socket between the check
+		// above and the control write. That is the requested end state, not a
+		// failed kill.
+		if s.HasExited() {
+			return nil
+		}
 		return fmt.Errorf("kill runner: %w", err)
 	}
 	return nil
@@ -604,9 +743,24 @@ func (s *Session) SetWorking(working bool) (previous bool, exited bool) {
 	return previous, exited
 }
 
+// RunnerTurnState returns the exact Rich turn state captured in the runner's
+// reconnect HELLO. Older compatible runners omit it.
+func (s *Session) RunnerTurnState() (bool, bool) {
+	info := s.runner.Info()
+	if info.ProtocolVersion < 5 || info.Turn == nil {
+		return false, false
+	}
+	return info.Turn.Working, true
+}
+
 // SetIdleResult publishes the last useful outcome as additive session state.
 // LastSummary deliberately survives the next working transition so operators
 // can still see the most recently completed result while a follow-up runs.
+//
+// A failed turn is the exception. Its line describes what went wrong, and
+// adopting that as the last summary made a provider outage read as the agent's
+// own reply for the rest of the session. The failure keeps its own fields, and
+// LastSummary keeps the last thing the agent actually produced.
 func (s *Session) SetIdleResult(reason, detail, summary string, at int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -616,7 +770,7 @@ func (s *Session) SetIdleResult(reason, detail, summary string, at int64) {
 	s.info.IdleReason = reason
 	s.info.IdleDetail = detail
 	s.info.IdleSince = &at
-	if summary != "" {
+	if summary != "" && reason != IdleReasonFailed {
 		s.info.LastSummary = summary
 	}
 }
@@ -705,8 +859,26 @@ func (s *Session) TerminalState() (bool, proto.ExitEvent) {
 	return s.info.Exited, s.exit
 }
 
+// HibernateIdleMirror gives back this session's terminal emulator when nothing
+// has written to or read from it for quiet.
+//
+// The emulator is about 8 MiB per live session — most of what a daemon holding
+// many sessions retains — and a session that is waiting for its next turn needs
+// none of it until someone looks. The next write or read rebuilds it from the
+// stream the mirror kept. A kind that never had a screen has nothing to give
+// back and says so.
+func (s *Session) HibernateIdleMirror(quiet time.Duration) bool {
+	if s.mirror == nil {
+		return true
+	}
+	return s.mirror.HibernateIfIdle(quiet)
+}
+
 func (s *Session) Close() error {
 	s.cancelRunner()
+	if s.mirror == nil {
+		return nil
+	}
 	return s.mirror.Close()
 }
 

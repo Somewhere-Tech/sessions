@@ -1,17 +1,27 @@
 # sessionsd state and discovery contract
 
-This records the paths and lifecycle actually used by the TypeScript source,
-with the shipped Go runtime's deliberate divergences called out where they
-exist. The current layout is split: runner artifacts live in a `runners/`
+This records the paths and lifecycle used by the shipped Go runtime. The
+current layout is split: runner artifacts live in a `runners/`
 subdirectory by default, while auth, push, uploads, and idle state live at the
 root.
 
 ## Default layout
 
+Continuation sidecars for authored conversation copies retain schema 1.
+Reviewed-briefing sidecars use schema 2, with `briefingOnly: true`, one reviewed
+user message, optional `destinationProfile` (empty means default), and optional
+`mainCollaborator` display intent. Current runners read both schemas. Older
+runners reject schema 2 rather than interpreting a briefing as an instruction
+to load the whole source transcript. Both schemas keep the source history ID
+for explicit lookups; neither changes the source provider history.
+
 ```text
 ~/.local/state/sessions/
 ├── token
 ├── open
+├── fleet-account.json
+├── fleet-machine-key.json
+├── fleet-machine-key.json.claim-nonces
 ├── vapid.json
 ├── push-subscriptions.json
 ├── delivery-operations/
@@ -45,19 +55,28 @@ than rebuilding either layout by hand.
 `<id>.json/.sock/.events/.log` directly in `/tmp/ct-state`, not
 `/tmp/ct-state/runners`.
 
-The Go runtime deliberately diverges from the Node fixture on what else follows
-it. Setting it also derives a separate *state root* — the parent when the
-configured directory is named `runners`, otherwise the directory itself — so a
-scratch daemon never reads the installed daemon's credentials or ledgers
+Setting it also derives a separate *state root* — the parent when the configured
+directory is named `runners`, otherwise the directory itself — so a scratch
+daemon never reads the installed daemon's credentials or ledgers
 (`runtime/internal/state/config.go` `stateRootsFromEnv`). These follow the
 override:
 
 - `token` and `open`;
-- `uploads/` (`runtime/internal/api/files.go` `uploadsDir`), matching how recap,
-  usage, and integration-error state already resolve;
+- `fleet-account.json`, `fleet-machine-key.json`, and its `.claim-nonces` replay file;
+- `uploads/` (`runtime/internal/api/files.go` `uploadsDir`), matching how usage
+  and integration-error state already resolve;
 - `delivery-operations/`, the content-free idempotency receipts for composer
   submissions;
-- `recaps/`, `usage.sqlite3`, and `errors.jsonl`.
+- `usage.sqlite3` and `errors.jsonl`;
+- `history-cache.json`, what the history listing has already computed about each
+  transcript file — its message count, its recorded last activity, and the card
+  the provider scan read out of that file's head — keyed by path with the size
+  and modification time those answers were computed at. It is
+  a cache and nothing depends on it: every entry is checked against the file
+  before it is used, a file that changed or vanished is recomputed, and a file
+  that cannot be parsed is treated as an empty cache. Deleting it costs one slow
+  listing. It is written after a listing that learned something, at most once
+  every five seconds, by rename, and holds at most 4096 entries (about 1 MB).
 
 These do **not** follow it, and resolve from the user state root, which is
 always derived from the home directory: `settings.json`, `machine-id`,
@@ -76,6 +95,16 @@ directory and answers
 
 ## Files
 
+### `profiles/<tool>/<name>.account.json`
+
+An optional mode-0600 sidecar beside the provider-owned home records the user's
+`label`, `removed` flag, and optional last checked `identity` (email, plan,
+organization, checked_at milliseconds). It contains no provider credential.
+Older clients may ignore `identity`. Provider sign-in helpers are memory-only
+and expire after ten minutes; they do not create runner artifacts or sessions.
+Named subscription launches discard ambient provider authentication overrides
+before assigning their private `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
+
 ### `token`
 
 Exactly 64 lowercase hexadecimal characters representing 32 random bytes. It is
@@ -93,6 +122,43 @@ every WS auth check calls the token getter even in open mode.
 Only existence matters; contents and mode are not read. Its presence bypasses
 HTTP and WS token comparison but does not bypass Origin checks. Removing it
 immediately restores auth on later requests.
+
+### `fleet-account.json`
+
+Optional, sessionsd-printed JSON containing the Somewhere app-user access,
+refresh, and logout-session tokens, the account's public user fields, and the
+last successful registration/heartbeat or registration error. The complete
+document is replaced atomically through a synced temporary file with mode 0600.
+It follows `SESSIONS_STATE_DIR`, so an isolated daemon never reads or rotates
+the installed daemon's login. A response rotates the token pair only when it
+contains both `X-New-Access-Token` and `X-New-Refresh-Token`; a network error or
+one incomplete header never clears or partly replaces the stored pair.
+
+### `fleet-machine-key.json`
+
+Optional, sessionsd-printed JSON containing one Ed25519 public/private machine
+key as unpadded base64url. It is created on first `sessions account key` or
+account registration and replaced atomically with mode 0600. The private key is
+never returned over the HTTP API. This file follows `SESSIONS_STATE_DIR` and is
+the first account-tier storage form; a future version may move the private key
+to the OS keychain.
+
+### `fleet-machine-key.json.claim-nonces`
+
+Additive version-1, mode-0600 replay state beside the configured machine-key
+path. It stores a SHA-256 hash of the JSON `(device_id, nonce)` tuple and its
+signed Unix-second timestamp plus five minutes; no credential or raw claim is
+stored. The daemon refuses the same tuple until strictly after that expiry,
+including after daemon process restart and account logout/login. Successful
+consumption atomically replaces the complete document through a synced private
+temporary file before any credential is issued. Corrupt, unsupported-version,
+unreadable, unwritable, oversized (1 MiB), or full (4096 live entries) state
+refuses account claims with a safe pairing remedy instead of resetting history.
+Expired entries are pruned on the next claim. This follows `SESSIONS_STATE_DIR`
+through the configured machine-key path. One active host daemon owns each state
+root; concurrent requests within its account manager are serialized. This does
+not promise coordination across multiple daemons sharing a state root or
+filesystem persistence across power loss.
 
 ### `vapid.json`
 
@@ -130,18 +196,25 @@ Subscribe replaces by endpoint; unsubscribe filters by endpoint. Push responses
 Uploaded raw request bodies for known sessions. The uploads directory is created
 recursively with requested mode 0700 and files are written mode 0600. Names and
 the 25 MiB limit are specified in `http-api.md`. There is no automatic cleanup.
-In the Go runtime this directory follows an explicit `SESSIONS_STATE_DIR` as
-described above; in the Node fixture it is fixed under `os.homedir()`.
+This directory follows an explicit `SESSIONS_STATE_DIR` as described above.
 
 ### `delivery-operations/<operation-id>.json`
 
 Go-runtime-only, mode 0600 files below a mode-0700 directory. Each file is a
 durable receipt for one logical `/submit` operation: UUID, target session id,
 content SHA-256, content byte count, status, delivery/retry booleans, optional
-reason, and creation/update times. It deliberately does not store the message
+reason, optional `mode` (`steer`; omitted for ordinary sends), optional
+`acceptance` evidence (`runner`, `provider`, or `unknown`), and
+creation/update times. It deliberately does not store the message
 body. A `pending` file left by a crash is treated as `unknown` and must not be
 retried automatically. Reusing an operation id with different content or a
-different target is refused. This directory follows `SESSIONS_STATE_DIR` so an
+different target or send mode is refused. The one record a same-id submit
+executes again is a `not-delivered` refusal with `retry:true` — Sessions proved
+nothing reached the provider — which returns to `pending` and gains an
+additive `attempts` count; every other status is only read back. A session's
+first request uses one of these receipts under the `prompt_operation_id`
+recorded in the lane ledger's `created` event (with the create
+`start_operation_id`), which is how its start receipt survives a restart. This directory follows `SESSIONS_STATE_DIR` so an
 isolated daemon cannot read or write the installed daemon's receipts.
 
 ### `idle/<id>`
@@ -256,25 +329,28 @@ launchd's `PathState` true. A runner keeps the permit across an unexpected
 same-boot crash, and removes it on a normal end, explicit stop, malformed
 startup, or other terminal startup failure.
 
-When the permit belongs to an earlier boot, the runner admits only the
-deterministic first eight pinned, non-lane roots whose permits prove they were
+When the permit belongs to an earlier boot, the runner admits only the eight
+most recently active pinned, non-lane roots whose permits prove they were
 running before shutdown. It renews those permits for the current boot. Every
 other runner removes its stale permit, exits without starting its provider, and
 writes `.restore-pending.json` with the session id, reason, and detection time.
-Discovery treats that marker as an intentional safety state: it preserves the
-metadata, launch record, events, and transcript so retained history can be
-reconciled without spawning provider processes.
+Discovery treats that marker as an actionable safety state: it preserves the
+metadata, launch record, events, and transcript, includes the session in the
+ordinary list as `unreachableReason: "restart-restore-pending"`, and never
+reports an empty successful live read for it.
 
 Both files are sidecars, not runner metadata documents, and are excluded by
 `RunnerIDFromMetadataName`. Both `/api/health` responses report the current
 marker count as `restore.pending` and the compiled ceiling as
-`restore.automaticPinnedLimit`, so a client can show safe mode without guessing
-from an empty live-session list.
+`restore.automaticPinnedLimit`. A non-zero count also makes health `status`
+and `restore.status` equal `"degraded"`, with code `SESSION_RESTORE_PENDING`
+and the explicit recovery action, so a client or operator does not have to
+infer recovery failure from an empty live-session list.
 
 ### `runners/<id>.transcript.jsonl` and `.transcript.meta.json`
 
-Go runtime only; the Node fixture has no equivalent. The transcript file is
-Sessions' own append-only copy of a Claude conversation, written by the daemon's
+The transcript file is Sessions' own append-only copy of a Claude conversation,
+written by the daemon's
 PTY-backed Claude watcher rather than by the runner
 (`runtime/internal/watch/transcript_mirror.go`). Provider lines are stored
 verbatim and in observed order, deduplicated by each record's own `uuid`, so the
@@ -385,9 +461,9 @@ success. Bootout invokes `launchctl bootout
 gui/<uid>/tech.somewhere.sessions.runner.<id>` and then unlinks the plist regardless of
 the command result.
 
-Current production runner argv prefers `/usr/bin/env node <runner.js>`. A fresh
-source/development tree may use a fresh `dist/runner.js` or
-`/usr/bin/env node <local tsx> <runner.ts>`.
+New plists run the configured native `sessions-runner` executable directly.
+An adopted pre-native plist may retain its earlier argv until the session exits
+and the compatibility registration is reaped.
 
 ## Runner lifecycle and restoration
 

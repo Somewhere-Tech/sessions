@@ -300,6 +300,15 @@ type ServiceOptions struct {
 	DiscoverProviderHistory bool
 }
 
+// historyCachePath keeps the retained fingerprints beside the daemon's other
+// state. A caller with no state directory — the CLI, a test — keeps nothing.
+func historyCachePath(stateDir string) string {
+	if stateDir == "" {
+		return ""
+	}
+	return filepath.Join(stateDir, "history-cache.json")
+}
+
 type Service struct {
 	history  *HistoryStore
 	recorder *ErrorRecorder
@@ -323,12 +332,17 @@ func NewService(options ServiceOptions) *Service {
 			RunnerStateDir: options.RunnerStateDir, ClaudeProjectsDir: options.ClaudeProjectsDir,
 			CodexSessionsDir: options.CodexSessionsDir, Machine: machine, Now: options.Now,
 			DiscoverProviderHistory: options.DiscoverProviderHistory,
+			CachePath:               historyCachePath(options.StateDir),
 		}),
 		recorder:        NewErrorRecorder(filepath.Join(options.StateDir, "errors.jsonl"), machine, options.Now),
 		observedExits:   make(map[string]struct{}),
 		trackedSessions: make(map[string]struct{}),
 	}
 }
+
+// HistoryCardCounts reports the store's cumulative card hits and re-reads, so a
+// listing can say which kind of slow it was.
+func (s *Service) HistoryCardCounts() CardCounts { return s.history.CardCounts() }
 
 func (s *Service) History(live []state.SessionInfo) (HistoryResponse, error) {
 	return s.history.List(live)

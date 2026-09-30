@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/somewhere-tech/sessions/runtime/internal/background"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
@@ -64,7 +66,10 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 				runtime.structuredLifecycleWorking = &value
 			}
 		}
-		if runtime.structuredLifecycleWorking != nil {
+		if working, exact := session.RunnerTurnState(); exact {
+			runtime.structuredLifecycleWorking = &working
+			session.SetWorking(working)
+		} else if runtime.structuredLifecycleWorking != nil {
 			session.SetWorking(*runtime.structuredLifecycleWorking)
 		}
 	}
@@ -73,7 +78,9 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 	}
 	if !session.Info().Working && (len(attachment.Replay.Events) > 0 || len(attachment.ClaudeEvents) > 0) {
 		if supportsTurnLifecycle(session.Info()) {
-			classification, summary := inspectIdle(session)
+			classification, summary, snapshot := inspectIdle(session)
+			clearFaultWithoutEvidence(session, classification, snapshot)
+			classification, summary = applyProviderOutcome(session, classification, summary, session.Info().LastDataAt)
 			session.SetIdleResult(
 				idleReason(classification.Outcome),
 				classification.Line,
@@ -103,6 +110,23 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 	return runtime
 }
 
+// expectProviderInput gives a terminal transcript watcher authored text which
+// reached the provider without crossing Manager.Input. Fresh Codex PTYs take
+// their first prompt from argv, so without this handoff the safe resolver has
+// no exact fact with which to choose among same-directory rollout files.
+func (r *runtimeSession) expectProviderInput(input string) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return
+	}
+	r.mu.Lock()
+	watcher := r.watcher
+	r.mu.Unlock()
+	if watcher != nil {
+		watcher.ExpectInput(input)
+	}
+}
+
 func structuredHistoryLifecycle(kind string, raw json.RawMessage) (bool, bool) {
 	switch kind {
 	case state.KindCodexAppServer:
@@ -129,6 +153,7 @@ func (m *Manager) activityLoop() {
 		case <-m.ctx.Done():
 			return
 		case <-m.ticker.C:
+			pass := background.Start("activity")
 			m.mu.Lock()
 			runtimes := make([]*runtimeSession, 0, len(m.runtimes))
 			for _, runtime := range m.runtimes {
@@ -139,8 +164,42 @@ func (m *Manager) activityLoop() {
 				runtime.tick()
 			}
 			m.sampleResources()
+			m.hibernateIdleMirrors()
+			pass.Done()
 		}
 	}
+}
+
+const (
+	// defaultMirrorQuiet is how long a mirror goes untouched before the daemon
+	// takes its emulator back. Two minutes is longer than the gap between an
+	// agent's turns and shorter than the time a person leaves a session alone,
+	// so a working session keeps its emulator and a resting one does not.
+	defaultMirrorQuiet = 2 * time.Minute
+
+	// mirrorSweepInterval keeps the sweep off the sub-second activity tick. A
+	// pass is one lock and one clock comparison per session.
+	mirrorSweepInterval = 30 * time.Second
+)
+
+// hibernateIdleMirrors gives back the terminal emulator of every session
+// nothing has written to or read from recently. That emulator is about 8 MiB —
+// a 4 MiB ANSI parser buffer x/vt allocates per emulator plus its two screens —
+// and on a machine holding two hundred sessions it is most of what the daemon
+// retains. The mirror rebuilds itself from the stream it kept on the next read
+// or write.
+func (m *Manager) hibernateIdleMirrors() {
+	now := m.resourceClock()
+	m.mirrorSweepM.Lock()
+	if !m.mirrorSwept.IsZero() && now.Sub(m.mirrorSwept) < mirrorSweepInterval {
+		m.mirrorSweepM.Unlock()
+		return
+	}
+	m.mirrorSwept = now
+	quiet := m.mirrorQuiet
+	m.mirrorSweepM.Unlock()
+	defer background.Start("mirror-hibernate").Done()
+	m.registry.HibernateIdleMirrors(quiet)
 }
 
 // sampleResources measures what every live session costs the machine.
@@ -177,6 +236,9 @@ func (m *Manager) sampleResources() {
 	}
 	m.resourceSampled = now
 	m.resourceMu.Unlock()
+	// Reading the process table is the one part of a tick that talks to the
+	// operating system about every session at once.
+	defer background.Start("resource-sample").Done()
 
 	infos := m.registry.List(false)
 	roots := make(map[string]int, len(infos))
@@ -228,6 +290,7 @@ func (r *runtimeSession) observe() {
 		case proto.EventOutput:
 			r.mu.Lock()
 			r.recentBytes += len(event.Output.Data)
+			r.preTurnOutput = true
 			r.mu.Unlock()
 			select {
 			case r.outputObserved <- struct{}{}:
@@ -243,6 +306,7 @@ func (r *runtimeSession) observe() {
 			}
 			r.manager.recordStructuredUsage(r.session.Info(), event.ClaudeEvent)
 			r.followProviderTitle()
+			r.publishObservedProviderFault()
 			select {
 			case r.structuredEventArrived <- struct{}{}:
 			default:
@@ -273,6 +337,7 @@ func (r *runtimeSession) observe() {
 			// title parsing. A Codex conversation has no title, so for Codex
 			// this costs one comparison and stops.
 			r.followProviderTitle()
+			r.publishObservedProviderFault()
 			select {
 			case r.structuredEventArrived <- struct{}{}:
 			default:
@@ -291,6 +356,27 @@ func (r *runtimeSession) observe() {
 			return
 		}
 	}
+}
+
+func (r *runtimeSession) publishObservedProviderFault() {
+	info := r.session.Info()
+	if info.Working || (info.IdleReason == state.IdleReasonFailed && info.IdleDetail == info.FailureDetail) {
+		return
+	}
+	fault, ok := r.session.ProviderFault()
+	if !ok {
+		return
+	}
+	if (fault.Kind == providerfault.KindUnavailable || fault.Kind == providerfault.KindRateLimited) &&
+		supportsStructuredRetry(info) {
+		// The runner publishes its schedule immediately after this fault event.
+		// Let the provider's terminal event decide between scheduled and exhausted
+		// so no notification races ahead of retry state.
+		return
+	}
+	classification := IdleClassification{Outcome: IdleError, Line: fault.Detail}
+	r.manager.publishIdle(r.session, 0, classification, fault.Detail)
+	r.notifyProviderFault(r.session.Info(), fault)
 }
 
 func (m *Manager) recordStructuredUsage(info state.SessionInfo, raw json.RawMessage) {
@@ -326,6 +412,13 @@ func (r *runtimeSession) tick() {
 	if info.Exited {
 		return
 	}
+	// Rich working state belongs to the ordered event observer (or reconnect
+	// HELLO), never the periodic output classifier. Reapplying a copied lifecycle
+	// sample here can race a newer event, reopen a completed turn, and notify its
+	// completion again. Silence is not evidence that a structured turn ended.
+	if info.Kind == state.KindCodexAppServer || info.Kind == state.KindClaudeStructured {
+		return
+	}
 	r.mu.Lock()
 	r.recentBytes /= 2
 	recent := r.recentBytes
@@ -348,6 +441,9 @@ func (r *runtimeSession) tick() {
 		}
 	}
 	r.setWorking(next)
+	if !next {
+		r.inspectPreTurn(recent)
+	}
 }
 
 func (r *runtimeSession) setWorking(next bool) {
@@ -356,8 +452,10 @@ func (r *runtimeSession) setWorking(next bool) {
 	r.mu.Lock()
 	if !previous && next {
 		r.workingStartedAt = now
+		r.faultAtTurnStart = r.session.Info().FailureAt
 		r.structuredDone = false
 		r.terminalTurnDone = false
+		r.preTurnBlocked = false
 		r.cancelWaitingLocked()
 		r.manager.removeIdleSentinel(r.session.Info().ID)
 	}
@@ -372,6 +470,8 @@ func (r *runtimeSession) setWorking(next bool) {
 	}
 	started := r.workingStartedAt
 	r.workingStartedAt = time.Time{}
+	faultAtStart := r.faultAtTurnStart
+	r.faultAtTurnStart = 0
 	suppressWaiting := r.structuredDone
 	r.structuredDone = false
 	authoritativeDone := r.terminalTurnDone
@@ -390,7 +490,7 @@ func (r *runtimeSession) setWorking(next bool) {
 	}
 	classification := IdleClassification{Outcome: IdleDone}
 	if authoritativeDone {
-		classification = r.manager.handleCompletedTurn(r.session, duration)
+		classification = r.manager.handleCompletedTurn(r.session, duration, faultAtStart)
 	} else {
 		classification = r.manager.handleIdle(r.session, duration)
 	}
@@ -399,7 +499,16 @@ func (r *runtimeSession) setWorking(next bool) {
 		// alive at a prompt is not a completed session lifecycle state.
 		r.session.ClearIdleResult()
 	}
-	if !suppressWaiting && classification.Outcome == IdleDone {
+	if classification.Outcome == IdleError {
+		if fault, ok := r.session.ProviderFault(); ok {
+			info := r.session.Info()
+			if info.Retry == nil {
+				r.notifyProviderFault(info, fault)
+			}
+		} else if !suppressWaiting {
+			r.scheduleWaiting()
+		}
+	} else if !suppressWaiting && classification.Outcome == IdleDone {
 		r.notifyDone()
 	} else if !suppressWaiting {
 		r.scheduleWaiting()
@@ -410,54 +519,19 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 	if info.Kind == state.KindCodexAppServer || info.Kind == state.KindClaudeStructured {
 		return
 	}
+	// Attaching a watcher resolves which provider transcript belongs to this
+	// session, which means reading the provider's directory. One of these per
+	// re-attached session is a plausible shape for a machine that is busy long
+	// after it says it is ready, so it is counted under its own name.
+	defer background.Start("provider-watch").Done()
 	var watcher *watch.FileWatcher
 	switch info.Tool {
 	case state.ToolClaude:
-		projectsDir := ""
-		if info.ConfigDir != "" {
-			projectsDir = filepath.Join(info.ConfigDir, "projects")
-		}
-		// The provider owns this transcript and prunes it on its own
-		// schedule, so the watcher keeps Sessions' own copy as it reads.
-		// Without it a pruned conversation is simply gone: cat, source,
-		// search, and usage all resolve through the same provider path.
-		created, err := watch.WatchSessionFile(watch.ClaudeWatcherOptions{
-			CWD: info.Cwd, ClaudeSessionID: extractClaudeSessionID(info.Args), ProjectsDir: projectsDir,
-			SessionID:  info.ID,
-			MirrorPath: watch.TranscriptMirrorPath(r.manager.config.RunnerStateDir, info.ID),
-		})
-		if err != nil {
-			return
-		}
-		watcher = created
+		watcher = r.claudeWatcher(info)
 	case state.ToolCodex:
-		sessionsDir := ""
-		if info.ConfigDir != "" {
-			sessionsDir = filepath.Join(info.ConfigDir, "sessions")
-		}
-		watcherArgs := info.Args
-		requireInputMatch := true
-		if providerargs.IsConversationUUID(info.ConversationID) {
-			// The watcher is not launching Codex, so this synthetic resume argv is
-			// only an exact provider-id lookup. Persisting the binding means a
-			// daemon restart can rebuild Conversation without waiting for another
-			// user message or guessing between same-folder rollouts.
-			watcherArgs = []string{"resume", info.ConversationID}
-			requireInputMatch = false
-		}
-		watcher = watch.WatchCodexRollout(watch.CodexWatcherOptions{
-			CWD: info.Cwd, Args: watcherArgs, CreatedAt: time.UnixMilli(info.CreatedAt), SessionsDir: sessionsDir,
-			RequireInputMatch: requireInputMatch,
-		})
-		if requireInputMatch && strings.TrimSpace(info.Description) != "" {
-			// The desktop stores its initial request as the session description
-			// before delivery. On recovery that exact authored text is evidence,
-			// not a timestamp guess: the resolver binds only when one provider
-			// rollout contains the same user message. CLI descriptions which are
-			// merely prose match nothing and remain safely unbound until input.
-			watcher.ExpectInput(info.Description)
-		}
-	default:
+		watcher = codexWatcher(info)
+	}
+	if watcher == nil {
 		return
 	}
 	r.mu.Lock()
@@ -500,6 +574,57 @@ func (r *runtimeSession) startWatcher(info state.SessionInfo) {
 	}) {
 		watcher.Close()
 	}
+}
+
+// claudeWatcher follows the transcript Claude owns. The provider prunes it on
+// its own schedule, so the watcher keeps Sessions' own copy as it reads:
+// without it a pruned conversation is simply gone, and cat, source, search and
+// usage all resolve through the same provider path.
+func (r *runtimeSession) claudeWatcher(info state.SessionInfo) *watch.FileWatcher {
+	projectsDir := ""
+	if info.ConfigDir != "" {
+		projectsDir = filepath.Join(info.ConfigDir, "projects")
+	}
+	created, err := watch.WatchSessionFile(watch.ClaudeWatcherOptions{
+		CWD: info.Cwd, ClaudeSessionID: extractClaudeSessionID(info.Args), ProjectsDir: projectsDir,
+		SessionID:  info.ID,
+		MirrorPath: watch.TranscriptMirrorPath(r.manager.config.RunnerStateDir, info.ID),
+	})
+	if err != nil {
+		return nil
+	}
+	return created
+}
+
+// codexWatcher follows the rollout Codex writes.
+func codexWatcher(info state.SessionInfo) *watch.FileWatcher {
+	sessionsDir := ""
+	if info.ConfigDir != "" {
+		sessionsDir = filepath.Join(info.ConfigDir, "sessions")
+	}
+	watcherArgs := info.Args
+	requireInputMatch := true
+	if providerargs.IsConversationUUID(info.ConversationID) {
+		// The watcher is not launching Codex, so this synthetic resume argv is
+		// only an exact provider-id lookup. Persisting the binding means a
+		// daemon restart can rebuild Conversation without waiting for another
+		// user message or guessing between same-folder rollouts.
+		watcherArgs = []string{"resume", info.ConversationID}
+		requireInputMatch = false
+	}
+	watcher := watch.WatchCodexRollout(watch.CodexWatcherOptions{
+		CWD: info.Cwd, Args: watcherArgs, CreatedAt: time.UnixMilli(info.CreatedAt), SessionsDir: sessionsDir,
+		RequireInputMatch: requireInputMatch,
+	})
+	if requireInputMatch && strings.TrimSpace(info.Description) != "" {
+		// The desktop stores its initial request as the session description
+		// before delivery. On recovery that exact authored text is evidence,
+		// not a timestamp guess: the resolver binds only when one provider
+		// rollout contains the same user message. CLI descriptions which are
+		// merely prose match nothing and remain safely unbound until input.
+		watcher.ExpectInput(info.Description)
+	}
+	return watcher
 }
 
 // bindCodexWatcher makes an exact watcher resolution durable. The resolver

@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	verdictprotocol "github.com/somewhere-tech/sessions/runtime/internal/verdict"
 )
 
@@ -23,11 +24,14 @@ type gitStatus struct {
 }
 
 type statusOutput struct {
-	ID                string                   `json:"id"`
-	Name              string                   `json:"name"`
-	Description       string                   `json:"description"`
-	DescriptionSource string                   `json:"description_source,omitempty"`
-	Kind              string                   `json:"kind"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Description       string `json:"description"`
+	DescriptionSource string `json:"description_source,omitempty"`
+	// Record says what this document describes. `kind` is left to the session
+	// record below, where it means the session's own kind, exactly as
+	// `sessions ls --json` reports it.
+	Record            string                   `json:"record"`
 	Tool              string                   `json:"tool"`
 	State             string                   `json:"state"`
 	ExitCode          *int                     `json:"exit_code,omitempty"`
@@ -58,22 +62,28 @@ type statusOutput struct {
 	SetAsideAtMS      *int64                   `json:"set_aside_at_ms,omitempty"`
 	Permissions       string                   `json:"permissions,omitempty"`
 	Lifecycle         string                   `json:"lifecycle,omitempty"`
+	Unreachable       bool                     `json:"unreachable,omitempty"`
+	UnreachableReason string                   `json:"unreachable_reason,omitempty"`
+	UnreachableSince  *int64                   `json:"unreachable_since_ms,omitempty"`
+	RunnerGone        bool                     `json:"runner_gone,omitempty"`
+	// gitMissing is not part of the document: `git` is already null when there
+	// are no facts, and a caller has nothing different to do about the reason.
+	// The card says it because a person on a fresh machine does.
+	gitMissing bool
 }
 
 func (a *app) cmdStatus(args []string) error {
 	if len(args) != 1 || args[0] == "" {
 		return fail(1, "usage: sessions status <id> [--json]")
 	}
-	current, err := a.resolveStatusSession(args[0])
+	record, err := a.resolveStatusRecord(args[0])
 	if err != nil {
 		return err
 	}
+	current := &record.value
 	id := current.ID
 
-	git, err := inspectGit(current.Cwd)
-	if err != nil {
-		return fail(2, "inspect git in %s: %s", current.Cwd, err)
-	}
+	git, gitMissing := inspectGit(current.Cwd)
 	latest, err := a.latestVerdict(id)
 	if err != nil {
 		return err
@@ -101,10 +111,10 @@ func (a *app) cmdStatus(args []string) error {
 	state := liveStatusState(*current)
 	output := statusOutput{
 		ID: id, Name: current.Name, Description: current.Description,
-		DescriptionSource: current.DescriptionSource, Kind: "session", Tool: toolOfSession(*current),
+		DescriptionSource: current.DescriptionSource, Record: "session", Tool: toolOfSession(*current),
 		State: state, Cwd: current.Cwd, Profile: current.Profile, ConfigDir: current.ConfigDir,
 		WorktreePath: current.WorktreePath, Branch: current.Branch, Base: current.Base, SourceRepo: current.SourceRepo,
-		Git: git, LastVerdict: summary,
+		Git: git, gitMissing: gitMissing, LastVerdict: summary,
 		LastActivityAt: lastActivityTime.Format(time.RFC3339Nano),
 		CreatedAt:      formatStatusTime(createdAt),
 		AgeMS:          max(now.UnixMilli()-createdAt, 0),
@@ -116,14 +126,20 @@ func (a *app) cmdStatus(args []string) error {
 		EndOperationID: current.EndOperationID,
 		SetAsideAtMS:   current.SetAsideAt,
 		Permissions:    current.Permissions, Lifecycle: current.Lifecycle,
+		Unreachable: current.Unreachable, UnreachableReason: current.UnreachableReason,
+		UnreachableSince: current.UnreachableSince, RunnerGone: current.RunnerGone,
 	}
 	if current.Exited {
 		output.ExitCode = current.ExitCode
 	}
 	if a.wantJSON {
-		return writeJSON(a.stdout, output, true)
+		document, mergeErr := statusDocument(record.raw, output)
+		if mergeErr != nil {
+			return mergeErr
+		}
+		return writeJSON(a.stdout, document, true)
 	}
-	return a.writeStatusCard(output, lastActivityAt)
+	return a.writeStatusCard(output, *current, lastActivityAt)
 }
 
 // liveStatusState describes the runtime that exists now. IdleReason describes
@@ -132,6 +148,15 @@ func (a *app) cmdStatus(args []string) error {
 func liveStatusState(current session) string {
 	if current.Exited {
 		return "exited"
+	}
+	if current.RunnerGone {
+		return "lost"
+	}
+	if current.Unreachable {
+		if current.UnreachableReason == "restart-restore-pending" {
+			return "needs-recovery"
+		}
+		return "unreachable"
 	}
 	if current.SetAsideAt != nil {
 		return "set-aside"
@@ -145,34 +170,86 @@ func liveStatusState(current session) string {
 	return "idle"
 }
 
+// statusDocument is the session record `sessions ls --json` returns, with what
+// status knows on top of it.
+//
+// An agent that inspects one session before sending to it read a thinner truth
+// than one that listed everything: status answered with its own hand-built
+// shape, so working, exited and failureKind were simply absent and "idle" could
+// not be told from "field not present". The listing record is now the base, and
+// it wins every name it defines, so the two commands cannot drift.
+func statusDocument(raw json.RawMessage, output statusOutput) (map[string]json.RawMessage, error) {
+	document := map[string]json.RawMessage{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &document); err != nil {
+			return nil, err
+		}
+	}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		return nil, err
+	}
+	statusOnly := map[string]json.RawMessage{}
+	if err := json.Unmarshal(encoded, &statusOnly); err != nil {
+		return nil, err
+	}
+	for key, value := range statusOnly {
+		if _, listed := document[key]; listed {
+			continue
+		}
+		document[key] = value
+	}
+	// The one value status derives rather than reports: a daemon that sends no
+	// tool for a session leaves the listing's field empty, and status has
+	// always answered with the tool its command implies.
+	if string(document["tool"]) == `""` {
+		document["tool"] = statusOnly["tool"]
+	}
+	return document, nil
+}
+
+func (a *app) resolveStatusRecord(idOrPrefix string) (sessionRecord, error) {
+	deadline := a.now().Add(startupWaitBudget)
+	for {
+		records, err := a.fetchSessionRecords(true)
+		if err != nil {
+			return sessionRecord{}, err
+		}
+		sessions := make([]session, 0, len(records))
+		for _, record := range records {
+			sessions = append(sessions, record.value)
+		}
+		candidates := candidatesForSessions(a, sessions)
+		id, found, resolveErr := resolveIDPrefix(idOrPrefix, "session", "sessions ls", candidates)
+		if resolveErr != nil {
+			return sessionRecord{}, resolveErr
+		}
+		if found {
+			return records[candidateIndex(id, candidates)], nil
+		}
+		// A daemon that is still loading has not reached this session yet.
+		// Saying it does not exist is the answer that sent a teammate looking
+		// for a lane that was running the whole time.
+		if !a.waitForLoadingDaemon(deadline) {
+			return sessionRecord{}, fail(1, "%s", unknownSessionMessage(idOrPrefix))
+		}
+	}
+}
+
 func (a *app) resolveStatusSession(idOrPrefix string) (*session, error) {
 	sessions, err := a.listSessions(true)
 	if err != nil {
 		return nil, err
 	}
-	for index := range sessions {
-		if sessions[index].ID == idOrPrefix {
-			return &sessions[index], nil
-		}
+	candidates := candidatesForSessions(a, sessions)
+	id, found, resolveErr := resolveIDPrefix(idOrPrefix, "session", "sessions ls", candidates)
+	if resolveErr != nil {
+		return nil, resolveErr
 	}
-	matches := make([]int, 0)
-	for index := range sessions {
-		if strings.HasPrefix(sessions[index].ID, idOrPrefix) {
-			matches = append(matches, index)
-		}
-	}
-	if len(matches) == 1 {
-		return &sessions[matches[0]], nil
-	}
-	if len(matches) == 0 {
+	if !found {
 		return nil, fail(1, "%s", unknownSessionMessage(idOrPrefix))
 	}
-	var lines strings.Builder
-	for _, index := range matches {
-		candidate := sessions[index]
-		fmt.Fprintf(&lines, "  %s  %s\n", prefixString(candidate.ID, 8), a.sessionLabel(candidate))
-	}
-	return nil, fail(1, "ambiguous session prefix '%s' — matches:\n%srun `sessions ls`", idOrPrefix, lines.String())
+	return &sessions[candidateIndex(id, candidates)], nil
 }
 
 func (a *app) latestVerdict(id string) (*verdictprotocol.Record, error) {
@@ -194,24 +271,33 @@ func (a *app) latestVerdict(id string) (*verdictprotocol.Record, error) {
 	return &record, nil
 }
 
-func inspectGit(cwd string) (*gitStatus, error) {
+// inspectGit reads the git facts status decorates a session with. They are
+// decoration: a machine without git still has sessions, and a status command
+// that refuses to answer because an optional tool is missing has turned a
+// missing nicety into a broken verb. Verified on a Linux container, where
+// `sessions status <id>` failed outright with
+// `inspect git in /: exec: "git": executable file not found in $PATH`.
+//
+// Every outcome that is not "here are the facts" returns no facts and no error.
+// missing reports the one case worth saying out loud, so the card can say why
+// the line is empty rather than leaving a bare dash.
+func inspectGit(cwd string) (status *gitStatus, missing bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil, true
+	}
 	probe := exec.CommandContext(ctx, "git", "-C", cwd, "rev-parse", "--is-inside-work-tree")
 	probeOutput, err := probe.Output()
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, false
 	}
 	if strings.TrimSpace(string(probeOutput)) != "true" {
-		return nil, nil
+		return nil, false
 	}
 	rootOutput, err := exec.CommandContext(ctx, "git", "-C", cwd, "rev-parse", "--show-toplevel").Output()
 	if err != nil {
-		return nil, err
+		return nil, false
 	}
 	root := strings.TrimSpace(string(rootOutput))
 	if home, homeErr := os.UserHomeDir(); homeErr == nil {
@@ -219,13 +305,13 @@ func inspectGit(cwd string) (*gitStatus, error) {
 		absCWD, cwdAbsErr := filepath.Abs(cwd)
 		absRoot, rootAbsErr := filepath.Abs(root)
 		if homeAbsErr == nil && cwdAbsErr == nil && rootAbsErr == nil && absHome == absRoot && absCWD == absRoot {
-			return nil, nil
+			return nil, false
 		}
 	}
 	command := exec.CommandContext(ctx, "git", "-C", cwd, "status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--", ".")
 	encoded, err := command.Output()
 	if err != nil {
-		return nil, err
+		return nil, false
 	}
 	result := &gitStatus{}
 	for _, line := range strings.Split(strings.TrimSuffix(string(encoded), "\n"), "\n") {
@@ -241,23 +327,30 @@ func inspectGit(cwd string) (*gitStatus, error) {
 	if result.Head == "(initial)" {
 		result.Head = ""
 	}
-	return result, nil
+	return result, false
 }
 
 func formatStatusTime(milliseconds int64) string {
 	return time.UnixMilli(milliseconds).UTC().Format(time.RFC3339Nano)
 }
 
-func (a *app) writeStatusCard(output statusOutput, lastActivityAt int64) error {
+func (a *app) writeStatusCard(output statusOutput, current session, lastActivityAt int64) error {
 	label := output.Name
 	if label == "" {
 		label = prefixString(output.ID, 8)
 	}
-	if _, err := fmt.Fprintf(a.stdout, "%s  %s\n", label, output.State); err != nil {
+	if _, err := fmt.Fprintf(a.stdout, "%s  %s\n", label, statusHeadline(output.State, current)); err != nil {
 		return err
 	}
+	kind := current.Kind
+	if kind == "" {
+		kind = "session"
+	}
 	if _, err := fmt.Fprintf(a.stdout, "  id       %s\n  kind     %s\n  tool     %s\n  cwd      %s\n",
-		output.ID, output.Kind, output.Tool, strings.Replace(output.Cwd, a.home, "~", 1)); err != nil {
+		output.ID, kind, output.Tool, a.homeRelative(output.Cwd)); err != nil {
+		return err
+	}
+	if err := writeStatusStateLines(a.stdout, current); err != nil {
 		return err
 	}
 	description := output.Description
@@ -269,14 +362,14 @@ func (a *app) writeStatusCard(output statusOutput, lastActivityAt int64) error {
 	}
 	if output.Profile != "" {
 		if _, err := fmt.Fprintf(a.stdout, "  profile  %s\n  config   %s\n", output.Profile,
-			strings.Replace(output.ConfigDir, a.home, "~", 1)); err != nil {
+			a.homeRelative(output.ConfigDir)); err != nil {
 			return err
 		}
 	}
 	if output.WorktreePath != "" {
 		if _, err := fmt.Fprintf(a.stdout, "  worktree %s\n  branch   %s\n  base     %s\n  source   %s\n",
-			strings.Replace(output.WorktreePath, a.home, "~", 1), output.Branch, output.Base,
-			strings.Replace(output.SourceRepo, a.home, "~", 1)); err != nil {
+			a.homeRelative(output.WorktreePath), output.Branch, output.Base,
+			a.homeRelative(output.SourceRepo)); err != nil {
 			return err
 		}
 	}
@@ -297,27 +390,17 @@ func (a *app) writeStatusCard(output statusOutput, lastActivityAt int64) error {
 			return err
 		}
 	}
-	if output.EndedByKind != "" || output.EndedByClient != "" {
-		endedBy := output.EndedByKind
-		if output.EndedByName != "" {
-			endedBy = terminalSafe(output.EndedByName)
+	if output.Unreachable {
+		detail := "unreachable — " + output.UnreachableReason
+		if output.UnreachableReason == "restart-restore-pending" {
+			detail = "unreachable — paused after reboot; run `sessions resume " + output.ID + "`"
 		}
-		if output.EndedByID != "" {
-			if endedBy != "" && output.EndedByName == "" {
-				endedBy += ":"
-			}
-			if output.EndedByName == "" {
-				endedBy += terminalSafe(output.EndedByID)
-			}
-		}
-		if endedBy == "" {
-			endedBy = terminalSafe(output.EndedByClient)
-		} else if output.EndedByClient != "" {
-			endedBy += " via " + terminalSafe(output.EndedByClient)
-		}
-		if _, err := fmt.Fprintf(a.stdout, "  ended by %s\n", endedBy); err != nil {
+		if _, err := fmt.Fprintf(a.stdout, "  recovery %s\n", detail); err != nil {
 			return err
 		}
+	}
+	if err := writeStatusEndedBy(a.stdout, output); err != nil {
+		return err
 	}
 	if output.EndReason != "" {
 		if _, err := fmt.Fprintf(a.stdout, "  end why  %s\n", terminalSafe(output.EndReason)); err != nil {
@@ -362,7 +445,11 @@ func (a *app) writeStatusCard(output statusOutput, lastActivityAt int64) error {
 		}
 	}
 	if output.Git == nil {
-		if _, err := fmt.Fprintln(a.stdout, "  git      -"); err != nil {
+		line := "  git      -"
+		if output.gitMissing {
+			line = "  git      not installed"
+		}
+		if _, err := fmt.Fprintln(a.stdout, line); err != nil {
 			return err
 		}
 	} else {
@@ -383,6 +470,92 @@ func (a *app) writeStatusCard(output statusOutput, lastActivityAt int64) error {
 	}
 	_, err := fmt.Fprintf(a.stdout, "  activity %s ago\n  age      %s\n", a.ageOf(lastActivityAt), formatAgeMS(output.AgeMS))
 	return err
+}
+
+// writeStatusStateLines states what `sessions ls --json` reports about a
+// session's state, in the same words and one fact per line. An agent reading a
+// card before it sends must not have to infer working from a state word, or a
+// provider failure from the absence of one.
+func writeStatusStateLines(writer io.Writer, current session) error {
+	if _, err := fmt.Fprintf(writer, "  working  %s\n  exited   %s\n",
+		yesOrNo(current.Working), yesOrNo(current.Exited)); err != nil {
+		return err
+	}
+	if current.FailureKind != "" {
+		failure := current.FailureKind
+		if current.FailureDetail != "" {
+			failure += " — " + terminalSafe(current.FailureDetail)
+		}
+		if _, err := fmt.Fprintf(writer, "  failure  %s\n", failure); err != nil {
+			return err
+		}
+	}
+	return writeStatusStartLines(writer, current.Start)
+}
+
+// statusHeadline keeps the runtime state word and, when the work is blocked,
+// says so first: a signed-out provider reading as "idle" is how a blocked
+// delegate got mistaken for a finished one. The JSON state stays the runtime
+// axis; failureKind and start carry the task.
+func statusHeadline(runtimeState string, current session) string {
+	blockedBy := current.FailureKind
+	if blockedBy == "" && current.Start != nil && current.Start.Phase == state.StartPhaseBlocked {
+		blockedBy = current.Start.BlockedBy
+	}
+	if blockedBy == "" || current.Exited {
+		return runtimeState
+	}
+	return fmt.Sprintf("BLOCKED (%s) — runtime %s", blockedBy, runtimeState)
+}
+
+// writeStatusStartLines shows how far delegated work got, from the daemon's
+// start receipt, and the one next step that cannot duplicate it.
+func writeStatusStartLines(writer io.Writer, start *state.StartReceipt) error {
+	if start == nil || start.Phase == "" {
+		return nil
+	}
+	if _, err := fmt.Fprintf(writer, "  start    %s — %s\n", start.Phase, terminalSafe(start.Evidence)); err != nil {
+		return err
+	}
+	if start.Recovery == nil {
+		return nil
+	}
+	next := terminalSafe(start.Recovery.Detail)
+	if start.Recovery.Command != "" {
+		next += " (" + terminalSafe(start.Recovery.Command) + ")"
+	}
+	_, err := fmt.Fprintf(writer, "  next     %s\n", next)
+	return err
+}
+
+func writeStatusEndedBy(writer io.Writer, output statusOutput) error {
+	if output.EndedByKind == "" && output.EndedByClient == "" {
+		return nil
+	}
+	endedBy := output.EndedByKind
+	if output.EndedByName != "" {
+		endedBy = terminalSafe(output.EndedByName)
+	}
+	if output.EndedByID != "" && output.EndedByName == "" {
+		if endedBy != "" {
+			endedBy += ":"
+		}
+		endedBy += terminalSafe(output.EndedByID)
+	}
+	if endedBy == "" {
+		endedBy = terminalSafe(output.EndedByClient)
+	} else if output.EndedByClient != "" {
+		endedBy += " via " + terminalSafe(output.EndedByClient)
+	}
+	_, err := fmt.Fprintf(writer, "  ended by %s\n", endedBy)
+	return err
+}
+
+func yesOrNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
 }
 
 func terminalSafe(value string) string {

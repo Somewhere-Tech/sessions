@@ -3,7 +3,13 @@
 // app process never owns sessionsd or a runner, so quitting it cannot affect a
 // durable session.
 
+#[cfg(target_os = "android")]
+mod android_credentials;
+#[cfg(any(target_os = "macos", target_os = "ios", test))]
+mod apple_credentials;
 mod lifecycle;
+#[cfg(mobile)]
+mod mobile_discovery;
 #[cfg(any(target_os = "windows", test))]
 mod windows_cli_path;
 mod windows_credentials;
@@ -154,6 +160,10 @@ struct NativePairingClaim {
     device_id: String,
     token: String,
     name: String,
+    lan_endpoint: Option<String>,
+    tailnet_endpoint: Option<String>,
+    tailnet_ip_endpoint: Option<String>,
+    relay_endpoint: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -163,6 +173,10 @@ struct NativeAgentMachine {
     machine_id: String,
     name: String,
     endpoint: String,
+    lan_endpoint: Option<String>,
+    tailnet_endpoint: Option<String>,
+    tailnet_ip_endpoint: Option<String>,
+    relay_endpoint: Option<String>,
     device_id: Option<String>,
     token: String,
 }
@@ -184,12 +198,27 @@ struct NativeNearbyPeer {
     address: String,
     port: u16,
     transport: String,
+    #[serde(default, rename = "lan_endpoint")]
+    lan_endpoint: String,
+    #[serde(rename = "tailnet_endpoint")]
+    tailnet_endpoint: Option<String>,
+    #[serde(rename = "tailnet_ip_endpoint")]
+    tailnet_ip_endpoint: Option<String>,
     version: String,
     os: String,
     arch: String,
     #[serde(rename = "sessions_loaded")]
     sessions_loaded: usize,
     reachable: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeMobileBonjourPeer {
+    name: String,
+    host: String,
+    port: u16,
+    txt: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -245,6 +274,10 @@ struct PairingClaimResponse {
     device_id: String,
     token: String,
     name: String,
+    lan_endpoint: Option<String>,
+    tailnet_endpoint: Option<String>,
+    tailnet_ip_endpoint: Option<String>,
+    relay_endpoint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,8 +310,7 @@ impl SessionsHealthResponse {
 
 #[derive(Debug, PartialEq, Eq)]
 struct ParsedPairingLink {
-    endpoint: String,
-    claim_url: String,
+    endpoints: Vec<String>,
     ticket: String,
 }
 
@@ -352,6 +384,7 @@ pub fn run() {
             native_tailnet_request,
             native_tailnet_claim,
             native_nearby_discover,
+            native_mobile_bonjour_discover,
             native_nearby_request,
             native_nearby_claim,
             native_backup_action,
@@ -362,10 +395,16 @@ pub fn run() {
             native_machine_credentials_load,
             native_machine_credentials_save,
             open_external_url,
+            open_local_network_settings,
             open_support_page,
             somewhere_cli_status
         ])
         .setup(|app| {
+            #[cfg(mobile)]
+            app.handle().plugin(tauri_plugin_barcode_scanner::init())?;
+            #[cfg(target_os = "android")]
+            app.handle().plugin(android_credentials::init())?;
+
             // One answer to a corrupt connections.json, shared with every
             // reconcile path: fall back to the default port so the management
             // plane keeps working, and carry the reason into the status the

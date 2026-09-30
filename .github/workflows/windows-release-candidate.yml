@@ -60,7 +60,6 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             frontend/package-lock.json
-            runtime/testdata/node-runtime/package-lock.json
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -90,7 +89,6 @@ jobs:
         run: |
           npm ci
           npm --prefix frontend ci
-          npm --prefix runtime/testdata/node-runtime ci
 
       - name: Run the Windows release gate
         run: |

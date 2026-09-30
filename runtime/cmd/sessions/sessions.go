@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 )
@@ -183,6 +184,13 @@ func (a *app) cmdSessions(args []string) error {
 	}
 	showProfile := recordsHaveProfiles(records)
 	showPin := recordsHavePins(records)
+	showRecovery := false
+	for _, record := range records {
+		if sessionRecoveryCommand(record.value) != "" {
+			showRecovery = true
+			break
+		}
+	}
 	header := []string{"ID", "TYPE", "NAME", "DESC", "TOOL"}
 	if showProfile {
 		header = append(header, "PROFILE")
@@ -191,6 +199,9 @@ func (a *app) cmdSessions(args []string) error {
 		header = append(header, "PIN")
 	}
 	header = append(header, "CWD", "STATE", "SUMMARY", "AGE", "OWNER")
+	if showRecovery {
+		header = append(header, "ACTION")
+	}
 	rows := [][]string{header}
 	for _, record := range records {
 		value := record.value
@@ -205,12 +216,19 @@ func (a *app) cmdSessions(args []string) error {
 		}
 		row = append(
 			row,
-			strings.Replace(value.Cwd, a.home, "~", 1),
+			a.homeRelative(value.Cwd),
 			sessionState(value),
 			compactSummary(value.LastSummary),
 			a.ageOf(value.CreatedAt),
 			ownershipLabel(value),
 		)
+		if showRecovery {
+			action := sessionRecoveryCommand(value)
+			if action == "" {
+				action = "-"
+			}
+			row = append(row, action)
+		}
 		rows = append(rows, row)
 	}
 	return writePaddedRows(a.stdout, rows)
@@ -455,6 +473,10 @@ func compactSummary(summary string) string {
 }
 
 func sessionState(value session) string {
+	return sessionStateAt(value, time.Now())
+}
+
+func sessionStateAt(value session, now time.Time) string {
 	if value.Exited {
 		code := "∅"
 		if value.ExitCode != nil {
@@ -465,14 +487,38 @@ func sessionState(value session) string {
 		}
 		return "exited(" + code + ")"
 	}
+	if value.UnreachableReason == "restart-restore-pending" {
+		return "needs-recovery"
+	}
+	if value.RunnerGone {
+		return "lost"
+	}
+	if value.Unreachable {
+		return "unreachable"
+	}
 	if value.SetAsideAt != nil {
 		return "set-aside"
+	}
+	if value.Retry != nil {
+		remaining := time.UnixMilli(value.Retry.NextAt).Sub(now)
+		seconds := max(0, int((remaining+time.Second-1)/time.Second))
+		return fmt.Sprintf("retrying (%d/%d, %ds)", value.Retry.Attempt, value.Retry.Max, seconds)
 	}
 	if value.Kind == "lane" {
 		return "running"
 	}
 	if value.Working {
 		return "working"
+	}
+	switch value.FailureKind {
+	case "provider-unavailable":
+		return "provider-down"
+	case "rate-limited":
+		return "rate-limited"
+	case "auth":
+		return "auth-needed"
+	case "other":
+		return "failed"
 	}
 	switch value.IdleReason {
 	case "needs-input":
@@ -485,6 +531,29 @@ func sessionState(value session) string {
 		return "not-started"
 	}
 	return "idle"
+}
+
+// sessionRecoveryCommand is the command a list row can safely offer for a
+// runtime that cannot come back by itself. A provider conversation with a
+// durable identity can continue in a successor; a headless lane has no
+// conversation to resume, so closing its retained record is the only honest
+// action.
+func sessionRecoveryCommand(value session) string {
+	switch {
+	case value.UnreachableReason == "restart-restore-pending":
+		return "sessions resume " + value.ID
+	case !value.RunnerGone:
+		return ""
+	case sessionConversationCanContinue(value):
+		return "sessions resume " + value.ID
+	default:
+		return "sessions kill " + value.ID
+	}
+}
+
+func sessionConversationCanContinue(value session) bool {
+	provider := value.Tool == "claude-code" || value.Tool == "claude" || value.Tool == "codex"
+	return provider && (value.ConversationID != "" || value.ClaudeSessionID != "")
 }
 
 func ownershipLabel(value session) string {

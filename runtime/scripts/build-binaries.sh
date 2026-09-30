@@ -72,19 +72,32 @@ build_binary() {
   local tags="$4"
   local output="$out_dir/${command_name}-${goos}-${goarch}"
   local binary_ldflags="$ldflags -buildid=sessions/$version/$command_name/$goos/$goarch"
+  local cgo_enabled=0
+  local info_plist=""
+  if [[ "$goos" == "darwin" ]]; then
+    cgo_enabled=1
+    info_plist="$out_dir/$command_name-$goos-$goarch-Info.plist"
+    sed -e "s|@EXECUTABLE@|$command_name|g" \
+      -e "s|@BUNDLE_IDENTIFIER@|tech.somewhere.sessions.$command_name|g" \
+      "$repo_root/scripts/runtime-info.plist.in" >"$info_plist"
+    binary_ldflags="$binary_ldflags -linkmode=external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,$info_plist"
+  fi
   echo "> building ${command_name}-${goos}-${goarch} (version $version)"
   if [[ -n "$tags" ]]; then
     (
       cd "$go_root"
-      CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+      CGO_ENABLED="$cgo_enabled" GOOS="$goos" GOARCH="$goarch" \
         go build -trimpath -tags "$tags" -ldflags "$binary_ldflags" -o "$output" "./cmd/$command_name"
     )
   else
     (
       cd "$go_root"
-      CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+      CGO_ENABLED="$cgo_enabled" GOOS="$goos" GOARCH="$goarch" \
         go build -trimpath -ldflags "$binary_ldflags" -o "$output" "./cmd/$command_name"
     )
+  fi
+  if [[ -n "$info_plist" ]]; then
+    find "$info_plist" -maxdepth 0 -type f -delete
   fi
 }
 
@@ -98,6 +111,7 @@ for target in darwin/arm64 linux/arm64 linux/amd64; do
   fi
   build_binary "$goos" "$goarch" sessionsd "$daemon_tags"
   build_binary "$goos" "$goarch" sessions-runner ""
+  build_binary "$goos" "$goarch" sessions-relay ""
 done
 
 # Sign darwin binaries when an identity is configured (SESSIONS_SIGN_IDENTITY, a
@@ -108,7 +122,7 @@ if [[ -z "${SESSIONS_SIGN_IDENTITY:-}" && -r "$HOME/.config/sessions/sign-identi
   SESSIONS_SIGN_IDENTITY="$(head -n1 "$HOME/.config/sessions/sign-identity")"
 fi
 if [[ -n "${SESSIONS_SIGN_IDENTITY:-}" ]]; then
-  for command_name in sessions sessionsd sessions-runner; do
+  for command_name in sessions sessionsd sessions-runner sessions-relay; do
     signed="$out_dir/${command_name}-darwin-arm64"
     echo "> signing ${command_name}-darwin-arm64 (identity ${SESSIONS_SIGN_IDENTITY:0:8}…)"
     codesign --force --timestamp --options runtime \

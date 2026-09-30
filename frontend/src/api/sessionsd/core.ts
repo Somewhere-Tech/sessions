@@ -6,6 +6,8 @@ import {
   type ServerConfig
 } from '../../lib/servers';
 import { isTauri } from '../../lib/tauriBridge';
+import { parseServerEndpoint } from '../../lib/serverEndpoint';
+import { abortBudget } from '../../lib/abortBudget';
 
 // Thrown when the daemon returns HTTP 401 (token required / wrong token).
 // Callers (UI components) can instanceof-check this to show an auth prompt
@@ -29,6 +31,7 @@ export class AuthError extends Error {
 // must keep that exact target; substituting window.location would send API
 // calls to sessions.somewhere.tech instead of the user's daemon.
 function isSameOriginDaemon(s: ServerConfig): boolean {
+  if (s.relayMachineId) return false;
   if (isTauri()) return false;
   const pageScheme = window.location.protocol === 'https:' ? 'https' : 'http';
   const pagePort = window.location.port
@@ -50,7 +53,11 @@ export function httpBaseForServer(s: ServerConfig): string {
   // Honour the selected endpoint exactly. Falling back to HTTP keeps older
   // stored configs (which predate the scheme field) compatible.
   const scheme = s.scheme ?? 'http';
-  return `${scheme}://${hostForUrl(s.host)}:${s.port}`;
+  const origin = `${scheme}://${hostForUrl(s.host)}:${s.port}`;
+  if (s.basePath) return `${origin}${s.basePath}`;
+  return s.relayMachineId
+    ? `${origin}/api/fleet/${encodeURIComponent(s.relayMachineId)}`
+    : origin;
 }
 
 export function httpBase(): string {
@@ -69,13 +76,58 @@ export function wsBase(): string {
   }
   // Mirror the http→https / ws→wss mapping so TLS connections work end-to-end.
   const scheme = s.scheme === 'https' ? 'wss' : 'ws';
-  return `${scheme}://${hostForUrl(s.host)}:${s.port}`;
+  const origin = `${scheme}://${hostForUrl(s.host)}:${s.port}`;
+  if (s.basePath) return `${origin}${s.basePath}`;
+  return s.relayMachineId
+    ? `${origin}/api/fleet/${encodeURIComponent(s.relayMachineId)}`
+    : origin;
 }
 
 // Returns `{ Authorization: 'Bearer <token>' }` when the supplied server has
 // a token configured, or an empty object when open (no auth).
 function authHeaders(s: ServerConfig): Record<string, string> {
   return s.token ? { Authorization: `Bearer ${s.token}` } : {};
+}
+
+/** How long one saved route gets to prove it can reach the machine. */
+const TRANSPORT_PROBE_BUDGET_MS = 5_000;
+
+const transportSelections = new Map<string, { endpoint: string; expires: number }>();
+
+async function selectTransport(server: ServerConfig, headers: Record<string, string>): Promise<string> {
+  const key = server.machineId ?? server.id;
+  const cached = transportSelections.get(key);
+  if (cached && cached.expires > Date.now()) return cached.endpoint;
+  for (const candidate of server.transportCandidates ?? []) {
+    // Each route gets its own clock, stopped as soon as that route is decided,
+    // so a route that answered does not leave a timer running behind it.
+    const budget = abortBudget(TRANSPORT_PROBE_BUDGET_MS);
+    try {
+      const response = await fetch(`${candidate.endpoint.replace(/\/$/, '')}/api/machine`, {
+        headers, redirect: 'error', signal: budget.signal
+      });
+      response.body?.cancel();
+      if (!response.ok) continue;
+      transportSelections.set(key, { endpoint: candidate.endpoint, expires: Date.now() + 30_000 });
+      const parsed = parseServerEndpoint(candidate.endpoint);
+      void useServers.getState().updateServer(server.id, { ...parsed, transport: candidate.transport });
+      return candidate.endpoint;
+    } catch { /* try the next route */ } finally {
+      budget.release();
+    }
+  }
+  throw new Error('No machine transport is reachable.');
+}
+
+function requestThroughEndpoint(input: RequestInfo | URL, server: ServerConfig, endpoint: string): RequestInfo | URL {
+  const requested = new URL(input instanceof Request ? input.url : input.toString(), window.location.origin);
+  const currentBase = new URL(httpBaseForServer(server));
+  let path = requested.pathname;
+  if (currentBase.pathname !== '/' && path.startsWith(currentBase.pathname)) {
+    path = path.slice(currentBase.pathname.length) || '/';
+  }
+  const rewritten = `${endpoint.replace(/\/$/, '')}${path}${requested.search}`;
+  return input instanceof Request ? new Request(rewritten, input) : rewritten;
 }
 
 // Shared fetch path for active-server and explicit fleet requests. Injects
@@ -91,7 +143,16 @@ export async function serverFetch(
     ...init,
     headers: { ...extra, ...(init?.headers as Record<string, string> | undefined) }
   };
-  const res = await fetch(input, merged);
+  const endpoint = authenticate && server.machineId && server.transportCandidates?.length
+    ? await selectTransport(server, extra)
+    : '';
+  let res;
+  try {
+    res = await fetch(endpoint ? requestThroughEndpoint(input, server, endpoint) : input, merged);
+  } catch (reason) {
+    if (endpoint) transportSelections.delete(server.machineId ?? server.id);
+    throw reason;
+  }
   if (res.status === 401) {
     if (server.isDefault && isSameOriginDaemon(server)) {
       useServers.getState().markTokenRequired(server.id);
@@ -105,12 +166,46 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
   return serverFetch(getActiveServer(), input, init);
 }
 
+// Thrown when the daemon answered with a status this caller cannot use. The
+// message is the complete body, because a failure body carries more than a
+// sentence: a reboot-paused session sends `code`, `sessionId` and the exact
+// `action` that recovers it, and dropping any of that would take the recovery
+// instruction away from whoever is reading the error. `detail` is the daemon's
+// own sentence, offered separately for a surface that wants to show one line.
+export class DaemonResponseError extends Error {
+  readonly status: number;
+  readonly body: string;
+  readonly detail: string;
+  constructor(status: number, body: string, statusText: string) {
+    super(`sessionsd ${status}: ${body || statusText}`);
+    this.name = 'DaemonResponseError';
+    this.status = status;
+    this.body = body;
+    this.detail = daemonErrorSentence(body) ?? `${body || statusText}`;
+  }
+}
+
 export async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`sessionsd ${res.status}: ${text || res.statusText}`);
+    throw new DaemonResponseError(res.status, text, res.statusText);
   }
   return res.json() as Promise<T>;
+}
+
+function daemonErrorSentence(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    if (typeof parsed?.error === 'string' && parsed.error.trim()) return parsed.error;
+  } catch { /* not a daemon JSON error */ }
+  return null;
+}
+
+// One line for a surface with room for one line. Everything else the daemon
+// sent stays on the error for callers that need it.
+export function daemonErrorDisplay(error: unknown): string | null {
+  if (error instanceof DaemonResponseError) return `sessionsd ${error.status}: ${error.detail}`;
+  return error instanceof Error ? error.message : null;
 }
 
 export async function featureJSON<T>(res: Response, feature: string): Promise<T> {

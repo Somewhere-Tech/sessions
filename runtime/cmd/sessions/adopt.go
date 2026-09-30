@@ -13,11 +13,10 @@ func (a *app) cmdAdopt(args []string) error {
 	if len(args) != 1 || args[0] == "" {
 		return fail(1, "usage: sessions adopt <path-or-uuid> [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]")
 	}
-	if repairSet && repairLaneID == "" {
-		return fail(1, "--repair requires the existing live successor id")
-	}
-	if sourceSet && sourceSessionID == "" {
-		return fail(1, "--source requires the ended source session id")
+	var err error
+	sourceSessionID, repairLaneID, err = a.resolveRecoverySessionIDs(sourceSessionID, sourceSet, repairLaneID, repairSet)
+	if err != nil {
+		return err
 	}
 	body := map[string]any{"target": args[0], "force": force}
 	if sourceSet {

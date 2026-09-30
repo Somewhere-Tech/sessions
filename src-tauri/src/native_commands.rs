@@ -193,6 +193,17 @@ async fn native_nearby_discover(app: AppHandle) -> Result<Vec<NativeNearbyPeer>,
 }
 
 #[tauri::command]
+async fn native_mobile_bonjour_discover() -> Result<Vec<NativeMobileBonjourPeer>, String> {
+    #[cfg(desktop)]
+    return Err("Phone Bonjour discovery is available only on iOS and Android.".to_string());
+
+    #[cfg(mobile)]
+    tauri::async_runtime::spawn_blocking(mobile_discovery::browse_sessions)
+        .await
+        .map_err(|error| format!("Bonjour discovery worker failed: {error}"))?
+}
+
+#[tauri::command]
 async fn native_nearby_request(
     endpoint: String,
     client_id: String,
@@ -363,7 +374,23 @@ async fn native_machine_credentials_load(app: AppHandle) -> Result<MachineCreden
         .map_err(|error| format!("Windows credential worker failed: {error}"))?;
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            apple_credentials::load(&app.config().identifier)
+        })
+        .await
+        .map_err(|_| "The protected credential worker stopped. Reopen Sessions and try again.".to_string())?
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        tauri::async_runtime::spawn_blocking(move || android_credentials::load(&app))
+            .await
+            .map_err(|_| "The protected credential worker stopped. Reopen Sessions and try again.".to_string())?
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios", target_os = "android")))]
     {
         let _ = app;
         Ok(MachineCredentialStore::unsupported())
@@ -388,7 +415,23 @@ async fn native_machine_credentials_save(
         .map_err(|error| format!("Windows credential worker failed: {error}"))?;
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            apple_credentials::save(&app.config().identifier, credentials)
+        })
+        .await
+        .map_err(|_| "The protected credential worker stopped. Reopen Sessions and try again.".to_string())?
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        tauri::async_runtime::spawn_blocking(move || android_credentials::save(&app, credentials))
+            .await
+            .map_err(|_| "The protected credential worker stopped. Reopen Sessions and try again.".to_string())?
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios", target_os = "android")))]
     {
         let _ = app;
         let _ = credentials;

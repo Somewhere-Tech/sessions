@@ -18,6 +18,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -51,6 +52,11 @@ type codexAppRunner struct {
 	history  []json.RawMessage
 	composer strings.Builder
 	active   bool
+	retry    *structuredRetryController
+
+	// approvals holds the requests the app-server is waiting on until the
+	// daemon answers each with an Approve frame.
+	approvals approvalDesk
 
 	shutdownOnce sync.Once
 }
@@ -67,6 +73,7 @@ func runCodexAppServer(cfg config, paths state.Paths, logger *log.Logger) int {
 		cfg: cfg, paths: paths, logger: logger, ctx: ctx, cancel: cancel,
 		done: make(chan int, 1), clients: make(map[*client]struct{}),
 	}
+	host.retry = newStructuredRetryController(host.startRetryTurn, host.appendStructured, host.publishRetryState)
 	if err := host.start(); err != nil {
 		logger.Printf("codex app-server host failed: %v", err)
 		removeRestartState(paths)
@@ -115,6 +122,11 @@ func (r *codexAppRunner) start() error {
 	r.client = client
 	r.turnClient = client
 	conversationOptions := codexConversationOptions(r.cfg)
+	// A lane that is not fully autonomous asks before acting. The request
+	// goes to the daemon as a structured event and waits here for the answer.
+	if conversationOptions.ApprovalPolicy != "" && conversationOptions.ApprovalPolicy != codexapp.ApprovalNever {
+		client.HandleApprovals(r.awaitApproval)
+	}
 	if r.continuation != nil {
 		conversationOptions.DeveloperInstructions = codexContinuationInstructions(*r.continuation)
 	}
@@ -130,7 +142,7 @@ func (r *codexAppRunner) start() error {
 	}
 	r.remoteEndpoint = client.RemoteEndpoint()
 
-	if err := r.openHistory(); err != nil {
+	if err := r.prepareResumeHistory(); err != nil {
 		_ = client.Close()
 		return err
 	}
@@ -188,6 +200,11 @@ func (r *codexAppRunner) prepareContinuation() error {
 		continuation.ProviderContext = "applied"
 	}
 	if !continuation.LocalHistoryReady {
+		if raw, encodeErr := codexapp.ContinuationStartedEvent(
+			r.conversationID, continuation.StartLine(), time.Now(),
+		); encodeErr == nil {
+			r.appendStructured(raw)
+		}
 		for _, message := range continuation.Messages {
 			raw, encodeErr := codexapp.ImportedHistoryEvent(
 				r.conversationID, message.Role, message.Text, continuation.SourceHistoryID,
@@ -300,7 +317,9 @@ func (r *codexAppRunner) serveClient(conn net.Conn) {
 		ID: r.cfg.id, Cmd: r.cfg.cmd, Args: r.cfg.args, Cwd: r.cfg.cwd,
 		Cols: r.cfg.cols, Rows: r.cfg.rows, CreatedAt: r.createdAt,
 		PID: os.Getpid(), ProtocolVersion: proto.ProtocolVersion, RuntimeVersion: version,
-		ConversationID: r.conversationID, RemoteEndpoint: r.remoteEndpoint,
+		ConversationID: r.conversationID, RemoteEndpoint: r.remoteEndpoint, Retry: r.retry.Current(),
+		Turn:          &proto.TurnState{Working: r.active},
+		MessageSubmit: true,
 	}
 	r.mu.Unlock()
 	payload, err := json.Marshal(h)
@@ -311,12 +330,7 @@ func (r *codexAppRunner) serveClient(conn net.Conn) {
 	if err != nil {
 		c.close()
 	}
-	defer func() {
-		c.close()
-		r.mu.Lock()
-		delete(r.clients, c)
-		r.mu.Unlock()
-	}()
+	defer r.detachClient(c)
 	for {
 		frame, err := proto.Read(conn)
 		if err != nil {
@@ -328,8 +342,20 @@ func (r *codexAppRunner) serveClient(conn net.Conn) {
 	}
 }
 
+// detachClient ends only one daemon transport. Provider turns, retries, and
+// approvals belong to the runner lifetime and must survive sessionsd going
+// away or replacing this socket connection.
+func (r *codexAppRunner) detachClient(c *client) {
+	c.close()
+	r.mu.Lock()
+	delete(r.clients, c)
+	r.mu.Unlock()
+}
+
 func (r *codexAppRunner) handleFrame(c *client, frame proto.Frame) error {
 	switch frame.Type {
+	case proto.MessageReq:
+		return replyMessage(c, frame.Payload, r.submitMessage)
 	case proto.Input:
 		r.handleInput(string(frame.Payload))
 	case proto.ModelReq:
@@ -347,6 +373,18 @@ func (r *codexAppRunner) handleFrame(c *client, frame proto.Frame) error {
 			return marshalErr
 		}
 		return c.write(proto.ModelRes, payload)
+	case proto.Approve:
+		control, err := proto.DecodeApprovalControl(frame.Payload)
+		if err == nil {
+			err = r.resolveApproval(control)
+		}
+		if err != nil {
+			r.logger.Printf("reject approval control: %v", err)
+		}
+	case proto.RetryReq:
+		return r.handleRetryControl(c, false)
+	case proto.RetryStop:
+		return r.handleRetryControl(c, true)
 	case proto.Resize:
 		return nil
 	case proto.SnapshotReq:
@@ -400,8 +438,48 @@ func (r *codexAppRunner) configureModel(control proto.ModelControl) error {
 	return nil
 }
 
+func (r *codexAppRunner) handleRetryControl(c *client, stop bool) error {
+	var err error
+	if stop {
+		err = r.retry.Stop()
+	} else {
+		r.mu.Lock()
+		active := r.active
+		r.mu.Unlock()
+		if active {
+			err = errors.New("Codex turn is active")
+		} else {
+			err = r.retry.RunNow()
+		}
+	}
+	result := proto.RetryControlResult{}
+	if err != nil {
+		result.Error = err.Error()
+	}
+	payload, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		return marshalErr
+	}
+	return c.write(proto.RetryRes, payload)
+}
+
+func (r *codexAppRunner) startRetryTurn(text string, attempt int) bool {
+	r.mu.Lock()
+	if r.active || r.ctx.Err() != nil {
+		r.mu.Unlock()
+		return false
+	}
+	r.active = true
+	r.mu.Unlock()
+	go r.runTurn(text, attempt, false)
+	return true
+}
+
 func (r *codexAppRunner) handleInput(data string) {
-	if isCodexInterruptInput(data) {
+	if isStructuredInterruptInput(data) {
+		if r.retry != nil {
+			r.retry.Interrupt()
+		}
 		r.mu.Lock()
 		active := r.active
 		r.mu.Unlock()
@@ -410,8 +488,14 @@ func (r *codexAppRunner) handleInput(data string) {
 		}
 		return
 	}
+	if data != "" {
+		if r.retry != nil {
+			r.retry.Interrupt()
+		}
+	}
 	r.mu.Lock()
 	var steering []string
+	var turns []string
 	parts := strings.Split(data, "\r")
 	for index, part := range parts {
 		r.composer.WriteString(part)
@@ -428,17 +512,25 @@ func (r *codexAppRunner) handleInput(data string) {
 			continue
 		}
 		r.active = true
-		go r.runTurn(text)
+		turns = append(turns, text)
 	}
 	r.mu.Unlock()
+	for _, text := range turns {
+		if r.retry != nil {
+			r.retry.Replace()
+		}
+		go r.runTurn(text, 0, true)
+	}
 	for _, text := range steering {
 		r.steerActiveTurn(text)
 	}
 }
 
-func isCodexInterruptInput(data string) bool {
+func isStructuredInterruptInput(data string) bool {
 	return data == "\x1b" || data == "\x03"
 }
+
+func isCodexInterruptInput(data string) bool { return isStructuredInterruptInput(data) }
 
 func (r *codexAppRunner) interruptTurn() {
 	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
@@ -454,6 +546,7 @@ func (r *codexAppRunner) steerActiveTurn(text string) {
 	// them. This mutex provides transport ordering, not a second prompt queue.
 	r.steerMu.Lock()
 	defer r.steerMu.Unlock()
+	submittedAt := time.Now()
 	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
 	defer cancel()
 	turnID, err := r.turnClient.SteerTurn(ctx, r.conversationID, text)
@@ -469,7 +562,7 @@ func (r *codexAppRunner) steerActiveTurn(text string) {
 		}
 		return
 	}
-	event, err := codexapp.SteeringHistoryEvent(r.conversationID, turnID, text, time.Now())
+	event, err := codexapp.SteeringHistoryEvent(r.conversationID, turnID, text, submittedAt)
 	if err == nil {
 		r.appendStructured(event)
 	}
@@ -481,33 +574,50 @@ func cleanComposerInput(value string) string {
 	return value
 }
 
-func (r *codexAppRunner) runTurn(text string) {
+func (r *codexAppRunner) runTurn(text string, attempt int, recordUser bool) {
 	defer func() {
 		r.mu.Lock()
 		r.active = false
 		r.mu.Unlock()
 	}()
+	if recordUser {
+		user, err := codexapp.UserHistoryEvent(r.conversationID, text, time.Now())
+		if err == nil {
+			r.appendStructured(user)
+		}
+	}
 	stream, err := r.turnClient.SendUserTurn(r.ctx, r.conversationID, text)
 	if err != nil {
-		r.recordTurnFailure(err)
+		if !errors.Is(err, context.Canceled) {
+			r.recordTurnFailure(text, attempt, err)
+		}
 		return
 	}
-	user, err := codexapp.UserHistoryEvent(r.conversationID, text, time.Now())
-	if err == nil {
-		r.appendStructured(user)
-	}
+	failed := false
 	for event := range stream.Events {
+		if completed, ok := event.(codexapp.TurnComplete); ok && !strings.EqualFold(completed.Status, "completed") {
+			failure := codexTurnFailureText(completed)
+			r.recordProviderFailure(text, attempt, failure, 0)
+			failed = true
+		}
 		raw, encodeErr := codexapp.HistoryEvent(event, time.Now())
 		if encodeErr == nil {
 			r.appendStructured(raw)
 		}
 	}
-	if _, err := stream.Result(r.ctx); err != nil && !errors.Is(err, context.Canceled) {
-		r.recordTurnFailure(err)
+	if _, err := stream.Result(r.ctx); err != nil && !errors.Is(err, context.Canceled) && !failed {
+		r.recordTurnFailure(text, attempt, err)
+		return
+	}
+	if !failed {
+		if r.retry != nil {
+			r.retry.Succeeded()
+		}
 	}
 }
 
-func (r *codexAppRunner) recordTurnFailure(err error) {
+func (r *codexAppRunner) recordTurnFailure(text string, attempt int, err error) {
+	r.recordProviderFailure(text, attempt, err.Error(), 0)
 	raw, encodeErr := codexapp.HistoryEvent(codexapp.TurnComplete{
 		ConversationID: r.conversationID, Status: "failed",
 		Error: &codexapp.TurnError{Message: err.Error()},
@@ -515,6 +625,27 @@ func (r *codexAppRunner) recordTurnFailure(err error) {
 	if encodeErr == nil {
 		r.appendStructured(raw)
 	}
+}
+
+func (r *codexAppRunner) recordProviderFailure(input string, attempt int, text string, status int) {
+	fault := providerfault.Classify("codex", text, status)
+	raw, err := providerfault.HistoryEvent("codex", fault, time.Now())
+	if err == nil {
+		r.appendStructured(raw)
+	}
+	if r.retry != nil {
+		r.retry.Failed(input, attempt, fault, text)
+	}
+}
+
+func codexTurnFailureText(event codexapp.TurnComplete) string {
+	if event.Error != nil && strings.TrimSpace(event.Error.Message) != "" {
+		return event.Error.Message
+	}
+	if strings.TrimSpace(event.Status) != "" {
+		return event.Status
+	}
+	return "Codex turn failed"
 }
 
 func (r *codexAppRunner) appendStructured(raw json.RawMessage) {
@@ -537,6 +668,24 @@ func (r *codexAppRunner) appendStructured(raw json.RawMessage) {
 	for _, c := range clients {
 		c.enqueue(proto.Structured, raw)
 	}
+}
+
+func (r *codexAppRunner) publishRetryState(retry *proto.ProviderRetry) {
+	payload, err := json.Marshal(proto.ProviderRetryState{Retry: retry})
+	if err != nil {
+		return
+	}
+	r.streamMu.Lock()
+	r.mu.Lock()
+	clients := make([]*client, 0, len(r.clients))
+	for c := range r.clients {
+		clients = append(clients, c)
+	}
+	r.mu.Unlock()
+	for _, c := range clients {
+		c.enqueue(proto.RetryState, payload)
+	}
+	r.streamMu.Unlock()
 }
 
 func (r *codexAppRunner) snapshot() string {
@@ -618,6 +767,7 @@ func (r *codexAppRunner) shutdownForHostExit(permanent bool, code int) {
 func (r *codexAppRunner) shutdownWithRestartPolicy(permanent bool, code int, preserveRestartPermit bool) {
 	r.shutdownOnce.Do(func() {
 		r.cancel()
+		r.retry.Close()
 		r.streamMu.Lock()
 		if r.listener != nil {
 			_ = r.listener.Close()
@@ -644,10 +794,35 @@ func (r *codexAppRunner) shutdownWithRestartPolicy(permanent bool, code int, pre
 		}
 		r.closeHistory()
 		if permanent {
+			// The runner record goes; the conversation copy stays. This
+			// sidecar is the only copy Sessions holds of a structured
+			// conversation, and a provider that keeps its own history in a
+			// database or under another home leaves nothing else to resume
+			// from. Ending a session must never make its conversation
+			// unrecoverable (docs/PRINCIPLES.md, "Sessions are durable work").
 			_ = os.Remove(r.paths.Meta)
-			_ = os.Remove(r.paths.Structured)
 		}
 		r.streamMu.Unlock()
 		r.done <- code
 	})
+}
+
+// awaitApproval announces one approval request on the structured stream and
+// blocks until the daemon answers it or the runner stops. The turn stays open
+// meanwhile; that is the point.
+func (r *codexAppRunner) awaitApproval(ctx context.Context, request codexapp.ApprovalRequest) codexapp.ApprovalDecision {
+	id, decided := r.approvals.open()
+	if raw, err := codexapp.ApprovalRequestedEvent(id, request, time.Now()); err == nil {
+		r.appendStructured(raw)
+	}
+	control := r.approvals.wait(ctx, r.ctx, id, decided)
+	decision := codexapp.ApprovalDecision(control.Decision)
+	if raw, err := codexapp.ApprovalResolvedEvent(request.ConversationID, id, decision, control.By, time.Now()); err == nil {
+		r.appendStructured(raw)
+	}
+	return decision
+}
+
+func (r *codexAppRunner) resolveApproval(control proto.ApprovalControl) error {
+	return r.approvals.resolve(control)
 }

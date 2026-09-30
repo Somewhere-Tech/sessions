@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
@@ -18,13 +17,14 @@ var keyBytes = map[string]string{
 	"esc": "\x1b", "escape": "\x1b", "up": "\x1b[A", "down": "\x1b[B",
 	"left": "\x1b[D", "right": "\x1b[C", "^c": "\x03", "ctrlc": "\x03",
 	"^d": "\x04", "ctrld": "\x04", "enter": "\r", "tab": "\t",
+	"shift-tab": "\x1b[Z", "backtab": "\x1b[Z",
 }
 
-var keyOrder = []string{"esc", "escape", "up", "down", "left", "right", "^c", "ctrlc", "^d", "ctrld", "enter", "tab"}
+var keyOrder = []string{"esc", "escape", "up", "down", "left", "right", "^c", "ctrlc", "^d", "ctrld", "enter", "tab", "shift-tab", "backtab"}
 
 func (a *app) cmdKeys(args []string) error {
 	if len(args) < 2 || args[0] == "" || args[1] == "" {
-		return fail(1, "usage: sessions keys <id> <esc|up|down|left|right|^c|^d|enter|tab>")
+		return fail(1, "usage: sessions keys <id> <esc|up|down|left|right|^c|^d|enter|tab|shift-tab>")
 	}
 	data, ok := keyBytes[strings.ToLower(args[1])]
 	if !ok {
@@ -49,32 +49,44 @@ var toolPresets = map[string]toolPreset{
 	},
 	"codex": {
 		command:  "codex",
-		args:     []string{"-c", "check_for_update_on_startup=false", "--sandbox", "workspace-write", "--ask-for-approval", "on-request"},
+		args:     []string{"-c", "check_for_update_on_startup=false", "--sandbox", "workspace-write", "--ask-for-approval", "untrusted"},
 		fullArgs: []string{"-c", "check_for_update_on_startup=false", "--dangerously-bypass-approvals-and-sandbox"},
 	},
 	"shell": {},
 }
 
+// Rich Codex uses the provider's untrusted policy for constrained sessions.
+// on-request lets ordinary workspace commands proceed without asking, which
+// contradicts the explicit Ask me contract once Sessions owns the approval UI.
+var constrainedCodexAppServerArgs = []string{
+	"-c", "check_for_update_on_startup=false",
+	"--sandbox", "workspace-write", "--ask-for-approval", "untrusted",
+}
+
 var toolPresetOrder = []string{"claude", "codex", "shell"}
 
 type createSessionRequest struct {
-	Cmd              string            `json:"cmd,omitempty"`
-	Args             []string          `json:"args,omitempty"`
-	Cwd              string            `json:"cwd,omitempty"`
-	Name             string            `json:"name,omitempty"`
-	Description      string            `json:"description,omitempty"`
-	Tags             map[string]string `json:"tags,omitempty"`
-	Profile          string            `json:"profile,omitempty"`
-	Worktree         bool              `json:"worktree,omitempty"`
-	Base             string            `json:"base,omitempty"`
-	OnIdle           string            `json:"onIdle,omitempty"`
-	WaitReady        bool              `json:"waitReady,omitempty"`
-	Kind             string            `json:"kind,omitempty"`
-	Force            bool              `json:"force,omitempty"`
-	ProviderTerminal bool              `json:"providerTerminal,omitempty"`
-	DelegationKind   string            `json:"delegationKind,omitempty"`
-	Permissions      string            `json:"permissions,omitempty"`
-	Lifecycle        string            `json:"lifecycle,omitempty"`
+	Cmd               string            `json:"cmd,omitempty"`
+	Args              []string          `json:"args,omitempty"`
+	InitialInput      string            `json:"initialInput,omitempty"`
+	OperationID       string            `json:"operation_id,omitempty"`
+	PromptOperationID string            `json:"prompt_operation_id,omitempty"`
+	Cwd               string            `json:"cwd,omitempty"`
+	Name              string            `json:"name,omitempty"`
+	Description       string            `json:"description,omitempty"`
+	Tags              map[string]string `json:"tags,omitempty"`
+	Profile           string            `json:"profile,omitempty"`
+	Worktree          bool              `json:"worktree,omitempty"`
+	NoWorktree        bool              `json:"noWorktree,omitempty"`
+	Base              string            `json:"base,omitempty"`
+	OnIdle            string            `json:"onIdle,omitempty"`
+	WaitReady         bool              `json:"waitReady,omitempty"`
+	Kind              string            `json:"kind,omitempty"`
+	Force             bool              `json:"force,omitempty"`
+	ProviderTerminal  bool              `json:"providerTerminal,omitempty"`
+	DelegationKind    string            `json:"delegationKind,omitempty"`
+	Permissions       string            `json:"permissions,omitempty"`
+	Lifecycle         string            `json:"lifecycle,omitempty"`
 }
 
 type agentControls struct {
@@ -215,6 +227,23 @@ func pluckWorktreeOptions(args *[]string) (bool, string, error) {
 	return worktree, base, nil
 }
 
+// worktreeSourceCwd is the folder a worktree is cut from: the caller's own
+// directory unless one was named, always absolute.
+func worktreeSourceCwd(cwd string) (string, error) {
+	if cwd == "" {
+		resolved, err := os.Getwd()
+		if err != nil {
+			return "", fail(1, "resolve worktree source cwd: %s", err)
+		}
+		return resolved, nil
+	}
+	resolved, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fail(1, "resolve worktree source cwd: %s", err)
+	}
+	return resolved, nil
+}
+
 func (a *app) cmdNew(args []string) error {
 	if err := a.configureCreateOwner(&args); err != nil {
 		return err
@@ -241,6 +270,10 @@ func (a *app) cmdNew(args []string) error {
 	body.Worktree, body.Base, err = pluckWorktreeOptions(&args)
 	if err != nil {
 		return err
+	}
+	body.NoWorktree = removeFirst(&args, "--no-worktree")
+	if body.NoWorktree && body.Worktree {
+		return fail(1, "--no-worktree and --worktree cannot be combined")
 	}
 	body.Force = removeFirst(&args, "--force")
 	forceStructuredClaude := removeFirst(&args, "--structured")
@@ -279,6 +312,9 @@ func (a *app) cmdNew(args []string) error {
 		body.OnIdle = value
 	}
 	body.WaitReady = removeFirst(&args, "--wait-ready")
+	if body.OperationID, err = pluckStartOperationID(&args); err != nil {
+		return err
+	}
 	tool, hasTool := pluck(&args, "--tool")
 	initialInput := ""
 	fullAccess := removeFirst(&args, "--full-access")
@@ -324,6 +360,8 @@ func (a *app) cmdNew(args []string) error {
 		chosen := preset.args
 		if fullAccess {
 			chosen = preset.fullArgs
+		} else if strings.EqualFold(tool, "codex") && forceAppServer {
+			chosen = constrainedCodexAppServerArgs
 		}
 		if chosen != nil {
 			body.Args = append([]string(nil), chosen...)
@@ -333,10 +371,7 @@ func (a *app) cmdNew(args []string) error {
 			if forceStructuredClaude || forcePTYClaude {
 				return fail(1, "--structured and --pty-claude are only valid with --tool claude")
 			}
-			if forceAppServer && !fullAccess {
-				return fail(1, "--codex-appserver currently requires --full-access because Sessions cannot yet present app-server approval prompts; use sandboxed --pty-codex otherwise")
-			}
-			if fullAccess && !forcePTYCodex && (forceAppServer || codexAppServerEnabled()) {
+			if !forcePTYCodex && (forceAppServer || (fullAccess && codexAppServerEnabled())) {
 				body.Kind = "codex-app-server"
 				// The app-server runtime does not consume positional CLI arguments.
 				// Treat them as the first user request and deliver them through the
@@ -346,6 +381,12 @@ func (a *app) cmdNew(args []string) error {
 					initialInput = strings.Join(args, " ")
 					body.Args = append([]string(nil), chosen...)
 				}
+			} else if len(args) > 0 {
+				// A terminal Codex process consumes its first request from argv,
+				// before Sessions can observe terminal input. Carry the exact same
+				// authored text separately so the transcript watcher can bind to
+				// the one rollout which records it instead of guessing by time.
+				body.InitialInput = strings.Join(args, " ")
 			}
 		} else if forceAppServer || forcePTYCodex {
 			return fail(1, "--codex-appserver and --pty-codex are only valid with --tool codex")
@@ -407,38 +448,22 @@ func (a *app) cmdNew(args []string) error {
 			return fail(1, "--profile is only for Claude or Codex sessions; remove it for shell sessions")
 		}
 	}
+	// A child starts from the folder where its manager invoked the CLI. The
+	// daemon cannot recover that process cwd from the creator header alone; an
+	// omitted cwd would fall back to HOME before the daemon applies the lane's
+	// default worktree policy, silently sharing the wrong folder instead.
+	if body.Cwd == "" && a.api.creatorSession != "" && a.api.ownerID == "" {
+		body.Cwd, err = os.Getwd()
+		if err != nil {
+			return fail(1, "resolve delegated session cwd: %s", err)
+		}
+	}
 	if body.Worktree {
-		if body.Cwd == "" {
-			body.Cwd, err = os.Getwd()
-		} else {
-			body.Cwd, err = filepath.Abs(body.Cwd)
-		}
-		if err != nil {
-			return fail(1, "resolve worktree source cwd: %s", err)
+		if body.Cwd, err = worktreeSourceCwd(body.Cwd); err != nil {
+			return err
 		}
 	}
-	var info map[string]any
-	if err := a.postJSON("/api/sessions", body, &info, 2); err != nil {
-		return err
-	}
-	if strings.TrimSpace(initialInput) != "" {
-		id := strings.TrimSpace(fmt.Sprint(info["id"]))
-		if id == "" {
-			return fail(2, "session was created, but sessionsd did not return its id; first request was not sent")
-		}
-		result, err := a.sendAndConfirm(id, initialInput, 30*time.Second, false)
-		if err != nil {
-			return fail(2, "session %s was created, but its first request was not sent: %s", id, err)
-		}
-		if result.ExitCode != 0 {
-			return fail(2, "session %s was created, but its first request was not confirmed: %s", id, result.Reason)
-		}
-	}
-	if a.wantJSON {
-		return writeJSON(a.stdout, info, true)
-	}
-	_, err = fmt.Fprintln(a.stdout, info["id"])
-	return err
+	return a.createAndStart(body, initialInput)
 }
 
 func codexAppServerEnabled() bool {
@@ -488,6 +513,7 @@ func (a *app) cmdModel(args []string) error {
 
 const (
 	killStatusKilled        = "killed"
+	killStatusClosedLost    = "closed-lost"
 	killStatusAlreadyExited = "already-exited"
 	killStatusFailed        = "failed"
 	killStatusUnconfirmed   = "unconfirmed"
@@ -581,6 +607,8 @@ func (a *app) reportKill(result killResult) error {
 			switch item.Status {
 			case killStatusKilled:
 				fmt.Fprintf(a.stdout, "killed %s\n", item.ID)
+			case killStatusClosedLost:
+				fmt.Fprintf(a.stdout, "closed lost record %s\n", item.ID)
 			case killStatusAlreadyExited:
 				fmt.Fprintf(a.stdout, "lane %s already exited; nothing to kill\n", item.ID)
 			default:
@@ -652,6 +680,7 @@ func (a *app) cmdKill(ids []string) error {
 	}
 	result := killResult{Items: make([]killItem, 0, len(ids)), OperationID: operationID}
 	resolved := make([]string, 0, len(ids))
+	lost := make(map[string]struct{})
 	for _, idArg := range ids {
 		laneID, isLane, err := a.resolveLaneID(idArg)
 		if err != nil {
@@ -680,8 +709,13 @@ func (a *app) cmdKill(ids []string) error {
 		}
 		alreadyExitedLane := false
 		for _, candidate := range listed {
-			if candidate.ID == id && candidate.Kind == "lane" && candidate.Exited {
-				alreadyExitedLane = true
+			if candidate.ID == id {
+				if candidate.Kind == "lane" && candidate.Exited {
+					alreadyExitedLane = true
+				}
+				if candidate.RunnerGone {
+					lost[id] = struct{}{}
+				}
 				break
 			}
 		}
@@ -704,7 +738,13 @@ func (a *app) cmdKill(ids []string) error {
 		if err != nil {
 			return err
 		}
-		result.Items = append(result.Items, response.classify(resolved)...)
+		items := response.classify(resolved)
+		for index := range items {
+			if _, wasLost := lost[items[index].ID]; wasLost && items[index].Status == killStatusKilled {
+				items[index].Status = killStatusClosedLost
+			}
+		}
+		result.Items = append(result.Items, items...)
 		return a.reportKill(result)
 	}
 	path := "/api/sessions/" + escapeID(resolved[0])
@@ -723,7 +763,11 @@ func (a *app) cmdKill(ids []string) error {
 		})
 		return a.reportKill(result)
 	}
-	result.Items = append(result.Items, killItem{ID: resolved[0], Status: killStatusKilled})
+	status := killStatusKilled
+	if _, wasLost := lost[resolved[0]]; wasLost {
+		status = killStatusClosedLost
+	}
+	result.Items = append(result.Items, killItem{ID: resolved[0], Status: status})
 	return a.reportKill(result)
 }
 

@@ -10,13 +10,16 @@ import {
   type SessionModelOption
 } from '../api/sessionsd';
 import { readNewSessionDefaults, type NewSessionTool } from '../lib/newSessionDefaults';
+import { accountLabel, accountNeedsLogin, rememberAccount, rememberedAccount } from '../lib/accountChoice';
 import { TagEditor } from './TagEditor';
-import type { ClaudeSessionOptions, DirectoryCandidate, SessionInfo } from '../types';
+import type { ClaudeSessionOptions, CreateSessionRequest, DirectoryCandidate, SessionInfo } from '../types';
 import { getActiveServer, isLocalServer, serverDisplayName, useServers } from '../lib/servers';
 import { sessionLabel, sessionTitleFromPrompt } from '../lib/tabLabels';
 import { ProviderMark } from './ProviderBadge';
 import { MachineMark } from './MachineMark';
 import { CLAUDE_MODEL_OPTIONS, ModelPicker, type ModelPickerOption } from './ModelPicker';
+import { InlineAccountSignIn } from './InlineAccountSignIn';
+import { firstRequestFailureMessage, recordedPromptOperationId, startFailureMessage, startOperationIds, withStartOperation, type StartOperationIds } from '../lib/startOperation';
 
 interface ToolDef {
   id: NewSessionTool;
@@ -26,7 +29,11 @@ interface ToolDef {
 
 type RuntimeMode = 'rich' | 'terminal';
 
-function defaultRuntimeMode(tool: NewSessionTool, parent: SessionInfo | null, fullAccess: boolean): RuntimeMode {
+// AccessChoice is the one permission question Sessions asks: run on its
+// own, ask before acting, or only plan. Each provider's own flags follow.
+type AccessChoice = 'full' | 'ask' | 'plan';
+
+function defaultRuntimeMode(tool: NewSessionTool, parent: SessionInfo | null): RuntimeMode {
   if (tool === 'shell') return 'terminal';
   // Claude always starts in its native interactive runtime. Conversation,
   // Terminal, claude.ai, and mobile then observe one provider session even
@@ -35,9 +42,13 @@ function defaultRuntimeMode(tool: NewSessionTool, parent: SessionInfo | null, fu
   if (parent && parent.tool === tool) {
     return parent.kind === 'codex-app-server' || parent.kind === 'claude-structured' ? 'rich' : 'terminal';
   }
-  // Codex Rich cannot present app-server approval prompts yet. Until that UI
-  // exists, only an explicit saved Full Access choice may default into Rich.
-  return tool === 'codex' && fullAccess ? 'rich' : 'terminal';
+  // A Codex Conversation session asks through Sessions when it is not given
+  // full access, so the view no longer depends on the permission choice.
+  return tool === 'codex' ? 'rich' : 'terminal';
+}
+
+function claudeModeFor(access: AccessChoice): ClaudeSessionOptions['permissionMode'] {
+  return access === 'full' ? 'bypassPermissions' : access === 'plan' ? 'plan' : 'manual';
 }
 
 function effortLabel(effort: string): string {
@@ -76,7 +87,6 @@ function AgentMark({ tool, size = 38 }: { tool: NewSessionTool; size?: number })
 }
 
 const NEW_PROFILE = '__new_profile__';
-const PROFILE_NAME = /^[a-z0-9-]{1,32}$/;
 
 function providerForTool(tool: NewSessionTool): 'claude' | 'codex' | null {
   return tool === 'claude-code' ? 'claude' : tool === 'codex' ? 'codex' : null;
@@ -88,11 +98,12 @@ function inheritedProfile(parent: SessionInfo | null, tool: NewSessionTool): str
   return providerForTool(parentTool) === providerForTool(tool) ? parent.profile : '';
 }
 
-async function submitInitialRequest(sessionId: string, text: string, serverId: string): Promise<void> {
-  await submitMessage(sessionId, `\x1b[200~${text}\x1b[201~`, serverId);
+async function submitInitialRequest(sessionId: string, text: string, serverId: string, operationId: string): Promise<void> {
+  await submitMessage(sessionId, `\x1b[200~${text}\x1b[201~`, serverId, undefined, undefined, operationId);
 }
 
 interface Props {
+  projectSeed?: { serverId: string; cwd: string; tags: Record<string, string> } | null;
   onClose: () => void;
   // Creation and opening are separate product actions. The daemon owns the
   // durable session; App owns which views are open.
@@ -114,7 +125,7 @@ interface Props {
 // boundary, keeping the provider transcript and Sessions record aligned.
 function resolveCommand(
   tool: NewSessionTool,
-  skipPerms: boolean,
+  access: AccessChoice,
   codexModel: string,
   codexEffort: string,
   claudeSafeMode: boolean
@@ -125,12 +136,15 @@ function resolveCommand(
     return { cmd: 'claude', args };
   }
   if (tool === 'codex') {
-    // Full Access is explicit and maps to Codex's exact no-sandbox,
-    // no-approval flag. The public default remains workspace-write with
-    // on-request approvals.
-    const args = skipPerms
+    // Full access maps to Codex's exact no-sandbox, no-approval flag. Ask me
+    // is workspace-write with Codex's untrusted policy, so ordinary commands
+    // really ask and the request routes through Sessions.
+    // Plan keeps Codex read-only so it can look and think but not change.
+    const args = access === 'full'
         ? ['--dangerously-bypass-approvals-and-sandbox']
-        : ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request'];
+        : access === 'plan'
+          ? ['--sandbox', 'read-only', '--ask-for-approval', 'on-request']
+          : ['--sandbox', 'workspace-write', '--ask-for-approval', 'untrusted'];
     if (codexModel.trim()) args.push('--model', codexModel.trim());
     if (codexEffort) args.push('-c', `model_reasoning_effort="${codexEffort}"`);
     return { cmd: 'codex', args };
@@ -139,7 +153,72 @@ function resolveCommand(
   return { cmd: undefined, args: undefined };
 }
 
-export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSession = null, embedded = false }: Props): JSX.Element {
+function useCodexCatalog(tool: NewSessionTool, machineId: string): {
+  models: SessionModelOption[]; loading: boolean; error: string | null;
+} {
+  const [models, setModels] = useState<SessionModelOption[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    setModels([]);
+    setError(null);
+    setLoading(tool === 'codex');
+    if (tool !== 'codex') return;
+    void listNewSessionCodexModels(controller.signal, machineId)
+      .then((catalog) => {
+        if (controller.signal.aborted) return;
+        const visible = catalog.filter((model) => !model.hidden);
+        setModels(visible);
+        if (!visible.length) setError('Codex returned no model choices. Enter an exact model name or use your Codex setting.');
+      })
+      .catch((reason) => {
+        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Could not load Codex models.');
+      })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [machineId, tool]);
+  return { models, loading, error };
+}
+
+
+// The account a session starts on, beside the agent and the computer rather
+// than inside Advanced: a second subscription is a normal choice.
+function AccountChoice(
+  { profiles, value, selected, inherited, title, disabled, onChange }: {
+    profiles: AccountProfile[];
+    value: string;
+    selected: string;
+    inherited: string;
+    title: string;
+    disabled: boolean;
+    onChange: (value: string) => void;
+  }
+): JSX.Element {
+  const unlisted = selected && value !== NEW_PROFILE && !profiles.some((profile) => profile.name === selected);
+  return (
+    <label className="launcher-setup-field is-account">
+      <span>Account</span>
+      <span className="launcher-intent-control is-account" title={title}>
+        <select value={value} onChange={(event) => onChange(event.currentTarget.value)} aria-label="Account" disabled={disabled}>
+          <option value="">Default</option>
+          {unlisted ? (
+            <option value={selected}>{selected}{inherited === selected ? ' · from this session' : ''}</option>
+          ) : null}
+          {profiles.map((profile) => (
+            <option key={`${profile.tool}:${profile.name}`} value={profile.name}>
+              {accountLabel(profile)}{profile.name === inherited ? ' · from this session' : ''}{profile.identity || profile.signed_in ? '' : ' · needs sign-in'}
+            </option>
+          ))}
+          <option value={NEW_PROFILE}>Add an account…</option>
+        </select>
+      </span>
+    </label>
+  );
+}
+
+
+export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSession = null, embedded = false, projectSeed = null }: Props): JSX.Element {
   const create = useSessions((s) => s.create);
   const openSessions = useSessions((s) => s.sessions);
   const activeId = useSessions((s) => s.activeId);
@@ -150,6 +229,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const selectActiveMachine = useServers((state) => state.setActive);
   const [initialDefaults] = useState(readNewSessionDefaults);
   const [machineId, setMachineId] = useState(() => {
+    if (projectSeed) return projectSeed.serverId;
     if (parentSession) return activeMachineId ?? configuredMachines[0]?.id ?? '';
     return configuredMachines.find((machine) => machine.isDefault && isLocalServer(machine))?.id
       ?? activeMachineId
@@ -159,33 +239,33 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const [tool, setTool] = useState<NewSessionTool>(() => parentSession?.tool === 'terminal' ? 'shell' : parentSession?.tool ?? initialDefaults.tool);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(() => defaultRuntimeMode(
     parentSession?.tool === 'terminal' ? 'shell' : parentSession?.tool ?? initialDefaults.tool,
-    parentSession,
-    initialDefaults.skipPerms
+    parentSession
   ));
-  const [skipPerms, setSkipPerms] = useState(initialDefaults.skipPerms);
+  const [access, setAccess] = useState<AccessChoice>(initialDefaults.skipPerms ? 'full' : 'ask');
   const [claudeOptions, setClaudeOptions] = useState<ClaudeSessionOptions>({});
   const [claudeSafeMode, setClaudeSafeMode] = useState(false);
   const [codexModel, setCodexModel] = useState('');
   const [codexEffort, setCodexEffort] = useState('');
-  const [codexModels, setCodexModels] = useState<SessionModelOption[]>([]);
-  const [codexModelsLoading, setCodexModelsLoading] = useState(false);
-  const [codexModelsError, setCodexModelsError] = useState<string | null>(null);
+  const { models: codexModels, loading: codexModelsLoading, error: codexModelsError } = useCodexCatalog(tool, machineId);
   const [cwd, setCwd] = useState(
-    parentSession?.cwd
+    projectSeed?.cwd ?? parentSession?.cwd
       ?? openSessions.find((session) => session.id === activeId)?.cwd
       ?? initialDefaults.cwd
   );
   const [browserOpen, setBrowserOpen] = useState(false);
-  const [tags, setTags] = useState<Record<string, string>>(parentSession?.tags ?? initialDefaults.tags);
+  const [tags, setTags] = useState<Record<string, string>>(projectSeed?.tags ?? parentSession?.tags ?? initialDefaults.tags);
   const [task, setTask] = useState('');
   const [recentWorkspaces, setRecentWorkspaces] = useState<DirectoryCandidate[]>([]);
   const [profiles, setProfiles] = useState<AccountProfile[]>([]);
   const [profileChoice, setProfileChoice] = useState(() => inheritedProfile(parentSession, tool));
-  const [newProfile, setNewProfile] = useState('');
+  // A delegate starts on its manager's account; anyone else starts on the one
+  // this project used last on this computer.
+  const [accountTouched, setAccountTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   // State disables the button on the next render; this ref closes the smaller
   // same-tick window in which Enter plus a click could create two runtimes.
   const startInFlightRef = useRef(false);
+  const startIdsRef = useRef<StartOperationIds | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [createdWithDeliveryError, setCreatedWithDeliveryError] = useState<string | null>(null);
   useEffect(() => {
@@ -200,9 +280,15 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
 
   const profileTool = providerForTool(tool);
   const toolProfiles = profiles.filter((profile) => profile.tool === profileTool);
-  const selectedProfile = profileChoice === NEW_PROFILE ? newProfile.trim() : profileChoice;
-  const profileValid = profileChoice !== NEW_PROFILE || PROFILE_NAME.test(selectedProfile);
-  const requiresProviderLogin = profileChoice === NEW_PROFILE;
+  const inheritedAccount = inheritedProfile(parentSession, tool);
+  const accountTitle = profileChoice === ''
+    ? 'Default account'
+    : profileChoice === NEW_PROFILE
+      ? 'Add an account'
+      : profileChoice;
+  const selectedProfile = profileChoice === NEW_PROFILE ? '' : profileChoice;
+  const requiresProviderLogin = profileChoice === NEW_PROFILE || Boolean(profileTool && selectedProfile && accountNeedsLogin(profiles, profileTool, selectedProfile));
+  const profileValid = !requiresProviderLogin;
   const selectedMachine = configuredMachines.find((machine) => machine.id === machineId)
     ?? configuredMachines[0]
     ?? null;
@@ -222,6 +308,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       if (!active) return;
       setRecentWorkspaces(items);
       setCwd((current) => {
+        if (projectSeed?.serverId === machineId && current === projectSeed.cwd) return current;
         const currentCandidate = items.find((item) => item.path === current);
         if (currentCandidate) return current;
         return items.find((item) => item.kind === 'somewhere')?.path
@@ -232,7 +319,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       });
     }).catch(() => { if (active) setRecentWorkspaces([]); });
     return () => { active = false; };
-  }, [configuredMachines, machineId, parentSession, selectActiveMachine, setServerScope]);
+  }, [configuredMachines, machineId, parentSession, projectSeed, selectActiveMachine, setServerScope]);
 
   useEffect(() => {
     if (!profileTool) {
@@ -246,30 +333,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     return () => controller.abort();
   }, [machineId, profileTool]);
 
-  useEffect(() => {
-    if (tool !== 'codex') {
-      setCodexModels([]);
-      setCodexModelsError(null);
-      setCodexModelsLoading(false);
-      return;
-    }
-    const controller = new AbortController();
-    setCodexModels([]);
-    setCodexModelsError(null);
-    setCodexModelsLoading(true);
-    void listNewSessionCodexModels(controller.signal, machineId)
-      .then((models) => setCodexModels(models.filter((model) => !model.hidden)))
-      .catch((reason) => {
-        if (!controller.signal.aborted) {
-          setCodexModelsError(reason instanceof Error ? reason.message : 'Could not load Codex models.');
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setCodexModelsLoading(false);
-      });
-    return () => controller.abort();
-  }, [machineId, tool]);
-
   // `inheritedProfile` reads only the parent's profile and tool, so listing
   // those two fields was substantively right — but the rule could not see it
   // through the call, and neither could a reader. Naming the resolved value
@@ -279,8 +342,19 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   const parentSessionId = parentSession?.id ?? null;
   useEffect(() => {
     setProfileChoice(inheritedProfileChoice);
-    setNewProfile('');
+    setAccountTouched(false);
   }, [inheritedProfileChoice, parentSessionId]);
+
+  // A delegate keeps its manager's account unless someone changes it. Everyone
+  // else starts on the account this project used last on this computer, so a
+  // second subscription stops being a per-session decision.
+  useEffect(() => {
+    if (accountTouched || parentSession || !profileTool) return;
+    const remembered = rememberedAccount(machineId, profileTool, cwd.trim());
+    if (!remembered) return;
+    if (!profiles.some((profile) => profile.tool === profileTool && profile.name === remembered)) return;
+    setProfileChoice(remembered);
+  }, [accountTouched, parentSession, profileTool, machineId, cwd, profiles]);
 
   const openSessionWorkspaces = useMemo<DirectoryCandidate[]>(() => {
     if (sessionsServerId !== machineId) return [];
@@ -358,7 +432,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     if (startInFlightRef.current) return;
     startInFlightRef.current = true;
     if (!profileValid) {
-      setError('Profile names use 1–32 lowercase letters, numbers, or hyphens.');
+      setError('Finish account sign-in before starting this chat.');
       startInFlightRef.current = false;
       return;
     }
@@ -374,8 +448,13 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         selectActiveMachine(machineId);
         setServerScope(machineId);
       }
-      const { cmd, args } = resolveCommand(tool, skipPerms, codexModel, codexEffort, claudeSafeMode);
-      const info = await create({
+      const { cmd, args } = resolveCommand(tool, access, codexModel, codexEffort, claudeSafeMode);
+      const resolvedClaudeOptions: ClaudeSessionOptions = {
+        ...claudeOptions,
+        permissionMode: claudeModeFor(access),
+        ...(claudeSafeMode ? { remoteControl: 'off', chrome: 'off', somewhereMcp: 'inherit' } : {})
+      };
+      const request: CreateSessionRequest = {
         cmd,
         args,
         kind: tool === 'codex' && runtimeMode === 'rich'
@@ -390,39 +469,31 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         description: task.trim() || undefined,
         tags,
         profile: selectedProfile || undefined,
-        // A newly isolated provider home starts in its login flow. Readiness
-        // cannot distinguish that prompt from the agent composer, so never
-        // inject an initial task until the user has authenticated explicitly.
-        waitReady: task.trim().length > 0 && !requiresProviderLogin,
-        claude: tool === 'claude-code'
-          ? claudeSafeMode
-            ? { ...claudeOptions, remoteControl: 'off', chrome: 'off', somewhereMcp: 'inherit' }
-            : claudeOptions
-          : undefined,
+        waitReady: task.trim().length > 0,
+        claude: tool === 'claude-code' ? resolvedClaudeOptions : undefined,
         creatorSessionId: parentSession?.id,
         delegationKind: parentSession ? 'user' : undefined
-      }, machineId);
-      // Open the durable record before attempting prompt delivery. Permission
-      // dialogs and provider readiness are runtime concerns; they must not
-      // strand a successfully-created session behind the launcher.
+      };
+      const ids = startIdsRef.current = startOperationIds(startIdsRef.current, JSON.stringify([machineId, request]));
+      const info = await create(withStartOperation(request, ids, Boolean(task.trim())), machineId);
+      // Open the durable record before prompt delivery; permission dialogs and
+      // provider readiness must not strand a created session behind the launcher.
+      if (profileTool && !parentSession) {
+        rememberAccount(machineId, profileTool, cwd.trim(), selectedProfile);
+      }
       onStarted(info.id);
       if (task.trim()) {
-        if (requiresProviderLogin) {
-          setCreatedWithDeliveryError(info.id);
-          setError(`Session ${info.id.slice(0, 8)} started in the provider login flow. Finish authentication first, then send the request shown above from Conversation. Sessions will not queue or paste it into a login prompt.`);
-          return;
-        }
         try {
-          await submitInitialRequest(info.id, task.trim(), machineId);
+          await submitInitialRequest(info.id, task.trim(), machineId, recordedPromptOperationId(info, ids.prompt));
         } catch (reason) {
           setCreatedWithDeliveryError(info.id);
-          setError(`Session ${info.id.slice(0, 8)} started, but Sessions could not confirm its first request: ${(reason as Error).message}. Open the session and inspect the terminal before typing anything else; the request may be waiting for one Enter.`);
+          setError(firstRequestFailureMessage(info.id, reason));
           return;
         }
       }
       onClose();
     } catch (err) {
-      setError((err as Error).message);
+      setError(startFailureMessage(err));
     } finally {
       setBusy(false);
       startInFlightRef.current = false;
@@ -459,7 +530,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
   };
   const chooseTool = (nextTool: NewSessionTool): void => {
     setTool(nextTool);
-    setRuntimeMode(defaultRuntimeMode(nextTool, parentSession, skipPerms));
+    setRuntimeMode(defaultRuntimeMode(nextTool, parentSession));
   };
   const selectedWorkspace = recentWorkspaces.find((item) => item.path === cwd)
     ?? displayedWorkspaces.find((item) => item.path === cwd);
@@ -481,56 +552,80 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
           </div>
           <div className="launcher-head-actions">
             {onOpenResume && !isDelegate && selectedProfile === '' ? (
-              <button type="button" className="dialog-head-link" onClick={() => onOpenResume()}>Resume an earlier chat</button>
+              <button type="button" className="dialog-head-link" onClick={() => onOpenResume()}>Resume chat</button>
             ) : null}
             <button type="button" className="launcher-close" onClick={onClose} aria-label="Close new session">×</button>
           </div>
         </header>
         <div className="dialog-body">
           <section className="launcher-hero">
-            <span>{isDelegate ? 'Linked session' : 'New session'}</span>
-            <h2 className="launcher-intent" aria-label={isDelegate ? 'Start a new linked session' : 'Start a new session'}>
-              <span>Start a new</span>
-              <label className="launcher-intent-control is-agent" title={`Agent: ${selectedTool.name}`}>
+            <h2>{isDelegate ? 'Delegate a task' : 'What would you like to work on?'}</h2>
+            <p>{isDelegate ? 'Give it one focused job. It stays linked to its parent.' : 'Choose an agent and a place to work.'}</p>
+          </section>
+          <div className="launcher-setup" role="group" aria-label="Session setup">
+            <label className="launcher-setup-field">
+              <span>Agent</span>
+              <span className="launcher-intent-control is-agent">
                 <AgentMark tool={tool} size={17} />
                 <select value={tool} onChange={(event) => chooseTool(event.currentTarget.value as NewSessionTool)} aria-label="Agent">
                   {TOOLS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>
-              </label>
-              <span>{isDelegate ? 'session linked to' : 'session on'}</span>
-              {isDelegate ? (
-                <strong>{parentSession ? sessionLabel(parentSession) : 'this session'}</strong>
-              ) : (
-                <label className="launcher-intent-control is-machine" title={`Computer: ${machineTitle}`}>
+              </span>
+            </label>
+            {!isDelegate && (
+              <label className="launcher-setup-field">
+                <span>Computer</span>
+                <span className="launcher-intent-control is-machine" title={machineTitle}>
                   <MachineMark machine={machineTitle} size={16} />
                   <select value={machineId} onChange={(event) => chooseMachine(event.currentTarget.value)} aria-label="Computer">
                     {configuredMachines.map((machine) => (
                       <option key={machine.id} value={machine.id}>{serverDisplayName(machine, true)}</option>
                     ))}
                   </select>
-                </label>
-              )}
-              <span>in</span>
-              <button type="button" className="launcher-intent-control is-workspace" title={cwd || 'Choose a project folder'} onClick={() => setBrowserOpen((open) => !open)} aria-expanded={browserOpen}>
+                </span>
+              </label>
+            )}
+            {profileTool ? (
+              <AccountChoice
+                profiles={toolProfiles}
+                value={profileChoice}
+                selected={selectedProfile}
+                inherited={inheritedAccount}
+                title={accountTitle}
+                disabled={busy}
+                onChange={(next) => { setAccountTouched(true); setProfileChoice(next); }}
+              />
+            ) : null}
+            <div className="launcher-setup-field is-folder">
+              <span>Folder</span>
+              <button type="button" className="launcher-intent-control is-workspace" title={cwd || 'Choose a project folder'} onClick={() => setBrowserOpen((open) => !open)} aria-label={`Folder: ${workspaceTitle}`} aria-expanded={browserOpen} disabled={isDelegate}>
                 <span className="workspace-folder-icon" aria-hidden />
                 <strong>{workspaceTitle}</strong>
+                {!isDelegate && <span className="launcher-folder-change">Change</span>}
               </button>
-            </h2>
-            <p>{isDelegate ? 'Give it one focused job. It stays grouped with its parent.' : 'Describe the work below, or leave it blank to open an empty conversation.'}</p>
-          </section>
+            </div>
+          </div>
+          {profileTool && requiresProviderLogin ? (
+            <InlineAccountSignIn
+              key={`${machineId}:${profileTool}:${profileChoice}`}
+              tool={profileTool} serverId={machineId}
+              account={toolProfiles.find((profile) => profile.name === selectedProfile)}
+              onReload={setProfiles} onConnected={setProfileChoice}
+            />
+          ) : null}
           <div className="field launcher-task-field launcher-composer input-composer">
             <span className="sr-only">First request (optional)</span>
             <textarea
               className="input-textarea"
-              autoFocus
               value={task}
+              aria-label="First request (optional)"
               onChange={(event) => setTask(event.currentTarget.value)}
               onKeyDown={(event) => {
                 if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
                 event.preventDefault();
                 event.currentTarget.form?.requestSubmit();
               }}
-              placeholder={isDelegate ? 'Describe the work for this linked session…' : 'Ask an agent to work, or leave blank to open a conversation…'}
+              placeholder={isDelegate ? 'What should this agent do?' : 'Describe a task, or start an empty chat…'}
               rows={6}
             />
             <div className="launcher-composer-footer input-composer-footer">
@@ -540,66 +635,51 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                 ) : null}
                 {tool !== 'shell' ? (
                   <>
-                    <ModelPicker
-                      provider={tool === 'claude-code' ? 'claude' : 'codex'}
-                      value={selectedModel}
-                      options={modelOptions}
-                      loading={tool === 'codex' && codexModelsLoading}
-                      error={tool === 'codex' ? codexModelsError : null}
-                      onChange={selectModel}
-                      defaultLabel={`${selectedTool.name} default`}
-                      allowCustom
-                      compact
-                    />
-                    <label className="launcher-effort-chip">
+                    <div className="launcher-model-control" data-label="Model">
+                      <ModelPicker
+                        provider={tool === 'claude-code' ? 'claude' : 'codex'}
+                        value={selectedModel}
+                        options={modelOptions}
+                        loading={tool === 'codex' && codexModelsLoading} error={tool === 'codex' ? codexModelsError : null}
+                        onChange={selectModel}
+                        defaultLabel={`${selectedTool.name} default`}
+                        allowCustom compact
+                      />
+                    </div>
+                    <label className="launcher-effort-chip" data-label="Effort">
                       <span className="sr-only">Effort</span>
                       <select value={selectedEffort} onChange={(event) => selectEffort(event.currentTarget.value)} aria-label="Reasoning effort">
                         <option value="">Default effort</option>
                         {effortChoices.map((effort) => <option key={effort} value={effort}>{effortLabel(effort)}</option>)}
                       </select>
                     </label>
-                    {tool === 'claude-code' ? (
-                      <label className="launcher-permissions-chip">
-                        <span className="sr-only">Permissions</span>
-                        <select
-                          value={claudeOptions.permissionMode ?? ''}
-                          onChange={(event) => setClaudeOptions((current) => ({ ...current, permissionMode: event.currentTarget.value as ClaudeSessionOptions['permissionMode'] }))}
-                          aria-label="Permissions"
-                        >
-                          <option value="">Settings permissions</option>
-                          <option value="manual">Ask every time</option>
-                          <option value="acceptEdits">Accept edits</option>
-                          <option value="auto">Auto</option>
-                          <option value="plan">Plan only</option>
-                          <option value="dontAsk">Don’t ask</option>
-                          <option value="bypassPermissions">Full access</option>
-                        </select>
-                      </label>
-                    ) : (
-                      <label className="launcher-permissions-chip">
-                        <span className="sr-only">Permissions</span>
-                        <select value={skipPerms ? 'full' : 'safe'} onChange={(event) => {
-                          const fullAccess = event.currentTarget.value === 'full';
-                          setSkipPerms(fullAccess);
-                          if (!fullAccess && runtimeMode === 'rich') setRuntimeMode('terminal');
-                        }} aria-label="Permissions">
-                          <option value="safe">Ask when needed</option>
-                          <option value="full">Full access</option>
-                        </select>
-                      </label>
-                    )}
+                    <label className="launcher-permissions-chip" data-label="Access">
+                      <span className="sr-only">Access</span>
+                      <select
+                        value={access}
+                        onChange={(event) => {
+                          setAccess(event.currentTarget.value as AccessChoice);
+                        }}
+                        aria-label="Access"
+                        title={access === 'full' ? 'Runs commands and edits files without asking' : access === 'plan' ? 'Reads and plans; makes no changes' : 'Asks you before running commands or changing files'}
+                      >
+                        <option value="full">Full access</option>
+                        <option value="ask">Ask me</option>
+                        <option value="plan">Plan</option>
+                      </select>
+                    </label>
                   </>
                 ) : null}
               </div>
               <div className="launcher-composer-actions">
-                <button type={createdWithDeliveryError ? 'button' : 'submit'} className={`btn btn-primary launcher-composer-start${createdWithDeliveryError ? ' is-wide' : ''}`} disabled={!createdWithDeliveryError && (busy || !cwd.trim() || !profileValid)} onClick={createdWithDeliveryError ? onClose : undefined} aria-label={createdWithDeliveryError ? 'View session' : 'Start session'} title={createdWithDeliveryError ? 'View session' : 'Start session'}>
-                  {createdWithDeliveryError ? 'View session' : busy ? '…' : '↑'}
+                <button type={createdWithDeliveryError ? 'button' : 'submit'} className="btn btn-primary launcher-composer-start is-wide" disabled={!createdWithDeliveryError && (busy || !cwd.trim() || !profileValid)} onClick={createdWithDeliveryError ? onClose : undefined} aria-label={createdWithDeliveryError ? 'View session' : 'Start session'} title={createdWithDeliveryError ? 'View session' : 'Start session'}>
+                  {createdWithDeliveryError ? 'View session' : busy ? 'Starting…' : 'Start session'}
                 </button>
               </div>
             </div>
-            <span className="launcher-send-hint">Enter sends · Shift+Enter adds a line</span>
-            {requiresProviderLogin ? <span className="field-help">Finish the new account login first. Sessions will keep this request here instead of sending it into a login screen.</span> : null}
           </div>
+          <span className="launcher-send-hint">Enter sends · Shift+Enter adds a line</span>
+          {requiresProviderLogin ? <span className="field-help">Finish the new account login first. Sessions will keep this request here instead of sending it into a login screen.</span> : null}
           {isDelegate ? (
             <div className="launcher-inherited"><span>Runs with its parent</span><strong>{cwd}</strong><small>{serverDisplayName(getActiveServer(), true)} · grouped under {parentSession ? sessionLabel(parentSession) : 'the current session'}</small></div>
           ) : (
@@ -628,41 +708,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
           <details className="launcher-advanced">
             <summary><strong>Advanced</strong><span>Account, tags, and provider settings</span></summary>
             <div className="launcher-advanced-body">
-              {profileTool ? (
-                <div className="field launcher-advanced-card account-profile-field">
-                  <span className="field-label">Account</span>
-                  <select
-                    className="field-input"
-                    value={profileChoice}
-                    onChange={(event) => setProfileChoice(event.target.value)}
-                    disabled={busy}
-                  >
-                    <option value="">Default</option>
-                    {selectedProfile && profileChoice !== NEW_PROFILE && !toolProfiles.some((profile) => profile.name === selectedProfile) ? (
-                      <option value={selectedProfile}>{selectedProfile} · inherited</option>
-                    ) : null}
-                    {toolProfiles.map((profile) => (
-                      <option key={`${profile.tool}:${profile.name}`} value={profile.name}>{profile.name}</option>
-                    ))}
-                    <option value={NEW_PROFILE}>Add another login…</option>
-                  </select>
-                  {profileChoice === NEW_PROFILE ? (
-                    <>
-                      <input
-                        className="field-input"
-                        value={newProfile}
-                        onChange={(event) => setNewProfile(event.target.value.toLowerCase())}
-                        placeholder="work or personal"
-                        maxLength={32}
-                        pattern="[a-z0-9-]{1,32}"
-                        autoFocus
-                        aria-invalid={!profileValid}
-                      />
-                      <span className="field-help">This opens a separate provider login and keeps its history separate.</span>
-                    </>
-                  ) : null}
-                </div>
-              ) : null}
               <details className="launcher-advanced-subsection">
                 <summary>Tags <span>Optional organization</span></summary>
                 <TagEditor value={tags} onChange={setTags} disabled={busy} />
@@ -687,7 +732,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                   <select className="field-input" value={runtimeMode} onChange={(event) => {
                     const nextMode = event.currentTarget.value as RuntimeMode;
                     setRuntimeMode(nextMode);
-                    if (nextMode === 'rich') setSkipPerms(true);
                   }} aria-label="Session experience">
                     <option value="rich">Conversation</option>
                     <option value="terminal">Terminal</option>

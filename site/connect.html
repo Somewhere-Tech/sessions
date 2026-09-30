@@ -165,9 +165,9 @@
             <div class="command">sessions remote enable</div>
             <p>Keep Tailscale connected on both devices. The endpoint link carries the verified address here in the fragment; the current flow does not put the master token in it.</p>
             <div class="command">sessions pair --name "my phone"</div>
-            <p>That newer QR opens the daemon-served app directly and exchanges a five-minute, single-use ticket for a revocable device credential.</p>
+            <p>That QR records every LAN and Tailscale endpoint, and exchanges a ten-minute, single-use ticket for a revocable device credential without another approval step.</p>
           </div>
-          <p class="safe">Saved only in this browser under <code>sessions:hosted-connect</code>. The handoff fragment is scrubbed before fonts or other resources load. A legacy optional <code>token</code> field is still forwarded for compatibility, but new QR pairing never shares the master token. No analytics. No terminal relay. Flow source: <code>runtime/cmd/sessions/remote.go</code> and <code>frontend/src/lib/hostedBootstrap.ts</code>.</p>
+          <p class="safe">Only the endpoint is saved in this browser under <code>sessions:hosted-connect</code>, never its token. The handoff fragment is scrubbed before fonts or other resources load. A legacy optional <code>token</code> field is still forwarded for compatibility, but new QR pairing never shares the master token. No analytics. No terminal relay. Flow source: <code>runtime/cmd/sessions/remote.go</code> and <code>frontend/src/lib/hostedBootstrap.ts</code>.</p>
           <noscript><p class="status-copy">JavaScript is required to read and immediately scrub the endpoint fragment.</p></noscript>
         </div>
       </div>
@@ -184,6 +184,8 @@
   (function () {
     var fragment = window.__prettyConnectFragment || '';
     window.__prettyConnectFragment = '';
+    // Older connector versions saved an optional bearer token here.
+    try { localStorage.removeItem('sessions:hosted-connect'); } catch (_) { /* Storage may be disabled. */ }
 
     var shell = document.getElementById('shell');
     var stateLabel = document.getElementById('stateLabel');
@@ -237,7 +239,6 @@
 
       try {
         var remembered = { endpoint: endpoint };
-        if (token) remembered.token = token;
         localStorage.setItem('sessions:hosted-connect', JSON.stringify(remembered));
       } catch (error) {
         // Storage can be disabled; the one-time connection check still works.

@@ -9,6 +9,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useSessions } from '../../src/store/sessions';
 import { SessionTabs } from '../../src/components/SessionTabs';
+import { SessionTitleRename } from '../../src/components/SessionTitleRename';
 import { installFakeDaemon, makeSession, useFakeMachines, type FakeMachine } from './fake-daemon';
 
 const SESSION_ID = 'to-rename';
@@ -40,6 +41,22 @@ function Tabs(): JSX.Element {
 }
 
 describe('capability: rename a session', () => {
+  it('offers a visible header action and saves the entered name', async () => {
+    const user = userEvent.setup();
+    let renamed = '';
+
+    render(<SessionTitleRename label="Untitled session" onRename={async (name) => { renamed = name; }} />);
+
+    await user.click(screen.getByRole('button', { name: 'Rename session' }));
+    const field = screen.getByRole('textbox', { name: 'Session name' });
+    await user.clear(field);
+    await user.type(field, 'Release notes');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(renamed).toBe('Release notes'));
+    expect(screen.getByRole('button', { name: 'Rename session' })).toBeInTheDocument();
+  });
+
   it('stores the new name and shows it instead of the old one', async () => {
     const machine = localMachine();
     const daemon = installFakeDaemon([machine]);

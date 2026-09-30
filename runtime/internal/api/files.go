@@ -144,12 +144,21 @@ func listProjectChildren(parent string, maximum int) []string {
 }
 
 func listProjectChildrenExcept(parent string, maximum int, skip map[string]struct{}) []string {
-	entries, err := os.ReadDir(parent)
+	directory, err := os.Open(parent)
 	if err != nil {
 		return []string{}
 	}
+	defer directory.Close()
+	entries, err := boundedDirectoryEntries(directory)
+	if err != nil && !errors.Is(err, errDirectoryTooLarge) {
+		return []string{}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	projects := make([]string, 0, maximum)
 	for _, entry := range entries {
+		if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+			continue
+		}
 		if strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
@@ -199,7 +208,7 @@ func (s *Server) handleFSList(response http.ResponseWriter, request *http.Reques
 	canonicalHome := canonicalPath(home)
 	if !pathWithinBase(canonical, canonicalHome) {
 		s.sendJSON(response, http.StatusForbidden, map[string]any{
-			"error": "path outside home directory", "path": canonical,
+			"error": "path outside home directory",
 		}, corsOrigin)
 		return
 	}
@@ -232,46 +241,17 @@ func (s *Server) handleFSList(response http.ResponseWriter, request *http.Reques
 		}, corsOrigin)
 		return
 	}
-	children, err := directory.ReadDir(-1)
+	children, err := boundedDirectoryEntries(directory)
 	if err != nil {
-		s.sendFilesystemError(response, err, corsOrigin)
+		s.sendDirectoryReadError(response, err, corsOrigin)
 		return
 	}
-	entries := make([]directoryEntry, 0, len(children))
-	for _, child := range children {
-		kind := "other"
-		// ReadDir already reports the entry type without opening the child.
-		// Do not Lstat or resolve every home-folder entry just to draw a
-		// picker: protected folders and cloud-drive symlinks can prompt for
-		// macOS access even when the user never chose them. An explicitly
-		// typed path still passes through canonicalPath and the normal
-		// within-home check before it is opened.
-		switch entryType := child.Type(); {
-		case entryType&os.ModeSymlink != 0:
-			kind = "symlink"
-		case child.IsDir():
-			kind = "dir"
-		case entryType.IsRegular():
-			kind = "file"
-		}
-		entries = append(entries, directoryEntry{
-			Name: child.Name(), Kind: kind, Hidden: strings.HasPrefix(child.Name(), "."),
-		})
-	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		iDir := entries[i].Kind == "dir"
-		jDir := entries[j].Kind == "dir"
-		if iDir != jDir {
-			return iDir
-		}
-		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
-	})
 	var parent any
 	if canonical != canonicalHome {
 		parent = filepath.Dir(canonical)
 	}
 	s.sendJSON(response, http.StatusOK, map[string]any{
-		"path": canonical, "parent": parent, "entries": entries,
+		"path": canonical, "parent": parent, "entries": directoryListingEntries(children),
 	}, corsOrigin)
 }
 

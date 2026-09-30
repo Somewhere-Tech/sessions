@@ -43,6 +43,10 @@ func daemonPlist(options daemonPlistOptions) string {
 <dict>
   <key>Label</key>
   <string>%s</string>
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>tech.somewhere.sessions</string>
+  </array>
   <key>ProgramArguments</key>
   <array>
 %s
@@ -225,6 +229,13 @@ func (a *app) waitForDaemonPortAvailable(timeout time.Duration) error {
 }
 
 func (a *app) cmdInstall(args []string) error {
+	if runtime.GOOS == "linux" {
+		return a.installLinuxService(args)
+	}
+	return a.installDarwinDaemon(args)
+}
+
+func (a *app) installDarwinDaemon(args []string) error {
 	if len(args) != 0 {
 		return fail(1, "usage: sessions install")
 	}
@@ -252,7 +263,9 @@ func (a *app) cmdInstall(args []string) error {
 	if err := writeDaemonPlist(config.PlistPath, xml); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "wrote plist: %s\n", config.PlistPath)
+	if !a.wantJSON {
+		fmt.Fprintf(a.stdout, "wrote plist: %s\n", config.PlistPath)
+	}
 	uid := os.Getuid()
 	domain := fmt.Sprintf("gui/%d", uid)
 	serviceTarget := domain + "/" + config.Label
@@ -291,6 +304,14 @@ func (a *app) cmdInstall(args []string) error {
 	if tokenErr != nil {
 		return fail(2, "%s", tokenErr)
 	}
+	return a.printDarwinInstall(config, token)
+}
+
+func (a *app) printDarwinInstall(config daemonInstallConfig, token string) error {
+	if a.wantJSON {
+		return writeJSON(a.stdout, map[string]any{"ok": true, "service": config.Label, "unit_path": config.PlistPath,
+			"url": "http://" + a.host + ":" + a.port, "token": token, "log_path": config.LogFile, "daemon_action": "started"}, true)
+	}
 	io.WriteString(a.stdout, "\nsessionsd development daemon registered, started, and healthy.\n")
 	fmt.Fprintf(a.stdout, "  Label: %s\n", config.Label)
 	fmt.Fprintf(a.stdout, "  URL:   http://%s:%s\n", a.host, a.port)
@@ -305,6 +326,9 @@ func (a *app) cmdInstall(args []string) error {
 }
 
 func (a *app) cmdUninstall(args []string) error {
+	if runtime.GOOS == "linux" {
+		return a.uninstallLinuxService(args)
+	}
 	if len(args) != 0 {
 		return fail(1, "usage: sessions uninstall")
 	}
@@ -333,6 +357,10 @@ func (a *app) cmdUninstall(args []string) error {
 		}
 		removed = false
 	}
+	if a.wantJSON {
+		return writeJSON(a.stdout, map[string]any{"ok": true, "service": label, "unit_path": plistPath,
+			"removed": removed, "daemon_stopped": true, "state_preserved": true}, true)
+	}
 	if bootoutErr != nil && !removed {
 		fmt.Fprintf(a.stdout, "sessionsd development daemon already uninstalled (label %s)\n", label)
 		return nil
@@ -357,11 +385,4 @@ func outputOrError(output []byte, err error) string {
 		return err.Error()
 	}
 	return "unknown error"
-}
-
-func (a *app) cmdDeploy(args []string) error {
-	if len(args) != 0 {
-		return fail(1, "usage: sessions deploy")
-	}
-	return fail(2, "sessions deploy was retired with the Node daemon; no changes were made. Sessions.app is the macOS install/update path. See docs/RELEASE.md and docs/NATIVE_APP.md in the source repository")
 }

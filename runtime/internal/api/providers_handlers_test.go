@@ -8,11 +8,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 )
 
 func TestProviderExecutableFindsUserLocalBinOutsideDaemonPath(t *testing.T) {
+	previous := providerVersionTimeout
+	providerVersionTimeout = 30 * time.Second
+	t.Cleanup(func() { providerVersionTimeout = previous })
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", "/usr/bin:/bin")
@@ -53,6 +57,7 @@ func TestVersionLess(t *testing.T) {
 func TestProviderUpdateRejectsOpenAccessClientBeforeMutation(t *testing.T) {
 	server := &Server{}
 	request := httptest.NewRequest(http.MethodPost, "/api/providers/codex/update", strings.NewReader(`{}`))
+	request.Host = ""
 	request = request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, authPrincipal{
 		Kind: ledger.CreatorExternal,
 		ID:   "remote:open-access",
@@ -85,5 +90,37 @@ func TestProviderUpdateAuthority(t *testing.T) {
 				t.Fatalf("principalMayUpdateProvider(%#v) = %v, want %v", test.principal, got, test.want)
 			}
 		})
+	}
+}
+
+func TestProviderStatusIncludesModelChoicesOnlyWhenRequested(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	daemon := newTestDaemon(t)
+	daemon.handler.registry = continuationCatalog(daemon.registry)
+
+	plain := serve(t, daemon.handler, http.MethodGet, "/api/providers", nil, "127.0.0.1:1", nil)
+	if strings.Contains(plain.Body.String(), `"models"`) {
+		t.Fatalf("ordinary provider status unexpectedly loaded model catalogs: %s", plain.Body.String())
+	}
+	withModels := serve(t, daemon.handler, http.MethodGet, "/api/providers?include_models=1", nil, "127.0.0.1:1", nil)
+	if withModels.Code != http.StatusOK ||
+		!strings.Contains(withModels.Body.String(), `"displayName":"Fable 5.1"`) ||
+		!strings.Contains(withModels.Body.String(), `"model":"claude-opus-5-5"`) ||
+		!strings.Contains(withModels.Body.String(), `"displayName":"GPT Next"`) {
+		t.Fatalf("provider models status=%d body=%s", withModels.Code, withModels.Body.String())
+	}
+}
+
+func TestClaudeModelChoicesPreserveAnExplicitOlderDefault(t *testing.T) {
+	models := claudeModelOptions("claude-fable-5", "high")
+	if models[0].Model != "claude-fable-5" || !models[0].IsDefault {
+		t.Fatal("silently upgraded a saved model")
+	}
+	found := map[string]bool{}
+	for _, model := range models {
+		found[model.Model] = true
+	}
+	if !found["claude-fable-5-1"] || !found["claude-opus-5-5"] {
+		t.Fatal("current model choices missing")
 	}
 }

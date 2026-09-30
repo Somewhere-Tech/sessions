@@ -381,8 +381,11 @@ func TestAdoptForwardsClaudeRemoteControlToTerminalContinuation(t *testing.T) {
 		"Remote Claude", creator, store.Boundaries(), store.Observations(),
 		recovery.AdoptOptions{
 			RuntimeMode: "terminal",
-			Claude:      &state.ClaudeSessionOptions{RemoteControl: state.ClaudeChoiceOn},
-			Events:      store,
+			Claude: &state.ClaudeSessionOptions{
+				RemoteControl:  state.ClaudeChoiceOn,
+				PermissionMode: state.ClaudePermissionBypass,
+			},
+			Events: store,
 		},
 	)
 	if err != nil {
@@ -392,7 +395,8 @@ func TestAdoptForwardsClaudeRemoteControlToTerminalContinuation(t *testing.T) {
 		t.Fatalf("result=%+v calls=%d", result, creator.calls)
 	}
 	if creator.request.Kind != "" || creator.request.Claude == nil ||
-		creator.request.Claude.RemoteControl != state.ClaudeChoiceOn {
+		creator.request.Claude.RemoteControl != state.ClaudeChoiceOn ||
+		creator.request.Claude.PermissionMode != state.ClaudePermissionBypass {
 		t.Fatalf("Terminal Claude continuation request = %#v", creator.request)
 	}
 }

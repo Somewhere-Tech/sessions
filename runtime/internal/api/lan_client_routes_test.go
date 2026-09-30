@@ -1,0 +1,148 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/discovery"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
+)
+
+func TestLANDiscoverRunsInDaemonAndReturnsVerifiedPeers(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/health" {
+			http.NotFound(response, request)
+			return
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"ok": true, "name": "sessionsd", "version": "v0.2.27", "sessionsLoaded": 4,
+			"system": map[string]string{"os": "darwin", "arch": "arm64"},
+		})
+	}))
+	defer peer.Close()
+	daemon := newTestDaemon(t)
+	daemon.handler.lan.browse = func(context.Context, time.Duration) ([]discovery.Candidate, error) {
+		return []discovery.Candidate{{Name: "Mini", Endpoint: peer.URL, Transport: "nearby"}}, nil
+	}
+	response := serve(t, daemon.handler, http.MethodGet, "/api/lan/discover?timeout=10ms", nil, "127.0.0.1:1", nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"sessions_loaded":4`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestLANDiscoverDoesNotInferPermissionDenialFromEmptyBrowse(t *testing.T) {
+	daemon := newTestDaemon(t)
+	daemon.handler.lan.browse = func(context.Context, time.Duration) ([]discovery.Candidate, error) { return nil, nil }
+	daemon.handler.lan.mu.Lock()
+	daemon.handler.lan.server = &http.Server{}
+	daemon.handler.lan.url = "http://10.0.0.1:8787"
+	daemon.handler.lan.registration = &fakeBonjourRegistration{}
+	daemon.handler.lan.mu.Unlock()
+	before := daemon.handler.lan.state().Permission.Status
+	response := serve(t, daemon.handler, http.MethodGet, "/api/lan/discover?timeout=10ms", nil, "127.0.0.1:1", nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"machines":[]`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := daemon.handler.lan.state().Permission.Status; got != before {
+		t.Fatalf("empty browse changed permission from %q to %q", before, got)
+	}
+}
+
+func TestLANConnectOwnsPeerDialAndReturnsIssuedCredential(t *testing.T) {
+	paths := make([]string, 0, 3)
+	peer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		paths = append(paths, request.URL.Path)
+		switch request.URL.Path {
+		case "/api/health":
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true, "name": "sessionsd"})
+		case "/api/lan/access/request":
+			response.WriteHeader(http.StatusAccepted)
+			_, _ = response.Write([]byte(`{"request_id":"request-id","request_secret":"secret"}`))
+		case "/api/lan/access/claim":
+			response.WriteHeader(http.StatusCreated)
+			_, _ = response.Write([]byte(`{"device_id":"device-id","token":"device-token","machine_id":"machine-mini","machine_name":"Mini"}`))
+		case "/api/machine":
+			_ = json.NewEncoder(response).Encode(map[string]string{"machine_id": "machine-mini"})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer peer.Close()
+	daemon := newTestDaemon(t)
+	body := `{"endpoint":"` + peer.URL + `","client_id":"11111111-1111-4111-8111-111111111111","name":"MacBook","timeout":"1s"}`
+	response := serve(t, daemon.handler, http.MethodPost, "/api/lan/connect", strings.NewReader(body), "127.0.0.1:1", nil)
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"device-token"`) {
+		t.Fatalf("status=%d body=%s paths=%v", response.Code, response.Body.String(), paths)
+	}
+	want := []string{"/api/health", "/api/lan/access/request", "/api/lan/access/claim", "/api/machine"}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Fatalf("paths = %v, want %v", paths, want)
+	}
+}
+
+func TestLANConnectClaimsPairingTicketWithoutApproval(t *testing.T) {
+	paths := make([]string, 0, 3)
+	peer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		paths = append(paths, request.URL.Path)
+		switch request.URL.Path {
+		case "/api/health":
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true, "name": "sessionsd"})
+		case "/api/lan/access/claim":
+			var body map[string]string
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			if body["ticket"] != "ticket-id.ticket-secret" {
+				t.Errorf("claim body = %#v", body)
+			}
+			response.WriteHeader(http.StatusCreated)
+			_, _ = response.Write([]byte(`{"device_id":"device-id","token":"device-token","machine_id":"machine-mini","machine_name":"Mini"}`))
+		case "/api/machine":
+			_ = json.NewEncoder(response).Encode(map[string]string{"machine_id": "machine-mini"})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer peer.Close()
+	d := newTestDaemon(t)
+	body := `{"endpoint":"` + peer.URL + `","ticket":"ticket-id.ticket-secret","name":"MacBook"}`
+	response := serve(t, d.handler, http.MethodPost, "/api/lan/connect", strings.NewReader(body), "127.0.0.1:1", nil)
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"device-token"`) {
+		t.Fatalf("status=%d body=%s paths=%v", response.Code, response.Body.String(), paths)
+	}
+	want := []string{"/api/health", "/api/lan/access/claim", "/api/machine"}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Fatalf("paths = %v, want %v", paths, want)
+	}
+}
+
+func TestLANConnectSelectionStopsAtFirstReachableEndpoint(t *testing.T) {
+	failedCalls, httpsCalls, ipCalls := 0, 0, 0
+	server := func(calls *int, healthy bool) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			*calls++
+			if !healthy {
+				http.Error(response, "offline", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"ok": true, "name": "sessionsd"})
+		}))
+	}
+	lan := server(&failedCalls, false)
+	defer lan.Close()
+	tailnet := server(&httpsCalls, true)
+	defer tailnet.Close()
+	tailnetIP := server(&ipCalls, true)
+	defer tailnetIP.Close()
+	selected, err := newTestDaemon(t).handler.selectLANConnectCandidate(context.Background(), []fleetendpoint.Candidate{
+		{Endpoint: lan.URL, Transport: "lan"},
+		{Endpoint: tailnet.URL, Transport: "tailnet"},
+		{Endpoint: tailnetIP.URL, Transport: "tailnet-ip"},
+	})
+	if err != nil || selected.Transport != "tailnet" || failedCalls != 1 || httpsCalls != 1 || ipCalls != 0 {
+		t.Fatalf("selected=%#v calls=%d/%d/%d err=%v", selected, failedCalls, httpsCalls, ipCalls, err)
+	}
+}

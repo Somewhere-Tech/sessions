@@ -28,10 +28,11 @@ interface PaletteAction {
 const VIEW_ACTIONS: Array<{ view: ProductView; label: string; detail: string; keywords: string }> = [
   { view: 'home', label: 'Home', detail: 'Agent operations overview', keywords: 'dashboard overview' },
   { view: 'tabs', label: 'Sessions', detail: 'Running and recently ended work', keywords: 'agents conversations lanes' },
-  { view: 'today', label: 'Daily', detail: 'Today’s work and saved recaps', keywords: 'journal recap today' },
+  { view: 'today', label: 'Daily', detail: 'Today’s local work journal', keywords: 'journal activity today' },
   { view: 'search', label: 'Conversation history', detail: 'Browse or search every Claude and Codex conversation', keywords: 'resume recall history search find codex claude' },
   { view: 'fleet', label: 'Fleet', detail: 'Machines and sessions across your network', keywords: 'computers mac windows linux' },
   { view: 'usage', label: 'Usage', detail: 'Tokens, cost, projects, and tags', keywords: 'budget tokens cost' },
+  { view: 'accounts', label: 'Accounts', detail: 'Claude and ChatGPT accounts on each computer', keywords: 'subscription profile sign in login rename nickname chatgpt claude' },
   { view: 'settings', label: 'Settings', detail: 'Agents, connections, updates, and appearance', keywords: 'preferences configuration' },
   { view: 'feedback', label: 'Send feedback', detail: 'Share an idea or report a problem', keywords: 'support bug issue' }
 ];
@@ -78,6 +79,18 @@ export function CommandPalette({
         group: 'Actions',
         keywords: 'start create agent',
         run: closeThen(onNewSession)
+      },
+      {
+        id: 'inbox',
+        label: 'Jump to inbox',
+        detail: 'Then ↑↓ or j/k move, ↵ opens · ⌘J',
+        group: 'Actions',
+        keywords: 'sessions list keyboard focus navigate',
+        run: closeThen(() => {
+          const tree = document.querySelector<HTMLElement>('.session-tree');
+          const row = tree?.querySelector<HTMLElement>('[role="treeitem"].is-active') ?? tree?.querySelector<HTMLElement>('[role="treeitem"]');
+          row?.focus();
+        })
       },
       {
         id: 'continue',

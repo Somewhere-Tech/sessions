@@ -28,6 +28,17 @@ function scrubFragment(): void {
   );
 }
 
+function scrubPairingLocation(): void {
+  const pathname = /^\/pair\/[^/]+$/.test(window.location.pathname)
+    ? '/'
+    : window.location.pathname;
+  window.history.replaceState(
+    window.history.state,
+    '',
+    `${pathname}${window.location.search}`
+  );
+}
+
 interface RememberServerOptions {
   name?: string;
   systemName?: string;
@@ -36,6 +47,35 @@ interface RememberServerOptions {
   token?: string | null;
   select?: boolean;
   allowPrivateHTTP?: boolean;
+  lanEndpoint?: string;
+  tailnetEndpoint?: string;
+  tailnetIpEndpoint?: string;
+  relayEndpoint?: string;
+  transport?: 'lan' | 'tailnet' | 'tailnet-ip' | 'relay';
+	transportCandidates?: ServerConfig['transportCandidates'];
+	sources?: ServerConfig['sources'];
+	directoryOnly?: boolean;
+}
+
+function pairingClaimTransport(claim: NativePairingClaim): 'lan' | 'tailnet' | 'tailnet-ip' | 'relay' {
+  if (claim.endpoint === claim.relayEndpoint || /\/m\/[A-Za-z0-9._-]+\/?$/.test(claim.endpoint)) return 'relay';
+  if (claim.endpoint === claim.tailnetIpEndpoint) return 'tailnet-ip';
+  if (claim.endpoint === claim.tailnetEndpoint || claim.endpoint.toLowerCase().startsWith('https://')) return 'tailnet';
+  return 'lan';
+}
+
+type ConnectionFields = Pick<RememberServerOptions, 'lanEndpoint' | 'tailnetEndpoint' | 'tailnetIpEndpoint' | 'relayEndpoint' | 'transport' | 'transportCandidates' | 'sources' | 'directoryOnly'>;
+
+function connectionFields(source: RememberServerOptions): Partial<ConnectionFields> {
+  return Object.fromEntries(
+		['lanEndpoint', 'tailnetEndpoint', 'tailnetIpEndpoint', 'relayEndpoint', 'transport', 'transportCandidates', 'sources', 'directoryOnly']
+      .map((key) => [key, source[key as keyof RememberServerOptions]])
+      .filter((entry) => entry[1] !== undefined)
+  );
+}
+
+function claimConnectionFields(claim: NativePairingClaim): Partial<ConnectionFields> {
+  return connectionFields({ ...claim, transport: pairingClaimTransport(claim) });
 }
 
 // Shared first-run/add-server path. Hosted browser connections require TLS,
@@ -67,12 +107,14 @@ export async function rememberServerEndpoint(
     : { token: options.token?.trim() || undefined };
   const name = options.name?.trim();
   const systemName = options.systemName?.trim();
+  const connection = connectionFields(options);
 
   if (existing) {
     await store.updateServer(existing.id, {
       ...endpoint,
       ...(machineId ? { machineId } : {}),
       ...(options.deviceId ? { deviceId: options.deviceId } : {}),
+      ...connection,
       ...tokenUpdate,
       ...(name ? { name, customName: name } : {}),
       ...(systemName ? { systemName, ...(!existing.customName ? { name: systemName } : {}) } : {})
@@ -102,6 +144,7 @@ export async function rememberServerEndpoint(
     ...(systemName ? { systemName } : {}),
     ...(machineId ? { machineId } : {}),
     ...(options.deviceId ? { deviceId: options.deviceId } : {}),
+    ...connection,
     ...endpoint,
     ...tokenUpdate
   });
@@ -121,6 +164,7 @@ export async function claimNativeMachinePairing(
       machineId: claim.machineId,
       deviceId: claim.deviceId,
       token: claim.token,
+      ...claimConnectionFields(claim),
       allowPrivateHTTP: true
     });
     await assertServerPersisted(server);
@@ -162,6 +206,7 @@ export async function rememberNativeMachineClaim(
       machineId: claim.machineId,
       deviceId: claim.deviceId,
       token: claim.token,
+      ...claimConnectionFields(claim),
       allowPrivateHTTP: claim.endpoint.toLowerCase().startsWith('http://')
     });
     await assertServerPersisted(server);
@@ -187,7 +232,10 @@ export async function bootstrapHostedConnection(): Promise<void> {
   if (typeof window === 'undefined' || !window.location.hash) return;
 
   const params = new URLSearchParams(window.location.hash.slice(1));
-  if (!params.has('endpoint')) return;
+  if (!params.has('endpoint')) {
+    if (params.has('token')) scrubFragment();
+    return;
+  }
 
   const endpointValue = params.get('endpoint') ?? '';
   const tokenValue = params.get('token');
@@ -215,10 +263,17 @@ interface PairClaimResponse {
 function pairingTicket(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return '';
+  if (!trimmed.includes('/') && !trimmed.startsWith('#')) return trimmed;
   try {
     const parsed = new URL(trimmed, window.location.origin);
+    if (parsed.protocol === 'sessions:' && parsed.hostname === 'pair') {
+      return parsed.searchParams.get('t')?.trim() ?? '';
+    }
+    const pathMatch = parsed.pathname.match(/^\/pair\/([^/]+)$/);
+    if (pathMatch) return decodeURIComponent(pathMatch[1]).trim();
     const fromFragment = new URLSearchParams(parsed.hash.slice(1)).get('pair');
     if (fromFragment) return fromFragment.trim();
+    return '';
   } catch {
     // A bare ticket is the normal Settings input; return it unchanged.
   }
@@ -252,7 +307,7 @@ export async function claimCurrentOriginPairing(
   // AuthError that drives the "enter your daemon token" banner. The API-range
   // check does not apply to a pairing claim either — it is validated against
   // /api/health by adoptCurrentOriginServer's caller path immediately after.
-  const response = await fetch(`${window.location.origin}/api/pair/claim`, {
+  const response = await fetch(`${window.location.origin}/api/lan/access/claim`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ ticket, ...(name?.trim() ? { name: name.trim() } : {}) })
@@ -279,12 +334,10 @@ export async function claimCurrentOriginPairing(
 // Run before every other bootstrap. The fragment is scrubbed before the
 // network request so even an expired or malformed ticket never stays visible.
 export async function bootstrapPairingConnection(): Promise<boolean> {
-  if (typeof window === 'undefined' || !window.location.hash) return false;
-  const params = new URLSearchParams(window.location.hash.slice(1));
-  if (!params.has('pair')) return false;
-
-  const ticket = params.get('pair') ?? '';
-  scrubFragment();
+  if (typeof window === 'undefined') return false;
+  const ticket = pairingTicket(window.location.href);
+  if (!ticket) return false;
+  scrubPairingLocation();
   try {
     await claimCurrentOriginPairing(ticket);
   } catch (error) {

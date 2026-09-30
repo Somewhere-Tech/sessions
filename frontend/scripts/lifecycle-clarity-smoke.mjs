@@ -63,6 +63,11 @@ const [
 ]);
 
 const subagents = await source('src/components/SubagentsPanel.tsx');
+const [restartControl, restartDialog, restartAPI] = await Promise.all([
+  source('src/components/RestartConversation.tsx'),
+  source('src/components/RestartConversationDialog.tsx'),
+  source('src/api/sessionsd/restart.ts')
+]);
 
 assert.doesNotMatch(app, /fromTerminalStatus/);
 assert.match(app, /machine=\{machine\} hydrated=\{sessionsHydrated\} error=\{sessionsError\}/);
@@ -71,7 +76,12 @@ assert.match(connection, /Can’t reach \$\{machine\}/);
 
 assert.match(navigator, /RECENTLY_ENDED_DAYS = 7/);
 assert.match(navigator, /RECENTLY_ENDED_LIMIT = 20/);
-assert.match(navigator, /DisclosureChevron open=\{runningOpen\} \/> Live/);
+// The single-machine body is organized by attention and project: a needs-you
+// strip, then one section per project, rendered by InboxSections from the
+// navigator's own row renderer. The old flat "Live" group is gone.
+assert.match(navigator, /<InboxSections/);
+assert.match(navigator, /layout=\{inboxLayout\}/);
+assert.doesNotMatch(navigator, /DisclosureChevron open=\{runningOpen\} \/> Live/);
 assert.match(navigator, /DisclosureChevron open=\{endedOpen\} \/> Ended/);
 assert.doesNotMatch(navigator, /> Later<|> Quiet<|Pin manager|Move to Later/);
 assert.doesNotMatch(navigator, /session-tree-toggle/);
@@ -79,14 +89,18 @@ assert.match(navigator, /All ended sessions →/);
 assert.doesNotMatch(navigator, /ENDED_CATEGORIES|Provider finished|Ended through Sessions/);
 assert.doesNotMatch(navigator, /Problems/);
 assert.doesNotMatch(navigator, /session-nav-summary/);
-assert.match(navigator, />Resume <span aria-hidden>→<\/span><\/button>/);
+assert.match(navigator, />Continue <span aria-hidden>→<\/span><\/button>/);
 assert.match(navigator, /draggable=\{movingId !== session\.id\}/);
 assert.match(navigator, /text\/x-sessions-session-id/);
-assert.match(navigator, /Start linked session…/);
+assert.match(navigator, /Start related session…/);
 assert.match(navigator, /Close tab <small>keeps running<\/small>/);
 assert.match(navigator, /filter\(\(session\) => !isAgentLedChild\(session\)\)/);
 assert.doesNotMatch(navigator, /className="session-helper-summary"/);
-assert.doesNotMatch(navigator, /session-nav-rollup/);
+// Helpers stay folded away. Only an agent's own request for input belongs in
+// its row; a helper needing its manager is not automatically a user decision.
+assert.match(navigator, /session-nav-rollup/);
+assert.doesNotMatch(navigator, /lanesNeedingYou/);
+assert.match(navigator, /sessionNeedsYou\(session\) && session\.idleDetail/);
 assert.match(subagents, /className="subagents-panel"/);
 assert.match(navigator, /<summary>Fork <small>original stays here<\/small><\/summary>/);
 assert.match(navigator, /'In Claude'/);
@@ -100,12 +114,15 @@ assert.match(navigator, /event\.key !== 'Escape'/);
 assert.doesNotMatch(navigator, /window\.confirm/);
 assert.match(continueElsewhere, /createPortal/);
 assert.match(continueElsewhere, /appearance === 'menuitem'/);
-assert.match(resumeDialog, /preferredDestinationApplied/);
+assert.match(resumeDialog, /preferredDestinationProvider=\{preferredDestinationProvider\}/);
+assert.match(resumeDialog, /key=\{`\$\{selected\?\.tool/);
 assert.doesNotMatch(resumeDialog, /preferredRemoteControl|resume-remote-control/);
-assert.match(resumeDialog, /Remote Control follows the explicit choice for the destination machine in Settings/);
 assert.match(navigator, /<MachineMark machine=\{machine\} size=\{17\} \/>/);
 assert.doesNotMatch(navigator, /<span>\{machine\}<\/span>/);
-assert.match(navigator, /<ProviderMark provider=\{providerName\} size=\{20\} \/>/);
+// The row's quiet line lives in SessionRowMeta now, so the check follows it:
+// the row hands it the session's provider, and it draws the 20px mark.
+assert.match(navigator, /provider=\{providerName\}/);
+assert.match(navigator, /<ProviderMark provider=\{provider\} size=\{20\} \/>/);
 assert.match(navigator, /className="session-continue-action" onClick=\{onContinue\}>Resume<\/button>/);
 assert.match(app, /onContinue=\{\(\) => setDialogOpen\('resume'\)\}/);
 assert.match(app, /onReparent=\{updateDisplayParent\}/);
@@ -140,11 +157,20 @@ assert.match(app, /sessionWorkspace && showManagerTabs/);
 assert.match(`${app}\n${appAuxiliary}`, /sessionId=\{sessionId\}[\s\S]*isActive[\s\S]*onStatusChange=\{setStatus\}/);
 assert.match(popout, />Pop out<\/span>/);
 assert.match(popout, /mode'\) === 'single'/);
-assert.match(view, /No terminal for this Rich session/);
-assert.match(view, /choose Resume conversation, then select Terminal/);
+assert.doesNotMatch(view, /No terminal for this Rich session/);
+assert.match(view, /effectiveSessionView/);
 assert.match(view, /terminalAvailable=\{!richSession\}/);
-assert.match(view, /Continuing the same Claude conversation in Terminal with Remote Control/);
-assert.match(view, /Continuing the same Claude conversation in Terminal for slash commands/);
+// Terminal / Remote Control must review the selected runtime through the same
+// confirmed restart boundary as the toolbar and menu. The browser restart suite
+// drives confirmation, cancellation, draft retention and partial retry.
+assert.match(view, /reviewConversationRestart\(\{ session, onOpen: onOpenSession, initialRemoteControl: enableRemoteControl, initialRuntimeMode: 'terminal' \}\)/);
+assert.match(view, /<RestartConversation session=\{session\} onOpen=\{onOpenSession\}/);
+assert.match(navigator, /<RestartConversation session=\{session\} onOpen=\{onOpen\} appearance="menuitem"/);
+assert.match(app, /<RestartConversationHost \/>/);
+assert.match(restartControl, /lazy\(\(\) => import\('\.\/RestartConversationDialog'\)/);
+assert.match(restartDialog, /This ends only runtime <code>\{session\.id\}<\/code>/);
+assert.match(restartAPI, /confirmSessionId: sourceSessionId/);
+assert.doesNotMatch(view, /await endSession\([\s\S]*?Continuing the same Claude conversation/);
 assert.doesNotMatch(view, /Not available in 0\.2\.7/);
 assert.doesNotMatch(view, /↳ Delegate|resumed from seq/);
 assert.match(view, /This Codex session uses its terminal interface/);
@@ -175,20 +201,25 @@ assert.match(input, /<ComposerModelControl/);
 assert.match(input, /Remote Control needs a Terminal session/);
 assert.match(input, /This command was not sent as a chat message/);
 assert.match(input, /Your draft is kept here and was not sent or queued/);
-assert.match(input, /title: 'Message not sent'/);
+assert.match(input, /reason instanceof MessageDeliveryError && reason.deliveryStatus !== 'not-delivered' \? 'Delivery not confirmed' : 'Message not sent'/,
+  'An uncertain receipt must not claim the message was definitely not sent');
 assert.match(input, /Your draft is still here/);
-assert.ok(input.includes("await submitMessage('\\x1b[200~' + text + '\\x1b[201~')"));
+assert.ok(input.includes("await submitMessage('\\x1b[200~' + submittedText + '\\x1b[201~')"));
 assert.doesNotMatch(mux, /return msg\.type === 'input' \|\|/);
 assert.match(mux, /Sessions is reconnecting\. Your message was not sent\./);
 assert.doesNotMatch(remote, />retry<\/button>/);
 assert.match(remote, />restore draft<\/button>/);
 assert.doesNotMatch(await source('src/hooks/useDispatch.ts'), /ENTER_RETRY_OFFSETS_MS|scheduleEnterRetries|send\('\\r'\)/);
 assert.match(input, /\/rename\(\?:\\s\|\$\)/);
-// The snapshot heuristic still runs only for a terminal-backed session that
-// has an unconfirmed failed send. `failedSendKey` is that send's identity —
-// the effect reads it directly so its dependency list is honest.
-assert.match(remote, /if \(!terminalAvailable \|\| !failedSendKey\)/);
+// The snapshot heuristic runs only for a terminal-backed session, and only
+// when there is something to explain: an unconfirmed failed send, or the
+// daemon's own needs-input state (a control drawn before the first turn).
+// `failedSendKey` is the send's identity — the hook reads it directly so its
+// dependency list is honest.
+const providerControl = await source('src/hooks/useProviderControl.ts');
+assert.match(providerControl, /if \(!terminalAvailable \|\| \(!failedSendKey && !needsInputDetail\)\)/);
 assert.match(remote, /const failedSendKey = latestFailedSend/);
+assert.match(remote, /useProviderControl\(\{/);
 assert.match(remote, /richSession=\{!terminalAvailable\}/);
 assert.match(modelControl, /Next message/);
 assert.match(modelControl, /listSessionModelOptions\(sessionId\)/);
@@ -197,14 +228,14 @@ assert.match(machineMark, /aria-label=\{machine\}/);
 assert.match(styles, /\.remote-message-actions\.is-agent\s*\{\s*justify-content:\s*flex-start;/);
 assert.doesNotMatch(styles, /\.remote-bubble-assistant\s*\{[^}]*cursor:\s*copy;/);
 assert.match(newSession, /\{browserOpen \? \([\s\S]*<DirectoryBrowser[\s\S]*\) : null\}/);
-const launcherHero = newSession.indexOf("'Start a new session'");
+const launcherHero = newSession.indexOf("What would you like to work on");
 const agentControl = newSession.indexOf('aria-label="Agent"');
 const machineControl = newSession.indexOf('aria-label="Computer"');
 const workspaceControl = newSession.indexOf('launcher-intent-control is-workspace');
 const launcherComposer = newSession.indexOf('launcher-task-field launcher-composer');
 const folderControl = newSession.indexOf('launcher-workspace-shell');
 const advancedControl = newSession.indexOf('launcher-advanced');
-const permissionsControl = newSession.indexOf('aria-label="Permissions"');
+const permissionsControl = newSession.indexOf('aria-label="Access"');
 assert.ok(launcherHero > 0 && launcherHero < agentControl && agentControl < machineControl && machineControl < workspaceControl && workspaceControl < launcherComposer && launcherComposer < folderControl,
   'new-session must present agent, computer, and folder before the prompt');
 assert.ok(permissionsControl > launcherComposer && permissionsControl < advancedControl,
@@ -218,8 +249,11 @@ assert.match(newSession, /<ModelPicker[\s\S]*options=\{modelOptions\}/);
 assert.match(newSession, /CLAUDE_MODEL_OPTIONS/);
 assert.match(newSession, /launcher-composer-footer/);
 assert.match(newSession, /listNewSessionCodexModels\(controller\.signal, machineId\)/);
-assert.match(newSession, /create\(\{[\s\S]*\}, machineId\)/);
-assert.match(newSession, /submitInitialRequest\(info\.id, task\.trim\(\), machineId\)/);
+assert.match(newSession, /create\(withStartOperation\(request, ids, Boolean\(task\.trim\(\)\)\), machineId\)/);
+// The first request goes to the chosen machine under the operation id recorded
+// at create, so a retry cannot deliver it twice.
+assert.match(newSession, /submitInitialRequest\(info\.id, task\.trim\(\), machineId, recordedPromptOperationId\(info, ids\.prompt\)\)/);
+assert.match(newSession, /startOperationIds\(startIdsRef\.current, JSON\.stringify\(\[machineId, request\]\)\)/);
 assert.match(newSession, /<DirectoryBrowser[\s\S]*serverId=\{machineId\}/);
 assert.doesNotMatch(newSession, /resumeId|sessionsForCwd|--resume/);
 assert.match(newSession, /event\.currentTarget\.form\?\.requestSubmit\(\)/);

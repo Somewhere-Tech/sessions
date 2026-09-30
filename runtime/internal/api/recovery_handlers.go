@@ -53,132 +53,29 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			}
 		}
 		s.sendJSON(response, http.StatusOK, result, corsOrigin)
+	case request.URL.Path == "/api/recovery/restart" && request.Method == http.MethodPost:
+		s.handleRestart(response, request, corsOrigin)
 	case request.URL.Path == "/api/recovery/fork" && request.Method == http.MethodPost:
-		var body struct {
-			SourceSessionID     string `json:"sourceSessionId"`
-			DestinationProvider string `json:"destinationProvider,omitempty"`
-			Name                string `json:"name,omitempty"`
-			SourceMessageIndex  *int   `json:"sourceMessageIndex,omitempty"`
-			SourceMessageID     string `json:"sourceMessageId,omitempty"`
-		}
-		if err := readJSON(request, &body); err != nil {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
-			return
-		}
-		if strings.TrimSpace(body.SourceSessionID) == "" {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "sourceSessionId is required"}, corsOrigin)
-			return
-		}
-		recoveryMutationMu.Lock()
-		defer recoveryMutationMu.Unlock()
-		sourceCandidates := s.registry.List(true)
-		sourceSession, live := s.registry.Get(body.SourceSessionID)
-		var candidate state.SessionInfo
-		if live {
-			candidate = sourceSession.Info()
-		} else {
-			for _, item := range sourceCandidates {
-				if item.ID == body.SourceSessionID {
-					candidate = item
-					break
-				}
-			}
-		}
-		if candidate.ID == "" {
-			s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "source session not found"}, corsOrigin)
-			return
-		}
-		if live && candidate.Working {
-			s.sendJSON(response, http.StatusConflict, map[string]any{
-				"error": "wait for the current turn to finish before copying this conversation; the original is still running",
-			}, corsOrigin)
-			return
-		}
-		sourceProvider, providerErr := normalizeContinuationProvider(string(candidate.Tool))
-		if providerErr != nil || sourceProvider == "" {
-			s.sendJSON(response, http.StatusConflict, map[string]any{
-				"error": "only live Claude and Codex conversations can be copied",
-			}, corsOrigin)
-			return
-		}
-		destination, destinationErr := normalizeContinuationProvider(body.DestinationProvider)
-		if destinationErr != nil {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": destinationErr.Error()}, corsOrigin)
-			return
-		}
-		if destination == "" {
-			destination = sourceProvider
-		}
-		history, historyErr := s.integrationEndpoints.LookupHistory(sourceCandidates, candidate.ID)
-		if historyErr != nil || !history.ConversationAvailable || history.PromptHistoryOnly {
-			s.sendJSON(response, http.StatusConflict, map[string]any{
-				"error": "a complete authored conversation snapshot is not available yet",
-			}, corsOrigin)
-			return
-		}
-		providerUUID, _ := ledger.ExistingProviderResume(candidate.Cmd, candidate.Args)
-		if providerUUID == "" {
-			providerUUID = candidate.ConversationID
-		}
-		if providerUUID == "" {
-			providerUUID = candidate.ClaudeSessionID
-		}
-		if providerUUID == "" || providerUUID != history.ProviderSessionID {
-			s.sendJSON(response, http.StatusConflict, map[string]any{
-				"error": "source session history does not match its live provider conversation",
-			}, corsOrigin)
-			return
-		}
-		transcript, transcriptErr := s.integrationEndpoints.Transcript(sourceCandidates, history.ID)
-		if transcriptErr != nil {
-			s.sendJSON(response, http.StatusConflict, map[string]any{
-				"error": "complete authored conversation is unavailable: " + transcriptErr.Error(),
-			}, corsOrigin)
-			return
-		}
-		selectedMessages, pointIndex, pointID, pointErr := forkTranscriptMessages(
-			transcript.Messages, body.SourceMessageIndex, body.SourceMessageID,
-		)
-		if pointErr != nil {
-			s.sendJSON(response, http.StatusConflict, map[string]any{
-				"error": pointErr.Error(),
-			}, corsOrigin)
-			return
-		}
-		messages := continuationMessages(selectedMessages)
-		mode := state.ContinuationLinkedSearch
-		if destination == "codex" {
-			mode = state.ContinuationNativeImport
-		}
-		continuation := state.ContinuationContext{
-			SchemaVersion:   state.ContinuationSchemaVersion,
-			SourceHistoryID: history.ID, SourceProvider: sourceProvider,
-			SourceProviderID: history.ProviderSessionID, SourceTitle: history.Name,
-			SourceCWD: history.CWD, DestinationProvider: destination,
-			Mode: mode, Fork: true, Messages: messages,
-			ForkPointIndex: pointIndex, ForkPointMessageID: pointID,
-			SourceWorktreePath: candidate.WorktreePath, SourceBranch: candidate.Branch,
-			SourceRepo: candidate.SourceRepo,
-		}
-		result, forkErr := recovery.ForkConversation(
-			request.Context(), continuation, body.Name, s.registry, adoptSourceFromSession(candidate),
-		)
-		if forkErr != nil {
-			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": forkErr.Error()}, corsOrigin)
-			return
-		}
-		s.sendJSON(response, http.StatusCreated, result, corsOrigin)
+		s.handleRecoveryFork(response, request, corsOrigin)
+	case request.URL.Path == "/api/recovery/collaborator" && request.Method == http.MethodPost:
+		s.handleRecoveryFork(response, request, corsOrigin)
+	case request.URL.Path == "/api/recovery/briefing" && request.Method == http.MethodPost:
+		s.handleBriefing(response, request, corsOrigin)
 	case request.URL.Path == "/api/recovery/adopt" && request.Method == http.MethodPost:
 		var body struct {
-			Target              string `json:"target"`
-			HistoryID           string `json:"historyId,omitempty"`
-			Name                string `json:"name,omitempty"`
-			SourceSessionID     string `json:"sourceSessionId,omitempty"`
-			RepairLaneID        string `json:"repairLaneId,omitempty"`
-			DestinationProvider string `json:"destinationProvider,omitempty"`
-			RuntimeMode         string `json:"runtimeMode,omitempty"`
-			RemoteControl       *bool  `json:"remoteControl,omitempty"`
-			Force               bool   `json:"force,omitempty"`
+			Target               string `json:"target"`
+			HistoryID            string `json:"historyId,omitempty"`
+			Name                 string `json:"name,omitempty"`
+			SourceSessionID      string `json:"sourceSessionId,omitempty"`
+			RepairLaneID         string `json:"repairLaneId,omitempty"`
+			DestinationProvider  string `json:"destinationProvider,omitempty"`
+			RuntimeMode          string `json:"runtimeMode,omitempty"`
+			RemoteControl        *bool  `json:"remoteControl,omitempty"`
+			ClaudePermissionMode string `json:"claudePermissionMode,omitempty"`
+			Model                string `json:"model,omitempty"`
+			Effort               string `json:"effort,omitempty"`
+			Permissions          string `json:"permissions,omitempty"`
+			Force                bool   `json:"force,omitempty"`
 		}
 		if err := readJSON(request, &body); err != nil {
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
@@ -198,6 +95,10 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			s.sendJSON(response, http.StatusBadRequest, map[string]any{
 				"error": "Remote Control requires runtimeMode terminal",
 			}, corsOrigin)
+			return
+		}
+		if body.Permissions != "" && body.Permissions != state.PermissionsConstrained && body.Permissions != state.PermissionsFull {
+			s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "resume permissions must be constrained or full"}, corsOrigin)
 			return
 		}
 		recoveryMutationMu.Lock()
@@ -225,14 +126,26 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		}
 		resolveOptions := recovery.AdoptionOptions{}
 		if sourceIndex >= 0 {
-			candidate := sourceCandidates[sourceIndex]
-			if candidate.ReopenedAs != "" && candidate.ReopenedAs != body.RepairLaneID {
+			// A person resuming a conversation means the conversation. Follow
+			// the successors to the newest one and resume that, rather than
+			// refusing because this record was continued once already.
+			target := resolveResumeTarget(sourceCandidates, sourceCandidates[sourceIndex], body.RepairLaneID)
+			if target.Refusal != "" && !body.Force {
 				s.sendJSON(response, http.StatusConflict, map[string]any{
-					"error":  "source session is already linked to successor " + candidate.ReopenedAs + "; no session was started",
-					"laneId": candidate.ReopenedAs,
+					"error": target.Refusal + "; no session was started", "laneId": target.Session.ID,
 				}, corsOrigin)
 				return
 			}
+			if len(target.Followed) > 0 && !body.Force {
+				for index, candidate := range sourceCandidates {
+					if candidate.ID == target.Session.ID {
+						sourceIndex = index
+						body.SourceSessionID = candidate.ID
+						break
+					}
+				}
+			}
+			candidate := sourceCandidates[sourceIndex]
 			if candidate.ConfigDir != "" {
 				if candidate.Tool == "claude-code" {
 					resolveOptions.ClaudeProjectsDir = filepath.Join(candidate.ConfigDir, "projects")
@@ -268,15 +181,22 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 				}
 			}
 			if sourceIndex >= 0 && source == nil {
-				candidate := sourceCandidates[sourceIndex]
-				if candidate.ReopenedAs != "" && candidate.ReopenedAs != body.RepairLaneID {
+				target := resolveResumeTarget(sourceCandidates, sourceCandidates[sourceIndex], body.RepairLaneID)
+				if target.Refusal != "" && !body.Force {
 					s.sendJSON(response, http.StatusConflict, map[string]any{
-						"error":  "source session is already linked to successor " + candidate.ReopenedAs + "; no session was started",
-						"laneId": candidate.ReopenedAs,
+						"error": target.Refusal + "; no session was started", "laneId": target.Session.ID,
 					}, corsOrigin)
 					return
 				}
-				source = adoptSourceFromSession(candidate)
+				if len(target.Followed) > 0 && !body.Force {
+					for index, candidate := range sourceCandidates {
+						if candidate.ID == target.Session.ID {
+							sourceIndex = index
+							break
+						}
+					}
+				}
+				source = adoptSourceFromSession(sourceCandidates[sourceIndex])
 			}
 			// A title/history-id resume can discover its source record only after
 			// History resolves it. Carry that record's private provider root into
@@ -319,6 +239,12 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 					source.SourceKind == string(watch.ClaudeMirror)
 			}
 			if restoreFromTranscript {
+				if strings.TrimSpace(body.ClaudePermissionMode) != "" || body.Permissions == state.PermissionsFull {
+					s.sendJSON(response, http.StatusConflict, map[string]any{
+						"error": "A permission override requires Claude's native resume handle; this conversation can only be restored from its Sessions transcript.",
+					}, corsOrigin)
+					return
+				}
 				if history.PromptHistoryOnly || !history.ConversationAvailable {
 					s.sendJSON(response, http.StatusConflict, map[string]any{
 						"error": "This conversation has neither a provider resume handle nor a complete Sessions transcript.",
@@ -333,6 +259,17 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 				}
 				if destination == "" {
 					destination = sourceProvider
+				}
+				model, modelName, effort := "", "", ""
+				if strings.TrimSpace(body.Model) != "" || strings.TrimSpace(body.Effort) != "" {
+					var modelErr error
+					model, modelName, effort, modelErr = s.resolveContinuationModel(
+						request.Context(), destination, body.Model, body.Effort,
+					)
+					if modelErr != nil {
+						s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": modelErr.Error()}, corsOrigin)
+						return
+					}
 				}
 				transcript, transcriptErr := s.integrationEndpoints.Transcript(sourceCandidates, history.ID)
 				if transcriptErr != nil {
@@ -350,7 +287,9 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 					SchemaVersion:   state.ContinuationSchemaVersion,
 					SourceHistoryID: history.ID, SourceProvider: sourceProvider,
 					SourceTitle: history.Name, SourceCWD: history.CWD,
-					DestinationProvider: destination, Mode: mode, Messages: messages,
+					DestinationProvider: destination, DestinationModel: model,
+					DestinationModelName: modelName, DestinationEffort: effort,
+					Mode: mode, Messages: messages,
 				}
 				if source != nil {
 					continuation.SourceWorktreePath = source.WorktreePath
@@ -385,6 +324,12 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 				return
 			}
 			if destination != "" && destination != sourceProvider {
+				if strings.TrimSpace(body.ClaudePermissionMode) != "" || body.Permissions == state.PermissionsFull {
+					s.sendJSON(response, http.StatusBadRequest, map[string]any{
+						"error": "--permissions applies only to a same-provider Claude resume, not a cross-provider copy",
+					}, corsOrigin)
+					return
+				}
 				if body.RuntimeMode == "terminal" {
 					s.sendJSON(response, http.StatusBadRequest, map[string]any{
 						"error": "Terminal is available only when continuing with the original provider; cross-provider continuation uses Rich mode",
@@ -503,18 +448,54 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			source = adoptSourceFromSession(candidate)
 		}
 		var claudeOptions *state.ClaudeSessionOptions
-		if body.RemoteControl != nil {
+		resumeModel, resumeEffort := "", ""
+		if body.RemoteControl != nil || strings.TrimSpace(body.ClaudePermissionMode) != "" ||
+			strings.TrimSpace(body.Model) != "" || strings.TrimSpace(body.Effort) != "" ||
+			body.Permissions == state.PermissionsConstrained {
 			if adoption.Tool != string(state.ToolClaude) {
-				s.sendJSON(response, http.StatusBadRequest, map[string]any{
-					"error": "Remote Control is available only when continuing a Claude conversation in Terminal",
-				}, corsOrigin)
+				if body.RemoteControl != nil || strings.TrimSpace(body.ClaudePermissionMode) != "" {
+					s.sendJSON(response, http.StatusBadRequest, map[string]any{
+						"error": "Claude runtime options are available only when continuing a Claude conversation",
+					}, corsOrigin)
+					return
+				}
+			} else {
+				claudeOptions = &state.ClaudeSessionOptions{}
+			}
+			if body.RemoteControl != nil {
+				choice := state.ClaudeChoiceOff
+				if *body.RemoteControl {
+					choice = state.ClaudeChoiceOn
+				}
+				claudeOptions.RemoteControl = choice
+			}
+			if mode := strings.TrimSpace(body.ClaudePermissionMode); mode != "" {
+				claudeOptions.PermissionMode = mode
+				if _, normalizeErr := state.ResolveClaudeSettings(state.DefaultClaudeSettings(), claudeOptions); normalizeErr != nil {
+					s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": normalizeErr.Error()}, corsOrigin)
+					return
+				}
+			}
+			if claudeOptions != nil && body.Permissions == state.PermissionsConstrained {
+				claudeOptions.PermissionMode = state.ClaudePermissionManual
+			}
+		}
+		if strings.TrimSpace(body.Model) != "" || strings.TrimSpace(body.Effort) != "" {
+			provider, providerErr := normalizeContinuationProvider(adoption.Tool)
+			if providerErr != nil || provider == "" {
+				s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "model choices require Claude or Codex"}, corsOrigin)
 				return
 			}
-			choice := state.ClaudeChoiceOff
-			if *body.RemoteControl {
-				choice = state.ClaudeChoiceOn
+			model, _, effort, modelErr := s.resolveContinuationModel(request.Context(), provider, body.Model, body.Effort)
+			if modelErr != nil {
+				s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": modelErr.Error()}, corsOrigin)
+				return
 			}
-			claudeOptions = &state.ClaudeSessionOptions{RemoteControl: choice}
+			resumeModel, resumeEffort = model, effort
+			if provider == "claude" && claudeOptions != nil {
+				claudeOptions.Model = model
+				claudeOptions.Effort = effort
+			}
 		}
 		if body.RepairLaneID != "" {
 			successorSession, live := s.registry.Get(body.RepairLaneID)
@@ -572,6 +553,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 			recovery.AdoptOptions{
 				Force: body.Force, Source: source, Events: store,
 				RuntimeMode: body.RuntimeMode, Claude: claudeOptions,
+				Permissions: body.Permissions, Model: resumeModel, Effort: resumeEffort,
 				ClaudeLive: claudeLiveQuery(sourceCandidates, resolveOptions.ClaudeProjectsDir),
 			},
 		)
@@ -596,6 +578,184 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 	default:
 		s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": request.URL.Path}, corsOrigin)
 	}
+}
+
+type recoveryForkRequest struct {
+	SourceSessionID     string  `json:"sourceSessionId"`
+	DestinationProvider string  `json:"destinationProvider,omitempty"`
+	Name                string  `json:"name,omitempty"`
+	SourceMessageIndex  *int    `json:"sourceMessageIndex,omitempty"`
+	SourceMessageID     string  `json:"sourceMessageId,omitempty"`
+	Model               string  `json:"model,omitempty"`
+	Effort              string  `json:"effort,omitempty"`
+	Permissions         string  `json:"permissions,omitempty"`
+	ContextMode         string  `json:"contextMode,omitempty"`
+	Briefing            string  `json:"briefing,omitempty"`
+	Profile             *string `json:"profile,omitempty"`
+}
+
+type recoveryForkPlan struct {
+	sourceProvider string
+	destination    string
+	model          string
+	modelName      string
+	effort         string
+}
+
+type recoveryHTTPError struct {
+	status  int
+	message string
+}
+
+func (s *Server) handleRecoveryFork(response http.ResponseWriter, request *http.Request, corsOrigin string) {
+	var body recoveryForkRequest
+	if err := readJSON(request, &body); err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	if err := validateCollaboratorRequest(request.URL.Path, body); err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	if strings.TrimSpace(body.SourceSessionID) == "" {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": "sourceSessionId is required"}, corsOrigin)
+		return
+	}
+	recoveryMutationMu.Lock()
+	defer recoveryMutationMu.Unlock()
+	candidates := s.registry.List(true)
+	candidate, live, candidateErr := s.recoveryForkCandidate(body.SourceSessionID, candidates)
+	if candidateErr != nil {
+		s.sendJSON(response, candidateErr.status, map[string]any{"error": candidateErr.message}, corsOrigin)
+		return
+	}
+	plan, planErr := s.resolveRecoveryForkPlan(request.Context(), candidate, live, body)
+	if planErr != nil {
+		s.sendJSON(response, planErr.status, map[string]any{"error": planErr.message}, corsOrigin)
+		return
+	}
+	continuation, continuationErr := s.recoveryForkContinuation(candidate, candidates, plan, body)
+	if continuationErr != nil {
+		s.sendJSON(response, continuationErr.status, map[string]any{"error": continuationErr.message}, corsOrigin)
+		return
+	}
+	if request.URL.Path == "/api/recovery/collaborator" {
+		continuation.MainCollaborator, continuation.DestinationProfile = true, body.Profile
+	}
+	result, err := recovery.ForkConversation(
+		request.Context(), continuation, body.Name, s.registry, adoptSourceFromSession(candidate),
+	)
+	if err != nil {
+		s.sendJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()}, corsOrigin)
+		return
+	}
+	s.sendJSON(response, http.StatusCreated, result, corsOrigin)
+}
+
+func (s *Server) recoveryForkCandidate(
+	sessionID string,
+	candidates []state.SessionInfo,
+) (state.SessionInfo, bool, *recoveryHTTPError) {
+	if source, live := s.registry.Get(sessionID); live {
+		return source.Info(), true, nil
+	}
+	for _, candidate := range candidates {
+		if candidate.ID == sessionID {
+			return candidate, false, nil
+		}
+	}
+	return state.SessionInfo{}, false, &recoveryHTTPError{http.StatusNotFound, "source session not found"}
+}
+
+func (s *Server) resolveRecoveryForkPlan(
+	ctx context.Context,
+	candidate state.SessionInfo,
+	live bool,
+	body recoveryForkRequest,
+) (recoveryForkPlan, *recoveryHTTPError) {
+	if live && candidate.Working && body.ContextMode != "briefing" {
+		return recoveryForkPlan{}, &recoveryHTTPError{http.StatusConflict,
+			"wait for the current turn to finish before copying this conversation; the original is still running"}
+	}
+	sourceProvider, err := normalizeContinuationProvider(string(candidate.Tool))
+	if err != nil || sourceProvider == "" {
+		return recoveryForkPlan{}, &recoveryHTTPError{http.StatusConflict,
+			"only live Claude and Codex conversations can be copied"}
+	}
+	destination, err := normalizeContinuationProvider(body.DestinationProvider)
+	if err != nil {
+		return recoveryForkPlan{}, &recoveryHTTPError{http.StatusBadRequest, err.Error()}
+	}
+	if destination == "" {
+		destination = sourceProvider
+	}
+	if body.Permissions != "" && body.Permissions != state.PermissionsConstrained {
+		return recoveryForkPlan{}, &recoveryHTTPError{http.StatusBadRequest, "fork permissions must be constrained"}
+	}
+	plan := recoveryForkPlan{sourceProvider: sourceProvider, destination: destination}
+	if strings.TrimSpace(body.Model) == "" && strings.TrimSpace(body.Effort) == "" {
+		return plan, nil
+	}
+	plan.model, plan.modelName, plan.effort, err = s.resolveContinuationModel(
+		ctx, destination, body.Model, body.Effort,
+	)
+	if err != nil {
+		return recoveryForkPlan{}, &recoveryHTTPError{http.StatusBadRequest, err.Error()}
+	}
+	return plan, nil
+}
+
+func (s *Server) recoveryForkContinuation(
+	candidate state.SessionInfo,
+	candidates []state.SessionInfo,
+	plan recoveryForkPlan,
+	body recoveryForkRequest,
+) (state.ContinuationContext, *recoveryHTTPError) {
+	if body.ContextMode == "briefing" {
+		return s.collaboratorBriefingContext(candidate, candidates, plan, body)
+	}
+	history, err := s.integrationEndpoints.LookupHistory(candidates, candidate.ID)
+	if err != nil || !history.ConversationAvailable || history.PromptHistoryOnly {
+		return state.ContinuationContext{}, &recoveryHTTPError{http.StatusConflict,
+			"a complete authored conversation snapshot is not available yet"}
+	}
+	providerUUID, _ := ledger.ExistingProviderResume(candidate.Cmd, candidate.Args)
+	if providerUUID == "" {
+		providerUUID = candidate.ConversationID
+	}
+	if providerUUID == "" {
+		providerUUID = candidate.ClaudeSessionID
+	}
+	if providerUUID == "" || providerUUID != history.ProviderSessionID {
+		return state.ContinuationContext{}, &recoveryHTTPError{http.StatusConflict,
+			"source session history does not match its live provider conversation"}
+	}
+	transcript, err := s.integrationEndpoints.Transcript(candidates, history.ID)
+	if err != nil {
+		return state.ContinuationContext{}, &recoveryHTTPError{http.StatusConflict,
+			"complete authored conversation is unavailable: " + err.Error()}
+	}
+	selected, pointIndex, pointID, err := forkTranscriptMessages(
+		transcript.Messages, body.SourceMessageIndex, body.SourceMessageID,
+	)
+	if err != nil {
+		return state.ContinuationContext{}, &recoveryHTTPError{http.StatusConflict, err.Error()}
+	}
+	mode := state.ContinuationLinkedSearch
+	if plan.destination == "codex" {
+		mode = state.ContinuationNativeImport
+	}
+	return state.ContinuationContext{
+		SchemaVersion:   state.ContinuationSchemaVersion,
+		SourceHistoryID: history.ID, SourceProvider: plan.sourceProvider,
+		SourceProviderID: history.ProviderSessionID, SourceTitle: history.Name,
+		SourceCWD: history.CWD, DestinationProvider: plan.destination,
+		DestinationModel: plan.model, DestinationModelName: plan.modelName,
+		DestinationEffort: plan.effort, Mode: mode, Fork: true,
+		Messages: continuationMessages(selected), ForkPointIndex: pointIndex,
+		ForkPointMessageID: pointID, SourceWorktreePath: candidate.WorktreePath,
+		SourceBranch: candidate.Branch, SourceRepo: candidate.SourceRepo,
+	}, nil
 }
 
 func (s *Server) clearPausedRestore(sourceSessionID string) {

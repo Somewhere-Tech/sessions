@@ -57,11 +57,15 @@ type updateHealth struct {
 }
 
 type updateSessions struct {
-	Sessions []struct {
-		ID     string `json:"id"`
-		PID    *int   `json:"pid"`
-		Exited bool   `json:"exited"`
-	} `json:"sessions"`
+	Sessions []updateSession `json:"sessions"`
+}
+
+type updateSession struct {
+	ID          string `json:"id"`
+	PID         *int   `json:"pid"`
+	Exited      bool   `json:"exited"`
+	Unreachable bool   `json:"unreachable"`
+	EndedByKind string `json:"ended_by_kind"`
 }
 
 func liveUpdateSession(id string, pid *int, exited bool) bool {
@@ -160,6 +164,28 @@ func (a *app) captureUpdateConvergenceBaseline(
 	return baseline, true
 }
 
+func updateSessionConvergence(baseline updateConvergenceBaseline, sessions updateSessions) (missing, preserved int) {
+	current := make(map[string]updateSession, len(sessions.Sessions))
+	for _, session := range sessions.Sessions {
+		current[session.ID] = session
+	}
+	for id := range baseline.SessionIDs {
+		session, ok := current[id]
+		if !ok {
+			missing++
+		} else if session.Exited || session.EndedByKind == "user" {
+			// A reaped exit or write-ahead user-close boundary proves the
+			// session ended, rather than being lost in the swap.
+			continue
+		} else if session.Unreachable || !liveUpdateSession(session.ID, session.PID, session.Exited) {
+			missing++
+		} else {
+			preserved++
+		}
+	}
+	return missing, preserved
+}
+
 func (a *app) waitForUpdateConvergence(
 	ctx context.Context,
 	targetVersion string,
@@ -195,28 +221,17 @@ func (a *app) waitForUpdateConvergence(
 			lastDetail = "sessionsd is still reconnecting to existing runners"
 		} else {
 			var sessions updateSessions
-			if err := a.getUpdateJSON(ctx, "/api/sessions", &sessions); err != nil {
+			if err := a.getUpdateJSON(ctx, "/api/sessions?include_exited=1", &sessions); err != nil {
 				lastDetail = err.Error()
 			} else {
-				current := make(map[string]struct{}, len(sessions.Sessions))
-				for _, session := range sessions.Sessions {
-					if liveUpdateSession(session.ID, session.PID, session.Exited) {
-						current[session.ID] = struct{}{}
-					}
-				}
-				missing := 0
-				for id := range baseline.SessionIDs {
-					if _, ok := current[id]; !ok {
-						missing++
-					}
-				}
+				missing, preserved := updateSessionConvergence(baseline, sessions)
 				switch {
 				case missing > 0:
 					lastDetail = fmt.Sprintf("sessionsd is still reconnecting to %d live sessions", missing)
 				case !cliIsCurrent(targetVersion):
 					lastDetail = "the Sessions CLI link is still converging"
 				default:
-					return len(baseline.SessionIDs), nil
+					return preserved, nil
 				}
 			}
 		}

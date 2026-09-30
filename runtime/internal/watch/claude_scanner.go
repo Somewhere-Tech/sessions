@@ -41,8 +41,12 @@ type ResumableSession struct {
 }
 
 type ResumableRun struct {
-	SessionID          string `json:"sessionId"`
-	Name               string `json:"name,omitempty"`
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name,omitempty"`
+	// CreatorKind is who started this runtime: "user" for a person, "session"
+	// for a lane created by another lane. The Resume picker uses it to keep a
+	// person's own conversations ahead of delegated work.
+	CreatorKind        string `json:"creatorKind,omitempty"`
 	StartedAt          int64  `json:"startedAt"`
 	LastActivityAt     int64  `json:"lastActivityAt"`
 	Machine            string `json:"machine,omitempty"`
@@ -73,16 +77,42 @@ func ScanResumableSessions() []ResumableSession {
 	if err != nil {
 		return []ResumableSession{}
 	}
-	return scanResumableClaudeSessions(projectsDir)
+	return scanResumableClaudeSessions(projectsDir, nil)
 }
 
-func scanResumableClaudeSessions(projectsDir string) []ResumableSession {
+// cachedResumable answers from the cache when it holds this exact file. The
+// stat is the price of asking, and it is what a listing pays instead of reading
+// half a megabyte of rollout.
+func cachedResumable(cache ResumableCache, path string) (ResumableSession, bool) {
+	if cache == nil {
+		return ResumableSession{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ResumableSession{}, false
+	}
+	return cache.Resumable(path, info)
+}
+
+func storeResumable(cache ResumableCache, path string, session ResumableSession) {
+	if cache == nil {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	cache.StoreResumable(path, info, session)
+}
+
+func scanResumableClaudeSessions(projectsDir string, cache ResumableCache) []ResumableSession {
 	projects, err := os.ReadDir(projectsDir)
 	if err != nil {
 		return []ResumableSession{}
 	}
 
 	tasks := make([]resumableTask, 0)
+	cached := make([]ResumableSession, 0)
 	for _, project := range projects {
 		if !project.IsDir() {
 			continue
@@ -101,15 +131,23 @@ func scanResumableClaudeSessions(projectsDir string) []ResumableSession {
 			if err != nil || !info.Mode().IsRegular() {
 				continue
 			}
+			path := filepath.Join(projectDir, file.Name())
+			if cache != nil {
+				if session, ok := cache.Resumable(path, info); ok {
+					cached = append(cached, session)
+					continue
+				}
+			}
 			tasks = append(tasks, resumableTask{
-				path:      filepath.Join(projectDir, file.Name()),
+				path:      path,
 				cwd:       cwd,
 				sessionID: strings.TrimSuffix(file.Name(), ".jsonl"),
 			})
 		}
 	}
 
-	out := make([]ResumableSession, 0, len(tasks))
+	out := make([]ResumableSession, 0, len(tasks)+len(cached))
+	out = append(out, cached...)
 	const pool = 16
 	for start := 0; start < len(tasks); start += pool {
 		end := min(start+pool, len(tasks))
@@ -118,36 +156,9 @@ func scanResumableClaudeSessions(projectsDir string) []ResumableSession {
 		for i, task := range tasks[start:end] {
 			go func(index int, task resumableTask) {
 				defer func() { done <- struct{}{} }()
-				info, err := os.Stat(task.path)
-				if err != nil {
-					return
+				if session, ok := describeClaudeConversation(task); ok {
+					results[index] = resumableResult{ok: true, session: session}
 				}
-				session := ResumableSession{
-					SessionID:        task.sessionID,
-					Tool:             "claude",
-					Origin:           "Claude Code",
-					Title:            claudeConversationTitle(task.path),
-					Cwd:              task.cwd,
-					ModifiedAt:       float64(info.ModTime().UnixNano()) / 1_000_000,
-					FirstUserMessage: firstUserMessageOf(task.path),
-					SizeBytes:        info.Size(),
-					SourcePath:       task.path,
-				}
-				// One bounded probe answers both questions: which directory this
-				// conversation actually ran in, and which surface started it.
-				// What the transcript recorded about itself outranks anything
-				// derivable from the directory name.
-				if facts, ok := probeClaudeTranscript(task.path); ok {
-					if facts.CWD != "" {
-						session.Cwd = facts.CWD
-					}
-					if surface := ClaudeSurface(
-						facts.Entrypoint, facts.PromptSource, facts.Version, facts.Sidechain,
-					); surface.Known() {
-						session.Surface = &surface
-					}
-				}
-				results[index] = resumableResult{ok: true, session: session}
 			}(i, task)
 		}
 		for range results {
@@ -155,6 +166,7 @@ func scanResumableClaudeSessions(projectsDir string) []ResumableSession {
 		}
 		for _, result := range results {
 			if result.ok {
+				storeResumable(cache, result.session.SourcePath, result.session)
 				out = append(out, result.session)
 			}
 		}
@@ -164,6 +176,41 @@ func scanResumableClaudeSessions(projectsDir string) []ResumableSession {
 		return out[i].ModifiedAt > out[j].ModifiedAt
 	})
 	return out
+}
+
+// describeClaudeConversation reads one transcript's head for the card the
+// picker shows: its title, where it ran, and its first request.
+func describeClaudeConversation(task resumableTask) (ResumableSession, bool) {
+	info, err := os.Stat(task.path)
+	if err != nil {
+		return ResumableSession{}, false
+	}
+	session := ResumableSession{
+		SessionID:        task.sessionID,
+		Tool:             "claude",
+		Origin:           "Claude Code",
+		Title:            claudeConversationTitle(task.path),
+		Cwd:              task.cwd,
+		ModifiedAt:       float64(info.ModTime().UnixNano()) / 1_000_000,
+		FirstUserMessage: firstUserMessageOf(task.path),
+		SizeBytes:        info.Size(),
+		SourcePath:       task.path,
+	}
+	// One bounded probe answers both questions: which directory this
+	// conversation actually ran in, and which surface started it. What the
+	// transcript recorded about itself outranks anything derivable from the
+	// directory name.
+	if facts, ok := probeClaudeTranscript(task.path); ok {
+		if facts.CWD != "" {
+			session.Cwd = facts.CWD
+		}
+		if surface := ClaudeSurface(
+			facts.Entrypoint, facts.PromptSource, facts.Version, facts.Sidechain,
+		); surface.Known() {
+			session.Surface = &surface
+		}
+	}
+	return session, true
 }
 
 // claudeProjectDirCWD is the bucket-level fallback for a conversation whose own
@@ -217,16 +264,42 @@ func ScanResumableConversations() []ResumableSession {
 // ScanResumableConversationsIn is the explicit-root form used by authenticated
 // local history surfaces and isolated tests. SourcePath is intentionally
 // excluded from JSON so provider store locations never enter a WebView.
+// ResumableCache keeps what a scan derived from one file, so a listing does not
+// read a conversation that has not changed since it was last described.
+//
+// Everything on a resumable card — the provider identity, the working
+// directory, the title, the first message, the surface — comes from the head of
+// the file. The rule is the same one the message-count cache uses and is the
+// only thing that makes this safe: an entry answers for one exact file, and a
+// file whose size or modification time differs is read again.
+type ResumableCache interface {
+	Resumable(path string, info os.FileInfo) (ResumableSession, bool)
+	StoreResumable(path string, info os.FileInfo, session ResumableSession)
+}
+
 func ScanResumableConversationsIn(claudeProjectsDir, codexSessionsDir string) []ResumableSession {
+	return ScanResumableConversationsCached(claudeProjectsDir, codexSessionsDir, nil)
+}
+
+// ScanResumableConversationsCached is the same scan, allowed to skip the files
+// a caller already described at exactly this size and modification time.
+func ScanResumableConversationsCached(
+	claudeProjectsDir, codexSessionsDir string, cache ResumableCache,
+) []ResumableSession {
 	var out []ResumableSession
 	if claudeProjectsDir == "" {
 		out = append(out, ScanResumableSessions()...)
 	} else {
-		out = append(out, scanResumableClaudeSessions(claudeProjectsDir)...)
+		out = append(out, scanResumableClaudeSessions(claudeProjectsDir, cache)...)
 	}
 	root := resolveCodexRoot(codexSessionsDir)
 	for _, candidate := range listRolloutsRecursive(root) {
+		if session, ok := cachedResumable(cache, candidate.path); ok {
+			out = append(out, session)
+			continue
+		}
 		if session, ok := resumableCodexConversation(candidate.path, candidate.modTime); ok {
+			storeResumable(cache, candidate.path, session)
 			out = append(out, session)
 		}
 	}
@@ -315,6 +388,14 @@ func resumableCodexConversation(path string, modified time.Time) (ResumableSessi
 				}
 			}
 			lineIndex++
+			// Everything this card needs comes from the session_meta line and
+			// the first user turn. Decoding the rest of the half-megabyte head
+			// budget into maps and discarding it was the bulk of what a listing
+			// paid per conversation; a rollout that never records a user turn
+			// still reads to the budget, because absence cannot be known early.
+			if session.SessionID != "" && session.Cwd != "" && session.FirstUserMessage != "" {
+				break
+			}
 		}
 		if readErr != nil {
 			break

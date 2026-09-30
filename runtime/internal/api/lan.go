@@ -25,27 +25,42 @@ type BonjourState struct {
 }
 
 type LANState struct {
-	Enabled bool         `json:"enabled"`
-	URL     *string      `json:"url"`
-	Bonjour BonjourState `json:"bonjour"`
+	Enabled    bool                   `json:"enabled"`
+	URL        *string                `json:"url"`
+	Bonjour    BonjourState           `json:"bonjour"`
+	Permission LocalNetworkPermission `json:"permission"`
+}
+
+// LocalNetworkPermission reports what this daemon has observed, not a reading
+// of the macOS switch, which has no supported API. Reason and Message stay in
+// the shape for clients that still receive a "denied" observation from an older
+// host; this daemon reports only the states it can actually establish.
+type LocalNetworkPermission struct {
+	Status  string `json:"status"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type lanListener struct {
-	opMu         sync.Mutex
-	mu           sync.Mutex
-	config       state.Config
-	handler      http.Handler
-	pickIP       func() (net.IP, error)
-	listen       func(string, string) (net.Listener, error)
-	advertise    discovery.AdvertiseFunc
-	settingsPath string
-	server       *http.Server
-	registration discovery.Registration
-	bonjourError string
-	machineName  string
-	machineID    string
-	host         string
-	url          string
+	opMu              sync.Mutex
+	mu                sync.Mutex
+	config            state.Config
+	handler           http.Handler
+	pickIP            func() (net.IP, error)
+	listen            func(string, string) (net.Listener, error)
+	advertise         discovery.AdvertiseFunc
+	browse            func(context.Context, time.Duration) ([]discovery.Candidate, error)
+	settingsPath      string
+	server            *http.Server
+	registration      discovery.Registration
+	bonjourError      string
+	machineName       string
+	machineID         string
+	host              string
+	url               string
+	permission        string
+	tailnetEndpoint   string
+	tailnetIPEndpoint string
 }
 
 type lanRequestContextKey struct{}
@@ -59,10 +74,24 @@ func newLANListener(config state.Config, handler http.Handler, identity machineI
 		}
 		settingsPath = filepath.Join(root, "settings.json")
 	}
+	permission := initialLocalNetworkPermission()
+	if permission != "not-required" {
+		// Only a proven observation is restored. Earlier builds recorded
+		// "denied" from a transport errno that a sleeping or absent peer
+		// produces just as readily, and that guess then outlived the condition
+		// across every restart. An unproven state reads as not-yet-asked, which
+		// already shows the same recovery guide without asserting a macOS
+		// setting this daemon cannot read.
+		if settings, err := state.LoadSettings(settingsPath); err == nil &&
+			settings.LocalNetworkPermission == "granted" {
+			permission = settings.LocalNetworkPermission
+		}
+	}
 	return &lanListener{
 		config: config, handler: handler, pickIP: lanutil.PrimaryIPv4,
-		listen: net.Listen, advertise: discovery.Advertise, settingsPath: settingsPath,
+		listen: net.Listen, advertise: discovery.Advertise, browse: discovery.Browse, settingsPath: settingsPath,
 		machineName: identity.Name, machineID: identity.ID,
+		permission: permission,
 	}
 }
 
@@ -74,7 +103,7 @@ func (l *lanListener) state() LANState {
 
 func (l *lanListener) stateLocked() LANState {
 	if l.server == nil || l.url == "" {
-		return LANState{Bonjour: BonjourState{Service: discovery.ServiceType}}
+		return LANState{Bonjour: BonjourState{Service: discovery.ServiceType}, Permission: l.permissionLocked()}
 	}
 	url := l.url
 	return LANState{
@@ -84,6 +113,36 @@ func (l *lanListener) stateLocked() LANState {
 			Service:    discovery.ServiceType,
 			Error:      l.bonjourError,
 		},
+		Permission: l.permissionLocked(),
+	}
+}
+
+func (l *lanListener) permissionLocked() LocalNetworkPermission {
+	return LocalNetworkPermission{Status: l.permission}
+}
+
+// markPermission records an observation. Successful nearby contact is the only
+// positive proof available -- macOS cannot be blocking local access while a LAN
+// peer answers -- so a later success reconciles any earlier failed attempt.
+func (l *lanListener) markPermission(status string) {
+	if initialLocalNetworkPermission() == "not-required" {
+		return
+	}
+	l.mu.Lock()
+	if l.permission == status {
+		l.mu.Unlock()
+		return
+	}
+	l.permission = status
+	l.mu.Unlock()
+	if status == "not-required" || status == "not-yet-asked" {
+		return
+	}
+	if err := state.UpdateSettings(l.settingsPath, func(settings *state.Settings) error {
+		settings.LocalNetworkPermission = status
+		return nil
+	}); err != nil {
+		log.Printf("sessionsd: could not persist local-network permission observation: %v", err)
 	}
 }
 
@@ -205,7 +264,7 @@ func (l *lanListener) disable(persist bool) (LANState, error) {
 			return LANState{}, fmt.Errorf("stop Bonjour advertisement: %w", err)
 		}
 	}
-	return LANState{Bonjour: BonjourState{Service: discovery.ServiceType}}, nil
+	return LANState{Bonjour: BonjourState{Service: discovery.ServiceType}, Permission: l.permissionLocked()}, nil
 }
 
 func (l *lanListener) ensureBonjour(ip net.IP, port int) {
@@ -218,7 +277,10 @@ func (l *lanListener) ensureBonjour(ip net.IP, port int) {
 	host := l.host
 	l.mu.Unlock()
 
-	registration, err := l.advertise(ip, port, l.machineName, l.machineID)
+	l.mu.Lock()
+	tailnetEndpoint, tailnetIPEndpoint := l.tailnetEndpoint, l.tailnetIPEndpoint
+	l.mu.Unlock()
+	registration, err := l.advertise(ip, port, l.machineName, l.machineID, tailnetEndpoint, tailnetIPEndpoint)
 	if err != nil {
 		l.mu.Lock()
 		if l.server == server && l.host == host {
@@ -237,6 +299,26 @@ func (l *lanListener) ensureBonjour(ip net.IP, port int) {
 	l.registration = registration
 	l.bonjourError = ""
 	l.mu.Unlock()
+}
+
+func (l *lanListener) setTailnetEndpoints(endpoint, ipEndpoint string) {
+	l.mu.Lock()
+	if l.tailnetEndpoint == endpoint && l.tailnetIPEndpoint == ipEndpoint {
+		l.mu.Unlock()
+		return
+	}
+	l.tailnetEndpoint, l.tailnetIPEndpoint = endpoint, ipEndpoint
+	registration := l.registration
+	l.registration = nil
+	host := l.host
+	port := portFromURL(l.url, l.config.Port)
+	l.mu.Unlock()
+	if registration != nil {
+		_ = registration.Shutdown()
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		l.ensureBonjour(ip, port)
+	}
 }
 
 func portFromURL(value string, fallback int) int {
@@ -286,6 +368,9 @@ func (s *Server) CloseLAN() error {
 }
 
 func (s *Server) handleLANRoute(response http.ResponseWriter, request *http.Request, corsOrigin string) bool {
+	if s.handleLANClientRoute(response, request, corsOrigin) {
+		return true
+	}
 	if request.URL.Path != "/api/lan" {
 		return false
 	}

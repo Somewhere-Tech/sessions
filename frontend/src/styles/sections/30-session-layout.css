@@ -134,26 +134,39 @@
   min-width: 0;
   min-height: 0;
 }
-.rich-terminal-empty {
-  display: grid;
-  width: min(560px, calc(100% - 48px));
-  height: 100%;
-  margin: 0 auto;
-  place-content: center;
-  justify-items: start;
-  color: var(--fg);
+.terminal-provider-fault {
+  position: absolute;
+  z-index: 4;
+  top: 12px;
+  left: 50%;
+  width: min(560px, calc(100% - 32px));
+  transform: translateX(-50%);
 }
-.rich-terminal-empty > span {
-  color: var(--accent);
+.terminal-provider-fault .provider-control-card { margin: 0; }
+/* Above the terminal the fault is one line: the person can see the provider's
+   own screen, so the card's offer to open it would be noise. The evidence is
+   the provider's own words, kept to one line in both shapes. */
+.provider-fault-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-base);
   font-size: 12px;
-  font-weight: 750;
-  letter-spacing: .1em;
-  text-transform: uppercase;
 }
-.rich-terminal-empty h2 { margin: 8px 0 7px; font-size: 21px; letter-spacing: -.025em; }
-.rich-terminal-empty p { max-width: 540px; margin: 0 0 10px; color: var(--fg-dim); font-size: 14px; line-height: 1.55; }
-.rich-terminal-empty .btn { margin-top: 6px; }
-.rich-terminal-empty small { margin-top: 7px; color: var(--fg-faint); font-size: 12px; }
+.provider-fault-banner strong { color: var(--warn); }
+.provider-fault-evidence {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .session-sessions-pane {
   position: relative;
   min-width: 0;

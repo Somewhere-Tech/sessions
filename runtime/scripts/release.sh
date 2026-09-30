@@ -109,7 +109,7 @@ if [[ -n "$source_state" ]]; then
 fi
 
 targets=(darwin/arm64 linux/arm64 linux/amd64)
-commands=(sessions sessionsd sessions-runner)
+commands=(sessions sessionsd sessions-runner sessions-relay)
 
 echo "release version: $version"
 echo "output directory: $output_dir"

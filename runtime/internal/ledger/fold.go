@@ -1,7 +1,6 @@
 package ledger
 
 import (
-	"encoding/json"
 	"sort"
 )
 
@@ -24,6 +23,8 @@ type LaneState struct {
 	CreatorKind              CreatorKind
 	CreatorID                string
 	DelegationKind           string
+	StartOperationID         string
+	PromptOperationID        string
 	CreatedAtMS              int64
 	LastEventAtMS            int64
 	LastActivityAtMS         int64
@@ -42,25 +43,30 @@ type LaneState struct {
 	EndReason                string
 	EndOperationID           string
 
-	Created           bool
-	LaunchStarted     bool
-	RunnerReady       bool
-	ProviderBound     bool
-	Attached          bool
-	ManagedActive     bool
-	UserKillRequested bool
-	RunnerExited      bool
-	RunnerLost        bool
-	Reaped            bool
-	ReopenedAs        string
-	Archived          bool
-	ProviderReboundAs string
-	MovedToMachine    string
-	MovedToLaneID     string
-	MovedToSeq        int64
-	MovedFromMachine  string
-	MovedFromLaneID   string
-	MovedFromSeq      int64
+	Created                 bool
+	LaunchStarted           bool
+	RunnerReady             bool
+	ProviderBound           bool
+	Attached                bool
+	ManagedActive           bool
+	UserKillRequested       bool
+	RunnerExited            bool
+	RunnerLost              bool
+	Reaped                  bool
+	ReopenedAs              string
+	Archived                bool
+	ProviderReboundAs       string
+	MovedToMachine          string
+	MovedToLaneID           string
+	MovedToSeq              int64
+	MovedFromMachine        string
+	MovedFromLaneID         string
+	MovedFromSeq            int64
+	WorktreeCleanRequested  bool
+	WorktreeCleanBranchHead string
+	WorktreeCleaned         bool
+	WorktreeCleanedAtMS     int64
+	WorktreeBranchRemoved   bool
 }
 
 // Fold reduces an event stream in seq order. Input order is irrelevant as
@@ -83,189 +89,28 @@ func Fold(events []Event) []LaneState {
 			state = &LaneState{LaneID: event.LaneID}
 			states[event.LaneID] = state
 		}
-		if event.AtMS > state.LastEventAtMS {
-			state.LastEventAtMS = event.AtMS
-		}
-		state.LatestEvent = event.Type
-		switch event.Type {
-		case EventCreated:
-			if state.Created {
-				continue
-			}
-			var payload createdPayload
-			if json.Unmarshal(event.Payload, &payload) != nil {
-				continue
-			}
-			state.Created = true
-			state.CreatedAtMS = event.AtMS
-			state.Name = payload.Name
-			state.Description = payload.Description
-			state.DescriptionSource = payload.DescriptionSource
-			state.Kind = payload.Kind
-			state.Tool = payload.Tool
-			state.Cwd = payload.Cwd
-			state.Profile = payload.Profile
-			state.ConfigDir = payload.ConfigDir
-			state.WorktreePath = payload.WorktreePath
-			state.Branch = payload.Branch
-			state.Base = payload.Base
-			state.SourceRepo = payload.SourceRepo
-			state.ResumeArgv = append([]string(nil), payload.ResumeArgv...)
-			state.ProviderUUID = payload.ProviderUUID
-			state.CreatorKind = payload.CreatorKind
-			state.CreatorID = payload.CreatorID
-			state.DelegationKind = payload.DelegationKind
-		case EventLaunchStarted:
-			state.LaunchStarted = true
-		case EventRunnerReady:
-			state.RunnerReady = true
-			if state.RunnerLost && !state.UserKillRequested && !state.RunnerExited && !state.Reaped && state.ReopenedAs == "" {
-				state.ClosedAtMS = 0
-			}
-			state.RunnerLost = false
-			state.ManagedActive = mayBecomeManaged(state)
-		case EventProviderBound:
-			var payload providerPayload
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				state.ProviderBound = true
-				state.ProviderUUID = payload.ProviderUUID
-				state.ResumeArgv = append([]string(nil), payload.ResumeArgv...)
-			}
-		case EventProviderRebound:
-			var payload providerReboundPayload
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.ProviderUUID == state.ProviderUUID {
-				state.ProviderReboundAs = payload.NewLaneID
-			}
-		case EventAttached:
-			state.Attached = true
-			if state.RunnerLost && !state.UserKillRequested && !state.RunnerExited && !state.Reaped && state.ReopenedAs == "" {
-				state.ClosedAtMS = 0
-			}
-			state.RunnerLost = false
-			state.ManagedActive = mayBecomeManaged(state)
-		case EventActivity:
-			var payload activityPayload
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				valid := true
-				switch payload.Source {
-				case ActivityHumanInput:
-					if event.AtMS > state.LastHumanInputAtMS {
-						state.LastHumanInputAtMS = event.AtMS
-					}
-				case ActivitySessionInput:
-					// Relayed input is activity, but it is not direct human
-					// input and must not alter human-input attribution.
-				case ActivityProviderEvent:
-					if event.AtMS > state.LastProviderActivityAtMS {
-						state.LastProviderActivityAtMS = event.AtMS
-					}
-				default:
-					valid = false
-				}
-				if valid && (event.AtMS > state.LastActivityAtMS ||
-					(event.AtMS == state.LastActivityAtMS && payload.Source == ActivityHumanInput)) {
-					state.LastActivityAtMS = event.AtMS
-					state.LastActivitySource = payload.Source
-				}
-			}
-		case EventRenamed:
-			var payload renamePayload
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				state.Name = payload.Name
-			}
-		case EventDescriptionDerived:
-			var payload descriptionPayload
-			if json.Unmarshal(event.Payload, &payload) == nil &&
-				payload.Source == DescriptionFirstMessage &&
-				state.DescriptionSource == "" && state.Description == "" {
-				state.Description = payload.Description
-				state.DescriptionSource = payload.Source
-			}
-		case EventUserKillRequested:
-			// This bit is monotonic. No later observation, including reopened,
-			// can turn a tombstoned lane into a recovery candidate. The first
-			// committed request is also the authoritative initiator: retries
-			// or competing requests must not rewrite who ended the session.
-			if !state.UserKillRequested {
-				state.UserKillRequested = true
-				var payload userKillPayload
-				if json.Unmarshal(event.Payload, &payload) == nil {
-					state.EndInitiatorKind = payload.InitiatorKind
-					state.EndInitiatorID = payload.InitiatorID
-					state.EndInitiatorName = payload.InitiatorName
-					state.EndClient = payload.Client
-					state.EndReason = payload.Reason
-					state.EndOperationID = payload.OperationID
-				}
-				if state.ClosedAtMS == 0 {
-					state.ClosedAtMS = event.AtMS
-				}
-			}
-			state.ManagedActive = false
-		case EventRunnerExited:
-			state.RunnerExited = true
-			state.ManagedActive = false
-			if state.ClosedAtMS == 0 {
-				state.ClosedAtMS = event.AtMS
-			}
-			var payload runnerExitPayload
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				state.ExitCode = payload.Code
-				state.ExitSignal = payload.Signal
-			}
-		case EventRunnerLost:
-			state.RunnerLost = true
-			state.ManagedActive = false
-			if state.ClosedAtMS == 0 {
-				state.ClosedAtMS = event.AtMS
-			}
-		case EventReaped:
-			state.Reaped = true
-			state.ManagedActive = false
-			if state.ClosedAtMS == 0 {
-				state.ClosedAtMS = event.AtMS
-			}
-		case EventReopened:
-			var payload reopenedPayload
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				state.ReopenedAs = payload.NewLaneID
-				state.ManagedActive = false
-				if state.ClosedAtMS == 0 {
-					state.ClosedAtMS = event.AtMS
-				}
-			}
-		case EventArchived:
-			state.Archived = true
-			state.ArchivedAtMS = event.AtMS
-			state.ManagedActive = false
-		case EventMovedTo:
-			var payload movedToPayload
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				state.MovedToMachine = payload.TargetEndpoint
-				state.MovedToLaneID = payload.NewLaneID
-				state.MovedToSeq = event.Seq
-			}
-		case EventMovedFrom:
-			var payload movedFromPayload
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				state.MovedFromMachine = payload.SourceEndpoint
-				state.MovedFromLaneID = payload.SourceLaneID
-				state.MovedFromSeq = event.Seq
-			}
-		}
+		applyLaneEvent(state, event)
 	}
+	return snapshotLaneStates(states)
+}
+
+func cloneLaneState(state LaneState) LaneState {
+	state.ResumeArgv = append([]string(nil), state.ResumeArgv...)
+	if state.ExitCode != nil {
+		code := *state.ExitCode
+		state.ExitCode = &code
+	}
+	if state.ExitSignal != nil {
+		signal := *state.ExitSignal
+		state.ExitSignal = &signal
+	}
+	return state
+}
+
+func snapshotLaneStates(states map[string]*LaneState) []LaneState {
 	result := make([]LaneState, 0, len(states))
 	for _, state := range states {
-		state.ResumeArgv = append([]string(nil), state.ResumeArgv...)
-		if state.ExitCode != nil {
-			code := *state.ExitCode
-			state.ExitCode = &code
-		}
-		if state.ExitSignal != nil {
-			signal := *state.ExitSignal
-			state.ExitSignal = &signal
-		}
-		result = append(result, *state)
+		result = append(result, cloneLaneState(*state))
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].LaneID < result[j].LaneID })
 	return result

@@ -125,6 +125,11 @@ func TestForkConversationLeavesSourceLiveAndGroupsCopyBelowIt(t *testing.T) {
 		creator.request.Kind != state.KindClaudeStructured {
 		t.Fatalf("fork request = %+v", creator.request)
 	}
+	if creator.request.Permissions != state.PermissionsConstrained ||
+		creator.request.Claude == nil ||
+		creator.request.Claude.PermissionMode != state.ClaudePermissionManual {
+		t.Fatalf("fork access plan = %+v", creator.request)
+	}
 	if creator.request.Profile != "work" || creator.request.ConfigDir != "/profiles/work" {
 		t.Fatalf("same-provider fork lost its provider account: %+v", creator.request)
 	}

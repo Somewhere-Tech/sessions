@@ -1,5 +1,7 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { ProviderMark } from './ProviderBadge';
+import { useAnchoredPopover } from '../hooks/useAnchoredPopover';
 
 export interface ModelPickerOption {
   id: string;
@@ -23,11 +25,21 @@ interface Props {
 }
 
 export const CLAUDE_MODEL_OPTIONS: ModelPickerOption[] = [
-  { id: 'claude-fable-5', label: 'Fable 5', description: 'Fast, capable everyday work' },
+  { id: 'claude-fable-5-1', label: 'Fable 5.1', description: 'Demanding reasoning and long-running work' },
+  { id: 'claude-opus-5-5', label: 'Opus 5.5', description: 'Complex coding and reasoning' },
   { id: 'opus', label: 'Opus (alias)', description: 'Deep reasoning; follows the Claude CLI alias' },
   { id: 'sonnet', label: 'Sonnet', description: 'Balanced speed and reasoning' },
   { id: 'haiku', label: 'Haiku', description: 'Fast, lightweight tasks' }
 ];
+
+function filterModelOptions(options: ModelPickerOption[], query: string): ModelPickerOption[] {
+  const lowered = query.trim().toLowerCase();
+  return options.filter((option) => !lowered || `${option.label} ${option.id} ${option.description ?? ''}`.toLowerCase().includes(lowered))
+    .sort((left, right) => {
+      if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
+      return options.indexOf(left) - options.indexOf(right);
+    });
+}
 
 export function ModelPicker({
   provider,
@@ -47,6 +59,7 @@ export function ModelPicker({
   const [activeIndex, setActiveIndex] = useState(0);
   const listId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const providerName = provider === 'claude' ? 'Claude' : 'Codex';
   const selected = options.find((option) => option.id === value);
@@ -57,31 +70,16 @@ export function ModelPicker({
     ? query.trim()
     : '';
 
-  const orderedOptions = useMemo(() => {
-    const lowered = query.trim().toLowerCase();
-    const visible = options.filter((option) => {
-      if (!lowered) return true;
-      return `${option.label} ${option.id} ${option.description ?? ''}`.toLowerCase().includes(lowered);
-    });
-    return visible.sort((left, right) => {
-      if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
-      return options.indexOf(left) - options.indexOf(right);
-    });
-  }, [options, query]);
+  const orderedOptions = useMemo(() => filterModelOptions(options, query), [options, query]);
+
+  const closePopover = useCallback(() => setOpen(false), []);
+  const popoverStyle = useAnchoredPopover({ open, rootRef, popoverRef, focusRef: searchRef,
+    layoutKey: `${query}:${orderedOptions.length}:${customValue}:${loading ? 'loading' : 'ready'}`, onClose: closePopover });
 
   useEffect(() => {
     if (!open) return;
     setQuery('');
     setActiveIndex(0);
-    const focus = window.setTimeout(() => searchRef.current?.focus(), 0);
-    const close = (event: PointerEvent): void => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    window.addEventListener('pointerdown', close);
-    return () => {
-      window.clearTimeout(focus);
-      window.removeEventListener('pointerdown', close);
-    };
   }, [open]);
 
   useEffect(() => {
@@ -152,8 +150,12 @@ export function ModelPicker({
         <span>{value ? selected?.label ?? value : defaultLabel}</span>
         <span className="model-picker-chevron" aria-hidden>⌄</span>
       </button>
-      {open ? (
-        <section className="model-picker-popover" onKeyDown={onKeyDown} aria-label={`${providerName} model picker`}>
+      {open && popoverStyle ? createPortal((
+        <section ref={popoverRef} className="model-picker-popover" style={popoverStyle}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={onKeyDown} aria-label={`${providerName} model picker`}
+        >
           <header>
             <span><ProviderMark provider={provider} size={20} /><strong>{providerName} models</strong></span>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close model picker">×</button>
@@ -162,12 +164,15 @@ export function ModelPicker({
             <span aria-hidden>⌕</span>
             <input
               ref={searchRef}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               value={query}
               onChange={(event) => {
                 setQuery(event.currentTarget.value);
                 setActiveIndex(0);
               }}
-              placeholder={`Search ${providerName} models`}
+              placeholder={allowCustom ? 'Search or enter an exact model name' : `Search ${providerName} models`}
               aria-label={`Search ${providerName} models`}
               maxLength={128}
               role="combobox"
@@ -230,15 +235,15 @@ export function ModelPicker({
                 <span className="model-picker-check" aria-hidden>↵</span>
               </button>
             ) : null}
-            {!loading && orderedOptions.length === 0 ? (
+            {!loading && orderedOptions.length === 0 && !customValue ? (
               <div className="model-picker-empty">No matching models</div>
             ) : null}
           </div>
           <footer>
-            {loading ? 'Loading the live catalog…' : error ? 'Live catalog unavailable; provider defaults still work.' : '↑↓ navigate · Enter selects'}
+            {loading ? 'Loading models…' : error || (allowCustom ? 'Not listed? Enter its exact model name.' : '↑↓ navigate · Enter selects')}
           </footer>
         </section>
-      ) : null}
+      ), document.body) : null}
     </div>
   );
 }

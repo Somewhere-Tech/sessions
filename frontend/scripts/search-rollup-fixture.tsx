@@ -192,11 +192,36 @@ function jsonResponse(body: unknown, status = 200): Response {
 const fetchLog: string[] = [];
 (window as unknown as { __fetchLog: string[] }).__fetchLog = fetchLog;
 
+// The driver can hold exactly the submitted response until it has inspected
+// loading. An immediately resolved fake fetch otherwise makes loading an
+// unobservable scheduling race between React and Puppeteer's next command.
+let releaseResponse: (() => void) | null = null;
+const searchGate = {
+  query: '',
+  pending: false,
+  arm(query: string): void {
+    if (releaseResponse) throw new Error('A search response is already held');
+    this.query = query.toLowerCase();
+    this.pending = false;
+  },
+  release(): void {
+    this.query = '';
+    this.pending = false;
+    releaseResponse?.();
+    releaseResponse = null;
+  }
+};
+(window as unknown as { __searchGate: typeof searchGate }).__searchGate = searchGate;
+
 window.fetch = async (input: RequestInfo | URL): Promise<Response> => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, window.location.href);
   fetchLog.push(`${url.pathname}${url.search}`);
   if (url.pathname === '/api/search') {
     const query = (url.searchParams.get('q') ?? '').toLowerCase();
+    if (searchGate.query && query === searchGate.query) {
+      searchGate.pending = true;
+      await new Promise<void>((resolve) => { releaseResponse = resolve; });
+    }
     if (query.includes('legacy')) return jsonResponse(LEGACY);
     if (query.includes('partial')) return jsonResponse(PARTIAL);
     if (query.includes('how should')) return jsonResponse(RELAXED);

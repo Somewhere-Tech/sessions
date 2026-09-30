@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>@EXECUTABLE@</string>
+  <key>CFBundleIdentifier</key>
+  <string>@BUNDLE_IDENTIFIER@</string>
+  <key>CFBundleName</key>
+  <string>Sessions</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Sessions discovers and connects to Sessions machines on private networks you trust.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_sessions._tcp</string>
+  </array>
+</dict>
+</plist>

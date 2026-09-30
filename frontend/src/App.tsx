@@ -1,59 +1,60 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RestartConversationHost } from './components/RestartConversation';
 import { SessionTabs, type TabStatus } from './components/SessionTabs';
 import { SessionView } from './components/SessionView';
 import { EmptyState } from './components/EmptyState';
-import { NewSessionDialog } from './components/NewSessionDialog';
-import { ResumeDialog } from './components/ResumeDialog';
+// These surfaces are only opened on demand, so keep them out of the entry bundle.
+const NewSessionDialog = lazy(() => import('./components/NewSessionDialog').then((module) => ({ default: module.NewSessionDialog })));
+const ResumeDialog = lazy(() => import('./components/ResumeDialog').then((module) => ({ default: module.ResumeDialog })));
+const ForkConfirmationDialog = lazy(() => import('./components/ForkConfirmationDialog').then((module) => ({ default: module.ForkConfirmationDialog })));
+const FleetView = lazy(() => import('./components/FleetView').then((module) => ({ default: module.FleetView })));
+const UsageDashboard = lazy(() => import('./components/UsageDashboard').then((module) => ({ default: module.UsageDashboard })));
+const DailyView = lazy(() => import('./components/DailyView').then((module) => ({ default: module.DailyView })));
+const AccountsView = lazy(() => import('./components/AccountsView').then((module) => ({ default: module.AccountsView })));
+const SettingsView = lazy(() => import('./components/SettingsView').then((module) => ({ default: module.SettingsView })));
+const SearchView = lazy(() => import('./components/SearchView').then((module) => ({ default: module.SearchView })));
+const ConnectScreen = lazy(() => import('./components/ConnectScreen').then((module) => ({ default: module.ConnectScreen })));
+const FleetRelaySync = lazy(() => import('./components/FleetRelaySync').then((module) => ({ default: module.FleetRelaySync })));
 import { MobileNav } from './components/MobileNav';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { GridView } from './components/GridView';
-import { FleetView } from './components/FleetView';
-import { UsageDashboard } from './components/UsageDashboard';
-import { DailyView } from './components/DailyView';
-import { SearchView } from './components/SearchView';
 import { ProductSidebar, type ProductView, type ThemeMode } from './components/ProductSidebar';
-import { SessionNavigator } from './components/SessionNavigator';
+import { SessionNavigator, focusTreeRow } from './components/SessionNavigator';
 import { HomeView } from './components/HomeView';
-import { SettingsView } from './components/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
 import { SessionsWorkspaceSkeleton } from './components/LoadingShell';
 import { OnboardingDialog } from './components/OnboardingDialog';
 import { DaemonBanner, SinglePopOut } from './AppAuxiliaryViews';
 import { useSessions } from './store/sessions';
 import { useServers, configureNativeClientOnly, configureNativeLocalPort, getActiveServer, isLocalServer, serverDisplayName } from './lib/servers';
-import { SettingsMenu } from './components/SettingsMenu';
+import { OnDemandSettingsMenu } from './components/OnDemandSettingsMenu';
 import { TailnetAccessInbox } from './components/TailnetAccessInbox';
 import { MachineRecoveryNotice } from './components/MachineRecoveryNotice';
 import { useIsMobile } from './hooks/useMediaQuery';
-import { ConnectScreen } from './components/ConnectScreen';
+import { useExactResume } from './hooks/useExactResume';
+import { useAndroidBackNavigation } from './hooks/useAndroidBackNavigation';
 import { readTabOrder, writeTabOrder, applyOrder, moveBefore } from './lib/tabOrder';
 import { getNativeConnectionSettings, getNativeRuntimeStatus, isTauri, notify, recoverNativeRuntime, syncTrayServers } from './lib/tauriBridge';
 import { readTextSize, writeTextSize, type TextSize } from './lib/textSize';
-import { preloadUsage } from './lib/usageCache';
-import { preloadDaily } from './lib/dailyCache';
-import { providerConversationId } from './lib/sessionStatus';
 import { INITIAL_STATUS, type ActiveStatus } from './lib/activeStatus';
 import { effectiveParentId } from './lib/workingSet';
-import { preferNextSessionView } from './lib/sessionViewPreference';
+import { providerConversationId } from './lib/sessionStatus';
 import { handleExternalLinkClick } from './lib/externalLinks';
 import {
   fetchServerMachineIdentity,
   fetchServerHealth,
   fetchOnboardingState,
-  forkConversation,
+  requestLocalNetworkAccess,
   updateOnboardingPreference,
   type OnboardingState,
   type ServerHealth
 } from './api/sessionsd';
-import { adoptConversationWithRepair, adoptionWarning } from './lib/adoptConversation';
 import type { SessionInfo, SessionTool } from './types';
-
 const TOOL_ICONS: Record<SessionTool, string> = {
   'claude-code': '🟠',
   'codex': '🟢',
   'terminal': '⬛'
 };
-
 // Status of the currently-attached session, lifted out of SessionView so
 // the tab strip and mobile nav can reflect it. Only the *active* session
 // has live data here — inactive tabs stay 'idle' until we add background
@@ -69,25 +70,23 @@ function readSingleModeParams(): { sessionId: string } | null {
   const sessionId = params.get('session');
   return sessionId ? { sessionId } : null;
 }
-
 // Layout mode: tabs (default), fleet (all configured machines), or grid
 // (active-machine monitor tiles).
 // Persisted per-window in localStorage so each window remembers its
 // last choice. Grid is best when N ≥ 2 and the window is wide.
-type LayoutMode = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'settings' | 'feedback' | 'connections' | 'grid';
+type LayoutMode = 'home' | 'tabs' | 'today' | 'fleet' | 'search' | 'usage' | 'accounts' | 'settings' | 'feedback' | 'connections' | 'grid';
 // Shared empty list for "the loaded sessions belong to a different machine".
 // A `[]` literal in that position is a new array identity on every render,
 // which made every memo, callback, and effect derived from the session list
 // re-run continuously while the scope was mismatched.
 const NO_SESSIONS: SessionInfo[] = [];
-
 const LAYOUT_KEY = 'sessions:layout-mode';
 const OPEN_TABS_KEY = 'sessions:open-tabs:v1';
 const THEME_KEY = 'sessions:theme:v1';
 function readStoredLayout(): LayoutMode {
   try {
     const v = window.localStorage.getItem(LAYOUT_KEY);
-    if (v === 'home' || v === 'tabs' || v === 'today' || v === 'fleet' || v === 'search' || v === 'usage' || v === 'settings' || v === 'feedback' || v === 'connections' || v === 'grid') return v;
+    if (v === 'home' || v === 'tabs' || v === 'today' || v === 'fleet' || v === 'search' || v === 'usage' || v === 'accounts' || v === 'settings' || v === 'feedback' || v === 'connections' || v === 'grid') return v;
   } catch { /* ignore */ }
   return 'tabs';
 }
@@ -184,8 +183,12 @@ export function App(): JSX.Element {
   }, [identityRefreshKey, nativeHydrated, updateServer]);
   if (!nativeHydrated) return <div className="native-hydration">Connecting to the Sessions runtime…</div>;
   return activeServerId && !pairingError && !credentialError
-    ? <ConnectedApp nativeClientOnly={nativeClientOnly} />
-    : <ConnectScreen clientOnly={nativeClientOnly} />;
+    ? <>
+        <ConnectedApp nativeClientOnly={nativeClientOnly} />
+      </>
+    : <Suspense fallback={<div className="native-hydration">Opening connection options…</div>}>
+        <ConnectScreen clientOnly={nativeClientOnly} />
+      </Suspense>;
 }
 
 function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean }): JSX.Element {
@@ -284,8 +287,8 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   }, [rawSessions]);
 
   const single = useMemo(() => readSingleModeParams(), []);
-  // Dialog state holds null (closed), 'new' (fresh-session mode), or
-  // 'resume' (the dedicated ended-conversation picker).
+  // Paid starts keep their exact source in dialog state. Opening a review is
+  // never the operation that creates the new runtime.
   const [dialogOpen, setDialogOpen] = useState<
     null | 'new' | 'resume' | { delegateFrom: string } | {
       resumeProviderId: string;
@@ -293,12 +296,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       historyId?: string;
       destinationProvider?: 'claude' | 'codex';
       runtimeMode?: 'rich' | 'terminal';
+    } | {
+      forkSession: SessionInfo;
+      destinationProvider: 'claude' | 'codex';
+      point?: { index: number; messageId: string };
     }
   >(null);
-  // A resume whose history annotations did not finish. Previously this was a
-  // console.warn, so the same failure that ResumeDialog puts on screen was
-  // invisible when the user continued from Fleet, Search, or the palette.
-  const [adoptionNotice, setAdoptionNotice] = useState<string | null>(null);
   const [activeStatus, setActiveStatus] = useState<ActiveStatus>(INITIAL_STATUS);
   const [openTabIds, setOpenTabIds] = useState<string[]>(readOpenTabs);
   const [theme, setTheme] = useState<ThemeMode>(readTheme);
@@ -339,32 +342,37 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // setLayoutMode is a stable React setter declared below; callbacks run only
   // after the component has completed initialization.
   }, [setActive, updateSetAside, writeOpenTabs]);
-  const resumeSession = useCallback((
+  const exactResume = useExactResume(openSession);
+  const resumeSelected = exactResume.resume;
+  const chooseHowToContinue = useCallback((
     session: SessionInfo,
     destinationProvider?: 'claude' | 'codex',
-    runtimeMode?: 'rich' | 'terminal'
+    runtimeMode?: 'rich' | 'terminal',
+    serverId?: string
   ): void => {
-    const providerId = providerConversationId(session);
+    if (!destinationProvider && !runtimeMode) {
+      if (serverId) {
+        useServers.getState().setActive(serverId);
+        setServerScope(serverId);
+      }
+      void resumeSelected(session, serverId);
+      return;
+    }
     setDialogOpen({
-      // A Sessions history id is a valid recovery target even when an older
-      // runner did not persist the provider UUID. Keep the exact row the user
-      // clicked instead of falling back to an unrelated generic picker.
-      resumeProviderId: providerId ?? session.id,
+      resumeProviderId: providerConversationId(session) ?? session.id,
       sourceSessionId: session.id,
-      historyId: providerId ? undefined : session.id,
+      historyId: session.id,
       destinationProvider,
-      runtimeMode: providerId ? runtimeMode : 'rich'
+      runtimeMode
     });
-  }, []);
+  }, [resumeSelected, setServerScope]);
   const forkSession = useCallback(async (
     session: SessionInfo,
     destinationProvider: 'claude' | 'codex',
     point?: { index: number; messageId: string }
   ): Promise<void> => {
-    const result = await forkConversation(session.id, destinationProvider, point);
-    await refresh();
-    openSession(result.laneId);
-  }, [openSession, refresh]);
+    setDialogOpen({ forkSession: session, destinationProvider, point });
+  }, []);
 
   // Bound how many sessions are kept LIVE (mounted SessionView → xterm
   // buffer + claudeEvents history + WS attach). Without this, every session
@@ -403,8 +411,10 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   // Grid is too cramped for a compact viewport. Fleet, search, and usage are
   // useful on phones and narrow Mac windows, so the mobile nav keeps them.
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(readStoredLayout);
+  const [projectSeed, setProjectSeed] = useState<{ serverId: string; cwd: string; tags: Record<string, string> } | null>(null);
   const effectiveLayout: LayoutMode = isMobile && layoutMode === 'grid' ? 'tabs' : layoutMode;
   const openNewSession = useCallback((): void => {
+    setProjectSeed(null);
     setLayoutMode('tabs');
     setMobileSessionDetail(true);
     setDialogOpen('new');
@@ -457,6 +467,20 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         event.stopPropagation();
         setCommandPaletteOpen(false);
         openNewSession();
+      } else if (event.key.toLowerCase() === 'j' && !event.shiftKey) {
+        // Jump to the inbox: the open session's row when it is listed,
+        // otherwise the first row, so arrows and Enter take over from there.
+        const tree = document.querySelector<HTMLElement>('.session-tree');
+        if (!tree) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const active = tree.querySelector<HTMLElement>('[role="treeitem"].is-active');
+        if (active) {
+          active.focus();
+          active.scrollIntoView({ block: 'nearest' });
+        } else {
+          focusTreeRow(tree, null, 'first');
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown, true);
@@ -465,6 +489,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   useEffect(() => {
     try { window.localStorage.setItem(LAYOUT_KEY, layoutMode); } catch { /* ignore */ }
   }, [layoutMode]);
+  useAndroidBackNavigation(() => commandPaletteOpen ? (setCommandPaletteOpen(false), true) : dialogOpen !== null ? (setDialogOpen(null), true) : mobileSessionDetail ? (setMobileSessionDetail(false), true) : effectiveLayout !== 'home' ? (setLayoutMode('home'), true) : false);
   useEffect(() => {
     try { window.localStorage.setItem(THEME_KEY, theme); } catch { /* ignore */ }
   }, [theme]);
@@ -517,25 +542,12 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   ): Promise<void> => {
     useServers.getState().setActive(serverId);
     setServerScope(serverId);
-    // Shared adopt-then-repair (lib/adoptConversation.ts): the same one
-    // ResumeDialog uses, so both entry points answer "did my history
-    // annotations finish?" identically. Repair is record-only and never
-    // turns an annotation failure into a second runtime.
-    const adopted = await adoptConversationWithRepair(providerSessionId, sourceSessionId, historyId);
-    const result = adopted.result;
-    setAdoptionNotice(adoptionWarning(adopted));
-    await refresh(serverId);
-    // Native Claude resume can immediately show a provider-only picker in its
-    // terminal. Imported Codex and Sessions transcript recovery are authored
-    // conversations, so open their Conversation view instead.
-    preferNextSessionView(
-      result.laneId,
-      result.transcriptRecovery || result.destinationProvider === 'codex' || result.mode
-        ? 'remote'
-        : 'terminal'
-    );
-    openSession(result.laneId);
-  }, [openSession, refresh, setServerScope]);
+    setDialogOpen({
+      resumeProviderId: providerSessionId,
+      sourceSessionId,
+      historyId
+    });
+  }, [setServerScope]);
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
     const onMessage = (event: MessageEvent<unknown>): void => {
@@ -589,10 +601,10 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
     return () => controller.abort();
   }, [activeServerId, single]);
   useEffect(() => {
-    if (!onboardingPending) return;
+    if (!onboardingPending || nativeClientOnly) return;
     setDialogOpen(null);
     setCommandPaletteOpen(false);
-  }, [onboardingPending]);
+  }, [nativeClientOnly, onboardingPending]);
   const chooseOnboardingPreference = useCallback(async (
     remoteControl: 'enabled' | 'local-only',
     delegatedAccess: 'inherit' | 'autonomous'
@@ -615,22 +627,13 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
   useEffect(() => {
     if (!activeServerId) return;
     const id = window.setTimeout(() => {
-      void preloadUsage(activeServerId).catch(() => {
-        // UsageDashboard owns the visible, actionable error state. Startup
-        // warming must never block the sessions inbox.
-      });
+      void import('./lib/usageCache')
+        .then(({ preloadUsage }) => preloadUsage(activeServerId))
+        .catch(() => {
+          // UsageDashboard owns the visible, actionable error state. Startup
+          // warming must never block the sessions inbox.
+        });
     }, 350);
-    return () => window.clearTimeout(id);
-  }, [activeServerId]);
-
-  // Daily is part of startup hydration rather than a cold, on-navigation
-  // request. The view adopts this cached result immediately and still renders
-  // its complete skeleton if the local index has not finished yet.
-  useEffect(() => {
-    if (!activeServerId) return;
-    const id = window.setTimeout(() => {
-      void preloadDaily(activeServerId);
-    }, 450);
     return () => window.clearTimeout(id);
   }, [activeServerId]);
 
@@ -744,8 +747,9 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       onOpen={openSession}
       onOpenMachineSession={openFleetSession}
       onNew={openNewSession}
+      onAddProjectAgent={(serverId, cwd, tags) => { openNewSession(); setProjectSeed({ serverId, cwd, tags }); }}
       onContinue={() => setDialogOpen('resume')}
-      onResumeSession={resumeSession}
+      onResumeSession={chooseHowToContinue}
       onForkSession={forkSession}
       onStartLinked={(id) => setDialogOpen({ delegateFrom: id })}
       openSessionIds={openTabIds}
@@ -761,15 +765,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         {sessionWorkspace && !isMobile ? sessionNavigator : null}
         <section className="operations-content">
           <TailnetAccessInbox />
-          {adoptionNotice ? (
-            <section className="adoption-notice" role="status" aria-live="polite">
-              <div>
-                <strong>The conversation is live; its records are incomplete.</strong>
-                <span>{adoptionNotice}</span>
-              </div>
-              <button type="button" className="btn btn-ghost" onClick={() => setAdoptionNotice(null)}>Dismiss</button>
-            </section>
-          ) : null}
+          {nativeClientOnly && onboardingPending ? <section className="client-onboarding-note" role="status" aria-live="polite"><strong>Finish setup on {machine}:</strong><span>Open Sessions on that computer once.</span></section> : null}
           {recoveryVisible ? (
             <MachineRecoveryNotice
               machine={selectedMachineName}
@@ -800,10 +796,11 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
               />
               {!isMobile ? <div className="session-layout-switch"><button type="button" className={effectiveLayout === 'tabs' ? 'is-active' : ''} onClick={() => setLayoutMode('tabs')}>Tabs</button><button type="button" className={effectiveLayout === 'grid' ? 'is-active' : ''} onClick={() => setLayoutMode('grid')}>Grid</button></div> : null}
               <ConnectionStatus machine={machine} hydrated={sessionsHydrated} error={sessionsError} />
-              <SettingsMenu textSize={textSize} onTextSizeChange={changeTextSize} onNewSession={openNewSession} onOpenConnections={() => setLayoutMode('settings')} />
+              <OnDemandSettingsMenu clientOnly={nativeClientOnly} hostName={machine} textSize={textSize} onTextSizeChange={changeTextSize} onNewSession={openNewSession} onOpenConnections={() => setLayoutMode('settings')} />
             </header>
           ) : null}
 
+      <Suspense fallback={null}><FleetRelaySync /></Suspense>
       <main className="app-main operations-main">
         {tokenRequiredServerId === activeServerId ? (
           <DaemonBanner
@@ -811,12 +808,13 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
             onRetry={() => void refresh()}
           />
         ) : sessionWorkspace && dialogOpen === 'new' ? (
-          <NewSessionDialog
-            embedded
-            onClose={() => setDialogOpen(null)}
-            onStarted={openSession}
-            onOpenResume={(providerId) => setDialogOpen(providerId ? { resumeProviderId: providerId } : 'resume')}
-          />
+          <Suspense fallback={null}><NewSessionDialog
+              embedded
+              projectSeed={projectSeed}
+              onClose={() => setDialogOpen(null)}
+              onStarted={openSession}
+              onOpenResume={(providerId) => setDialogOpen(providerId ? { resumeProviderId: providerId } : 'resume')}
+            /></Suspense>
         ) : sessionWorkspace && sessions.length === 0 && !sessionsHydrated ? (
           <SessionsWorkspaceSkeleton />
         ) : sessionWorkspace && isMobile && !mobileSessionDetail ? (
@@ -824,24 +822,25 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         ) : effectiveLayout === 'home' ? (
           <HomeView sessions={sessions} machine={machine} onOpen={openSession} onNew={openNewSession} onNavigate={(view) => setLayoutMode(view)} />
         ) : effectiveLayout === 'fleet' ? (
-          <FleetView onOpenSession={openFleetSession} onOpenMachine={openFleetMachine} />
+          <Suspense fallback={null}><FleetView onOpenSession={openFleetSession} onOpenMachine={openFleetMachine} /></Suspense>
         ) : effectiveLayout === 'today' ? (
-          <DailyView />
+          <Suspense fallback={null}><DailyView /></Suspense>
         ) : effectiveLayout === 'search' ? (
-          <SearchView
-            onResumeConversation={continueExactConversation}
-            onOpenLiveSession={openFleetSession}
-          />
+          <Suspense fallback={null}><SearchView
+              onResumeConversation={continueExactConversation}
+              onOpenLiveSession={openFleetSession}
+            /></Suspense>
         ) : effectiveLayout === 'usage' ? (
-          <UsageDashboard />
+          <Suspense fallback={null}><UsageDashboard /></Suspense>
+        ) : effectiveLayout === 'accounts' ? (
+          <Suspense fallback={null}><AccountsView key={activeServerId ?? ''} hostName={machine} serverId={activeServerId ?? undefined} /></Suspense>
         ) : effectiveLayout === 'settings' || effectiveLayout === 'feedback' || effectiveLayout === 'connections' ? (
-          <SettingsView
-            theme={theme}
-            onThemeChange={setTheme}
-            textSize={textSize}
-            onTextSizeChange={changeTextSize}
-            initialSection={effectiveLayout === 'feedback' ? 'support' : effectiveLayout === 'connections' ? 'network' : 'general'}
-          />
+          <Suspense fallback={null}><SettingsView clientOnly={nativeClientOnly} hostName={machine} theme={theme}
+              onThemeChange={setTheme}
+              textSize={textSize}
+              onTextSizeChange={changeTextSize}
+              initialSection={effectiveLayout === 'feedback' ? 'support' : effectiveLayout === 'connections' ? 'fleet' : 'general'}
+            /></Suspense>
         ) : effectiveLayout === 'grid' ? (
           liveSessions.length > 0 ? (
             <GridView
@@ -888,9 +887,9 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
                   sessionId={s.id}
                   isActive={s.id === activeId}
                   onStatusChange={s.id === activeId ? setActiveStatus : undefined}
-                  onResume={resumeSession}
-                  onFork={forkSession}
-                  onCloseView={closeTab}
+                  onResume={chooseHowToContinue} onContinueConversation={chooseHowToContinue}
+                  onFork={forkSession} onCloseView={closeTab}
+                  onOpenAccounts={() => setLayoutMode('accounts')}
                   onOpenSession={openSession}
                   onReparent={updateDisplayParent}
                   onBack={isMobile ? () => setMobileSessionDetail(false) : undefined}
@@ -902,6 +901,7 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
         </section>
       </div>
 
+      {exactResume.notice ? <div className="dialog-error" role="alert">{exactResume.notice}<button type="button" onClick={exactResume.dismiss}>Dismiss</button></div> : null}
       <MobileNav
         layoutMode={effectiveLayout === 'grid' ? 'tabs' : effectiveLayout === 'feedback' ? 'settings' : effectiveLayout}
         showingSessionDetail={effectiveLayout === 'tabs' && mobileSessionDetail}
@@ -926,39 +926,51 @@ function ConnectedApp({ nativeClientOnly = false }: { nativeClientOnly?: boolean
       />
 
       {dialogOpen === 'resume' || (dialogOpen && typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen) ? (
-        <ResumeDialog
+        <Suspense fallback={null}>
+          <ResumeDialog
+            onClose={() => setDialogOpen(null)}
+            onResumed={(laneId) => openSession(laneId)}
+            onStartNew={openNewSession}
+            preferredProviderId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+              ? dialogOpen.resumeProviderId
+              : undefined}
+            preferredSourceSessionId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+              ? dialogOpen.sourceSessionId
+              : undefined}
+            preferredHistoryId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+              ? dialogOpen.historyId
+              : undefined}
+            preferredDestinationProvider={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+              ? dialogOpen.destinationProvider
+              : undefined}
+            preferredRuntimeMode={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
+              ? dialogOpen.runtimeMode
+              : undefined}
+          />
+        </Suspense>
+      ) : null}
+      {dialogOpen && typeof dialogOpen === 'object' && 'forkSession' in dialogOpen ? (
+        <Suspense fallback={null}><ForkConfirmationDialog
+          session={dialogOpen.forkSession}
+          destinationProvider={dialogOpen.destinationProvider}
+          point={dialogOpen.point}
           onClose={() => setDialogOpen(null)}
-          onResumed={(laneId) => openSession(laneId)}
-          onStartNew={openNewSession}
-          preferredProviderId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
-            ? dialogOpen.resumeProviderId
-            : undefined}
-          preferredSourceSessionId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
-            ? dialogOpen.sourceSessionId
-            : undefined}
-          preferredHistoryId={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
-            ? dialogOpen.historyId
-            : undefined}
-          preferredDestinationProvider={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
-            ? dialogOpen.destinationProvider
-            : undefined}
-          preferredRuntimeMode={typeof dialogOpen === 'object' && 'resumeProviderId' in dialogOpen
-            ? dialogOpen.runtimeMode
-            : undefined}
-        />
+          onStarted={openSession}
+        /></Suspense>
       ) : null}
       {dialogOpen && typeof dialogOpen === 'object' && 'delegateFrom' in dialogOpen ? (
-        <NewSessionDialog
+        <Suspense fallback={null}><NewSessionDialog
           parentSession={sessions.find((session) => session.id === dialogOpen.delegateFrom) ?? null}
           onClose={() => setDialogOpen(null)}
           onStarted={openSession}
-        />
+        /></Suspense>
       ) : null}
-      {onboarding && onboarding.supported !== false && !onboarding.complete ? (
+      <RestartConversationHost />
+      {!nativeClientOnly && onboarding && onboarding.supported !== false && !onboarding.complete ? (
         <OnboardingDialog
           machine={machine}
           busy={onboardingBusy}
-          error={onboardingError}
+          error={onboardingError} onAllowLocalNetwork={requestLocalNetworkAccess}
           onChoose={chooseOnboardingPreference}
         />
       ) : null}

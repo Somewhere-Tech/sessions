@@ -3,6 +3,16 @@ export type SessionViewMode = 'terminal' | 'remote';
 const GLOBAL_VIEW_KEY = 'sessions:viewMode';
 const NEXT_VIEW_PREFIX = 'sessions:next-view:';
 
+// A saved view is a preference, not evidence that this runtime has a PTY.
+export function effectiveSessionView(
+  requested: SessionViewMode,
+  supportsConversation: boolean,
+  conversationOnly: boolean
+): SessionViewMode {
+  if (!supportsConversation) return 'terminal';
+  return conversationOnly ? 'remote' : requested;
+}
+
 export function readInitialSessionView(sessionId: string): SessionViewMode {
   try {
     const oneShotKey = `${NEXT_VIEW_PREFIX}${sessionId}`;

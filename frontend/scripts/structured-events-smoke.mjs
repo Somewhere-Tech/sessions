@@ -338,6 +338,52 @@ try {
     'a rejection with no turn of its own must still render'
   );
 
+  const providerFaults = eventsToMessages([
+    {
+      ...codexBase,
+      type: 'system',
+      subtype: 'provider_fault',
+      timestamp: '2026-07-20T10:00:04Z',
+      provider: 'codex',
+      kind: 'provider-unavailable',
+      detail: 'Codex API unavailable (503, overloaded)',
+      status: 503
+    },
+    {
+      ...codexBase,
+      type: 'system',
+      subtype: 'provider_retry',
+      timestamp: '2026-07-20T10:00:05Z',
+      provider: 'codex',
+      attempt: 2,
+      max: 5,
+      nextAt: Date.now() + 42_000
+    }
+  ]);
+  assert.equal(providerFaults[0].errorResponse, 'Codex API unavailable (503, overloaded)');
+  assert.equal(providerFaults[0].content, '', 'provider faults must not become assistant prose');
+  assert.equal(providerFaults[1].quietStatus, 'Retrying (2 of 5) …');
+  assert.equal(providerFaults[1].content, '', 'provider retries must stay a quiet system line');
+
+  const continued = eventsToMessages([{
+    ...codexBase,
+    type: 'system',
+    subtype: 'continuation_started',
+    timestamp: '2026-07-20T10:00:06Z',
+    detail: 'Continued from Frozen release plan (Codex) · 84 messages · model Sonnet 5'
+  }]);
+  assert.equal(continued.length, 1, 'a continued conversation must begin with its source line');
+  assert.equal(continued[0].quietStatus, 'Continued from Frozen release plan (Codex) · 84 messages · model Sonnet 5');
+
+  const resumed = eventsToMessages([
+    { type: 'user', source: 'sessions-continuation', uuid: 'old-user', message: { role: 'user', content: 'Original request' } },
+    { type: 'assistant', source: 'sessions-continuation', uuid: 'old-answer', message: { role: 'assistant', content: [{ type: 'text', text: 'Original answer' }] } },
+    { ...codexBase, type: 'user', uuid: 'new-user', message: { role: 'user', content: 'New request' } }
+  ]);
+  assert.deepEqual(resumed.map((message) => message.content), ['Original request', 'Original answer', 'New request'], 'live app-server events must not hide restored display history');
+  const unavailable = eventsToMessages([{ ...codexBase, type: 'system', subtype: 'resume_history_unavailable', detail: 'Earlier display history is unavailable; open the saved runtime.' }]);
+  assert.equal(unavailable[0].quietStatus, 'Earlier display history is unavailable; open the saved runtime.');
+
   process.stdout.write('structured-events smoke passed\n');
 } finally {
   await rm(work, { recursive: true, force: true });

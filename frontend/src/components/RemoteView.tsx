@@ -1,20 +1,24 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from '../hooks/useDispatch';
 import { renderContent } from '../lib/contentRender';
 import type { SessionSidebarState } from '../hooks/useSessionSidebar';
-import type { ClaudeSessionEvent, SessionTool } from '../types';
+import type { ClaudeSessionEvent, HarnessEventView, SessionTool, ApprovalDecision, PendingApproval, ProviderFailureKind, ProviderRetry } from '../types';
 import { InputBar } from './InputBar';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import StatusSidebar from './StatusSidebar';
 import { saveScrollPosition, readScrollPosition } from '../lib/scrollMemory';
 import { eventsToMessages } from '../lib/claudeEvents';
-import { snapshot as fetchServerSnapshot } from '../api/sessionsd';
-import { classifySnapshotComposerState, type SnapshotComposerState } from '../lib/detectMultiChoice';
 import type { DispatchMessage } from '../hooks/useDispatch';
 import { ProviderMark, type Provider as ProviderIdentity } from './ProviderBadge';
 import { CopyButton } from './CopyButton';
 import { linkifyFilePaths } from '../lib/filePaths';
 import { PlanPanel } from './RemotePlanPanel';
+import { ProviderControlCard } from './ProviderControlCard';
+import { ProviderFaultCard } from './ProviderFaultCard';
+import { RemoteEmptyState } from './RemoteEmptyState';
+import { useProviderControl } from '../hooks/useProviderControl';
+
+const LostConversationCard = lazy(() => import('./LostConversationCard').then((module) => ({ default: module.LostConversationCard })));
 
 function renderFileReference(path: string, cwd = ''): string {
   const escaped = path
@@ -25,8 +29,53 @@ function renderFileReference(path: string, cwd = ''): string {
   return linkifyFilePaths(escaped, cwd);
 }
 
+function countProviderUserMessages(messages: DispatchMessage[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const message of messages) {
+    if (message.role !== 'user' || message.status !== 'sent') continue;
+    const content = message.content.trim();
+    counts.set(content, (counts.get(content) ?? 0) + 1);
+  }
+  return counts;
+}
+
+export interface ProviderFaultView {
+  kind: ProviderFailureKind;
+  detail?: string;
+  /** The provider's own line the claim rests on. */
+  evidence?: string;
+  retry?: ProviderRetry;
+  onConnectAccount?: () => void;
+}
+
+export interface LostConversationView {
+  providerName: 'Claude' | 'Codex';
+  onResume?: () => void;
+  onClose: () => Promise<void>;
+}
+
+function LostCard({ view }: { view: LostConversationView }): JSX.Element {
+  return <Suspense fallback={null}><LostConversationCard {...view} /></Suspense>;
+}
+
+function FaultCard({ sessionId, fault, rich, onOpenTerminal }: {
+  sessionId: string;
+  fault: ProviderFaultView;
+  rich: boolean;
+  onOpenTerminal: () => void;
+}): JSX.Element {
+  return (
+    <ProviderFaultCard
+      sessionId={sessionId} failureKind={fault.kind} detail={fault.detail}
+      evidence={fault.evidence} retry={fault.retry} rich={rich} onOpenTerminal={onOpenTerminal}
+      onConnectAccount={fault.onConnectAccount}
+    />
+  );
+}
+
 interface Props {
   sessionId: string;
+  draftMachineId?: string;
   // Provider-neutral structured history. Claude supplies JSONL records;
   // Codex supplies normalized rollout or app-server notifications.
   events: ClaudeSessionEvent[];
@@ -35,6 +84,7 @@ interface Props {
   // inside SessionView and are never used for conversation dispatch.
   sendConfirmed: (data: string) => Promise<void>;
   submitMessage: (data: string) => Promise<void>;
+  steerMessage?: (data: string) => Promise<void>;
   connected: boolean;
   sendAvailable?: boolean;
   hasEarlierClaudeEvents: boolean;
@@ -63,6 +113,19 @@ interface Props {
   ) => Promise<void>;
   forkMode?: boolean;
   onExitForkMode?: () => void;
+  // The daemon's durable needs-input state for this session, when set. It
+  // arrives before any send is attempted, so the provider control is shown
+  // (and answerable) the moment the session stops at one.
+  needsInputDetail?: string | null;
+  // Raw keystrokes for answering a provider control in place. Only the
+  // banner uses it; conversation text still goes through sendConfirmed.
+  sendRawInput?: (data: string) => void;
+  // The permission a Rich Codex lane is holding open, and how to answer it.
+  pendingApproval?: PendingApproval | null;
+  onApprove?: (decision: ApprovalDecision) => Promise<void>;
+  providerFault?: ProviderFaultView;
+  lostConversation?: LostConversationView;
+  statusLabel?: string;
 }
 
 // Provider-neutral conversation view over the durable session transport.
@@ -77,11 +140,12 @@ interface Props {
 // cycle.
 
 export function RemoteView({
-  sessionId,
+  sessionId, draftMachineId,
   events,
   historyPending,
   sendConfirmed,
   submitMessage,
+  steerMessage,
   connected,
   sendAvailable = connected,
   hasEarlierClaudeEvents,
@@ -100,37 +164,31 @@ export function RemoteView({
   onContinueInTerminal,
   onForkFromMessage,
   forkMode = false,
-  onExitForkMode
+  onExitForkMode,
+  needsInputDetail = null,
+  sendRawInput,
+  pendingApproval = null,
+  onApprove,
+  providerFault,
+  lostConversation,
+  statusLabel = 'Ready'
 }: Props): JSX.Element {
   const providerName = provider === 'codex' ? 'Codex' : 'Claude';
   const providerIdentity: ProviderIdentity = provider === 'codex' ? 'codex' : 'claude';
-  // Event-derived user contents — passed to useDispatch so an acknowledged
-  // local copy is replaced when provider history contains the same turn.
-  // Computed once per events change; the Map is
-  // stable across renders when its contents don't change so useDispatch's
-  // effect doesn't re-run unnecessarily.
+  // Event-derived user contents stay stable so dispatch reconciliation does
+  // not rerun unless provider history actually changes.
   const eventMessages = useMemo(() => eventsToMessages(events), [events]);
   // Occurrence COUNT per trimmed user content in the JSONL — a count, not
   // a set, so useDispatch can tell a genuinely-new re-send ("continue"
   // again) from a historical duplicate and not false-confirm it.
-  const eventUserContentCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const m of eventMessages) {
-      if (m.role !== 'user' || m.status !== 'sent') continue;
-      const c = m.content.trim();
-      counts.set(c, (counts.get(c) ?? 0) + 1);
-    }
-    return counts;
-  }, [eventMessages]);
-
-  const { messages: dispatchMessages, recordSent, restoreDraft, remove, resetLog } = useDispatch({
+  const eventUserContentCounts = useMemo(() => countProviderUserMessages(eventMessages), [eventMessages]);
+  const { messages: dispatchMessages, prepareSend, recordSent, restoreDraft, remove, resetLog } = useDispatch({
     sessionId,
     eventUserContentCounts
   });
   const hasRecoverableLocalState = dispatchMessages.some(
     (message) => message.status === 'failed'
   );
-
   // JSONL events are the authoritative chat record. Merge in only the
   // dispatch log's acknowledged or legacy-failed user entries — sends that
   // haven't shown up in provider history yet. useDispatch flips an entry to
@@ -201,11 +259,19 @@ export function RemoteView({
     setVisibleCount(TAIL_WINDOW_INITIAL);
   }, [sessionId]);
 
+  // A send the provider has not picked up yet is not part of the record of
+  // what was said; it is what the person is waiting on, and it belongs beside
+  // the composer where they are waiting.
+  const transcript = useMemo(() => messages.filter((m) => !m.pendingQueue), [messages]);
+  const queuedSend = useMemo(
+    () => [...messages].reverse().find((m) => m.pendingQueue) ?? null,
+    [messages]
+  );
   const visibleMessages = useMemo(() => {
-    if (messages.length <= visibleCount) return messages;
-    return messages.slice(messages.length - visibleCount);
-  }, [messages, visibleCount]);
-  const hiddenCount = messages.length - visibleMessages.length;
+    if (transcript.length <= visibleCount) return transcript;
+    return transcript.slice(transcript.length - visibleCount);
+  }, [transcript, visibleCount]);
+  const hiddenCount = transcript.length - visibleMessages.length;
   const latestFailedSend = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]!;
@@ -223,7 +289,6 @@ export function RemoteView({
   const failedSendKey = latestFailedSend
     ? `${latestFailedSend.id}:${latestFailedSend.createdAt}`
     : null;
-  const [blockingState, setBlockingState] = useState<SnapshotComposerState | null>(null);
   const [forkPointId, setForkPointId] = useState<string | null>(null);
   const [forkBusy, setForkBusy] = useState(false);
   const [forkError, setForkError] = useState<string | null>(null);
@@ -256,35 +321,9 @@ export function RemoteView({
     setForkError(null);
   }, [forkMode]);
 
-  useEffect(() => {
-    // Snapshot prompt classification is a terminal-screen heuristic. Rich
-    // sessions have structured provider events but no terminal stream, so
-    // applying it there can turn ordinary conversation text into a false
-    // "open Terminal" warning with an impossible action.
-    if (!terminalAvailable || !failedSendKey) {
-      setBlockingState(null);
-      return;
-    }
-
-    let alive = true;
-    const checkSnapshot = async (): Promise<void> => {
-      try {
-        const snap = await fetchServerSnapshot(sessionId);
-        if (!alive) return;
-        if (!snap) {
-          setBlockingState(null);
-          return;
-        }
-        const state = classifySnapshotComposerState(snap.text);
-        setBlockingState(state.kind === 'normal-composer' ? null : state);
-      } catch {
-        if (alive) setBlockingState(null);
-      }
-    };
-
-    void checkSnapshot();
-    return () => { alive = false; };
-  }, [failedSendKey, sessionId, terminalAvailable]);
+  const { blockingState, trustChoice, answerControl, controlPending } = useProviderControl({
+    sessionId, terminalAvailable: Boolean(terminalAvailable), failedSendKey, needsInputDetail, sendRawInput
+  });
 
   // Scroll-anchor preservation across window expansion. Prepending
   // older messages grows scrollHeight by ~the prepended block's
@@ -429,42 +468,31 @@ export function RemoteView({
           reset sends
         </button>
       ) : null}
-      {changedFiles.length > 0 ? (
-        <details className="remote-changes-strip">
-          <summary>Changes <span>{changedFiles.length} loaded {changedFiles.length === 1 ? 'file' : 'files'}</span></summary>
-          <div>
-            {changedFiles.map((path) => (
-              <code key={path} dangerouslySetInnerHTML={{ __html: renderFileReference(path, cwd) }} />
-            ))}
-          </div>
-        </details>
-      ) : null}
+      <ChangedFilesStrip files={changedFiles} cwd={cwd} />
       <div
         className="remote-scroll"
         ref={scrollRef}
         onScroll={onScroll}
       >
-        {messages.length === 0 && historyPending ? (
-          <div className="remote-history-loading" role="status" aria-busy="true" aria-label="Loading conversation history">
-            <span className="loading-skeleton is-title" />
-            <span className="loading-skeleton is-line" />
-            <span className="loading-skeleton is-line is-medium" />
-            <div>
-              <span className="loading-skeleton is-line" />
-              <span className="loading-skeleton is-line is-short" />
-            </div>
-          </div>
-        ) : messages.length === 0 ? (
-          <div className="remote-empty">
-            <ProviderMark provider={providerIdentity} size={48} />
-            <span>Ready</span>
-            <h2>Start a {providerName} conversation</h2>
-            <p className="remote-empty-hint">
-              {terminalAvailable
-                ? 'Send the first request below. Conversation and Terminal stay connected to the same provider session.'
-                : 'Send the first request below. Rich sessions use the provider’s structured conversation interface.'}
-            </p>
-          </div>
+        {transcript.length === 0 ? (
+          <RemoteEmptyState
+            historyPending={historyPending}
+            providerIdentity={providerIdentity}
+            providerName={providerName}
+            terminalAvailable={Boolean(terminalAvailable)}
+            control={lostConversation ? <LostCard view={lostConversation} /> : providerFault ? <FaultCard sessionId={sessionId} fault={providerFault} rich={!terminalAvailable} onOpenTerminal={onOpenTerminal} /> : controlPending ? (
+              <ProviderControlCard
+                detail={needsInputDetail}
+                blockingState={blockingState}
+                trustChoice={trustChoice}
+                answer={sendRawInput ? answerControl : undefined}
+                onOpenTerminal={onOpenTerminal}
+                terminalAvailable={Boolean(terminalAvailable)}
+                approval={pendingApproval}
+                onApprove={onApprove}
+              />
+            ) : null}
+          />
         ) : null}
         {hiddenCount > 0 || hasEarlierClaudeEvents ? (
           <button
@@ -487,6 +515,7 @@ export function RemoteView({
             <small>The original conversation stays unchanged.</small>
           </div>
         ) : null}
+        {transcript.length > 0 && lostConversation ? <LostCard view={lostConversation} /> : providerFault && transcript.length > 0 ? <FaultCard sessionId={sessionId} fault={providerFault} rich={!terminalAvailable} onOpenTerminal={onOpenTerminal} /> : null}
         {visibleMessages.map((m, i) => (
           <RemoteMessage
             key={m.id}
@@ -519,6 +548,18 @@ export function RemoteView({
               : undefined}
           />
         ))}
+        {!lostConversation && controlPending && messages.length > 0 ? (
+          <ProviderControlCard
+            detail={needsInputDetail}
+            blockingState={blockingState}
+            trustChoice={trustChoice}
+            answer={sendRawInput ? answerControl : undefined}
+            onOpenTerminal={onOpenTerminal}
+            terminalAvailable={Boolean(terminalAvailable)}
+            approval={pendingApproval}
+            onApprove={onApprove}
+          />
+        ) : null}
         {/* Sticky-anchor: pins the down-arrow to the right edge of the
             centered 820px message column (same pattern as Sessions). */}
         <div className="scroll-to-bottom-anchor" aria-hidden={atBottom}>
@@ -536,30 +577,20 @@ export function RemoteView({
         finalElapsed={sidebar.finalElapsed}
         currentTask={sidebar.currentTask}
         checklist={sidebar.checklist}
+        statusLabel={statusLabel}
       />
 
-      {blockingState ? (
-        <div className="remote-blocking-banner" role="status" aria-live="polite">
-          <span className="remote-blocking-banner-text">
-            {blockingState.description} Open Terminal view to respond.
-          </span>
-          <button
-            type="button"
-            className="remote-blocking-banner-action"
-            onClick={onOpenTerminal}
-          >
-            Terminal
-          </button>
-        </div>
-      ) : null}
 
       <div className="remote-input-wrap">
+        {queuedSend ? <QueuedComposerStatus text={queuedSend.content} providerName={providerName} /> : null}
         <InputBar
           send={sendConfirmed}
           submitMessage={submitMessage}
+          steerMessage={steerMessage}
           connected={connected}
           sendAvailable={sendAvailable}
-          sessionId={sessionId}
+          sessionId={sessionId} draftMachineId={draftMachineId}
+          onSubmitting={prepareSend}
           onSubmitted={recordSent}
           recoverDraft={recoverDraft}
           provider={provider}
@@ -573,6 +604,54 @@ export function RemoteView({
           onContinueInTerminal={onContinueInTerminal}
         />
       </div>
+    </div>
+  );
+}
+
+/** The files this conversation has touched, as links into the project. */
+function ChangedFilesStrip({ files, cwd = '' }: { files: string[]; cwd?: string }): JSX.Element | null {
+  if (files.length === 0) return null;
+  return (
+    <details className="remote-changes-strip">
+      <summary>Changes <span>{files.length} loaded {files.length === 1 ? 'file' : 'files'}</span></summary>
+      <div>
+        {files.map((path) => (
+          <code key={path} dangerouslySetInnerHTML={{ __html: renderFileReference(path, cwd) }} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
+/** A harness block: one quiet line, openable for exactly what arrived. */
+function HarnessFold({ view, className }: { view: HarnessEventView; className: string }): JSX.Element {
+  return (
+    <details className={className} data-no-copy onClick={(event) => event.stopPropagation()}>
+      <summary>{view.summary}</summary>
+      <pre>{view.detail}</pre>
+    </details>
+  );
+}
+
+function QueuedBadge({ agentName }: { agentName: string }): JSX.Element {
+  return (
+    <div className="remote-bubble-badge remote-bubble-badge-queued" aria-label="queued">
+      <span aria-hidden>⏳</span>
+      <span>{agentName === 'Codex'
+        ? 'Accepted for this turn · may wait for a tool to finish'
+        : 'queued — Claude is finishing the previous turn'}</span>
+    </div>
+  );
+}
+
+// A send the provider has not picked up yet: status where the person is
+// waiting, rather than a line in the record of what was said.
+function QueuedComposerStatus({ text, providerName }: { text: string; providerName: string }): JSX.Element {
+  return (
+    <div className="remote-provider-retry remote-queued-status" role="status">
+      <span aria-hidden>⏳</span>
+      <span>queued — {providerName} is finishing the previous turn</span>
+      <span className="remote-queued-text">{text}</span>
     </div>
   );
 }
@@ -626,7 +705,6 @@ function RemoteMessageInner({
   const cls = `remote-msg remote-msg-${m.role} is-${m.status}${isLatest ? ' is-latest' : ''}${m.interrupted ? ' is-interrupted' : ''}${m.queued ? ' is-queued' : ''}${!isUser && !showAgentHeader ? ' is-continuation' : ''}${toolOnly ? ' is-tool-only' : ''}${followedByToolActivity ? ' has-following-tool-activity' : ''}`;
   const timestamp = formatMessageTimestamp(m.createdAt);
   const timestampTitle = new Date(m.createdAt).toLocaleString();
-
   // CSS-level height ratchet for the latest bubble: the parser sometimes
   // reports a shorter snapshot mid-stream (1 line) before re-emitting
   // the full set (5 lines), causing the chat to bounce up and down.
@@ -647,8 +725,13 @@ function RemoteMessageInner({
     const h = el.offsetHeight;
     if (h > minHeight) setMinHeight(h);
   }, [isLatest, m.content, m.status, minHeight]);
-
   const lockStyle = isLatest && minHeight > 0 ? { minHeight: `${minHeight}px` } : undefined;
+
+  if (m.quietStatus) return <div className="remote-provider-retry" role="status">{m.quietStatus}</div>;
+  // The harness delivered this through a user-role record. It is not the
+  // person's message and is not shown as one: one line, openable by whoever
+  // wants to read exactly what arrived.
+  if (m.systemEvent) return <HarnessFold view={m.systemEvent} className="remote-provider-retry remote-system-event" />;
 
   return (
     <div className={cls}>
@@ -665,14 +748,7 @@ function RemoteMessageInner({
             ref={bubbleRef}
             style={lockStyle}
           >
-            {m.queued ? (
-              <div className="remote-bubble-badge remote-bubble-badge-queued" aria-label="queued">
-                <span aria-hidden>⏳</span>
-                <span>{agentName === 'Codex'
-                  ? 'submitted after Codex’s next tool call'
-                  : 'queued — Claude is finishing the previous turn'}</span>
-              </div>
-            ) : null}
+            {m.queued ? <QueuedBadge agentName={agentName} /> : null}
             {m.interrupted ? (
               <div className="remote-bubble-badge remote-bubble-badge-interrupted" aria-label="interrupted">
                 <span aria-hidden>⎋</span>
@@ -681,6 +757,7 @@ function RemoteMessageInner({
             ) : (
               <div className="remote-bubble-content">{m.content}</div>
             )}
+            {m.systemNote ? <HarnessFold view={m.systemNote} className="remote-system-event remote-system-note" /> : null}
             {m.errorResponse ? (
               <div className="remote-bubble-error">
                 <span className="remote-bubble-error-icon" aria-hidden>⚠</span>
@@ -736,8 +813,7 @@ function RemoteMessageInner({
               </details>
             ) : null}
             {m.updates && m.updates.length > 0 ? (
-              <details className="remote-bubble-disclosure remote-bubble-updates">
-                <summary>{m.updates.length} progress {m.updates.length === 1 ? 'update' : 'updates'}</summary>
+              <section className="remote-bubble-updates" aria-label="Assistant updates">
                 <div className="remote-bubble-updates-list">
                   {m.updates.map((update, index) => (
                     <div
@@ -747,7 +823,7 @@ function RemoteMessageInner({
                     />
                   ))}
                 </div>
-              </details>
+              </section>
             ) : null}
             {m.plan && m.plan.length > 0 ? (
               <PlanPanel steps={m.plan} explanation={m.planExplanation} />
@@ -825,7 +901,7 @@ const RemoteMessage = memo(RemoteMessageInner, (a, b) => {
     ma.content === mb.content &&
     ma.status === mb.status &&
     ma.errorResponse === mb.errorResponse &&
-    ma.failureReason === mb.failureReason &&
+    ma.failureReason === mb.failureReason && ma.quietStatus === mb.quietStatus &&
     ma.queued === mb.queued &&
     ma.interrupted === mb.interrupted &&
     ma.hadThinking === mb.hadThinking &&

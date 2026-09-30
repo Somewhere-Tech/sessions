@@ -1,7 +1,6 @@
 # sessionsd WebSocket contract
 
-This is the protocol preserved in `runtime/testdata/node-runtime/src/ws.ts`, with message shapes
-from `runtime/testdata/node-runtime/src/types.ts` and actual browser consumption from
+This protocol is implemented by `runtime/internal/api` and consumed by
 `frontend/src/lib/wsMux.ts` and `frontend/src/hooks/useTerminal.ts`.
 
 All application messages described below are UTF-8 JSON objects. Protocol
@@ -70,6 +69,12 @@ and each successful attach starts its own hello/replay/live stream. Every
 session stream message is tagged with `sessionId`. Duplicate attaches are
 ignored both after attachment and while the first async replay is pending.
 Unknown attachment IDs produce an `error` but do not close the socket.
+Each connection supports at most 256 distinct attached or pending session
+streams. Duplicate attaches use no additional capacity. An excess attach gets
+an `error` with `code: "mux_attachment_limit"` and instructions to close an
+unused chat view and reopen the desired view. Existing streams and the socket
+stay open; the underlying session is not stopped or marked exited. Detach,
+lookup/replay failure, runner unavailability, and actual exit free that slot.
 
 Mux input is JSON-only in the application protocol: invalid JSON is ignored and
 there is no untagged raw-input fallback. Detaching/exiting one session leaves
@@ -131,6 +136,25 @@ reconnect when no server message has arrived for 30 seconds.
 - Mux: missing `sessionId` is ignored. The data is sent only for a known,
   non-exited session. When `requestId` is truthy, an `inputAck` is sent with the
   resulting boolean; without it, there is no response.
+
+Mux `input`, `submit`, and `resize` execute in receive order for each session
+through a fixed pool of eight workers per connection, started on first use.
+A legacy submit's bounded provider-history wait does not occupy the receive
+loop: ping, reads, and work for another admitted session can continue.
+At most eight session IDs and 64 commands (including executing commands) are
+admitted at once, with at most 1 MiB of decoded command strings retained.
+Admission never waits for capacity. Excess input/submit requests receive
+`ok:false` and an instructional `reason` before writing; without a request ID,
+or for resize, the server sends an `error` with code `input_overloaded`.
+This transport scheduling is not a claim that a provider queued the message.
+
+Raw HTTP and single-session socket input share the submit session lock, so
+they cannot write between another client's message text and Enter. Concurrent
+connections have no shared receive order; the lock makes their writes mutually
+exclusive. Closing a mux connection cancels its waiters and confirmation work,
+discards commands not yet started, and joins its workers. Already-started
+runner socket writes retain their existing transport deadline; cancellation
+does not retract bytes already written or end the underlying session.
 
 ### `resize`
 
@@ -309,8 +333,10 @@ absolute total; the response does not expose its selected start.
 {"type":"inputAck","requestId":"<request id>","ok":true,"sessionId":"<id>"}
 ```
 
-Only mux `input` carrying `requestId` gets this response. `ok=false` means the
-session was unknown or exited.
+Only mux `input` carrying `requestId` gets this response. `ok=false` reports a
+refusal or unsuccessful input write. The optional `reason` distinguishes a
+bounded-work refusal from an unavailable session; clients display it instead
+of assuming the session disappeared.
 
 ### `submitAck`
 
@@ -321,6 +347,12 @@ session was unknown or exited.
 Mux `submit` is the atomic composer-message equivalent of HTTP `/submit`.
 Unlike raw `input`, it owns the provider-compatible text/Enter sequence and is
 never queued while disconnected.
+For legacy Claude/Codex PTY sessions it uses one bracketed paste and requires
+a fresh complete user-history match before `ok:true`. An uncertain or partial
+outcome returns `ok:false` with an optional instructional `reason`; it is not
+proof of non-delivery, and clients must not automatically resend. This uses the
+same bounded confirmation and session lock as HTTP, without consuming or
+replacing any existing event subscriptions.
 
 ### `claudeEvent`
 
@@ -355,6 +387,8 @@ The terminal consumer:
 - resets xterm on `gap` as described above;
 - flushes output, displays terminal state, and detaches on `exit`;
 - displays and terminally handles unknown-session `error`;
+- shows `mux_attachment_limit` guidance in both conversation and terminal views
+  without manufacturing an exit, and clears it after a successful `hello`;
 - folds `claudeEvent` into UI state only for the active view.
 
 Although both TypeScript copies export protocol version 2, the current frontend

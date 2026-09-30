@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 )
 
 func (s *Session) recordCodexLocked(event *proto.Event) int64 {
@@ -16,14 +17,11 @@ func (s *Session) recordCodexLocked(event *proto.Event) int64 {
 
 func (s *Session) recordClaudeLocked(event *proto.Event) int64 {
 	event.ClaudeIndex = s.claudeBase + int64(len(s.claude))
-	raw := append(json.RawMessage(nil), event.ClaudeEvent...)
+	raw := event.ClaudeEvent
 	providerActivityAt := time.Now().UnixMilli()
-	s.claude = append(s.claude, raw)
-	if len(s.claude) > maxClaudeEvents {
-		removed := len(s.claude) - maxClaudeEvents
-		s.claude = append([]json.RawMessage(nil), s.claude[removed:]...)
-		s.claudeBase += int64(removed)
-	}
+	var removed int
+	s.claude, removed = proto.RetainStructuredHistory(s.claude, raw)
+	s.claudeBase += int64(removed)
 
 	var value map[string]any
 	if json.Unmarshal(raw, &value) != nil {
@@ -39,7 +37,10 @@ func (s *Session) recordClaudeLocked(event *proto.Event) int64 {
 			providerActivityAt = parsed.UnixMilli()
 		}
 	}
+	s.trackProviderFaultLocked(value, providerActivityAt)
 	switch value["type"] {
+	case "system":
+		s.trackApprovalLocked(value, providerActivityAt)
 	case "custom-title":
 		if title, ok := value["customTitle"].(string); ok && title != "" {
 			s.info.ClaudeCustomTitle = title
@@ -65,6 +66,123 @@ func (s *Session) recordClaudeLocked(event *proto.Event) int64 {
 		s.info.LastUserMessageAt = &millis
 	}
 	return providerActivityAt
+}
+
+func (s *Session) trackProviderFaultLocked(value map[string]any, at int64) {
+	if value["type"] == "system" && value["subtype"] == "provider_fault" {
+		fault := providerfault.Fault{}
+		fault.Kind, _ = value["kind"].(string)
+		fault.Detail, _ = value["detail"].(string)
+		fault.Evidence, _ = value["evidence"].(string)
+		provider, _ := value["provider"].(string)
+		s.setProviderFaultLocked(provider, fault, at)
+		return
+	}
+	if fault, ok := nativeClaudeProviderFault(value); ok {
+		s.setProviderFaultLocked("claude", fault, at)
+		return
+	}
+	if successfulProviderTurn(value) {
+		s.clearProviderFaultLocked()
+	}
+}
+
+func nativeClaudeProviderFault(value map[string]any) (providerfault.Fault, bool) {
+	isError, _ := value["isApiErrorMessage"].(bool)
+	if !isError {
+		isError, _ = value["is_api_error_message"].(bool)
+	}
+	if !isError || value["type"] != "assistant" {
+		return providerfault.Fault{}, false
+	}
+	message, _ := value["message"].(map[string]any)
+	text := structuredContentText(message["content"])
+	status := numericStatus(value["apiErrorStatus"])
+	if status == 0 {
+		status = numericStatus(value["api_error_status"])
+	}
+	return providerfault.Classify("claude", text, status), true
+}
+
+func numericStatus(value any) int {
+	switch number := value.(type) {
+	case float64:
+		return int(number)
+	case json.Number:
+		status, _ := number.Int64()
+		return int(status)
+	default:
+		return 0
+	}
+}
+
+// setProviderFaultLocked records what went wrong with the provider. It does not
+// touch LastSummary: a fault is not something the agent said, and writing its
+// detail there made every surface that shows "the last message" report a
+// provider outage as the agent's reply. The fault travels in its own fields,
+// which is where a caller that wants to show it reads it.
+func (s *Session) setProviderFaultLocked(provider string, fault providerfault.Fault, at int64) {
+	// A fault older than this lane is somebody else's fault. Replaying a
+	// provider's history into a fresh runner hands it every failure that
+	// conversation ever had, each carrying its original timestamp; without
+	// this, a lane that started cleanly a minute ago could open showing an
+	// outage from last week as its current state.
+	if at > 0 && s.info.CreatedAt > 0 && at < s.info.CreatedAt {
+		return
+	}
+	s.info.FailureKind = fault.Kind
+	s.info.FailureDetail = fault.Detail
+	s.info.FailureProvider = provider
+	s.info.FailureEvidence = fault.Evidence
+	s.info.FailureAt = at
+}
+
+func successfulProviderTurn(value map[string]any) bool {
+	source, _ := value["source"].(string)
+	if source == "codex-app-server" && value["subtype"] == "turn_completed" {
+		status, _ := value["status"].(string)
+		return strings.EqualFold(status, "completed")
+	}
+	if source != "claude-p-stream-json" || value["type"] != "result" {
+		return false
+	}
+	isError, _ := value["is_error"].(bool)
+	return !isError
+}
+
+func (s *Session) clearProviderFaultLocked() {
+	s.info.FailureKind = ""
+	s.info.FailureDetail = ""
+	s.info.FailureProvider = ""
+	s.info.FailureEvidence = ""
+	s.info.FailureAt = 0
+}
+
+// ProviderFault is the policy seam for a future retry controller. It returns
+// only classified provider state and does not decide whether or when to retry.
+func (s *Session) ProviderFault() (providerfault.Fault, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.info.FailureKind == "" || s.info.FailureDetail == "" {
+		return providerfault.Fault{}, false
+	}
+	fault := providerfault.Classify(s.info.FailureProvider, s.info.FailureDetail, 0)
+	fault.Kind = s.info.FailureKind
+	fault.Detail = s.info.FailureDetail
+	fault.Evidence = s.info.FailureEvidence
+	return fault, true
+}
+
+func (s *Session) SetProviderFault(provider string, fault providerfault.Fault, at int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setProviderFaultLocked(provider, fault, at)
+}
+
+func (s *Session) ClearProviderFault() {
+	s.mu.Lock()
+	s.clearProviderFaultLocked()
+	s.mu.Unlock()
 }
 
 func realUserMessage(event map[string]any) bool {
@@ -115,7 +233,11 @@ func realUserMessage(event map[string]any) bool {
 		return false
 	}
 	trimmed := strings.TrimLeft(text, " \t\r\n")
-	for _, prefix := range []string{"<", "Caveat:", "This session is being continued", "[Request interrupted"} {
+	// "[SYSTEM NOTIFICATION" is the one harness shape that does not start with
+	// "<": Claude Code delivers a background task's result through a user-role
+	// record, and counting it as a person made the navigator say "You sent a
+	// message" for a notification nobody sent.
+	for _, prefix := range []string{"<", "Caveat:", "This session is being continued", "[Request interrupted", "[SYSTEM NOTIFICATION"} {
 		if strings.HasPrefix(trimmed, prefix) {
 			return false
 		}
@@ -169,4 +291,32 @@ func structuredContentText(content any) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+// trackApprovalLocked keeps PendingApproval in step with the structured
+// stream: a requested approval is pending until the runner records its
+// resolution. Replayed history goes through the same path, so a daemon that
+// reconnects to a runner still holding a request shows it.
+func (s *Session) trackApprovalLocked(value map[string]any, at int64) {
+	approval, _ := value["approval"].(map[string]any)
+	text := func(key string) string {
+		if v, ok := approval[key].(string); ok {
+			return v
+		}
+		return ""
+	}
+	switch value["subtype"] {
+	case "approval_requested":
+		if text("id") == "" {
+			return
+		}
+		s.info.PendingApproval = &ApprovalPrompt{
+			ID: text("id"), Kind: text("kind"), Summary: text("summary"),
+			Command: text("command"), Cwd: text("cwd"), Reason: text("reason"), At: at,
+		}
+	case "approval_resolved":
+		if s.info.PendingApproval != nil && (text("id") == "" || s.info.PendingApproval.ID == text("id")) {
+			s.info.PendingApproval = nil
+		}
+	}
 }

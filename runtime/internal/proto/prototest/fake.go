@@ -16,8 +16,15 @@ type Launcher struct {
 	mu       sync.Mutex
 	Runners  map[string]*Runner
 	Launches []proto.LaunchRequest
-	PID      int
-	Err      error
+	// Wakes records the paused sessions the daemon asked to restart.
+	Wakes   []string
+	WakeErr error
+	PID     int
+	Err     error
+	// AttachDelay makes re-attachment slow on purpose, which is the only way
+	// to test what a daemon says while it is still loading: on the owner's
+	// Mini, 593 runners took about three minutes to re-attach.
+	AttachDelay time.Duration
 }
 
 func NewLauncher() *Launcher {
@@ -44,11 +51,31 @@ func (l *Launcher) Launch(_ context.Context, request proto.LaunchRequest) (proto
 
 func (l *Launcher) Attach(_ context.Context, info proto.RunnerInfo) (proto.Runner, error) {
 	l.mu.Lock()
+	delay := l.AttachDelay
+	l.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	l.mu.Lock()
 	defer l.mu.Unlock()
 	runner, ok := l.Runners[info.ID]
 	if !ok {
 		return nil, errors.New("fake runner is not available")
 	}
+	return runner, nil
+}
+
+// Wake stands in for a launchd kickstart: a fresh fake runner answers for
+// the paused id from then on.
+func (l *Launcher) Wake(_ context.Context, id string) (proto.Runner, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.Wakes = append(l.Wakes, id)
+	if l.WakeErr != nil {
+		return nil, l.WakeErr
+	}
+	runner := NewRunner(proto.RunnerInfo{ID: id, PID: l.PID, ProtocolVersion: proto.ProtocolVersion, Cols: 120, Rows: 40})
+	l.Runners[id] = runner
 	return runner, nil
 }
 
@@ -59,18 +86,23 @@ func (l *Launcher) Runner(id string) *Runner {
 }
 
 type Runner struct {
-	mu          sync.Mutex
-	info        proto.RunnerInfo
-	outputs     []proto.OutputEvent
-	structured  []json.RawMessage
-	inputs      []string
-	models      []proto.ModelControl
-	cols        int
-	rows        int
-	exited      bool
-	subscribers map[uint64]chan proto.Event
-	nextSubID   uint64
-	changes     chan struct{}
+	mu           sync.Mutex
+	info         proto.RunnerInfo
+	outputs      []proto.OutputEvent
+	structured   []json.RawMessage
+	inputs       []string
+	approvals    []proto.ApprovalControl
+	models       []proto.ModelControl
+	retries      int
+	retryStops   int
+	cols         int
+	rows         int
+	exited       bool
+	subscribers  map[uint64]chan proto.Event
+	nextSubID    uint64
+	changes      chan struct{}
+	forgottenSeq uint32
+	late         map[string]proto.MessageResult
 }
 
 func NewRunner(info proto.RunnerInfo) *Runner {
@@ -81,11 +113,34 @@ func NewRunner(info proto.RunnerInfo) *Runner {
 	}
 }
 
+// AcknowledgeLate records what this runner answered for an operation whose
+// caller had already stopped waiting, mirroring proto.SocketRunner's retention
+// of an acknowledgment that arrived too late for its request.
+func (r *Runner) AcknowledgeLate(result proto.MessageResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.late == nil {
+		r.late = make(map[string]proto.MessageResult, 1)
+	}
+	r.late[result.OperationID] = result
+}
+
+func (r *Runner) LateMessageResult(operationID string) (proto.MessageResult, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result, ok := r.late[operationID]
+	return result, ok
+}
+
 func (r *Runner) Info() proto.RunnerInfo {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	info := r.info
 	info.Args = append([]string(nil), info.Args...)
+	if info.Turn != nil {
+		turn := *info.Turn
+		info.Turn = &turn
+	}
 	info.CurrentSeq = r.currentSeqLocked()
 	return info
 }
@@ -131,6 +186,46 @@ func (r *Runner) ConfigureModel(_ context.Context, control proto.ModelControl) e
 	return nil
 }
 
+func (r *Runner) Approve(_ context.Context, control proto.ApprovalControl) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.exited {
+		return errors.New("runner exited")
+	}
+	r.approvals = append(r.approvals, control)
+	r.signalChangeLocked()
+	return nil
+}
+
+func (r *Runner) Retry(context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.exited {
+		return errors.New("runner exited")
+	}
+	r.retries++
+	r.signalChangeLocked()
+	return nil
+}
+
+func (r *Runner) StopRetry(context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.exited {
+		return errors.New("runner exited")
+	}
+	r.retryStops++
+	r.signalChangeLocked()
+	return nil
+}
+
+// Approvals returns every approval decision the daemon sent, in order.
+func (r *Runner) Approvals() []proto.ApprovalControl {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]proto.ApprovalControl(nil), r.approvals...)
+}
+
 func (r *Runner) Resize(_ context.Context, cols, rows int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -146,6 +241,12 @@ func (r *Runner) Kill(context.Context) error {
 	zero := 0
 	r.Emit(proto.Event{Kind: proto.EventExit, Exit: proto.ExitEvent{Code: &zero, Seq: r.CurrentSeq()}})
 	return nil
+}
+
+func (r *Runner) HasExited() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.exited
 }
 
 func (r *Runner) Subscribe() (<-chan proto.Event, func()) {
@@ -188,6 +289,17 @@ func (r *Runner) AddCodexEvent(value any) {
 	r.Emit(proto.Event{Kind: proto.EventCodex, CodexEvent: encoded})
 }
 
+func (r *Runner) SetRetry(value *proto.ProviderRetry) {
+	r.Emit(proto.Event{Kind: proto.EventRetry, Retry: value})
+}
+
+func (r *Runner) SetTurnWorking(working bool) {
+	r.mu.Lock()
+	r.info.Turn = &proto.TurnState{Working: working}
+	r.signalChangeLocked()
+	r.mu.Unlock()
+}
+
 func (r *Runner) Emit(event proto.Event) {
 	r.mu.Lock()
 	if event.Kind == proto.EventOutput {
@@ -224,6 +336,20 @@ func cloneRaw(values []json.RawMessage) []json.RawMessage {
 // Changes reports coalesced state transitions so tests can synchronize with
 // fake-runner work without scheduler sleeps. Callers must always re-read the
 // state they care about after a notification.
+// Forget drops the events this fake recorded. A fake keeps everything it was
+// given, unbounded and on purpose, so a test that measures what the daemon
+// retains can subtract the fixture's own copy first.
+func (r *Runner) Forget() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// The sequence keeps counting. A runner that renumbered from one after
+	// forgetting would look to a session like a different runner.
+	r.forgottenSeq = r.currentSeqLocked()
+	r.outputs = nil
+	r.structured = nil
+	r.inputs = nil
+}
+
 func (r *Runner) Changes() <-chan struct{} { return r.changes }
 
 func (r *Runner) signalChangeLocked() {
@@ -245,6 +371,12 @@ func (r *Runner) ModelControls() []proto.ModelControl {
 	return append([]proto.ModelControl(nil), r.models...)
 }
 
+func (r *Runner) RetryControls() (run, stop int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.retries, r.retryStops
+}
+
 func (r *Runner) Size() (int, int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -259,7 +391,7 @@ func (r *Runner) CurrentSeq() uint32 {
 
 func (r *Runner) currentSeqLocked() uint32 {
 	if len(r.outputs) == 0 {
-		return 0
+		return r.forgottenSeq
 	}
 	return r.outputs[len(r.outputs)-1].Seq
 }

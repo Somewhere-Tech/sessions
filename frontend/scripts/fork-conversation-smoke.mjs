@@ -7,6 +7,7 @@ const history = fs.readFileSync(new URL('../src/components/SessionHistoryView.ts
 const conversation = fs.readFileSync(new URL('../src/components/RemoteView.tsx', import.meta.url), 'utf8');
 const view = fs.readFileSync(new URL('../src/components/SessionView.tsx', import.meta.url), 'utf8');
 const forkButton = fs.readFileSync(new URL('../src/components/ConversationForkButton.tsx', import.meta.url), 'utf8');
+const forkConfirmation = fs.readFileSync(new URL('../src/components/ForkConfirmationDialog.tsx', import.meta.url), 'utf8');
 
 for (const text of [
   '<summary>Fork <small>original stays here</small></summary>',
@@ -17,6 +18,9 @@ for (const text of [
 }
 if (!api.includes('/api/recovery/fork')) {
   throw new Error('live-copy UI must use the dedicated non-lifecycle fork endpoint');
+}
+for (const text of ['<PaidStartPlan', 'Only your messages and the agent’s replies are copied']) {
+  if (!forkConfirmation.includes(text)) throw new Error(`fork confirmation must disclose its plan before starting: ${text}`);
 }
 for (const text of ['sourceMessageIndex', 'sourceMessageId']) {
   if (!api.includes(text)) throw new Error(`missing exact fork-point API field: ${text}`);

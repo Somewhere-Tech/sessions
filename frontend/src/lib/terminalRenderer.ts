@@ -1,10 +1,10 @@
-export type TerminalRenderer = 'webgl' | 'canvas' | 'dom';
+export type TerminalRenderer = 'webgl' | 'dom';
 
 // Full-screen provider TUIs redraw large grids for every keystroke. xterm's
 // DOM renderer turns those frames into thousands of styled spans and layout
 // work, which is not an acceptable fallback for an interactive terminal.
 // WebGL is therefore the default on every native client, including WKWebView;
-// useTerminal retains Canvas as the runtime fallback when WebGL is unavailable.
+// xterm's built-in DOM renderer remains the no-GPU fallback.
 export function terminalRenderer(_nativeClient: boolean, _userAgent: string): TerminalRenderer {
   return 'webgl';
 }

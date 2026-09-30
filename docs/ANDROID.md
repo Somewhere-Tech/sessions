@@ -2,8 +2,10 @@
 
 Sessions for Android is a client-only Tauri 2 application. It uses the same
 React application as macOS and Windows, but it does not install `sessionsd`,
-start agent CLIs, or host runners on the phone. Work stays on a paired Sessions
-computer and the Android app talks directly to that host.
+start agent CLIs, or host runners on the phone. Work stays on Sessions computers;
+the Android app talks to its paired host, which can relay the host's approved fleet.
+The Android platform bundle configuration excludes desktop runtime executables
+from the APK; verify the built archive as well as its package identity.
 
 ## Product shape
 
@@ -16,28 +18,36 @@ computer and the Android app talks directly to that host.
   rail + session navigator + active-session workspace. There is no separate
   tablet codebase
   ([`frontend/src/styles/globals.css`](../frontend/src/styles/globals.css)).
-- **Pairing now:** enable trusted-network access with `sessions lan enable`,
-  then run `sessions pair` on a host and paste its one-time link in the Android
-  app. The ticket is consumed once and the device receives its own revocable
-  credential
+- **Account or pairing:** **Sign in** loads every reachable machine in the same
+  Somewhere account and obtains a separate revocable credential from each host
+  without an accept prompt. Without an account, run `sessions pair` on a host
+  and use **Scan a pairing code**; pasting the link is the non-camera fallback
   ([`frontend/src/components/ConnectScreen.tsx`](../frontend/src/components/ConnectScreen.tsx),
   [`frontend/src/lib/hostedBootstrap.ts`](../frontend/src/lib/hostedBootstrap.ts)).
-- **Transport:** direct LAN or Tailscale connectivity only. There is no Sessions
-  relay, hosted terminal stream, analytics connection, or model API call
+- **Host-owned setup:** the phone does not present the host's first-run
+  onboarding. It inherits the connected computer's machine-level choices and
+  shows host runtime, connection, provider, delegated-access, and AI
+  settings as read-only; appearance and other device-local choices remain
+  editable ([`frontend/src/App.tsx`](../frontend/src/App.tsx),
+  [`frontend/src/components/SettingsView.tsx`](../frontend/src/components/SettingsView.tsx)).
+- **Transport:** direct LAN or Tailscale connectivity to the paired host. That
+  user-owned host can relay to machines it already has approval for; there is no
+  Somewhere-hosted relay, hosted terminal stream, analytics connection, or model API call
   ([`docs/NETWORK_SECURITY.md`](NETWORK_SECURITY.md)).
 
 Android release builds permit cleartext network traffic because a user-approved
 LAN or Tailscale host can intentionally use an `http://` daemon endpoint.
 Tailscale still encrypts its network transport; raw LAN mode is explicitly
 unencrypted and should only be used on a trusted network. The app never scans
-the public internet and only connects to a paired or explicitly entered
-endpoint
+the public internet and only connects to a discovered, paired, or explicitly
+entered endpoint
 ([`src-tauri/gen/android/app/build.gradle.kts`](../src-tauri/gen/android/app/build.gradle.kts),
 [`src-tauri/gen/android/app/src/main/AndroidManifest.xml`](../src-tauri/gen/android/app/src/main/AndroidManifest.xml)).
 
-Automatic Android Bonjour/Tailscale discovery, request/accept onboarding, and
-background FCM delivery are not represented as shipped. Trusted-LAN pair-link
-onboarding and foreground session control work without them
+Android performs multicast DNS discovery only while the connect screen is in
+the foreground; it does not scan addresses or provide automatic Tailscale
+discovery. QR pairing and foreground session control work without
+FCM, while background FCM delivery is not represented as shipped
 ([`frontend/src/components/ConnectScreen.tsx`](../frontend/src/components/ConnectScreen.tsx)).
 
 ## Build a sideloadable test APK
@@ -61,6 +71,22 @@ npx tauri android init --ci        # only when src-tauri/gen/android is absent
 npx tauri android build --debug --apk --target aarch64 --ci
 ```
 
+To build a local test app alongside the published Android preview, opt into the
+separate package identity through a Gradle project property:
+
+```sh
+ORG_GRADLE_PROJECT_sessionsTestApp=true \
+  npx tauri android build --debug --apk --target aarch64 --ci \
+  --config '{"bundle":{"android":{"debugApplicationIdSuffix":".local"}}}'
+```
+
+That debug-only switch produces `tech.somewhere.sessions.local` with the
+launcher label **Sessions Test**. Without it, debug builds remain
+`tech.somewhere.sessions.debug` and release builds remain
+`tech.somewhere.sessions`; the Android task and APK output path do not change.
+Before installing, verify the built APK with `aapt dump badging` rather than
+assuming that a package intended to be side by side has the expected identity.
+
 The installable debug APK is:
 
 ```text
@@ -83,19 +109,64 @@ A public release must use the Somewhere production Android keystore or Play App
 Signing; those credentials do not belong in this repository
 ([`src-tauri/gen/android/app/build.gradle.kts`](../src-tauri/gen/android/app/build.gradle.kts)).
 
+## Check the Android credential vault
+
+The Android JVM unit tests exercise bounded encryption and failure-preserving
+transactions with synthetic credentials. They do not exercise Android Keystore.
+For OS-backed tests, `src-tauri/gen/android/vault-fixture` builds a small,
+SDK-only instrumentation app using the exact production vault classes. It has
+its own package and key alias, no network permission, and no real credentials.
+Use only a disposable, task-owned emulator, not a user's phone:
+
+```sh
+cd src-tauri/gen/android/vault-fixture
+../gradlew --offline --no-daemon assembleDebug
+
+# Select the disposable emulator explicitly before installing anything.
+SESSIONS_TEST_DEVICE=emulator-5580
+"$ANDROID_HOME/platform-tools/adb" -s "$SESSIONS_TEST_DEVICE" install -r \
+  build/outputs/apk/debug/sessions-vault-fixture-debug.apk
+"$ANDROID_HOME/platform-tools/adb" -s "$SESSIONS_TEST_DEVICE" shell am instrument -w \
+  -e phase seed tech.somewhere.sessions.vault.fixture/tech.somewhere.sessions.VaultInstrumentation
+"$ANDROID_HOME/platform-tools/adb" -s "$SESSIONS_TEST_DEVICE" shell am force-stop \
+  tech.somewhere.sessions.vault.fixture
+"$ANDROID_HOME/platform-tools/adb" -s "$SESSIONS_TEST_DEVICE" shell am instrument -w \
+  -e phase reopen tech.somewhere.sessions.vault.fixture/tech.somewhere.sessions.VaultInstrumentation
+"$ANDROID_HOME/platform-tools/adb" -s "$SESSIONS_TEST_DEVICE" uninstall \
+  tech.somewhere.sessions.vault.fixture
+```
+
+Both phases must print `passed`; the Android command's exit code alone does not
+establish acceptance. The second phase tests fresh-process readback, tamper
+refusal, verified rollback, and refusal to regenerate a lost key over existing
+ciphertext. These tests prove the native vault backend, not the full
+Rust/Kotlin/frontend migration journey or physical-device behavior. Run the
+frontend credential migration regressions and build the native app separately.
+
 ## Pair a phone
 
 On a Mac that already runs the current Sessions runtime and is on the same
 trusted network as the phone:
 
-```sh
-sessions lan enable
-sessions pair
-```
-
-Keep the phone on a network that can reach the endpoint printed in that link.
-Open Sessions on Android, paste the full link under **Connect with a one-time
-link**, and tap **Connect this device**. If the link expires or was already
-consumed, generate a new one. Revoke the phone later with `sessions devices`
+Enable LAN access or sign into Tailscale on the host, run `sessions pair`, tap
+**Scan a pairing code**, and scan the QR. Android asks for camera permission
+only for that action. The paste-link field is the fallback when scanning is
+inconvenient. A code is consumed once and expires in ten minutes by default;
+the phone claims its credential and opens the host without another approval.
+Revoke the phone later in Settings › Fleet with **Forget**, or with `sessions
+devices`
 ([`runtime/cmd/sessions/pair.go`](../runtime/cmd/sessions/pair.go),
 [`runtime/cmd/sessions/devices.go`](../runtime/cmd/sessions/devices.go)).
+
+Alternatively, tap **Sign in**, enter the emailed Somewhere code, and choose a
+machine from the account fleet. The phone registers an endpoint-free signing
+identity and each same-account host verifies that identity through its own
+owner-scoped directory token before issuing the phone a device credential.
+Other accounts still require a pairing code or an accepted access request.
+
+Without account sign-in, pair with one Mac and the phone also sees that Mac's approved Sessions fleet.
+The paired Mac stays first, and its other saved machines appear in Fleet and the
+all-machines inbox; opening or acting on one is relayed through the Mac with the
+Mac's own independently revocable credential. An unreachable machine stays
+visible as offline. The phone never receives the other machine's credential,
+and each other machine can revoke the Mac exactly as before.

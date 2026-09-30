@@ -1,8 +1,8 @@
 # Native application contract
 
 Sessions.app is the primary user interface and package for the local Sessions
-runtime. Tauri supplies the native window, tray, permissions, secure client
-storage, installer, and updater around the shared React interface.
+runtime. Tauri supplies the native window, tray, permissions, platform credential
+adapters, installer, and updater around the shared React interface.
 
 The Go runtime remains independently useful through the `sessions` CLI and is
 not owned by the viewer.
@@ -52,16 +52,17 @@ The native shell owns:
 
 - scoped desktop/mobile windows and platform navigation;
 - tray and native notifications;
-- OS permission prompts;
-- secure storage for paired-machine credentials;
+- user-facing OS permission context and the launch-agent responsibility link;
+- platform-specific storage for paired-machine credentials, as scoped below;
 - runtime staging, installation status, and signed update UI;
-- native LAN and tailnet discovery adapters.
+- native tailnet and mobile Bonjour discovery adapters.
 
 The daemon owns:
 
 - session creation, input, interruption, and termination;
 - runner adoption and recovery;
 - ledger, history, search, usage, hierarchy, and compatibility facts;
+- host Bonjour discovery, LAN connection, and saved-machine fleet relay;
 - authenticated HTTP/WebSocket contracts used by every client.
 
 Operational settings and controls require CLI/JSON parity unless they are
@@ -71,12 +72,29 @@ inherently visual or an OS-owned prompt.
 
 Runtime binaries are staged as immutable versioned bytes with a manifest. The
 managed daemon may advance while compatible existing runners keep their
-original runtime until they exit. A package update must preserve the exact live
-session baseline or refuse/roll back.
+original runtime until they exit. A package update must re-adopt every baseline
+session that remains live. A session that exits during the readiness check, or
+whose user-end boundary is already recorded, satisfies that baseline; one that
+disappears or remains unreachable without either fact makes the update refuse
+or roll back.
 
 macOS releases require Developer ID signatures for the app and nested
 binaries, notarization, stapling, Gatekeeper acceptance, a pinned updater
 signature, immutable download identity, and checksum verification.
+Release automation stages verified assets in a GitHub draft; it does not
+publish the release, mark it latest, or promote the hosted updater. Maintainers
+verify and install the exact signed draft bytes before explicitly authorizing
+publication. Existing draft assets are not overwritten automatically, and
+changing their bytes requires repeating acceptance. Public runtime-pin checks,
+npm publication, and hosted download/updater promotion are separate steps.
+Each Darwin runtime binary also carries a Mach-O `__TEXT,__info_plist` section
+with its stable bundle identifier, Local Network usage description, and
+`_sessions._tcp` Bonjour declaration. The app-managed sessionsd launch agent
+declares `AssociatedBundleIdentifiers = [tech.somewhere.sessions]`, making the
+signed app the responsible code for sessionsd under macOS Local Network
+privacy. Onboarding's Fleet step and Settings › Fleet › **Allow local network**
+start the first daemon-owned browse so any macOS prompt appears in context;
+the app does not fabricate or preflight a permission result.
 
 Windows releases require a current-user installer, Authenticode, the pinned
 updater signature, manifest verification, and the hardware matrix in
@@ -92,13 +110,20 @@ macOS runner supervision is boot-scoped. A per-runner permit lets launchd
 restart an unexpected runner crash during the same boot, but retained history
 does not imply permission to launch every provider again after login.
 
-At a new boot Sessions automatically restores at most eight explicitly pinned,
-non-lane session roots that were actually running before shutdown. It never
-automatically repeats a headless lane. Other prior runners stay stopped; their
+At a new boot Sessions automatically restores at most eight non-lane session
+roots that were actually running before shutdown: pinned roots first, then the
+roots a person spoke to within the last 24 hours, most recent first. It never
+automatically repeats a headless lane. Other prior runners stay paused; their
 metadata, event logs, transcripts, and launch records remain intact and a
-`restore-pending` marker records why automatic restoration paused. Daemon
-discovery reconciles those records without spawning providers or deleting that
-recovery evidence.
+`restore-pending` marker records why. The inbox lists them under "Not
+connected" with that reason. Browsing saved history in the app stays read-only.
+Explicit Resume continues the selected provider conversation and may create a
+linked runtime. Sending a message or reading it live wakes a paused runner in
+place with the same id, conversation, and folder. Daemon discovery on its own
+never spawns a provider or deletes
+that recovery evidence. When a wake fails, live commands fail with
+`SESSION_NEEDS_RECREATE`, the failure as the reason, and a resume action
+instead of returning an empty successful result.
 
 This is a safety ceiling, not a retention ceiling. It limits the process fanout
 that one login can cause while keeping every durable conversation available for
@@ -120,11 +145,40 @@ rules.
 
 ## Mobile clients
 
-Android and future iOS builds are paired clients, not mobile daemon hosts. They
-reuse the authenticated daemon contract, store revocable device credentials in
-platform secure storage, and adapt the shared interface to phone and tablet
-layouts. Mobile notifications use the explicit encrypted notification path and
-do not grant broader host authority.
+Android and iOS builds are paired clients, not mobile daemon hosts. They reuse
+the authenticated daemon contract and adapt the shared interface to phone and tablet
+layouts. A phone does not run host onboarding or change host-owned runtime
+choices; it reads those settings from the connected computer and presents them
+read-only while keeping device-local choices editable.
+
+## Paired-machine credential storage
+
+The candidate implements protected native storage for saved machine tokens on
+these platforms:
+
+- **Windows:** user-scope DPAPI with an owner-restricted native credential file.
+- **macOS:** login Keychain, without iCloud synchronization.
+- **iOS:** device-only Keychain items available while the device is unlocked,
+  without iCloud synchronization.
+- **Android:** a bounded AES-256-GCM vault with a non-exportable Android Keystore
+  key and verified write/readback. Local credential data is excluded from
+  backup and device transfer; a replacement device must pair again. This does
+  not guarantee hardware-backed key storage on every Android device.
+
+On these platforms, migration removes legacy plaintext tokens from WebView
+local storage only after saving and reading them back from the native store.
+A locked, unreadable, or unverified protected store reports an error rather
+than silently replacing it with an empty store or falling back to plaintext.
+
+Linux native clients and browser clients do not yet have this
+protected-store implementation in this candidate. Their saved tokens remain
+in local client storage; do not describe that storage as an OS credential vault.
+Interactive browser control is deprecated. Platform source and fixture tests
+are not a substitute for native device acceptance.
+
+This boundary covers Sessions pairing tokens, not Claude, Codex, or other
+provider logins. Provider account authentication remains provider-owned and
+separate from client-to-daemon pairing.
 
 ## Release gate
 

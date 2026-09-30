@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/somewhere-tech/sessions/runtime/internal/background"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/liveness"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
@@ -29,6 +31,14 @@ func (m *Manager) RunDiscoveryLoop() {
 	}
 	lastReportedError := ""
 	run := func() {
+		// The first pass is startup and logs its own line, with stages. Every
+		// pass after it is maintenance nobody asked for, and says so.
+		var pass *background.Pass
+		if !m.Startup().Loading() {
+			pass = background.Start("discovery")
+		}
+		defer pass.Done()
+		m.refreshPendingRestores()
 		if err := m.Discover(m.ctx); err != nil && !errors.Is(err, context.Canceled) {
 			message := err.Error()
 			if message != lastReportedError {
@@ -59,19 +69,17 @@ func (m *Manager) Discover(ctx context.Context) error {
 // RestorePendingCount is the calm, queryable safe-mode signal exposed through
 // daemon health. It never starts or adopts a runner.
 func (m *Manager) RestorePendingCount() int {
-	m.restoreHealthMu.Lock()
-	defer m.restoreHealthMu.Unlock()
-	if !m.restoreHealthAt.IsZero() && time.Since(m.restoreHealthAt) < 5*time.Second {
-		return m.restoreHealthCount
-	}
-	count, err := state.CountRestorePending(m.config.RunnerStateDir)
-	if err != nil {
-		log.Printf("count paused reboot restores: %v", err)
-		return m.restoreHealthCount
-	}
-	m.restoreHealthAt = time.Now()
-	m.restoreHealthCount = count
-	return count
+	m.pausedMu.RLock()
+	defer m.pausedMu.RUnlock()
+	return len(m.pausedRestores)
+}
+
+// RetiredRestoreCount reports reboot markers that had no metadata or creation
+// record and were moved out of the active runner directory.
+func (m *Manager) RetiredRestoreCount() int {
+	m.pausedMu.RLock()
+	defer m.pausedMu.RUnlock()
+	return m.pausedRetiredCount
 }
 
 func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptions) error {
@@ -79,8 +87,13 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 	defer m.discoveryMu.Unlock()
 	m.registry.MarkDiscovering(true)
 	defer m.registry.MarkDiscovering(false)
+	// The first pass is startup: it is what a person restarting the daemon is
+	// waiting for, and the only one that reports progress.
+	passStarted := time.Now()
+	defer m.finishStartup()
 
-	candidates, deadArtifacts := m.orphanPlistCandidates()
+	processes, snapshotOK := m.processSnapshot(ctx)
+	candidates, deadArtifacts := m.orphanPlistCandidates(processes, snapshotOK)
 	for id := range candidates {
 		if _, exists := m.registry.Get(id); exists {
 			// A filesystem-only orphan signal cannot override the daemon's
@@ -89,12 +102,15 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 			delete(deadArtifacts, id)
 		}
 	}
+	m.startup.record("scan", time.Since(passStarted))
 	artifactIDs, err := state.RunnerArtifactIDs(m.config.RunnerStateDir)
 	if err != nil {
 		return fmt.Errorf("read runner state directory: %w", err)
 	}
+	m.startup.setTotal(len(artifactIDs))
 	if err == nil {
 		for _, id := range artifactIDs {
+			m.startup.advance()
 			if existing, exists := m.registry.Get(id); exists && !existing.Info().Unreachable {
 				continue
 			}
@@ -125,12 +141,21 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 			// runner can answer that socket. Classify it without paying three
 			// attach attempts and two retry delays. Ambiguous live/PID-reuse cases
 			// still take the conservative attach-first path below.
-			if metadata.Info.PID > 0 && !m.options.ProcessAlive(metadata.Info.PID) {
+			identityAlive := m.runnerAliveWithSnapshot(id, metadata.Info, processes, snapshotOK)
+			if metadata.Info.PID > 0 && !identityAlive {
+				deadStarted := time.Now()
+				attached := m.attachDiscovered(ctx, probe, metadata)
+				m.startup.record("attach", time.Since(deadStarted))
+				if attached {
+					delete(candidates, id)
+					continue
+				}
 				deadArtifacts[id] = struct{}{}
 				candidates[id] = struct{}{}
 				continue
 			}
 			connected := false
+			attachStarted := time.Now()
 			for attempt := 0; attempt < m.options.DiscoveryRetries; attempt++ {
 				runner, attachErr := m.launcher.Attach(ctx, probe)
 				if attachErr == nil {
@@ -144,6 +169,7 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 					return ctx.Err()
 				}
 			}
+			m.startup.record("attach", time.Since(attachStarted))
 			if connected {
 				delete(candidates, id)
 				continue
@@ -153,67 +179,44 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 				delete(candidates, id)
 				continue
 			}
-			if m.runnerAlive(id, metadata.Info) {
+			if m.runnerAliveWithSnapshot(id, metadata.Info, processes, snapshotOK) {
 				log.Printf("[discover] runner %s unreachable but pid %d alive — leaving it alone", id, metadata.Info.PID)
 				delete(candidates, id)
 				delete(deadArtifacts, id)
 				continue
-			}
-			if m.options.ProcessAlive(metadata.Info.PID) {
-				log.Printf("[discover] runner %s pid %d is PID reuse (%s) — treating as dead",
-					id, metadata.Info.PID, truncate(m.options.ProcessCommand(metadata.Info.PID), 60))
 			}
 			deadArtifacts[id] = struct{}{}
 			candidates[id] = struct{}{}
 		}
 	}
 
-	ids := sortedKeys(candidates)
-	if err := m.guard.Check(len(ids), options.Force); err != nil {
-		// The guard only protects the destructive half of the sweep. Skipping
-		// reconciliation as well would wedge discovery permanently: nothing
-		// else records runner_lost, so every ledger-derived view would keep
-		// reporting these sessions as live and no later sweep could ever get
-		// back under the limit. Reconciliation writes observations only — it
-		// removes no socket, metadata document, or launch agent.
-		m.reconcileLedger(ctx)
-		var guardErr *MassKillError
-		if errors.As(err, &guardErr) {
-			return &MassKillError{
-				Count: guardErr.Count, Limit: guardErr.Limit,
-				Operation: "stale runner artifact removals during discovery",
-				Remedy: fmt.Sprintf(
-					"sockets, metadata, and launch agents were left in place and no session was touched, "+
-						"and lost runners were still recorded in the ledger. Review them with `sessions ls -a` and end "+
-						"the ones you no longer need with `sessions kill <id>...` (--force is required for more than %d "+
-						"targets); discovery finishes the cleanup by itself once at most %d runners are stale",
-					guardErr.Limit, guardErr.Limit),
-			}
-		}
-		return err
+	allIDs := sortedKeys(candidates)
+	ids := allIDs
+	if !options.Force && len(ids) > DefaultDiscoveryBatch {
+		ids = ids[:DefaultDiscoveryBatch]
 	}
+	retireStarted := time.Now()
 	var cleanupErrors []error
+	retired := 0
 	for _, id := range ids {
-		if _, dead := deadArtifacts[id]; dead {
-			// Structured histories are durable conversation evidence, not
-			// disposable runner coordination artifacts. An unreachable or dead
-			// runner may lose its socket and metadata, but discovery must never
-			// erase the transcript needed to inspect or continue that session.
-			for _, suffix := range []string{".sock", ".json"} {
-				if removeErr := os.Remove(filepath.Join(m.config.RunnerStateDir, id+suffix)); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-					cleanupErrors = append(cleanupErrors, removeErr)
-				}
-			}
+		_, dead := deadArtifacts[id]
+		removed, retireErr := m.retireRunnerArtifacts(ctx, id, dead)
+		if removed {
+			retired++
 		}
-		if reapErr := m.reap(id); reapErr != nil {
-			cleanupErrors = append(cleanupErrors, reapErr)
+		if retireErr != nil {
+			cleanupErrors = append(cleanupErrors, retireErr)
 		}
 	}
+	m.recordArtifactSweep(retired, len(allIDs)-retired)
+	m.startup.record("retire", time.Since(retireStarted))
+	ledgerStarted := time.Now()
 	m.reconcileLedger(ctx)
+	m.startup.record("ledger", time.Since(ledgerStarted))
 	return errors.Join(cleanupErrors...)
 }
 
-func (m *Manager) orphanPlistCandidates() (map[string]struct{}, map[string]struct{}) {
+func (m *Manager) orphanPlistCandidates(processes map[int]string, snapshotOK bool) (map[string]struct{}, map[string]struct{}) {
 	candidates := make(map[string]struct{})
 	deadArtifacts := make(map[string]struct{})
 	entries, err := os.ReadDir(m.config.LaunchAgentsDir)
@@ -263,17 +266,101 @@ func (m *Manager) orphanPlistCandidates() (map[string]struct{}, map[string]struc
 		if metadataErr != nil || metadata.Info.ID != id || metadata.Info.PID <= 0 {
 			continue
 		}
-		if m.runnerAlive(id, metadata.Info) {
+		if m.runnerAliveWithSnapshot(id, metadata.Info, processes, snapshotOK) {
 			continue
-		}
-		if m.options.ProcessAlive(metadata.Info.PID) {
-			log.Printf("[discover] orphan runner %s pid %d is PID reuse (%s) — treating as dead",
-				id, metadata.Info.PID, truncate(m.options.ProcessCommand(metadata.Info.PID), 60))
 		}
 		candidates[id] = struct{}{}
 		deadArtifacts[id] = struct{}{}
 	}
 	return candidates, deadArtifacts
+}
+
+func (m *Manager) processSnapshot(ctx context.Context) (map[int]string, bool) {
+	if m.options.ProcessSnapshot == nil {
+		return nil, false
+	}
+	processes, err := m.options.ProcessSnapshot(ctx)
+	if err != nil {
+		log.Printf("[discover] process snapshot unavailable; using per-runner probes: %v", err)
+		return nil, false
+	}
+	return processes, true
+}
+
+func (m *Manager) runnerAliveWithSnapshot(id string, info proto.RunnerInfo, processes map[int]string, ok bool) bool {
+	if !ok {
+		return m.runnerAlive(id, info)
+	}
+	command, alive := processes[info.PID]
+	return info.PID > 0 && alive && liveness.CommandMatches(command, id, info.Cmd)
+}
+
+func (m *Manager) attachDiscovered(ctx context.Context, probe proto.RunnerInfo, metadata state.RunnerMetadata) bool {
+	runner, err := m.launcher.Attach(ctx, probe)
+	if err != nil {
+		return false
+	}
+	session, err := m.registry.RegisterMetadata(ctx, runner, metadata, "")
+	if err != nil {
+		log.Printf("[discover] runner %s answered its socket but metadata registration failed — leaving artifacts alone: %v", probe.ID, err)
+		return true
+	}
+	m.manage(session)
+	return true
+}
+
+func (m *Manager) retireRunnerArtifacts(ctx context.Context, id string, dead bool) (bool, error) {
+	var cleanupErrors []error
+	if dead {
+		// Provider histories and event logs are conversation evidence. Only the
+		// socket and metadata are runner coordination artifacts.
+		for _, suffix := range []string{".sock", ".json"} {
+			path := filepath.Join(m.config.RunnerStateDir, id+suffix)
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				cleanupErrors = append(cleanupErrors, err)
+			}
+		}
+	}
+	if err := m.reap(id); err != nil {
+		cleanupErrors = append(cleanupErrors, err)
+	}
+	if m.runnerArtifactsRemain(id) {
+		return false, errors.Join(cleanupErrors...)
+	}
+	m.observe(ctx, "runner artifacts retired", func(writer ledger.ObservationWriter) error {
+		return writer.RecordRunnerArtifactsRetired(ctx, ledger.Observation{Meta: ledger.Meta{LaneID: id}})
+	})
+	log.Printf("[discover] retired stale runner artifacts for %s", id)
+	return true, errors.Join(cleanupErrors...)
+}
+
+func (m *Manager) runnerArtifactsRemain(id string) bool {
+	for _, path := range []string{
+		state.RunnerPlistPath(m.config.LaunchAgentsDir, id),
+		state.LegacyRunnerPlistPath(m.config.LaunchAgentsDir, id),
+		state.For(m.config.RunnerStateDir, id).Socket,
+		filepath.Join(m.config.RunnerStateDir, id+".json"),
+	} {
+		if _, err := os.Stat(path); err == nil || !errors.Is(err, os.ErrNotExist) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) recordArtifactSweep(retired, pending int) {
+	m.pausedMu.Lock()
+	m.artifactRetired += retired
+	m.artifactPending = pending
+	m.pausedMu.Unlock()
+}
+
+// ArtifactRetirementHealth reports bounded discovery cleanup since daemon
+// start and the stale sets left for later ticks.
+func (m *Manager) ArtifactRetirementHealth() (int, int) {
+	m.pausedMu.RLock()
+	defer m.pausedMu.RUnlock()
+	return m.artifactRetired, m.artifactPending
 }
 
 // runnerAlive is the manager's only liveness answer: is THIS session's runner
@@ -322,13 +409,6 @@ func sortedKeys(values map[string]struct{}) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func truncate(value string, length int) string {
-	if len(value) <= length {
-		return value
-	}
-	return value[:length]
 }
 
 func loadGlobalHooks(path string) globalHooks {

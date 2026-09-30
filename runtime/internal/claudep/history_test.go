@@ -59,6 +59,23 @@ func TestInputRejectedEventIsVisibleButNotLifecycle(t *testing.T) {
 	}
 }
 
+func TestContinuationStartedEventIsVisibleButNotLifecycle(t *testing.T) {
+	raw, err := ContinuationStartedEvent("session-1", "Continued from Review (Codex)", time.Unix(2, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event map[string]any
+	if err := json.Unmarshal(raw, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event["subtype"] != "continuation_started" || event["detail"] != "Continued from Review (Codex)" {
+		t.Fatalf("continuation event = %#v", event)
+	}
+	if _, authoritative := HistoryLifecycle(raw); authoritative {
+		t.Fatal("continuation line incorrectly changed turn lifecycle")
+	}
+}
+
 func TestTurnArgsForcePerTurnResumeAndStructuredOutput(t *testing.T) {
 	first := turnArgs("hello", TurnOptions{
 		SessionID: "session-1", Model: "sonnet",
@@ -85,5 +102,34 @@ func assertStrings(t *testing.T, got, want []string) {
 		if got[index] != want[index] {
 			t.Fatalf("got %q, want %q", got, want)
 		}
+	}
+}
+
+func TestApprovalSummaryAndLifecycle(t *testing.T) {
+	cases := map[string]string{
+		"Bash":     "Run `npm test`",
+		"Edit":     "Change src/a.go",
+		"WebFetch": "Fetch https://example.com",
+		"Grep":     "Use Grep",
+	}
+	input := json.RawMessage(`{"command":"npm   test","file_path":"src/a.go","url":"https://example.com"}`)
+	for tool, want := range cases {
+		if got := ApprovalSummary(tool, input); got != want {
+			t.Fatalf("ApprovalSummary(%s) = %q, want %q", tool, got, want)
+		}
+	}
+	requested, err := ApprovalRequestedEvent("s-1", "approval-1", "Bash", input, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if working, ok := HistoryLifecycle(requested); working || !ok {
+		t.Fatalf("requested lifecycle = %v, %v", working, ok)
+	}
+	resolved, err := ApprovalResolvedEvent("s-1", "approval-1", "allow", "", time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if working, ok := HistoryLifecycle(resolved); !working || !ok {
+		t.Fatalf("resolved lifecycle = %v, %v", working, ok)
 	}
 }

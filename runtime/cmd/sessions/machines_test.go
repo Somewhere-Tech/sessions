@@ -2,15 +2,121 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/discovery"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetaccount"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/tokenstore"
 )
+
+func TestMergeMachinesCombinesSavedBonjourAndAccountTransports(t *testing.T) {
+	saved := []savedMachine{{
+		Alias: "mini", MachineID: "machine-mini", Name: "Mac mini",
+		Endpoint: "https://mini.example.ts.net", Transport: "tailnet",
+		LANEndpoint: "http://192.168.1.20:8787", TailnetEndpoint: "https://mini.example.ts.net",
+	}}
+	nearby := []discoveredMachine{{Candidate: discovery.Candidate{
+		Name: "Mac mini", Endpoint: "http://192.168.1.20:8787",
+		LANEndpoint: "http://192.168.1.20:8787", Transport: "nearby",
+	}}}
+	account := []fleetaccount.Machine{{
+		ID: "machine-mini", Name: "Mac mini", LastSeenAt: "2026-09-03T22:00:00Z",
+		EndpointsJSON: fleetaccount.Endpoints{
+			LAN: "http://192.168.1.20:8787", Tailnet: "https://mini.example.ts.net",
+			TailnetIP: "http://100.100.20.30:8787", Relay: "https://relay.example/m/machine-mini",
+		},
+	}}
+
+	merged := mergeMachineSources(saved, nearby, account)
+	if len(merged) != 1 {
+		t.Fatalf("merged machines = %#v", merged)
+	}
+	machine := merged[0]
+	if strings.Join(machine.Sources, ",") != "account,bonjour,saved" || !machine.Credential ||
+		machine.InUse == nil || machine.InUse.Transport != "tailnet" || len(machine.Candidates) != 4 {
+		t.Fatalf("merged machine = %#v", machine)
+	}
+}
+
+func TestMachineCommandUsesDaemonFleetRelayPath(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		path = request.URL.Path
+		_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{}})
+	}))
+	defer server.Close()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SESSIONS_HOST", server.URL)
+	if _, err := saveMachine(home, savedMachine{
+		Alias: "mini", MachineID: "machine-mini", Name: "Mini", Endpoint: "http://10.0.0.2:8787", Transport: "nearby",
+	}, "device-secret"); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--machine", "mini", "--json", "ls"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if path != "/api/fleet/machine-mini/api/sessions" {
+		t.Fatalf("request path = %q", path)
+	}
+}
+
+func TestMachinesConnectAcceptsPairingLink(t *testing.T) {
+	var posted map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/lan/connect" {
+			http.NotFound(response, request)
+			return
+		}
+		if err := json.NewDecoder(request.Body).Decode(&posted); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"endpoint": serverURL(request), "transport": "lan",
+			"claim": map[string]string{
+				"device_id":    "22222222-2222-4222-8222-222222222222",
+				"token":        "device-token",
+				"name":         "Laptop",
+				"machine_id":   "11111111-1111-4111-8111-111111111111",
+				"machine_name": "Studio",
+				"lan_endpoint": serverURL(request),
+			},
+		})
+	}))
+	defer server.Close()
+	link, err := fleetendpoint.PairingLink(
+		[]fleetendpoint.Candidate{{Endpoint: server.URL, Transport: "lan"}},
+		"ticket-id.ticket-secret",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--host", server.URL, "machines", "connect", link, "--name", "studio"},
+		strings.NewReader(""), &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("connect exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if posted["ticket"] != "ticket-id.ticket-secret" || posted["lan_endpoint"] != server.URL {
+		t.Fatalf("pairing request = %#v", posted)
+	}
+	registry, err := readMachineRegistry(home)
+	if err != nil || len(registry.Machines) != 1 || registry.Machines[0].Alias != "studio" {
+		t.Fatalf("saved registry = %#v, err=%v", registry, err)
+	}
+}
 
 func TestMachineRegistryKeepsCredentialsOutOfMetadataAndUsesPrivateModes(t *testing.T) {
 	home := t.TempDir()
@@ -78,7 +184,7 @@ func TestNativeMachineSyncSharesApprovedMachinesWithAgents(t *testing.T) {
 	}
 }
 
-func TestSavedMachineGlobalSelectsEndpointAndTokenWithoutPrintingIt(t *testing.T) {
+func TestSavedMachineGlobalUsesLocalDaemonRelayUnlessDirect(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	machine, err := saveMachine(home, savedMachine{
@@ -98,11 +204,23 @@ func TestSavedMachineGlobalSelectsEndpointAndTokenWithoutPrintingIt(t *testing.T
 		t.Fatal(err)
 	}
 	defer application.close()
-	if application.api.host != machine.Endpoint {
+	if application.api.host != "127.0.0.1" {
 		t.Fatalf("api host = %q", application.api.host)
 	}
-	if application.api.tokenPath != savedMachineTokenPath(home, machine.MachineID) {
-		t.Fatalf("token path = %q", application.api.tokenPath)
+	if application.api.pathPrefix != "/api/fleet/"+machine.MachineID || application.api.relayEndpoint != machine.Endpoint {
+		t.Fatalf("relay client = host %q prefix %q endpoint %q", application.api.host, application.api.pathPrefix, application.api.relayEndpoint)
+	}
+	application.close()
+	application, err = newApp(
+		[]string{"--direct", "--machine", "mini", "ls"},
+		strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.close()
+	if application.api.host != machine.Endpoint || application.api.tokenPath != savedMachineTokenPath(home, machine.MachineID) {
+		t.Fatalf("direct client = host %q token %q", application.api.host, application.api.tokenPath)
 	}
 }
 
@@ -142,7 +260,7 @@ func TestMachineEndpointValidationIsFailClosed(t *testing.T) {
 		{"http://192.168.1.20:8787", "nearby", true},
 		{"http://10.0.0.2:9000", "nearby", true},
 		{"https://mini.example.ts.net", "tailnet", true},
-		{"http://127.0.0.1:8787", "", false},
+		{"http://127.0.0.1:8787", "nearby", true},
 		{"http://example.com:8787", "", false},
 		{"http://192.168.1.20", "", false},
 		{"https://example.com", "", false},
@@ -169,7 +287,7 @@ func TestForgetMachineRemovesOnlyLocalCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"machines", "forget", "mini"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+	if code := run([]string{"machines", "forget", machine.MachineID[:8]}, strings.NewReader(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	if _, err := os.Stat(savedMachineTokenPath(home, machine.MachineID)); !os.IsNotExist(err) {

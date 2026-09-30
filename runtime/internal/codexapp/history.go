@@ -23,9 +23,9 @@ func UserHistoryEvent(conversationID, text string, at time.Time) (json.RawMessag
 }
 
 // SteeringHistoryEvent records provider-accepted input for an active Codex
-// turn. queued is intentionally explicit so every client can explain that the
-// message will be applied after Codex's next tool call. A turn-completed event
-// later resolves this into ordinary authored history in the UI.
+// turn. queued describes acceptance while the turn may still be working, not
+// proof that Codex has applied the input. The timestamp is the submission time;
+// the acknowledgment can arrive after a turn-completed notification.
 func SteeringHistoryEvent(conversationID, turnID, text string, at time.Time) (json.RawMessage, error) {
 	return marshalHistory(map[string]any{
 		"type":           "user",
@@ -53,6 +53,14 @@ func ImportedHistoryEvent(conversationID, role, text, sourceHistoryID string, at
 		"type": role, "subtype": "imported_message", "source": "sessions-continuation",
 		"timestamp": historyTimestamp(at), "conversationId": conversationID,
 		"continuedFromHistoryId": sourceHistoryID, "message": message,
+	})
+}
+
+// ContinuationStartedEvent is the first visible line before copied history.
+func ContinuationStartedEvent(conversationID, detail string, at time.Time) (json.RawMessage, error) {
+	return marshalHistory(map[string]any{
+		"type": "system", "subtype": "continuation_started", "source": "sessions-continuation",
+		"timestamp": historyTimestamp(at), "conversationId": conversationID, "detail": detail,
 	})
 }
 
@@ -178,6 +186,12 @@ func HistoryLifecycle(raw json.RawMessage) (working bool, authoritative bool) {
 		return true, true
 	case "turn_completed":
 		return false, true
+	// A lane waiting on an approval is not working: nothing moves until
+	// someone answers, and the session must read as needing that answer.
+	case "approval_requested":
+		return false, true
+	case "approval_resolved":
+		return true, true
 	default:
 		return false, false
 	}

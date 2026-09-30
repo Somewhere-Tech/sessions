@@ -14,7 +14,7 @@ func TestCandidateFromEntryRequiresSessionsApprovalAndPrivateIPv4(t *testing.T) 
 		Host:       "sessions-abc123.local.",
 		AddrV4:     net.ParseIP("192.168.4.20"),
 		Port:       8787,
-		InfoFields: []string{"sessions=1", "api=1", "approval=required", "transport=http"},
+		InfoFields: []string{"sessions=1", "api=1", "approval=required", "transport=http", "lan=http://192.168.4.20:8787", "tailnet=https://studio.example.ts.net", "tailnet-ip=http://100.100.20.30:8787"},
 	}
 	candidate, ok := candidateFromEntry(entry)
 	if !ok {
@@ -23,6 +23,9 @@ func TestCandidateFromEntryRequiresSessionsApprovalAndPrivateIPv4(t *testing.T) 
 	if candidate.Name != "Studio Mac" ||
 		candidate.Hostname != "sessions-abc123.local" ||
 		candidate.Endpoint != "http://192.168.4.20:8787" ||
+		candidate.LANEndpoint != candidate.Endpoint ||
+		candidate.TailnetEndpoint != "https://studio.example.ts.net" ||
+		candidate.TailnetIPEndpoint != "http://100.100.20.30:8787" ||
 		candidate.Transport != "nearby" {
 		t.Fatalf("candidate = %#v", candidate)
 	}
@@ -55,6 +58,21 @@ func TestServiceInstanceIsBoundedAndDoesNotExposeMachineID(t *testing.T) {
 	}
 	if !strings.HasSuffix(instance, machineIDSuffix(machineID)) || strings.Contains(instance, "abcdef") {
 		t.Fatalf("instance lacks hashed disambiguator or leaked an ID suffix: %q", instance)
+	}
+}
+
+func TestSanitizeServiceNamePreservesWords(t *testing.T) {
+	for input, want := range map[string]string{
+		"Uzair's MacBook Pro":       "Uzair's MacBook Pro",
+		"MacBook-Pro":               "MacBook-Pro",
+		"MacBook.Pro":               "MacBook Pro",
+		`Studio.\\Mac`:              "Studio Mac",
+		"workstation\x00downstairs": "workstation downstairs",
+		"Studio. Mac":               "Studio Mac",
+	} {
+		if got := sanitizeServiceName(input); got != want {
+			t.Fatalf("sanitizeServiceName(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/ipc"
 	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/providerargs"
+	"github.com/somewhere-tech/sessions/runtime/internal/providerfault"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
@@ -37,16 +38,23 @@ type claudeStructuredRunner struct {
 	historyFile  *os.File
 	continuation *state.ContinuationContext
 
+	// approvals holds the permission requests the prompt shim forwarded
+	// until the daemon answers each with an Approve frame.
+	approvals        approvalDesk
+	approvalListener net.Listener
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan int
 
-	streamMu sync.Mutex
-	mu       sync.Mutex
-	clients  map[*client]struct{}
-	history  []json.RawMessage
-	composer strings.Builder
-	active   bool
+	streamMu   sync.Mutex
+	mu         sync.Mutex
+	clients    map[*client]struct{}
+	history    []json.RawMessage
+	composer   strings.Builder
+	active     bool
+	turnCancel context.CancelFunc
+	retry      *structuredRetryController
 
 	shutdownOnce sync.Once
 }
@@ -57,6 +65,7 @@ func runClaudeStructured(cfg config, paths state.Paths, logger *log.Logger) int 
 		cfg: cfg, paths: paths, logger: logger, ctx: ctx, cancel: cancel,
 		done: make(chan int, 1), clients: make(map[*client]struct{}),
 	}
+	host.retry = newStructuredRetryController(host.startRetryTurn, host.appendStructured, host.publishRetryState)
 	if err := host.start(); err != nil {
 		logger.Printf("structured Claude host failed: %v", err)
 		removeRestartState(paths)
@@ -124,7 +133,30 @@ func (r *claudeStructuredRunner) start() error {
 	}
 	r.listener = listener
 	go r.acceptLoop()
+	endpoint := approvalEndpoint(r.paths.Socket)
+	_ = ipc.Remove(endpoint)
+	if approvals, err := ipc.Listen(endpoint); err == nil {
+		r.approvalListener = approvals
+		go serveApprovalSocket(approvals, r.decideApproval)
+	} else {
+		r.logger.Printf("approval endpoint unavailable, permission requests will be declined: %v", err)
+	}
 	return nil
+}
+
+// decideApproval answers one request from the prompt shim: announce it on
+// the structured stream, wait for the daemon's Approve frame, record the
+// outcome. The turn stays open meanwhile.
+func (r *claudeStructuredRunner) decideApproval(request shimApprovalRequest) shimApprovalReply {
+	id, decided := r.approvals.open()
+	if raw, err := claudep.ApprovalRequestedEvent(r.sessionID, id, request.ToolName, request.Input, time.Now()); err == nil {
+		r.appendStructured(raw)
+	}
+	control := r.approvals.wait(r.ctx, r.ctx, id, decided)
+	if raw, err := claudep.ApprovalResolvedEvent(r.sessionID, id, control.Decision, control.By, time.Now()); err == nil {
+		r.appendStructured(raw)
+	}
+	return shimApprovalReply{Decision: control.Decision, By: control.By}
 }
 
 func (r *claudeStructuredRunner) prepareContinuation() error {
@@ -146,6 +178,11 @@ func (r *claudeStructuredRunner) prepareContinuation() error {
 		}
 	}
 	if !continuation.LocalHistoryReady {
+		if raw, encodeErr := claudep.ContinuationStartedEvent(
+			r.sessionID, continuation.StartLine(), time.Now(),
+		); encodeErr == nil {
+			r.appendStructured(raw)
+		}
 		for _, message := range continuation.Messages {
 			raw, encodeErr := claudep.ImportedHistoryEvent(
 				r.sessionID, message.Role, message.Text, continuation.SourceHistoryID,
@@ -245,7 +282,8 @@ func (r *claudeStructuredRunner) serveClient(connection net.Conn) {
 		ID: r.cfg.id, Cmd: r.cfg.cmd, Args: r.cfg.args, Cwd: r.cfg.cwd,
 		Cols: r.cfg.cols, Rows: r.cfg.rows, CreatedAt: r.createdAt,
 		PID: os.Getpid(), ProtocolVersion: proto.ProtocolVersion, RuntimeVersion: version,
-		ClaudeSessionID: r.sessionID,
+		ClaudeSessionID: r.sessionID, Retry: r.retry.Current(), Turn: &proto.TurnState{Working: r.active},
+		MessageSubmit: true,
 	}
 	r.mu.Unlock()
 	payload, err := json.Marshal(h)
@@ -256,12 +294,7 @@ func (r *claudeStructuredRunner) serveClient(connection net.Conn) {
 	if err != nil {
 		c.close()
 	}
-	defer func() {
-		c.close()
-		r.mu.Lock()
-		delete(r.clients, c)
-		r.mu.Unlock()
-	}()
+	defer r.detachClient(c)
 	for {
 		frame, err := proto.Read(connection)
 		if err != nil {
@@ -273,8 +306,19 @@ func (r *claudeStructuredRunner) serveClient(connection net.Conn) {
 	}
 }
 
+// detachClient ends only one daemon transport. The active claude -p process,
+// retry schedule, and approval desk remain owned by the runner lifetime.
+func (r *claudeStructuredRunner) detachClient(c *client) {
+	c.close()
+	r.mu.Lock()
+	delete(r.clients, c)
+	r.mu.Unlock()
+}
+
 func (r *claudeStructuredRunner) handleFrame(c *client, frame proto.Frame) error {
 	switch frame.Type {
+	case proto.MessageReq:
+		return replyMessage(c, frame.Payload, r.submitMessage)
 	case proto.Input:
 		r.handleInput(string(frame.Payload))
 	case proto.ModelReq:
@@ -292,6 +336,18 @@ func (r *claudeStructuredRunner) handleFrame(c *client, frame proto.Frame) error
 			return marshalErr
 		}
 		return c.write(proto.ModelRes, payload)
+	case proto.Approve:
+		control, err := proto.DecodeApprovalControl(frame.Payload)
+		if err == nil {
+			err = r.approvals.resolve(control)
+		}
+		if err != nil {
+			r.logger.Printf("reject approval control: %v", err)
+		}
+	case proto.RetryReq:
+		return r.handleRetryControl(c, false)
+	case proto.RetryStop:
+		return r.handleRetryControl(c, true)
 	case proto.Resize:
 		return nil
 	case proto.SnapshotReq:
@@ -339,9 +395,64 @@ func (r *claudeStructuredRunner) configureModel(control proto.ModelControl) erro
 	return nil
 }
 
+func (r *claudeStructuredRunner) handleRetryControl(c *client, stop bool) error {
+	var err error
+	if stop {
+		err = r.retry.Stop()
+	} else {
+		r.mu.Lock()
+		active := r.active
+		r.mu.Unlock()
+		if active {
+			err = errors.New("Claude turn is active")
+		} else {
+			err = r.retry.RunNow()
+		}
+	}
+	result := proto.RetryControlResult{}
+	if err != nil {
+		result.Error = err.Error()
+	}
+	payload, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		return marshalErr
+	}
+	return c.write(proto.RetryRes, payload)
+}
+
+func (r *claudeStructuredRunner) startRetryTurn(text string, attempt int) bool {
+	r.mu.Lock()
+	if r.active || r.ctx.Err() != nil {
+		r.mu.Unlock()
+		return false
+	}
+	r.active = true
+	r.mu.Unlock()
+	go r.runTurn(text, attempt, false)
+	return true
+}
+
 func (r *claudeStructuredRunner) handleInput(data string) {
+	if isStructuredInterruptInput(data) {
+		if r.retry != nil {
+			r.retry.Interrupt()
+		}
+		r.mu.Lock()
+		cancel := r.turnCancel
+		r.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		return
+	}
+	if data != "" {
+		if r.retry != nil {
+			r.retry.Interrupt()
+		}
+	}
 	r.mu.Lock()
 	var rejected []json.RawMessage
+	var turns []string
 	parts := strings.Split(data, "\r")
 	for index, part := range parts {
 		r.composer.WriteString(part)
@@ -365,22 +476,36 @@ func (r *claudeStructuredRunner) handleInput(data string) {
 			continue
 		}
 		r.active = true
-		go r.runTurn(text)
+		turns = append(turns, text)
 	}
 	r.mu.Unlock()
+	for _, text := range turns {
+		if r.retry != nil {
+			r.retry.Replace()
+		}
+		go r.runTurn(text, 0, true)
+	}
 	for _, event := range rejected {
 		r.appendStructured(event)
 	}
 }
 
-func (r *claudeStructuredRunner) runTurn(text string) {
+func (r *claudeStructuredRunner) runTurn(text string, attempt int, recordUser bool) {
+	turnCtx, turnCancel := context.WithCancel(r.ctx)
+	r.mu.Lock()
+	r.turnCancel = turnCancel
+	r.mu.Unlock()
 	defer func() {
+		turnCancel()
 		r.mu.Lock()
 		r.active = false
+		r.turnCancel = nil
 		r.mu.Unlock()
 	}()
-	user, _ := claudep.UserHistoryEvent(r.sessionID, text, time.Now())
-	r.appendStructured(user)
+	if recordUser {
+		user, _ := claudep.UserHistoryEvent(r.sessionID, text, time.Now())
+		r.appendStructured(user)
+	}
 	started, _ := claudep.TurnStartedEvent(r.sessionID, time.Now())
 	r.appendStructured(started)
 	r.mu.Lock()
@@ -394,12 +519,17 @@ func (r *claudeStructuredRunner) runTurn(text string) {
 		updated := *continuation
 		updated.ProviderContext = "applying"
 		if err := state.WriteContinuation(r.paths.Continuation, updated); err != nil {
-			r.recordTurnFailure(fmt.Errorf("prepare linked continuation: %w", err))
+			r.recordTurnFailure(text, attempt, fmt.Errorf("prepare linked continuation: %w", err))
 			return
 		}
 		cfg.args = withContinuationSystemPrompt(cfg.args, continuationBridge(updated))
 	}
-	stream, err := r.client.SendTurn(r.ctx, text, claudep.TurnOptions{
+	if r.approvalListener != nil {
+		if executable, err := os.Executable(); err == nil {
+			cfg.args = withApprovalShim(cfg.args, executable, approvalEndpoint(r.paths.Socket))
+		}
+	}
+	stream, err := r.client.SendTurn(turnCtx, text, claudep.TurnOptions{
 		CWD: cfg.cwd, SessionID: r.sessionID, Resume: resume,
 		Model: providerargs.Value(cfg.args, providerargs.ModelFlags()...), ExtraArgs: cfg.args,
 	})
@@ -409,7 +539,9 @@ func (r *claudeStructuredRunner) runTurn(text string) {
 			updated.ProviderContext = ""
 			_ = state.WriteContinuation(r.paths.Continuation, updated)
 		}
-		r.recordTurnFailure(structuredProfileLoginHint(err, cfg.profile))
+		if !errors.Is(err, context.Canceled) {
+			r.recordTurnFailure(text, attempt, structuredProfileLoginHint(err, cfg.profile))
+		}
 		return
 	}
 	if applyContinuation {
@@ -421,7 +553,18 @@ func (r *claudeStructuredRunner) runTurn(text string) {
 			r.mu.Unlock()
 		}
 	}
+	r.consumeTurn(text, attempt, cfg.profile, turnCtx, stream)
+}
+
+func (r *claudeStructuredRunner) consumeTurn(
+	text string,
+	attempt int,
+	profile string,
+	turnCtx context.Context,
+	stream *claudep.TurnStream,
+) {
 	completed := false
+	failed := false
 	for event := range stream.Events {
 		if claudep.HistoryInitialized(event.Raw) {
 			r.mu.Lock()
@@ -431,11 +574,19 @@ func (r *claudeStructuredRunner) runTurn(text string) {
 		if event.Type == "result" {
 			completed = true
 		}
+		if fault, failureText, isFailure := claudeResultProviderFault(event); isFailure {
+			r.recordProviderFailure(text, attempt, fault, failureText)
+			failed = true
+		}
 		r.appendStructured(event.Raw)
 	}
-	_, err = stream.Result(r.ctx)
-	if err != nil && !errors.Is(err, context.Canceled) && (!completed || cfg.profile != "") {
-		r.recordTurnFailure(structuredProfileLoginHint(err, cfg.profile))
+	_, err := stream.Result(turnCtx)
+	if err != nil && !errors.Is(err, context.Canceled) && (!completed || profile != "") {
+		r.recordTurnFailure(text, attempt, structuredProfileLoginHint(err, profile))
+		return
+	}
+	if !failed && r.retry != nil {
+		r.retry.Succeeded()
 	}
 }
 
@@ -446,11 +597,45 @@ func structuredProfileLoginHint(err error, profile string) error {
 	return fmt.Errorf("%w; new profile: open a regular PTY session with --profile %s once to log in", err, profile)
 }
 
-func (r *claudeStructuredRunner) recordTurnFailure(err error) {
+func (r *claudeStructuredRunner) recordTurnFailure(text string, attempt int, err error) {
+	r.recordProviderFailure(text, attempt, providerfault.Classify("claude", err.Error(), 0), err.Error())
 	raw, encodeErr := claudep.FailureHistoryEvent(r.sessionID, err, time.Now())
 	if encodeErr == nil {
 		r.appendStructured(raw)
 	}
+}
+
+func (r *claudeStructuredRunner) recordProviderFailure(input string, attempt int, fault providerfault.Fault, text string) {
+	raw, err := providerfault.HistoryEvent("claude", fault, time.Now())
+	if err == nil {
+		r.appendStructured(raw)
+	}
+	if r.retry != nil {
+		r.retry.Failed(input, attempt, fault, text)
+	}
+}
+
+func claudeResultProviderFault(event claudep.Event) (providerfault.Fault, string, bool) {
+	if event.Type != "result" {
+		return providerfault.Fault{}, "", false
+	}
+	var result struct {
+		IsError        bool   `json:"is_error"`
+		APIErrorStatus int    `json:"api_error_status"`
+		Result         string `json:"result"`
+		Error          string `json:"error"`
+	}
+	if json.Unmarshal(event.Raw, &result) != nil || !result.IsError {
+		return providerfault.Fault{}, "", false
+	}
+	text := result.Result
+	if strings.TrimSpace(text) == "" {
+		text = result.Error
+	}
+	if strings.TrimSpace(text) == "" {
+		text = event.Message
+	}
+	return providerfault.Classify("claude", text, result.APIErrorStatus), text, true
 }
 
 func (r *claudeStructuredRunner) appendStructured(raw json.RawMessage) {
@@ -474,6 +659,24 @@ func (r *claudeStructuredRunner) appendStructured(raw json.RawMessage) {
 	}
 }
 
+func (r *claudeStructuredRunner) publishRetryState(retry *proto.ProviderRetry) {
+	payload, err := json.Marshal(proto.ProviderRetryState{Retry: retry})
+	if err != nil {
+		return
+	}
+	r.streamMu.Lock()
+	r.mu.Lock()
+	clients := make([]*client, 0, len(r.clients))
+	for c := range r.clients {
+		clients = append(clients, c)
+	}
+	r.mu.Unlock()
+	for _, c := range clients {
+		c.enqueue(proto.RetryState, payload)
+	}
+	r.streamMu.Unlock()
+}
+
 func (r *claudeStructuredRunner) snapshot() string {
 	r.mu.Lock()
 	history := cloneStructured(r.history)
@@ -492,10 +695,15 @@ func (r *claudeStructuredRunner) shutdownForHostExit(permanent bool, code int) {
 func (r *claudeStructuredRunner) shutdownWithRestartPolicy(permanent bool, code int, preserveRestartPermit bool) {
 	r.shutdownOnce.Do(func() {
 		r.cancel()
+		r.retry.Close()
 		r.streamMu.Lock()
 		if r.listener != nil {
 			_ = r.listener.Close()
 		}
+		if r.approvalListener != nil {
+			_ = r.approvalListener.Close()
+		}
+		_ = ipc.Remove(approvalEndpoint(r.paths.Socket))
 		_ = ipc.Remove(r.paths.Socket)
 		if !preserveRestartPermit {
 			removeRestartState(r.paths)
@@ -515,8 +723,13 @@ func (r *claudeStructuredRunner) shutdownWithRestartPolicy(permanent bool, code 
 		}
 		r.closeHistory()
 		if permanent {
+			// The runner record goes; the conversation copy stays. This
+			// sidecar is the only copy Sessions holds of a structured
+			// conversation, and a provider that keeps its own history in a
+			// database or under another home leaves nothing else to resume
+			// from. Ending a session must never make its conversation
+			// unrecoverable (docs/PRINCIPLES.md, "Sessions are durable work").
 			_ = os.Remove(r.paths.Meta)
-			_ = os.Remove(r.paths.ClaudeP)
 		}
 		r.streamMu.Unlock()
 		r.done <- code

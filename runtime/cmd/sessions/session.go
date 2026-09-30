@@ -12,6 +12,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ansi"
+	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 type session struct {
@@ -35,6 +36,7 @@ type session struct {
 	CreatedAt         int64             `json:"createdAt"`
 	PID               int               `json:"pid"`
 	RunnerProtocol    int               `json:"runnerProtocol"`
+	MessageSubmit     bool              `json:"messageSubmit,omitempty"`
 	RunnerVersion     string            `json:"runnerVersion,omitempty"`
 	Tool              string            `json:"tool"`
 	Working           bool              `json:"working"`
@@ -43,53 +45,72 @@ type session struct {
 	// LastHumanMessageAt and LastAgentMessageAt are the daemon's own record of
 	// who spoke, stamped at the input boundary. LastUserMessageAt is read back
 	// out of the provider transcript and can include provider-internal turns.
-	LastHumanMessageAt *int64  `json:"lastHumanMessageAt"`
-	LastAgentMessageAt *int64  `json:"lastAgentMessageAt"`
-	IdleReason         string  `json:"idleReason,omitempty"`
-	IdleDetail         string  `json:"idleDetail,omitempty"`
-	IdleSince          *int64  `json:"idleSince,omitempty"`
-	LastSummary        string  `json:"lastSummary,omitempty"`
-	Model              string  `json:"model,omitempty"`
-	Effort             string  `json:"effort,omitempty"`
-	Exited             bool    `json:"exited"`
-	ExitCode           *int    `json:"exitCode"`
-	ExitSignal         *string `json:"exitSignal"`
-	ExitedAt           *int64  `json:"exitedAt"`
-	ConversationID     string  `json:"conversationId,omitempty"`
-	RemoteEndpoint     string  `json:"remoteEndpoint,omitempty"`
-	ClaudeSessionID    string  `json:"claudeSessionId,omitempty"`
-	CreatorKind        string  `json:"creator_kind,omitempty"`
-	CreatorID          string  `json:"creator_id,omitempty"`
-	ParentSessionID    string  `json:"parent_session_id,omitempty"`
-	DelegationKind     string  `json:"delegation_kind,omitempty"`
-	Permissions        string  `json:"permissions,omitempty"`
-	Lifecycle          string  `json:"lifecycle,omitempty"`
-	SetAsideAt         *int64  `json:"setAsideAt,omitempty"`
-	Pinned             bool    `json:"pinned"`
+	LastHumanMessageAt     *int64         `json:"lastHumanMessageAt"`
+	LastAgentMessageAt     *int64         `json:"lastAgentMessageAt"`
+	IdleReason             string         `json:"idleReason,omitempty"`
+	IdleDetail             string         `json:"idleDetail,omitempty"`
+	IdleSince              *int64         `json:"idleSince,omitempty"`
+	LastSummary            string         `json:"lastSummary,omitempty"`
+	FailureKind            string         `json:"failureKind,omitempty"`
+	FailureDetail          string         `json:"failureDetail,omitempty"`
+	FailureProvider        string         `json:"failureProvider,omitempty"`
+	FailureAt              int64          `json:"failureAt,omitempty"`
+	Retry                  *providerRetry `json:"retry,omitempty"`
+	Model                  string         `json:"model,omitempty"`
+	Effort                 string         `json:"effort,omitempty"`
+	Exited                 bool           `json:"exited"`
+	Unreachable            bool           `json:"unreachable,omitempty"`
+	UnreachableReason      string         `json:"unreachableReason,omitempty"`
+	UnreachableSince       *int64         `json:"unreachableSince,omitempty"`
+	RunnerGone             bool           `json:"runnerGone,omitempty"`
+	ExitCode               *int           `json:"exitCode"`
+	ExitSignal             *string        `json:"exitSignal"`
+	ExitedAt               *int64         `json:"exitedAt"`
+	ConversationID         string         `json:"conversationId,omitempty"`
+	RemoteEndpoint         string         `json:"remoteEndpoint,omitempty"`
+	ClaudeSessionID        string         `json:"claudeSessionId,omitempty"`
+	CreatorKind            string         `json:"creator_kind,omitempty"`
+	CreatorID              string         `json:"creator_id,omitempty"`
+	ParentSessionID        string         `json:"parent_session_id,omitempty"`
+	DisplayParentSessionID *string        `json:"display_parent_session_id,omitempty"`
+	DelegationKind         string         `json:"delegation_kind,omitempty"`
+	Permissions            string         `json:"permissions,omitempty"`
+	Lifecycle              string         `json:"lifecycle,omitempty"`
+	SetAsideAt             *int64         `json:"setAsideAt,omitempty"`
+	Pinned                 bool           `json:"pinned"`
 	// Pointers, so a daemon that never reported these and a session that
 	// genuinely costs nothing stay distinguishable. Rendering turns nil into
 	// "-" and never into 0.
-	MemoryBytes        *uint64         `json:"memoryBytes,omitempty"`
-	CPUPercent         *float64        `json:"cpuPercent,omitempty"`
-	ResourceProcesses  *int            `json:"resourceProcesses,omitempty"`
-	ResourceSampledAt  *int64          `json:"resourceSampledAt,omitempty"`
-	CreatorAncestry    []string        `json:"creator_ancestry,omitempty"`
-	RootCreatorKind    string          `json:"root_creator_kind,omitempty"`
-	RootCreatorID      string          `json:"root_creator_id,omitempty"`
-	ProvenanceStatus   string          `json:"provenance_status,omitempty"`
-	ReopenedAs         string          `json:"reopened_as,omitempty"`
-	ResumedFrom        string          `json:"resumed_from,omitempty"`
-	MovedToEndpoint    string          `json:"moved_to_endpoint,omitempty"`
-	MovedToSessionID   string          `json:"moved_to_session_id,omitempty"`
-	MovedFromEndpoint  string          `json:"moved_from_endpoint,omitempty"`
-	MovedFromSessionID string          `json:"moved_from_session_id,omitempty"`
-	EndedByKind        string          `json:"ended_by_kind,omitempty"`
-	EndedByID          string          `json:"ended_by_id,omitempty"`
-	EndedByName        string          `json:"ended_by_name,omitempty"`
-	EndedByClient      string          `json:"ended_by_client,omitempty"`
-	EndReason          string          `json:"end_reason,omitempty"`
-	EndOperationID     string          `json:"end_operation_id,omitempty"`
-	Extra              json.RawMessage `json:"-"`
+	MemoryBytes        *uint64  `json:"memoryBytes,omitempty"`
+	CPUPercent         *float64 `json:"cpuPercent,omitempty"`
+	ResourceProcesses  *int     `json:"resourceProcesses,omitempty"`
+	ResourceSampledAt  *int64   `json:"resourceSampledAt,omitempty"`
+	CreatorAncestry    []string `json:"creator_ancestry,omitempty"`
+	RootCreatorKind    string   `json:"root_creator_kind,omitempty"`
+	RootCreatorID      string   `json:"root_creator_id,omitempty"`
+	ProvenanceStatus   string   `json:"provenance_status,omitempty"`
+	ReopenedAs         string   `json:"reopened_as,omitempty"`
+	ResumedFrom        string   `json:"resumed_from,omitempty"`
+	MovedToEndpoint    string   `json:"moved_to_endpoint,omitempty"`
+	MovedToSessionID   string   `json:"moved_to_session_id,omitempty"`
+	MovedFromEndpoint  string   `json:"moved_from_endpoint,omitempty"`
+	MovedFromSessionID string   `json:"moved_from_session_id,omitempty"`
+	EndedByKind        string   `json:"ended_by_kind,omitempty"`
+	EndedByID          string   `json:"ended_by_id,omitempty"`
+	EndedByName        string   `json:"ended_by_name,omitempty"`
+	EndedByClient      string   `json:"ended_by_client,omitempty"`
+	EndReason          string   `json:"end_reason,omitempty"`
+	EndOperationID     string   `json:"end_operation_id,omitempty"`
+	// Start is the daemon's delegated-start receipt; see state.StartReceipt.
+	Start *state.StartReceipt `json:"start,omitempty"`
+	Extra json.RawMessage     `json:"-"`
+}
+
+type providerRetry struct {
+	Attempt int    `json:"attempt"`
+	Max     int    `json:"max"`
+	NextAt  int64  `json:"nextAt"`
+	Kind    string `json:"kind"`
 }
 
 type sessionsResponse struct {
@@ -157,7 +178,7 @@ func (a *app) sessionLabel(value session) string {
 		parts = append(parts, value.Name)
 	}
 	if value.Cwd != "" {
-		parts = append(parts, strings.Replace(value.Cwd, a.home, "~", 1))
+		parts = append(parts, a.homeRelative(value.Cwd))
 	}
 	if value.Exited {
 		parts = append(parts, "exited")
@@ -170,32 +191,54 @@ func (a *app) sessionLabel(value session) string {
 }
 
 func (a *app) resolveSessionID(idOrPrefix string) (string, error) {
+	resolved, err := a.resolveSession(idOrPrefix)
+	return resolved.ID, err
+}
+
+// Keep the row from the same startup-aware lookup that resolved its identity.
+// A wait cannot decide its target kind from an earlier, incomplete listing.
+func (a *app) resolveSession(idOrPrefix string) (session, error) {
+	deadline := a.now().Add(startupWaitBudget)
+	for {
+		matched, err := a.matchSession(idOrPrefix)
+		if err != nil {
+			return session{}, err
+		}
+		if matched != nil {
+			return *matched, nil
+		}
+		// A daemon that is still loading has not said this session is gone; it
+		// has not got to it yet. Saying "no live session matches" here is what
+		// sent a teammate looking for a lane that was running the whole time.
+		if !a.waitForLoadingDaemon(deadline) {
+			return session{}, fail(1, "%s", unknownSessionMessage(idOrPrefix))
+		}
+	}
+}
+
+func (a *app) matchSessionID(idOrPrefix string) (string, bool, error) {
+	matched, err := a.matchSession(idOrPrefix)
+	if matched == nil {
+		return "", false, err
+	}
+	return matched.ID, true, err
+}
+
+func (a *app) matchSession(idOrPrefix string) (*session, error) {
 	sessions, err := a.listSessions(true)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	for _, candidate := range sessions {
-		if candidate.ID == idOrPrefix {
-			return candidate.ID, nil
+	id, found, resolveErr := resolveIDPrefix(idOrPrefix, "session", "sessions ls", candidatesForSessions(a, sessions))
+	if resolveErr != nil || !found {
+		return nil, resolveErr
+	}
+	for index := range sessions {
+		if sessions[index].ID == id {
+			return &sessions[index], nil
 		}
 	}
-	matches := make([]session, 0)
-	for _, candidate := range sessions {
-		if strings.HasPrefix(candidate.ID, idOrPrefix) {
-			matches = append(matches, candidate)
-		}
-	}
-	if len(matches) == 1 {
-		return matches[0].ID, nil
-	}
-	if len(matches) == 0 {
-		return "", fail(1, "%s", unknownSessionMessage(idOrPrefix))
-	}
-	var lines strings.Builder
-	for _, candidate := range matches {
-		fmt.Fprintf(&lines, "  %s  %s\n", prefixString(candidate.ID, 8), a.sessionLabel(candidate))
-	}
-	return "", fail(1, "ambiguous session prefix '%s' — matches:\n%srun `sessions ls`", idOrPrefix, lines.String())
+	return nil, nil
 }
 
 func prefixString(value string, count int) string {
@@ -313,7 +356,7 @@ func (a *app) cmdLS(args []string) error {
 		if showPin {
 			row = append(row, pinMark(value))
 		}
-		row = append(row, strings.Replace(value.Cwd, a.home, "~", 1), sessionState(value),
+		row = append(row, a.homeRelative(value.Cwd), sessionState(value),
 			compactSummary(value.LastSummary), a.ageOf(value.CreatedAt), lastUser)
 		if showLastHuman {
 			row = append(row, a.lastHumanAge(value))

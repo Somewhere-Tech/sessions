@@ -53,4 +53,16 @@ describe('capability: keep subagents out of the main navigator', () => {
     expect(screen.queryByRole('button', { name: /Expand Platform manager/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Collapse Platform manager/i })).not.toBeInTheDocument();
   });
+
+  it('shows project refresh failures without hiding the fallback inbox', async () => {
+    const machine = localMachine();
+    machine.projectFailure = { status: 503, message: 'project index unavailable' };
+    installFakeDaemon([machine]);
+    useFakeMachines([machine]);
+
+    render(<Workbench />);
+
+    expect(await screen.findByText('Platform manager')).toBeInTheDocument();
+    expect(await screen.findByRole('status')).toHaveTextContent('Some project names could not be refreshed. Known agents remain visible');
+  });
 });

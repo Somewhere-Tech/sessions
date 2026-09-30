@@ -68,8 +68,12 @@ try {
     'interactive terminals must restore bounded server scrollback during bulk prefill');
 
   const sessionView = await readFile(new URL('../src/components/SessionView.tsx', import.meta.url), 'utf8');
-  assert.match(sessionView, /sendInput\('\\x1b\\x1b'\).*↶ Earlier/,
+  // The toolbar moved into MobileTerminalKeys; the claim follows it — the key
+  // still sends Esc Esc, and it is still wired to the terminal's own input.
+  assert.match(sessionView, /onSend\('\\x1b\\x1b'\).*↶ Earlier/,
     'mobile terminal controls must expose Claude\'s native Esc Esc rewind');
+  assert.match(sessionView, /<MobileTerminalKeys onSend=\{sendInput\} \/>/,
+    'the mobile keys must send through the terminal input path');
 
   const css = await readStylesheetTree(new URL('../src/styles/globals.css', import.meta.url));
   assert.match(css, /html,\s*body,\s*#root\s*\{[^}]*overflow:\s*hidden/s);

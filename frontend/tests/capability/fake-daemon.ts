@@ -19,14 +19,21 @@
 // empty `unhandled` is telling you about the product.
 import { useServers, type ServerConfig } from '../../src/lib/servers';
 import { useSessions } from '../../src/store/sessions';
-import type { DirectoryCandidate, SessionInfo } from '../../src/types';
+import type { AccountLogin } from '../../src/api/sessionsd/accountLogin';
+import type { DirectoryCandidate, SessionInfo, StructuredSessionEvent } from '../../src/types';
 import type {
+  ContinuationJob,
+  ContinuationPreview,
   HistoryMessage,
   HistorySession,
+  ProjectView,
   ProviderStatus,
+  SessionModelOption,
   ResumableSession,
   SearchMatch,
-  SearchResponse
+  SearchResponse,
+  TeamListing,
+  AccountUsage
 } from '../../src/api/sessionsd';
 
 export interface FakeMachine {
@@ -43,6 +50,8 @@ export interface FakeMachine {
   sessions: SessionInfo[];
   history?: HistorySession[];
   transcripts?: Record<string, HistoryMessage[]>;
+  /** Structured provider history returned by /api/sessions/:id/events. */
+  events?: Record<string, StructuredSessionEvent[]>;
   resumable?: ResumableSession[];
   /** Message corpus the fake's /api/search scans. */
   searchCorpus?: Array<{
@@ -53,18 +62,80 @@ export interface FakeMachine {
     text: string;
     cwd?: string;
   }>;
-  profiles?: unknown[];
+  /** The accounts this machine holds, as GET /api/profiles reports them. */
+  profiles?: FakeAccount[];
+  /** Answer account renames the way an open-access peer is answered. */
+  accountRenameForbidden?: boolean;
+  /**
+   * GET /api/account-usage readings by `tool/name`. Accounts without one answer
+   * the way a daemon does: Claude unsupported, Codex not answered yet. `false`
+   * answers 404, the way a computer running an older Sessions does.
+   */
+  accountUsage?: Record<string, Partial<AccountUsage>> | false;
+  /** Answer `refresh=1` usage reads the way an open-access peer is answered. */
+  accountUsageRefreshForbidden?: boolean;
   directories?: DirectoryCandidate[];
   providers?: ProviderStatus[];
+  codexModels?: SessionModelOption[];
+  /** Optional continuation responses; GET advances through the snapshots. */
+  continuationPreview?: ContinuationPreview;
+  continuationJobs?: ContinuationJob[];
+  team?: TeamListing;
+  /**
+   * Sessions this machine refuses to archive, with the daemon's own reason.
+   * ArchiveClosed answers per id and skips the ones it will not take —
+   * "runner is still live" for a record whose process is running whatever the
+   * record says — so a caller has to be able to see a refusal.
+   */
+  archiveRefusals?: Record<string, string>;
+  /** The project groups this machine reports, as GET /api/projects answers. */
+  projects?: ProjectView[];
+  projectFailure?: { status: number; message: string };
+  /** How this machine answers /api/search while it is running but failing. */
+  searchFailure?: { status: number; message: string };
+  teamFailure?: { status: number; message: string };
+  /**
+   * Machines this host has approved and relays to, as GET /api/fleet/machines
+   * reports them. A peer with no relayFailure is forwarded to its own fake
+   * daemon exactly as the host's reverse proxy forwards it.
+   */
+  fleetPeers?: FakeFleetPeer[];
   /** Optional latency used to expose same-tick duplicate-action races. */
   createDelayMS?: number;
   submitDelayMS?: number;
+  /** Create the session but lose the next create response, as a dropped connection does. */
+  loseNextCreateResponse?: boolean;
+}
+
+/** One second subscription on a machine: a provider home with a name. */
+export interface FakeAccount {
+  identity?: AccountLogin['identity'];
+  tool: 'claude' | 'codex';
+  name: string;
+  path?: string;
+  label?: string;
+  signed_in?: boolean;
+  sessions?: Array<{ id: string; name?: string }>;
+  last_used?: number;
+}
+
+export interface FakeFleetPeer {
+  id: string;
+  name: string;
+  transport?: 'lan' | 'tailnet' | 'tailnet-ip';
+  reachable?: boolean;
+  reason?: string;
+  message?: string;
+  /** How the host answers while it cannot reach this peer. Mutable mid-test. */
+  relayFailure?: { status: number; error: string; reason?: string };
 }
 
 export interface RecordedRequest {
   method: string;
   url: string;
   path: string;
+  /** Origin of the host that relayed this request onward, when one did. */
+  relayedFrom?: string;
   origin: string;
   body: unknown;
 }
@@ -79,10 +150,16 @@ export interface FakeDaemon {
   created: SessionInfo[];
   /** Sessions ended through DELETE /api/sessions/:id. */
   ended: string[];
+  /** Sessions whose failed provider turn was retried immediately. */
+  retried: string[];
+  /** Sessions whose automatic provider retry schedule was stopped. */
+  retryStopped: string[];
   /** ids passed to POST /api/retention/archive, and what the fake answered. */
   archived: string[];
   /** Conversations adopted through POST /api/recovery/adopt. */
   adopted: string[];
+  /** Continuation job ids canceled through the job API. */
+  continuationCanceled: string[];
   machineFor(origin: string): FakeMachine | undefined;
   session(id: string): SessionInfo | undefined;
   /** Route requests whose path/method this fake does not model, for the report. */
@@ -201,13 +278,50 @@ function searchFor(machine: FakeMachine, query: string, limit: number): SearchRe
   };
 }
 
+function fakeContinuationPreview(machine: FakeMachine, body: unknown): ContinuationPreview {
+  const request = (body ?? {}) as { messageLimit?: number; destinationProvider?: 'claude' | 'codex' };
+  const base = machine.continuationPreview ?? {
+    conversation: 'Saved conversation', sourceProvider: 'codex', destinationProvider: 'claude',
+    totalMessageCount: 84, messageCount: 84, characterCount: 48_000,
+    estimatedTokens: 12_000, thresholdTokens: 60_000, limited: false, sourceUntouched: true
+  };
+  const limit = request.messageLimit && request.messageLimit > 0
+    ? Math.min(request.messageLimit, base.totalMessageCount)
+    : base.totalMessageCount;
+  const ratio = base.totalMessageCount > 0 ? limit / base.totalMessageCount : 1;
+  const characters = limit < base.totalMessageCount ? Math.ceil(base.characterCount * ratio) : base.characterCount;
+  return {
+    ...base,
+    destinationProvider: request.destinationProvider ?? base.destinationProvider,
+    messageCount: limit,
+    characterCount: characters,
+    estimatedTokens: Math.ceil(characters / 4),
+    limited: limit < base.totalMessageCount
+  };
+}
+
+function fakeContinuationJob(machine: FakeMachine, body: unknown): ContinuationJob {
+  const request = (body ?? {}) as { destinationProvider?: 'claude' | 'codex'; model?: string; effort?: string };
+  const provider = request.destinationProvider ?? 'claude';
+  return {
+    id: 'continuation-1', status: 'running', stage: 'exporting-history',
+    stageText: 'Exporting conversation history', provider,
+    model: request.model, modelDisplayName: request.model, effort: request.effort,
+    preview: fakeContinuationPreview(machine, body), events: [
+      { stage: 'exporting-history', text: 'Exporting conversation history', at: NOW }
+    ]
+  };
+}
+
 /**
  * Replace window.fetch and window.WebSocket with the in-process daemon and seed
  * lib/servers + the sessions store so the mounted components address it.
  */
 export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
+  const logins = new Map<string, AccountLogin>();
   const byOrigin = new Map<string, FakeMachine>();
   for (const machine of machines) byOrigin.set(originOf(machine), machine);
+  const continuationIndexes = new Map<string, number>();
 
   const daemon: FakeDaemon = {
     machines,
@@ -216,8 +330,11 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     delivered: {},
     created: [],
     ended: [],
+    retried: [],
+    retryStopped: [],
     archived: [],
     adopted: [],
+    continuationCanceled: [],
     machineFor: (origin) => byOrigin.get(origin),
     session: (id) => machines.flatMap((m) => m.sessions).find((s) => s.id === id),
     restore: () => { /* setup.ts re-bans the network after every test */ }
@@ -238,6 +355,10 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       body = init.body;
     }
     const record: RecordedRequest = { method, url: url.href, path: url.pathname, origin: url.origin, body };
+    // Set only by this fake when a host forwards a relayed request onward, so a
+    // test can tell "the client dialled the peer" from "the host relayed to it".
+    const relayedFrom = new Headers(init?.headers ?? {}).get('x-fake-relayed-from');
+    if (relayedFrom) record.relayedFrom = relayedFrom;
     daemon.requests.push(record);
 
     const machine = byOrigin.get(url.origin);
@@ -251,6 +372,34 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     }
 
     const path = url.pathname;
+
+    // ── inherited fleet: this host lists and relays to its approved peers ──
+    if (path === '/api/fleet/machines') {
+      return jsonResponse({
+        machines: (machine.fleetPeers ?? []).map((peer) => ({
+          id: peer.id, name: peer.name, transport: peer.transport,
+          reachable: peer.reachable ?? !peer.relayFailure,
+          reason: peer.reason, message: peer.message
+        }))
+      });
+    }
+    const relayRoute = /^\/api\/fleet\/([^/]+)(\/.*)$/.exec(path);
+    if (relayRoute) {
+      const peer = (machine.fleetPeers ?? []).find((candidate) => candidate.id === decodeURIComponent(relayRoute[1]!));
+      if (!peer) return jsonResponse({ error: 'machine is not approved on this host' }, 404);
+      if (peer.relayFailure) {
+        return jsonResponse({ error: peer.relayFailure.error, reason: peer.relayFailure.reason }, peer.relayFailure.status);
+      }
+      const destination = machines.find((candidate) => (candidate.machineId ?? candidate.id) === peer.id);
+      if (!destination) return jsonResponse({ error: 'reach peer: connection refused' }, 502);
+      // Forwarded with the peer's own daemon answering, which is what the
+      // host's reverse proxy does. The relay request above is already recorded.
+      return handle(`${originOf(destination)}${relayRoute[2]}${url.search}`, {
+        ...init,
+        headers: { ...Object.fromEntries(new Headers(init?.headers ?? {})), 'x-fake-relayed-from': url.origin }
+      });
+    }
+
     const sessionRoute = /^\/api\/sessions\/([^/]+)(\/.*)?$/.exec(path);
     const sessionId = sessionRoute ? decodeURIComponent(sessionRoute[1]) : '';
     const sessionTail = sessionRoute?.[2] ?? '';
@@ -262,6 +411,10 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       return jsonResponse({ machineId: machine.machineId ?? machine.id, name: machine.name });
     }
     if (path === '/api/lan') return jsonResponse({ enabled: false, url: null });
+    if (path === '/api/lanes/mine' && machine.teamFailure) {
+      return jsonResponse({ error: machine.teamFailure.message }, machine.teamFailure.status);
+    }
+    if (path === '/api/lanes/mine' && machine.team) return jsonResponse(machine.team);
 
     // ── session list & lifecycle ────────────────────────────────────────
     if (path === '/api/sessions' && method === 'GET') {
@@ -275,6 +428,11 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
         await new Promise((resolve) => window.setTimeout(resolve, machine.createDelayMS));
       }
       const request = (body ?? {}) as Record<string, unknown>;
+      // Like sessionsd: the same operation id returns the session it already
+      // created (200) instead of starting a second one.
+      const operationId = typeof request.operation_id === 'string' ? request.operation_id : '';
+      const replayed = operationId ? machine.sessions.find((session) => session.start?.operation_id === operationId) : undefined;
+      if (replayed) return jsonResponse({ ...replayed, start: { ...replayed.start!, replayed: true } });
       const created = makeSession({
         id: `created-${machine.sessions.length + 1}`,
         name: typeof request.name === 'string' && request.name ? request.name : 'Untitled session',
@@ -284,8 +442,18 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
         lastDataAt: NOW,
         tool: request.cmd === 'codex' ? 'codex' : request.cmd === 'bash' || request.cmd === 'zsh' ? 'terminal' : 'claude-code'
       });
+      if (operationId) {
+        created.start = {
+          operation_id: operationId, phase: 'created', evidence: 'the session was created', evidence_source: 'delivery-receipt',
+          ...(typeof request.prompt_operation_id === 'string' ? { prompt_operation_id: request.prompt_operation_id } : {})
+        };
+      }
       machine.sessions.push(created);
       daemon.created.push(created);
+      if (machine.loseNextCreateResponse) {
+        machine.loseNextCreateResponse = false;
+        throw new TypeError('Failed to fetch');
+      }
       return jsonResponse(created);
     }
     if (sessionRoute && sessionTail === '' && method === 'DELETE') {
@@ -344,8 +512,20 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     if (sessionRoute && sessionTail === '/snapshot') {
       return new Response('', { status: 200, headers: { 'X-Sessions-Seq': '0' } });
     }
+    if (sessionRoute && sessionTail === '/retry' && method === 'POST') {
+      if (!target) return jsonResponse({ error: 'session not found' }, 404);
+      daemon.retried.push(sessionId);
+      return jsonResponse({ ok: true });
+    }
+    if (sessionRoute && sessionTail === '/retry/stop' && method === 'POST') {
+      if (!target) return jsonResponse({ error: 'session not found' }, 404);
+      daemon.retryStopped.push(sessionId);
+      target.retry = undefined;
+      return jsonResponse({ ok: true });
+    }
     if (sessionRoute && sessionTail === '/events') {
-      return jsonResponse({ events: [], nextIndex: 0, totalCount: 0, startIndex: 0, endIndex: 0 });
+      const events = machine.events?.[sessionId] ?? [];
+      return jsonResponse({ events, nextIndex: events.length, totalCount: events.length, startIndex: 0, endIndex: events.length });
     }
     if (sessionRoute && sessionTail === '/model-options') return jsonResponse({ models: [] });
 
@@ -359,10 +539,16 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       // finished child record remains visible.
       const items = ids.map((id) => {
         const record = machine.sessions.find((s) => s.id === id);
+        const refusal = machine.archiveRefusals?.[id];
+        if (refusal) return { id, name: record?.name, status: 'skipped' as const, reason: refusal };
         if (!record) return { id, status: 'skipped' as const, reason: 'record not found' };
         if (!record.exited) return { id, name: record.name, status: 'skipped' as const, reason: 'session is still running' };
         daemon.archived.push(id);
         machine.sessions = machine.sessions.filter((s) => s.id !== id);
+        // Archiving hides a row and deletes nothing, so the conversation stays
+        // in History — marked, the way the daemon marks it from its ledger.
+        const remembered = (machine.history ?? []).find((entry) => entry.id === id);
+        if (remembered) remembered.archived = true;
         return { id, name: record.name, status: 'archived' as const };
       });
       return jsonResponse({ dry_run: false, cutoff_ms: NOW, items });
@@ -411,12 +597,49 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
         }
       });
     }
-    if (path === '/api/recovery/fork' && method === 'POST') {
+    if ((path === '/api/recovery/fork' || path === '/api/recovery/collaborator') && method === 'POST') {
       return jsonResponse({ ok: true, laneId: 'forked-1' });
+    }
+    if (path === '/api/recovery/briefing' && method === 'POST') {
+      return jsonResponse({ briefing: 'Review the release. Preserve the original conversation. Verify the tests.', sourceUntouched: true });
+    }
+    if (path === '/api/recovery/continuation/preview' && method === 'POST') {
+      return jsonResponse(fakeContinuationPreview(machine, body));
+    }
+    if (path === '/api/recovery/continuation/jobs' && method === 'POST') {
+      continuationIndexes.set(machine.id, 0);
+      const job = machine.continuationJobs?.[0] ?? fakeContinuationJob(machine, body);
+      if (job.laneId && !machine.sessions.some((session) => session.id === job.laneId)) {
+        const created = makeSession({ id: job.laneId, name: 'Continued conversation', cmd: job.provider, tool: job.provider === 'codex' ? 'codex' : 'claude-code' });
+        machine.sessions.push(created);
+        daemon.created.push(created);
+      }
+      return jsonResponse(job, 202);
+    }
+    const continuationRoute = /^\/api\/recovery\/continuation\/jobs\/([^/]+)$/.exec(path);
+    if (continuationRoute && method === 'GET') {
+      const snapshots = machine.continuationJobs ?? [fakeContinuationJob(machine, body)];
+      const index = Math.min((continuationIndexes.get(machine.id) ?? 0) + 1, snapshots.length - 1);
+      continuationIndexes.set(machine.id, index);
+      return jsonResponse(snapshots[index]);
+    }
+    if (continuationRoute && method === 'DELETE') {
+      daemon.continuationCanceled.push(decodeURIComponent(continuationRoute[1]));
+      const snapshots = machine.continuationJobs ?? [fakeContinuationJob(machine, body)];
+      const current = snapshots[continuationIndexes.get(machine.id) ?? 0];
+      if (current?.laneId) {
+        const created = machine.sessions.find((session) => session.id === current.laneId);
+        if (created) created.exited = true;
+        daemon.ended.push(current.laneId);
+      }
+      return jsonResponse({ ...current, status: 'canceled', stageText: 'The new session was ended. The original conversation was not changed.' });
     }
 
     // ── search ──────────────────────────────────────────────────────────
     if (path === '/api/search') {
+      if (machine.searchFailure) {
+        return jsonResponse({ error: machine.searchFailure.message }, machine.searchFailure.status);
+      }
       return jsonResponse(searchFor(
         machine,
         url.searchParams.get('q') ?? '',
@@ -428,14 +651,113 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     }
 
     // ── settings surfaces the views read on mount ───────────────────────
-    if (path === '/api/profiles') return jsonResponse({ profiles: machine.profiles ?? [] });
+    if (path === '/api/account-usage' && method === 'GET') {
+      if (machine.accountUsage === false) return jsonResponse({ error: 'not found' }, 404);
+      if (machine.accountUsageRefreshForbidden && url.searchParams.get('refresh') === '1') {
+        return jsonResponse({ error: 'refreshing account usage requires a local or paired Sessions client; omit refresh to read the latest reading' }, 403);
+      }
+      const readings = machine.accountUsage ?? {};
+      return jsonResponse({
+        accounts: (machine.profiles ?? []).map((account): AccountUsage => ({
+          tool: account.tool, name: account.name, label: account.label,
+          ...(account.tool === 'claude'
+            ? { state: 'unsupported', message: 'Claude usage is not connected in Sessions yet. Check Claude for your current limits.' }
+            : { state: 'unavailable', message: 'The provider has not answered yet; refresh in a moment.' }),
+          ...readings[`${account.tool}/${account.name}`]
+        })),
+        checked_at: NOW,
+        ttl_seconds: 60
+      });
+    }
+    if (path === '/api/profiles' && method === 'GET') {
+      // Absent fields answer the way the daemon answers them, so a fixture can
+      // name an account in one line without describing a whole home.
+      return jsonResponse({
+        profiles: (machine.profiles ?? []).map((account) => ({
+          path: `/state/profiles/${account.tool}/${account.name}`,
+          signed_in: false, sessions: [], last_used: 0, ...account
+        }))
+      });
+    }
+    if (path === '/api/profiles' && method === 'POST') {
+      // Registering an account is a home and a label. The provider writes its
+      // own login later, which is what `signed_in` reports.
+      const request = body as { tool: 'claude' | 'codex'; name: string; label?: string };
+      const account: FakeAccount = {
+        tool: request.tool, name: request.name || 'acct-fixture', label: request.label,
+        path: `/state/profiles/${request.tool}/${request.name}`,
+        signed_in: false, sessions: [], last_used: 0
+      };
+      machine.profiles = [...(machine.profiles ?? []).filter(
+        (existing) => !(existing.tool === account.tool && existing.name === account.name)
+      ), account];
+      return jsonResponse({ profile: account });
+    }
+    if (path === '/api/account-logins' && method === 'POST') {
+      const request = body as { tool: 'claude' | 'codex'; profile: string };
+      const id = `${machine.id}-${request.tool}-${request.profile}`;
+      const operation: AccountLogin = {
+        id, ...request, state: 'waiting', expires_at: Date.now() + 600_000,
+        url: request.tool === 'claude' ? 'https://claude.com/cai/oauth/authorize?state=fixture' : 'https://auth.openai.com/codex/device',
+        code: request.tool === 'codex' ? 'TEST-CODE' : undefined
+      };
+      logins.set(id, operation);
+      return jsonResponse(operation);
+    }
+    if (path.startsWith('/api/account-logins/')) {
+      const operation = logins.get(path.slice('/api/account-logins/'.length));
+      if (!operation) return jsonResponse({ error: 'sign-in is no longer available; start again' }, 400);
+      if (method === 'DELETE') operation.state = 'cancelled';
+      if (method === 'POST') {
+        operation.state = 'connected';
+        operation.identity = { email: 'second@example.test', plan: 'max', checked_at: Date.now() };
+        const account = machine.profiles?.find((candidate) => candidate.tool === operation.tool && candidate.name === operation.profile);
+        if (account) account.identity = operation.identity;
+      }
+      return jsonResponse(operation);
+    }
+    const accountRoute = /^\/api\/profiles\/([^/]+)\/([^/]+)$/.exec(path);
+    if (accountRoute && method === 'PUT') {
+      // The daemon's own rule: only a nickname changes, and it is checked.
+      const [, tool, name] = accountRoute;
+      if (machine.accountRenameForbidden) {
+        return jsonResponse({ error: 'renaming an account requires a local or paired Sessions client' }, 403);
+      }
+      const label = String((body as { label?: string })?.label ?? '').trim();
+      if ([...label].length > 64 || /\p{Cc}/u.test(label)) {
+        return jsonResponse({ error: 'an account nickname can be at most 64 characters' }, 400);
+      }
+      const account = machine.profiles?.find((existing) => existing.tool === tool && existing.name === name);
+      if (!account) return jsonResponse({ error: `unknown account ${tool}/${name}` }, 400);
+      account.label = label || undefined;
+      return jsonResponse({ profile: {
+        path: `/state/profiles/${tool}/${name}`, signed_in: false, sessions: [], last_used: 0, ...account
+      } });
+    }
+    if (accountRoute && method === 'DELETE') {
+      const [, tool, name] = accountRoute;
+      machine.profiles = (machine.profiles ?? []).filter(
+        (existing) => !(existing.tool === tool && existing.name === name)
+      );
+      return jsonResponse({
+        ok: true, forgotten: `${tool}/${name}`,
+        home: `/state/profiles/${tool}/${name}`,
+        note: 'the provider home was left in place for manual review'
+      });
+    }
     if (path === '/api/directories') return jsonResponse({ directories: machine.directories ?? [] });
     if (path === '/api/fs/list') {
       return jsonResponse({ path: '/Users/example', parent: '/Users', entries: [] });
     }
-    if (path === '/api/models/codex') return jsonResponse({ models: [] });
+    if (path === '/api/models/codex') return jsonResponse({ models: machine.codexModels ?? [] });
     if (path === '/api/providers' && method === 'GET') {
       return jsonResponse({ providers: machine.providers ?? [] });
+    }
+    if (path === '/api/projects' && machine.projectFailure) {
+      return jsonResponse({ error: machine.projectFailure.message }, machine.projectFailure.status);
+    }
+    if (path === '/api/projects' && machine.projects) {
+      return jsonResponse({ projects: machine.projects });
     }
     const providerUpdateRoute = /^\/api\/providers\/(claude|codex)\/update$/.exec(path);
     if (providerUpdateRoute && method === 'POST') {
@@ -452,8 +774,23 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
       return jsonResponse({ remoteControl: 'inherit', permissionMode: 'inherit', model: '', somewhereMCP: 'inherit' });
     }
     if (path === '/api/ai/settings') return jsonResponse({ provider: 'claude' });
-    if (path === '/api/recap/settings') return jsonResponse({ provider: 'off' });
-    if (path === '/api/recap/dates') return jsonResponse({ dates: [] });
+    if (path === '/api/daily') {
+      return jsonResponse({
+        date: url.searchParams.get('date') ?? '2026-09-02',
+        timezone: 'UTC',
+        activities: [],
+        usage: {
+          key: 'total',
+          models: [],
+          tokens: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 },
+          costUSD: 0,
+          recordedCostUSD: 0,
+          calculatedCostUSD: 0,
+          entries: 0,
+          missingPricingEntries: 0
+        }
+      });
+    }
     if (path === '/api/access/requests') return jsonResponse({ requests: [] });
     if (path === '/api/usage') {
       return jsonResponse({

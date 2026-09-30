@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"github.com/somewhere-tech/sessions/runtime/internal/background"
 	"log"
 	"os"
 	"path/filepath"
@@ -53,6 +54,7 @@ type SweptArtifact struct {
 // touched: they are the durable record of the conversation, not runner
 // coordination state.
 func (m *Manager) SweepStaleRunnerArtifacts(ctx context.Context) []SweptArtifact {
+	defer background.Start("runner-sweep").Done()
 	lanes, err := m.ledgerStates(ctx)
 	if err != nil {
 		log.Printf("[sweep] read lanes: %v; leaving every runner artifact in place", err)
@@ -71,6 +73,10 @@ func (m *Manager) SweepStaleRunnerArtifacts(ctx context.Context) []SweptArtifact
 			state.RunnerPlistPath(m.config.LaunchAgentsDir, id),
 			state.LegacyRunnerPlistPath(m.config.LaunchAgentsDir, id),
 			state.For(m.config.RunnerStateDir, id).Socket,
+			// The launch record is what the plist is on a machine without
+			// launchd: a description of how to start this runner, which a
+			// session that has ended durably no longer needs.
+			state.For(m.config.RunnerStateDir, id).Launch,
 		} {
 			err := os.Remove(path)
 			switch {

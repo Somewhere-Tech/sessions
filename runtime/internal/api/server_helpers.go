@@ -101,6 +101,9 @@ func (s *Server) writeSessionInput(
 	attribution state.InputAttribution,
 	attributed bool,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !attributed {
 		if s.registry.Input(ctx, id, data) {
 			return nil
@@ -112,6 +115,19 @@ func (s *Server) writeSessionInput(
 		return errors.New("message attribution is unavailable")
 	}
 	return service.InputAttributed(ctx, id, data, attribution)
+}
+
+// HTTP submit already holds the session gate. Raw HTTP and single-socket
+// input must acquire it too, so they cannot split a submit's text and Enter.
+func (s *Server) writeInputForRoute(ctx context.Context, id, data, route string, attribution state.InputAttribution, attributed bool) error {
+	if route != "/submit" {
+		unlock, err := s.submits.lockContext(ctx, id)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
+	return s.writeSessionInput(ctx, id, data, attribution, attributed)
 }
 
 func (s *Server) sendInputError(response http.ResponseWriter, err error, corsOrigin string) {
@@ -367,4 +383,59 @@ func readableRootFile(root *os.Root, name string) (*os.File, os.FileInfo) {
 		}
 	}
 	return nil, nil
+}
+
+func (s *Server) pendingRestore(id string) (state.RestorePending, bool) {
+	reporter, ok := s.registry.(pendingRestoreService)
+	if !ok {
+		return state.RestorePending{}, false
+	}
+	return reporter.PendingRestore(id)
+}
+
+func (s *Server) sendPendingRestore(response http.ResponseWriter, id, corsOrigin string) bool {
+	pending, ok := s.pendingRestore(id)
+	if !ok {
+		return false
+	}
+	reason := strings.TrimSpace(pending.Reason)
+	if reason == "" {
+		reason = "the runner stayed paused after reboot"
+	}
+	action := "sessions resume " + id
+	s.sendJSON(response, http.StatusConflict, map[string]any{
+		"code": "SESSION_NEEDS_RECREATE", "sessionId": id,
+		"error":  "session is paused after reboot and cannot be read or controlled until it is resumed: " + reason,
+		"action": action,
+	}, corsOrigin)
+	return true
+}
+
+// wakePausedSession restarts a reboot-paused session on first contact and
+// returns it live. False means it is not paused, or waking failed; the
+// caller then reports the paused state with the failure as its reason.
+func (s *Server) wakePausedSession(ctx context.Context, id string) (*state.Session, bool, error) {
+	if _, paused := s.pendingRestore(id); !paused {
+		return nil, false, nil
+	}
+	waker, ok := s.registry.(pausedWaker)
+	if !ok {
+		return nil, false, nil
+	}
+	if _, err := waker.WakePaused(ctx, id); err != nil {
+		return nil, false, err
+	}
+	session, live := s.registry.Get(id)
+	return session, live, nil
+}
+
+// sessionOnContact returns a live session, waking a reboot-paused one when
+// needed. WebSocket reads report any remaining paused state to the peer, so
+// they need the live result rather than a separate wake error.
+func (s *Server) sessionOnContact(ctx context.Context, id string) (*state.Session, bool) {
+	if session, live := s.registry.Get(id); live {
+		return session, true
+	}
+	session, live, _ := s.wakePausedSession(ctx, id)
+	return session, live
 }

@@ -74,17 +74,23 @@ func (c *Client) ListModels(ctx context.Context) ([]Model, error) {
 	}
 }
 
-// ResolveModelChoice validates an exact declared choice against the live
-// catalog. It never substitutes an unavailable model, effort, or service tier.
+// ResolveModelChoice validates a catalog-known choice against the live model's
+// capabilities. An explicit ID absent from discovery remains authoritative and
+// is preserved without substitution; the catalog is not an exhaustive support
+// boundary.
 // If no model is declared, the catalog default is selected so effort/tier
 // validation cannot race against an implicit, unknown model choice.
 func ResolveModelChoice(catalog []Model, choice ModelChoice) (ModelChoice, error) {
-	if len(catalog) == 0 {
-		return ModelChoice{}, errors.New("Codex model catalog is empty")
-	}
 	requestedModel := strings.TrimSpace(choice.Model)
+	choice.Model = requestedModel
 	choice.Effort = strings.TrimSpace(choice.Effort)
 	choice.ServiceTier = strings.TrimSpace(choice.ServiceTier)
+	if len(catalog) == 0 {
+		if requestedModel != "" {
+			return choice, nil
+		}
+		return ModelChoice{}, errors.New("Codex model catalog is empty")
+	}
 
 	var selected *Model
 	if requestedModel != "" {
@@ -95,7 +101,7 @@ func ResolveModelChoice(catalog []Model, choice ModelChoice) (ModelChoice, error
 			}
 		}
 		if selected == nil {
-			return ModelChoice{}, fmt.Errorf("model %q not available; valid: [%s]", requestedModel, strings.Join(modelIDs(catalog), ", "))
+			return choice, nil
 		}
 	} else {
 		for index := range catalog {

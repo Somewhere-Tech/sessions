@@ -124,6 +124,8 @@
   border-color: var(--border);
   opacity: 0.7;
 }
+.grid-cell.is-provider-down { border-color: color-mix(in srgb, var(--danger) 58%, var(--border)); }
+.grid-cell.is-auth-needed { border-color: color-mix(in srgb, var(--warn) 58%, var(--border)); }
 @keyframes gridCellPulse {
   0%, 100% { box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.3); }
   50%      { box-shadow: 0 0 0 3px rgba(251, 146, 60, 0.55); }
@@ -178,6 +180,8 @@
 }
 .grid-cell-status.is-working { color: var(--ok); }
 .grid-cell-status.is-exited { color: var(--danger); }
+.grid-cell-status.is-provider-down { color: var(--danger); }
+.grid-cell-status.is-auth-needed { color: var(--warn); }
 .grid-cell-status .grid-cell-dot {
   width: 6px;
   height: 6px;

@@ -16,6 +16,7 @@
 // resume point so replays stay incremental).
 
 import type { ServerMsg, MuxClientMsg, ClaudeSessionEvent } from '../types';
+import { MessageDeliveryError } from './messageDelivery';
 
 export type MuxStatus = 'connecting' | 'open' | 'reconnecting' | 'closed' | 'error';
 
@@ -160,7 +161,9 @@ class MuxManager {
         if (this.reconnectTimer === null) this.connect();
       }
       this.scheduleIdleShutdown();
-      return Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'));
+      return Promise.reject(msg.type === 'submit'
+        ? new MessageDeliveryError('Sessions is reconnecting. Your message was not sent.', 'not-delivered', msg.requestId)
+        : new Error('Sessions is reconnecting. Your message was not sent.'));
     }
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
@@ -505,7 +508,7 @@ export async function sendSessionInput(
     data
   });
   if (msg.type !== 'inputAck') throw new Error(`unexpected mux response: ${msg.type}`);
-  if (!msg.ok) throw new Error(`unknown session ${sessionId}`);
+  if (!msg.ok) throw new Error(msg.reason || `unknown session ${sessionId}`);
 }
 
 export async function submitSessionMessage(
@@ -514,9 +517,12 @@ export async function submitSessionMessage(
   data: string
 ): Promise<void> {
   const requestId = newRequestId();
-  const msg = await managerFor(muxUrl).request({
-    type: 'submit', requestId, sessionId, data
-  });
-  if (msg.type !== 'submitAck') throw new Error(`unexpected mux response: ${msg.type}`);
-  if (!msg.ok) throw new Error(`session ${sessionId} could not accept the message`);
+  try {
+    const msg = await managerFor(muxUrl).request({ type: 'submit', requestId, sessionId, data });
+    if (msg.type !== 'submitAck') throw new Error(`unexpected mux response: ${msg.type}`);
+    if (!msg.ok) throw new MessageDeliveryError(msg.reason || 'Complete message delivery was not confirmed. Inspect the conversation before resending.', 'unknown', requestId);
+  } catch (reason) {
+    if (reason instanceof MessageDeliveryError) throw reason;
+    throw new MessageDeliveryError('The connection did not confirm complete message delivery. Inspect the conversation before resending.', 'unknown', requestId);
+  }
 }

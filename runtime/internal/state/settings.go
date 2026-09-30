@@ -15,10 +15,6 @@ const (
 	NotifyWaiting = "waiting"
 	NotifyLost    = "lost"
 
-	RecapProviderOff    = "off"
-	RecapProviderCodex  = "codex"
-	RecapProviderClaude = "claude"
-
 	AIProviderCodex  = "codex"
 	AIProviderClaude = "claude"
 
@@ -49,18 +45,22 @@ type NotifySettings struct {
 	Lost    bool `json:"lost"`
 }
 
-// RecapSettings is deliberately opt-in. Provider "off" means Sessions never
-// launches a model for daily synthesis. The selected CLI chooses its own
-// default model; Sessions only requests the provider's lowest reasoning effort.
-type RecapSettings struct {
-	Provider string `json:"provider"`
-}
-
 // AISettings selects the pre-authenticated CLI used for explicit smart
 // features such as natural-language search planning. It defaults to Codex,
 // but no call happens until the user submits an AI action.
 type AISettings struct {
 	Provider string `json:"provider"`
+}
+
+// RemoteSettings controls daemon-owned Tailscale reachability. A missing
+// section means automatic reachability is on, so upgraded machines gain the
+// zero-configuration behavior without a settings migration.
+type RemoteSettings struct {
+	Auto bool `json:"auto"`
+}
+
+type RelaySettings struct {
+	URL string `json:"url"`
 }
 
 // ClaudeSettings contains launch defaults owned by Sessions. "inherit" means
@@ -237,21 +237,6 @@ func NormalizeAISettings(settings AISettings) (AISettings, error) {
 	return settings, nil
 }
 
-func DefaultRecapSettings() RecapSettings {
-	return RecapSettings{Provider: RecapProviderOff}
-}
-
-func NormalizeRecapSettings(settings RecapSettings) (RecapSettings, error) {
-	settings.Provider = strings.ToLower(strings.TrimSpace(settings.Provider))
-	if settings.Provider == "" {
-		settings.Provider = RecapProviderOff
-	}
-	if settings.Provider != RecapProviderOff && settings.Provider != RecapProviderCodex && settings.Provider != RecapProviderClaude {
-		return RecapSettings{}, fmt.Errorf("unknown recap provider %q; choose off, codex, or claude", settings.Provider)
-	}
-	return settings, nil
-}
-
 func DefaultNotifySettings() NotifySettings {
 	return NotifySettings{Done: true, Waiting: true, Lost: true}
 }
@@ -291,13 +276,22 @@ func (n *NotifySettings) Set(kind string, enabled bool) error {
 // state. Additive fields keep this file easy to extend without changing its
 // location or format.
 type Settings struct {
-	LAN        bool                `json:"lan"`
-	Notify     *NotifySettings     `json:"notify,omitempty"`
-	Recap      *RecapSettings      `json:"recap,omitempty"`
-	AI         *AISettings         `json:"ai,omitempty"`
-	Claude     *ClaudeSettings     `json:"claude,omitempty"`
-	Delegation *DelegationSettings `json:"delegation,omitempty"`
-	Onboarding *OnboardingSettings `json:"onboarding,omitempty"`
+	LAN                    bool                `json:"lan"`
+	LocalNetworkPermission string              `json:"localNetworkPermission,omitempty"`
+	Remote                 *RemoteSettings     `json:"remote,omitempty"`
+	Relay                  *RelaySettings      `json:"relay,omitempty"`
+	Notify                 *NotifySettings     `json:"notify,omitempty"`
+	AI                     *AISettings         `json:"ai,omitempty"`
+	Claude                 *ClaudeSettings     `json:"claude,omitempty"`
+	Delegation             *DelegationSettings `json:"delegation,omitempty"`
+	Onboarding             *OnboardingSettings `json:"onboarding,omitempty"`
+}
+
+func (s Settings) EffectiveRemote() RemoteSettings {
+	if s.Remote == nil {
+		return RemoteSettings{Auto: true}
+	}
+	return *s.Remote
 }
 
 func (s Settings) EffectiveNotify() NotifySettings {
@@ -305,13 +299,6 @@ func (s Settings) EffectiveNotify() NotifySettings {
 		return DefaultNotifySettings()
 	}
 	return *s.Notify
-}
-
-func (s Settings) EffectiveRecap() RecapSettings {
-	if s.Recap == nil {
-		return DefaultRecapSettings()
-	}
-	return *s.Recap
 }
 
 func (s Settings) EffectiveAI() AISettings {
@@ -332,13 +319,22 @@ func (s Settings) EffectiveClaude() ClaudeSettings {
 	return effective
 }
 
+// EffectiveDelegation is the machine-level answer to "how much may an
+// agent-created child do on its own". Autonomous full access is the default:
+// delegated lanes run in the background and are expected to finish work, not
+// wait on a person for each command. A person who wants children to inherit
+// their manager's exact permission mode chooses that explicitly during
+// onboarding or in Settings; that choice, and only that choice, narrows it.
+// A child still cannot promote itself past what this setting allows.
 func (s Settings) EffectiveDelegation() DelegationSettings {
-	value := DelegationSettings{Access: DelegatedAccessConsentInherited}
+	value := DelegationSettings{Access: DelegatedAccessConsentAutonomous}
 	if s.Delegation != nil && (s.Delegation.Access == DelegatedAccessConsentInherited || s.Delegation.Access == DelegatedAccessConsentAutonomous) {
 		value = *s.Delegation
 	}
-	if s.EffectiveOnboarding().DelegatedAccess != DelegatedAccessConsentAutonomous {
+	if s.EffectiveOnboarding().DelegatedAccess == DelegatedAccessConsentInherited {
 		value.Access = DelegatedAccessConsentInherited
+	} else {
+		value.Access = DelegatedAccessConsentAutonomous
 	}
 	return value
 }
@@ -358,9 +354,9 @@ func (s Settings) EffectiveOnboarding() OnboardingState {
 	if oneOf(s.Onboarding.DelegatedAccessConsent, DelegatedAccessConsentInherited, DelegatedAccessConsentAutonomous) {
 		state.DelegatedAccess = s.Onboarding.DelegatedAccessConsent
 	} else if s.Onboarding.Version >= OnboardingCurrentVersion {
-		// Conservative compatibility for v2 settings written by an early
-		// client that knew only about Remote Control.
-		state.DelegatedAccess = DelegatedAccessConsentInherited
+		// v2 settings written by an early client that knew only about Remote
+		// Control carry no delegation choice; they take the product default.
+		state.DelegatedAccess = DelegatedAccessConsentAutonomous
 	}
 	state.Complete = state.RemoteControl != RemoteControlConsentPending && state.DelegatedAccess != DelegatedAccessConsentPending
 	return state

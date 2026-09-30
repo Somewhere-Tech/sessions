@@ -8,9 +8,8 @@ import (
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
-// DailyActivity is the compact, factual input used by the opt-in daily recap.
-// It intentionally carries summaries and metadata rather than full transcripts
-// so the provider call stays cheap and does not disclose unrelated history.
+// DailyActivity is one compact, factual entry in the local work journal. It
+// intentionally carries summaries and metadata rather than full transcripts.
 type DailyActivity struct {
 	ID                string            `json:"id"`
 	Name              string            `json:"name"`
@@ -40,8 +39,8 @@ func (m *Manager) DailyActivity(start, end time.Time) []DailyActivity {
 	return BuildDailyActivity(m.List(true), m.Get, start, end)
 }
 
-// BuildDailyActivity is shared by the full Manager and narrow API test
-// registries which expose the same List/Get boundary.
+// BuildDailyActivity is shared by the full Manager and the Daily API's narrow
+// test registries, which expose the same List/Get boundary.
 func BuildDailyActivity(infos []state.SessionInfo, get func(string) (*state.Session, bool), start, end time.Time) []DailyActivity {
 	startMS, endMS := start.UnixMilli(), end.UnixMilli()
 	activities := make([]DailyActivity, 0)

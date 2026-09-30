@@ -57,11 +57,38 @@ try {
     { serverId: 'offline', serverName: 'Travel PC', error: 'offline' }
   ]);
   assert.equal(summary.reportingMachines, 2);
-  assert.deepEqual(summary.unavailableMachines, ['Travel PC']);
+  // Every machine without a report, and why. A machine that answered with an
+  // error is unreachable; one nobody has heard from yet is pending, and the
+  // difference is the whole point of this field.
+  assert.deepEqual(summary.missingMachines.map((machine) => [machine.serverName, machine.status]), [['Travel PC', 'unreachable']]);
   assert.equal(summary.exactDeduplication, true);
   assert.equal(summary.duplicatesRemoved, 1);
   assert.equal(summary.report.totals.entries, 2);
   assert.equal(summary.report.totals.tokens.inputTokens, 150);
+
+  // Nothing has answered yet: no machine is unavailable, and no host is called
+  // out for an older shape, because no shape has arrived.
+  const waiting = combineFleetUsage([
+    { serverId: 'mac', serverName: 'MacBook' },
+    { serverId: 'mini', serverName: 'Studio Mini' }
+  ]);
+  assert.equal(waiting.report, null);
+  assert.equal(waiting.reportingMachines, 0);
+  assert.deepEqual(waiting.missingMachines.map((machine) => machine.status), ['pending', 'pending']);
+  assert.deepEqual(waiting.olderHostMachines, []);
+
+  // One older-shape answer beside one machine still being asked: the older host
+  // is named, the pending one is not accused of anything.
+  const older = report('mac', []);
+  delete older.eventsIncluded;
+  delete older.events;
+  const mixed = combineFleetUsage([
+    { serverId: 'mac', serverName: 'MacBook', report: older },
+    { serverId: 'mini', serverName: 'Studio Mini' }
+  ]);
+  assert.deepEqual(mixed.olderHostMachines, ['MacBook']);
+  assert.equal(mixed.exactDeduplication, false);
+  assert.deepEqual(mixed.missingMachines.map((machine) => [machine.serverName, machine.status]), [['Studio Mini', 'pending']]);
 } finally {
   await rm(work, { recursive: true, force: true });
 }

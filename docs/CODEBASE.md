@@ -8,9 +8,10 @@ each claim when behavior changes. Protocol compatibility requirements live in
 
 ## Native application
 
-`src-tauri/` is the native shell for macOS, Windows, and the Android paired
-client. It uses Tauri 2 around the shared React build. Android's generated
-Gradle/Kotlin project lives in `src-tauri/gen/android`; mobile builds are
+`src-tauri/` is the native shell for macOS, Windows, and the Android and iOS
+paired clients. It uses Tauri 2 around the shared React build. Android's
+generated Gradle/Kotlin project lives in `src-tauri/gen/android`, and iOS's
+generated Xcode project lives in `src-tauri/gen/apple`; mobile builds are
 client-only and never bundle or start the Go daemon or runners.
 `src-tauri/src/lib.rs` owns native window and
 tray behavior on desktop: scoped server/tool/session windows, persisted window geometry,
@@ -20,8 +21,11 @@ to the frontend. The Somewhere command is read-only; its card only copies
 explicit install/update/docs commands (`frontend/src/components/SomewhereCard.tsx`).
 `scripts/build-app-runtime.sh` builds and signs the three arm64 Go binaries,
 while `src-tauri/src/lifecycle.rs` verifies their manifest, stages immutable
-runtime versions, installs `tech.somewhere.sessions.daemon`, waits for health
-and discovery, verifies the live-session baseline, and rolls back on failure.
+runtime versions, installs `tech.somewhere.sessions.daemon`, waits for daemon
+health, and verifies that every baseline session is reachable, exited, or has
+a recorded user-end boundary. A missing or still-unreachable baseline session
+without either end fact rolls the update back; unrelated runner discovery may
+continue.
 It also maintains a non-destructive `sessions` symlink in the first writable
 standard command directory, updating only links that already point into a
 Sessions-managed runtime and leaving unrelated executables untouched.
@@ -29,9 +33,9 @@ The signed app-bundle updater is configured in `src-tauri/tauri.conf.json` and
 exposed through the native-only settings flow in
 `frontend/src/lib/tauriBridge.ts`; the bridge serializes update discovery and
 delivers once-per-version native notifications. `frontend/src/components/DailyView.tsx`
-renders the preloaded local work journal, saved-day history, and opt-in recap,
-while `frontend/src/lib/dailyCache.ts` warms the current day and adopts it
-without a blank navigation state. `frontend/src/components/ProductSidebar.tsx`
+renders the local work journal on demand, while `frontend/src/lib/dailyCache.ts`
+keeps navigation between already-read days from returning to a blank state.
+`frontend/src/components/ProductSidebar.tsx`
 owns the always-visible signed-update action, while
 `frontend/src/components/ConnectionsView.tsx` presents loopback, LAN, Tailscale,
 multi-transport machine discovery/request state, the LAN pairing fallback, and safe
@@ -44,7 +48,7 @@ same-origin while routing a pasted native link through the Tauri command in
 machine entry. The native shell also synchronizes that approved identity into
 the CLI registry through standard input, never argv. Unix keeps the device
 credential in a private file; Windows applies signed-in-user DPAPI protection.
-Native onboarding probes `/api/health` before consuming the
+The one-time-link pairing fallback probes `/api/health` before consuming its
 single-use ticket. The claim returns the daemon identity persisted in
 `~/.local/state/sessions/machine-id`; `frontend/src/lib/hostedBootstrap.ts`
 uses that identity to update an existing machine even when its access endpoint
@@ -101,8 +105,7 @@ verified tailnet and Bonjour discovery independently and uses the host-approved
 claim commands from Connections, sharing the
 durable requester ID through `frontend/src/lib/tailnetClient.ts`. The current
 computer is visually primary, an unreachable machine fades as a complete
-card, and the Somewhere VM remains a clearly disabled coming-soon machine card
-rather than a fake live endpoint. macOS Local Network purpose and
+card. macOS Local Network purpose and
 `_sessions._tcp` declarations live in `src-tauri/Info.plist`.
 The navigator never derives parentage from cwd or timestamps. Manager pins and
 open-tab IDs are bounded local UI preferences; the main list explicitly requests
@@ -128,14 +131,25 @@ out of the default working set without stopping it, and ended-session
 cross-provider or cross-machine actions route through the existing audited
 continuation dialogs. `SessionHistoryView.tsx` is the
 explicit exited-session path: it fetches the bounded history preview and never
-mounts xterm or a live WebSocket; its Continue button opens the audited provider
-adoption picker with that identity preselected. The picker is provider-neutral:
+mounts xterm or a live WebSocket; it initially renders only the latest 60
+messages and expands older history on request. Its Resume button immediately
+adopts that exact conversation through the audited recovery contract. The
+separate global Resume entry point owns the provider-neutral picker:
 `runtime/internal/api/resumable.go` merges provider files, prompt-index history,
 and Sessions ledger records into one row per Claude/Codex conversation with a
 linked continuation chain. `ContinueElsewhereButton.tsx` runs the bundled CLI's
 saved-machine dry run and confirmed ended-only transfer through native commands;
-credentials and transcript bytes do not enter WebView state. `RemoteView.tsx` renders
-timestamped Codex-style user cards and full-width provider answers, while
+credentials and transcript bytes do not enter WebView state. `sessionStatus.ts`
+keeps provider outages, rate limits, and login failures distinct from working,
+waiting, and ended runtimes across the navigator, inbox, Grid, Fleet, and session
+details. Recent same-provider faults roll up into one fleet notice. `RemoteView.tsx`
+renders timestamped Codex-style user cards and full-width provider answers;
+`ProviderFaultCard.tsx` reports the daemon's concise failure detail, live Rich-turn
+retry schedule and recovery controls in both Conversation and Terminal. Structured
+`provider_fault` and `provider_retry` history stays system UI rather than assistant
+prose. Rich runners retain one failed outage turn, own its bounded retry timer,
+and publish the live schedule to the daemon; new input replaces that retained
+turn instead of creating a second queue. Meanwhile,
 `InputBar.tsx` owns the single Attach composer action. Terminal quick keys are
 scoped to the mobile Terminal pane. Grid and mobile navigation receive only active
 sessions, while the full navigator retains lineage history. `CommandPalette.tsx`
@@ -152,17 +166,34 @@ uses wait-ready plus the composer's bracketed-paste/separate-Enter input contrac
 for an optional initial task. Profiles inherit only while the child keeps the
 same provider; switching providers visibly resets to that provider's default login.
 A newly created profile never receives task input during its provider login flow.
-`SettingsView.tsx` provides native light/dark appearance, working agent/recap
+`SettingsView.tsx` provides native light/dark appearance and smart-feature
 preferences with rollback and stale-request protection, profile visibility,
 signed update checks/install, Connections, and the existing encrypted
-Somewhere backup surface, with unimplemented platform services labeled Coming
-soon.
+Somewhere backup surface.
 
 The native process is a management plane, not the owner of session work. Its
 installer writes and kickstarts the per-user daemon service, but launchd owns
 that service afterward and independently supervised runners stay alive through
-app quits, daemon reloads, and app upgrades. Android follows the
-macOS release as a paired client and does not host the Go runtime.
+app quits, daemon reloads, and app upgrades. Android and iOS are paired clients
+and do not host the Go runtime.
+
+### Bundle budget
+
+The production frontend build runs `frontend/scripts/check-bundle-size.mjs`.
+It holds the minified entry JavaScript to 558,974 bytes and entry CSS to
+279,911 bytes: the 2026-09-03 measurements of 548,974 and 269,911 bytes plus
+10 KB of headroom. Total minified JavaScript has a 1,500,000-byte ceiling, and
+every non-entry JavaScript chunk has a 250,000-byte gzip transfer ceiling.
+The check prints the eight largest JavaScript chunks with raw and gzip sizes in
+every build log so deferred growth remains visible before it reaches a limit.
+
+The entry path is the inbox and the session workspace. Settings, Daily, Search
+and its transcript reader, Fleet account and relay work, continuation dialogs,
+pairing, and onboarding after the welcome step load through dynamic imports at
+the interaction that needs them. New secondary surfaces should follow the
+per-surface imports represented by `frontend/src/components/OnDemandViews.ts`;
+an on-demand barrel that makes unrelated views arrive together defeats the
+budget even when the entry file itself stays small.
 
 ## Process model
 
@@ -228,9 +259,7 @@ command table rather than a copied list.
 
 ## Internal packages
 
-There are 27 production packages under `runtime/internal/`. The neighboring
-`runtime/internal/interop/` directory is a compatibility test fixture, not a
-production package (`runtime/internal/interop/cutover_test.go`).
+There are 26 production packages under `runtime/internal/`.
 
 The sections below describe the packages that carry product behavior. Five
 supporting packages have no section of their own: `discovery` (Bonjour
@@ -243,25 +272,29 @@ covers the Windows side.
 
 ### `api`
 
-`api` serves health, authenticated API/WebSocket routes, LAN controls, daily
-recap settings/generation, and the
+`api` serves health, authenticated API/WebSocket routes, LAN controls, the
+factual Daily journal, and the
 SPA (`runtime/internal/api/server.go`, `runtime/internal/api/ws.go`). Loopback
 peers bypass token authentication unless a forwarding header makes the peer
 ambiguous; non-loopback clients use the configured bearer or query token unless
 the explicit `open` sentinel enables the compatibility escape hatch
 (`runtime/internal/api/auth.go`, `runtime/internal/api/server.go`).
-QR pairing lives here too: single-use five-minute tickets are claimed by an
-unauthenticated, rate-limited `POST /api/pair/claim`, which mints per-device
+QR pairing lives here too: single-use tickets with a ten-minute maximum carry
+every current LAN and Tailscale endpoint and are claimed by the unauthenticated,
+rate-limited `POST /api/lan/access/claim`, which mints per-device
 tokens stored as SHA-256 hashes with list/revoke management
 (`runtime/internal/api/pair.go`); device tokens authorize anywhere the master
-token does. The native claimant validates the link transport and shape, refuses
-redirects, sends the ticket in the POST body rather than the URL, bounds the
-response, and never exposes the master token (`src-tauri/src/lib.rs`). Device
+token does. The native claimant validates every link transport and shape,
+probes the recorded order, refuses redirects, sends the 32-byte random ticket
+secret in the POST body rather than the URL, bounds the response, and never
+exposes the master token (`src-tauri/src/lib.rs`). The daemon-served
+`/pair/<ticket>` fallback may claim from its own browser origin; unrelated
+browser origins remain forbidden. Device
 tokens remain bearer credentials in this release; narrower scopes, protected
 native at-rest storage, and short-lived WebSocket tickets remain required
 hardening before adding less-trusted ingress.
 
-The normal Tailscale onboarding path is request/accept, implemented in
+The normal Tailscale pairing path is request/accept, implemented in
 `runtime/internal/api/tailnet_access.go`. The native Rust layer reads the local
 Tailscale peer list, accepts only `.ts.net` HTTPS endpoints, concurrently
 health-probes bounded candidates, sends the request, and polls its in-memory
@@ -291,12 +324,11 @@ are accepted only through that listener, reject browser Origins, require a
 private IPv4 peer, and bind claim polling to its observed source address.
 The approval view states that its device name is self-reported and that LAN
 HTTP is unencrypted. Both transports mint the same revocable device records.
-Daily recap routes combine local usage totals with compact factual activity
+The Daily route combines local usage totals with compact factual activity
 from both managed lanes and locally observed, still-outside Claude/Codex
 conversations. The latter are streamed only from provider logs that contributed
-usage in the selected day; child-agent context snapshots are excluded. Only
-optional narrative generation is delegated to `internal/recap`
-(`runtime/internal/api/recap_handlers.go`).
+usage in the selected day; child-agent context snapshots are excluded
+(`runtime/internal/api/daily_handlers.go`).
 Smart-feature settings and natural-language search planning live at
 `GET/PUT /api/ai/settings` and `POST /api/search/plan`; the planner receives
 only the user's bounded query, while the existing `/api/search` route applies
@@ -338,8 +370,9 @@ child, defaults to `session` lifecycle. A caller can explicitly mark a bounded
 end it; lifecycle metadata stays visible to the manager that owns the decision.
 Claude children use the structured provider boundary by default so their
 manager receives exact events and submission confirmation without parsing a
-terminal. Codex children retain the constrained terminal default until
-app-server approval prompts can be represented without weakening the sandbox.
+terminal. Codex children retain the terminal default unless the caller chooses
+app-server; constrained Rich Codex sessions route their approval prompts through
+Sessions and use Codex's untrusted policy rather than on-request.
 
 ### `agentcall`
 
@@ -387,8 +420,9 @@ history (`runtime/internal/claudep/events.go`,
 `codexapp` speaks the Codex app-server JSON-RPC contract and persists provider
 thread IDs across turns (`runtime/internal/codexapp/client.go`,
 `runtime/internal/codexapp/transport.go`). It permits one active turn per
-conversation and normalizes app-server events into stored history; model IDs
-are checked against the provider catalog rather than guessed
+conversation and normalizes app-server events into stored history. Catalog-known
+models receive capability validation; explicit unlisted IDs are passed to Codex
+unchanged because discovery is not an exhaustive support list
 (`runtime/internal/codexapp/history.go`, `runtime/internal/codexapp/models.go`).
 
 ### `integrations`
@@ -435,6 +469,13 @@ from those events and exposes safe resume recipes (`runtime/internal/ledger/fold
 The store enables WAL and synchronous-full durability and blocks update/delete
 with database triggers. Explicit retention uses a separate atomic writer to
 append `archived` facts for old closed records; it never deletes the evidence.
+Session listing reads `Store.CurrentStates`, an in-memory projection containing
+one current state per lane. Each call queries committed sequence numbers after
+its last successful read, including writes from other ledger connections.
+The initial read streams history once; later reads apply only new rows through
+the same reducer as `Fold`. Read failures publish neither partial state nor an
+advanced cursor, and callers receive detached state copies. The append-only
+database remains authoritative; this adds no persisted schema or timed cache.
 `runtime/internal/session/retention.go` refuses live registry entries and any
 still-present socket, metadata process, or current/legacy LaunchAgent; apply is
 also refused while discovery is running. Finished parents and descendants can
@@ -485,7 +526,9 @@ by this package rather than by API clients.
 
 `proto` defines the framed runner protocol and the daemon-side socket client
 (`runtime/internal/proto/proto.go`, `runtime/internal/proto/client.go`). The
-current revision is protocol 2, which added the model request/response frames;
+current revision is protocol 4: protocol 2 added model control, protocol 3 added
+Rich approval control, and protocol 4 adds acknowledged provider retry controls
+plus runner-owned retry state;
 every revision requires server-first HELLO, bounds frame size, and distinguishes
 replay from live traffic. The daemon accepts protocol 0 for immutable legacy
 runners whose HELLO omitted the field, accepts every revision through the
@@ -493,23 +536,9 @@ current one, and rejects an unknown future version before replay or control
 frames (`MinimumCompatibleVersion`, `MaximumCompatibleVersion`). HELLO also reports the runner's
 runtime release when known; semantic runner capabilities are exposed through
 `runtime/internal/proto/runner.go`. Structured provider events use the protocol's
-extension frame instead of masquerading as terminal output.
-
-### `recap`
-
-`recap` owns the explicitly opt-in daily narrative call and its private local
-cache (`runtime/internal/recap/service.go`). It accepts already-aggregated usage
-and compact `session.DailyActivity` facts, aliases durable session IDs, bounds
-activity count and text size, avoids full transcripts, and runs either the
-pre-authenticated Codex CLI in an ephemeral read-only sandbox with user
-configuration and rules ignored, or Claude with tools and session persistence
-disabled through the shared `internal/agentcall` boundary. Sessions does not
-supply a model override; each CLI chooses its default while the service requests
-its lowest supported reasoning effort. The
-provider-safe JSON is passed over stdin, hard-capped at 32 KiB, and never placed
-in a visible composer. Documents are keyed by date and cached by the factual
-input digest plus provider; this package never calculates usage totals or owns
-provider credentials.
+extension frame instead of masquerading as terminal output. Retry state is a
+separate frame because cancelling a live schedule must not fabricate or delete
+append-only history.
 
 ### `recovery`
 
@@ -627,7 +656,8 @@ local daemon and every approved machine concurrently. Results add a stable
 while retaining their `available_on` locations. Per-machine status is included
 in JSON; reachable results still succeed when another machine is offline.
 `sessions grep` accepts familiar `-i` and `-C` spelling over this contract,
-`sessions cat` streams the exact normalized transcript from its source, and
+`sessions cat` streams the exact normalized transcript from its source,
+including `approval_requested` and `approval_resolved` audit records, and
 `sessions resurrect` is an accepted spelling of `sessions resume`. No transcript
 is materialized into a shared plaintext directory for OS-level grep. The fleet
 merge preserves the per-session rollup, machine-qualifies it the same way
@@ -663,7 +693,7 @@ an operator-facing reason/detail/time and last useful summary, which powers GUI
 health, CLI status/list output, and summary-returning waits. Creation and user-kill intent are
 recorded before the corresponding process action. Its daily activity projection
 selects sessions and lanes active in a local day, carries hierarchy/tags/outcome,
-and uses only final structured assistant summaries for optional recap input
+and uses only final structured assistant summaries for the local journal
 (`runtime/internal/session/daily_activity.go`).
 
 `MassKillGuard` refuses more than `DefaultMassKillLimit` (3) runner removals in
@@ -684,7 +714,7 @@ Runner artifacts have defined suffixes in `runtime/internal/state/paths.go`,
 and the in-memory replay plus persisted event log are bounded. Attached state
 also exposes runner protocol/release and the additive idle outcome without
 changing runner ownership. Additive daemon
-settings persist notification, LAN, recap, smart-feature provider choices, and
+settings persist notification, LAN, smart-feature provider choices, and
 typed Claude launch defaults
 without coupling them to runner state (`runtime/internal/state/settings.go`). This is
 low-level runtime state; product lifecycle policy stays in `internal/session`.
@@ -827,6 +857,41 @@ while `embedui` builds embed the built SPA and provide guarded route fallback
 (`runtime/internal/webassets/assets.go`,
 `runtime/internal/webassets/assets_embedui.go`).
 
+## Source structure
+
+The structural gate is `npm run check:structure` from the repository root. It
+measures physical source spans from the Go AST and TypeScript compiler API,
+and reports violations as `file:line:function:length`. Go has an 80-line limit;
+TypeScript and TSX have a 120-line limit. Anonymous nested callbacks and IIFEs
+remain part of their outer named function's span instead of producing duplicate
+ratchet entries. A nested function with its own stable declaration or binding
+is measured independently.
+
+`scripts/function-length-exceptions.txt` is the complete baseline of named
+functions that exceeded those limits when the ratchet was introduced. Each
+entry records its current length as a frozen ceiling: a function may shrink but
+not grow, a new over-limit function fails, and an entry becomes an error once
+its function reaches the normal limit so the baseline cannot retain obsolete
+allowances. The checker also rejects missing or renamed exception targets.
+
+Go package direction is an exact direct-edge declaration in
+`scripts/import-boundaries.txt`, generated from `go list -deps` for Darwin,
+Linux, and Windows. The checker rejects both an undeclared edge and an allowed
+edge no longer present, so dependency changes require a deliberate review of
+the graph. Command packages remain assembly points over `internal/*`.
+`internal/state` does not point back into `internal/api` or `internal/session`;
+`internal/discovery`, `internal/ipc`, and `internal/tokenstore` have no product
+dependencies; and `internal/proto` retains only its existing dependency on
+`internal/ipc`.
+
+The frontend follows the same inward direction. Files under `frontend/src/lib`
+and `frontend/src/api` may depend on shared types and lower-level helpers, but
+never on React components or hooks. Shared provider-message types therefore
+live in `frontend/src/types/index.ts`, below both the history parser and its
+React hook. `scripts/check-source-size.sh` still prints the largest handwritten
+production and build files for orientation, but file length is informational;
+function responsibility and import direction are enforced.
+
 ## Session lifecycle
 
 1. An API create request reaches `session.Manager.Create`, which validates the
@@ -847,14 +912,15 @@ while `embedui` builds embed the built SPA and provide guarded route fallback
    (`runtime/internal/session/manager.go`,
    `runtime/internal/state/registry.go`).
 
-Idle classification treats a provider approval or confirmation footer as
-`needs-input` and preserves its actual `Reason:` line. That state flows through
-status, list, Fleet, notifications, JSON, and `sessions wait`, whose envelope
-reports `reason: needs-input` with or without `--summary`; no
-watcher sends Enter on the user's behalf. Lifecycle metadata records whether a
-caller intended a bounded task or a durable conversation, but provider output
-never authorizes Sessions to end either one. Only an explicit End records the
-boundary and closes the runner-owned process tree.
+Idle classification treats a provider approval or confirmation footer, or a
+structured `approval_requested` event, as `needs-input` and preserves its
+actionable detail. That state flows through status, list, Fleet, notifications,
+JSON, and `sessions wait`, whose envelope reports `reason: needs-input` with or
+without `--summary`; no watcher sends Enter on the user's behalf. Lifecycle
+metadata records whether a caller intended a bounded task or a durable
+conversation, but provider output never authorizes Sessions to end either one.
+Only an explicit End records the boundary and closes the runner-owned process
+tree.
 
 A server or watcher that must outlive an agent turn should be launched as its
 own Sessions command session. A process backgrounded inside a provider terminal
@@ -866,8 +932,8 @@ sessions from resuming the same provider conversation. The runner keeps exited
 state available briefly for reconnecting clients before removing its transient
 socket and metadata (`runtime/cmd/sessions-runner/main.go`).
 During the Mini compatibility window, doctor and clean-exit reaping recognize
-both the Sessions runner LaunchAgent and the retained legacy Node runner
-LaunchAgent; new sessions always use the Sessions label
+both the Sessions runner LaunchAgent and the retained legacy runner LaunchAgent;
+new sessions always use the Sessions label
 (`runtime/cmd/sessions/doctor.go`, `runtime/internal/state/launcher.go`).
 
 ## Lane lifecycle
@@ -899,7 +965,7 @@ own configuration root is `~/.config/sessions` on Unix and
 `%LOCALAPPDATA%\Sessions\config` on Windows. Derive both from
 `state.UserStateRootFor`/`state.UserConfigRootFor` rather than rebuilding either
 layout by hand (`runtime/internal/state/config.go`). `SESSIONS_STATE_DIR` relocates runner,
-token, open-sentinel, uploads, recap, usage, and integration-error state for a
+token, open-sentinel, uploads, usage, and integration-error state for a
 scratch daemon, while the user state root — settings, machine identity, approved
 machines, search index, idle sentinels — stays where `HOME` puts it. The
 override is necessary but not sufficient for scratch work: a scratch daemon also
@@ -917,17 +983,19 @@ daily driver's ledger and sweep the daily driver's runner plists (`docs/DEV.md`)
 | Durable machine identity | `~/.local/state/sessions/machine-id` | `runtime/internal/api/identity.go` |
 | Search index | `~/.local/state/sessions/search-index.db` | `runtime/internal/api/search_handlers.go` |
 | Integration errors | `~/.local/state/sessions/errors.jsonl`; follows an explicit `SESSIONS_STATE_DIR` | `runtime/internal/integrations/errors.go` |
-| Daily recaps and local usage rollup | `~/.local/state/sessions/recaps/` and `usage.sqlite3`; both follow an explicit `SESSIONS_STATE_DIR` | `runtime/internal/recap/service.go`, `runtime/internal/usage/config.go` |
+| Local usage rollup | `~/.local/state/sessions/usage.sqlite3`; follows an explicit `SESSIONS_STATE_DIR` | `runtime/internal/usage/config.go` |
 | Browser push keys and subscriptions | `~/.local/state/sessions/{vapid.json,push-subscriptions.json}` | `runtime/internal/session/push.go` |
 | Idle completion sentinels | `~/.local/state/sessions/idle/<session-id>` | `runtime/internal/session/idle.go` |
 | Saved provider profiles | `~/.local/state/sessions/profiles/<tool>/<name>` | `runtime/internal/session/profiles.go` |
 | Fleet-search peer health cache (CLI-local, best effort) | `<user state root>/fleet-search-health.json`, so Windows gets `%LOCALAPPDATA%\Sessions\state`; written only by the CLI, holding the last failure and a five-minute cooldown per approved peer | `runtime/cmd/sessions/fleet.go` |
 | Windows supervisor identity | `%LOCALAPPDATA%\Sessions\state\supervisor.json` | `runtime/cmd/sessionsd/supervisor_windows.go` |
 | Files uploaded to a session | `~/.local/state/sessions/uploads/<stem>-<8 hex><ext>`; an explicit `SESSIONS_STATE_DIR` keeps them inside that scratch state | `runtime/internal/api/files.go` |
-| Lane ledger | `<user state root>/ledger/lanes.sqlite3`; an existing `~/Library/Application Support/sessions/ledger/lanes.sqlite3` is adopted rather than abandoned | `runtime/internal/ledger/store.go` |
+| Lane ledger | `<user state root>/ledger/lanes.sqlite3`; an existing `~/Library/Application Support/sessions/ledger/lanes.sqlite3` is adopted rather than abandoned. Indexes are additive and built on the first open that has them — a build over an existing ledger logs `[ledger] building index … over N events took …`, about 300 ms for a quarter of a million events | `runtime/internal/ledger/store.go` |
 | Global idle hook | `<user config root>/hooks.json` | `runtime/internal/state/config.go` |
 | Backup configuration and encryption key | `<user config root>/{backup.json,backup.key}` | `runtime/internal/backup/config.go`, `runtime/internal/backup/encrypt.go` |
 | Runner LaunchAgents on macOS | `~/Library/LaunchAgents/tech.somewhere.sessions.runner.<id>.plist` | `runtime/internal/state/registry.go` |
+| Self-taken CPU profiles | `<state>/profiles/burst-<UTC timestamp>.pprof`, written when the daemon stays above 80% of one core for 20 s after it reports ready; newest three kept, total capped, one capture per ten minutes, and none at all when `SESSIONS_PPROF=off` | `runtime/internal/background/burst.go` |
+| Client cold-start cache (the app's own storage, not the daemon's) | `localStorage`, one key per machine: `sessions:cache:v4:<machine-id>` plus the `sessions:cache:v4-last` pointer. Bounded to the newest 300 rows of the fields a first frame draws — no transcripts, sizes, pids, model/effort, worktree or ending bookkeeping — and written only when those bytes change, at most once per machine every 30 s, flushed when the tab is hidden or closing. Safe to delete: the next listing refills it | `frontend/src/store/sessionCache.ts` |
 
 The event log is persistent and trims toward its lower bound after crossing its
 soft limit; the daemon also keeps a bounded replay window in memory
@@ -959,9 +1027,10 @@ compatibility bypass, and static UI/health routing is distinct from
 authenticated API routes (`runtime/internal/api/server.go`).
 
 After authentication, `GET /api/machine` returns the daemon's durable machine
-ID and its current operating-system hostname. The ID survives a computer
-rename, while clients refresh the hostname and keep any explicit Fleet nickname
-as a separate override. Local UI labels use the real current name followed by
+ID and the operating system's user-facing computer name. The ID survives a
+computer rename, while its DNS-derived legacy display name is upgraded without
+changing that identity and clients keep any explicit Fleet nickname as a
+separate override. Local UI labels use the real current name followed by
 `(this machine)`; they do not use that phrase as the machine's identity
 (`runtime/internal/api/server.go`, `frontend/src/lib/servers.ts`).
 

@@ -133,6 +133,10 @@ type Client struct {
 	convs          map[string]conversationDefaults
 	remoteEndpoint string
 	closed         bool
+	accountLogin   *accountLoginCompletion
+	// approvals, when set, decides server-side approval requests; nil
+	// accepts them for the session (a fully autonomous lane).
+	approvals ApprovalHandler
 }
 
 // NewClient starts (or reuses) the managed app-server daemon, launches the
@@ -237,7 +241,12 @@ func NewClient(ctx context.Context, options Options) (*Client, error) {
 }
 
 func startDirectAppServerClient(ctx context.Context, codexPath string) (*Client, error) {
+	return startAccountProcess(ctx, codexPath, nil, "")
+}
+
+func startAccountProcess(ctx context.Context, codexPath string, env []string, directory string) (*Client, error) {
 	command := exec.Command(codexPath, "app-server", "--stdio")
+	command.Env, command.Dir = env, directory
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("open direct app-server stdin: %w", err)

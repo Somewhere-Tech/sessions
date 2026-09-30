@@ -1,3 +1,4 @@
+import { connectionSettingsTarget } from '../../lib/connectionSettingsTarget';
 import type { SessionInfo } from '../../types';
 import {
   getActiveServer,
@@ -42,9 +43,11 @@ export async function updateDisplayParent(
 
 export async function updateSessionName(
   sessionId: string,
-  name: string
+  name: string,
+  serverId?: string
 ): Promise<string> {
-  const r = await apiFetch(`${httpBase()}/api/sessions/${encodeURIComponent(sessionId)}/name`, {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/sessions/${encodeURIComponent(sessionId)}/name`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name })
@@ -201,6 +204,20 @@ export interface ServerHealth {
   version: string;
   listen: { host: string; port: number };
   lan: { enabled: boolean; url: string | null };
+  tailscale?: {
+    present: boolean;
+    signedIn: boolean;
+    remoteEndpoint?: string;
+    tailnetIpEndpoint?: string;
+    auto: boolean;
+    enabled: boolean;
+    preview?: boolean;
+  };
+  account?: {
+    signedIn: boolean;
+    lastRegistrationAt?: string;
+    lastRegistrationError?: string;
+  };
   access?: { open: boolean };
   system?: { os: string; arch: string };
   compatibility?: {
@@ -210,6 +227,142 @@ export interface ServerHealth {
   discovering: boolean;
   sessionsLoaded: number;
   restore?: { pending: number; automaticPinnedLimit: number };
+}
+
+export interface FleetAccountStatus {
+  signed_in: boolean;
+  user?: { id: string; email: string; display_name?: string };
+  machine_public_key?: string;
+  last_registration_at?: string;
+  last_registration_error?: string;
+  last_heartbeat_at?: string;
+}
+
+export async function fetchFleetAccount(signal?: AbortSignal): Promise<FleetAccountStatus> {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/account`, { signal });
+  return featureJSON<FleetAccountStatus>(r, 'Somewhere fleet account');
+}
+
+export async function requestFleetMagicLink(email: string): Promise<void> {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/account/magic-link`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email })
+  });
+  await featureJSON<{ ok: boolean }>(r, 'Somewhere sign-in');
+}
+
+export async function verifyFleetMagicLink(token: string): Promise<FleetAccountStatus> {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/account/verify`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token })
+  });
+  return featureJSON<FleetAccountStatus>(r, 'Somewhere sign-in');
+}
+
+export async function logoutFleetAccount(): Promise<void> {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/account/logout`, { method: 'POST' });
+  await featureJSON<{ ok: boolean }>(r, 'Somewhere sign-out');
+}
+
+export interface FleetDirectoryMachine {
+	id: string;
+	name: string;
+	machine_public_key: string;
+	endpoints_json: {
+		lan?: string;
+		tailnet?: string;
+		tailnet_ip?: string;
+		relay?: string;
+	};
+	daemon_version: string;
+	last_seen_at: string;
+}
+
+export interface FleetDirectoryResponse {
+	signed_in: boolean;
+	machine_id: string;
+	machines: FleetDirectoryMachine[];
+}
+
+export interface FleetAccountClaim {
+	device_id: string;
+	token: string;
+	name: string;
+	machine_id: string;
+	machine_name: string;
+	lan_endpoint?: string;
+	tailnet_endpoint?: string;
+	tailnet_ip_endpoint?: string;
+	relay_endpoint?: string;
+}
+
+export interface FleetAccountClaimResponse {
+	claim: FleetAccountClaim;
+	endpoint: string;
+	transport: 'lan' | 'tailnet' | 'tailnet-ip' | 'relay';
+}
+
+export async function fetchFleetDirectory(signal?: AbortSignal): Promise<FleetDirectoryResponse> {
+	const target = connectionSettingsTarget();
+	const response = await serverFetch(target, `${httpBaseForServer(target)}/api/account/machines`, { signal });
+	return featureJSON<FleetDirectoryResponse>(response, 'Somewhere fleet directory');
+}
+
+export async function claimFleetDirectoryMachine(machineId: string): Promise<FleetAccountClaimResponse> {
+	const target = connectionSettingsTarget();
+	const response = await serverFetch(target, `${httpBaseForServer(target)}/api/account/machines/claim`, {
+		method: 'POST', headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ machine_id: machineId })
+	});
+	return featureJSON<FleetAccountClaimResponse>(response, 'Somewhere account credential');
+}
+
+export interface RemoteState {
+  auto: boolean;
+  present: boolean;
+  signedIn: boolean;
+  endpoint?: string;
+  tailnetIpEndpoint?: string;
+  enabled: boolean;
+  preview?: boolean;
+}
+
+export async function fetchRemoteState(signal?: AbortSignal): Promise<RemoteState> {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/remote`, { signal });
+  return json<RemoteState>(r);
+}
+
+export async function setRemoteAuto(auto: boolean): Promise<RemoteState> {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/remote`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ auto })
+  });
+  return json<RemoteState>(r);
+}
+
+export interface RelayState {
+  url: string;
+  connected: boolean;
+  source?: 'settings' | 'directory' | 'environment';
+}
+
+export async function fetchRelayState(signal?: AbortSignal): Promise<RelayState> {
+  const target = connectionSettingsTarget();
+  const response = await serverFetch(target, `${httpBaseForServer(target)}/api/relay`, { signal });
+  return json<RelayState>(response);
+}
+
+export async function setRelayURL(url: string): Promise<RelayState> {
+  const target = connectionSettingsTarget();
+  const response = await serverFetch(target, `${httpBaseForServer(target)}/api/relay`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url })
+  });
+  return json<RelayState>(response);
 }
 
 export const API_PROTOCOL_VERSION = 1;
@@ -244,7 +397,7 @@ function validateServerHealth(health: ServerHealth): ServerHealth {
 
 export async function fetchActiveServerHealth(signal?: AbortSignal): Promise<ServerHealth> {
   const server = getActiveServer();
-  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/health`, { signal }, false);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/health`, { signal }, Boolean(server.relayMachineId));
   return validateServerHealth(await json<ServerHealth>(r));
 }
 
@@ -256,20 +409,77 @@ export interface LANState {
     service: string;
     error?: string;
   };
+  permission?: {
+    // What the host has observed, never a reading of the macOS switch: 'granted'
+    // once nearby contact succeeded, 'not-yet-asked' while nothing is proven.
+    // 'denied' only arrives from a host running an older daemon.
+    status: 'granted' | 'denied' | 'not-yet-asked' | 'not-required';
+    reason?: 'local-network-permission';
+    message?: string;
+  };
 }
 
 export async function fetchLANState(signal?: AbortSignal): Promise<LANState> {
-  const r = await apiFetch(`${httpBase()}/api/lan`, { signal });
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/lan`, { signal });
   return json<LANState>(r);
 }
 
 export async function setLANEnabled(enabled: boolean): Promise<LANState> {
-  const r = await apiFetch(`${httpBase()}/api/lan`, {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/lan`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ enabled })
   });
   return json<LANState>(r);
+}
+
+// Starting a Bonjour browse is the supported way to make macOS ask for Local
+// Network access. The daemon owns the browse so app and agent clients never
+// need the permission themselves.
+//
+// Returns how many nearby machines the daemon actually reached. A browse that
+// succeeds and finds nothing is not evidence that local access works, so the
+// count — not the absence of an error — is what a caller may treat as proof.
+export async function requestLocalNetworkAccess(signal?: AbortSignal): Promise<number> {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/lan/discover?timeout=3s`, { signal });
+  if (!r.ok) {
+    const payload = await r.json().catch(() => null) as { error?: string } | null;
+    throw new Error(payload?.error || `sessionsd ${r.status}: ${r.statusText}`);
+  }
+  const payload = await r.json().catch(() => null) as { machines?: unknown[] } | null;
+  return Array.isArray(payload?.machines) ? payload.machines.length : 0;
+}
+
+export interface PairedDevice {
+  device_id: string;
+  name: string;
+  created_at: string;
+  last_used_at: string;
+}
+
+export async function listPairedDevices(): Promise<PairedDevice[]> {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/devices`);
+  return (await json<{ devices: PairedDevice[] }>(r)).devices;
+}
+
+export async function revokePairingTicket(ticketId: string): Promise<void> {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/pair/tickets/${encodeURIComponent(ticketId)}`, {
+    method: 'DELETE'
+  });
+  await json<{ revoked: boolean }>(r);
+}
+
+export async function forgetPairedDevice(deviceId: string): Promise<void> {
+  const target = connectionSettingsTarget();
+  const r = await serverFetch(target, `${httpBaseForServer(target)}/api/devices/${encodeURIComponent(deviceId)}`, {
+    method: 'DELETE'
+  });
+  if (!r.ok) await json<unknown>(r);
 }
 
 // Fleet probes never mutate the active-server store. Every request is
@@ -283,7 +493,7 @@ export async function fetchServerHealth(
     server,
     `${httpBaseForServer(server)}/api/health`,
     { signal },
-    false
+    Boolean(server.relayMachineId)
   );
   return validateServerHealth(await json<ServerHealth>(r));
 }
@@ -343,12 +553,124 @@ export interface AccountProfileSession {
   name?: string;
 }
 
+/**
+ * What the provider reported at its last check. `account_id` is reserved for a
+ * provider's own stable account or workspace identifier; no supported provider
+ * reports one yet, and an email alone cannot prove which workspace an allowance
+ * belongs to.
+ */
+export interface AccountIdentity {
+  account_id?: string;
+  email: string;
+  plan?: string;
+  organization?: string;
+  checked_at: number;
+}
+
 export interface AccountProfile {
+  identity?: AccountIdentity;
   tool: 'claude' | 'codex';
   name: string;
   path: string;
+  /** What the person called this account. Never read out of a provider's files. */
+  label?: string;
+  /** The provider has written its login state into this home. Presence, not identity. */
+  signed_in: boolean;
   sessions: AccountProfileSession[];
   last_used: number;
+}
+
+export interface AccountUsageWindow {
+  kind: 'primary' | 'secondary' | string;
+  used_percent: number;
+  window_minutes?: number;
+  /** Unix milliseconds; absent when the provider did not say. */
+  resets_at?: number;
+}
+
+/** One metered limit. Buckets are separate allowances and are never added. */
+export interface AccountUsageBucket {
+  limit_id?: string;
+  limit_name?: string;
+  plan?: string;
+  reached?: string;
+  windows: AccountUsageWindow[];
+  credits?: { has_credits: boolean; unlimited: boolean; balance?: string };
+}
+
+/**
+ * An account's allowance as its provider reported it on one computer. Only
+ * `available` is a fresh reading; `unavailable` may carry the last good one
+ * marked `stale`.
+ */
+export interface AccountUsage {
+  tool: 'claude' | 'codex';
+  name: string;
+  label?: string;
+  state: 'available' | 'signed_out' | 'unsupported' | 'unavailable';
+  message?: string;
+  checked_at?: number;
+  identity?: AccountIdentity;
+  buckets?: AccountUsageBucket[];
+  read_at?: number;
+  stale?: boolean;
+}
+
+export interface ForgottenAccount {
+  forgotten: string;
+  home: string;
+  note: string;
+}
+
+/**
+ * Register a second subscription's provider home on one machine. The login
+ * itself happens afterwards, in a session, where the person can watch it.
+ */
+export async function createAccount(
+  tool: 'claude' | 'codex', name: string, label: string, serverId?: string
+): Promise<AccountProfile> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/profiles`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tool, name, label })
+  });
+  const body = await json<{ profile: AccountProfile }>(r);
+  return body.profile;
+}
+
+/**
+ * Change only an account's nickname on the machine that holds it. The account
+ * ID, provider home, sign-in and history stay as they are; an empty label
+ * clears the nickname.
+ */
+export async function renameAccount(
+  tool: 'claude' | 'codex', name: string, label: string, serverId?: string
+): Promise<AccountProfile> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(
+    server,
+    `${httpBaseForServer(server)}/api/profiles/${encodeURIComponent(tool)}/${encodeURIComponent(name)}`,
+    { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ label }) }
+  );
+  const body = await json<{ profile: AccountProfile }>(r);
+  return body.profile;
+}
+
+/**
+ * Take an account off this machine's list. The provider home stays: it holds a
+ * real subscription's login and history, and the answer names it.
+ */
+export async function forgetAccount(
+  tool: 'claude' | 'codex', name: string, serverId?: string
+): Promise<ForgottenAccount> {
+  const server = requestedServer(serverId);
+  const r = await serverFetch(
+    server,
+    `${httpBaseForServer(server)}/api/profiles/${encodeURIComponent(tool)}/${encodeURIComponent(name)}`,
+    { method: 'DELETE' }
+  );
+  return json<ForgottenAccount>(r);
 }
 
 async function profilesForServer(server: ServerConfig, signal?: AbortSignal): Promise<AccountProfile[]> {
@@ -356,6 +678,25 @@ async function profilesForServer(server: ServerConfig, signal?: AbortSignal): Pr
   if (r.status === 404 || r.status === 501) return [];
   const body = await json<{ profiles: AccountProfile[] }>(r);
   return body.profiles;
+}
+
+/**
+ * Each account's allowance on one computer, or null when that computer's
+ * Sessions predates usage reads. `refresh` asks the providers again rather than
+ * answering from the daemon's short cache.
+ */
+export async function fetchAccountUsage(
+  serverId: string | undefined, options: { refresh?: boolean; signal?: AbortSignal } = {}
+): Promise<AccountUsage[] | null> {
+  const server = requestedServer(serverId);
+  const query = options.refresh ? '?refresh=1' : '';
+  const r = await serverFetch(server, `${httpBaseForServer(server)}/api/account-usage${query}`, { signal: options.signal });
+  if (r.status === 404 || r.status === 501) return null;
+  // Only a local or paired client may make providers answer again; any other
+  // client still gets the daemon's latest reading.
+  if (r.status === 403 && options.refresh) return fetchAccountUsage(serverId, { signal: options.signal });
+  const body = await json<{ accounts: AccountUsage[] }>(r);
+  return body.accounts ?? [];
 }
 
 export async function fetchProfiles(signal?: AbortSignal, serverId?: string): Promise<AccountProfile[]> {

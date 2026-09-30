@@ -1,6 +1,6 @@
 [package]
 name = "sessions-app"
-version = "0.2.26"
+version = "0.2.27"
 description = "Sessions native client and release package for the local Sessions runtime"
 authors = ["Uzair Haq"]
 license = "MIT"
@@ -30,6 +30,9 @@ tauri-plugin-updater = { version = "2", default-features = false, features = ["r
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+security-framework = "3.7"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
@@ -41,3 +44,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.55"
+
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+mdns-sd = "0.21.1"
+tauri-plugin-barcode-scanner = "2.4"

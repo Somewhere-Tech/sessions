@@ -50,6 +50,8 @@ const CURSOR_FORWARD_RE = /\x1b\[(\d+)C/g;
 const GENERIC_NUMBERED_OPTION_RE = /^\s*(?:[❯>]\s*)?\d+[.)]\s+\S.+$/;
 const TRUST_PROMPT_RE = /\b(?:do you trust|trust (?:this|the)|trusted (?:folder|directory|workspace|project)|trust the files|only grant access to directories you trust)\b/i;
 const TRUST_CONTEXT_RE = /\b(?:folder|directory|workspace|project|files in this)\b/i;
+const CLAUDE_APPEARANCE_PROMPT_RE = /\bchoose\s+the\s+text\s+style\s+that\s+looks\s+best\s+with\s+your\s+terminal\b/i;
+const CLAUDE_APPEARANCE_CHOICES_RE = /\b1[.)]\s*auto\s*\(match terminal\)[\s\S]*\b2[.)]\s*dark mode\b/i;
 const UPDATE_NOTICE_RE = /\b(?:update available|new version|latest version|release notes|what'?s new|restart to update|install update|update now|press enter to continue|notice)\b/i;
 const BLOCKING_PROMPT_RE = /\b(?:press enter|hit enter|continue\?|confirm|are you sure|allow|deny|approve|permission|yes\/no|\[y\/n\]|\(y\/n\)|select|choose)\b/i;
 
@@ -90,6 +92,14 @@ export function classifySnapshotComposerState(rawSnapshot: string): SnapshotComp
   const tail = tailLines(rawSnapshot, 44);
   const tailText = tail.join('\n');
   const fullText = cleanSnapshot(rawSnapshot);
+
+  if (CLAUDE_APPEARANCE_PROMPT_RE.test(fullText) && CLAUDE_APPEARANCE_CHOICES_RE.test(fullText)) {
+    return {
+      kind: 'numbered-picker',
+      title: 'Claude appearance choice is open',
+      description: "Choose Claude's terminal appearance"
+    };
+  }
 
   if (detectMultiChoice(rawSnapshot) || hasGenericNumberedMenu(rawSnapshot)) {
     return {
@@ -243,4 +253,28 @@ export function detectMultiChoice(rawSnapshot: string): MultiChoice | null {
     options,
     selectedIndex: selectedIndex >= 0 ? selectedIndex : 0
   };
+}
+
+// Claude Code's folder-trust dialog is a two-option picker without the
+// numbered-picker footer. The highlighted option carries the ❯ glyph; the
+// answer buttons need to know which one it is so they can move the cursor
+// before pressing Enter instead of guessing.
+export interface TrustChoice {
+  selected: 'yes' | 'no';
+}
+
+const TRUST_YES_RE = /\byes,?\s+i trust this folder\b/i;
+const TRUST_NO_RE = /\bno,?\s+exit\b/i;
+
+export function detectTrustChoice(rawSnapshot: string): TrustChoice | null {
+  const lines = tailLines(rawSnapshot, 44);
+  let yesLine: string | null = null;
+  let noLine: string | null = null;
+  for (const line of lines) {
+    if (TRUST_YES_RE.test(line)) yesLine = line;
+    if (TRUST_NO_RE.test(line)) noLine = line;
+  }
+  if (!yesLine || !noLine) return null;
+  if (/[❯>]/.test(yesLine)) return { selected: 'yes' };
+  return { selected: 'no' };
 }

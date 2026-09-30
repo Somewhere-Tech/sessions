@@ -239,7 +239,7 @@
     <div class="step-head"><div class="num">1</div><div><div class="step-title">Install Sessions</div><div class="step-sub">on your Mac</div></div></div>
     <div class="step-body">
       <span class="pill">native Mac app</span>
-      <a class="btn-open" href="https://github.com/somewhere-tech/sessions/releases/download/v0.2.20/Sessions_0.2.20_darwin_arm64.zip" target="_blank" rel="noopener">Download Sessions 0.2.20 <span class="arr">→</span></a>
+      <a class="btn-open" href="https://github.com/somewhere-tech/sessions/releases/download/v0.2.26/Sessions_0.2.26_darwin_arm64.zip" target="_blank" rel="noopener">Download Sessions 0.2.26 <span class="arr">→</span></a>
       <div class="cmd"><code>brew install --cask somewhere-tech/tap/sessions-app</code><button class="copy">copy</button></div>
       <p class="note" style="margin-top:18px">Move <b>Sessions.app</b> to Applications and open it. The app verifies and installs its own signed background runtime. There is no Node or npm install, no native-module compile, and no script piped into your shell.</p>
       <p class="note" style="margin-top:18px">For headless machines and developers, the same release also includes checksummed archives. Keep <code>sessions</code>, <code>sessionsd</code>, and <code>sessions-runner</code> together:</p>
@@ -303,7 +303,7 @@
       <p class="note">Android is currently a sideloaded paired-client preview. It does not host agents itself; it connects directly to a Sessions computer you approve.</p>
       <p class="note">After enabling LAN or remote access, mint a one-time QR for the device in your hand:</p>
       <div class="cmd"><code>sessions pair --name "my phone"</code><button class="copy">copy</button></div>
-      <p class="note">The ticket expires after five minutes and works once. It is exchanged directly with your Mac for a per-device credential; the daemon's master token is never embedded in the QR.</p>
+      <p class="note">The ticket expires after ten minutes by default and works once. It is exchanged directly with your Mac for a per-device credential; the daemon's master token is never embedded in the QR.</p>
       <div class="cmd"><code>sessions devices</code><button class="copy">copy</button></div>
       <div class="cmd"><code>sessions devices revoke &lt;id-or-prefix&gt;</code><button class="copy">copy</button></div>
       <p class="note">List each credential by device and revoke one immediately without rotating every other device.</p>

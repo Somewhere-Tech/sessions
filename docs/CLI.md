@@ -36,9 +36,12 @@ Exit codes: 0 satisfied · 1 usage · 2 daemon unreachable · 3 timed out ·
 document, including on failure, and its `code` matches the exit status.
 
 Daily workflows:
+  restart                  end one runtime and reopen its exact conversation
   new                      create an interactive session
   profiles                 list Claude and Codex login profiles
+  accounts                 list and add second Claude or ChatGPT accounts
   onboarding               inspect user consent and delegated access
+  defaults                 inspect or change new-session defaults
   providers                inspect or update agent CLIs
   run                      run a command in a headless lane
   tags                     view or edit session tags
@@ -53,7 +56,12 @@ Daily workflows:
   ls                       list interactive sessions
   list                     list agent sessions and headless lanes
   lanes                    list headless lanes
-  send                     send text and Enter to a session
+  team                     show the lanes a manager delegated and their state
+  fanout                   give one request to a lane per provider and join them
+  approve                  answer the permission a Rich lane is waiting on
+  retry                    retry or stop retrying a failed Rich provider turn
+  projects                 list or name the projects sessions are grouped under
+  send                     send a message to a session
   send-status              inspect a durable message-delivery receipt
   ask                      send, wait, and print the reply
   wait                     wait for session idle, lane exit, or a fan-out join
@@ -87,11 +95,12 @@ Models and interactive:
   attach                   attach a raw two-way terminal stream
 
 Admin/operational:
-  install                  install and start the development daemon
-  uninstall                stop and remove the development daemon
-  deploy                   explain the retired Node deploy path
+  install                  install the per-user daemon service
+  relay                    configure or install the optional relay
+  uninstall                remove daemon service integration
   update                   securely update Sessions.app
-  pair                     pair a device on the same LAN
+  pair                     show a one-time device pairing code
+  account                  manage the optional Somewhere fleet account
   devices                  list or revoke paired devices
   machines                 discover, approve, and save Sessions machines
   access                   review and decide machine access requests
@@ -119,7 +128,8 @@ Delegating to another agent:
 
 Global flags:
   --json           machine-friendly output; may also appear among command options
-  --machine NAME   use a saved Sessions machine and its device credential
+  --machine NAME   use a saved machine through the local daemon fleet relay
+  --direct         dial a --machine peer directly (debugging only)
   --host HOST      low-level sessionsd host; local token stays on loopback
   --port PORT      sessionsd port (default 8787)
 
@@ -128,21 +138,40 @@ Connection flags must precede the command. Arguments after `sessions run --` alw
 Run `sessions help <command>` for one command or `sessions docs` for the complete offline reference.
 ```
 
+## `sessions restart`
+
+```text
+Usage:
+  sessions restart SESSION --confirm EXACT-RUNTIME-ID --permissions constrained|full [--terminal|--structured] [--remote-control]
+
+end one runtime and reopen its exact conversation
+
+Explicitly end only the confirmed runtime and reopen the same provider conversation, preserving its account profile, model, history and runtime kind. Full access (YOLO) applies only to the replacement, never global defaults. --remote-control selects Claude Terminal and requires existing user consent in Settings. Running work is interrupted. Inspect status first and pass its full runtime UUID to --confirm. Repeating the same source and choices recovers the recorded restart without starting a duplicate. Different choices on an already recorded restart are refused. JSON reports sourceEnded, laneId, partial and error; exit 2 means the operation needs attention. The native app retains its unsent draft; CLI has no composer draft.
+
+Examples:
+  sessions status SESSION
+  sessions --json restart SESSION --confirm EXACT-RUNTIME-ID --permissions full --remote-control
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
 ## `sessions new`
 
 ```text
 Usage:
-  sessions new [--tool claude|codex|shell] [--permissions inherit|constrained|full] [--lifecycle task|session] [--profile NAME] [--cwd P] [--name L] [--model M] [--effort LEVEL] [--fast] [--structured] [--wait-ready] [--on-idle CMD] [--owner ID [--detach]] [--force] [--worktree [--base REF]] [--cmd PATH] [options] [args...]
+  sessions new [--tool claude|codex|shell] [--permissions inherit|constrained|full] [--lifecycle task|session] [--profile NAME] [--cwd P] [--name L] [--model M] [--effort LEVEL] [--fast] [--structured] [--wait-ready] [--on-idle CMD] [--owner ID [--detach]] [--force] [--worktree [--base REF] | --no-worktree] [--operation-id UUID] [--cmd PATH] [options] [args...]
 
 create an interactive session
 
-Create a session. --tool selects Claude, Codex, or shell. For Claude and Codex, positional text after the options is sent immediately as the first request. Agent-created children inherit their manager's resolved permission policy by default; when the user has explicitly enabled autonomous delegated work, those children use full access instead. A child cannot escalate itself. --permissions makes the policy explicit, while --full-access remains an alias for --permissions full. Every new conversation, including an agent-created child, stays session-lifecycle by default. Use --lifecycle task only when the caller deliberately wants a bounded worker; provider completion alone never authorizes Sessions to end a runtime. Approval questions become needs-input state and are never blindly accepted. Existing sessions keep their original runtime and permission mode. Top-level Claude sessions default to the native interactive runtime; a Claude child created from inside another Sessions session defaults to the provider-native structured runtime so its manager can drive exact events without screen parsing. Use --pty-claude when that child specifically needs the interactive terminal. Codex defaults to its sandboxed terminal mode unless full access selects app-server, because constrained app-server approvals are not yet surfaced safely. Remote Control remains separately consent-gated. --profile selects a private provider login. --description and repeated --tag values record purpose and dimensions. --worktree creates a Sessions-owned worktree, and --base picks its starting ref.
+Create a session. --tool selects Claude, Codex, or shell. For Claude and Codex, positional text after the options is sent immediately as the first request. Agent-created children run with autonomous full access by default so delegated work finishes in the background; when the user has chosen inheritance in onboarding or Settings, children inherit their manager's resolved permission policy instead. A child cannot escalate itself past what the machine allows. --permissions makes the policy explicit, while --full-access remains an alias for --permissions full. Every new conversation, including an agent-created child, stays session-lifecycle by default. Use --lifecycle task only when the caller deliberately wants a bounded worker; provider completion alone never authorizes Sessions to end a runtime. Approval questions become needs-input state and are never blindly accepted. Existing sessions keep their original runtime and permission mode. Top-level Claude sessions default to the native interactive runtime; a Claude child created from inside another Sessions session defaults to the provider-native structured runtime so its manager can drive exact events without screen parsing. Use --pty-claude when that child specifically needs the interactive terminal. Codex defaults to its sandboxed terminal mode unless full access selects app-server; --codex-appserver explicitly selects the Rich app-server runtime for constrained or full sessions. Remote Control remains separately consent-gated. --profile selects a private provider login. --description and repeated --tag values record purpose and dimensions. --worktree creates a Sessions-owned worktree, and --base picks its starting ref. A lane created from inside another session gets its own worktree by default when its folder is a usable Git checkout, so autonomous work lands on a branch the manager can diff or merge; --no-worktree makes it share the folder instead, and a folder that cannot host a worktree is shared automatically.
 
 Agent controls: --model chooses the provider model for the new session and --effort its reasoning effort; both are validated by the provider and are only valid for Claude or Codex. --fast requests the Codex priority service tier and is refused for Claude, which has no service tier. Explicit provider arguments you pass yourself always win over these controls.
 
-Runtime and lifecycle options: --structured creates a Rich structured Claude session instead of the interactive terminal, --pty-claude keeps the terminal explicitly, and --codex-appserver or --pty-codex select the Codex runtime; app-server currently requires full access. --wait-ready holds the create call until the new agent runtime has produced its first structured event or a short settle timeout expires, so an immediately following send is not lost. --on-idle registers a shell command the daemon runs in the session's working directory every time the session becomes idle. --force overrides the live or moved conversation guard. --no-skip-perms is an accepted no-op kept for scripts written before constrained execution became the default, and it cannot be combined with full access. --cmd runs an explicit executable instead of a tool preset.
+Runtime and lifecycle options: --structured creates a Rich structured Claude session instead of the interactive terminal, --pty-claude keeps the terminal explicitly, and --codex-appserver or --pty-codex select the Codex runtime. In a constrained Rich session, Sessions presents provider approval requests through `sessions approve`. --wait-ready holds the create call until the new agent runtime has produced its first structured event or a short settle timeout expires, so an immediately following send is not lost. --on-idle registers a shell command the daemon runs in the session's working directory every time the session becomes idle. --force overrides the live or moved conversation guard. --no-skip-perms is an accepted no-op kept for scripts written before constrained execution became the default, and it cannot be combined with full access. --cmd runs an explicit executable instead of a tool preset.
 
 Long-running child processes: a server started inside Claude or Codex belongs to that provider terminal and may end when the provider exits. If the server must remain inspectable, start it as its own Sessions command, for example `sessions new --name preview --cwd ~/work --cmd npm run dev`. That gives the server a first-class session; explicit End then terminates its complete runner-owned process tree on every supported desktop platform. A process that deliberately detaches itself into a different process group is outside Sessions' lifecycle.
+
+Start receipts: every `sessions new` carries a create operation id, and a first request its own delivery operation id; sessionsd records both before anything launches. Creating the session and delivering its first request can fail separately, so when the first request is not confirmed the command still prints the session id (and, with --json, the session record with first_request, start, and rerun) and exits 2. When sessionsd acknowledged the id (its create answer echoes start.operation_id), re-running the same command with --operation-id UUID returns the session the first attempt created instead of starting another, and sends the first request at most once: a request Sessions proved never arrived is sent, an uncertain one is never resent. An older sessionsd ignores the id, and the command then says so rather than promising a safe re-run. A create that returns no usable session answers with a receipt instead of a bare error (--json: ok, code, outcome refused, already-created, created-not-started or unknown, operation_id, session_id when known, and next); unknown means the answer was lost, so look for the session before retrying. The session's start receipt (`sessions status`, `sessions --json ls`) says created, prompt-not-delivered, prompt-unknown, prompt-delivered, working, completed, or blocked, with its evidence and the one next step that cannot duplicate the work; an authentication failure is blocked with connect-account as that step.
 
 Ownership: --owner records an external principal as the creator instead of the inherited Sessions ancestry, and --detach is required with it when this process already belongs to a session, creating an external root rather than a child.
 
@@ -154,7 +183,7 @@ Examples:
   sessions new --name preview --cwd ~/work --cmd npm run dev
   sessions new --cmd /bin/zsh
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions profiles`
@@ -165,13 +194,38 @@ Usage:
 
 list Claude and Codex login profiles
 
-List profile names, private config paths, active sessions, and last-use times. Sessions never reads or copies credentials and has no profile delete command; remove a profile manually only after reviewing the printed path.
+List profile names, labels, whether the file a provider writes at sign-in is present in that profile's home, private config paths, active sessions, and last-use times. LOGIN-FILE is presence only: Sessions never opens that file, so it is not proof that the login still works, and a provider that keeps its credential in the system keychain reports none. Sessions never reads or copies credentials and has no profile delete command; remove a profile manually only after reviewing the printed path. `sessions accounts` is the same list with the verbs that add and unregister one.
 
 Examples:
   sessions profiles
   sessions --json profiles
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions accounts`
+
+```text
+Usage:
+  sessions accounts [list | usage [<name>] [--tool claude|codex] [--refresh] | add [name] --tool claude|codex [--label TEXT] [--machine NAME] | login <name> --tool claude|codex | login-status <id> | login-code <id> | login-cancel <id> | rename <name> --tool claude|codex --label TEXT | forget <name> --tool claude|codex]
+
+list and add second Claude or ChatGPT accounts
+
+Each account has a separate provider home and history. Select it with --profile when starting a session. Accounts stay on the computer where you sign in; credentials are never copied between machines.
+
+`accounts add [name] --tool claude|codex` registers an account and starts a short-lived provider sign-in, not an agent session. Omit name to generate one. `accounts login <name> --tool claude|codex` checks an existing account or starts its sign-in. Both return an operation ID. Use `accounts login-status <id>` for the provider link and ChatGPT device code, then follow the link in your browser. Check which account you choose. For Claude, pipe the confirmation code into `accounts login-code <id>`; do not put codes in command arguments or shell history. `accounts login-cancel <id>` stops only the sign-in helper. Operations expire after ten minutes or a daemon restart.
+
+Completion reports the email and plan returned by the provider. This checks identity, not remaining usage. `accounts usage` reads each account's allowance from its provider: every metered limit separately with its used percentage, window and reset time, when it was read, and whether it is stale. Codex answers through its own app-server in the account's private home, with no model turn; Claude usage is not connected in Sessions yet, so Claude accounts report `unsupported`. A failed or slow read reports `unavailable`, never signed out or zero; it keeps the last good reading, marked stale, only when the provider still reports the same account. Readings are cached for a minute; --refresh asks again. `accounts usage <name> --tool claude|codex` reads one account. `accounts rename <name> --tool claude|codex --label TEXT` changes only the nickname; the account ID, provider home, sign-in and history stay as they are, and --label "" clears it. Nicknames are at most 64 characters with no line breaks or control characters. `accounts forget <name> --tool claude|codex` unregisters the account but preserves its provider home, credentials and history. --machine NAME selects another approved computer; for add it may also follow the command. No existing session is ended or logged out.
+
+Examples:
+  sessions accounts
+  sessions accounts add work --tool claude --label 'Work — team plan'
+  sessions accounts usage --json
+  sessions accounts add work --tool claude --machine mini
+  sessions accounts rename work --tool claude --label 'Team plan'
+  sessions accounts forget work --tool claude
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions onboarding`
@@ -188,7 +242,26 @@ Examples:
   sessions onboarding
   sessions --json onboarding
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions defaults`
+
+```text
+Usage:
+  sessions defaults [--permissions settings|ask|accept-edits|auto|plan|dont-ask|full]
+
+inspect or change new-session defaults
+
+Inspect the Claude launch defaults stored by Sessions on the selected machine. --permissions changes the mode for future Claude sessions while preserving the other Claude settings. Full access maps to Claude's exact skip-permissions launch mode. Existing sessions keep their current provider mode; for a blocked live Terminal session, use `sessions keys SESSION shift-tab` to cycle Claude's own mode without replacing the session.
+
+Examples:
+  sessions defaults
+  sessions defaults --permissions full
+  sessions --machine mini defaults --permissions full
+  sessions --json defaults
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions providers`
@@ -206,7 +279,7 @@ Examples:
   sessions providers update codex
   sessions --json providers
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions run`
@@ -229,7 +302,7 @@ Examples:
   sessions run --wait --timeout 30m -- ./slow-migration.sh
   sessions --json run --wait -- sh -c 'exit 3'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions tags`
@@ -248,7 +321,7 @@ Examples:
   sessions tags 0123abcd --remove client
   sessions --json tags 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions rename`
@@ -272,26 +345,27 @@ Examples:
   sessions rename 0123abcd --auto
   sessions --json rename 0123abcd 'Database migration'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions worktrees`
 
 ```text
 Usage:
-  sessions worktrees [clean [--dry-run]]
+  sessions worktrees [--all | clean [--dry-run]]
 
 list or safely clean Sessions-created worktrees
 
-List worktrees recorded in the Sessions ledger with dirty, merge, and session state. clean removes only worktrees whose session has exited, whose tree is clean, and whose branch is fully merged into its recorded base; every other worktree is skipped with a reason. --dry-run shows the plan without mutation. There is no force option, and killing a session never cleans its worktree automatically.
+List worktrees recorded in the Sessions ledger with dirty, merge, and session state. Worktrees successfully removed by clean are omitted by default; --all includes their durable cleaned records. clean removes only worktrees whose session has exited, whose tree is clean, and whose branch is fully merged into its recorded base; every other worktree is skipped with a reason. --dry-run shows the plan without mutation. There is no force option, and killing a session never cleans its worktree automatically.
 
 Examples:
   sessions worktrees
+  sessions worktrees --all
   sessions --json worktrees
   sessions worktrees clean --dry-run
   sessions worktrees clean
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions transcripts`
@@ -309,7 +383,7 @@ Examples:
   sessions transcripts --apply
   sessions --json transcripts
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions gc`
@@ -329,7 +403,7 @@ Examples:
   sessions gc --older-than 30d --apply
   sessions --json gc
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions archive`
@@ -347,7 +421,7 @@ Examples:
   sessions archive 0123abcd 89abcdef
   sessions --json archive 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions aside`
@@ -366,7 +440,7 @@ Examples:
   sessions aside 0123abcd --clear
   sessions --json aside 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions pin`
@@ -388,7 +462,7 @@ Examples:
   sessions pin bolo
   sessions --json pin 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions unpin`
@@ -405,7 +479,7 @@ Examples:
   sessions unpin 0123abcd
   sessions --json unpin 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions ls`
@@ -439,7 +513,7 @@ Examples:
   sessions ls --kind lane
   sessions --json ls
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions list`
@@ -452,7 +526,7 @@ list agent sessions and headless lanes
 
 List agent sessions and headless lanes together. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. Pinned sessions come first here too, with a PIN column when any row carries the mark.
 
-State: ended sessions and exited lanes are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's records and changes nothing about which states are shown.
+State: ended sessions and exited lanes are hidden by default, and -a (long form --include-exited, alias --include-closed) includes them. Owner: --all-owners (alias --all) returns every owner's records and changes nothing about which states are shown. A runtime whose process is proven gone reads as lost and carries its recovery action: resume a provider conversation that can continue, or kill a headless lane to close its retained record.
 
 `sessions list -a` is the one command that answers "show me every session Sessions created": every agent session and every retained lane, live or ended, in a single table with a TYPE column. It does not reach conversations Sessions did not create — for those, and for reopening any past conversation, use `sessions history`. Use it when a lane you dispatched with `sessions run` is not where you expected to find it — ls never lists lanes, and a lane drops out of the default list view as soon as it exits.
 
@@ -463,7 +537,7 @@ Examples:
   sessions list --mine -a
   sessions list --owner team:mine
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions lanes`
@@ -476,6 +550,8 @@ list headless lanes
 
 List retained headless lanes, including the ones `sessions run` created that `sessions ls` never shows. --mine follows SESSIONS_OWNER_ID, then the SESSIONS_SESSION_ID descendant subtree, then the daemon OS user. The OS-user fallback is user-wide, not invocation-scoped. --subtree selects session ancestry; --direct limits ancestry to immediate children. --all-owners (alias --all) returns every owner's lanes; like everywhere else it selects owners, not states.
 
+A lane with no completion manifest is not necessarily running. When the daemon's process probe proves its runner is gone, the lane reads as lost with the reason and exact `sessions kill <id>` command that closes the retained record. JSON carries the same answer in lane_status without changing exited: a vanished runner supplies no exit status.
+
 Lanes are retained after they exit and are always listed here, so -a (--include-exited, --include-closed) is accepted for spelling parity with ls and list and changes nothing.
 
 Examples:
@@ -483,30 +559,131 @@ Examples:
   sessions lanes --mine
   sessions lanes --subtree 0123abcd --direct
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions team`
+
+```text
+Usage:
+  sessions team [lane-id] [--since CURSOR] | team --all
+
+show the lanes a manager delegated and their state
+
+Show the lanes one manager is responsible for: its own parent, if any, and its delegated descendants, each with a compact state and the last line of work. The calling lane is SESSIONS_SESSION_ID; pass a lane id to inspect any lane's team. Rows waiting on a decision and lanes whose runners are lost are called out with the command that resolves them.
+
+Use --since with the previous response's next_cursor to return only changed members, including their latest agent-reported handoff, new blockers and shared-checkout warnings. Save the returned next_cursor for the next check. This is a comparison of observed snapshots, not every intervening event; polling never sends a message. A missing, evicted, or expired cursor fails explicitly: read a fresh baseline without --since. Cursors are scoped to a manager and this daemon, kept for at most 24 hours in a bounded cache, and do not survive restart. --since cannot be combined with --all.
+
+Handoffs report commits, tests, artifacts and remaining work only when the producer emits verdict meta.handoff. Missing evidence is not success. Shared-checkout warnings are advisory, not an exclusive write lock.
+
+--all is the view from the top: every session that has delegated lanes, with how many are working, lost, or waiting on you.
+
+Examples:
+  sessions team
+  sessions team 0123abcd
+  sessions --json team 0123abcd
+  sessions team --all
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions fanout`
+
+```text
+Usage:
+  sessions fanout [--with claude,codex] [--name N] [--cwd D] [--timeout D] [--idle D] [--no-wait] [--no-worktree] -- <request...>
+
+give one request to a lane per provider and join them
+
+Start one lane per installed provider with the same request and wait for all of them, so a change can be checked by an agent from each provider in one step. --with picks the providers; the default is every installed one. Run from inside a lane, the new lanes are its delegated children (autonomous, each in its own worktree unless --no-worktree); from a shell they are your own sessions. --no-wait prints the lanes and returns; otherwise the command joins them like `sessions wait --all --summary` and reports each lane's last line. Every lane keeps running afterwards and can be opened, questioned, or ended like any other.
+
+Examples:
+  sessions fanout -- review the diff on this branch and list any bug you are sure about
+  sessions fanout --with codex --no-wait -- run the test suite and report failures
+  sessions --json fanout --timeout 20m -- summarize what changed in src/
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions approve`
+
+```text
+Usage:
+  sessions approve <session-id> [--deny | --for-session]
+
+answer the permission a Rich lane is waiting on
+
+A lane that inherits your permissions instead of running on its own asks before it runs a command, changes files, or takes more access. The request shows as the lane's needs-you line (`sessions ls`, `sessions team`, the app) and the lane waits until it is answered. `approve` allows it once; --for-session allows the same kind of request for the rest of the lane's session; --deny refuses and lets the lane continue without it. Run from inside a manager lane, the decision is attributed to that lane in the worker's transcript.
+
+Examples:
+  sessions approve 0123abcd
+  sessions approve 0123abcd --for-session
+  sessions approve 0123abcd --deny
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions retry`
+
+```text
+Usage:
+  sessions retry <session-id> [--stop]
+
+retry or stop retrying a failed Rich provider turn
+
+Run a failed Rich Claude or Codex turn again immediately. While Sessions is waiting through the automatic outage backoff, this uses the pending attempt now; after retries are exhausted, it retries the retained failed turn. During that schedule `sessions ls` shows the attempt and countdown, and `sessions wait` keeps treating the session as working. --stop cancels only the automatic schedule and leaves the provider fault visible. PTY sessions cannot retain a structured failed turn and are refused with the reason.
+
+Examples:
+  sessions retry 0123abcd
+  sessions retry 0123abcd --stop
+  sessions --json retry 0123abcd
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions projects`
+
+```text
+Usage:
+  sessions projects [name <folder> <name> | forget <project-id>]
+
+list or name the projects sessions are grouped under
+
+A project is the work a session belongs to: a folder, a git checkout together with every worktree of it, or a Somewhere project. Sessions find their project by working directory, so every folder shows up here on day one as an implicit project named after itself; `name` claims a folder under a name of your choosing (a GitHub origin suggests owner/repo), and `forget` drops a stored project so its sessions return to their folder's implicit one. The inbox groups sessions by these projects.
+
+Examples:
+  sessions projects
+  sessions projects name ~/Sessions Sessions
+  sessions --json projects
+  sessions projects forget p_0123
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions send`
 
 ```text
 Usage:
-  sessions send <id> [--from SESSION] [--timeout D] [--no-wait] [--file PATH] [--operation-id UUID] [--] <text...>
+  sessions send <id> [--steer] [--from SESSION] [--timeout D] [--no-wait] [--file PATH] [--operation-id UUID] [--] <text...>
 
-send text and Enter to a session
+send a message to a session
 
-Send a message and Enter. Every send records a durable operation before runner input and returns its operation_id. If the caller disconnects after Sessions may have delivered the message, the result is unknown with retry:false; inspect it with `sessions send-status <operation-id>` instead of creating a duplicate writer. --operation-id lets an automated caller supply a UUID so retrying the same request is idempotent, including across a daemon restart. Reusing it for different content or a different target is refused.
+Send a message. Every send records a durable operation before runner input and returns its operation_id. If the caller disconnects after Sessions may have delivered the message, the result is unknown with retry:false; inspect it with `sessions send-status <operation-id>` instead of creating a duplicate writer. --operation-id lets an automated caller supply a UUID so retrying the same request is idempotent, including across a daemon restart. Reusing it for different content or a different target is refused.
 
-Claude and Codex sessions return success only after Sessions observes the provider's user event; --no-wait is retained for script compatibility but never disables that delivery check. When Codex is already working, its native runtime accepts ordinary follow-up input for submission after the next tool call. Sessions records that provider-owned state and does not create a second hidden prompt queue. A Codex refusal remains recoverable and is never reported as delivered. --file reads the complete message body from a UTF-8 file before delivery begins. --from records a durable, content-free source-lane attribution, so a delegate can see which session asked and reply to it by id; agents running inside Sessions inherit their source lane automatically, and the target may be running the other provider. An unrecognized option in front of the message is refused rather than typed into the session; put -- before a message that must begin with dashes.
+--steer submits the text to a working Rich Codex turn for delivery at its next safe provider boundary. It requires a current structured Codex runner and is refused before anything is written when that capability is unavailable; omit --steer to send an ordinary follow-up. A structured runner's typed acknowledgement is success at the reported runner or provider boundary, so Sessions does not retry with terminal Enter. A refusal remains recoverable and is never reported as delivered.
+
+Claude and Codex terminal sessions use one bracketed paste and return success only after a fresh provider user event matches the complete intended message (allowing terminal newline and outer-whitespace normalization). A suffix, unrelated event, or Working state is not confirmation. Sessions never repeats Enter automatically; --no-wait is retained for script compatibility but never disables that delivery check. --file reads the complete message body from a UTF-8 file before delivery begins. --from records a durable, content-free source-lane attribution, so a delegate can see which session asked and reply to it by id; agents running inside Sessions inherit their source lane automatically, and the target may be running the other provider. An unrecognized option in front of the message is refused rather than typed into the session; put -- before a message that must begin with dashes.
 
 Send confirms delivery and returns; it does not wait for the reply. Follow it with `sessions wait <id>` for one delegate or `sessions wait <id>... --all` for a fan-out, or use `sessions ask` for a single request and answer. A terminal-only tool that cannot expose provider events is explicitly reported as unconfirmed rather than silently treated as delivered.
 
 Examples:
   sessions send 0123abcd 'Run the focused tests.'
+  sessions send 0123abcd --steer 'Also verify the Windows package.'
   sessions send 0123abcd --from 89abcdef 'Please review this result.'
   sessions send 0123abcd --file prompt.md
   sessions send 0123abcd -- --json is a flag, not output
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions send-status`
@@ -517,13 +694,13 @@ Usage:
 
 inspect a durable message-delivery receipt
 
-Read the durable receipt for a send operation. accepted means Sessions delivered the message and Enter to the runner. not-delivered with retry:true is the only result that authorizes an automatic retry. unknown or text-delivered means the message may already be visible to the provider and must not be resent automatically. Receipts survive daemon restarts and contain no message text.
+Read the durable receipt for a send operation. The acceptance field states the evidence: runner or provider is a typed structured acknowledgment; transcript means the complete legacy terminal message was observed in fresh provider history. Older receipts without that evidence do not establish complete provider delivery. not-delivered with retry:true is the only result that authorizes an automatic retry. unknown or text-delivered means the message may already be visible to the provider and must not be resent automatically. Receipts survive daemon restarts and contain no message text.
 
 Examples:
   sessions send-status 11111111-2222-4333-8444-555555555555
   sessions --json send-status 11111111-2222-4333-8444-555555555555
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions ask`
@@ -544,7 +721,7 @@ Examples:
   sessions ask 0123abcd 'Summarize the failing test.'
   sessions --json ask 0123abcd --wait-timeout 2m 'Report status.'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions wait`
@@ -555,9 +732,9 @@ Usage:
 
 wait for session idle, lane exit, or a fan-out join
 
-Wait for a session to become idle or a lane to exit. --summary reports which target changed and its last useful assistant/output summary. A single lane wait propagates the lane exit code. Conditions include --until commit, --until-file-contains FILE STRING, and --until-idle-stable D.
+Wait for a session to become idle or a lane to exit. --summary reports which target changed and its last useful assistant/output summary. A single lane wait propagates the lane exit code. Conditions include --until commit, --until-file-contains FILE STRING, and --until-idle-stable D. If sessionsd restarts after the target is resolved, wait prints `sessionsd restarted; still waiting` once on stderr and reconnects with backoff for the remainder of the same timeout; this also applies to fanout joins.
 
-Every wait answers with the same JSON object: ok, kind, reason, session, working, idleMs, and the optional elapsedMs, idleReason, detail, summary, and a nested lane or condition object carrying what only that kind of target can report — a lane's exit_code, signal, duration_ms, and last_output_tail, or a condition's commit, file, or idle_stable_ms. kind is session, lane, commit, file-contains, or idle-stable, and the target id is always in session. reason is idle, needs-input, exited, satisfied, failed, gone, or timeout, and ok is true only when the caller can stop waiting and act. A lane that exits non-zero reports failed with its status in lane.exit_code. --summary adds prose; it never changes the shape.
+Every wait answers with the same JSON object: ok, kind, reason, session, working, idleMs, and the optional elapsedMs, idleReason, detail, summary, and a nested lane or condition object carrying what only that kind of target can report — a lane's exit_code, signal, duration_ms, and last_output_tail, or a condition's commit, file, or idle_stable_ms. kind is session, lane, commit, file-contains, or idle-stable, and the target id is always in session. reason is idle, needs-input, exited, satisfied, failed, gone, or timeout; a provider fault reports its kind instead of failed (auth, provider-unavailable, rate-limited, or other) whatever idle reason the session carries, so a signed-out delegate is never read as idle. A session started with a first request whose delivery was never proven reports prompt-not-sent, prompt-not-delivered, or prompt-unknown instead of idle, and the envelope carries the session's start receipt as start. ok is true only when the caller can stop waiting and act. A lane that exits non-zero reports failed with its status in lane.exit_code. --summary adds prose; it never changes the shape.
 
 Fanning out to several delegates: --any returns the first target to finish, for a race. --all waits for every target and returns {ok, kind:"all", reason, waited, results:[...]} where results holds one envelope per target in the order they were named, ok is true only if every target is ok, and reason carries the worst outcome — so a delegator can join N delegates in one call instead of re-waiting them one at a time and losing the ones that died in between. Sessions and lanes may be mixed. --idle describes a settling session and governs only the session targets; it is refused when every target is a lane, whose wait ends when the process exits.
 
@@ -571,7 +748,7 @@ Examples:
   sessions --json wait 0123abcd 89abcdef lane-c --all --timeout 30m
   sessions wait 0123abcd --until commit --timeout 10m
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions last`
@@ -589,7 +766,7 @@ Examples:
   sessions last 0123abcd --role assistant -n 1
   sessions --json last 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions history`
@@ -633,7 +810,7 @@ Examples:
   sessions history --cwd . --since 1w
   sessions --json history --since yesterday
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions grep`
@@ -651,7 +828,7 @@ Examples:
   sessions grep --tool claude --role user bolo
   sessions --json grep 'release decision'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions search`
@@ -670,7 +847,7 @@ Examples:
   sessions search 'near(draft,egress,8) OR "stable session"' --timeline
   sessions search '{{first_name}}' --exact --session 0123abcd --json
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions usage`
@@ -693,7 +870,7 @@ Examples:
   sessions usage model
   sessions --json usage monthly
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions resources`
@@ -719,7 +896,7 @@ Examples:
   sessions resources -n 25
   sessions --json resources
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions status`
@@ -730,13 +907,15 @@ Usage:
 
 show a compact session status card
 
-Show session state, tool, working directory, git state, activity timestamps, and the latest explicit verdict when present.
+Show session state, tool, working directory, git state, activity timestamps, and the latest explicit verdict when present. Working, exited, the last turn's reason and summary, an unreachable runner and a provider failure each read as their own line, in the words `sessions ls` uses.
+
+--json answers with the session record `sessions ls --json` reports, field for field and name for name, plus what only status knows: record, state, git, last_verdict, created_at, last_activity_at, age_ms and the idle/ended detail fields. An agent inspecting one session before sending to it therefore reads exactly what an agent listing every session reads, and an absent field means the daemon did not report it rather than that status dropped it. `kind` is the session's own kind, as in the listing; the document type is `record`.
 
 Examples:
   sessions status 0123abcd
   sessions --json status 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions kill`
@@ -747,9 +926,9 @@ Usage:
 
 terminate sessions or lanes
 
-Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one, and it refuses to swallow a following flag as the explanation, so `--reason --force` is a usage error rather than a recorded reason of '--force' with the force silently dropped. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit.
+Resolve every id or unique prefix before requesting any termination. Sessions durably records whether the caller was another Sessions runtime, a paired device or external owner, or a local user client. --reason adds an optional literal human explanation; Sessions never invents one, and it refuses to swallow a following flag as the explanation, so `--reason --force` is a usage error rather than a recorded reason of '--force' with the force silently dropped. Multi-target calls use one guarded daemon batch and share an operation id. More than three targets are refused unless --force is explicit. A retained runner-gone record has no process to signal; kill closes that record with a durable user-end boundary instead.
 
-Results are reported per target from what the daemon confirmed, never assumed. Each target is killed, already-exited for a lane that had already finished, failed when the daemon refused or did not confirm it, or unconfirmed when the daemon accepted the request without saying which sessions ended. The command exits 1 when any target failed and 2 when any target could not be confirmed, so a partially refused batch is never reported as success. --json prints {"items":[{"id","status","reason"}],"operation_id"} on stdout with the same statuses, matching the per-target shape used by archive and aside.
+Results are reported per target from what the daemon confirmed, never assumed. Each target is killed, closed-lost when a proven-gone runner's retained record was closed, already-exited for a lane that had already finished, failed when the daemon refused or did not confirm it, or unconfirmed when the daemon accepted the request without saying which sessions ended. The command exits 1 when any target failed and 2 when any target could not be confirmed, so a partially refused batch is never reported as success. --json prints {"items":[{"id","status","reason"}],"operation_id"} on stdout with the same statuses, matching the per-target shape used by archive and aside.
 
 Examples:
   sessions kill 0123abcd
@@ -757,7 +936,7 @@ Examples:
   sessions --json kill 0123abcd
   sessions kill --json 0123abcd 89abcdef
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions recover`
@@ -776,14 +955,14 @@ Examples:
   sessions recover --reopen
   sessions --json recover --reopen --force
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions recall`
 
 ```text
 Usage:
-  sessions recall [<full-session-id> [--raw]]
+  sessions recall [<session-id-or-prefix> [--raw]]
 
 inspect integration recall data
 
@@ -793,7 +972,7 @@ Examples:
   sessions recall
   sessions recall 00000000-0000-4000-8000-000000000001 --raw
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions source`
@@ -812,7 +991,7 @@ Examples:
   sessions source 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001' --raw
   sessions --json source PM
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions snap`
@@ -829,7 +1008,7 @@ Examples:
   sessions snap 0123abcd
   sessions snap 0123abcd --raw
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions tail`
@@ -847,7 +1026,7 @@ Examples:
   sessions tail 0123abcd -n 200 -f
   sessions tail 0123abcd --lines 200 --follow
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions cat`
@@ -858,14 +1037,14 @@ Usage:
 
 print one durable conversation
 
-Print the complete normalized conversation identified by a live session id, a unique session-id prefix, or a fleet-search reference. An unqualified argument that resolves to a session on this daemon prints that session's transcript; otherwise it is treated as a history reference. The machine qualifier selects the approved per-device credential without putting a token in argv. The conversation is read from its source machine; Sessions does not create a second transcript copy merely for search.
+Print the complete normalized conversation identified by a live session id, a unique session-id prefix, or a fleet-search reference. An unqualified argument that resolves to a session on this daemon prints that session's transcript, including approval_requested and approval_resolved audit records; otherwise it is treated as a history reference. The machine qualifier selects the approved per-device credential without putting a token in argv. The conversation is read from its source machine; Sessions does not create a second transcript copy merely for search.
 
 Examples:
   sessions cat 0123abcd
   sessions cat 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'
   sessions --json cat 'local::provider:codex:00000000-0000-4000-8000-000000000001'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions transcript`
@@ -882,7 +1061,7 @@ Examples:
   sessions transcript 0123abcd
   sessions --json transcript 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions input`
@@ -900,24 +1079,25 @@ Examples:
   sessions --json input 0123abcd 'Continue.'
   sessions input 0123abcd --json 'Continue.'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions keys`
 
 ```text
 Usage:
-  sessions keys <id> <esc|up|down|left|right|^c|^d|enter|tab>
+  sessions keys <id> <esc|up|down|left|right|^c|^d|enter|tab|shift-tab>
 
 send a named key to a session
 
-Translate a supported key name to terminal bytes and send it to the session.
+Translate a supported key name to terminal bytes and send it to the session. `shift-tab` is Claude's provider-native permission-mode control, so a user or agent can repair a blocked Terminal session without opening the raw terminal or replacing its runner.
 
 Examples:
   sessions keys 0123abcd esc
   sessions keys 0123abcd ^c
+  sessions keys PM shift-tab
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions resize`
@@ -933,7 +1113,7 @@ Resize the terminal associated with a session to the requested columns and rows.
 Examples:
   sessions resize 0123abcd 160 48
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions verdict`
@@ -946,11 +1126,13 @@ read or emit an explicit producer verdict
 
 Print the latest verdict for a session or lane. verdict emit appends a schemaVersion 1 verdict, reading JSON from the argument or standard input.
 
+To leave a handoff receipt, include meta.handoff with summary (string), commits/tests/artifacts/remaining (arrays of strings), and push (pushed, not-pushed, or unknown). sessions team and the delegated-work panel show it as agent-reported, not independently verified. Name exact tests and their outcome, commit hashes and artifact paths. Do not report an inferred push or skipped test as success. Emitting a verdict does not end the session.
+
 Examples:
   sessions verdict 0123abcd
   sessions --json verdict emit 0123abcd '{"schemaVersion":1,"verdict":"pass","findings":[]}'
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions move`
@@ -971,7 +1153,7 @@ Examples:
   sessions move 0123abcd --machine mini --terminal
   sessions move 0123abcd --to https://mini.tailnet.ts.net --dry-run
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions adopt`
@@ -989,46 +1171,48 @@ Examples:
   sessions adopt ~/.claude/projects/example/session.jsonl --force
   sessions adopt 00000000-0000-4000-8000-000000000001 --repair 0123abcd --source 4567cdef
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions resume`
 
 ```text
 Usage:
-  sessions resume <[machine::]name-or-id> [--with claude|codex] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
+  sessions resume <[machine::]name-or-id> [--with claude|codex] [--permissions inherit|constrained|full] [--terminal [--remote-control] | --structured] [--force] [--source SESSION] [--repair LIVE-SUCCESSOR]
 
 resume one saved conversation
 
-Resume a conversation by its durable Sessions title, full id, id prefix, or exact machine::history-id across the approved fleet. Sessions first recovers a missing Codex identity from the provider's session_meta, then uses the native provider resume. If the provider handle is truly gone but the authored transcript remains, Sessions creates one linked same-provider successor from that transcript instead of losing the conversation. `continue` and `resurrect` remain compatibility aliases. Claude resumes in its native interactive runtime by default; Codex resumes in its Rich app-server runtime. --with creates a linked copy in the other provider. --source links the ended Sessions runtime, and --repair only completes missing records for an already-live successor.
+Resume a conversation by its durable Sessions title, full id, id prefix, or exact machine::history-id across the approved fleet. Sessions first recovers a missing Codex identity from the provider's session_meta, then uses the native provider resume. If the provider handle is truly gone but the authored transcript remains, Sessions creates one linked same-provider successor from that transcript instead of losing the conversation. `continue` and `resurrect` remain compatibility aliases. Claude resumes in its native interactive runtime by default; Codex resumes in its Rich app-server runtime. --permissions full reopens a Claude conversation with the exact skip-permissions launch mode; this is the supported repair when a constrained process is blocked, because Claude cannot elevate that live process through its mode cycle. --with creates a linked copy in the other provider. --source links the ended Sessions runtime, and --repair only completes missing records for an already-live successor.
 
 Examples:
   sessions resume db-final-review-sol
-  sessions resume PM
+  sessions resume PM --permissions full
   sessions resume 'mini::provider-history:claude:00000000-0000-4000-8000-000000000001'
   sessions resume db-final-review-sol --with claude
   sessions --json resume provider:codex:00000000-0000-4000-8000-000000000001
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions fork`
 
 ```text
 Usage:
-  sessions fork <live-session> [--with claude|codex] [--at MESSAGE_INDEX [--message-id ID]]
+  sessions fork <live-session> [--with claude|codex] [--at MESSAGE_INDEX [--message-id ID]] [--briefing-file FILE|- | --generate-briefing] [--profile NAME] [--name NAME] [--model MODEL] [--effort EFFORT]
 
 copy a live conversation without stopping it
 
-Create a new Rich conversation from a stable authored-history snapshot while the original session remains live and unchanged. Omit --with to fork into the same provider, or select Claude/Codex to open a copy in the other provider. --at forks at one non-negative authored-message index, copying that user or agent message and everything before it instead of the whole history; --message-id is only valid with --at and pins the expected message identity, so a conversation that moved on is refused instead of forked from the wrong point. Sessions copies user and assistant messages only; tool output, credentials, attachments, provider internals, and the source runtime are never modified. Wait for the current turn to finish before forking.
+Create a new Rich conversation while the original remains unchanged. Omit --with for the same provider. By default, copy authored user/assistant messages from a stable snapshot; wait for the current turn to finish. Tool output, credentials, attachments, and provider internals are not copied. --at selects a message index; --message-id pins that message identity. With --briefing-file FILE (or - for stdin), add an independent main collaborator using only the reviewed briefing, up to 24 KiB, with a searchable source reference. --generate-briefing prints an editable draft using a separate tool-free call through the source account; it consumes provider allowance but creates no lane or source message. It cannot be combined with --briefing-file or --profile. --profile selects an existing destination account, with an empty value selecting the host default. --name, --model, and --effort configure the new collaborator. No account choice changes the original agent.
 
 Examples:
   sessions fork 0123abcd
   sessions fork 0123abcd --with codex
   sessions fork 0123abcd --at 42 --message-id a1b2c3
+  sessions fork 0123abcd --generate-briefing
+  sessions fork 0123abcd --with codex --briefing-file reviewed-brief.txt --profile work --name Reviewer
   sessions --json fork 0123abcd --with claude
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions model`
@@ -1046,7 +1230,7 @@ Examples:
   sessions model 0123abcd gpt-5.6-sol --effort high
   sessions --json model 0123abcd opus
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions models`
@@ -1063,7 +1247,7 @@ Examples:
   sessions models
   sessions --json models
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions attach`
@@ -1079,23 +1263,42 @@ Attach the local terminal to a session. Press Ctrl+Q to detach without terminati
 Examples:
   sessions attach 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions install`
 
 ```text
 Usage:
-  sessions install
+  sessions install [--restart-daemon]
 
-install and start the development daemon
+install the per-user daemon service
 
-Register the development sessionsd macOS LaunchAgent and start it.
+On Linux, stage immutable runtime binaries and enable a systemd user service. First install starts it; reinstall preserves the running daemon until --restart-daemon explicitly applies the staged version. Daemon restart never stops runners. Boot and logout operation require an explicit loginctl enable-linger USER action. On macOS, register and start the development sessionsd LaunchAgent; --restart-daemon is Linux-only.
 
 Examples:
   sessions install
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions relay`
+
+```text
+Usage:
+  sessions relay <status | set URL | disable | install [--listen :8899] [--cert FILE --key FILE] --allow-file FILE>
+
+configure or install the optional relay
+
+Inspect, set, or disable this daemon's outbound relay fallback, or install sessions-relay as a macOS LaunchAgent. The relay accepts outbound machine tunnels only after an Ed25519 challenge matches a static allow-list. Put TLS directly on the relay with --cert/--key, or keep its listener behind Tailscale Serve or Caddy. Directory-token mode is unsupported; retained --directory-url and --owner-token-file flags return an explicit --allow-file remedy before reading credentials or installing a service.
+
+Examples:
+  sessions relay status
+  sessions relay set https://relay.example
+  sessions relay disable
+  sessions relay install --listen 127.0.0.1:8899 --allow-file ~/.config/sessions/relay-allow.json
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions uninstall`
@@ -1104,30 +1307,14 @@ Examples:
 Usage:
   sessions uninstall
 
-stop and remove the development daemon
+remove daemon service integration
 
-Stop and remove the development sessionsd macOS LaunchAgent.
+On Linux, disable and remove the user service definition while preserving the running daemon, runners, state and immutable binaries. On macOS, stop and remove the development sessionsd LaunchAgent.
 
 Examples:
   sessions uninstall
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
-```
-
-## `sessions deploy`
-
-```text
-Usage:
-  sessions deploy
-
-explain the retired Node deploy path
-
-The mutating Node-daemon deploy path is retired. Sessions.app is the macOS release and update vehicle; this command exits without changing files, services, or sessions and points operators to the current release documentation.
-
-Examples:
-  sessions deploy
-
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions update`
@@ -1145,25 +1332,45 @@ Examples:
   sessions update --check
   sessions --json update --check
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions pair`
 
 ```text
 Usage:
-  sessions pair [--name NAME]
+  sessions pair [--ttl 10m] [--name NAME]
 
-pair a device on the same LAN
+show a one-time device pairing code
 
-Mint a five-minute, single-use pairing ticket for the explicit same-network LAN listener. This is the fallback for devices without Tailscale: Sessions apps on the same tailnet discover each other and use Request access instead. The claiming device receives its own revocable token; the master daemon token is never embedded in the link.
+Mint and display a QR code, sessions:// application link, and plain browser fallback containing every enabled LAN and Tailscale endpoint in connection order. The random 32-byte ticket is single use, expires after ten minutes by default, and can be shortened with --ttl. Possession is the host's consent: a claiming device immediately receives its own revocable credential without a separate access accept step. The master daemon token is never embedded in the link.
 
 Examples:
   sessions pair
-  sessions pair --name 'Uzair phone'
+  sessions pair --ttl 5m --name 'Uzair phone'
   sessions --json pair
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+```
+
+## `sessions account`
+
+```text
+Usage:
+  sessions account <login [--email EMAIL] [--code CODE] | logout | status | key>
+
+manage the optional Somewhere fleet account
+
+Sign this machine in to the optional Somewhere fleet directory with an emailed magic-link code, inspect or revoke that login, or print the machine's Ed25519 public key. Login stores an access/refresh pair and the machine private key in atomic mode-0600 files owned by sessionsd; neither command exposes the private key. Sessions continues to work over LAN and the user's tailnet without an account.
+
+Examples:
+  sessions account login
+  sessions account login --email owner@example.com
+  sessions account status
+  sessions account key
+  sessions account logout
+
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions devices`
@@ -1181,27 +1388,28 @@ Examples:
   sessions --json devices
   sessions devices revoke 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions machines`
 
 ```text
 Usage:
-  sessions machines <discover [--timeout D] | connect ENDPOINT [--name ALIAS] [--timeout D] | list | forget ALIAS | sync-native>
+  sessions machines <discover [--timeout D] | connect ENDPOINT-OR-PAIRING-LINK [--lan URL] [--tailnet URL] [--tailnet-ip URL] [--name ALIAS] [--timeout D] | list | forget ALIAS | sync-native>
 
 discover, approve, and save Sessions machines
 
-Discover Sessions hosts announced with Bonjour on the nearby network, request host approval, and save the issued per-device credential in a mode-0600 file. `sessions --machine ALIAS <command>` then runs any daemon-backed CLI command against that saved machine. Discovery reveals no credentials or session data. Nearby HTTP traffic is not encrypted, so connect only on a private network you trust; use Tailscale HTTPS on untrusted networks. Forget removes the local credential but does not revoke it on the host. sync-native reconciles the saved set against a native client's machine registry read as JSON on stdin.
+List one merged fleet from saved LAN/Tailscale pairings, currently reachable Bonjour announcements, and the optional Somewhere account directory. Every row names all known transport candidates and the one currently in use. Same-account directory machines receive a per-device credential automatically through a signed challenge; another account still uses pairing or request/accept. Passing the sessions:// or plain /pair/ link printed by `sessions pair` uses the link as host consent and claims immediately, preserving its LAN, Tailscale HTTPS, and direct Tailscale-IP endpoint order. `sessions --machine ALIAS <command>` then runs any daemon-backed CLI command against that saved machine. Discovery reveals no credentials or session data. Nearby HTTP traffic is not encrypted, so connect only on a private network you trust. Direct tailnet-IP HTTP is authenticated and encrypted by Tailscale and remains protected by the Sessions device credential. Forget removes the local credential but does not revoke it on the host. sync-native reconciles the saved set against a native client's machine registry read as JSON on stdin.
 
 Examples:
   sessions machines discover
+  sessions machines connect 'sessions://pair?host=…&t=…' --name mini
   sessions machines connect http://192.168.1.20:8787 --name mini
   sessions machines
   sessions --machine mini ls
   sessions machines forget mini
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions access`
@@ -1212,7 +1420,7 @@ Usage:
 
 review and decide machine access requests
 
-List pending nearby and Tailscale access requests, or accept or deny one by id. Requests show the transport and verified Tailscale identity or observed private-LAN source address before approval. This is the CLI equivalent of the native access inbox, so an authorized agent can complete the same workflow without GUI automation.
+List pending nearby and Tailscale access requests, or accept or deny one by exact id or the unique prefix printed by the list. Requests show the transport and verified Tailscale identity or observed private-LAN source address before approval. This is the CLI equivalent of the native access inbox, so an authorized agent can complete the same workflow without GUI automation.
 
 Examples:
   sessions access requests
@@ -1220,7 +1428,7 @@ Examples:
   sessions access accept 0123abcd
   sessions access deny 0123abcd
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions lan`
@@ -1240,7 +1448,7 @@ Examples:
   sessions lan status
   sessions lan disable
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions notify`
@@ -1259,7 +1467,7 @@ Examples:
   sessions notify on done
   sessions --json notify status
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions remote`
@@ -1270,14 +1478,14 @@ Usage:
 
 manage tailnet-only remote access
 
-Enable, disable, or inspect the Tailscale Serve HTTPS endpoint used for Sessions remote access. Once enabled, other Sessions apps in the same tailnet can discover this Mac and request access; the host must accept before a revocable device credential is issued.
+Enable, disable, or inspect tailnet-only Sessions access. When Tailscale is installed and signed in, the daemon enables its Tailscale Serve HTTPS endpoint and exact 100.64.0.0/10 interface listener automatically unless disabled. The host must still accept a new device before a revocable credential is issued. Enable turns automatic reachability on; disable turns it off and removes the Sessions-owned Serve root.
 
 Examples:
   sessions remote enable
   sessions remote status
   sessions remote disable
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions token`
@@ -1293,7 +1501,7 @@ Read and print the local daemon token for use by an authorized Sessions client.
 Examples:
   sessions token
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions backup`
@@ -1312,24 +1520,25 @@ Examples:
   sessions backup decrypt transcript.jsonl.enc
   sessions --json backup status
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions doctor`
 
 ```text
 Usage:
-  sessions doctor
+  sessions doctor [--cpu-profile DURATION]
 
 diagnose daemon and session health
 
-Report per-session health, spawn path, QoS state, and sessions which should be recreated.
+Report per-session health, spawn path, QoS state, and sessions which should be recreated. --cpu-profile captures the local daemon for a whole-second duration, writes the pprof data to the current directory, and prints its ten hottest symbolized frames. The daemon must have been started with a loopback-only SESSIONS_PPROF address.
 
 Examples:
   sessions doctor
+  sessions doctor --cpu-profile 30s
   sessions --json doctor
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions support`
@@ -1349,7 +1558,7 @@ Examples:
   sessions support --bundle ./sessions-support.json
   sessions --json support --attach --ticket tsk_1234abcd --project sessions
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions docs`
@@ -1366,7 +1575,7 @@ Examples:
   sessions docs
   sessions docs > sessions-cli.md
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions help`
@@ -1384,7 +1593,7 @@ Examples:
   sessions help run
   sessions recover --help
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```
 
 ## `sessions version`
@@ -1401,5 +1610,5 @@ Examples:
   sessions version
   sessions --version
 
---json may appear before the command or among its options. --machine, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
+--json may appear before the command or among its options. --machine, --direct, --host, and --port must appear before the command. Arguments after `sessions run --` always belong to the child command.
 ```

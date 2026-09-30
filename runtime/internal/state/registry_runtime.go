@@ -97,11 +97,48 @@ func (r *Registry) removeOrderLocked(id string) {
 	}
 }
 
+// HibernateIdleMirrors sweeps every live session and releases the terminal
+// emulator of each one nothing has touched for quiet. It answers how many
+// sessions are hibernated afterwards.
+func (r *Registry) HibernateIdleMirrors(quiet time.Duration) int {
+	r.mu.RLock()
+	sessions := make([]*Session, 0, len(r.sessions))
+	for _, session := range r.sessions {
+		sessions = append(sessions, session)
+	}
+	r.mu.RUnlock()
+	hibernated := 0
+	for _, session := range sessions {
+		if session.HibernateIdleMirror(quiet) {
+			hibernated++
+		}
+	}
+	return hibernated
+}
+
 func (r *Registry) Get(id string) (*Session, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	session, ok := r.sessions[id]
 	return session, ok
+}
+
+// RemoveUnreachable forgets only a dead connection after the session manager
+// has durably closed its record. It never removes an attached runner: if
+// discovery won the race and reconnected the session, the caller must send the
+// ordinary kill control to that live runner instead.
+func (r *Registry) RemoveUnreachable(id string) bool {
+	r.mu.Lock()
+	session, ok := r.sessions[id]
+	if !ok || !session.Info().Unreachable {
+		r.mu.Unlock()
+		return false
+	}
+	delete(r.sessions, id)
+	r.removeOrderLocked(id)
+	r.mu.Unlock()
+	_ = session.Close()
+	return true
 }
 
 // Kill sends one runner KILL frame. The higher-level session manager applies
@@ -123,6 +160,39 @@ func (r *Registry) RequestKill(ctx context.Context, id string, _ bool) error {
 func (r *Registry) Input(ctx context.Context, id, data string) bool {
 	session, ok := r.Get(id)
 	return ok && session.Input(ctx, data)
+}
+
+func (r *Registry) RetryProvider(ctx context.Context, id string) (SessionInfo, error) {
+	session, ok := r.Get(id)
+	if !ok {
+		return SessionInfo{}, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	if err := session.RetryProvider(ctx); err != nil {
+		return SessionInfo{}, err
+	}
+	return session.Info(), nil
+}
+
+func (r *Registry) StopProviderRetry(ctx context.Context, id string) error {
+	session, ok := r.Get(id)
+	if !ok {
+		return fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	return session.StopProviderRetry(ctx)
+}
+
+// Approve answers the approval a session is waiting on and returns the
+// session as it stands; the runner's approval_resolved event clears the
+// pending prompt a moment later.
+func (r *Registry) Approve(ctx context.Context, id string, control proto.ApprovalControl) (SessionInfo, error) {
+	session, ok := r.Get(id)
+	if !ok {
+		return SessionInfo{}, fmt.Errorf("%w: session %s", ErrSessionNotFound, id)
+	}
+	if err := session.Approve(ctx, control); err != nil {
+		return SessionInfo{}, err
+	}
+	return session.Info(), nil
 }
 
 func (r *Registry) ConfigureModel(ctx context.Context, id, model, effort string) (SessionInfo, error) {
@@ -199,6 +269,14 @@ func (r *Registry) runnerEnvironment(info proto.RunnerInfo, caller map[string]st
 		setRunnerEnvironment(environment, key, value)
 	}
 	setRunnerEnvironment(environment, "TERM", "xterm-256color")
+	// A session invoking the Sessions CLI must return to the daemon that owns
+	// it. In particular, an isolated daemon on a non-default port must not let
+	// delegated commands fall through to the installed daemon on 8787. Set the
+	// route after caller environment merging for the same reason we set the
+	// identity here: neither is caller-controlled ambient state.
+	setRunnerEnvironment(environment, "SESSIONS_HOST", r.config.Host)
+	setRunnerEnvironment(environment, "SESSIONS_PORT", fmt.Sprint(r.config.Port))
+	setRunnerEnvironment(environment, "SESSIONS_STATE_DIR", r.config.RunnerStateDir)
 	// This identity belongs to the newly-created session. Set it after caller
 	// environment merging so a caller cannot forge a different descendant.
 	setRunnerEnvironment(environment, "SESSIONS_SESSION_ID", info.ID)

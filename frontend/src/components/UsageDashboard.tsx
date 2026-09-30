@@ -1,11 +1,63 @@
 import { useEffect, useMemo, useState } from 'react';
 import { type UsageOptions, type UsageReport, type UsageRow, type UsageTokens } from '../api/sessionsd';
-import { serverDisplayName, useServers } from '../lib/servers';
+import { isLocalServer, serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 import { getCachedUsage, requestUsageReport } from '../lib/usageCache';
-import { combineFleetUsage, type FleetUsageSummary } from '../lib/fleetUsage';
+import { combineFleetUsage, type FleetUsageSource, type FleetUsageSummary } from '../lib/fleetUsage';
+import { classifyPeerFailure, peerBudget, peerReportText } from '../lib/fleetPeerBudget';
 import { useSessions } from '../store/sessions';
 import { TagEditor } from './TagEditor';
 import { ProviderBadge, normalizeProvider } from './ProviderBadge';
+
+// One machine's usage report, bounded by the same budget every other
+// per-machine read uses. A machine that does not answer inside it is a machine
+// that did not answer in time — not one that failed, and not one that is
+// missing its history.
+async function readUsageForMachine(
+  server: ServerConfig,
+  options: UsageOptions,
+  force: boolean,
+  base: AbortSignal
+): Promise<FleetUsageSource> {
+  const serverName = serverDisplayName(server, true);
+  const budget = peerBudget(base, isLocalServer(server));
+  try {
+    const report = await Promise.race([
+      requestUsageReport(server.id, options, force),
+      new Promise<never>((_, reject) => {
+        budget.signal.addEventListener('abort', () => reject(budget.signal.reason), { once: true });
+      })
+    ]);
+    return { serverId: server.id, serverName, report };
+  } catch (reason) {
+    return {
+      serverId: server.id,
+      serverName,
+      // Peer semantics for every machine here: this screen has no retry loop of
+      // its own, so it must not tell anyone their Mac is restarting.
+      status: classifyPeerFailure(reason),
+      error: reason instanceof Error ? reason.message : 'Usage unavailable'
+    };
+  } finally {
+    budget.release();
+  }
+}
+
+// The fleet as it stands right now: what each machine has answered, or the
+// report already cached for it, or — for a machine still being asked — that it
+// is pending. A machine nobody has heard from is not a machine that failed.
+function usageSources(
+  servers: ServerConfig[],
+  settled: Map<string, FleetUsageSource>,
+  options: UsageOptions
+): FleetUsageSource[] {
+  return servers.map((server) => {
+    const answered = settled.get(server.id);
+    if (answered) return answered;
+    const serverName = serverDisplayName(server, true);
+    const cached = getCachedUsage(server.id, options) ?? undefined;
+    return cached ? { serverId: server.id, serverName, report: cached } : { serverId: server.id, serverName, status: 'pending' as const };
+  });
+}
 
 type Group = UsageReport['group'];
 type Mode = UsageReport['mode'];
@@ -145,33 +197,35 @@ export function UsageDashboard(): JSX.Element {
 			until: dates.until,
 			includeEvents: scope === 'fleet'
 		};
-		const cached = selectedServers.map((server) => ({
-			serverId: server.id,
-			serverName: serverDisplayName(server, true),
-			report: getCachedUsage(server.id, options) ?? undefined
-		}));
-		const cachedSummary = combineFleetUsage(cached);
+		const cachedSummary = combineFleetUsage(usageSources(selectedServers, new Map(), options));
 		setReport(cachedSummary.report);
 		setFleetSummary(cachedSummary);
 		setLoading(true);
 		setError(null);
+		const base = new AbortController();
 		const timer = window.setTimeout(() => {
-			void Promise.all(selectedServers.map(async (server) => {
-				try {
-					return { serverId: server.id, serverName: serverDisplayName(server, true), report: await requestUsageReport(server.id, options, refreshToken > 0) };
-				} catch (reason) {
-					return { serverId: server.id, serverName: serverDisplayName(server, true), error: reason instanceof Error ? reason.message : 'Usage unavailable' };
-				}
-			})).then((sources) => {
+			// Each machine is committed as it answers. Waiting for the whole fleet
+			// meant one machine that never answered hid every machine that did.
+			const settled = new Map<string, FleetUsageSource>();
+			const commit = (): void => {
 				if (!alive) return;
+				const sources = usageSources(selectedServers, settled, options);
 				const summary = combineFleetUsage(sources);
 				setFleetSummary(summary);
-				setReport(summary.report);
-				setError(summary.reportingMachines === 0 ? sources.map((source) => `${source.serverName}: ${source.error ?? 'unavailable'}`).join(' · ') : null);
-			})
-        .finally(() => { if (alive) setLoading(false); });
+				if (summary.report) setReport(summary.report);
+				setLoading(summary.missingMachines.some((machine) => machine.status === 'pending'));
+				setError(summary.reportingMachines === 0 && !summary.missingMachines.some((machine) => machine.status === 'pending')
+					? sources.map((source) => `${source.serverName}: ${source.error ?? 'unavailable'}`).join(' · ')
+					: null);
+			};
+			for (const server of selectedServers) {
+				void readUsageForMachine(server, options, refreshToken > 0, base.signal).then((source) => {
+					settled.set(server.id, source);
+					commit();
+				});
+			}
     }, group === 'tag' ? 250 : 0);
-    return () => { alive = false; window.clearTimeout(timer); };
+    return () => { alive = false; base.abort(); window.clearTimeout(timer); };
   }, [activeServerId, servers, scope, period, group, mode, provider, dimension, since, until, refreshToken]);
 
   // While the dashboard is open, an inexpensive incremental sync keeps newly
@@ -273,26 +327,21 @@ export function UsageDashboard(): JSX.Element {
         </div>
 
         {fleetSummary ? (
-          <div className="usage-fleet-status">
-            <strong>{scope === 'fleet' ? `${fleetSummary.reportingMachines} of ${fleetSummary.configuredMachines} machines reporting` : 'Selected machine'}</strong>
-            {scope === 'fleet' ? <span>{fleetSummary.exactDeduplication ? `Copied history deduplicated${fleetSummary.duplicatesRemoved > 0 ? ` · ${fleetSummary.duplicatesRemoved} duplicate events removed` : ''}.` : 'Machine totals are combined; update older machines for exact copied-history deduplication.'}</span> : null}
-            {fleetSummary.unavailableMachines.length > 0 ? <span>Unavailable: {fleetSummary.unavailableMachines.join(', ')}</span> : null}
-          </div>
+          <FleetUsageStatus summary={fleetSummary} fleet={scope === 'fleet'}
+            onRetry={() => setRefreshToken((value) => value + 1)} />
         ) : null}
 
         {error ? <div className="usage-error">{error}</div> : null}
         {report ? (
           <>
-            <section className="usage-kpis" aria-label="Usage totals">
-              <UsageKPI label="Total tokens" value={compactNumber(totalTokens(report.totals.tokens))} detail={`${compactNumber(report.totals.entries)} billable events`} />
-              <UsageKPI label="Estimated cost" value={dollars(report.totals.costUSD)} detail={mode === 'auto' ? 'recorded where available' : mode === 'calculate' ? 'pinned token pricing' : 'recorded costs only'} />
-              <UsageKPI label="Cache reads" value={compactNumber(report.totals.tokens.cacheReadTokens)} detail={`${percent(report.totals.tokens.cacheReadTokens, totalTokens(report.totals.tokens))}% of tokens`} />
-              <UsageKPI label="Reasoning" value={compactNumber(report.totals.tokens.reasoningTokens)} detail="included in output tokens" />
-              <UsageKPI label="Sources" value={compactNumber(report.scan.filesSeen)} detail={`${report.scan.filesRead} changed this refresh`} />
-            </section>
+            <UsageOverview report={report} mode={mode} coverage={
+              scope === 'fleet' && fleetSummary && fleetSummary.missingMachines.length > 0
+                ? `${fleetSummary.reportingMachines} of ${fleetSummary.configuredMachines} machines`
+                : undefined
+            } />
 
             <section className="usage-panel">
-              <header><h2>{GROUPS.find((item) => item.id === group)?.label} breakdown</h2><span>{report.rows.length} rows · schema v{report.schemaVersion}</span></header>
+              <header><h2>{GROUPS.find((item) => item.id === group)?.label} breakdown</h2><span>{report.rows.length} groups</span></header>
               {report.rows.length === 0 ? <div className="usage-empty">No usage matched this scope, time range, and filter set.</div> : (
                 <div className="usage-row-list">
                   {report.rows.map((row) => (
@@ -314,8 +363,74 @@ export function UsageDashboard(): JSX.Element {
   );
 }
 
-function UsageKPI({ label, value, detail }: { label: string; value: string; detail: string }): JSX.Element {
-  return <div className="usage-kpi"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+function FleetUsageStatus(
+  { summary, fleet, onRetry }: { summary: FleetUsageSummary; fleet: boolean; onRetry: () => void }
+): JSX.Element {
+  const pendingOnly = summary.missingMachines.every((machine) => machine.status === 'pending');
+  return (
+    <div className="usage-fleet-status">
+      <strong>{fleet ? `${summary.reportingMachines} of ${summary.configuredMachines} machines reporting` : 'Selected machine'}</strong>
+      {fleet && summary.reportingMachines > 0 ? (
+        <span>{summary.exactDeduplication
+          ? `Copied history deduplicated${summary.duplicatesRemoved > 0 ? ` · ${summary.duplicatesRemoved} duplicate events removed` : ''}.`
+          // Named, and only for machines that have answered: an older shape is
+          // something a report shows, not something a silence implies.
+          : `${summary.olderHostMachines.join(', ')} sent machine totals; update ${summary.olderHostMachines.length > 1 ? 'them' : 'it'} for exact copied-history deduplication.`}</span>
+      ) : null}
+      {summary.missingMachines.length > 0 ? (
+        <span className="usage-fleet-missing">
+          {summary.missingMachines.map((machine) => peerReportText(machine)).join(' · ')}
+          {pendingOnly ? null : (
+            <button type="button" className="btn btn-ghost" onClick={onRetry}>Try again</button>
+          )}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+export function UsageOverview(
+  { report, mode, coverage }: { report: Pick<UsageReport, 'totals' | 'rows'>; mode: Mode; coverage?: string }
+): JSX.Element {
+  const tokens = report.totals.tokens;
+  const input = tokens.inputTokens + tokens.cacheCreationTokens;
+  const context = input + tokens.cacheReadTokens;
+  const total = totalTokens(tokens);
+  const models = [...new Set(report.rows.flatMap((row) => row.models).filter(Boolean))];
+  const unpriced = report.totals.missingPricingEntries;
+  const parts = [
+    { label: 'New context', value: input, className: 'is-input' },
+    { label: 'Reused context', value: tokens.cacheReadTokens, className: 'is-cache' },
+    { label: 'Output', value: tokens.outputTokens, className: 'is-output' }
+  ];
+  const stats = [
+    { label: 'Tokens processed', value: compactNumber(total), detail: `${compactNumber(report.totals.entries)} recorded usage events` },
+    { label: 'Context reused', value: context > 0 ? `${percent(tokens.cacheReadTokens, context)}%` : '—', detail: context > 0 ? 'of input served from cache' : 'No input recorded yet' },
+    { label: 'Models used', value: String(models.length), detail: models.join(', ') || 'No model data yet' },
+    { label: unpriced > 0 ? 'Partial cost estimate' : 'Estimated cost',
+      value: unpriced > 0 && unpriced >= report.totals.entries ? 'Unavailable' : dollars(report.totals.costUSD),
+      // The unpriced sentence is what it was; the coverage clause is added when
+      // part of the fleet is missing, so a total nobody could complete does not
+      // read as the whole of it.
+      detail: (unpriced > 0 ? `${unpriced} of ${report.totals.entries} events unpriced; not your bill`
+        : mode === 'display' ? 'Recorded costs only; not your bill' : mode === 'auto' ? 'Recorded or token-priced; not your bill' : 'Token pricing; not your bill')
+        + (coverage ? ` · ${coverage}` : '') }
+  ];
+  return <section className="usage-overview" aria-label="Usage overview">
+    <div className="usage-kpis">{stats.map((stat) => <div className="usage-kpi" key={stat.label}>
+      <span>{stat.label}</span><strong>{stat.value}</strong><small title={stat.detail}>{stat.detail}</small>
+    </div>)}</div>
+    <div className="usage-token-mix">
+      <h2>How your agents used context</h2>
+      {total > 0 ? <div className="usage-token-track" aria-hidden="true">{parts.map((part) =>
+        <span key={part.label} className={part.className} style={{ width: `${part.value / total * 100}%` }} />
+      )}</div> : <p>No token activity recorded in this period.</p>}
+      <div className="usage-token-legend">{parts.map((part) => <span key={part.label}>
+        <i className={part.className} aria-hidden="true" />{part.label} <strong>{compactNumber(part.value)}</strong>
+      </span>)}</div>
+      <p>Output includes {compactNumber(tokens.reasoningTokens)} reported reasoning tokens. Token volume measures usage, not work quality.</p>
+    </div>
+  </section>;
 }
 
 function UsageReportRow({ row, maxTokens, editable, onTagsSaved }: { row: UsageRow; maxTokens: number; editable: boolean; onTagsSaved: () => void }): JSX.Element {

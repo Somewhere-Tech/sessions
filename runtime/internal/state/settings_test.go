@@ -15,6 +15,9 @@ func TestSettingsRoundTrip(t *testing.T) {
 	if notify := settings.EffectiveNotify(); !notify.Done || !notify.Waiting || !notify.Lost {
 		t.Fatalf("missing notify defaults = %#v", notify)
 	}
+	if remote := settings.EffectiveRemote(); !remote.Auto {
+		t.Fatalf("missing remote default = %#v", remote)
+	}
 	if err := SaveSettings(path, Settings{LAN: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,19 +63,32 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 }
 
-func TestNormalizeRecapSettings(t *testing.T) {
-	settings, err := NormalizeRecapSettings(RecapSettings{Provider: " CODEX "})
+func TestRemoteAutoSettingRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := SaveSettings(path, Settings{Remote: &RemoteSettings{Auto: false}}); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := LoadSettings(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.Provider != RecapProviderCodex {
-		t.Fatalf("settings = %#v", settings)
+	if settings.Remote == nil || settings.EffectiveRemote().Auto {
+		t.Fatalf("remote setting = %#v", settings.Remote)
 	}
-	if _, err := NormalizeRecapSettings(RecapSettings{Provider: "hosted"}); err == nil {
-		t.Fatal("unknown provider was accepted")
+}
+
+func TestLoadSettingsIgnoresLegacyRecapAndUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	encoded := []byte(`{"lan":true,"recap":{"provider":"codex","schedule":"daily"},"future":{"enabled":true}}`)
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if got := (Settings{}).EffectiveRecap(); got.Provider != RecapProviderOff {
-		t.Fatalf("default recap = %#v", got)
+	settings, err := LoadSettings(path)
+	if err != nil {
+		t.Fatalf("LoadSettings() rejected legacy or unknown keys: %v", err)
+	}
+	if !settings.LAN {
+		t.Fatalf("LoadSettings() lost known settings: %#v", settings)
 	}
 }
 
@@ -183,7 +199,7 @@ func TestRemoteControlRequiresCompletedOnboardingConsent(t *testing.T) {
 }
 
 func TestDelegatedAccessRequiresCurrentExplicitOnboarding(t *testing.T) {
-	if got := (Settings{}).EffectiveDelegation().Access; got != DelegatedAccessConsentInherited {
+	if got := (Settings{}).EffectiveDelegation().Access; got != DelegatedAccessConsentAutonomous {
 		t.Fatalf("fresh delegation = %q, want inherit", got)
 	}
 	legacy := Settings{
@@ -193,7 +209,7 @@ func TestDelegatedAccessRequiresCurrentExplicitOnboarding(t *testing.T) {
 			DelegatedAccessConsent: DelegatedAccessConsentAutonomous,
 		},
 	}
-	if got := legacy.EffectiveDelegation().Access; got != DelegatedAccessConsentInherited {
+	if got := legacy.EffectiveDelegation().Access; got != DelegatedAccessConsentAutonomous {
 		t.Fatalf("legacy delegation = %q, want inherit", got)
 	}
 	autonomous := Settings{

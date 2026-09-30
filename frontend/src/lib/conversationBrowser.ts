@@ -49,6 +49,9 @@ export interface ConversationRow {
   tool: ConversationTool;
   cwd: string;
   messages: number;
+  messagesKnown?: boolean;
+  dateApproximate?: boolean;
+  createdAt: number;
   /**
    * When the conversation was last spoken in. Prefers the transcript's own
    * mtime over the Sessions record's activity stamp for the reason documented
@@ -66,6 +69,9 @@ export interface ConversationRow {
   readable: boolean;
   promptHistoryOnly: boolean;
   external: boolean;
+  /** The person put this away. It is still here to read, and says so. */
+  archived: boolean;
+  copies?: number;
 }
 
 export interface ConversationSource {
@@ -104,19 +110,19 @@ export function conversationRecovery(
   if (live) {
     return {
       status: 'live',
-      reason: 'This conversation is running right now. Open the live session instead of starting a second one on top of it.'
+      reason: 'This conversation is running right now. Open its live session instead.'
     };
   }
   if (session.moved_to_endpoint) {
     return {
       status: 'moved',
-      reason: `This conversation was continued on ${session.moved_to_endpoint}. Resume it there — resuming here would fork it.`
+      reason: `Continued on ${session.moved_to_endpoint}. Resume it there; resuming here would fork it.`
     };
   }
   if (session.unreadable) {
     return {
       status: 'unreadable',
-      reason: session.unreadable_reason?.trim() || 'This conversation could not be read on this pass.'
+      reason: session.unreadable_reason?.trim() || 'This conversation could not be read.'
     };
   }
   if (!session.conversation_available) {
@@ -160,6 +166,9 @@ export function buildConversationRows(sources: ConversationSource[]): Conversati
         tool: session.tool,
         cwd: session.cwd ?? '',
         messages: session.message_count ?? 0,
+        messagesKnown: session.message_count_uncounted !== true,
+        dateApproximate: session.conversation_updated_approximate === true,
+        createdAt: session.created_at || 0,
         lastActiveAt: session.conversation_updated_at || session.last_activity_at || 0,
         status,
         reason,
@@ -167,11 +176,20 @@ export function buildConversationRows(sources: ConversationSource[]): Conversati
         liveLabel: live ? classifySession(live).label : undefined,
         readable: session.conversation_available === true && session.unreadable !== true,
         promptHistoryOnly: session.prompt_history_only === true || isPromptHistoryOnly(session.id),
-        external: session.external === true
+        external: session.external === true,
+        archived: session.archived === true
       });
     }
   }
-  return rows.sort((left, right) => (right.lastActiveAt - left.lastActiveAt) || left.key.localeCompare(right.key));
+  rows.sort((left, right) => right.createdAt - left.createdAt);
+  const grouped = new Map<string, ConversationRow>();
+  for (const row of rows) {
+    const identity = row.providerSessionId ? `${row.serverId}:${row.tool}:${row.providerSessionId}` : row.key;
+    const primary = grouped.get(identity);
+    if (primary) { primary.copies = (primary.copies ?? 1) + 1; continue; }
+    grouped.set(identity, row);
+  }
+  return [...grouped.values()].sort((left, right) => (right.lastActiveAt - left.lastActiveAt) || left.key.localeCompare(right.key));
 }
 
 export function filterConversations(rows: ConversationRow[], filters: BrowseFilters): ConversationRow[] {
@@ -184,7 +202,7 @@ export function filterConversations(rows: ConversationRow[], filters: BrowseFilt
       // recognise, and a row nothing can bring back is not what someone
       // looking for their conversation is scrolling for.
       if (row.tool !== 'claude' && row.tool !== 'codex') return false;
-      if (row.messages <= 0) return false;
+      if (row.messagesKnown !== false && row.messages <= 0) return false;
       if (row.status === 'unrecoverable' || row.status === 'unreadable') return false;
     }
     if (cwd && !row.cwd.toLocaleLowerCase().includes(cwd)) return false;

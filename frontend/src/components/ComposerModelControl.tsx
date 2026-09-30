@@ -14,8 +14,20 @@ interface Props {
 }
 
 function compactModel(model?: string): string {
-  if (!model) return 'Provider default';
+  if (!model) return 'Choose model';
+  const label = CLAUDE_MODEL_OPTIONS.find((option) => option.id === model)?.label;
+  if (label) return label;
   return model.length > 24 ? `${model.slice(0, 21)}…` : model;
+}
+
+function pickerOptions(provider: SessionTool, options: SessionModelOption[]): ModelPickerOption[] {
+  if (provider === 'claude-code') return CLAUDE_MODEL_OPTIONS;
+  return options.map((option) => ({
+    id: option.id,
+    label: option.displayName || option.id,
+    description: option.isDefault ? `Default · ${option.defaultReasoningEffort || 'automatic effort'}` : option.id,
+    isDefault: option.isDefault
+  }));
 }
 
 export function ComposerModelControl({
@@ -85,16 +97,7 @@ export function ComposerModelControl({
   };
 
   const providerName = provider === 'codex' ? 'Codex' : 'Claude';
-  const modelOptions: ModelPickerOption[] = provider === 'claude-code'
-    ? CLAUDE_MODEL_OPTIONS
-    : options.map((option) => ({
-        id: option.id,
-        label: option.displayName || option.id,
-        description: option.isDefault
-          ? `Default · ${option.defaultReasoningEffort || 'provider effort'}`
-          : option.id,
-        isDefault: option.isDefault
-      }));
+  const modelOptions = pickerOptions(provider, options);
   return (
     <div className="composer-model-control" ref={rootRef}>
       <button
@@ -130,6 +133,7 @@ export function ComposerModelControl({
                   loading={optionsLoading}
                   error={optionsError}
                   includeDefault={false}
+                  defaultLabel="Choose model"
                   allowCustom
                   compact
                 />
@@ -137,7 +141,7 @@ export function ComposerModelControl({
               <label>
                 <span>Effort</span>
                 <select value={draftEffort} onChange={(event) => setDraftEffort(event.currentTarget.value)}>
-                  <option value="">Provider default</option>
+                  <option value="">Automatic</option>
                   <option value="low">Low</option>
                   <option value="medium">Medium</option>
                   <option value="high">High</option>

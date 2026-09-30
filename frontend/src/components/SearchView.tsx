@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+  daemonErrorDisplay,
   fetchServerHistory,
   fetchServerHistoryTranscript,
   fetchServerResumableSessions,
@@ -20,20 +21,30 @@ import {
   type SearchConversationGroup
 } from '../lib/searchConversations';
 import {
-  isPromptHistoryOnly,
   managedSourceSessionID,
   plural,
   type BrowseFilters,
   type ConversationRow,
   type ResumeTarget
 } from '../lib/conversationBrowser';
-import { serverDisplayName, useServers } from '../lib/servers';
+import { isLocalServer, serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
+import {
+  anyPeerMissing,
+  classifyPeerFailure,
+  peerBudget,
+  peerReportText,
+  FLEET_BUDGET_MS,
+  type PeerReport
+} from '../lib/fleetPeerBudget';
 import { isTauri } from '../lib/tauriBridge';
+import { useRestartRetry } from '../hooks/useRestartRetry';
 import { ConversationBrowser } from './ConversationBrowser';
 import { ProviderBadge, normalizeProvider, type Provider } from './ProviderBadge';
-import { ConversationReader, normalizeTranscriptIndexes } from './SearchConversationReader';
+import { normalizeTranscriptIndexes } from '../lib/searchTranscript';
 import { SearchConversationCard, SearchRollupCard } from './SearchResultCards';
 import type { SessionInfo } from '../types';
+
+const ConversationReader = lazy(() => import('./SearchConversationReader').then((module) => ({ default: module.ConversationReader })));
 
 type SearchMode = 'ai' | 'ranked';
 type Speaker = 'user' | '' | 'assistant' | 'tool';
@@ -144,6 +155,107 @@ interface SearchViewProps {
   onOpenLiveSession?: (serverId: string, sessionId: string) => void;
 }
 
+// One machine's contribution to a fleet-wide read, including what happened to
+// it. A machine that did not answer still has a row here: absence is reported,
+// never inferred from an empty list.
+interface ServerResponse {
+  matches: Result[];
+  sessions: RollupSession[];
+  meta: SearchMeta | null;
+  report: PeerReport;
+}
+
+interface FleetSearchParams {
+  query: string;
+  speaker: Speaker;
+  tool: Tool;
+  sessionName: string;
+  cwd: string;
+  since?: string;
+  until?: string;
+  timeline: boolean;
+}
+
+// One machine's whole contribution, read under its own budget. A machine that
+// does not answer returns a report rather than throwing, because the fan-out
+// commits each machine on its own and absence has to be renderable.
+async function readServerForSearch(
+  server: ServerConfig,
+  params: FleetSearchParams,
+  base: AbortSignal
+): Promise<ServerResponse> {
+  const serverName = serverDisplayName(server, true);
+  const budget = peerBudget(base, isLocalServer(server));
+  const signal = budget.signal;
+  const filters = {
+    speaker: params.speaker, tool: params.tool, sessionName: params.sessionName,
+    cwd: params.cwd, since: params.since, until: params.until
+  };
+  try {
+    const [response, sessions, history, resumable] = await Promise.all([
+      searchServer(server, {
+        query: params.query,
+        mode: 'ranked',
+        role: params.speaker || undefined,
+        tool: params.tool || undefined,
+        name: params.sessionName.trim() || undefined,
+        cwd: params.cwd.trim() || undefined,
+        since: params.since,
+        until: params.until,
+        timeline: params.timeline,
+        limit: 250
+      }, signal),
+      listServerSessions(server, signal).catch(() => []),
+      fetchServerHistory(server, signal).catch(() => []),
+      fetchServerResumableSessions(server, signal).catch(() => [])
+    ]);
+    const managedMatches = enrichSearchResultsWithSessions(
+      response.matches, filterTitleSearchSessions(sessions, filters), params.query
+    );
+    const historyMatches = enrichSearchResultsWithHistory(
+      managedMatches, filterTitleSearchHistory(history, filters), params.query
+    );
+    const matches = enrichSearchResultsWithResumable(
+      historyMatches, filterTitleSearchResumable(resumable, filters), params.query, serverName
+    );
+    return {
+      matches: matches.map((match) => ({ ...match, serverId: server.id, serverName })),
+      // Absent fields stay absent. An older daemon sends matches and a total
+      // and nothing else, and every null below is what keeps this screen from
+      // inventing a rollup it was never given.
+      sessions: (response.sessions ?? []).map((session) => ({ ...session, serverId: server.id, serverName })),
+      meta: {
+        serverId: server.id,
+        serverName,
+        rewrittenQuery: response.effective_query ?? null,
+        matchMode: response.match_mode ?? null,
+        totalHits: response.total_hits ?? null,
+        totalSessions: response.total_sessions ?? null,
+        rollupPartial: response.rollup_partial === true || response.partial === true
+      } satisfies SearchMeta,
+      report: { serverId: server.id, serverName, status: 'answered', detail: null }
+    };
+  } catch (reason) {
+    return {
+      matches: [],
+      sessions: [],
+      meta: null,
+      report: {
+        serverId: server.id,
+        serverName,
+        status: classifyPeerFailure(reason, isLocalServer(server)),
+        // A daemon that answered with a failure said something; show its own
+        // sentence rather than this screen's guess about what went wrong.
+        detail: daemonErrorDisplay(reason)
+      }
+    };
+  } finally {
+    // The clock stops when the read is over, however it ended. Without this a
+    // finished read would keep a timer alive for the rest of its budget.
+    budget.release();
+  }
+}
+
 export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchViewProps): JSX.Element {
   const initial = useMemo(readSearchState, []);
   const nativeClient = isTauri();
@@ -164,7 +276,11 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
   const [results, setResults] = useState<Result[]>([]);
   const [rollup, setRollup] = useState<RollupSession[]>([]);
   const [metas, setMetas] = useState<SearchMeta[]>([]);
-  const [errors, setErrors] = useState<string[]>([]);
+  const [peerReports, setPeerReports] = useState<PeerReport[]>([]);
+  const [retryToken, setRetryToken] = useState(0);
+  // Not a machine's answer: this screen's own failures, kept apart from what
+  // the fleet reported so neither is mistaken for the other.
+  const [screenError, setScreenError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [continuingKey, setContinuingKey] = useState<string | null>(null);
   const [continuationError, setContinuationError] = useState<string | null>(null);
@@ -210,92 +326,46 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
       setResults([]);
       setRollup([]);
       setMetas([]);
-      setErrors([]);
+      setPeerReports([]);
       setLoading(false);
       return;
     }
     const controller = new AbortController();
+    const fleetBudget = window.setTimeout(() => controller.abort(), FLEET_BUDGET_MS);
     setLoading(true);
     const timer = window.setTimeout(() => {
-      void Promise.all(servers.map(async (server) => {
-        try {
-          const [response, sessions, history, resumable] = await Promise.all([
-            searchServer(server, {
-            query: effectiveQuery,
-            mode: 'ranked',
-            role: speaker || undefined,
-            tool: tool || undefined,
-            name: sessionName.trim() || undefined,
-            cwd: cwd.trim() || undefined,
-            since: dates.since,
-            until: dates.until,
-            timeline: sort === 'timeline',
-            limit: 250
-            }, controller.signal),
-            listServerSessions(server, controller.signal).catch(() => []),
-            fetchServerHistory(server, controller.signal).catch(() => []),
-            fetchServerResumableSessions(server, controller.signal).catch(() => [])
-          ]);
-          const managedMatches = enrichSearchResultsWithSessions(
-            response.matches,
-            filterTitleSearchSessions(sessions, { speaker, tool, sessionName, cwd, since: dates.since, until: dates.until }),
-            effectiveQuery
-          );
-          const historyMatches = enrichSearchResultsWithHistory(
-            managedMatches,
-            filterTitleSearchHistory(history, { speaker, tool, sessionName, cwd, since: dates.since, until: dates.until }),
-            effectiveQuery
-          );
-          const matches = enrichSearchResultsWithResumable(
-            historyMatches,
-            filterTitleSearchResumable(resumable, { speaker, tool, sessionName, cwd, since: dates.since, until: dates.until }),
-            effectiveQuery,
-            serverDisplayName(server, true)
-          );
-          const serverName = serverDisplayName(server, true);
-          return {
-            matches: matches.map((match) => ({
-              ...match,
-              serverId: server.id,
-              serverName
-            })),
-            // Absent fields stay absent. An older daemon sends matches and a
-            // total and nothing else, and every null below is what keeps this
-            // screen from inventing a rollup it was never given.
-            sessions: (response.sessions ?? []).map((session) => ({ ...session, serverId: server.id, serverName })),
-            meta: {
-              serverId: server.id,
-              serverName,
-              rewrittenQuery: response.effective_query ?? null,
-              matchMode: response.match_mode ?? null,
-              totalHits: response.total_hits ?? null,
-              totalSessions: response.total_sessions ?? null,
-              rollupPartial: response.rollup_partial === true || response.partial === true
-            } satisfies SearchMeta,
-            error: null
-          };
-        } catch (reason) {
-          return {
-            matches: [] as Result[],
-            sessions: [] as RollupSession[],
-            meta: null,
-            error: `${serverDisplayName(server, true)}: ${reason instanceof Error ? reason.message : 'unavailable'}`
-          };
-        }
-      })).then((responses) => {
+      // Each machine is read under its own budget and committed on its own.
+      // A machine that is off no longer decides when this person sees the
+      // history of the machine in front of them.
+      const params: FleetSearchParams = {
+        query: effectiveQuery, speaker, tool, sessionName, cwd,
+        since: dates.since, until: dates.until, timeline: sort === 'timeline'
+      };
+      const settled = new Map<string, ServerResponse>();
+      const commit = (): void => {
         if (controller.signal.aborted) return;
+        const responses = servers
+          .map((server) => settled.get(server.id))
+          .filter((response): response is ServerResponse => Boolean(response));
         setResults(responses.flatMap((response) => response.matches));
         setRollup(responses.flatMap((response) => response.sessions));
         setMetas(responses.flatMap((response) => response.meta ? [response.meta] : []));
-        setErrors(responses.flatMap((response) => response.error ? [response.error] : []));
-        setLoading(false);
+        setPeerReports(responses.map((response) => response.report));
+        setLoading(settled.size < servers.length);
+      };
+      servers.forEach((server) => {
+        void readServerForSearch(server, params, controller.signal).then((response) => {
+          settled.set(server.id, response);
+          commit();
+        });
       });
     }, mode === 'ai' ? 0 : 180);
     return () => {
       window.clearTimeout(timer);
+      window.clearTimeout(fleetBudget);
       controller.abort();
     };
-  }, [effectiveQuery, mode, speaker, tool, sort, dateRange, dates.since, dates.until, sessionName, cwd, servers]);
+  }, [effectiveQuery, mode, speaker, tool, sort, dateRange, dates.since, dates.until, sessionName, cwd, servers, retryToken]);
 
   const orderedResults = useMemo(() => [...results].sort((left, right) => {
     if (sort === 'timeline') {
@@ -343,8 +413,14 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
 
   // A count is a lower bound whenever any part of the fleet did not finish:
   // a truncated rollup, a machine that failed, or a machine that never replied.
+  const missingPeers = useMemo(
+    () => peerReports.filter((report) => report.status !== 'answered'),
+    [peerReports]
+  );
+  const restarting = missingPeers.some((report) => report.status === 'restarting');
+  const stillRetrying = useRestartRetry(restarting, peerReports, () => setRetryToken((token) => token + 1));
   const countsArePartial = metas.some((meta) => meta.rollupPartial)
-    || errors.length > 0
+    || anyPeerMissing(peerReports)
     || metas.length < servers.length;
 
   const queryNotice = useMemo(
@@ -370,7 +446,8 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
     setMode(next);
     setSubmittedQuery('');
     setPlan(null);
-    setErrors([]);
+    setPeerReports([]);
+    setScreenError(null);
   };
 
   const runAISearch = async (): Promise<void> => {
@@ -386,13 +463,14 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
     setResults([]);
     setRollup([]);
     setMetas([]);
-    setErrors([]);
+    setPeerReports([]);
+    setScreenError(null);
     try {
       const nextPlan = await planSmartSearch(naturalQuery, controller.signal);
       if (planGeneration.current === generation) setPlan(nextPlan);
     } catch (reason) {
       if (planGeneration.current === generation && !controller.signal.aborted) {
-        setErrors([reason instanceof Error ? reason.message : 'AI search planning failed']);
+        setScreenError(reason instanceof Error ? reason.message : 'AI search planning failed');
       }
     } finally {
       if (planGeneration.current === generation) setPlanning(false);
@@ -407,7 +485,8 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
     setResults([]);
     setRollup([]);
     setMetas([]);
-    setErrors([]);
+    setPeerReports([]);
+    setScreenError(null);
     setSubmittedQuery(query.trim());
   };
 
@@ -424,7 +503,8 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
     try {
       await onResumeConversation(serverId, providerSessionId, sourceSessionId, historyId);
     } catch (reason) {
-      setContinuationError(reason instanceof Error ? reason.message : 'Could not resume this conversation');
+      setContinuationError(reason instanceof Error ? reason.message : 'Could not open the continuation details');
+    } finally {
       setContinuingKey(null);
     }
   };
@@ -435,7 +515,7 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
   ): void => {
     const server = servers.find((candidate) => candidate.id === target.serverId);
     if (!server) {
-      setErrors([`The ${target.serverName} connection is no longer configured.`]);
+      setScreenError(`The ${target.serverName} connection is no longer configured.`);
       return;
     }
     transcriptAbort.current?.abort();
@@ -527,25 +607,25 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
   };
 
   if (selected) {
-    return (
-      <ConversationReader
-        selected={selected}
-        server={servers.find((candidate) => candidate.id === selected.serverId)}
-        continuing={continuingKey === selected.key}
-        continuationError={continuationError}
-        onResumeConversation={(serverId, providerSessionId, sourceSessionId, historyId) => continueConversation(
-          selected.key,
-          serverId,
-          providerSessionId,
-          sourceSessionId,
-          historyId
-        )}
-        onBack={() => {
-          transcriptAbort.current?.abort();
-          setSelected(null);
-        }}
-      />
-    );
+    return <Suspense fallback={null}>
+        <ConversationReader
+          selected={selected}
+          server={servers.find((candidate) => candidate.id === selected.serverId)}
+          continuing={continuingKey === selected.key}
+          continuationError={continuationError}
+          onResumeConversation={(serverId, providerSessionId, sourceSessionId, historyId) => continueConversation(
+            selected.key,
+            serverId,
+            providerSessionId,
+            sourceSessionId,
+            historyId
+          )}
+          onBack={() => {
+            transcriptAbort.current?.abort();
+            setSelected(null);
+          }}
+        />
+      </Suspense>;
   }
 
   const hasSearch = mode === 'ai' ? Boolean(plan) : Boolean(submittedQuery);
@@ -565,7 +645,7 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
     <div className="search-view">
       <div className="search-shell">
         <header className="search-heading">
-          <h1>History</h1>
+          <h1>Search</h1>
           <p>Every Claude and Codex conversation recorded on your machines. Browse the recent ones, or search for something that was said.</p>
         </header>
         <form className="search-query-row" aria-busy={searchBusy} onSubmit={(event) => {
@@ -658,7 +738,19 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
           </section>
         ) : null}
 
-        {errors.length > 0 ? <div className="search-errors">{errors.join(' · ')}</div> : null}
+        {missingPeers.length > 0 ? (
+          <div className="search-errors" role="status">
+            {missingPeers.map((report) => peerReportText(report, stillRetrying)).join(' · ')}
+            {/* Asking again is already happening; a button beside it would only
+                invite a person to do what the screen is doing. */}
+            {stillRetrying ? null : (
+              <button type="button" className="btn btn-ghost" onClick={() => setRetryToken((token) => token + 1)}>
+                Try again
+              </button>
+            )}
+          </div>
+        ) : null}
+        {screenError ? <div className="search-errors">{screenError}</div> : null}
         {continuationError ? <div className="search-errors">{continuationError}</div> : null}
         {/* Both notices are silent on a normal strict search: a screen that
             explains itself every time teaches people to stop reading it. */}
@@ -675,7 +767,7 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
           <div className="search-notice" role="status">
             <span aria-hidden>±</span>
             <span>
-              {errors.length > 0
+              {missingPeers.length > 0
                 ? 'A machine did not answer, so these counts are lower bounds — there is more history than this.'
                 : 'This count did not finish, so the numbers here are lower bounds — there is more history than this.'}
             </span>
@@ -700,7 +792,12 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
             } : undefined}
           />
         ) : rows.length === 0 && !loading ? (
-          <div className="usage-empty">No matching conversations.</div>
+          // A machine that did not answer is not an answer of none. Saying "no
+          // matching conversations" while this Mac is restarting would report
+          // its silence as its history.
+          <div className="usage-empty">
+            {missingPeers.length > 0 ? 'No matching conversations on the machines that answered.' : 'No matching conversations.'}
+          </div>
         ) : (
           <div className="search-results">
             {rows.map((row) => row.kind === 'group' ? (
@@ -717,9 +814,7 @@ export function SearchView({ onResumeConversation, onOpenLiveSession }: SearchVi
                     row.group.primary.serverId,
                     row.group.primary.provider_session_id || row.group.primary.session_id,
                     managedSourceSessionID(row.group.primary.session_id),
-                    !row.group.primary.provider_session_id || isPromptHistoryOnly(row.group.primary.session_id)
-                      ? row.group.primary.session_id
-                      : undefined
+                    row.group.primary.session_id
                   )
                   : undefined}
                 resumePending={continuingKey === row.key}

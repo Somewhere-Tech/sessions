@@ -1,6 +1,10 @@
 package state
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+)
 
 func cloneStringPointer(value *string) *string {
 	if value == nil {
@@ -101,6 +105,7 @@ type SessionInfo struct {
 	PID               int               `json:"pid"`
 	RunnerProtocol    int               `json:"runnerProtocol"`
 	RunnerVersion     string            `json:"runnerVersion,omitempty"`
+	MessageSubmit     bool              `json:"messageSubmit,omitempty"`
 	Tool              SessionTool       `json:"tool"`
 	Working           bool              `json:"working"`
 	LastDataAt        int64             `json:"lastDataAt"`
@@ -134,6 +139,23 @@ type SessionInfo struct {
 	IdleDetail         string `json:"idleDetail,omitempty"`
 	IdleSince          *int64 `json:"idleSince,omitempty"`
 	LastSummary        string `json:"lastSummary,omitempty"`
+	FailureKind        string `json:"failureKind,omitempty"`
+	FailureDetail      string `json:"failureDetail,omitempty"`
+	FailureProvider    string `json:"failureProvider,omitempty"`
+	// FailureEvidence is the provider's own line this failure was read from.
+	// Surfaces show it, because a claim about somebody's provider they cannot
+	// trace to their own screen is one Sessions should not be making.
+	FailureEvidence string               `json:"failureEvidence,omitempty"`
+	FailureAt       int64                `json:"failureAt,omitempty"`
+	Retry           *proto.ProviderRetry `json:"retry,omitempty"`
+	// PendingApproval is the permission a Rich lane is waiting on right now.
+	// It is derived from the lane's structured stream, so it survives a
+	// daemon restart as long as the runner is still holding the request.
+	PendingApproval *ApprovalPrompt `json:"pendingApproval,omitempty"`
+	// Start is the delegated-start receipt for a session created with an
+	// operation id: created, first request delivered, working, completed or
+	// blocked, each with its evidence and one safe recovery. See start.go.
+	Start *StartReceipt `json:"start,omitempty"`
 	// Exited means Sessions reaped a real status for this session's process:
 	// an exit code, a signal, or a user-requested end that completed. It is
 	// never set because the daemon lost contact. Losing a socket says nothing
@@ -149,9 +171,21 @@ type SessionInfo struct {
 	// connection, not about the work. An unreachable session is still a
 	// session: it is listed, readable, and attachable, and reconnect or the
 	// next discovery pass may reattach it. It is never presented as ended.
-	Unreachable            bool   `json:"unreachable,omitempty"`
-	UnreachableReason      string `json:"unreachableReason,omitempty"`
-	UnreachableSince       *int64 `json:"unreachableSince,omitempty"`
+	Unreachable       bool   `json:"unreachable,omitempty"`
+	UnreachableReason string `json:"unreachableReason,omitempty"`
+	UnreachableSince  *int64 `json:"unreachableSince,omitempty"`
+	// RunnerGone is stronger than Unreachable: the daemon's identity-aware
+	// process probe found no process belonging to this session. It is derived
+	// for listings and never turns Exited true, because a missing process still
+	// supplies no exit status.
+	RunnerGone bool `json:"runnerGone,omitempty"`
+	// LostReason says why a runner is gone, and LostAtMS when. A session shown
+	// as "lost" with nothing else is a dead end: after the owner's MacBook
+	// rebooted, seven sessions read that way and the daemon knew perfectly well
+	// that the machine had restarted under them. One of:
+	// "machine rebooted", "runner exited", "daemon lost contact".
+	LostReason             string `json:"lostReason,omitempty"`
+	LostAtMS               int64  `json:"lostAt,omitempty"`
 	ClaudeCustomTitle      string `json:"claudeCustomTitle,omitempty"`
 	ClaudeAITitle          string `json:"claudeAiTitle,omitempty"`
 	OnIdle                 string `json:"onIdle,omitempty"`
@@ -227,6 +261,18 @@ type SessionInfo struct {
 	EndOperationID     string   `json:"end_operation_id,omitempty"`
 }
 
+// ApprovalPrompt is one permission request a structured provider is holding
+// open until Sessions answers it.
+type ApprovalPrompt struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Summary string `json:"summary"`
+	Command string `json:"command,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	At      int64  `json:"at"`
+}
+
 const (
 	IdleReasonNeverStarted = "never-started"
 	IdleReasonCompleted    = "completed"
@@ -240,23 +286,36 @@ const (
 )
 
 type CreateSessionRequest struct {
-	Cmd         string            `json:"cmd,omitempty"`
-	Args        []string          `json:"args,omitempty"`
-	Cwd         string            `json:"cwd,omitempty"`
-	Cols        int               `json:"cols,omitempty"`
-	Rows        int               `json:"rows,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Name        string            `json:"name,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Tags        map[string]string `json:"tags,omitempty"`
-	Profile     string            `json:"profile,omitempty"`
-	Worktree    bool              `json:"worktree,omitempty"`
-	Base        string            `json:"base,omitempty"`
-	Kind        string            `json:"kind,omitempty"`
-	SpecPath    string            `json:"specPath,omitempty"`
-	OnIdle      string            `json:"onIdle,omitempty"`
-	WaitReady   bool              `json:"waitReady,omitempty"`
-	Force       bool              `json:"force,omitempty"`
+	Cmd  string   `json:"cmd,omitempty"`
+	Args []string `json:"args,omitempty"`
+	// InitialInput is a provider-authored first request already present in Args.
+	// It is a watcher binding hint, not a second input to deliver, and is never
+	// persisted separately from the provider transcript.
+	InitialInput string `json:"initialInput,omitempty"`
+	// OperationID makes creation idempotent: a second request with the same id
+	// returns the session the first one created instead of starting another.
+	// PromptOperationID is the delivery operation id the caller will use for
+	// the first request, recorded so the start receipt can follow it.
+	OperationID       string            `json:"operation_id,omitempty"`
+	PromptOperationID string            `json:"prompt_operation_id,omitempty"`
+	Cwd               string            `json:"cwd,omitempty"`
+	Cols              int               `json:"cols,omitempty"`
+	Rows              int               `json:"rows,omitempty"`
+	Env               map[string]string `json:"env,omitempty"`
+	Name              string            `json:"name,omitempty"`
+	Description       string            `json:"description,omitempty"`
+	Tags              map[string]string `json:"tags,omitempty"`
+	Profile           string            `json:"profile,omitempty"`
+	Worktree          bool              `json:"worktree,omitempty"`
+	Base              string            `json:"base,omitempty"`
+	// NoWorktree declines the worktree an agent-created child would otherwise
+	// get by default, so a lane can deliberately share its manager's checkout.
+	NoWorktree bool   `json:"noWorktree,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	SpecPath   string `json:"specPath,omitempty"`
+	OnIdle     string `json:"onIdle,omitempty"`
+	WaitReady  bool   `json:"waitReady,omitempty"`
+	Force      bool   `json:"force,omitempty"`
 	// ProviderTerminal is a request-only escape hatch for an agent-created
 	// Claude child that genuinely needs the provider's interactive terminal.
 	// It is never persisted as a session kind: the normal PTY kind remains
@@ -280,14 +339,19 @@ type CreateSessionRequest struct {
 	Lifecycle string `json:"lifecycle,omitempty"`
 	// DisplayParentSessionID is copied only by trusted recovery code. It is
 	// never accepted from the public create-session JSON body.
-	DisplayParentSessionID *string              `json:"-"`
-	ConversationID         string               `json:"-"`
-	ConfigDir              string               `json:"-"`
-	WorktreePath           string               `json:"-"`
-	WorktreeBranch         string               `json:"-"`
-	WorktreeBase           string               `json:"-"`
-	SourceRepo             string               `json:"-"`
-	Continuation           *ContinuationContext `json:"-"`
+	DisplayParentSessionID *string `json:"-"`
+	ConversationID         string  `json:"-"`
+	ConfigDir              string  `json:"-"`
+	WorktreePath           string  `json:"-"`
+	WorktreeBranch         string  `json:"-"`
+	WorktreeBase           string  `json:"-"`
+	// WorktreeDefaulted marks a worktree the daemon chose for a delegated lane
+	// rather than one the caller asked for. A defaulted worktree that cannot be
+	// created (folder is not a usable Git checkout) degrades to the shared
+	// folder; an explicitly requested one still fails loudly.
+	WorktreeDefaulted bool                 `json:"-"`
+	SourceRepo        string               `json:"-"`
+	Continuation      *ContinuationContext `json:"-"`
 }
 
 // EndSessionRequest is durable audit context for an explicit termination.

@@ -21,9 +21,77 @@ them.
 - Sessions does not add third-party analytics, advertising SDKs, or silent crash
   uploads. Local diagnostics stay local until the user previews and explicitly
   sends them.
-- LAN, Tailscale Serve, pairing, a future cloud worker, backup, and support
-  access are separate capabilities. Enabling one never silently enables
-  another or creates a general-purpose tunnel.
+- LAN, Tailscale reachability, pairing, the optional Somewhere fleet account,
+  a future cloud worker, backup, and support access are separate capabilities.
+  Tailscale reachability is on by
+  default when this Mac is already signed in to Tailscale, and has its own
+  opt-out; it never enables the trusted-LAN listener or creates a
+  general-purpose tunnel.
+
+## Optional Somewhere fleet account
+
+The account tier is opt-in during host onboarding and in Settings › Fleet; the
+CLI equivalent is `sessions account login`. Skipping it is a complete setup and
+does not disable loopback, trusted-LAN, Tailscale, discovery, pairing, or local
+session work. Sign out revokes the Somewhere auth session and removes this
+machine's directory row; it does not disable either local transport or end a
+running session.
+
+sessionsd sends the email address only to the `sessions-fleet` authentication
+functions to request and verify a Somewhere magic link. It stores the returned
+access, refresh, and logout-session tokens together in
+`fleet-account.json` under the daemon state root. The file is replaced
+atomically with mode `0600`. Every authenticated request sends the access token
+and the refresh token. sessionsd adopts a rotated pair only when the same
+response contains both `X-New-Access-Token` and `X-New-Refresh-Token`; a lone
+header is ignored, requests are serialized around rotation, and a network
+error never clears the stored login.
+
+The machine's Ed25519 private/public key pair is stored separately in
+`fleet-machine-key.json`, also atomically written with mode `0600`. This first
+account slice deliberately uses a private state file; moving the private key to
+the OS keychain is later hardening. `sessions account key` exposes only the
+unpadded-base64url public key.
+
+After sign-in, the platform sees only the app-user identity and owner-scoped
+machine directory metadata: the computer name, stable machine ID, enabled LAN,
+tailnet, and relay endpoint hints, machine public key, daemon version, and
+last-seen time. It never receives provider credentials, prompts, responses,
+transcripts, terminal bytes, session names, paths, tags, search indexes, usage
+events, logs, or the machine private key. The daemon registers after login and
+startup and sends a heartbeat every five minutes.
+
+Every machine write carries the Somewhere app-user access/refresh pair and an
+Ed25519 signature over the machine ID, Unix timestamp, nonce, method, path, and
+SHA-256 of the exact request body. The platform rejects timestamps outside five
+minutes, retains accepted nonces for at least 601 seconds in an owner-scoped
+replay table, and rate-limits
+heartbeat retries. The registration public key may establish a new row; once a
+row exists, updates must verify with its stored key. These requests update
+directory presence only. A same-account connection is a separate direct
+exchange: the requesting device signs the target machine ID, its registered
+device ID, timestamp, nonce, method/path, and SHA-256 of the unsigned claim.
+The host uses its own Somewhere token to fetch the requester from the same
+owner-scoped directory, rejects signatures from absent or different-account
+keys, timestamps outside five minutes, and replayed nonces, then issues the
+same two-minute-pending, independently revocable device credential as an
+accepted access request. Before issuance, the host writes a private replay
+record retained through the signed timestamp's full validity window, including
+its inclusive endpoint. A daemon restart or account logout does not erase
+these records. Invalid or unwritable replay state refuses account claims with
+an instructional error; normal one-time pairing remains available. The daemon
+audit line names the device and `via
+account`. Somewhere sees the directory lookup but never the issued credential
+or later session traffic. The account directory is not the relay service; it
+stores only the relay endpoint hint.
+
+Client-only iOS and Android builds have no local daemon state directory. Their
+optional account token pair and Ed25519 key live in the application's private
+WebView storage; the phone registers an endpoint-free directory identity so a
+host can verify its key, and endpoint-free client rows are not presented as
+host machines. Signing out removes that identity. The per-host credentials
+minted afterward remain in the existing native client machine registry and can
+be revoked separately.
 
 ## Claude Remote Control consent
 
@@ -33,13 +101,18 @@ available on claude.ai and the Claude mobile app, using the user's existing
 Claude subscription. The connection goes directly from Claude Code to
 Anthropic; Somewhere is not a transcript relay.
 
-Sessions recommends the feature during first-run onboarding but does not enable
-it until the user explicitly chooses **Enable Remote Control**. Choosing
+Sessions recommends the feature during first-run onboarding on a daemon host
+but does not enable it until the user explicitly chooses **Enable Remote
+Control**. Choosing
 **Keep sessions local** is equally complete onboarding. The choice is stored per
 Sessions machine and can be changed later in Settings. Fresh installs, upgraded
 installs, missing state, old `inherit` values, and old `on` values all remain
 local until this current consent record exists. Sessions also passes
 `remoteControlAtStartup: false` for a local-only managed launch.
+
+A client-only phone inherits this machine-level choice from its connected host.
+It does not present host onboarding or write the setting; host-owned controls
+are labelled and read-only on the phone.
 
 The daemon enforces this below the UI: general Claude settings, per-session
 overrides, continuations, delegates, and direct `--remote-control` launch
@@ -55,9 +128,10 @@ does not restart, terminate, or alter existing sessions.
 
 ## Delegated task access
 
-The same user-facing onboarding/Settings surface asks whether agent-created
-children should inherit a manager's exact permission mode or receive autonomous
-full access. Inheritance is the default. The daemon resolves the choice below
+The same host onboarding/Settings surface asks whether agent-created children
+should receive autonomous full access or inherit a manager's exact
+permission mode. Autonomous access is the default; inheritance is the explicit
+narrower choice. The daemon resolves the choice below
 the UI and CLI, rejects child self-escalation, and applies it only to newly
 created children. The authenticated CLI exposes the current state read-only;
 an agent cannot grant autonomous consent through the normal command surface.
@@ -85,8 +159,93 @@ The source provider file is preserved. Sessions does not transfer isolated
 profile credentials, environment variables, arbitrary attachments, PTY bytes,
 usage databases, or the full ledger. Transport security remains the selected
 machine connection's responsibility: prefer Tailscale Serve HTTPS for remote or
-untrusted networks, and use plain LAN HTTP only on a private network the user
-trusts.
+untrusted networks, use the direct Tailscale IP fallback when tailnet DNS is
+unavailable, and use plain LAN HTTP only on a private network the user trusts.
+
+## Hosted relay fallback
+
+`sessions-relay` is an optional Sessions service the owner hosts, independently
+of the Somewhere directory. Each daemon opens one outbound WebSocket and signs
+a relay-generated nonce and timestamp with its Ed25519 machine key. The relay
+admits that tunnel only when the public key matches a static allow-list.
+Directory-backed relay authorization is unsupported; retained directory flags
+fail with a `--allow-file` remedy rather than sending a bearer-only request to
+the machine-signature-protected directory. Duplicate machine connections
+replace the old tunnel, many
+client streams are multiplexed per machine, each frame is limited to 64 KiB,
+and bounded queues apply backpressure. The daemon reconnects with bounded
+exponential backoff. `/healthz` exposes only service health and a connected
+machine count.
+
+Clients try LAN, Tailscale Serve, the direct tailnet address, and then the
+machine-specific relay endpoint. The relay forwards `/api/*` and `/ws` bytes
+but grants no Sessions authority. It preserves the presented device credential,
+marks the request as forwarded so the destination cannot mistake the relay's
+loopback connection for local trust, and the destination daemon performs its
+normal credential and Origin checks. A relay-admitted machine key cannot read,
+create, send to, or end a session. Revoking a client device on the destination
+therefore ends that client's relay access exactly as it ends direct access.
+
+The service stores no request bodies, terminal bytes, or transcripts and logs
+only connection events, machine IDs, methods, paths, and errors. This is a
+storage and authority boundary, not end-to-end content encryption against the
+relay operator: when HTTPS terminates at the relay, a compromised relay host
+can observe, delay, drop, replay, or alter relayed bytes. The destination's
+device authentication detects no general content tampering. Run the relay only
+on infrastructure you trust, protect its TLS key and static allow-list, and
+prefer direct LAN/tailnet routes. Compromise of the allow-list can admit machine
+tunnels but still does not mint a device credential or bypass the destination
+daemon.
+
+See [`RELAY.md`](RELAY.md) for deployment and configuration.
+
+## Paired-client fleet relay
+
+A phone is a viewer that inherits the approved fleet of the machine it pairs
+with. After that phone authenticates to host A with its own revocable device
+credential, A may list only the machines in A's saved `sessions machines`
+registry and relay an `/api/*` or `/ws` request to one of those exact endpoints.
+A removes the phone credential and supplies A's separate saved credential for
+host B. B therefore authorizes and audits A as the paired device it already
+approved, and revoking A on B immediately ends the relay path. Forgetting B on
+A removes it from the relay allowlist; revoking the phone on A ends all of that
+phone's inherited access. No machine accepts a new machine or device because of
+the relay.
+
+The destination and payload are visible and attributable: a relay request is
+triggered only by a local or paired-device call naming a saved machine; it may
+carry the same API body, event response, or WebSocket frames as a direct client.
+A logs the method, path, destination machine, and calling device ID, never the
+body or either credential. The fleet-list reachability check sends only an
+authenticated machine-identity probe and keeps offline machines visible. Each
+connection tries the saved LAN origin first, then Tailscale Serve HTTPS, then
+the direct Tailscale IP origin. A saved row A cannot use — a machine claimed
+from the account directory keeps the addresses that directory published, which A
+never validated — is listed as unreachable with the reason, and requests to it
+fail closed as a bad gateway; A still refuses to dial an address that does not
+match its transport rules, and the rest of A's fleet stays listed and usable. A
+refused address is also not published: the listing carries only addresses A
+would dial, so an unvalidated saved URL cannot carry userinfo or a query
+parameter to a paired client, and no error quotes one back. Relayed streams have no background retry queue;
+the phone's existing reconnect behavior starts a new request.
+
+This is a user's own machine relaying to that same user's independently
+approved machines. It is distinct from the optional `sessions-relay` transport:
+host A holds B's credential and substitutes it, while the hosted fallback pipes
+the original client's credential to B. Somewhere still operates neither path.
+
+**What we borrowed from T3 Code, and what we deliberately did not.** T3 Code's
+public remote model keeps each environment as one intact server/runtime behind
+an HTTP/WebSocket connection, while LAN, Tailscale, HTTPS, and desktop-managed
+SSH forwarding are connection choices. Sessions uses the same useful UI
+property: a relayed machine is still an ordinary server base, so the existing
+Fleet, inbox, and conversation paths do not split the runtime. We did not adopt
+client-owned SSH launch or direct per-environment credentials for this inherited
+phone path: the phone learns no credential for B and gets no new tunnel
+authority; A stays the only ingress and may reach B only with B's prior
+approval. See T3 Code's
+[remote architecture](https://github.com/pingdotgg/t3code/blob/main/docs/internals/remote.md)
+and [remote-access guide](https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md).
 
 ## Review checklist for an outbound feature
 
@@ -101,6 +260,63 @@ trusts.
    reinstalling Sessions?
 7. Do tests prove local-only operation still works with the network unavailable?
 
+## Automatic tailnet reachability
+
+When the Tailscale CLI is installed and reports a signed-in backend,
+`sessionsd` makes the machine reachable without a separate Sessions action. It
+configures Tailscale Serve HTTPS for the daemon's loopback origin and listens on
+the daemon port at the exact IPv4 address in Tailscale's `100.64.0.0/10` range.
+It checks on startup, after a network-interface change, and periodically so a
+later Tailscale sign-in is picked up. A missing or signed-out Tailscale install
+is routine and produces no prompt or alarming error. Settings › Fleet ›
+**Reachable over Tailscale automatically** is on by default; turning it off
+stops the Tailscale-IP listener and removes the Sessions-owned Serve root.
+
+The HTTPS name is the preferred remote transport. The direct
+`http://100.x.y.z:8787` origin exists for peers whose Tailscale tunnel works but
+whose MagicDNS resolver is not applied. Plain HTTP is acceptable on that exact
+interface because Tailscale authenticates the peer and encrypts packets before
+they traverse the physical network. Sessions additionally requires the same
+revocable device credential for protected API and WebSocket routes. Bootstrap
+still requires either explicit request approval or possession of a one-time
+pairing ticket.
+
+The direct listener is never wildcard-bound and never listens on Wi-Fi,
+Ethernet, public, or arbitrary private addresses: both Tailscale status parsing
+and listener creation independently require `100.64.0.0/10`. The daemon
+publishes LAN, Tailscale HTTPS, direct Tailscale-IP, and optional relay origins
+as distinct endpoint kinds. Clients try `lan`, `tailnet`, `tailnet-ip`, then
+`relay`; a macOS Local Network denial falls through silently and is logged once
+with the transport that was selected.
+
+## One-time pairing tickets
+
+Settings › Fleet › **Pair a device** and `sessions pair [--ttl 10m]` mint the
+same daemon-owned ticket. Its secret is 32 random bytes encoded as base64url,
+exists only in memory, is single use, and expires after ten minutes by default.
+The caller may shorten but not extend that lifetime. An unused ticket can be
+revoked locally, and every daemon restart revokes all outstanding tickets.
+Used, expired, revoked, malformed, and unknown values deliberately produce the
+same `410 Gone` sentence.
+
+The QR and `sessions://pair` link record all enabled `lan`, `tailnet`, and
+`tailnet-ip` endpoints in that order. The plain `/pair/<ticket>` fallback uses
+Tailscale HTTPS when available and otherwise the trusted-LAN HTTP origin. A
+native claimant validates every origin, probes endpoints in recorded order,
+follows no redirect, and posts the ticket in a JSON body to
+`/api/lan/access/claim`; it never puts the daemon master token on the wire. The
+daemon-served browser fallback may make that one same-origin claim. Other
+browser origins and ordinary request/accept claim secrets remain rejected.
+
+Possession is explicit host consent and immediately mints a separate
+host-administrator device credential—there is no second accept action. Failed
+ticket guesses are rate-limited per source with a bounded global backstop.
+Successful claims log `paired via ticket <short> from <device name>` in the
+same audit stream as accepted or denied discovery requests, without logging the
+ticket, device token, or request body. Durable device storage contains only a
+SHA-256 token hash. Settings › Fleet **Forget** and `sessions devices revoke`
+invalidate that credential immediately.
+
 ## Nearby Bonjour discovery and LAN access
 
 Bonjour is a low-sensitivity discovery hint, not authentication. `sessionsd`
@@ -108,24 +324,40 @@ advertises `_sessions._tcp` only while the user-enabled LAN listener is active
 and names only that selected private IPv4 address as its target. On macOS the
 daemon registers the proxy record through Apple's system Bonjour responder;
 other platforms use the same record contract through the bundled mDNS
-implementation. The record carries the friendly instance name, IP/port,
-protocol marker, HTTP transport marker, and “approval required.” It carries no
+implementation. The record carries the friendly instance name, LAN IP/port,
+the current Tailscale HTTPS and direct-IP origins when available, protocol
+marker, HTTP transport marker, and “approval required.” It carries no
 credential, account, full machine ID, session metadata, workspace, usage, or
 filesystem path. Any peer on a local link where the operating system publishes
 Bonjour can observe or spoof such a record, even when the selected target
 address is unreachable from that link.
 
-Native clients and `sessions machines discover` therefore verify `/api/health`
-before presenting a candidate, then require a separate request/accept/claim
-flow. Nearby bootstrap routes:
+The host app and CLI ask their loopback `sessionsd` to browse and verify
+`/api/health` before presenting a candidate. Selecting a discovery result uses
+the separate request/accept/claim flow; a pairing link instead uses the
+possession flow above. The daemon also owns the outbound peer connection
+for `sessions machines connect`, `sessions --machine`, cross-machine grep, and
+conversation moves. A lane therefore talks only to its local daemon and needs
+no local-network permission. The global `--direct` flag is an explicit
+diagnostic escape hatch that restores client-side browsing and peer dials.
+Nearby bootstrap routes:
 
-- exist only on the dedicated LAN listener, never the main loopback listener;
-- require a private IPv4 network peer and `application/json`;
-- reject every browser `Origin`;
+- exist on the dedicated LAN listener, plus the main listener only for a true
+  loopback peer that already has local-user authority;
+- require a private IPv4 network peer or local loopback and `application/json`;
+- reject every browser `Origin`, except the same-origin one-time ticket claim;
 - bind the short-lived request secret to the observed source address;
 - are bounded by the shared pending-request limits; and
 - issue only a per-device revocable token after authenticated local host
   approval.
+
+An approved machine is not a passive viewer. Its revocable per-device token is
+a host-administrator credential used by the native client and CLI to create,
+send to, and end sessions. Those actions run with the local Sessions user's
+authority and can therefore execute commands on that computer. Approve only a
+device you control, prefer a Tailscale transport outside a private LAN, and
+revoke a lost device. Sessions does not currently issue a read-only pairing
+token.
 
 LAN traffic is plain HTTP. Credentials and later session traffic are therefore
 not confidential against a hostile observer on shared Wi-Fi even though API
@@ -136,13 +368,87 @@ Bonjour failure does not disable the listener; disabling LAN access also stops
 the advertisement.
 
 The agent surface has the same boundary. `sessions machines connect` accepts
-only private IPv4 HTTP origins or `.ts.net` HTTPS origins, follows no redirects,
-never sends the local daemon token to a candidate, and stores an issued token
-in a separate mode-0600 file. The metadata registry contains no credential.
-`sessions --machine` reads that file internally, while `sessions access`
+only private or loopback IPv4 HTTP origins, `.ts.net` HTTPS origins, or HTTP
+origins in `100.64.0.0/10`; it follows no redirects, never sends the local
+daemon token to a candidate, and stores an issued token in a separate mode-0600
+file. The metadata registry contains no credential. `sessions --machine` reads
+that file through the local daemon's fleet relay, while `sessions access`
 exposes the same pending host decisions as the native inbox. The low-level
 global `--host` flag uses the local daemon token only for a loopback target; a
 non-loopback raw host receives no local credential.
+
+The Windows native client protects saved paired-machine tokens with user-scope
+DPAPI. macOS and iOS native clients use a device-local, non-synchronizing
+Keychain item scoped to the app identifier. WebView storage holds endpoint and
+machine metadata but no token after migration: the app saves and reads back the
+complete native credential set before removing the legacy browser copy or
+contacting a machine. A locked or unreadable vault is an explicit error, not an
+empty list; failed migration preserves the legacy connection metadata and
+credential. Removing a machine updates the protected credential set.
+
+Android native clients encrypt the same bounded credential set with AES-256-GCM
+using an app-owned, non-exportable Android Keystore key. Ciphertext lives in the
+app's `noBackupFilesDir`, uses fresh provider-generated nonces and app-identity
+associated data, and is atomically replaced and read back before migration is
+confirmed. A missing key for existing ciphertext is an error, never permission
+to generate a replacement or silently forget the connection. This does not
+claim that every Android device has hardware-backed key storage. Android backup
+and device-transfer rules exclude local app data, including legacy WebView
+pages; a replacement device must pair again rather than inherit a credential.
+
+Linux native clients and browser builds currently retain paired
+tokens in their local WebView/browser storage; they do **not** have this OS
+vault protection. This is separate from provider login credentials and from
+the daemon's CLI machine registry. Do not copy any of these credentials between
+devices as a substitute for pairing.
+
+On macOS 15, Local Network privacy applies to launchd agents as well as apps.
+Darwin release binaries embed an Info.plist section with their stable bundle
+identifier, `NSLocalNetworkUsageDescription`, and
+`NSBonjourServices = [_sessions._tcp]`; the app-installed launch agent is
+associated with the signed Sessions app bundle so macOS attributes sessionsd's
+request to the visible app, following
+[Apple TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
+First-run Fleet onboarding and **Check again** in the local Mac's Fleet or
+Settings permission guide start a daemon-owned Bonjour browse while the person is
+looking at that surface. macOS 14 accepts the same binary metadata but does not
+enforce the macOS 15 Local Network gate.
+
+Apple provides no supported API to preflight this permission, force its prompt,
+or read the switch. Sessions therefore reports only what it can establish, and
+the report is a **last observation, not a current reading**: `granted` records
+that nearby contact succeeded when it was last attempted — macOS cannot be
+blocking local access while a LAN peer answers — and `not-yet-asked` means
+nothing has been proven (`not-required` on other platforms). Successful nearby
+discovery, a completed nearby connect, or a LAN fleet probe records `granted`
+and reconciles any earlier failed attempt. Nothing re-verifies it afterwards, so
+`sessions doctor` says so in words and the UI never presents a stored `granted`
+as a live connection.
+
+Nothing records a denial. A private or link-local Darwin dial failing with
+`EHOSTUNREACH` looks identical whether the switch is off or the other machine is
+asleep, powered down, or on another network, so the API, CLI, and doctor keep
+the transport error and the endpoint that failed and add the permission as one
+possible cause: “macOS may not have allowed Sessions to use the local network —
+check System Settings › Privacy & Security › Local Network › Sessions; a machine
+that is off, asleep, or on another network fails the same way.” The
+machine-readable `reason` stays `local-network-permission`, which classifies the
+failure rather than asserting a verdict. An empty browse likewise establishes
+nothing. Tailnet addresses are outside this classification and remain exempt; a
+tailnet route that works is never evidence about the LAN. Older hosts may still
+report `denied`, and clients keep accepting it.
+
+Fleet and Settings show a numbered recovery guide whenever nearby access is not
+confirmed. **Open System Settings** opens the local Mac's privacy pane; it never
+changes the permission. A phone or remote viewer instead names the host Mac
+where the steps belong. The guide refreshes on return to the app and
+periodically, and it confirms working access only from a check that actually
+reached a nearby machine. A check that completes with nothing found, or one that
+fails, keeps the steps and its own error on screen even when the host still
+reports an earlier `granted`; that stored success is described as the host's
+last observation instead. A `denied` from an older host is attributed to that
+host rather than restated as a macOS verdict. Older macOS versions may open the
+main privacy pane; the written navigation remains available beside the button.
 
 ## Native update traffic
 

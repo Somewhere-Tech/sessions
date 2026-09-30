@@ -37,6 +37,7 @@ const (
 	defaultNotifyWaitingDelay = 30 * time.Second
 	defaultNotifyCooldown     = 60 * time.Second
 	DefaultMassKillLimit      = 3
+	DefaultDiscoveryBatch     = 10
 	DefaultDiscoveryInterval  = 30 * time.Second
 	discoveryIntervalEnv      = "SESSIONS_DISCOVERY_INTERVAL"
 )
@@ -91,9 +92,11 @@ type ManagerOptions struct {
 	// runner. Use Manager.runnerAlive rather than either seam directly.
 	ProcessAlive       func(int) bool
 	ProcessCommand     func(int) string
+	ProcessSnapshot    func(context.Context) (map[int]string, error)
 	Boundaries         ledger.BoundaryWriter
 	Observations       ledger.ObservationWriter
 	Retention          ledger.RetentionWriter
+	Worktrees          ledger.WorktreeWriter
 	Attributions       ledger.AttributionWriter
 	LedgerReader       LedgerReader
 	UsageRecorder      UsageRecorder
@@ -105,6 +108,9 @@ type ManagerOptions struct {
 	// session costs the machine. nil means this platform's real one; tests
 	// inject a fabricated table through it.
 	ResourceEnumerator resource.Enumerator
+	// MirrorQuiet is how long a session's terminal mirror must go untouched
+	// before the daemon releases its emulator. Zero takes the default.
+	MirrorQuiet time.Duration
 	// ResourceInterval is the floor between whole-machine samples. It is a
 	// floor, not a schedule: sampling rides the activity tick, so the real
 	// spacing is the next tick at or after this interval.
@@ -147,8 +153,17 @@ func (e *ConversationMovedError) Error() string {
 }
 
 type Manager struct {
-	config   state.Config
-	launcher proto.RunnerLauncher
+	accountLoginMu    sync.Mutex
+	accountMetadataMu sync.Mutex
+	accountLogins     map[string]*accountLoginOperation
+	config            state.Config
+	launcher          proto.RunnerLauncher
+	// accountUsage coalesces and briefly caches provider allowance reads. See
+	// account_usage.go.
+	accountUsage accountUsageCache
+	// wakeMu serializes WakePaused so two first messages cannot kick one
+	// runner twice.
+	wakeMu   sync.Mutex
 	registry *state.Registry
 	push     *PushService
 	guard    MassKillGuard
@@ -158,11 +173,18 @@ type Manager struct {
 	boundaries   ledger.BoundaryWriter
 	observations ledger.ObservationWriter
 	retention    ledger.RetentionWriter
+	worktrees    ledger.WorktreeWriter
 	attributions ledger.AttributionWriter
 	ledgerReader LedgerReader
-	usage        UsageRecorder
-	notify       func(PushPayload)
-	listModels   func(context.Context, string) ([]codexapp.Model, error)
+	// ledgerCache holds what the ledger says, for as long as the ledger has not
+	// said anything new. See ledger_cache.go.
+	ledgerCache ledgerCache
+	// startup is how far through its first discovery pass this daemon is. See
+	// startup.go: a daemon that is still loading is not one that lost your work.
+	startup    *startupProgress
+	usage      UsageRecorder
+	notify     func(PushPayload)
+	listModels func(context.Context, string) ([]codexapp.Model, error)
 
 	deathMu             sync.Mutex
 	laneDeaths          map[string]laneDeathBurst
@@ -170,9 +192,13 @@ type Manager struct {
 	notifications       map[string]*sessionNotificationState
 	notificationsClosed bool
 	discoveryMu         sync.Mutex
-	restoreHealthMu     sync.Mutex
-	restoreHealthAt     time.Time
-	restoreHealthCount  int
+	pausedRefreshMu     sync.Mutex
+	pausedMu            sync.RWMutex
+	pausedRestores      map[string]pausedRestoreCacheEntry
+	pausedMissingLogged map[string]struct{}
+	pausedRetiredCount  int
+	artifactRetired     int
+	artifactPending     int
 	bindMu              sync.Mutex
 	// completionGeneration records the newest delegated-task completion
 	// attempt per session so a fresh idle classification supersedes an
@@ -203,6 +229,13 @@ type Manager struct {
 	// resourceFailed suppresses repeated logging of the same enumeration
 	// failure. A platform that cannot sample says so once, not every tick.
 	resourceFailed bool
+
+	// mirrorQuiet is how long a session's terminal mirror must go untouched
+	// before its emulator is given back, and mirrorSwept keeps the sweep off
+	// the sub-second activity tick.
+	mirrorQuiet  time.Duration
+	mirrorSwept  time.Time
+	mirrorSweepM sync.Mutex
 }
 
 type laneDeathBurst struct {
@@ -225,8 +258,10 @@ type runtimeSession struct {
 	structuredLifecycleWorking *bool
 	pushWorkingObserved        bool
 	workingStartedAt           time.Time
+	faultAtTurnStart           int64
 	structuredDone             bool
 	terminalTurnDone           bool
+	faultNotified              bool
 	waitingTimer               *time.Timer
 	waitingGeneration          uint64
 	stopped                    bool
@@ -237,6 +272,13 @@ type runtimeSession struct {
 	firstMessageInput          []byte
 	firstMessageDone           bool
 	providerInput              []byte
+	// preTurnOutput records terminal output that arrived while the session
+	// has not yet completed a turn, so a provider dialog drawn before the
+	// first request (Claude's folder-trust screen, a login prompt) can be
+	// classified without waiting for a working-to-idle edge that never comes.
+	preTurnOutput      bool
+	preTurnBlocked     bool
+	preTurnInspectedAt time.Time
 }
 
 func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...ManagerOptions) *Manager {
@@ -264,14 +306,7 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 	if selected.DiscoveryDelay <= 0 {
 		selected.DiscoveryDelay = discoveryRetryDelay
 	}
-	if selected.ProcessAlive == nil {
-		selected.ProcessAlive = liveness.ProcessAlive
-	}
-	if selected.ProcessCommand == nil {
-		selected.ProcessCommand = func(pid int) string {
-			return liveness.ProcessCommand(context.Background(), pid)
-		}
-	}
+	configureProcessProbes(&selected)
 	if selected.ResourceEnumerator == nil {
 		selected.ResourceEnumerator = resource.SystemEnumerator()
 	}
@@ -291,14 +326,19 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 		push: NewPushService(root), guard: MassKillGuard{Limit: selected.MassKillLimit},
 		options: selected, started: time.Now(), ctx: ctx, cancel: cancel,
 		boundaries: selected.Boundaries, observations: selected.Observations,
-		retention: selected.Retention, attributions: selected.Attributions,
+		retention: selected.Retention, worktrees: selected.Worktrees, attributions: selected.Attributions,
 		ledgerReader: selected.LedgerReader,
 		usage:        selected.UsageRecorder,
 		runtimes:     make(map[string]*runtimeSession), hooks: loadGlobalHooks(config.GlobalHooksPath),
 		laneDeaths: make(map[string]laneDeathBurst), notifications: make(map[string]*sessionNotificationState),
 		completionGeneration: make(map[string]uint64),
+		pausedRestores:       make(map[string]pausedRestoreCacheEntry), pausedMissingLogged: make(map[string]struct{}),
 	}
 	manager.resources = resource.NewTracker(selected.ResourceEnumerator, selected.ResourceClock)
+	manager.mirrorQuiet = selected.MirrorQuiet
+	if manager.mirrorQuiet <= 0 {
+		manager.mirrorQuiet = defaultMirrorQuiet
+	}
 	manager.resourceInterval = selected.ResourceInterval
 	manager.resourceClock = selected.ResourceClock
 	manager.listModels = selected.ListCodexModels
@@ -313,11 +353,33 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 			})
 		}
 	}
-	manager.registry.SetTerminalObservers(manager.recordRunnerExited, manager.recordReaped)
-	manager.recordDaemonRestart(ctx)
+	manager.startup = newStartupProgress()
+	manager.initializeRuntimeState(ctx)
 	manager.ticker = time.NewTicker(selected.ActivityInterval)
 	manager.startWorker(manager.activityLoop)
 	return manager
+}
+
+func configureProcessProbes(options *ManagerOptions) {
+	custom := options.ProcessAlive != nil || options.ProcessCommand != nil
+	if options.ProcessAlive == nil {
+		options.ProcessAlive = liveness.ProcessAlive
+	}
+	if options.ProcessCommand == nil {
+		options.ProcessCommand = func(pid int) string {
+			return liveness.ProcessCommand(context.Background(), pid)
+		}
+	}
+	if options.ProcessSnapshot == nil && !custom {
+		options.ProcessSnapshot = liveness.ProcessSnapshot
+	}
+}
+
+func (m *Manager) initializeRuntimeState(ctx context.Context) {
+	m.registry.SetTerminalObservers(m.recordRunnerExited, m.recordReaped)
+	m.refreshPendingRestores()
+	m.recordDaemonRestart(ctx)
+	m.startWorker(m.watchPendingRestores)
 }
 
 func (m *Manager) startWorker(run func()) bool {
@@ -340,15 +402,109 @@ func (m *Manager) Config() state.Config      { return m.config }
 func (m *Manager) Uptime() time.Duration     { return time.Since(m.started) }
 func (m *Manager) IsDiscovering() bool       { return m.registry.IsDiscovering() }
 func (m *Manager) List(includeExited bool) []state.SessionInfo {
+	infos, _ := m.ListTimed(includeExited)
+	return infos
+}
+
+// ListTiming is where a listing spent its time. It exists because a twelve
+// second first listing on the owner's machine could not be attributed from
+// outside this function: the store was measured at 0.38 s, and the rest was
+// here. Durations only — no ids, no paths — so the breakdown can be logged.
+type ListTiming struct {
+	// Ledger is the projection fold. It is the cold cost after a restart: the
+	// projection is incremental, so the first caller pays for the whole ledger
+	// and every later one pays for what has happened since.
+	Ledger time.Duration
+	// LedgerCached reports that the fold was served from the cache keyed on the
+	// ledger's own sequence, which is the difference between a listing that
+	// reads the log and one that reads a single number to learn it has not
+	// changed.
+	LedgerCached bool
+	// LedgerHighWater, LedgerWait and LedgerFold are what Ledger was made of.
+	// A hit pays the first two and not the third, which is the difference the
+	// Mini's "ledger_cached: true, ledger_ms: 654" could not express.
+	LedgerHighWater time.Duration
+	LedgerWait      time.Duration
+	LedgerFold      time.Duration
+	// LedgerConnWait is the part of this listing the ledger's connection pool
+	// spent queueing behind other users of its single connection.
+	LedgerConnWait time.Duration
+	// Mark is the ledger snapshot this listing describes, so a caller can ask a
+	// second question about the same snapshot without a second query.
+	Mark LedgerMark
+	// Restores reads the paused-after-reboot markers; Reality probes the
+	// processes of runners the daemon has lost contact with.
+	Restores time.Duration
+	Reality  time.Duration
+}
+
+// ListTimed is List with the breakdown. Callers that can report it use this;
+// everything else keeps calling List.
+func (m *Manager) ListTimed(includeExited bool) ([]state.SessionInfo, ListTiming) {
 	ctx := context.Background()
+	var timing ListTiming
 	infos := m.registry.List(includeExited)
+	ledgerStart := time.Now()
+	answer, err := m.readLedger(ctx)
+	states, cached := answer.states, answer.cached
+	timing.LedgerCached = cached
+	timing.Ledger = time.Since(ledgerStart)
+	timing.LedgerHighWater = answer.timing.HighWater
+	timing.LedgerWait = answer.timing.Wait
+	timing.LedgerFold = answer.timing.Fold
+	timing.LedgerConnWait = answer.timing.ConnWait
+	timing.Mark = answer.mark
+	if err != nil {
+		log.Printf("[ledger] read session list: %v", err)
+	}
 	// Restored unconditionally, not only for the include-ended listing: a
 	// session the daemon cannot currently reach has not ended, and dropping it
 	// from the default list because a socket died is a kill wearing sleep's
 	// clothes. withDurableClosed adds ended records only when they were asked
 	// for.
-	infos = m.withDurableClosed(ctx, infos, includeExited)
-	return m.withProvenance(ctx, infos)
+	infos = m.withDurableClosedStates(infos, states, includeExited)
+	restoreStart := time.Now()
+	infos = m.withPendingRestores(infos)
+	timing.Restores = time.Since(restoreStart)
+	realityStart := time.Now()
+	infos = m.withRunnerReality(infos)
+	timing.Reality = time.Since(realityStart)
+	infos = withLostReason(infos, states, bootAtMS())
+	return m.withProvenanceStates(infos, states), timing
+}
+
+func (m *Manager) withRunnerReality(infos []state.SessionInfo) []state.SessionInfo {
+	var processes map[int]string
+	snapshotRead := false
+	snapshotOK := false
+	for index := range infos {
+		if !infos[index].Unreachable || infos[index].UnreachableReason != "runner-lost" {
+			continue
+		}
+		if !snapshotRead {
+			processes, snapshotOK = m.processSnapshot(context.Background())
+			snapshotRead = true
+		}
+		if !m.runnerIDAlive(infos[index].ID, processes, snapshotOK) {
+			infos[index].RunnerGone = true
+		}
+	}
+	return infos
+}
+
+func (m *Manager) runnerIDAlive(id string, processes map[int]string, snapshotOK bool) bool {
+	if session, ok := m.registry.Get(id); ok {
+		info := session.Info()
+		if !info.Exited && !info.Unreachable {
+			return true
+		}
+	}
+	metadata, err := state.ReadRunnerMetadata(filepath.Join(m.config.RunnerStateDir, id+".json"))
+	if err != nil {
+		return false
+	}
+	metadata.Info.ID = id
+	return m.runnerAliveWithSnapshot(id, metadata.Info, processes, snapshotOK)
 }
 func (m *Manager) Get(id string) (*state.Session, bool) { return m.registry.Get(id) }
 func (m *Manager) DeepDiagnostics() []map[string]any    { return m.registry.DeepDiagnostics() }
@@ -494,6 +650,7 @@ func (m *Manager) recordCreated(ctx context.Context, prepared state.PreparedSess
 		Base: prepared.WorktreeBase, SourceRepo: prepared.SourceRepo,
 		ResumeArgv: resumeArgv, LaneUUID: info.ID, ProviderUUID: providerUUID,
 		CreatorKind: creatorKind, CreatorID: creatorID, DelegationKind: prepared.DelegationKind,
+		StartOperationID: prepared.StartOperationID, PromptOperationID: prepared.PromptOperationID,
 	}); err != nil {
 		return fmt.Errorf("record lane creation before launch: %w", err)
 	}
@@ -683,15 +840,4 @@ func (m *Manager) observe(ctx context.Context, label string, record func(ledger.
 	if err := record(m.observations); err != nil {
 		log.Printf("[ledger] record %s: %v", label, err)
 	}
-}
-
-func (m *Manager) ledgerStates(ctx context.Context) ([]ledger.LaneState, error) {
-	if m.ledgerReader == nil {
-		return nil, nil
-	}
-	events, err := m.ledgerReader.Events(ctx, "")
-	if err != nil {
-		return nil, err
-	}
-	return ledger.Fold(events), nil
 }

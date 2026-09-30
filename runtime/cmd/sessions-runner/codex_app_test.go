@@ -6,21 +6,38 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
 
 type fakeCodexTurnClient struct {
-	steered  []string
-	steerErr error
+	steered      []string
+	steerErr     error
+	turnStarted  chan struct{}
+	turnRelease  chan struct{}
+	turnCanceled chan struct{}
 }
 
-func (*fakeCodexTurnClient) SendUserTurn(context.Context, string, string) (*codexapp.TurnStream, error) {
-	return nil, errors.New("not implemented in this test")
+func (f *fakeCodexTurnClient) SendUserTurn(ctx context.Context, _, _ string) (*codexapp.TurnStream, error) {
+	if f.turnStarted == nil {
+		return nil, errors.New("not implemented in this test")
+	}
+	close(f.turnStarted)
+	select {
+	case <-f.turnRelease:
+		return nil, errors.New("test turn released")
+	case <-ctx.Done():
+		close(f.turnCanceled)
+		return nil, ctx.Err()
+	}
 }
 
 func (f *fakeCodexTurnClient) SteerTurn(_ context.Context, conversationID, text string) (string, error) {
@@ -133,6 +150,81 @@ func TestCodexInputDuringActiveTurnUsesProviderSteering(t *testing.T) {
 	}
 }
 
+func TestCodexHelloReportsCurrentTurnState(t *testing.T) {
+	r := newCodexTestRunner(t)
+	r.active = true
+	r.retry = &structuredRetryController{}
+	server, daemon := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		r.serveClient(server)
+		close(done)
+	}()
+	frame, err := proto.Read(daemon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got hello
+	if frame.Type != proto.Hello || json.Unmarshal(frame.Payload, &got) != nil {
+		t.Fatalf("runner hello = type %v payload %s", frame.Type, frame.Payload)
+	}
+	if got.ProtocolVersion != proto.ProtocolVersion || got.Turn == nil || !got.Turn.Working {
+		t.Fatalf("runner hello turn state = %#v", got)
+	}
+	_ = daemon.Close()
+	<-done
+}
+
+func TestCodexDaemonDisconnectDoesNotCancelActiveTurn(t *testing.T) {
+	r := newCodexTestRunner(t)
+	r.retry = newStructuredRetryController(r.startRetryTurn, r.appendStructured, r.publishRetryState)
+	fake := r.turnClient.(*fakeCodexTurnClient)
+	fake.turnStarted = make(chan struct{})
+	fake.turnRelease = make(chan struct{})
+	fake.turnCanceled = make(chan struct{})
+	r.handleInput("long-running work\r")
+	<-fake.turnStarted
+
+	server, daemon := net.Pipe()
+	detached := make(chan struct{})
+	go func() {
+		r.serveClient(server)
+		close(detached)
+	}()
+	if _, err := proto.Read(daemon); err != nil {
+		t.Fatal(err)
+	}
+	_ = daemon.Close()
+	<-detached
+
+	r.mu.Lock()
+	active := r.active
+	r.mu.Unlock()
+	if !active {
+		t.Fatal("daemon disconnect ended the runner-owned provider turn")
+	}
+	select {
+	case <-fake.turnCanceled:
+		t.Fatal("daemon disconnect canceled the provider context")
+	default:
+	}
+	close(fake.turnRelease)
+	deadline := time.After(time.Second)
+	for {
+		r.mu.Lock()
+		active = r.active
+		r.mu.Unlock()
+		if !active {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("released test turn stayed active")
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
 func TestCodexRejectedSteeringIsExplicit(t *testing.T) {
 	r := newCodexTestRunner(t)
 	r.active = true
@@ -161,6 +253,21 @@ func TestCodexBlankInputDuringActiveTurnStaysSilent(t *testing.T) {
 
 	if len(r.history) != 0 {
 		t.Fatalf("blank input produced %d events, want none", len(r.history))
+	}
+}
+
+func TestCodexTurnFailureAppendsClassifiedFaultBeforeLifecycleClose(t *testing.T) {
+	r := newCodexTestRunner(t)
+	r.recordTurnFailure("keep this prompt", 0, errors.New("unexpected status 503 Service Unavailable: The server is currently overloaded."))
+	if len(r.history) != 2 {
+		t.Fatalf("failure history = %d events, want fault and turn completion", len(r.history))
+	}
+	joined := string(r.history[0]) + "\n" + string(r.history[1])
+	if !strings.Contains(string(r.history[0]), `"subtype":"provider_fault"`) ||
+		!strings.Contains(string(r.history[0]), `"kind":"provider-unavailable"`) ||
+		!strings.Contains(joined, "Codex API unavailable (503, overloaded)") ||
+		!strings.Contains(string(r.history[1]), `"subtype":"turn_completed"`) {
+		t.Fatalf("failure history = %s", joined)
 	}
 }
 
@@ -218,5 +325,88 @@ func TestRunnerMetadataWriteWithoutExistingDocumentSucceeds(t *testing.T) {
 	}
 	if metadata.Info.ID != "new-session" || len(metadata.Tags) != 0 {
 		t.Fatalf("first metadata write = %#v", metadata)
+	}
+}
+
+func codexHistorySubtype(r *codexAppRunner, subtype string) (map[string]any, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, raw := range r.history {
+		var value map[string]any
+		if json.Unmarshal(raw, &value) == nil && value["subtype"] == subtype {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func TestCodexRunnerHoldsAnApprovalUntilTheDaemonAnswers(t *testing.T) {
+	r := newCodexTestRunner(t)
+	decided := make(chan codexapp.ApprovalDecision, 1)
+	go func() {
+		decided <- r.awaitApproval(context.Background(), codexapp.ApprovalRequest{
+			Kind: codexapp.ApprovalCommand, ConversationID: "thread-1", TurnID: "turn-1", Command: "npm test",
+		})
+	}()
+	var requested map[string]any
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if value, ok := codexHistorySubtype(r, "approval_requested"); ok {
+			requested = value
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if requested == nil {
+		t.Fatal("runner never announced the approval")
+	}
+	approval := requested["approval"].(map[string]any)
+	id, _ := approval["id"].(string)
+	if id == "" || approval["summary"] != "Run `npm test`" {
+		t.Fatalf("announced approval = %#v", approval)
+	}
+	select {
+	case decision := <-decided:
+		t.Fatalf("runner decided %q without an answer", decision)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := r.resolveApproval(proto.ApprovalControl{ID: "not-waiting", Decision: proto.ApprovalAllow}); err == nil {
+		t.Fatal("an unknown approval id was accepted")
+	}
+	payload, err := proto.EncodeApprovalControl(proto.ApprovalControl{ID: id, Decision: proto.ApprovalAllow, By: "manager-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.handleFrame(nil, proto.Frame{Type: proto.Approve, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case decision := <-decided:
+		if decision != codexapp.ApprovalAllow {
+			t.Fatalf("decision = %q", decision)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the answer never reached the waiting approval")
+	}
+	resolved, ok := codexHistorySubtype(r, "approval_resolved")
+	if !ok {
+		t.Fatal("no approval_resolved event recorded")
+	}
+	if outcome := resolved["approval"].(map[string]any); outcome["id"] != id || outcome["decision"] != "allow" || outcome["by"] != "manager-1" {
+		t.Fatalf("resolved event = %#v", outcome)
+	}
+
+	// A request nobody answers before the turn is cancelled is denied.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		decided <- r.awaitApproval(ctx, codexapp.ApprovalRequest{Kind: codexapp.ApprovalFileChange, ConversationID: "thread-1"})
+	}()
+	cancel()
+	select {
+	case decision := <-decided:
+		if decision != codexapp.ApprovalDeny {
+			t.Fatalf("cancelled decision = %q", decision)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled approval never returned")
 	}
 }

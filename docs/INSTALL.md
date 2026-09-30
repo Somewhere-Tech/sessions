@@ -4,15 +4,21 @@ Sessions.app is the primary macOS package, carrying a bundled-runtime installer
 and a signed updater. Public releases are Developer ID signed, notarized,
 stapled, and backed by an immutable updater artifact; see
 [GitHub Releases](https://github.com/somewhere-tech/sessions/releases/latest)
-for the current version. The standalone instructions below remain useful for
-agents, developers, and headless installs. Do not use them to change the
-production mini.
+for the current version. The current public release is 0.2.26. This branch
+targets the unpublished 0.2.27 candidate; its Linux systemd installer and npm
+package require candidate bytes until that release is published. These
+instructions do not make candidate assets publicly available.
+
+The standalone instructions below remain useful for agents, developers, and
+headless installs. Prefer the native app for interactive macOS use. Do not
+replace an app-managed daemon with a standalone install merely to update the
+viewer; use the app's update path instead.
 
 The standalone runtime ships as three static Go binaries:
 
 - `sessions` — CLI
-- `sessionsd` — daemon and embedded web UI
-- `sessions-runner` — one long-lived PTY owner per session
+- `sessionsd` — daemon and HTTP/WebSocket API
+- `sessions-runner` — independent owner of a PTY, pipe, or provider conversation
 
 Keep all three in the same directory. Sessions uses that adjacency to locate the
 daemon and runner. Node, npm, and the retired repository install script are not
@@ -35,6 +41,11 @@ updater. The app zip is signed, notarized, stapled, and checked by Gatekeeper in
 CI before the GitHub Release becomes visible. Extract it, move `Sessions.app` to
 Applications, and open it normally. First run installs or adopts the independent
 daemon; quitting the app does not end the daemon or any session.
+
+The app-managed service uses the launchd label
+`tech.somewhere.sessions.daemon`. Its log is
+`~/Library/Logs/Sessions/sessionsd.log`. Those are separate from the
+development label and log used by the standalone `sessions install` command.
 
 Install the native app through Homebrew with:
 
@@ -74,7 +85,7 @@ runtime binaries:
 ```sh
 brew install somewhere-tech/tap/sessions
 sessions install
-open http://localhost:8787
+sessions status --json
 ```
 
 The public `somewhere-tech/homebrew-tap` repository pins immutable release URLs
@@ -103,8 +114,8 @@ Set a release version without the leading `v`, select the archive, and download
 it directly from GitHub Releases. This example is for Apple Silicon macOS:
 
 With GitHub CLI, agents can select an immutable tag without parsing a web page.
-`gh` uses the agent's existing GitHub authentication while the repository is
-private; no repository checkout, npm, Node, or install script is involved:
+`gh` can use existing GitHub authentication when required; no repository
+checkout, npm, Node, or install script is involved:
 
 ```sh
 # Resolve the current release, then pin it for the rest of the install.
@@ -129,9 +140,9 @@ For a public repository, the same command works without authentication. Agents
 that do not have `gh` can use the direct HTTPS form:
 
 ```sh
-# Substitute the version you intend to install. The releases page always shows
-# the current one: https://github.com/somewhere-tech/sessions/releases/latest
-VERSION=0.2.18
+# This candidate example works only after v0.2.27 assets are published.
+# Until then, select an existing tag from the releases page or build from source.
+VERSION=0.2.27
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}.sha256"
@@ -155,20 +166,75 @@ The archive contains plain files at its root, so you can inspect it with
 
 ```sh
 sessions install
-open http://localhost:8787
+sessions status --json
 ```
+
+Use Sessions.app for the interactive interface; a standalone runtime is also
+fully usable from the CLI. Interactive browser control is deprecated.
 
 ### Start on Linux
 
-`sessions install` currently supports macOS launchd only. On Linux, run the
-daemon under your user supervisor or start it in the foreground:
+With the 0.2.27 candidate on a Linux machine running systemd, install the user service:
+
+```sh
+sessions install
+sessions status --json
+```
+
+The unit is `~/.config/systemd/user/sessions.service`. It starts the daemon,
+checks its health, and uses `Restart=on-failure` with `KillMode=process`, so
+stopping the service leaves independently owned runners alive. All three runtime
+binaries are copied to an immutable directory under
+`~/.local/share/sessions/runtime/`, preserving executable paths across package
+updates and removal. Reinstalling stages the new service definition without
+interrupting an active daemon. Apply it explicitly with
+`sessions install --restart-daemon`.
+
+For startup before login and continued service after logout, enable lingering
+for your user (this may require administrator authorization):
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+The installer does not enable lingering or elevate itself. If there is no
+systemd user manager, start the daemon with your own supervisor or in the foreground:
 
 ```sh
 SESSIONS_HOST=127.0.0.1 SESSIONS_PORT=8787 sessionsd
 ```
 
-Then open `http://localhost:8787` and run `sessions token` in another terminal.
-Linux systemd unit installation is not shipped yet.
+Then run `sessions status --json` in another terminal. Use the CLI locally or
+explicitly pair a native client for remote access; do not expose a wildcard listener.
+
+#### What supervises a session on Linux and Windows
+
+Your sessions are not the daemon. On macOS each runner is a launchd job; on
+Linux and Windows Sessions starts the runner as a detached process of its own —
+its own session and process group on Linux, its own process group and Job
+Object on Windows — with its output in
+`~/.local/state/sessions/runners/<id>.log`.
+
+What that gives you:
+
+- **A session survives the daemon.** Stopping, restarting, upgrading, or
+  killing `sessionsd` leaves every runner working. The next daemon re-adopts
+  them through the same runner sockets and reports everything they produced in
+  the meantime.
+- **A session does not survive a reboot.** launchd brings a macOS runner back at
+  login, where Sessions' own policy decides which sessions resume and which stay
+  paused. On Linux, the systemd daemon marks retained detached runtimes from a
+  prior boot as paused and keeps their launch settings and event history. It
+  does not rerun commands automatically. Open a retained conversation and send
+  a message to wake it explicitly, or use the saved provider conversation with
+  `sessions resume <id>`. Windows reboot recovery requires separate platform
+  verification.
+- **A crashed runner is not restarted.** launchd restarts one within the same
+  boot. On Linux and Windows the session ends and stays readable.
+
+`SESSIONS_LAUNCHER=detached` selects this launcher on macOS too. That is for a
+container with no `launchctl` and for the tests that exercise this path; a
+normal macOS install should leave it unset and keep launchd.
 
 ## Listener and state
 
@@ -198,6 +264,11 @@ Static install: download and verify the new archive, then replace all three
 binaries together. Restart only `sessionsd`; per-session runner processes are
 separate and continue to own their PTYs.
 
+On Linux, run `sessions install` to stage the new immutable runtime and service
+definition, then `sessions install --restart-daemon` to switch the daemon while
+retaining live runners. The [npm package](../npm/README.md) uses a separate
+immutable cache; npm updates and uninstall do not start or stop runtime processes.
+
 ## Uninstall
 
 There are two removal paths, because there are two things that install.
@@ -209,6 +280,10 @@ development daemon and removes its launchd registration idempotently on macOS:
 sessions uninstall
 ```
 
+On Linux, this removes and disables the systemd user unit while leaving the
+running daemon and runners alive. It preserves state, transcripts, and immutable
+runtime copies. Stop only runtimes you own when you actually intend to end work.
+
 Then use `brew uninstall sessions`, or remove `sessions`, `sessionsd`, and `sessions-runner`
 from the directory where you installed the static archive.
 
@@ -218,7 +293,7 @@ login, and the Sessions-managed `sessions` symlinks in
 `/opt/homebrew/bin`, `/usr/local/bin`, and `~/.local/bin`:
 
 ```sh
-/Applications/Sessions.app/Contents/MacOS/Sessions --remove-integration
+/Applications/Sessions.app/Contents/MacOS/sessions-app --remove-integration
 ```
 
 Windows runs the same step automatically from the uninstaller, where it also
@@ -251,10 +326,13 @@ Common checks:
 - **`sessions: command not found`:** confirm the install directory is on `PATH`.
 - **Missing daemon or runner:** install all three binaries into the same
   directory and rerun `sessions install` on macOS.
-- **Daemon unhealthy:** inspect
+- **App-managed daemon unhealthy:** inspect
+  `~/Library/Logs/Sessions/sessionsd.log` on macOS.
+- **Standalone development daemon unhealthy:** inspect
   `~/Library/Logs/sessions/tech.somewhere.sessions.dev.daemon.log` on macOS.
-- **Web UI says unauthorized:** run `sessions token`, then paste the token into
-  the UI's server settings.
+- **Client says unauthorized:** check the saved host and pairing. Re-pair a
+  revoked device; for an explicit token connection, obtain the current token
+  with `sessions token` on the host.
 - **Port already in use:** choose a private scratch port with `SESSIONS_PORT` or
   stop the other local process; do not expose a wildcard listener.
 - **Lost lanes:** run `sessions recover`, review the plan, then opt in with

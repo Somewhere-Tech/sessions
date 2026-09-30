@@ -1,6 +1,42 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
+
+func TestHandleDaemonArgsDoesNotStartForHelpOrVersion(t *testing.T) {
+	for _, test := range []struct {
+		arguments []string
+		want      string
+	}{
+		{arguments: []string{"--help"}, want: "Usage: sessionsd"},
+		{arguments: []string{"--version"}, want: version},
+	} {
+		var output bytes.Buffer
+		handled, err := handleDaemonArgs(test.arguments, &output)
+		if err != nil || !handled || !strings.Contains(output.String(), test.want) {
+			t.Fatalf("handleDaemonArgs(%q) = handled=%v output=%q err=%v", test.arguments, handled, output.String(), err)
+		}
+	}
+}
+
+func TestHandleDaemonArgsAcceptsServeAndRejectsTypos(t *testing.T) {
+	if handled, err := handleDaemonArgs([]string{"--serve"}, &bytes.Buffer{}); err != nil || handled {
+		t.Fatalf("--serve = handled=%v err=%v", handled, err)
+	}
+	if _, err := handleDaemonArgs([]string{"--hepl"}, &bytes.Buffer{}); err == nil {
+		t.Fatal("unknown argument was accepted")
+	}
+}
+
+func TestDaemonArgumentsExtractsRemotePreview(t *testing.T) {
+	arguments, preview := daemonArguments([]string{"--serve", "--remote-auto-preview"})
+	if !preview || len(arguments) != 1 || arguments[0] != "--serve" {
+		t.Fatalf("daemonArguments = %q, %v", arguments, preview)
+	}
+}
 
 // The daemon must refuse every spelling of an all-interfaces bind, not just the
 // four literals the original denylist contained. "0:0:0:0:0:0:0:0" and "0000::0"

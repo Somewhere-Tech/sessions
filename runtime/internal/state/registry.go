@@ -19,7 +19,6 @@ import (
 
 const (
 	defaultEventLogBytes = 4 * 1024 * 1024
-	maxClaudeEvents      = proto.MaxStructuredReplayEvents
 	exitedGrace          = 30 * time.Second
 )
 
@@ -56,6 +55,8 @@ type PreparedSession struct {
 	DelegationKind    string
 	Permissions       string
 	Lifecycle         string
+	StartOperationID  string
+	PromptOperationID string
 }
 
 type SessionMetadata struct {
@@ -225,13 +226,7 @@ func (r *Registry) CreateWithLifecycle(
 		Env:  r.runnerEnvironment(runnerInfo, request.Env),
 	}
 	if profile != "" {
-		envKey := "CODEX_HOME"
-		if tool == ToolClaude {
-			envKey = "CLAUDE_CONFIG_DIR"
-		}
-		launchRequest.Env[envKey] = configDir
-		launchRequest.Env["RUNNER_PROFILE"] = profile
-		launchRequest.Env["RUNNER_CONFIG_DIR"] = configDir
+		configureProfileEnvironment(launchRequest.Env, tool, profile, configDir)
 	}
 	if kind == KindClaudeStructured {
 		// Structured Claude is intentionally subscription-authenticated. Never
@@ -250,7 +245,7 @@ func (r *Registry) CreateWithLifecycle(
 	prepared := PreparedSession{
 		Info: runnerInfo, Name: strings.TrimSpace(request.Name), Description: description,
 		DescriptionSource: descriptionSource, Tags: tags, Kind: kind, SpecPath: specPath, Tool: tool,
-		Profile: profile, ConfigDir: configDir,
+		Profile: profile, ConfigDir: configDir, StartOperationID: request.OperationID, PromptOperationID: request.PromptOperationID,
 		WorktreePath: request.WorktreePath, WorktreeBranch: request.WorktreeBranch,
 		WorktreeBase: request.WorktreeBase, SourceRepo: request.SourceRepo,
 		DelegationKind: request.DelegationKind, Permissions: request.Permissions, Lifecycle: request.Lifecycle,

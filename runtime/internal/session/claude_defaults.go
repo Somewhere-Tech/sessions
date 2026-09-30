@@ -26,9 +26,9 @@ const (
 )
 
 func (m *Manager) applyClaudeDefaults(request state.CreateSessionRequest) (state.CreateSessionRequest, error) {
-	if state.CommandTool(request.Cmd) != state.ToolClaude {
+	if state.CommandTool(request.Cmd) != state.ToolClaude || request.Kind == state.KindLane {
 		if request.Claude != nil {
-			return request, errors.New("Claude launch options require the claude command")
+			return request, errors.New("Claude launch options require a managed Claude session, not a command lane")
 		}
 		return request, nil
 	}

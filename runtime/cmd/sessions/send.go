@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/somewhere-tech/sessions/runtime/internal/delivery"
 )
 
 type sendEvidence struct {
@@ -29,9 +31,6 @@ func decideSendConfirmation(evidence sendEvidence) sendDecision {
 	if evidence.JSONLConfirmed {
 		return sendDecision{Confidence: "confirmed", ExitCode: 0}
 	}
-	if !evidence.TextStillInComposer && evidence.Working {
-		return sendDecision{Confidence: "accepted", ExitCode: 0}
-	}
 	if evidence.TextStillInComposer {
 		return sendDecision{Confidence: "unconfirmed", ExitCode: 1}
 	}
@@ -48,6 +47,7 @@ type sendResult struct {
 	OperationID         string
 	Confirmed           *bool
 	Confidence          string
+	Retry               bool
 	ExitCode            int
 	Tool                string
 	Text                string
@@ -65,6 +65,7 @@ type deliveryReceipt struct {
 	Retry       bool   `json:"retry"`
 	Reason      string `json:"reason,omitempty"`
 	Duplicate   bool   `json:"duplicate"`
+	Acceptance  string `json:"acceptance,omitempty"`
 }
 
 var (
@@ -82,7 +83,6 @@ var (
 
 const (
 	sendPollInterval = 300 * time.Millisecond
-	maxEnterRetries  = 2
 )
 
 func getComposerLines(snapshot string) []string {
@@ -326,11 +326,8 @@ func firstValue(value map[string]any, keys ...string) any {
 // submitComposer sends one logical message through the daemon's atomic submit
 // boundary. Raw terminal keystrokes still use /input; message text and Enter
 // must never be interleaved with another agent's concurrent submission.
-func (a *app) submitComposer(inputPath, text, sourceSessionID, operationID string, timeout time.Duration) (deliveryReceipt, error) {
+func (a *app) submitComposer(inputPath, text, sourceSessionID, operationID string, timeout time.Duration, mode ...string) (deliveryReceipt, error) {
 	headers := make(http.Header)
-	if sourceSessionID == "" {
-		sourceSessionID = a.api.creatorSession
-	}
 	if sourceSessionID != "" {
 		headers.Set("X-Sessions-Creator-Session", sourceSessionID)
 	}
@@ -341,15 +338,22 @@ func (a *app) submitComposer(inputPath, text, sourceSessionID, operationID strin
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	response, err := a.api.requestWithHeaders(ctx, http.MethodPost, submitPath, map[string]string{
+	body := map[string]string{
 		"data": text, "operation_id": operationID,
-	}, 0, headers)
+	}
+	if len(mode) > 0 {
+		body["mode"] = mode[0]
+	}
+	response, err := a.api.requestWithHeaders(ctx, http.MethodPost, submitPath, body, 0, headers)
 	if err != nil {
 		return a.lookupDeliveryAfterTransportFailure(operationID, err)
 	}
 	var receipt deliveryReceipt
 	if decodeErr := json.Unmarshal(response.body, &receipt); decodeErr != nil {
-		return deliveryReceipt{}, fmt.Errorf("%s returned an unreadable delivery receipt: %w", submitPath, decodeErr)
+		if response.status >= 400 && response.status < 500 {
+			return deliveryReceipt{}, fmt.Errorf("%s refused the request (HTTP %d); inspect this operation before resending", submitPath, response.status)
+		}
+		return a.lookupDeliveryAfterTransportFailure(operationID, fmt.Errorf("%s returned an unreadable delivery receipt: %w", submitPath, decodeErr))
 	}
 	if receipt.OperationID == "" {
 		receipt.OperationID = operationID
@@ -369,7 +373,12 @@ func (a *app) submitComposer(inputPath, text, sourceSessionID, operationID strin
 		if payload.Error == "" {
 			payload.Error = fmt.Sprintf("%s → %d", submitPath, response.status)
 		}
-		return deliveryReceipt{}, errors.New(payload.Error)
+		// A conflict may refer to a different message under this operation ID.
+		// Its existing receipt cannot acknowledge the newly refused payload.
+		if response.status < 500 {
+			return deliveryReceipt{}, errors.New(payload.Error)
+		}
+		return a.lookupDeliveryAfterTransportFailure(operationID, errors.New(payload.Error))
 	}
 	return receipt, nil
 }
@@ -390,10 +399,6 @@ func (a *app) lookupDeliveryAfterTransportFailure(operationID string, transportE
 		OperationID: operationID, Status: "unknown", Retry: false,
 		Reason: "delivery outcome is unknown because Sessions could not query the durable receipt after: " + transportErr.Error(),
 	}, nil
-}
-
-func (a *app) pressComposerEnter(inputPath string) error {
-	return a.postJSON(inputPath, map[string]string{"data": "\r"}, &map[string]any{}, 1)
 }
 
 type eventsResponse struct {
@@ -421,15 +426,12 @@ func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, _ bool,
 		}
 	}
 	if baseline == nil {
-		return sendResult{}, fail(1, "%s", unknownSessionMessage(id))
+		return sendResult{}, a.missingSessionError(id)
 	}
+	sourceSessionID = a.sourceSessionOnSelectedDaemon(sessions, sourceSessionID)
 	tool := toolOfSession(*baseline)
 	confirmable := isConfirmableTool(tool)
-	baseTimestamp := int64(0)
-	if baseline.LastUserMessageAt != nil {
-		baseTimestamp = *baseline.LastUserMessageAt
-	}
-	baseNextIndex := int64(0)
+	baseNextIndex := int64(-1)
 	if confirmable {
 		var events eventsResponse
 		if err := a.getJSON("/api/sessions/"+escapeID(id)+"/events?tail=1", &events); err == nil {
@@ -441,22 +443,61 @@ func (a *app) sendAndConfirmFrom(id, text string, timeout time.Duration, _ bool,
 	if err != nil {
 		return sendResult{}, fmt.Errorf("create message operation id: %w", err)
 	}
-	return a.sendAndConfirmOperation(id, text, timeout, sourceSessionID, operationID, baseTimestamp, baseNextIndex, tool, confirmable, inputPath)
+	return a.sendAndConfirmOperation(id, text, timeout, sourceSessionID, operationID, baseNextIndex, tool, confirmable, structuredSender(*baseline), inputPath)
+}
+
+// sourceSessionOnSelectedDaemon keeps inherited session identity scoped to the
+// daemon which owns it. A CLI running inside a real session may explicitly
+// target a scratch or remote daemon where that UUID has no ledger record; the
+// header is optional authorship metadata, so its absence there must not turn a
+// valid message into a failed delivery. An explicit --from has already been
+// resolved against the selected daemon and remains strict.
+func (a *app) sourceSessionOnSelectedDaemon(sessions []session, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	inherited := strings.TrimSpace(a.api.creatorSession)
+	if inherited == "" {
+		return ""
+	}
+	for _, current := range sessions {
+		if current.ID == inherited {
+			return inherited
+		}
+	}
+	return ""
 }
 
 func (a *app) sendAndConfirmOperation(
 	id, text string,
 	timeout time.Duration,
 	sourceSessionID, operationID string,
-	baseTimestamp, baseNextIndex int64,
+	baseNextIndex int64,
 	tool string,
-	confirmable bool,
-	inputPath string,
+	confirmable, structured bool,
+	inputPath string, mode ...string,
 ) (sendResult, error) {
-	receipt, err := a.submitComposer(inputPath, text, sourceSessionID, operationID, timeout)
+	wireText := text
+	if confirmable && !structured {
+		var err error
+		wireText, err = delivery.LegacyPaste(text)
+		if err != nil {
+			return sendResult{}, err
+		}
+	}
+	receipt, err := a.submitComposer(inputPath, wireText, sourceSessionID, operationID, timeout, mode...)
 	if err != nil {
 		return sendResult{}, err
 	}
+	if result, final := acknowledgedSendResult(receipt, tool); final {
+		return result, nil
+	}
+	return a.confirmTerminalSend(id, text, timeout, baseNextIndex, tool, confirmable, receipt)
+}
+
+// Structured acknowledgments are final delivery evidence, not a reason to
+// inspect a terminal or synthesize another Enter. Keep their boundary explicit.
+func acknowledgedSendResult(receipt deliveryReceipt, tool string) (sendResult, bool) {
 	if receipt.Status != "accepted" {
 		confirmed := false
 		exitCode := exitTransport
@@ -465,29 +506,37 @@ func (a *app) sendAndConfirmOperation(
 		}
 		return sendResult{
 			OperationID: receipt.OperationID, Confirmed: &confirmed, Confidence: receipt.Status,
-			ExitCode: exitCode, Reason: receipt.Reason, Tool: tool,
-		}, nil
+			ExitCode: exitCode, Reason: receipt.Reason, Retry: receipt.Retry, Tool: tool,
+		}, true
 	}
-	if receipt.Duplicate {
+	if receipt.Acceptance == "runner" || receipt.Acceptance == "provider" || receipt.Acceptance == "transcript" {
 		confirmed := true
+		confidence := "accepted"
+		if receipt.Acceptance != "" {
+			confidence = receipt.Acceptance + "-accepted"
+		}
+		if receipt.Acceptance == "transcript" {
+			confidence = "confirmed"
+		}
 		return sendResult{
 			OperationID: receipt.OperationID, Confirmed: &confirmed,
-			Confidence: "accepted", ExitCode: 0, Tool: tool,
-		}, nil
+			Confidence: confidence, ExitCode: 0, Tool: tool,
+		}, true
 	}
+	if receipt.Duplicate && isConfirmableTool(tool) {
+		confirmed := false
+		return sendResult{OperationID: receipt.OperationID, Confirmed: &confirmed, Confidence: "unknown", ExitCode: exitTransport, Tool: tool,
+			Reason: "the old terminal receipt does not confirm complete provider input; inspect history and do not resend this operation"}, true
+	}
+	return sendResult{}, false
+}
+
+func (a *app) confirmTerminalSend(id, text string, timeout time.Duration, baseNextIndex int64, tool string, confirmable bool, receipt deliveryReceipt) (sendResult, error) {
 	if !confirmable {
 		return sendResult{OperationID: receipt.OperationID, Confirmed: nil, Tool: tool}, nil
 	}
-	snippetSource := text
-	for _, line := range strings.Split(text, "\n") {
-		if strings.TrimSpace(line) != "" {
-			snippetSource = strings.TrimSpace(line)
-			break
-		}
-	}
-	snippet := prefixString(snippetSource, 25)
+	snippet := confirmationSnippet(text)
 	start := a.now()
-	enterRetries := 0
 	for {
 		current, err := a.listSessions(false)
 		if err != nil {
@@ -508,22 +557,7 @@ func (a *app) sendAndConfirmOperation(
 				Reason: "session-unreachable",
 			}, nil
 		}
-		newTimestamp := int64(0)
-		if currentSession.LastUserMessageAt != nil {
-			newTimestamp = *currentSession.LastUserMessageAt
-		}
-		if newTimestamp > baseTimestamp {
-			confirmedText := ""
-			var events eventsResponse
-			path := fmt.Sprintf("/api/sessions/%s/events?since=%d", escapeID(id), baseNextIndex)
-			if err := a.getJSON(path, &events); err == nil {
-				for index := len(events.Events) - 1; index >= 0; index-- {
-					if isRealUserEvent(events.Events[index]) {
-						confirmedText = extractEventText(events.Events[index])
-						break
-					}
-				}
-			}
+		if confirmedText := a.matchingUserEventText(id, baseNextIndex, text); confirmedText != "" {
 			confirmed := true
 			decision := decideSendConfirmation(sendEvidence{JSONLConfirmed: true})
 			return sendResult{
@@ -553,20 +587,38 @@ func (a *app) sendAndConfirmOperation(
 				ComposerTail: composerTail, SnapshotState: &state,
 			}, nil
 		}
-		if enterRetries < maxEnterRetries {
-			snapshot, err := a.getText("/api/sessions/" + escapeID(id) + "/snapshot")
-			if err != nil {
-				return sendResult{}, err
-			}
-			if snippet != "" && anyLineContains(getComposerLines(snapshot), snippet) {
-				if err := a.pressComposerEnter(inputPath); err != nil {
-					return sendResult{}, err
-				}
-				enterRetries++
-			}
-		}
 		a.sleep(sendPollInterval)
 	}
+}
+
+func confirmationSnippet(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return prefixString(strings.TrimSpace(line), 25)
+		}
+	}
+	return prefixString(text, 25)
+}
+
+func (a *app) matchingUserEventText(id string, since int64, intended string) string {
+	if since < 0 {
+		return ""
+	}
+	var events eventsResponse
+	path := fmt.Sprintf("/api/sessions/%s/events?since=%d", escapeID(id), since)
+	if err := a.getJSON(path, &events); err != nil {
+		return ""
+	}
+	for index := len(events.Events) - 1; index >= 0; index-- {
+		raw, err := json.Marshal(events.Events[index])
+		if err != nil {
+			continue
+		}
+		if text, matches := delivery.MatchingUserText(raw, intended); matches {
+			return text
+		}
+	}
+	return ""
 }
 
 func anyLineContains(lines []string, snippet string) bool {
@@ -578,10 +630,21 @@ func anyLineContains(lines []string, snippet string) bool {
 	return false
 }
 
+// retryGuidance turns the receipt's retry flag into the only two sentences it
+// can mean. A refusal that happened before any input reached the provider is
+// safe to send again; anything Sessions could not prove is not.
+func retryGuidance(retry bool) string {
+	if retry {
+		return "retry:true — nothing reached the provider, so sending this message again is safe"
+	}
+	return "retry:false — Sessions cannot prove nothing arrived; inspect the conversation before sending again"
+}
+
 type sendJSONResult struct {
 	OperationID             string  `json:"operation_id,omitempty"`
 	Submitted               *bool   `json:"submitted"`
 	Confidence              string  `json:"confidence"`
+	Retry                   *bool   `json:"retry,omitempty"`
 	Reason                  string  `json:"reason,omitempty"`
 	Text                    string  `json:"text,omitempty"`
 	Tool                    string  `json:"tool,omitempty"`
@@ -593,11 +656,12 @@ type sendJSONResult struct {
 
 func (a *app) cmdSend(args []string) error {
 	if len(args) == 0 || args[0] == "" {
-		return fail(1, "usage: sessions send <id> [--from session] [--no-wait] [--timeout Ns] [--file path] [--operation-id UUID] <text...>")
+		return fail(1, "usage: sessions send <id> [--steer] [--from session] [--no-wait] [--timeout Ns] [--file path] [--operation-id UUID] <text...>")
 	}
 	idArg := args[0]
 	args = args[1:]
 	noWait := removeFirst(&args, "--no-wait")
+	steer := removeFirst(&args, "--steer")
 	timeout := 10 * time.Second
 	if raw, present := pluck(&args, "--timeout"); present && raw != "" {
 		var err error
@@ -618,6 +682,14 @@ func (a *app) cmdSend(args []string) error {
 	if hasOperationID && operationID == "" {
 		return fail(1, "--operation-id needs a UUID")
 	}
+	if steer && !hasOperationID {
+		var err error
+		operationID, err = randomUUID()
+		if err != nil {
+			return err
+		}
+		hasOperationID = true
+	}
 	// An unrecognized option in the leading position is a mistake, not message
 	// text: silently typing `--json` into someone's agent session is worse than
 	// refusing it. Later words are left alone so a message may still contain a
@@ -626,7 +698,7 @@ func (a *app) cmdSend(args []string) error {
 		if args[0] == "--" {
 			args = args[1:]
 		} else if strings.HasPrefix(args[0], "--") {
-			return fail(1, "unknown send option %s — valid options are --from, --timeout, --no-wait, --file, and --operation-id; to send it as text use `sessions send <id> -- %s ...`",
+			return fail(1, "unknown send option %s — valid options are --steer, --from, --timeout, --no-wait, --file, and --operation-id; to send it as text use `sessions send <id> -- %s ...`",
 				args[0], args[0])
 		}
 	}
@@ -642,7 +714,7 @@ func (a *app) cmdSend(args []string) error {
 		text = string(encoded)
 	}
 	if text == "" {
-		return fail(1, "usage: sessions send <id> [--from session] [--no-wait] [--timeout Ns] [--file path] [--operation-id UUID] <text...>")
+		return fail(1, "usage: sessions send <id> [--steer] [--from session] [--no-wait] [--timeout Ns] [--file path] [--operation-id UUID] <text...>")
 	}
 	id, err := a.resolveSessionID(idArg)
 	if err != nil {
@@ -659,34 +731,7 @@ func (a *app) cmdSend(args []string) error {
 		if !sendOperationIDPattern.MatchString(operationID) {
 			return fail(1, "--operation-id must be a lowercase UUID")
 		}
-		sessions, listErr := a.listSessions(false)
-		if listErr != nil {
-			return listErr
-		}
-		var baseline *session
-		for index := range sessions {
-			if sessions[index].ID == id {
-				baseline = &sessions[index]
-				break
-			}
-		}
-		if baseline == nil {
-			return fail(1, "%s", unknownSessionMessage(id))
-		}
-		baseTimestamp := int64(0)
-		if baseline.LastUserMessageAt != nil {
-			baseTimestamp = *baseline.LastUserMessageAt
-		}
-		baseNextIndex := int64(0)
-		tool := toolOfSession(*baseline)
-		confirmable := isConfirmableTool(tool)
-		if confirmable {
-			var events eventsResponse
-			if eventsErr := a.getJSON("/api/sessions/"+escapeID(id)+"/events?tail=1", &events); eventsErr == nil {
-				baseNextIndex = events.NextIndex
-			}
-		}
-		result, err = a.sendAndConfirmOperation(id, text, timeout, sourceID, operationID, baseTimestamp, baseNextIndex, tool, confirmable, "/api/sessions/"+escapeID(id)+"/input")
+		result, err = a.sendExplicitOperation(id, text, sourceID, operationID, timeout, steer)
 	} else {
 		result, err = a.sendAndConfirmFrom(id, text, timeout, noWait, sourceID)
 	}
@@ -717,13 +762,17 @@ func (a *app) cmdSend(args []string) error {
 			_, err := io.WriteString(a.stdout, "accepted (working); JSONL confirmation pending\n")
 			return err
 		}
+		if result.Confidence == "runner-accepted" {
+			_, err := io.WriteString(a.stdout, "accepted by runner; provider response pending\n")
+			return err
+		}
 		_, err := io.WriteString(a.stdout, "delivered\n")
 		return err
 	}
 	if a.wantJSON {
 		output := sendJSONResult{
 			OperationID: result.OperationID, Submitted: boolPointer(false), Confidence: result.Confidence, Reason: result.Reason,
-			TextStillInComposer: result.TextStillInComposer,
+			Retry: boolPointer(result.Retry), TextStillInComposer: result.TextStillInComposer,
 		}
 		composerTail := result.ComposerTail
 		output.ComposerTail = &composerTail
@@ -736,17 +785,23 @@ func (a *app) cmdSend(args []string) error {
 		}
 	} else if result.Reason == "session-unreachable" {
 		io.WriteString(a.stderr, "sessions send: session exited or became unreachable before submission was confirmed\n")
+	} else if (result.Confidence == "not-delivered" || result.Confidence == "unknown") && result.Reason != "" {
+		// Preserve the daemon's specific refusal or uncertainty instructions,
+		// and say what they amount to: the message did not arrive, and whether
+		// sending this same operation again is safe.
+		fmt.Fprintf(a.stderr, "sessions send: %s\n", result.Reason)
+		fmt.Fprintf(a.stderr, "  not delivered; %s\n", retryGuidance(result.Retry))
 	} else {
 		fmt.Fprintf(a.stderr, "sessions send: could not confirm submission after %dms\n", timeout.Milliseconds())
 		if isBlockingSnapshotState(result.SnapshotState) {
 			fmt.Fprintf(a.stderr, "  session is at %s — not accepting a typed message; use `sessions keys` or the terminal view\n", snapshotStateCLILabel(result.SnapshotState))
 			fmt.Fprintf(a.stderr, "  %s\n", result.SnapshotState.Description)
 		} else if result.TextStillInComposer != nil && *result.TextStillInComposer {
-			io.WriteString(a.stderr, "  the message is still in the composer (Enter did not submit)\n")
+			io.WriteString(a.stderr, "  text remains visible in the composer; complete delivery is not confirmed\n")
 		} else {
-			io.WriteString(a.stderr, "  sent but not confirmed — the session may still be starting; retry, or use `sessions wait` first\n")
-			io.WriteString(a.stderr, "  message is no longer in the composer but no JSONL user event appeared yet\n")
-			io.WriteString(a.stderr, "  (the tool may still be picking it up, or the session may be confused)\n")
+			io.WriteString(a.stderr, "  complete delivery is not confirmed; input may be partial or still pending\n")
+			io.WriteString(a.stderr, "  inspect provider history before deciding whether to send a new message\n")
+			io.WriteString(a.stderr, "  Sessions did not resend the message or press Enter again\n")
 		}
 		if result.ComposerTail != "" {
 			fmt.Fprintf(a.stderr, "  inspect the terminal with `sessions snap %s` if the provider is showing a picker or prompt\n", id)
@@ -758,12 +813,51 @@ func (a *app) cmdSend(args []string) error {
 	return status(result.ExitCode)
 }
 
+func (a *app) sendExplicitOperation(id, text, sourceID, operationID string, timeout time.Duration, steer bool) (sendResult, error) {
+	sessions, err := a.listSessions(false)
+	if err != nil {
+		return sendResult{}, err
+	}
+	var baseline *session
+	for index := range sessions {
+		if sessions[index].ID == id {
+			baseline = &sessions[index]
+			break
+		}
+	}
+	if baseline == nil {
+		return sendResult{}, a.missingSessionError(id)
+	}
+	if steer && (!baseline.MessageSubmit || toolOfSession(*baseline) != "codex") {
+		return sendResult{}, fail(1, "Steer now requires an updated structured Codex runner. Nothing was sent; keep this draft or send an ordinary follow-up.")
+	}
+	sourceID = a.sourceSessionOnSelectedDaemon(sessions, sourceID)
+	baseNextIndex := int64(-1)
+	tool := toolOfSession(*baseline)
+	confirmable := isConfirmableTool(tool)
+	if confirmable {
+		var events eventsResponse
+		if err := a.getJSON("/api/sessions/"+escapeID(id)+"/events?tail=1", &events); err == nil {
+			baseNextIndex = events.NextIndex
+		}
+	}
+	mode := "auto"
+	if steer {
+		mode = "steer"
+	}
+	return a.sendAndConfirmOperation(id, text, timeout, sourceID, operationID, baseNextIndex, tool, confirmable, structuredSender(*baseline), "/api/sessions/"+escapeID(id)+"/input", mode)
+}
+
+func structuredSender(current session) bool {
+	return current.MessageSubmit || current.Kind == "codex-app-server" || current.Kind == "claude-structured"
+}
+
 func (a *app) cmdSendStatus(args []string) error {
 	if len(args) != 1 || !sendOperationIDPattern.MatchString(args[0]) {
 		return fail(1, "usage: sessions send-status <operation-id>")
 	}
-	var receipt deliveryReceipt
-	if err := a.getJSON("/api/message-deliveries/"+args[0], &receipt); err != nil {
+	receipt, err := a.readDeliveryReceipt(args[0])
+	if err != nil {
 		return err
 	}
 	if a.wantJSON {
@@ -779,6 +873,30 @@ func (a *app) cmdSendStatus(args []string) error {
 		fmt.Fprintln(a.stdout, "Do not resend the message automatically.")
 	}
 	return nil
+}
+
+// readDeliveryReceipt reads one durable receipt. A receipt is recognised by its
+// shape rather than by the status code that carried it: a daemon from before
+// receipts-are-answers reports a recorded refusal as 404 with the receipt in
+// the body, and wrapping that in an error string is how a definitive answer
+// became "the CLI could not tell you".
+func (a *app) readDeliveryReceipt(operationID string) (deliveryReceipt, error) {
+	path := "/api/message-deliveries/" + operationID
+	response, err := a.api.request(context.Background(), http.MethodGet, path, nil, 0)
+	if err != nil {
+		return deliveryReceipt{}, err
+	}
+	var receipt deliveryReceipt
+	if json.Unmarshal(response.body, &receipt) == nil && receipt.Status != "" {
+		if receipt.OperationID == "" {
+			receipt.OperationID = operationID
+		}
+		return receipt, nil
+	}
+	if response.status >= 400 {
+		return deliveryReceipt{}, apiReadFailure(path, response)
+	}
+	return deliveryReceipt{}, fmt.Errorf("%s returned no delivery receipt", path)
 }
 
 func boolPointer(value bool) *bool { return &value }

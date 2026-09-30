@@ -62,15 +62,28 @@
 }
 .session-active-copy { min-width: 0; }
 .session-parent-breadcrumb { display: block; margin-bottom: 2px; color: var(--fg-faint); font-size: 12px; }
+button.session-parent-breadcrumb { appearance: none; background: none; border: 0; padding: 0; margin-bottom: 2px; font: inherit; font-size: 12px; color: var(--fg-faint); cursor: pointer; text-align: left; }
+button.session-parent-breadcrumb:hover, button.session-parent-breadcrumb:focus-visible { color: var(--fg); text-decoration: underline; outline: none; }
 .session-parent-breadcrumb span { padding: 0 4px; }
 .session-active-title-row { display: flex; align-items: center; gap: 9px; }
 .session-active-title-row h1 { min-width: 0; overflow: hidden; margin: 0; color: var(--fg); font-size: 17px; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
+.session-title-display { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.session-title-display h1 { flex: 1 1 auto; }
+.session-title-rename-button { flex: 0 0 auto; padding: 2px 5px; border: 0; border-radius: 4px; background: transparent; color: var(--fg-faint); font: inherit; font-size: 12px; cursor: pointer; }
+.session-title-rename-button:hover, .session-title-rename-button:focus-visible { background: var(--bg-elev-3); color: var(--fg); outline: none; }
+.session-title-rename { display: flex; min-width: 0; align-items: center; gap: 5px; }
+.session-title-rename input { min-width: 120px; width: min(260px, 30vw); height: 29px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--bg-base); color: var(--fg); font: 600 13px var(--font-ui); outline: none; }
+.session-title-rename button { height: 27px; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-elev-2); color: var(--fg-dim); font-size: 12px; cursor: pointer; }
+.session-title-rename button[type="submit"] { border-color: var(--accent-border-soft); color: var(--accent); }
+.session-title-rename-error { color: var(--danger); font-size: 12px; }
 .session-live-pill { flex: 0 0 auto; padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--fg-faint); font-size: 12px; font-weight: 700; text-transform: uppercase; }
 .session-live-pill.is-working { border-color: var(--accent-border-soft); background: var(--accent-bg-soft); color: var(--accent); }
 .session-live-pill.is-reconnecting { border-color: var(--accent-border-soft); color: var(--accent); }
 .session-live-pill.is-needs-you { border-color: color-mix(in srgb, var(--warn) 42%, transparent); color: var(--warn); }
 .session-live-pill.is-limited { border-color: color-mix(in srgb, var(--warn) 42%, transparent); color: var(--warn); }
-.session-live-pill.is-failed { border-color: color-mix(in srgb, var(--danger) 42%, transparent); color: var(--danger); }
+.session-live-pill.is-failed,
+.session-live-pill.is-provider-down { border-color: color-mix(in srgb, var(--danger) 42%, transparent); color: var(--danger); }
+.session-live-pill.is-auth-needed { border-color: color-mix(in srgb, var(--warn) 42%, transparent); color: var(--warn); }
 .session-live-pill.is-finished { color: var(--fg-dim); }
 .session-live-pill.is-completed { border-color: color-mix(in srgb, var(--ok) 38%, transparent); color: var(--ok); }
 .session-live-pill.is-ended,
@@ -203,6 +216,11 @@
 .session-popout-view:hover { border-color: var(--accent-border-soft); color: var(--accent); }
 .session-popout-view svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.55; }
 .session-close-view { min-height: 30px; border-color: var(--border); color: var(--fg-dim); font-size: 12px; }
+/* Putting a session away is a deliberate act, so it is a visible button rather
+   than a menu item, and a refusal is shown where the button is. */
+.session-archive-action { min-height: 30px; border-color: var(--border); color: var(--fg-dim); font-size: 12px; white-space: nowrap; }
+.session-archive-action:hover { border-color: var(--accent-border-soft); color: var(--accent); }
+.session-archive-error { max-width: 240px; color: var(--warn); font-size: 12px; }
 .session-toolbar .view-toggle { order: -2; margin-left: 0; margin-right: auto; background: transparent; }
 .session-toolbar .view-toggle.is-content-switch { padding: 2px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-base); }
 .session-toolbar .view-toggle-btn { padding: 4px 11px; }
@@ -222,6 +240,8 @@
 .session-view.view-details .session-details-pane { position: absolute; inset: 0; z-index: 3; display: flex; overflow: auto; }
 .session-history-body { position: relative; min-height: 0; flex: 1; overflow: auto; background: var(--bg-base); }
 .session-history-transcript { width: min(860px, calc(100% - 48px)); margin: 0 auto; padding: 28px 0 80px; }
+.session-history-preview-control { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.session-history-preview-control .btn { flex: none; }
 .session-history-message { display: flex; flex-direction: column; margin: 20px 0; color: var(--fg); }
 .session-history-message.is-assistant.is-continuation { margin-top: -8px; }
 .session-history-message.is-user { align-items: flex-end; }
@@ -354,6 +374,9 @@
 .details-row { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; align-items: baseline; }
 .details-row span { color: var(--fg-dim); font-size: 13px; }
 .details-row strong { overflow: hidden; color: var(--fg); font-size: 13px; font-weight: 550; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.details-row strong.is-provider-down,
+.details-row strong.is-failed { color: var(--danger); }
+.details-row strong.is-auth-needed { color: var(--warn); }
 .details-provider-row { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; align-items: center; }
 .details-provider-row > span { color: var(--fg-dim); font-size: 13px; }
 .details-provider-row > .provider-badge,
@@ -364,7 +387,6 @@
 .details-technical[open] { padding-bottom: 14px; }
 .details-technical .details-card { background: var(--bg-base); box-shadow: none; }
 .details-technical .details-row strong { font-family: var(--font-mono); font-size: 12px; }
-.coming-soon-pill { justify-self: start; padding: 4px 7px; border: 1px dashed var(--accent-border-soft); border-radius: 999px; color: var(--accent); font-size: 12px; }
 .session-control {
   display: flex;
   align-items: center;
@@ -414,7 +436,9 @@
 .home-session-dot.is-reconnecting { border-color: var(--accent); background: transparent; box-shadow: 0 0 0 3px var(--accent-glow); animation: pulse 1.2s ease-in-out infinite; }
 .home-session-dot.is-needs-you { border-color: var(--warn); background: var(--warn); }
 .home-session-dot.is-limited { border-color: var(--warn); background: transparent; box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 14%, transparent); }
-.home-session-dot.is-failed { border-color: var(--danger); background: var(--danger); }
+.home-session-dot.is-failed,
+.home-session-dot.is-provider-down { border-color: var(--danger); background: var(--danger); }
+.home-session-dot.is-auth-needed { border-color: var(--warn); background: var(--warn); }
 .home-session-dot.is-finished,
 .home-session-dot.is-ended,
 .home-session-dot.is-unavailable { background: var(--fg-faint); opacity: .5; }
@@ -439,10 +463,8 @@
 .settings-kicker { color: var(--accent); font-size: 12px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
 .settings-page > h1 { margin: 7px 0; font-size: 28px; letter-spacing: -.045em; }
 .settings-page > p { margin: 0 0 28px; color: var(--fg-dim); font-size: 14px; line-height: 1.55; }
-.settings-card,
-.settings-coming-card { margin-bottom: 12px; padding: 18px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-elev-1); }
-.settings-card h2,
-.settings-coming-card h2 { margin: 0 0 14px; font-size: 14px; }
+.settings-card { margin-bottom: 12px; padding: 18px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-elev-1); }
+.settings-card h2 { margin: 0 0 14px; font-size: 14px; }
 .settings-card > p { color: var(--fg-dim); font-size: 12px; line-height: 1.55; }
 .view-size-choice { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .view-size-choice button {

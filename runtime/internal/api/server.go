@@ -2,14 +2,23 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"log"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/backup"
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
 	"github.com/somewhere-tech/sessions/runtime/internal/delivery"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetaccount"
+	"github.com/somewhere-tech/sessions/runtime/internal/fleetendpoint"
 	"github.com/somewhere-tech/sessions/runtime/internal/integrations"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
-	"github.com/somewhere-tech/sessions/runtime/internal/recap"
+	"github.com/somewhere-tech/sessions/runtime/internal/project"
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/relay"
 	sessionruntime "github.com/somewhere-tech/sessions/runtime/internal/session"
 	"github.com/somewhere-tech/sessions/runtime/internal/smartsearch"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
@@ -30,25 +39,53 @@ const (
 // Version is stamped into sessionsd at build time and reported by both health
 // endpoints. Keep the source fallback aligned with the current app version so
 // an un-stamped development build is still honest.
-var Version = "0.2.18"
+var Version = "0.2.27"
 
 type Server struct {
 	config               state.Config
+	projects             *project.Store
 	registry             sessionService
 	push                 pushService
 	tokens               tokenStore
 	pair                 *pairService
 	tailnetAccess        *tailnetAccessService
 	lan                  *lanListener
+	remote               *remoteManager
+	tailnetIP            *tailnetIPListener
 	backups              *backup.Service
 	integrationEndpoints *integrations.Service
-	usage                *usage.Service
-	recaps               *recap.Service
-	smartSearch          *smartsearch.Service
-	deliveries           *delivery.Store
-	identity             machineIdentity
-	identityError        error
-	submits              *sessionMutexes
+	// routes counts what the daemon spent its time answering, per route shape.
+	routes *routeStats
+	// historyAsked counts the full history listings this process has served, so
+	// the startup warm can tell "nobody is waiting" from "somebody is waiting
+	// right now, on the work I am about to duplicate".
+	historyAsked       atomic.Int64
+	usage              *usage.Service
+	smartSearch        *smartsearch.Service
+	deliveries         *delivery.Store
+	identity           machineIdentity
+	identityError      error
+	account            *fleetaccount.Manager
+	accountError       error
+	relayConnector     *relay.Connector
+	relayMu            sync.RWMutex
+	relayDirectoryBase string
+	relayConnected     bool
+	relayWake          chan struct{}
+	submits            *sessionMutexes
+	deliveriesInFlight sync.Map
+	continuationJobs   *continuationJobStore
+	lanFallbackLog     sync.Once
+	teamChanges        teamChanges
+}
+
+func (s *Server) logLANFallbackOnce(fallbacks []fleetendpoint.Candidate) {
+	if len(fallbacks) == 0 {
+		return
+	}
+	s.lanFallbackLog.Do(func() {
+		log.Printf("sessionsd: local-network endpoint unreachable; using %s transport", fallbacks[0].Transport)
+	})
 }
 
 type authPrincipal struct {
@@ -78,6 +115,18 @@ type rebootRestoreHealthService interface {
 	RestorePendingCount() int
 }
 
+type retiredRestoreHealthService interface {
+	RetiredRestoreCount() int
+}
+
+type artifactRetirementHealthService interface {
+	ArtifactRetirementHealth() (retired, pending int)
+}
+
+type pendingRestoreService interface {
+	PendingRestore(string) (state.RestorePending, bool)
+}
+
 type attributedKillService interface {
 	RequestKillAttributed(context.Context, string, bool, state.EndSessionRequest) error
 }
@@ -94,8 +143,21 @@ type messageAttributionService interface {
 	MessageRelays(context.Context, string) ([]ledger.MessageRelayed, error)
 }
 
+type pausedWaker interface {
+	WakePaused(context.Context, string) (state.SessionInfo, error)
+}
+
+type approvalService interface {
+	Approve(context.Context, string, proto.ApprovalControl) (state.SessionInfo, error)
+}
+
 type modelControlService interface {
 	ConfigureModel(context.Context, string, string, string) (state.SessionInfo, error)
+}
+
+type providerRetryService interface {
+	RetryProvider(context.Context, string) (state.SessionInfo, error)
+	StopProviderRetry(context.Context, string) error
 }
 
 type modelCatalogService interface {
@@ -137,8 +199,11 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 		pair:          newPairService(config),
 		tailnetAccess: newTailnetAccessService(),
 		submits:       newSessionMutexes(),
+		relayWake:     make(chan struct{}, 1),
 		identity:      identity, identityError: identityErr,
-		deliveries: delivery.New(deliveryRoot),
+		deliveries:       delivery.New(deliveryRoot),
+		continuationJobs: newContinuationJobStore(),
+		routes:           newRouteStats(),
 		integrationEndpoints: integrations.NewService(integrations.ServiceOptions{
 			StateDir: config.StateRoot, RunnerStateDir: config.RunnerStateDir,
 			DiscoverProviderHistory: true,
@@ -148,13 +213,21 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 		localUsage = usage.NewLocalService(config)
 	}
 	server.usage = localUsage
-	recapRoot := config.StateRoot
-	if recapRoot == "" {
-		recapRoot = config.UserStateRoot
-	}
-	server.recaps = recap.NewService(recapRoot)
 	server.smartSearch = smartsearch.NewService()
 	server.lan = newLANListener(config, server, identity)
+	server.remote = newRemoteManager(config, server.lan.settingsPath)
+	server.tailnetIP = newTailnetIPListener(config, server)
+	server.remote.onEndpoints = func(endpoint, ipEndpoint string) error {
+		server.lan.setTailnetEndpoints(endpoint, ipEndpoint)
+		if server.remote.state().Preview {
+			return server.tailnetIP.close()
+		}
+		if err := server.tailnetIP.setEndpoint(ipEndpoint); err != nil {
+			return fmt.Errorf("open tailnet-IP listener: %w", err)
+		}
+		return nil
+	}
+	server.initFleetAccount()
 	// Create the token while the daemon is starting, including when the open
 	// escape hatch is present. This keeps a fresh install secure without an
 	// inbound request and makes `sessions token` immediately useful. A failure
@@ -165,6 +238,16 @@ func NewWithUsage(config state.Config, registry sessionService, localUsage *usag
 			ConfigPath: backup.ConfigPath(home), RunnerStateDir: config.RunnerStateDir,
 		}, func() []state.SessionInfo { return registry.List(true) })
 		_ = server.backups.ReloadPeriodic()
+	}
+	// Projects live beside settings in the user state root; a daemon with only
+	// a state root (tests, isolated runs) keeps them there rather than in the
+	// working directory.
+	projectsRoot := config.UserStateRoot
+	if projectsRoot == "" {
+		projectsRoot = config.StateRoot
+	}
+	if projectsRoot != "" {
+		server.projects = project.NewStore(filepath.Join(projectsRoot, "projects.json"), nil)
 	}
 	return server
 }

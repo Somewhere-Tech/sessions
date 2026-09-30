@@ -22,6 +22,11 @@ const (
 type IdleClassification struct {
 	Outcome IdleOutcome
 	Line    string
+	// Evidence is set only when the provider itself said something went wrong,
+	// and carries the rendered line that proves it. An error line that is not
+	// provider evidence — tool output, an echoed command, the agent's own prose
+	// — leaves this zero, and no provider fault may be raised from it.
+	Evidence providerEvidence
 }
 
 var (
@@ -30,6 +35,10 @@ var (
 	inputPromptRE            = regexp.MustCompile(`(?i)\b(?:y/n|yes/no|do you want)\b|\[[yn]/[yn]\]|\b(?:continue|proceed)\s*\?|\?\s*$`)
 	permissionPromptRE       = regexp.MustCompile(`(?i)^\s*[❯›]\s*(?:approve|allow|trust)\b|\b(?:approve|allow|trust)\b.*(?:\?|:)\s*$`)
 	confirmationFooterRE     = regexp.MustCompile(`(?i)\bpress\s+enter\s+to\s+(?:confirm|continue|approve|allow)\b|\benter\s+to\s+(?:confirm|continue|approve|allow)\b.*\besc\s+to\s+(?:cancel|go\s+back)\b`)
+	claudeTrustQuestionRE    = regexp.MustCompile(`(?i)\bis this a project you created or one you trust\?`)
+	claudeTrustChoiceRE      = regexp.MustCompile(`(?i)\b(?:yes,?\s+i trust this folder|no,?\s+exit)\b`)
+	claudeAppearancePromptRE = regexp.MustCompile(`(?i)\bchoose\s+the\s+text\s+style\s+that\s+looks\s+best\s+with\s+your\s+terminal\b`)
+	claudeAppearanceChoiceRE = regexp.MustCompile(`(?is)\b1[.)]\s*auto\s*\(match terminal\).*\b2[.)]\s*dark mode\b`)
 	promptReasonRE           = regexp.MustCompile(`(?i)^\s*reason\s*:\s*(.+)$`)
 	choicePromptRE           = regexp.MustCompile(`(?i)\b(?:which|select|choose)\b.*(?:\?|:)\s*$`)
 	numberedChoiceRE         = regexp.MustCompile(`^\s*(?:[>❯›^]\s*)?\d+[.)]\s+\S`)
@@ -37,8 +46,17 @@ var (
 	selectedChoiceRE         = regexp.MustCompile(`^\s*[❯›]\s+\S`)
 	otherChoiceRE            = regexp.MustCompile(`(?i)^\s*(?:[○◯●◉]|\[[ x]\])\s+\S`)
 	errorRE                  = regexp.MustCompile(`(?i)\b(?:error|failed|exception|panic|traceback|fatal)\b`)
-	benignErrorRE            = regexp.MustCompile(`(?i)\b(?:0\s+(?:errors?|fail(?:ed|ures?)?)|no\s+(?:errors?|failures?))\b`)
-	resolutionRE             = regexp.MustCompile(`(?i)\b(?:resolved|recovered|fixed|succeeded|successful|passed|completed|all checks pass|done)\b`)
+	// A provider warning is not a failed turn. Codex prints "⚠ MCP startup
+	// incomplete (failed: name)" when an optional MCP server is down and then
+	// answers normally; treating that line as the outcome reported a completed
+	// turn as failed.
+	benignErrorRE = regexp.MustCompile(`(?i)\b(?:0\s+(?:errors?|fail(?:ed|ures?)?)|no\s+(?:errors?|failures?))\b|^\s*⚠|\bMCP (?:startup|client|server)\b|\bcodex_rmcp_client\b`)
+	resolutionRE  = regexp.MustCompile(`(?i)\b(?:resolved|recovered|fixed|succeeded|successful|passed|completed|all checks pass|done)\b`)
+	// Claude closes every turn with an activity footer ("✻ Sautéed for 1s ·
+	// done 11:25 AM"); its "done" is about the turn, not the fault above it.
+	claudeTurnFooterRE        = regexp.MustCompile(`^\s*[✻✽✶✳*]\s+\S+ for \d+(?:\.\d+)?[smh]\b`)
+	claudeProviderFaultLineRE = regexp.MustCompile(`(?i)^⏺\s*(?:API Error\b|Request timed out\b|fetch failed\b)`)
+	codexProviderFaultLineRE  = regexp.MustCompile(`(?i)^(?:■\s*|ERROR:\s*|Reconnecting\.\.\.\s+\d+/\d+\b|stream disconnected\b)`)
 
 	workingSpinnerRE = regexp.MustCompile(`(?:…|\.\.\.)\s*\(\s*\d+\s*[hms]`)
 	workingFooterRE  = regexp.MustCompile(`(?i)[·•∙]\s*esc\s+to\s+interrupt`)
@@ -54,8 +72,8 @@ var (
 	ignoredMirrorSummaryRE = regexp.MustCompile(`(?i)\b(?:esc to interrupt|shift\+tab|for shortcuts|context left|bypass permissions|accept edits)\b`)
 )
 
-// ClaudeWorkingFromSnapshot ports the spinner/footer activity detector used by
-// the TypeScript daemon. The snapshot should represent the current viewport.
+// ClaudeWorkingFromSnapshot applies the spinner/footer activity detector. The
+// snapshot should represent the current viewport.
 func ClaudeWorkingFromSnapshot(snapshot string) bool {
 	if snapshot == "" {
 		return false
@@ -80,11 +98,33 @@ func ClaudeWorkingFromSnapshot(snapshot string) bool {
 // ClassifyIdleReason applies the terminal-tail completion rules.
 func ClassifyIdleReason(snapshot string) IdleOutcome { return ClassifySnapshot(snapshot).Outcome }
 
+// ClassifySnapshotFor is ClassifySnapshot for a caller that knows which
+// provider is running. The provider decides what counts as its own login UI;
+// without one, only an anchored provider error line can be evidence.
+func ClassifySnapshotFor(provider, snapshot string) IdleClassification {
+	return classifySnapshot(provider, snapshot)
+}
+
+// Claude's first-run trust dialog spans more lines than the terminal-tail
+// window. Recognize it before trailing controls so semantic input cannot
+// activate its selected "No, exit" choice.
 func ClassifySnapshot(snapshot string) IdleClassification {
+	return classifySnapshot("", snapshot)
+}
+
+func classifySnapshot(provider, snapshot string) IdleClassification {
 	lines := snapshotLines(snapshot)
+	if classified, ok := claudeFirstRunClassification(lines); ok {
+		return classified
+	}
 	trailing := lines
 	if len(trailing) > 12 {
 		trailing = trailing[len(trailing)-12:]
+	}
+	// The provider's own words, from rows that still have their indentation:
+	// what a tool printed is not what the provider said.
+	if evidence := terminalProviderEvidence(provider, terminalRows(snapshot)); evidence.proven() {
+		return IdleClassification{Outcome: IdleError, Line: evidence.Fault.Detail, Evidence: evidence}
 	}
 	for i := len(trailing) - 1; i >= 0; i-- {
 		line := trailing[i]
@@ -100,6 +140,34 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 			return IdleClassification{Outcome: IdleBlocked, Line: displayLine(line)}
 		}
 	}
+	if classified, ok := blockedByRenderedChoice(trailing); ok {
+		return classified
+	}
+	for i := len(trailing) - 1; i >= 0; i-- {
+		line := trailing[i]
+		if !errorRE.MatchString(line) || benignErrorRE.MatchString(line) {
+			continue
+		}
+		resolved := false
+		for _, following := range trailing[i+1:] {
+			if resolutionRE.MatchString(following) {
+				resolved = true
+				break
+			}
+		}
+		if resolved {
+			return IdleClassification{Outcome: IdleDone}
+		}
+		return IdleClassification{Outcome: IdleError, Line: displayLine(line)}
+	}
+	return IdleClassification{Outcome: IdleDone}
+}
+
+// blockedByRenderedChoice recognizes a picker the person has to answer: a
+// numbered list with one entry selected, or a selected row beside other
+// choices. The prompt above the list is what the row is named after, because
+// "❯ 2. Dark mode" tells nobody what was asked.
+func blockedByRenderedChoice(trailing []string) (IdleClassification, bool) {
 	numbered := 0
 	selectedNumbered := ""
 	for _, line := range trailing {
@@ -122,7 +190,7 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 		if prompt == "" {
 			prompt = selectedNumbered
 		}
-		return IdleClassification{Outcome: IdleBlocked, Line: displayLine(prompt)}
+		return IdleClassification{Outcome: IdleBlocked, Line: displayLine(prompt)}, true
 	}
 	selected := ""
 	for _, line := range trailing {
@@ -130,31 +198,36 @@ func ClassifySnapshot(snapshot string) IdleClassification {
 			selected = line
 		}
 	}
-	if selected != "" {
-		for _, line := range trailing {
-			if line != selected && otherChoiceRE.MatchString(line) {
-				return IdleClassification{Outcome: IdleBlocked, Line: displayLine(selected)}
-			}
+	if selected == "" {
+		return IdleClassification{}, false
+	}
+	for _, line := range trailing {
+		if line != selected && otherChoiceRE.MatchString(line) {
+			return IdleClassification{Outcome: IdleBlocked, Line: displayLine(selected)}, true
 		}
 	}
-	for i := len(trailing) - 1; i >= 0; i-- {
-		line := trailing[i]
-		if !errorRE.MatchString(line) || benignErrorRE.MatchString(line) {
-			continue
-		}
-		resolved := false
-		for _, following := range trailing[i+1:] {
-			if resolutionRE.MatchString(following) {
-				resolved = true
-				break
-			}
-		}
-		if resolved {
-			return IdleClassification{Outcome: IdleDone}
-		}
-		return IdleClassification{Outcome: IdleError, Line: displayLine(line)}
+	return IdleClassification{}, false
+}
+
+func claudeFirstRunClassification(lines []string) (IdleClassification, bool) {
+	joined := strings.Join(lines, "\n")
+	if claudeTrustQuestionRE.MatchString(joined) && claudeTrustChoiceRE.MatchString(joined) {
+		return IdleClassification{Outcome: IdleBlocked, Line: "Claude is waiting for you to trust this folder"}, true
 	}
-	return IdleClassification{Outcome: IdleDone}
+	if claudeAppearancePromptRE.MatchString(joined) && claudeAppearanceChoiceRE.MatchString(joined) {
+		return IdleClassification{Outcome: IdleBlocked, Line: "Choose Claude's terminal appearance"}, true
+	}
+	return IdleClassification{}, false
+}
+
+func terminalProviderFaultLine(line string) (string, bool) {
+	if claudeProviderFaultLineRE.MatchString(line) {
+		return "claude", true
+	}
+	if codexProviderFaultLineRE.MatchString(line) {
+		return "codex", true
+	}
+	return "", false
 }
 
 func snapshotLines(snapshot string) []string {
@@ -191,6 +264,77 @@ func displayLine(line string) string {
 
 // FinalAssistantSummary returns the concise last assistant text, or an empty
 // string when no usable structured event exists.
+// finalAssistantText returns the full text of the last assistant message in a
+// structured event log, or "" when there is none.
+func finalAssistantText(events []json.RawMessage) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		var event map[string]any
+		if json.Unmarshal(events[i], &event) != nil || event["type"] != "assistant" {
+			continue
+		}
+		message, ok := event["message"].(map[string]any)
+		if !ok || message["role"] != "assistant" {
+			continue
+		}
+		if text := strings.TrimSpace(assistantContent(message["content"])); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+var (
+	askPhraseRE      = regexp.MustCompile(`(?i)\b(?:which|should i|do you want|would you like|do you prefer|shall i|can you confirm|please confirm|let me know|what would you|how would you|which one)\b`)
+	optionListLineRE = regexp.MustCompile(`(?m)^\s*(?:\d+[.)]|[a-c][.)]|[-*])\s+\S`)
+)
+
+// AssistantQuestion reports whether the last assistant message stopped to ask
+// the person something, and returns the question. A structured turn has no
+// terminal to read, so this is the only signal that a Rich lane is waiting on
+// its manager rather than done. It is deliberately conservative: the closing
+// line must end in a question mark, and the message must either ask outright
+// (which / should I / do you want / let me know) or lay out options to pick
+// from. A rhetorical "?" mid-message does not qualify.
+func AssistantQuestion(events []json.RawMessage) (string, bool) {
+	text := finalAssistantText(events)
+	if text == "" {
+		return "", false
+	}
+	plain := conciseFull(text)
+	if !strings.HasSuffix(plain, "?") {
+		return "", false
+	}
+	if !askPhraseRE.MatchString(plain) && !optionListLineRE.MatchString(text) {
+		return "", false
+	}
+	// The question is the last sentence of the last line, read before markdown
+	// stripping joins an option list into the sentence before it.
+	lines := strings.Split(text, "\n")
+	last := ""
+	for i := len(lines) - 1; i >= 0 && last == ""; i-- {
+		last = conciseFull(lines[i])
+	}
+	question := last
+	if len(question) > 1 {
+		if index := strings.LastIndexAny(question[:len(question)-1], ".!?"); index >= 0 && index+1 < len(question) {
+			question = strings.TrimSpace(question[index+1:])
+		}
+	}
+	return conciseText(question, 160), true
+}
+
+// conciseFull strips markdown like conciseText but keeps the whole text, so
+// a trailing question mark can be inspected wherever it sits.
+func conciseFull(text string) string {
+	text = codeFenceRE.ReplaceAllString(text, " ")
+	text = imageRE.ReplaceAllString(text, "$1")
+	text = linkRE.ReplaceAllString(text, "$1")
+	text = markdownPrefixRE.ReplaceAllString(text, "")
+	text = htmlTagRE.ReplaceAllString(text, " ")
+	text = markdownPunctuationRE.ReplaceAllString(text, "")
+	return strings.TrimSpace(allSpaceRE.ReplaceAllString(text, " "))
+}
+
 func FinalAssistantSummary(events []json.RawMessage) string {
 	for i := len(events) - 1; i >= 0; i-- {
 		var event map[string]any

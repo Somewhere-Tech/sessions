@@ -57,7 +57,7 @@ private hosted-service designs do not belong in this repository.
 2. **Isolate development.** Use a worktree and branch. `SESSIONS_STATE_DIR` plus
    `SESSIONS_PORT` is **not** isolation. `SESSIONS_STATE_DIR` moves the runner
    artifact directory, the `token`/`open` sentinels beside it, and the state
-   that follows the derived root -- uploads, recap, usage, integration errors
+   that follows the derived root -- uploads, usage, integration errors
    (`runtime/internal/state/config.go` `stateRootsFromEnv`, and the callers
    that prefer `StateRoot` in `runtime/internal/api/server.go`); the lane ledger
    (`runtime/internal/ledger/store.go` `ResolvePath`), the user state root, and
@@ -74,7 +74,8 @@ private hosted-service designs do not belong in this repository.
    The runner socket is `<SESSIONS_STATE_DIR>/<uuid>.sock` and macOS `sun_path`
    accepts at most 103 bytes, so a long scratch root fails every session with
    `runner did not create socket within 60s: ...: connect: invalid argument`
-   after a full 60-second wait (`runtime/internal/state/launcher.go`).
+   after a full 60-second wait (`runtime/internal/state/launcher.go`). Use the
+   same complete isolation for integration and install tests.
 
    On Windows set `USERPROFILE` instead of `HOME`: `os.UserHomeDir` reads
    `USERPROFILE` there, so `HOME` alone leaves the scratch daemon pointed at the
@@ -134,8 +135,36 @@ For the shared frontend:
 cd frontend
 npm ci
 npm run typecheck
+npm run lint
 npm run build
+npm run test:smoke
 ```
+
+From the repository root, verify the source structure and public tree:
+
+```sh
+npm run check:structure
+scripts/check-source-size.sh
+scripts/check-public-tree.sh
+node scripts/check-doc-links.mjs
+```
+
+`check:structure` parses handwritten production functions and the import graph.
+Go functions may be at most 80 lines and TypeScript/TSX functions at most 120
+lines. `scripts/function-length-exceptions.txt` is the complete ratchet for
+larger functions present when the rule was introduced: every recorded length is
+a ceiling that may shrink but may not grow, and an entry must be removed once
+its function reaches the normal limit. Anonymous nested callbacks are counted
+inside their outer named function rather than duplicated; an independently
+named nested function is measured on its own. `scripts/import-boundaries.txt`
+is the exact direct Go product-package graph across Darwin, Linux, and Windows.
+New or stale edges require an explicit review of that file. Frontend modules
+below `src/lib` and `src/api` may not import from `src/components` or
+`src/hooks`.
+
+`scripts/check-source-size.sh` remains an informational report of the largest
+handwritten files. It does not enforce a file-length cap; function length and
+dependency direction are the structural gates.
 
 When the CLI surface changes, run `runtime/scripts/gen-cli-docs.sh` and commit
 the generated reference unchanged.

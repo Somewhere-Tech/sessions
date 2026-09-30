@@ -16,17 +16,21 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/somewhere-tech/sessions/runtime/internal/localnetwork"
 	sessionstate "github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/watch"
 )
 
 type doctorRow struct {
-	ID    string `json:"id"`
-	Tool  string `json:"tool"`
-	Size  string `json:"size"`
-	QoS   string `json:"qos"`
-	Spawn string `json:"spawn"`
-	OK    bool   `json:"ok"`
+	ID       string `json:"id"`
+	Tool     string `json:"tool"`
+	Size     string `json:"size"`
+	QoS      string `json:"qos"`
+	Spawn    string `json:"spawn"`
+	Recovery bool   `json:"needs_recovery,omitempty"`
+	Lost     bool   `json:"lost,omitempty"`
+	Action   string `json:"action,omitempty"`
+	OK       bool   `json:"ok"`
 }
 
 // doctorMirrorRow is one stored conversation that reports having stopped
@@ -40,83 +44,326 @@ type doctorMirrorRow struct {
 
 const legacyRunnerLabelPrefix = "tech.pretty-pty.runner."
 
-func (a *app) cmdDoctor() error {
-	if err := ptyPreflight(); err != nil {
+func (a *app) cmdDoctor(args []string) error {
+	cpuDuration, err := parseDoctorArgs(args)
+	if err != nil {
 		return err
+	}
+	localRuntime := a.api.localToken && a.api.pathPrefix == ""
+	if localRuntime {
+		if err := ptyPreflight(); err != nil {
+			return err
+		}
 	}
 	sessions, err := a.listSessions(false)
 	if err != nil {
 		return err
 	}
+	lan := a.doctorLocalNetwork()
 	var deep any
 	if response, requestErr := a.api.request(context.Background(), "GET", "/api/health/deep", nil, 0); requestErr == nil && response.status < 400 {
 		_ = json.Unmarshal(response.body, &deep)
 	}
-	processTypePattern := regexp.MustCompile(`<key>ProcessType</key>\s*<string>([^<]+)</string>`)
-	rows := make([]doctorRow, 0, len(sessions))
-	for _, value := range sessions {
-		// Per-session service QoS is a launchd concept. The Windows adapter is
-		// a logon supervisor with no ProcessType, so reporting "no-plist"
-		// there would invent a fault; say the probe does not apply instead.
-		qos := probeNotApplicable
-		if runtime.GOOS == "darwin" {
-			qos = runnerQoS(a.home, value.ID, processTypePattern)
-		}
-		spawn := "dead?"
-		if value.PID != 0 {
-			// The runner is intentionally independent of the daemon and the
-			// app. It may be re-parented after either one updates, so its
-			// parent command is not evidence of how the runner itself was
-			// launched. Inspect the durable runner process instead.
-			spawn = probeNotApplicable
-			if canProbeProcessCommand() {
-				spawn = classifyRunnerSpawn(psField("command=", value.PID))
-			}
-		}
-		rows = append(rows, doctorRow{
-			ID: value.ID, Tool: toolOfSession(value), Size: fmt.Sprintf("%dx%d", value.Cols, value.Rows),
-			QoS: qos, Spawn: spawn, OK: doctorRowOK(qos, spawn),
-		})
+	profile, err := a.requestedCPUProfile(deep, cpuDuration, localRuntime)
+	if err != nil {
+		return err
 	}
-	damagedMirrors := damagedTranscriptMirrors()
+	rows, damagedMirrors := a.doctorRows(sessions, localRuntime)
 	if a.wantJSON {
-		return writeJSON(a.stdout, struct {
-			Daemon         any               `json:"daemon"`
-			Sessions       []doctorRow       `json:"sessions"`
-			DamagedMirrors []doctorMirrorRow `json:"damaged_conversations,omitempty"`
-		}{deep, rows, damagedMirrors}, true)
+		return a.writeDoctorJSON(deep, lan, rows, damagedMirrors, profile)
 	}
+	writeCPUProfileReport(a.stdout, profile)
 	if deepMap, ok := deep.(map[string]any); ok {
 		fmt.Fprintf(a.stdout, "daemon: %s sessions, discovering=%s, uptime=%ss\n\n",
 			jsonScalar(deepMap["sessionsLoaded"]), jsonScalar(deepMap["discovering"]), jsonScalar(deepMap["uptimeSec"]))
-		if restore, ok := deepMap["restore"].(map[string]any); ok {
-			if pending, ok := restore["pending"].(float64); ok && pending > 0 {
-				fmt.Fprintf(a.stdout, "restore: %.0f session(s) stayed paused after reboot; their history is preserved for explicit recovery\n\n", pending)
-			}
-		}
+		writeDoctorStartup(a.stdout, deepMap["startup"])
+		writeDoctorRestoreHealth(a.stdout, deepMap["restore"])
+		writeDoctorArtifactHealth(a.stdout, deepMap["runnerArtifacts"])
+		writeDoctorTailscale(a.stdout, deepMap["tailscale"])
+		writeDoctorFleetAccount(a.stdout, deepMap["account"])
 	}
+	writeDoctorLocalNetwork(a.stdout, lan)
 	fmt.Fprintf(a.stdout, "%s%s%s%s%sSTATUS\n",
 		fixedWidth("ID", 10), fixedWidth("TOOL", 8), fixedWidth("SIZE", 10), fixedWidth("QoS", 13), fixedWidth("SPAWN", 10))
-	bad := 0
+	runnerFaults := 0
+	recoveryRows := 0
+	lostRows := 0
 	for _, row := range rows {
 		statusText := "ok"
-		if !row.OK {
+		if row.Recovery {
+			statusText = "⚠ resume required"
+			recoveryRows++
+		} else if row.Lost {
+			statusText = "⚠ lost — " + row.Action
+			lostRows++
+		} else if !row.OK {
 			statusText = "⚠ needs recreate"
-			bad++
+			runnerFaults++
 		}
 		fmt.Fprintf(a.stdout, "%s%s%s%s%s%s\n",
 			fixedWidth(prefixString(row.ID, 8), 10), fixedWidth(shortToolName(row.Tool), 8),
 			fixedWidth(row.Size, 10), fixedWidth(row.QoS, 13), fixedWidth(row.Spawn, 10), statusText)
 	}
-	fmt.Fprintf(a.stdout, "\n%d of %d sessions need recreate ", bad, len(rows))
-	if bad > 0 {
-		io.WriteString(a.stdout, doctorUnhealthyAdvice()+"\n")
+	recovery := max(recoveryRows, restorePendingFromHealth(deep))
+	attention := recovery + lostRows + runnerFaults
+	fmt.Fprintf(a.stdout, "\n%d session(s) need attention", attention)
+	if attention > 0 {
+		io.WriteString(a.stdout, ": ")
+		if recovery > 0 {
+			fmt.Fprintf(a.stdout, "%d paused after reboot — resume only the sessions you want with `sessions resume <id>`", recovery)
+		}
+		if lostRows > 0 {
+			if recovery > 0 {
+				io.WriteString(a.stdout, "; ")
+			}
+			fmt.Fprintf(a.stdout, "%d lost runner(s) — use each row's action to close or continue it", lostRows)
+		}
+		if runnerFaults > 0 {
+			if recovery > 0 || lostRows > 0 {
+				io.WriteString(a.stdout, "; ")
+			}
+			fmt.Fprintf(a.stdout, "%d runner fault(s) %s", runnerFaults, doctorUnhealthyAdvice())
+		}
+		io.WriteString(a.stdout, "\n")
 		a.exitCode = 1
 	} else {
-		io.WriteString(a.stdout, doctorHealthySummary()+"\n")
+		io.WriteString(a.stdout, " "+doctorHealthySummary()+"\n")
 	}
 	a.writeDoctorMirrorHealth(damagedMirrors)
 	return nil
+}
+
+func (a *app) doctorRows(sessions []session, localRuntime bool) ([]doctorRow, []doctorMirrorRow) {
+	pattern := regexp.MustCompile(`<key>ProcessType</key>\s*<string>([^<]+)</string>`)
+	rows := make([]doctorRow, 0, len(sessions))
+	for _, value := range sessions {
+		rows = append(rows, a.doctorRunnerRow(value, localRuntime, pattern))
+	}
+	if !localRuntime {
+		return rows, nil
+	}
+	return rows, damagedTranscriptMirrors()
+}
+
+func writeDoctorArtifactHealth(writer io.Writer, value any) {
+	artifacts, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	retired, _ := artifacts["retired"].(float64)
+	pending, _ := artifacts["pending"].(float64)
+	if retired == 0 && pending == 0 {
+		return
+	}
+	fmt.Fprintf(writer, "runner artifacts: %.0f stale set(s) retired; %.0f pending bounded cleanup\n\n", retired, pending)
+}
+
+// writeDoctorStartup says whether this daemon can yet answer for every session
+// it has. A daemon that is still loading is not one that lost your work, and a
+// doctor that does not distinguish them sends a person looking for sessions
+// that are simply not attached yet.
+func writeDoctorStartup(writer io.Writer, value any) {
+	startup, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	phase, _ := startup["phase"].(string)
+	if phase != "loading" {
+		return
+	}
+	loaded, _ := startup["loaded"].(float64)
+	total, _ := startup["total"].(float64)
+	if total > 0 {
+		fmt.Fprintf(writer, "startup: still loading sessions (%.0f of %.0f); a session missing from this list may simply not be attached yet\n\n", loaded, total)
+		return
+	}
+	fmt.Fprint(writer, "startup: still loading sessions; a session missing from this list may simply not be attached yet\n\n")
+}
+
+func writeDoctorRestoreHealth(writer io.Writer, value any) {
+	restore, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	pending, _ := restore["pending"].(float64)
+	retired, _ := restore["retired"].(float64)
+	if pending > 0 {
+		fmt.Fprintf(writer, "restore: %.0f session(s) stayed paused after reboot; their history is preserved for explicit recovery\n", pending)
+	}
+	if retired > 0 {
+		fmt.Fprintf(writer, "restore: %.0f orphan marker(s) retired because no session history matched them\n", retired)
+	}
+	if pending > 0 || retired > 0 {
+		fmt.Fprintln(writer)
+	}
+}
+
+func writeDoctorTailscale(writer io.Writer, value any) {
+	state, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	present, _ := state["present"].(bool)
+	signedIn, _ := state["signedIn"].(bool)
+	auto, _ := state["auto"].(bool)
+	endpoint, _ := state["remoteEndpoint"].(string)
+	ipEndpoint, _ := state["tailnetIpEndpoint"].(string)
+	currentDNSName, _ := state["currentDNSName"].(string)
+	servedDNSName, _ := state["servedDNSName"].(string)
+	status := "not installed"
+	if present {
+		status = "signed out"
+	}
+	if signedIn {
+		status = "signed in"
+	}
+	fmt.Fprintf(writer, "tailscale: %s, automatic=%s", status, map[bool]string{true: "on", false: "off"}[auto])
+	if endpoint != "" {
+		fmt.Fprintf(writer, ", https=%s", endpoint)
+	}
+	if ipEndpoint != "" {
+		fmt.Fprintf(writer, ", tailnet-ip=%s", ipEndpoint)
+	}
+	fmt.Fprint(writer, "\n")
+	if currentDNSName != "" && servedDNSName != "" && !strings.EqualFold(currentDNSName, servedDNSName) {
+		fmt.Fprintf(writer, "warning: Tailscale Serve name %s does not match current tailnet name %s\n",
+			servedDNSName, currentDNSName)
+	}
+	fmt.Fprint(writer, "\n")
+}
+
+func writeDoctorFleetAccount(writer io.Writer, value any) {
+	state, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	signedIn, _ := state["signedIn"].(bool)
+	status := "signed out"
+	if signedIn {
+		status = "signed in"
+	}
+	fmt.Fprintf(writer, "somewhere account: %s", status)
+	if registered, _ := state["lastRegistrationAt"].(string); registered != "" {
+		fmt.Fprintf(writer, ", machine registered=%s", registered)
+	}
+	if detail, _ := state["lastRegistrationError"].(string); detail != "" {
+		fmt.Fprintf(writer, ", registration pending=%s", detail)
+	}
+	fmt.Fprint(writer, "\n\n")
+}
+
+func (a *app) doctorLocalNetwork() any {
+	var lan any
+	response, err := a.api.request(context.Background(), "GET", "/api/lan", nil, 0)
+	if err == nil && response.status < 400 {
+		_ = json.Unmarshal(response.body, &lan)
+	}
+	return lan
+}
+
+func (a *app) writeDoctorJSON(deep, lan any, rows []doctorRow, mirrors []doctorMirrorRow, profile *cpuProfileReport) error {
+	return writeJSON(a.stdout, struct {
+		Daemon         any               `json:"daemon"`
+		LocalNetwork   any               `json:"local_network"`
+		Sessions       []doctorRow       `json:"sessions"`
+		DamagedMirrors []doctorMirrorRow `json:"damaged_conversations,omitempty"`
+		CPUProfile     *cpuProfileReport `json:"cpu_profile,omitempty"`
+	}{deep, lan, rows, mirrors, profile}, true)
+}
+
+func writeDoctorLocalNetwork(writer io.Writer, state any) {
+	lan, ok := state.(map[string]any)
+	if !ok {
+		return
+	}
+	permission, ok := lan["permission"].(map[string]any)
+	if !ok {
+		return
+	}
+	status, _ := permission["status"].(string)
+	switch status {
+	case "denied":
+		// Only a host on an older version still reports a denial, and it was an
+		// inference from one errno. Attribute the claim to that host instead of
+		// restating it as a macOS state this CLI cannot read.
+		message, _ := permission["message"].(string)
+		if message == "" {
+			message = localnetwork.PossibleCause
+		}
+		fmt.Fprintf(writer, "local network: the host (older version) reported denied — %s\n\n", message)
+	case "granted":
+		// A last observation, not a live check: macOS has no readable switch, so
+		// this says nearby contact worked when it was last attempted.
+		fmt.Fprint(writer, "local network: nearby access worked at the host's last observation; this is not a live check\n\n")
+	case "not-yet-asked":
+		fmt.Fprint(writer, "local network: not confirmed; nearby access has not succeeded yet. Open Fleet in Sessions to try it, or check System Settings › Privacy & Security › Local Network › Sessions\n\n")
+	}
+}
+
+// doctorRunnerRow inspects process and launch-service state only when the CLI
+// and daemon are on the same machine. A PID and plist path are host-local
+// identities; applying the MacBook's ps/LaunchAgents results to a Mini made a
+// healthy remote fleet look entirely broken.
+func (a *app) doctorRunnerRow(value session, localRuntime bool, processTypePattern *regexp.Regexp) doctorRow {
+	row := doctorRow{
+		ID: value.ID, Tool: toolOfSession(value), Size: fmt.Sprintf("%dx%d", value.Cols, value.Rows),
+		QoS: probeNotApplicable, Spawn: probeNotApplicable,
+	}
+	if value.UnreachableReason == "restart-restore-pending" {
+		row.Spawn = "paused"
+		row.Recovery = true
+		return row
+	}
+	if !localRuntime {
+		if value.RunnerGone {
+			row.Lost = true
+			row.Action = sessionRecoveryCommand(value)
+			return row
+		}
+		row.OK = true
+		return row
+	}
+	// Per-session service QoS is a launchd concept. The Windows adapter is a
+	// logon supervisor with no ProcessType, so the probe does not apply there.
+	if runtime.GOOS == "darwin" {
+		row.QoS = runnerQoS(a.home, value.ID, processTypePattern)
+	}
+	row.Spawn = "dead?"
+	if value.PID != 0 {
+		// The runner is intentionally independent of the daemon and app and may
+		// be re-parented after either updates. Inspect the runner itself.
+		row.Spawn = probeNotApplicable
+		if canProbeProcessCommand() {
+			row.Spawn = runnerSpawn(value.PID, psField)
+		}
+	}
+	row.OK = doctorRowOK(row.QoS, row.Spawn)
+	if value.Unreachable && value.UnreachableReason == "runner-lost" && row.Spawn != "native" {
+		row.Lost = true
+		value.RunnerGone = true
+		row.Action = sessionRecoveryCommand(value)
+		row.OK = false
+	}
+	return row
+}
+
+func restorePendingFromHealth(deep any) int {
+	health, ok := deep.(map[string]any)
+	if !ok {
+		return 0
+	}
+	restore, ok := health["restore"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	switch pending := restore["pending"].(type) {
+	case float64:
+		return max(int(pending), 0)
+	case int:
+		return max(pending, 0)
+	default:
+		return 0
+	}
 }
 
 // writeDoctorMirrorHealth reports stored conversations that are missing
@@ -283,11 +530,8 @@ func runnerPlistPaths(home, id string) []string {
 }
 
 // classifyRunnerSpawn names what is actually running as the session's runner.
-// The retired Node runtime's "dist"/"tsx-SLOW" classifications are gone: a
-// shipped Go install cannot spawn dist/runner.js or tsx, so those buckets could
-// only mislabel some unrelated process as a healthy or a slow Sessions runner.
-// Anything that is not the shipped sessions-runner is now reported as "other",
-// which is what it is.
+// Only the shipped sessions-runner is native; every other command is reported
+// as "other" so an unrelated process cannot be mislabeled as healthy.
 func classifyRunnerSpawn(runnerCommand string) string {
 	switch {
 	case strings.Contains(runnerCommand, "sessions-runner"):
@@ -297,6 +541,23 @@ func classifyRunnerSpawn(runnerCommand string) string {
 	default:
 		return "dead?"
 	}
+}
+
+// runnerSpawn resolves the process that owns the provider child recorded in
+// session metadata. PTY sessions record the provider PID (Claude, Codex, or a
+// shell), whose direct parent is sessions-runner; structured sessions record
+// sessions-runner itself. Treating the child command as the runner made doctor
+// falsely condemn every healthy PTY session.
+func runnerSpawn(pid int, field func(string, int) string) string {
+	command := field("command=", pid)
+	if classified := classifyRunnerSpawn(command); classified == "native" || classified == "dead?" {
+		return classified
+	}
+	parent, err := strconv.Atoi(strings.TrimSpace(field("ppid=", pid)))
+	if err != nil || parent <= 0 {
+		return "other"
+	}
+	return classifyRunnerSpawn(field("command=", parent))
 }
 
 func psField(format string, pid int) string {

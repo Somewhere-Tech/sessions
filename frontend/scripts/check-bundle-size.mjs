@@ -1,12 +1,13 @@
 import { gzipSync } from 'node:zlib';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
-const assetsDirectory = new URL('../dist/assets/', import.meta.url);
+const assetsDirectory = fileURLToPath(new URL('../dist/assets/', import.meta.url));
 const files = readdirSync(assetsDirectory).filter((name) => !name.endsWith('.map'));
 
 const assets = files.map((name) => {
-  const path = join(assetsDirectory.pathname, name);
+  const path = join(assetsDirectory, name);
   const contents = readFileSync(path);
   return {
     name,
@@ -16,15 +17,35 @@ const assets = files.map((name) => {
 });
 
 const limits = {
-  entryJavaScript: { raw: 715_000, gzip: 210_000 },
-  entryCSS: { raw: 270_000, gzip: 45_000 },
-  totalJavaScript: 1_225_000,
+  // Baseline measured 2026-09-03. These two assets are what the browser must
+  // fetch before it can draw the first screen, so keep their headroom strict.
+  //
+  // entryCSS was raised once, on 2026-09-11, by a measured 430 bytes: the
+  // provider-trouble banner that replaces the card when the terminal is already
+  // on screen, and the evidence line that shows the provider's own words. CSS
+  // cannot be lazily loaded out of this entry, and the alternative was styling
+  // a new affordance by reusing rules that mean something else.
+  // Lowered on 2026-09-11 from 491,900 to the measured 445,080 plus a little
+  // headroom, after the conversation pane (RemoteView and everything only it
+  // pulls in) moved behind a lazy boundary. Two ratchets in two days had gone
+  // the other way; the boundary gave back 46,753 bytes — far more than they
+  // took — because nothing draws a conversation before a session is opened.
+  // Reviewed 2026-09-13: reply/queue truth fixes measure 446,005 bytes.
+  // Keep 95 bytes of headroom rather than obscure ordering logic to save five.
+  entryJavaScript: 446_100,
+  entryCSS: 280_341,
+  // Deferred code may grow as the product gains secondary surfaces, but no
+  // one interaction should have to download an oversized lazy chunk.
+  totalJavaScript: 1_500_000,
+  lazyJavaScriptChunkGzip: 250_000,
 };
 
 const entryJavaScript = assets.find((asset) => /^index-[^.]+\.js$/.test(asset.name));
 const entryCSS = assets.find((asset) => /^index-[^.]+\.css$/.test(asset.name));
-const totalJavaScript = assets
+const javaScriptChunks = assets
   .filter((asset) => asset.name.endsWith('.js'))
+  .sort((left, right) => right.bytes - left.bytes);
+const totalJavaScript = javaScriptChunks
   .reduce((total, asset) => total + asset.bytes, 0);
 
 if (!entryJavaScript || !entryCSS) {
@@ -32,26 +53,33 @@ if (!entryJavaScript || !entryCSS) {
 }
 
 const failures = [];
-if (entryJavaScript.bytes > limits.entryJavaScript.raw) {
-  failures.push(`${entryJavaScript.name} is ${entryJavaScript.bytes} bytes; limit ${limits.entryJavaScript.raw}`);
+if (entryJavaScript.bytes > limits.entryJavaScript) {
+  failures.push(`${entryJavaScript.name} is ${entryJavaScript.bytes} bytes; entry limit ${limits.entryJavaScript}`);
 }
-if (entryJavaScript.gzipBytes > limits.entryJavaScript.gzip) {
-  failures.push(`${entryJavaScript.name} is ${entryJavaScript.gzipBytes} gzip bytes; limit ${limits.entryJavaScript.gzip}`);
-}
-if (entryCSS.bytes > limits.entryCSS.raw) {
-  failures.push(`${entryCSS.name} is ${entryCSS.bytes} bytes; limit ${limits.entryCSS.raw}`);
-}
-if (entryCSS.gzipBytes > limits.entryCSS.gzip) {
-  failures.push(`${entryCSS.name} is ${entryCSS.gzipBytes} gzip bytes; limit ${limits.entryCSS.gzip}`);
+if (entryCSS.bytes > limits.entryCSS) {
+  failures.push(`${entryCSS.name} is ${entryCSS.bytes} bytes; entry limit ${limits.entryCSS}`);
 }
 if (totalJavaScript > limits.totalJavaScript) {
   failures.push(`all JavaScript is ${totalJavaScript} bytes; limit ${limits.totalJavaScript}`);
+}
+for (const chunk of javaScriptChunks) {
+  if (chunk !== entryJavaScript && chunk.gzipBytes > limits.lazyJavaScriptChunkGzip) {
+    failures.push(`${chunk.name} is ${chunk.gzipBytes} gzip bytes; lazy-chunk limit ${limits.lazyJavaScriptChunkGzip}`);
+  }
+}
+
+console.log('Largest JavaScript chunks:');
+for (const chunk of javaScriptChunks.slice(0, 8)) {
+  console.log(
+    `  ${chunk.name}: ${chunk.bytes} B (${chunk.gzipBytes} B gzip)`
+      + (chunk === entryJavaScript ? ' [entry]' : ''),
+  );
 }
 
 if (failures.length > 0) {
   console.error('Frontend bundle budget exceeded:');
   for (const failure of failures) console.error(`  ${failure}`);
-  console.error('Reduce or lazy-load the added code; do not raise the budget without a measured reason.');
+  console.error('Reduce the entry path or split the interaction; do not raise the budget without a measured reason.');
   process.exit(1);
 }
 

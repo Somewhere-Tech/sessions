@@ -1,13 +1,104 @@
-// Mirror of the legacy contract in runtime/testdata/node-runtime/src/types.ts.
-// Kept duplicated for now to avoid
-// bundling backend code into the browser; Phase 4 will move shared
-// protocol types into a shared/ package once the daemon goes prod.
+// Mirror of the sessionsd HTTP and WebSocket contract. Kept duplicated to avoid
+// bundling backend code into the browser.
 
 export const PROTOCOL_VERSION = 2;
 
 export type SessionTool = 'claude-code' | 'codex' | 'terminal';
 
+export type ApprovalDecision = 'allow' | 'allow-session' | 'deny';
+
+export type ProviderFailureKind = 'provider-unavailable' | 'rate-limited' | 'auth' | 'other';
+
+export interface ProviderRetry {
+  attempt: number;
+  max: number;
+  nextAt: number;
+  kind: ProviderFailureKind;
+}
+
+// Message projection types are shared by the provider-history parser and the
+// React dispatch hook. Keep them below the hook layer so lib never depends on
+// UI lifecycle code merely to describe a message.
+export interface ToolCall {
+  id: string;
+  name: string;
+  inputPreview: string;
+  inputFull?: string;
+  resultPreview?: string;
+  resultFull?: string;
+  kind?: string;
+  status?: string;
+  durationMs?: number;
+}
+
+export interface MessagePlanStep {
+  step: string;
+  status: string;
+}
+
+/** One quiet line, with the block itself for whoever wants to read it. */
+export interface HarnessEventView {
+  summary: string;
+  detail: string;
+}
+
+export interface DispatchMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  // accepted means sessionsd acknowledged the complete composer submission.
+  // sent means the provider's own history also contains the turn. Failed is
+  // retained only for old local records written before receipt-backed sends.
+  status: 'accepted' | 'queued' | 'sent' | 'failed';
+  createdAt: number;
+  author?: MessageAuthor;
+  confirmedAt?: number;
+  blockId?: string;
+  errorResponse?: string;
+  toolCalls?: ToolCall[];
+  hadThinking?: boolean;
+  reasoningSummary?: string;
+  updates?: string[];
+  plan?: MessagePlanStep[];
+  planExplanation?: string;
+  streaming?: boolean;
+  turnStatus?: string;
+  interrupted?: boolean;
+  queued?: boolean;
+  failureReason?: string;
+  // A Sessions-authored timeline event. This is deliberately separate from
+  // content so provider retry state can never be rendered as assistant prose.
+  quietStatus?: string;
+  // Content the harness put in the transcript as a user-role record: a
+  // background task's result, a system reminder, a system notification. It is
+  // never the person's message, so it is carried separately from content and
+  // rendered as one quiet line. systemEvent means the whole entry was
+  // machinery; systemNote means it trailed something the person actually
+  // wrote, and folds under their words.
+  systemEvent?: HarnessEventView;
+  systemNote?: HarnessEventView;
+  // Sessions' own marker for a send the provider has not picked up yet. It
+  // belongs on the composer, where the person is waiting, not in the record of
+  // what was said.
+  pendingQueue?: boolean;
+  // Number of identical provider-history turns that existed when sessionsd
+  // began this submission, BEFORE network IO. A later occurrence replaces
+  // the local copy even when provider history arrives before the receipt.
+  confirmBaseline?: number;
+}
+
+export interface PendingApproval {
+  id: string;
+  kind: 'command' | 'file-change' | 'permissions' | string;
+  summary: string;
+  command?: string;
+  cwd?: string;
+  reason?: string;
+  at?: number;
+}
+
 export interface SessionInfo {
+  messageSubmit?: boolean;
   id: string;
   name?: string;
   name_source?: 'launch' | 'provider' | 'explicit';
@@ -45,6 +136,27 @@ export interface SessionInfo {
   idleDetail?: string;
   idleSince?: number | null;
   lastSummary?: string;
+  // Provider-turn failure state. These fields are absent once the fault
+  // clears; retry is present only while Sessions owns an automatic Rich-turn
+  // retry schedule.
+  failureKind?: ProviderFailureKind;
+  failureDetail?: string;
+  // The provider's own line this failure was read from. Sessions shows it
+  // rather than asking the person to take its word: a session that was logged
+  // in and working once showed "Claude is not logged in" because those words
+  // appeared in the agent's own grep output.
+  failureEvidence?: string;
+  failureProvider?: 'claude' | 'codex';
+  failureAt?: number;
+  retry?: ProviderRetry;
+  // The permission a Rich Codex lane is holding open, when it is not
+  // autonomous. Answered with approveSession, never with a reply.
+  pendingApproval?: PendingApproval | null;
+  // Delegated-start receipt, present only for sessions created with an
+  // operation id: how far the work provably got, on what evidence, and the one
+  // next step that cannot duplicate it. Process liveness stays on exited /
+  // unreachable; this describes the task.
+  start?: StartReceipt;
   exited: boolean;
   exitCode: number | null;
   exitSignal: string | null;
@@ -55,6 +167,15 @@ export interface SessionInfo {
   unreachable?: boolean;
   unreachableReason?: string;
   unreachableSince?: number | null;
+  // The daemon's identity-aware process probe confirmed that the unreachable
+  // runner process is gone. Unlike a transient disconnect, this is recoverable
+  // only by continuing the saved provider conversation in a new runtime.
+  runnerGone?: boolean;
+  // Why the runner is gone, and when. A session shown as "lost" with nothing
+  // else is a dead end: after the owner's MacBook rebooted, seven sessions read
+  // that way while the daemon knew the machine had restarted under them.
+  lostReason?: 'machine rebooted' | 'runner exited' | 'daemon lost contact' | string;
+  lostAt?: number;
   // Claude-side session titles, surfaced from the JSONL by sessionsd.
   // claudeCustomTitle: set by Claude's /rename slash command.
   // claudeAiTitle: Claude's own auto-generated summary.
@@ -116,7 +237,39 @@ export interface SessionInfo {
   endOperationId?: string;
 }
 
+export type StartPhase =
+  | 'created'
+  | 'prompt-not-delivered'
+  | 'prompt-unknown'
+  | 'prompt-delivered'
+  | 'working'
+  | 'completed'
+  | 'blocked';
+
+export interface StartReceipt {
+  operation_id?: string;
+  prompt_operation_id?: string;
+  phase: StartPhase;
+  prompt?: {
+    status: 'not-sent' | 'sending' | 'accepted' | 'not-delivered' | 'unknown' | 'text-delivered' | 'unreadable';
+    acceptance?: string;
+    // True only when Sessions proved nothing reached the provider.
+    retry: boolean;
+    reason?: string;
+    at?: number;
+  };
+  evidence: string;
+  evidence_source: string;
+  blocked_by?: string;
+  recovery?: { action: string; command?: string; detail: string };
+  replayed?: boolean;
+}
+
 export interface CreateSessionRequest {
+  // Create idempotency key and the first request's delivery operation id.
+  // Re-sending the same operation_id returns the session already created.
+  operation_id?: string;
+  prompt_operation_id?: string;
   cmd?: string;
   args?: string[];
   cwd?: string;
@@ -195,7 +348,7 @@ export type ServerMsg =
   | { type: 'gap'; oldestAvailableSeq: number; currentSeq: number; sessionId?: string }
   | { type: 'exit'; code: number | null; signal: string | null; seq: number; sessionId?: string }
   | { type: 'unreachable'; reason: string; seq: number; sessionId?: string }
-  | { type: 'error'; message: string; sessionId?: string }
+  | { type: 'error'; message: string; sessionId?: string; code?: string }
   | { type: 'rpcError'; requestId: string; message: string; code?: string; sessionId?: string }
   | { type: 'snapshot'; requestId: string; text: string; seq: number; sessionId: string }
   | {
@@ -206,8 +359,8 @@ export type ServerMsg =
       totalCount: number;
       sessionId: string;
     }
-  | { type: 'inputAck'; requestId: string; ok: boolean; sessionId: string }
-  | { type: 'submitAck'; requestId: string; ok: boolean; sessionId: string }
+  | { type: 'inputAck'; requestId: string; ok: boolean; sessionId: string; reason?: string }
+  | { type: 'submitAck'; requestId: string; ok: boolean; sessionId: string; reason?: string }
   // Claude Code's structured session events. Sourced server-side from
   // ~/.claude/projects/<encoded-cwd>/<id>.jsonl. RemoteView consumes
   // these instead of the parser-derived blocks — far more reliable

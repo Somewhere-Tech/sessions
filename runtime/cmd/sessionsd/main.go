@@ -4,24 +4,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/api"
+	"github.com/somewhere-tech/sessions/runtime/internal/background"
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/proto"
+	"github.com/somewhere-tech/sessions/runtime/internal/relaycmd"
 	"github.com/somewhere-tech/sessions/runtime/internal/session"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 	"github.com/somewhere-tech/sessions/runtime/internal/usage"
 )
 
-var version = "0.2.26"
+var version = "0.2.27"
 
 // isWildcardHost reports whether a bind host would expose the daemon on every
 // interface. A literal denylist is not enough, and neither is netip.ParseAddr
@@ -52,17 +57,26 @@ func isWildcardHost(host string) bool {
 }
 
 func main() {
-	handled, err := runPlatformSupervisor(os.Args[1:])
+	arguments, remotePreview := daemonArguments(os.Args[1:])
+	if handleRelayMode(arguments) {
+		return
+	}
+	handled, err := runPlatformSupervisor(arguments)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if handled {
 		return
 	}
-	config, err := state.ConfigFromEnv()
+	handled, err = handleDaemonArgs(arguments, os.Stdout)
 	if err != nil {
 		log.Fatal(err)
 	}
+	if handled {
+		return
+	}
+	config, profiler := daemonConfig()
+	defer profiler.close()
 	if isWildcardHost(config.Host) {
 		fmt.Fprintf(os.Stderr,
 			"\n  sessionsd: refusing to bind to %s.\n  Set SESSIONS_HOST to a specific address — 127.0.0.1 for loopback only,\n  or a tailnet IP (100.x.y.z) for access from other devices on your tailnet.\n\n",
@@ -73,33 +87,28 @@ func main() {
 	if os.Getenv("SESSIONS_SMOKE") == "1" {
 		return
 	}
-
 	ledgerStore, err := ledger.Open(context.Background(), ledger.Options{})
 	if err != nil {
 		log.Fatalf("open lane ledger: %v", err)
 	}
-	defer func() {
-		if err := ledgerStore.Close(); err != nil {
-			log.Printf("close lane ledger: %v", err)
-		}
-	}()
+	defer closeLedger(ledgerStore)
 	usageService := usage.NewLocalService(config)
 	defer func() {
 		if err := usageService.Close(); err != nil {
 			log.Printf("close usage ledger: %v", err)
 		}
 	}()
-	manager := session.NewManager(config, state.NewPlatformLauncher(config), session.ManagerOptions{
+	manager := session.NewManager(config, daemonLauncher(config), session.ManagerOptions{
 		Boundaries: ledgerStore.Boundaries(), Observations: ledgerStore.Observations(), LedgerReader: ledgerStore,
 		Retention:     ledgerStore.Retention(),
+		Worktrees:     ledgerStore.Worktrees(),
 		Attributions:  ledgerStore.Attributions(),
 		UsageRecorder: usageService,
 	})
 	defer manager.Close()
 	api.Version = version
 	handler := api.NewWithUsage(config, manager, usageService, manager.Push())
-	// An explicitly isolated scratch daemon must not restore the user's
-	// persisted LAN listener on a second port.
+	// An isolated scratch daemon must not restore the user's persisted LAN listener.
 	if os.Getenv("SESSIONS_STATE_DIR") == "" {
 		handler.RestoreLAN(log.Printf)
 	}
@@ -119,7 +128,12 @@ func main() {
 	// running. The sweep removes nothing for a session that is live, unknown,
 	// or starting; see Manager.SweepStaleRunnerArtifacts.
 	manager.SweepStaleRunnerArtifacts(context.Background())
+	// The first history listing after a restart pays for everything this
+	// process has not seen yet. Start that work now, in the background, so it
+	// is finished — or at least under way — before anybody asks for a listing.
+	handler.WarmHistory(log.Printf)
 	go manager.RunDiscoveryLoop()
+	defer startBurstWatch(config, manager)()
 	serveErrors := make(chan error, 1)
 	go func() {
 		log.Printf("sessionsd listening on http://%s", config.ListenAddress())
@@ -127,11 +141,10 @@ func main() {
 			serveErrors <- err
 		}
 	}()
-
+	defer startAutomaticServices(handler, remotePreview)()
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	cleanupPlatformStop := watchPlatformStop(stop)
-	defer cleanupPlatformStop()
+	defer watchPlatformStop(stop)()
 	select {
 	case sig := <-stop:
 		log.Printf("sessionsd: %s received, shutting down", sig)
@@ -143,4 +156,100 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("sessionsd shutdown: %v", err)
 	}
+}
+
+func daemonLauncher(config state.Config) proto.RunnerLauncher {
+	launcher := state.NewPlatformLauncher(config)
+	if recovery, ok := launcher.(interface{ RecoverAfterBoot() error }); ok {
+		if err := recovery.RecoverAfterBoot(); err != nil {
+			log.Fatalf("preserve detached reboot recovery before discovery: %v", err)
+		}
+	}
+	return launcher
+}
+
+// startBurstWatch has the daemon watch its own CPU. When it stays busy long
+// after it said it was ready — the Mini's 150 seconds at 100-170% — it profiles
+// itself and logs what the top frames were, because by the time anybody could
+// ask, the burst is over. Off when profiling is off.
+func startBurstWatch(config state.Config, manager *session.Manager) func() {
+	if config.PprofAddress == "" {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go background.WatchBurst(ctx, background.BurstOptions{
+		Dir:   filepath.Join(config.StateRoot, "profiles"),
+		Ready: func() bool { return !manager.Startup().Loading() },
+		Logf:  log.Printf,
+	})
+	return cancel
+}
+
+func closeLedger(store *ledger.Store) {
+	if err := store.Close(); err != nil {
+		log.Printf("close lane ledger: %v", err)
+	}
+}
+
+func handleRelayMode(arguments []string) bool {
+	if len(arguments) == 0 || arguments[0] != "--relay" {
+		return false
+	}
+	if err := relaycmd.Run(arguments[1:], os.Stdout, os.Stderr); err != nil {
+		log.Fatal(err)
+	}
+	return true
+}
+
+func startAutomaticServices(handler *api.Server, remotePreview bool) func() {
+	stopRemote := startAutomaticRemote(handler, remotePreview)
+	accountContext, stopAccount := context.WithCancel(context.Background())
+	handler.StartFleetAccount(accountContext, log.Printf)
+	handler.StartFleetRelay(accountContext, log.Printf)
+	return func() {
+		stopAccount()
+		stopRemote()
+	}
+}
+
+func startAutomaticRemote(handler *api.Server, preview bool) func() {
+	handler.SetRemotePreview(preview)
+	ctx, cancel := context.WithCancel(context.Background())
+	handler.StartRemote(ctx, log.Printf)
+	return func() {
+		cancel()
+		if err := handler.CloseTailnetIP(); err != nil {
+			log.Printf("close tailnet-IP listener: %v", err)
+		}
+	}
+}
+
+func daemonArguments(arguments []string) ([]string, bool) {
+	filtered := make([]string, 0, len(arguments))
+	preview := false
+	for _, argument := range arguments {
+		if argument == "--remote-auto-preview" {
+			preview = true
+			continue
+		}
+		filtered = append(filtered, argument)
+	}
+	return filtered, preview
+}
+
+func handleDaemonArgs(arguments []string, output io.Writer) (bool, error) {
+	if len(arguments) == 0 || (len(arguments) == 1 && arguments[0] == "--serve") {
+		return false, nil
+	}
+	if len(arguments) == 1 {
+		switch arguments[0] {
+		case "-h", "--help":
+			fmt.Fprintln(output, "Usage: sessionsd [--serve] [--remote-auto-preview] | sessionsd --relay [relay options]\n\nRuns the Sessions background service. --relay runs the separately hosted relay service; run sessions-relay --help for its options. --remote-auto-preview reports automatic Tailscale endpoints without changing Serve or opening a tailnet listener. Configuration uses SESSIONS_HOST, SESSIONS_PORT, and the state environment described in docs/DEV.md.")
+			return true, nil
+		case "-v", "--version":
+			fmt.Fprintln(output, version)
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("sessionsd: unknown arguments %q; run sessionsd --help", strings.Join(arguments, " "))
 }

@@ -199,6 +199,7 @@ func TestRunnerEnvironmentRejectsCaseVariantsOfProtectedKeys(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	config := Config{
+		Host: "127.0.0.1", Port: 9911,
 		DefaultShell: "/bin/sh", DefaultCwd: root, DefaultCols: 80, DefaultRows: 24,
 		RunnerStateDir: filepath.Join(root, "runners"),
 	}
@@ -206,9 +207,12 @@ func TestRunnerEnvironmentRejectsCaseVariantsOfProtectedKeys(t *testing.T) {
 	environment := registry.runnerEnvironment(proto.RunnerInfo{
 		ID: "11111111-1111-4111-8111-111111111111", Cmd: "/bin/sh", Cwd: root, Cols: 80, Rows: 24,
 	}, map[string]string{
-		"runner_id":    "forged",
-		"codex_home":   filepath.Join(root, "forged-codex"),
-		"node_options": "--require=forged.js",
+		"runner_id":          "forged",
+		"codex_home":         filepath.Join(root, "forged-codex"),
+		"node_options":       "--require=forged.js",
+		"SESSIONS_HOST":      "127.0.0.99",
+		"SESSIONS_PORT":      "8787",
+		"SESSIONS_STATE_DIR": filepath.Join(root, "wrong-runners"),
 	})
 	for key := range environment {
 		switch strings.ToUpper(key) {
@@ -218,6 +222,15 @@ func TestRunnerEnvironmentRejectsCaseVariantsOfProtectedKeys(t *testing.T) {
 	}
 	if got := environment["RUNNER_ID"]; got != "11111111-1111-4111-8111-111111111111" {
 		t.Fatalf("RUNNER_ID = %q, want canonical session identity", got)
+	}
+	if got := environment["SESSIONS_HOST"]; got != config.Host {
+		t.Fatalf("SESSIONS_HOST = %q, want owning daemon host %q", got, config.Host)
+	}
+	if got := environment["SESSIONS_PORT"]; got != "9911" {
+		t.Fatalf("SESSIONS_PORT = %q, want owning daemon port", got)
+	}
+	if got := environment["SESSIONS_STATE_DIR"]; got != config.RunnerStateDir {
+		t.Fatalf("SESSIONS_STATE_DIR = %q, want owning daemon runner state %q", got, config.RunnerStateDir)
 	}
 }
 

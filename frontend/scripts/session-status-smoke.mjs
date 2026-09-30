@@ -33,6 +33,10 @@ try {
     sessionWantsAttention
   } = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
 
+  assert.equal(classifySession({ id: 'new', idleReason: 'never-started' }).state, 'not-started');
+  assert.equal(classifySession({ id: 'resumed', idleReason: 'never-started', resumedFrom: 'original' }).state, 'ready');
+  assert.equal(classifySession({ id: 'lost', idleReason: 'never-started', resumedFrom: 'original', unreachable: true }).state, 'unavailable');
+
   const liveMcpWarning = {
     id: 'mcp-warning',
     tool: 'codex',
@@ -194,6 +198,24 @@ try {
   assert.equal(sessionIsFinished(crashed), false);
   assert.equal(classifySession(runnerLost).state, 'failed');
 
+  const codexUnavailable = {
+    ...askingWhileBusy,
+    id: 'codex-unavailable',
+    failureKind: 'provider-unavailable',
+    failureProvider: 'codex',
+    idleReason: 'failed'
+  };
+  assert.equal(classifySession(codexUnavailable).state, 'provider-down');
+  assert.equal(classifySession(codexUnavailable).label, 'Codex unavailable');
+  assert.equal(classifySession(codexUnavailable).degraded, false);
+  assert.equal(classifySession({ ...codexUnavailable, failureProvider: 'claude' }).label, 'Claude unavailable');
+  assert.equal(classifySession({ ...codexUnavailable, failureKind: 'rate-limited' }).label, 'Rate limited');
+  assert.equal(classifySession({ ...codexUnavailable, failureKind: 'auth' }).state, 'auth-needed');
+  assert.equal(classifySession({ ...codexUnavailable, failureKind: 'auth' }).label, 'Needs login');
+  assert.equal(classifySession({ ...codexUnavailable, failureKind: 'other' }).state, 'failed');
+  assert.equal(sessionWantsAttention(codexUnavailable), true);
+  assert.equal(classifySession(codexUnavailable, { working: true }).state, 'provider-down');
+
   // A lost daemon-to-runner connection is not an exit. Even when an older
   // durable provenance record also says "lost", the current literal state is
   // recoverable and every surface must say so without offering Resume.
@@ -220,6 +242,23 @@ try {
   assert.equal(classifySession(unavailable).label, 'Not connected');
   assert.equal(sessionIsFinished(unavailable), false);
 
+  // An identity-aware process probe is stronger than a stale retained PID.
+  // Once the runner is confirmed gone, no surface may promise reconnection.
+  const runnerGone = { ...reconnecting, id: 'runner-gone', runnerGone: true };
+  assert.equal(classifySession(runnerGone).state, 'unavailable');
+  assert.equal(classifySession(runnerGone).label, 'Not connected');
+
+  // A deliberately reboot-paused runtime is not generic connection loss and
+  // never reads as idle. It has one actionable state across every surface.
+  const needsRecovery = {
+    ...unavailable,
+    id: 'runner-paused-after-reboot',
+    unreachableReason: 'restart-restore-pending'
+  };
+  assert.equal(classifySession(needsRecovery).state, 'needs-recovery');
+  assert.equal(classifySession(needsRecovery).label, 'Needs recovery');
+  assert.equal(sessionWantsAttention(needsRecovery), true);
+
   // Ordinary live states.
   const working = { ...askingWhileBusy, id: 'working', idleReason: undefined };
   assert.equal(classifySession(working).state, 'working');
@@ -235,13 +274,13 @@ try {
 
   // Every state carries exactly one label and one `is-<state>` class token.
   const states = new Set();
-  for (const sample of [reconnecting, unavailable, crashed, endedButAsking, askingWhileBusy, working, liveMcpWarning, ready]) {
+  for (const sample of [reconnecting, unavailable, needsRecovery, crashed, codexUnavailable, { ...codexUnavailable, failureKind: 'auth' }, endedButAsking, askingWhileBusy, working, liveMcpWarning, ready]) {
     const status = classifySession(sample);
     assert.equal(status.className, `is-${status.state}`);
     assert.ok(status.label.length > 0);
     states.add(status.state);
   }
-  assert.equal(states.size, 8, 'each sample must land in a distinct state');
+  assert.equal(states.size, 11, 'each sample must land in a distinct state');
 
   console.log('session status smoke: ok');
 } finally {

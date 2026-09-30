@@ -13,6 +13,8 @@ val tauriProperties = Properties().apply {
     }
 }
 
+val sessionsTestApp = providers.gradleProperty("sessionsTestApp").orNull == "true"
+
 android {
     compileSdk = 36
     namespace = "tech.somewhere.sessions"
@@ -23,6 +25,7 @@ android {
         // enters; disabling cleartext globally would make those direct
         // connections fail in release builds.
         manifestPlaceholders["usesCleartextTraffic"] = "true"
+        manifestPlaceholders["sessionsAppLabel"] = "Sessions"
         applicationId = "tech.somewhere.sessions"
         minSdk = 24
         targetSdk = 36
@@ -32,6 +35,9 @@ android {
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".debug"
+            if (sessionsTestApp) {
+                manifestPlaceholders["sessionsAppLabel"] = "Sessions Test"
+            }
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true

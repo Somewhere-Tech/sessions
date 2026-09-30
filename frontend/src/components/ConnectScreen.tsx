@@ -1,16 +1,13 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { fetchServerHealth } from '../api/sessionsd';
 import { claimNativeMachinePairing, rememberServerEndpoint } from '../lib/hostedBootstrap';
 import { formatServerEndpoint } from '../lib/serverEndpoint';
 import { useServers, type ServerConfig } from '../lib/servers';
-import { tailnetClientID } from '../lib/tailnetClient';
 import {
-  discoverNativeMachines,
-  requestNativeMachineAccess,
-  type NativeMachinePeer,
-  type NativeTailnetRequest
+  isNativeMobileRuntime,
+  scanPairingCode
 } from '../lib/tauriBridge';
-import { useMachineAccessPairing } from '../hooks/useMachineAccessPairing';
+import type { ClientFleetStatus } from '../lib/clientFleetAccount';
 
 const LOCAL_ENDPOINT = 'http://localhost:8787';
 const HEALTH_TIMEOUT_MS = 8_000;
@@ -35,28 +32,25 @@ export function ConnectScreen({
   const [token, setToken] = useState('');
   const [pairingLink, setPairingLink] = useState('');
   const [checkingId, setCheckingId] = useState<string | null>(null);
-  const [discoveryBusy, setDiscoveryBusy] = useState(false);
-  const [discoveredPeers, setDiscoveredPeers] = useState<NativeMachinePeer[] | null>(null);
-  const [accessRequest, setAccessRequest] = useState<(NativeTailnetRequest & { transport: NativeMachinePeer['transport'] }) | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const busy = checkingId !== null || discoveryBusy || accessRequest !== null;
+  const busy = checkingId !== null;
   const connectionDisabled = credentialError !== null || busy;
   const remembered = useMemo(
     () => servers.filter((server) => !server.isDefault),
     [servers]
   );
-  const isAndroidClient = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+  const isMobileClient = isNativeMobileRuntime();
 
-  const claimPairingLink = async (): Promise<void> => {
-    if (!clientOnly || connectionDisabled || !pairingLink.trim()) return;
-    setCheckingId('pairing-link');
+  const connectPairingLink = async (link: string, source: 'pairing-link' | 'pairing-code'): Promise<void> => {
+    if (!clientOnly || connectionDisabled || !link.trim()) return;
+    setCheckingId(source);
     setMessage('Claiming this one-time connection link…');
     setError(null);
     try {
-      const { server } = await claimNativeMachinePairing(pairingLink.trim());
+      const { server } = await claimNativeMachinePairing(link.trim());
       setPairingLink('');
-      setMessage(`${server.name} approved this device. Connecting…`);
+      setMessage(`Paired with ${server.name}. Connecting…`);
       onRetry?.();
     } catch (reason) {
       setMessage(null);
@@ -66,60 +60,19 @@ export function ConnectScreen({
     }
   };
 
-  const findMachines = async (): Promise<void> => {
+  const scanAndConnect = async (): Promise<void> => {
     if (!clientOnly || connectionDisabled) return;
-    setDiscoveryBusy(true);
-    setMessage('Looking for Sessions machines through Tailscale and nearby Bonjour…');
-    setError(null);
+    setCheckingId('pairing-code'); setMessage('Opening the camera…'); setError(null);
     try {
-      const result = await discoverNativeMachines();
-      setDiscoveredPeers(result.peers);
-      setMessage(result.peers.length > 0
-        ? `Found ${result.peers.length} ${result.peers.length === 1 ? 'machine' : 'machines'}.`
-        : result.errors[0] ?? 'No Sessions machines answered. Enable Tailscale remote access or trusted-network LAN access on the host.');
+      const link = await scanPairingCode();
+      setCheckingId(null);
+      await connectPairingLink(link, 'pairing-code');
     } catch (reason) {
-      setDiscoveredPeers([]);
       setMessage(null);
       setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setDiscoveryBusy(false);
+      setCheckingId(null);
     }
   };
-
-  const requestAccess = async (peer: NativeMachinePeer): Promise<void> => {
-    if (!clientOnly || connectionDisabled) return;
-    setDiscoveryBusy(true);
-    setError(null);
-    try {
-      const request = await requestNativeMachineAccess(peer, tailnetClientID(), '');
-      setAccessRequest({ ...request, transport: peer.transport });
-      setMessage(`Request sent to ${peer.name}. Accept it in Sessions on that machine.`);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setDiscoveryBusy(false);
-    }
-  };
-
-  // One shared implementation of the approval poll (hooks/useMachineAccessPairing.ts).
-  // This was one of three hand-rolled copies whose wording had already drifted.
-  const pendingAccess = useMemo(
-    () => accessRequest ? { transport: accessRequest.transport, request: accessRequest } : null,
-    [accessRequest]
-  );
-  useMachineAccessPairing({
-    pending: pendingAccess,
-    onAccepted: (server) => {
-      setAccessRequest(null);
-      setMessage(`${server.name} approved this device. Connecting…`);
-    },
-    onSettled: (_outcome, text) => {
-      setAccessRequest(null);
-      setMessage(null);
-      setError(text);
-    },
-    onError: setError
-  });
 
   const probe = async (server: ServerConfig): Promise<void> => {
     if (credentialError) {
@@ -179,78 +132,30 @@ export function ConnectScreen({
   };
 
   return (
-    <main className="connect-screen" data-testid="connect-screen">
+    <main className={`connect-screen${clientOnly ? ' connect-screen-client' : ''}`} data-testid="connect-screen">
       <section className="connect-panel" aria-labelledby="connect-title">
         <div className="connect-brand">Sessions</div>
         <p className="connect-kicker">
           {clientOnly ? 'this device → your Sessions machines' : 'native window → your daemon'}
         </p>
         <h1 id="connect-title">
-          {clientOnly ? 'Find the computers running your sessions.' : 'Open your sessions from here.'}
+          {clientOnly ? 'Find your Sessions machines.' : 'Open your sessions from here.'}
         </h1>
         <p className="connect-lede">
           {clientOnly
-            ? 'Sessions connects directly over your private network. The computer running each agent stays in control, and approves this device before anything opens.'
+            ? 'Scan a host pairing code to connect directly over your private network.'
             : 'This is the complete Sessions app. Pick a daemon and this client talks straight to it — no relay, proxy, hosted terminal data, or analytics.'}
         </p>
 
         {clientOnly ? (
           <>
-          <section className="connect-pair-link" aria-labelledby="pair-link-title">
-            <div>
-              <span>Fastest setup</span>
-              <h2 id="pair-link-title">Connect with a one-time link</h2>
-              <p>On the computer running Sessions, enable trusted-network access with <code>sessions lan enable</code>, then ask your agent to run <code>sessions pair</code>. Paste the link here; its ticket is consumed once and this device receives its own revocable credential.</p>
-            </div>
-            <form onSubmit={(event) => { event.preventDefault(); void claimPairingLink(); }}>
-              <input
-                type="url"
-                inputMode="url"
-                autoComplete="off"
-                placeholder="Paste the Sessions connection link"
-                value={pairingLink}
-                onChange={(event) => setPairingLink(event.currentTarget.value)}
-              />
-              <button type="submit" className="connect-submit" disabled={connectionDisabled || !pairingLink.trim()}>
-                {checkingId === 'pairing-link' ? 'Connecting…' : 'Connect this device'}
-              </button>
-            </form>
-          </section>
-          <section className="connect-discovery" aria-labelledby="discovery-title">
-            <div className="connect-discovery-heading">
-              <div>
-                <span>Private machine discovery</span>
-                <h2 id="discovery-title">Find your machines</h2>
-                <p>{isAndroidClient
-                  ? 'Automatic Android discovery and Tailscale onboarding are coming next. The one-time link above connects directly on a trusted LAN today.'
-                  : 'Sessions checks encrypted Tailscale and nearby Bonjour independently, then shows only verified Sessions runtimes.'}</p>
-              </div>
-              {!isAndroidClient ? (
-                <button type="button" className="connect-submit connect-find" disabled={connectionDisabled} onClick={() => void findMachines()}>
-                  {discoveryBusy ? 'Searching…' : discoveredPeers === null ? 'Find machines' : 'Search again'}
-                </button>
-              ) : <span className="connect-coming-soon">Coming next</span>}
-            </div>
-            {discoveredPeers !== null && discoveredPeers.length > 0 ? (
-              <div className="connect-peer-list">
-                {discoveredPeers.map((peer) => {
-                  const waiting = accessRequest?.endpoint === peer.endpoint;
-                  return (
-                    <article key={peer.endpoint} className="connect-peer">
-                      <span className="connect-peer-icon" aria-hidden>{peer.os.toLowerCase().includes('windows') ? '⊞' : peer.os.toLowerCase().includes('mac') ? '⌘' : '◇'}</span>
-                      <div>
-                        <strong>{peer.name}</strong>
-                        <small>{peer.transport === 'tailnet' ? 'Tailscale · encrypted' : 'Nearby · unencrypted'} · {peer.endpoint.replace(/^https?:\/\//, '')}</small>
-                      </div>
-                      <button type="button" className="btn" disabled={connectionDisabled} onClick={() => void requestAccess(peer)}>
-                        {waiting ? 'Waiting for approval…' : 'Request access'}
-                      </button>
-                    </article>
-                  );
-                })}
-              </div>
-            ) : null}
-          </section>
+		  <ClientFleetSignIn onConnected={() => onRetry?.()} />
+          <PairingLinkPanel
+            link={pairingLink} busy={connectionDisabled} checkingId={checkingId}
+            mobile={isMobileClient} onChange={setPairingLink}
+            onScan={() => void scanAndConnect()}
+            onConnect={() => void connectPairingLink(pairingLink, 'pairing-link')}
+          />
           </>
         ) : null}
 
@@ -364,15 +269,15 @@ export function ConnectScreen({
               <code>brew install somewhere-tech/tap/sessions &amp;&amp; sessions install</code>
             </li>
             <li>
-              <span>{isAndroidClient
+              <span>{isMobileClient
                 ? 'Enable direct access on the trusted Wi-Fi or Ethernet network shared with your phone.'
                 : 'Enable direct HTTPS access over your own Tailscale network.'}</span>
-              <code>{isAndroidClient ? 'sessions lan enable && sessions pair' : 'sessions remote enable'}</code>
+              <code>{isMobileClient ? 'sessions lan enable' : 'sessions remote enable'}</code>
             </li>
             <li>
               <span>
-                {isAndroidClient
-                  ? 'Paste the printed one-time link above. Tailscale discovery and request/accept onboarding are next.'
+                {isMobileClient
+                  ? 'Choose a nearby Sessions machine above and approve this phone there, or paste a one-time link.'
                   : clientOnly
                     ? 'Paste the one-time link above. On desktop clients, you can also discover and request access from the app.'
                   : 'Scan the printed QR code, or paste its endpoint and token above.'}
@@ -388,5 +293,102 @@ export function ConnectScreen({
         </p>
       </section>
     </main>
+  );
+}
+
+function ClientFleetSignIn({ onConnected }: { onConnected: () => void }): JSX.Element {
+	const [status, setStatus] = useState<ClientFleetStatus>({ signedIn: false });
+	const [email, setEmail] = useState('');
+	const [code, setCode] = useState('');
+	const [sent, setSent] = useState(false);
+	const [busy, setBusy] = useState(false);
+	const [message, setMessage] = useState<string | null>(null);
+	const sync = async (): Promise<void> => {
+		setBusy(true); setMessage('Loading your fleet…');
+		try {
+			const { syncClientAccountFleet } = await import('../lib/clientFleetAccount');
+			const errors = await syncClientAccountFleet();
+			setMessage(errors.length > 0 ? `Fleet loaded. ${errors.join(' · ')}` : 'Your fleet is ready without pairing.');
+			onConnected();
+		} catch (reason) {
+			setMessage(reason instanceof Error ? reason.message : String(reason));
+		} finally { setBusy(false); }
+	};
+	useEffect(() => {
+		void import('../lib/clientFleetAccount').then((client) => {
+			const current = client.clientFleetStatus();
+			setStatus(current);
+			if (current.signedIn) void sync();
+		});
+	}, []); // eslint-disable-line react-hooks/exhaustive-deps
+	const submit = async (): Promise<void> => {
+		setBusy(true); setMessage(null);
+		try {
+			const client = await import('../lib/clientFleetAccount');
+			if (!sent) {
+				await client.requestClientFleetMagicLink(email);
+				setSent(true); setMessage(`Somewhere sent a single-use code or link to ${email.trim()}.`);
+			} else {
+				setStatus(await client.verifyClientFleetMagicLink(code));
+				setSent(false); setCode('');
+				await sync();
+			}
+		} catch (reason) {
+			setMessage(reason instanceof Error ? reason.message : String(reason));
+		} finally { setBusy(false); }
+	};
+	const signOut = async (): Promise<void> => {
+		setBusy(true); setMessage(null);
+		try {
+			const { logoutClientFleetAccount } = await import('../lib/clientFleetAccount');
+			await logoutClientFleetAccount();
+			setStatus({ signedIn: false }); setMessage('Signed out. Saved pairings stay on this phone.');
+		} catch (reason) {
+			setMessage(reason instanceof Error ? reason.message : String(reason));
+		} finally { setBusy(false); }
+	};
+	return (
+		<section className="connect-account" aria-label="Somewhere fleet sign in">
+			<div><strong>{status.signedIn ? status.user?.email ?? 'Signed in to Somewhere' : 'See every machine'}</strong><small>{status.signedIn ? 'Same-account machines connect automatically.' : 'Sign in, or scan/enter an address below.'}</small></div>
+			{status.signedIn ? (
+				<div className="connect-account-actions"><button type="button" className="btn" disabled={busy} onClick={() => void sync()}>{busy ? 'Loading…' : 'Refresh fleet'}</button><button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void signOut()}>Sign out</button></div>
+			) : (
+				<div className="connect-account-form">
+					<input type="email" value={email} disabled={busy || sent} placeholder="you@example.com" autoComplete="email" onChange={(event) => setEmail(event.currentTarget.value)} />
+					{sent ? <input value={code} disabled={busy} placeholder="Six-digit code or link token" autoComplete="one-time-code" onChange={(event) => setCode(event.currentTarget.value)} /> : null}
+					<button type="button" className="btn" disabled={busy || (sent ? !code.trim() : !email.trim())} onClick={() => void submit()}>{busy ? 'Waiting…' : sent ? 'Verify' : 'Sign in'}</button>
+				</div>
+			)}
+			{message ? <small className="connect-status" role="status">{message}</small> : null}
+		</section>
+	);
+}
+
+function PairingLinkPanel({ link, busy, checkingId, mobile, onChange, onScan, onConnect }: {
+  link: string; busy: boolean; checkingId: string | null; mobile: boolean;
+  onChange: (value: string) => void; onScan: () => void; onConnect: () => void;
+}): JSX.Element {
+  const input = useRef<HTMLInputElement>(null);
+  const keepVisible = useCallback((): void => {
+    input.current?.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }, []);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return undefined;
+    const onViewportChange = (): void => {
+      if (document.activeElement === input.current) keepVisible();
+    };
+    viewport.addEventListener('resize', onViewportChange);
+    return () => viewport.removeEventListener('resize', onViewportChange);
+  }, [keepVisible]);
+  return (
+    <section className="connect-pair-link" aria-labelledby="pair-link-title">
+      <div><span>One-time consent</span><h2 id="pair-link-title">Pair with a code</h2><p>Run <code>sessions pair</code> on the host, then scan or paste.</p></div>
+      {mobile ? <button type="button" className="connect-submit connect-scan" disabled={busy} onClick={onScan}>{checkingId === 'pairing-code' ? 'Scanning…' : 'Scan a pairing code'}</button> : null}
+      <form onSubmit={(event) => { event.preventDefault(); onConnect(); }}>
+        <input ref={input} type="url" inputMode="url" autoComplete="off" placeholder="Paste the Sessions pairing link" value={link} onChange={(event) => onChange(event.currentTarget.value)} onFocus={keepVisible} />
+        <button type="submit" className="connect-submit" disabled={busy || !link.trim()}>{checkingId === 'pairing-link' ? 'Connecting…' : 'Connect this device'}</button>
+      </form>
+    </section>
   );
 }
