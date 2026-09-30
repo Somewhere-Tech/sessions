@@ -317,6 +317,18 @@ interface CodexTurnProjection {
   completed: boolean;
 }
 
+function newCodexProjection(turnID: string, at: number, segment: number): CodexTurnProjection {
+  return {
+    message: { id: `codex-turn-${turnID}-${segment}`, role: 'assistant', content: '', status: 'sent',
+      createdAt: at, blockId: turnID, streaming: true, turnStatus: 'inProgress' },
+    itemText: new Map(), itemPhase: new Map(), itemOrder: [], tools: new Map(), reasoning: [], completed: false
+  };
+}
+
+function hasCodexActivity(projection: CodexTurnProjection): boolean {
+  return projection.itemOrder.length > 0 || projection.tools.size > 0 || projection.reasoning.length > 0;
+}
+
 function refreshCodexTurn(projection: CodexTurnProjection): void {
   const finalTexts: string[] = [];
   const updates: string[] = [];
@@ -339,6 +351,7 @@ function refreshCodexTurn(projection: CodexTurnProjection): void {
 function markFinalTextTime(projection: CodexTurnProjection, itemID: string, at: number): void {
   if (projection.itemPhase.get(itemID) !== 'final_answer') return;
   if (!projection.itemText.get(itemID)?.trim()) return;
+  if (projection.message.confirmedAt !== undefined) return;
   projection.message.createdAt = at;
   projection.message.confirmedAt = at;
 }
@@ -397,30 +410,15 @@ function appendProviderSystemMessage(event: ClaudeSessionEvent, out: DispatchMes
 function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] {
   const out: DispatchMessage[] = [];
   const turns = new Map<string, CodexTurnProjection>();
+  const itemOwners = new Map<string, CodexTurnProjection>();
+  const completedTurns = new Set<string>();
   const steeringByTurn = new Map<string, DispatchMessage[]>();
   let latestTurnID = '';
   const ensureTurn = (turnID: string, at: number): CodexTurnProjection | null => {
     if (!turnID) return null;
     const existing = turns.get(turnID);
     if (existing) return existing;
-    const projection: CodexTurnProjection = {
-      message: {
-        id: `codex-turn-${turnID}`,
-        role: 'assistant',
-        content: '',
-        status: 'sent',
-        createdAt: at,
-        blockId: turnID,
-        streaming: true,
-        turnStatus: 'inProgress'
-      },
-      itemText: new Map(),
-      itemPhase: new Map(),
-      itemOrder: [],
-      tools: new Map(),
-      reasoning: [],
-      completed: false
-    };
+    const projection = newCodexProjection(turnID, at, out.length);
     turns.set(turnID, projection);
     out.push(projection.message);
     return projection;
@@ -480,9 +478,16 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
         confirmedAt: at,
         blockId: event.uuid,
         author: event.author,
-        queued: subtype === 'user_steer' && event.turnId ? !turns.get(event.turnId)?.completed : undefined
+        queued: subtype === 'user_steer' && event.turnId ? !completedTurns.has(event.turnId) : undefined
       };
       out.push(message);
+      const previous = event.turnId ? turns.get(event.turnId) : undefined;
+      if (previous && !previous.completed && hasCodexActivity(previous)) {
+        previous.completed = true;
+        previous.message.streaming = false;
+        previous.message.turnStatus = undefined;
+        turns.delete(event.turnId!);
+      }
       if (message.queued && event.turnId) {
         const queued = steeringByTurn.get(event.turnId) ?? [];
         queued.push(message);
@@ -531,8 +536,10 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
     }
 
     if (event.turnId) latestTurnID = event.turnId;
-    const projection = ensureTurn(event.turnId || latestTurnID, at);
+    const itemID = event.itemId || recordString(asRecord(event.item), 'id');
+    const projection = itemOwners.get(itemID) ?? ensureTurn(event.turnId || latestTurnID, at);
     if (!projection) continue;
+    if (itemID) itemOwners.set(itemID, projection);
 
     if (subtype === 'agent_message_delta') {
       const itemID = event.itemId ?? '';
@@ -579,6 +586,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
     }
 
     if (subtype === 'turn_completed') {
+      if (event.turnId) completedTurns.add(event.turnId);
       projection.completed = true;
       projection.message.turnStatus = event.status || 'completed';
       projection.message.streaming = false;

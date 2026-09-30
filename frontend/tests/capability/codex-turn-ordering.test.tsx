@@ -69,7 +69,37 @@ describe('capability: Codex final answers follow in-turn steering', () => {
 
     expect(messages.map((message) => message.role)).toEqual(['user', 'user', 'assistant']);
     expect(messages[2]?.content).toBe('Yes. The detailed review is finished.\n\nI saved it here: review.md');
-    expect(messages[2]?.createdAt).toBe(Date.parse('2026-09-05T16:06:27Z'));
+    expect(messages[2]?.createdAt).toBe(Date.parse('2026-09-05T16:06:20Z'));
+  });
+
+  it('keeps commentary and tool activity before a follow-up, including replay and late tool completion', () => {
+    const history = [
+      event('2026-09-05T16:06:00Z', { subtype: 'turn_started' }),
+      event('2026-09-05T16:06:01Z', { subtype: 'item_completed', item: {
+        id: 'update', type: 'agentMessage', phase: 'commentary', text: 'Checking the original request.'
+      } }),
+      event('2026-09-05T16:06:02Z', { subtype: 'item_started', item: {
+        id: 'tool', type: 'commandExecution', command: 'go test ./...', status: 'inProgress'
+      } }),
+      event('2026-09-05T16:06:03Z', { subtype: 'user_steer', type: 'user', uuid: 'followup',
+        message: { role: 'user', content: 'Check the changed requirements too.' } }),
+      event('2026-09-05T16:06:04Z', { subtype: 'item_completed', item: {
+        id: 'tool', type: 'commandExecution', command: 'go test ./...', status: 'completed', exitCode: 0
+      } }),
+      event('2026-09-05T16:06:05Z', { subtype: 'item_completed', item: {
+        id: 'answer', type: 'agentMessage', phase: 'final_answer', text: 'Both checks passed.'
+      } }),
+      event('2026-09-05T16:06:06Z', { subtype: 'turn_completed', status: 'completed' })
+    ];
+    for (const events of [history, JSON.parse(JSON.stringify(history))]) {
+      const messages = eventsToMessages(events);
+      expect(messages.map((message) => message.role)).toEqual(['assistant', 'user', 'assistant']);
+      expect(messages[0]?.updates).toEqual(['Checking the original request.']);
+      expect(messages[0]?.toolCalls?.[0]?.status).toBe('completed');
+      expect(messages[0]?.streaming).toBe(false);
+      expect(messages[1]?.queued).toBe(false);
+      expect(messages[2]?.content).toBe('Both checks passed.');
+    }
   });
 
   it('replaces streaming updates for one item instead of duplicating them', () => {

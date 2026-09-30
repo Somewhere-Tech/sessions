@@ -68,10 +68,40 @@ function SendControls({ disabled, submitting, feedback, steer, submit }: {
   steer: boolean; submit: (steer?: boolean) => Promise<void>;
 }): JSX.Element {
   return <button type="button" className={`btn btn-primary input-send${steer ? ' is-steering' : ''}${feedback === 'sent' ? ' is-sent' : ''}`}
-    onClick={() => void submit(steer)} disabled={disabled || submitting} aria-label={steer ? 'Steer now' : 'Send'}
+    onClick={() => void submit(steer)} disabled={disabled || submitting} aria-label={steer ? 'Send follow-up' : 'Send'}
     title={submitting ? 'Sending…' : steer ? 'Send a new follow-up to the active turn (Enter)' : 'Send (Enter)'}>
-    {steer ? 'Steer now' : <span aria-hidden>↑</span>}
+    {steer ? 'Send follow-up' : <span aria-hidden>↑</span>}
   </button>;
+}
+
+function CodexTurnControl({ working, available, send }: {
+  working: boolean; available: boolean; send: (data: string) => Promise<void>;
+}): JSX.Element | null {
+  const [requested, setRequested] = useState(false);
+  const [error, setError] = useState('');
+  const inFlight = useRef(false);
+  useEffect(() => { if (!working) { setRequested(false); setError(''); } }, [working]);
+  if (!working) return null;
+  const stop = async (): Promise<void> => {
+    if (inFlight.current || requested) return;
+    inFlight.current = true;
+    setRequested(true);
+    setError('');
+    try { await send('\x1b'); }
+    catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The stop request could not be delivered.');
+      setRequested(false);
+    } finally { inFlight.current = false; }
+  };
+  return <div className="input-composer-notice is-info" role="status">
+    <div><strong>{requested ? 'Stop requested' : 'Codex is working'}</strong>
+      <span>{requested
+        ? 'Wait for this turn to finish before sending a revised instruction. Accepted follow-ups are not resent; they may already have applied.'
+        : 'Follow-ups are accepted for this turn, but may wait for the current tool. Stopping does not resend them.'}</span>
+      {error ? <span role="alert">{error}</span> : null}</div>
+    <button type="button" className="btn btn-secondary" disabled={!available || requested}
+      onClick={() => void stop()}>{requested ? 'Stop requested' : 'Stop current turn'}</button>
+  </div>;
 }
 
 // Bottom composer for the Sessions view. xterm itself accepts input fine
@@ -123,7 +153,6 @@ export function InputBar({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handledRecoveryKeysRef = useRef<Set<string>>(new Set());
   const restoredDraftRef = useRef<{ key: string; text: string } | null>(null);
-
   // Auto-dismiss the upload error after 8s — the user may have moved on
   // and it's annoying to have a persistent red stripe that they can't
   // dismiss. Refreshes the timer each time a new error is set.
@@ -388,6 +417,7 @@ export function InputBar({
         </div>
       ) : null}
       {draftWarning ? <div className="input-bar-upload-state is-error" role="alert">{draftWarning}</div> : null}
+      {provider === 'codex' ? <CodexTurnControl key={sessionId} working={providerWorking} available={sendAvailable} send={send} /> : null}
       {composerNotice && (composerNotice.kind !== 'busy' || providerWorking) ? (
         <div className={`input-composer-notice is-${composerNotice.tone}`} role={composerNotice.tone === 'error' ? 'alert' : 'status'}>
           <div>
