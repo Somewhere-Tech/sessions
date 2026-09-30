@@ -47,6 +47,11 @@ test('release preparation pins all archive and binary hashes and refuses bad che
   const archives = await fixture(root);
   const packageDirectory = path.join(root, 'package');
   await fs.cp(packageSource, packageDirectory, { recursive: true });
+  // This historical archive fixture is independent of the source candidate.
+  const pkgPath = path.join(packageDirectory, 'package.json');
+  const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
+  pkg.version = '0.2.27';
+  await fs.writeFile(pkgPath, JSON.stringify(pkg));
   const manifest = await prepare(archives, packageDirectory);
   assert.equal(Object.keys(manifest.platforms).length, 3);
   for (const entry of Object.values(manifest.platforms)) {

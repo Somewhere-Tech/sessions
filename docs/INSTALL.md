@@ -5,7 +5,7 @@ and a signed updater. Public releases are Developer ID signed, notarized,
 stapled, and backed by an immutable updater artifact; see
 [GitHub Releases](https://github.com/somewhere-tech/sessions/releases/latest)
 for the current version. The current public release is 0.2.26. This branch
-targets the unpublished 0.2.27 candidate; its Linux systemd installer and npm
+targets the unpublished 0.2.28 candidate; its Linux systemd installer and npm
 package require candidate bytes until that release is published. These
 instructions do not make candidate assets publicly available.
 
@@ -140,9 +140,9 @@ For a public repository, the same command works without authentication. Agents
 that do not have `gh` can use the direct HTTPS form:
 
 ```sh
-# This candidate example works only after v0.2.27 assets are published.
+# This candidate example works only after v0.2.28 assets are published.
 # Until then, select an existing tag from the releases page or build from source.
-VERSION=0.2.27
+VERSION=0.2.28
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}.sha256"
@@ -174,7 +174,7 @@ fully usable from the CLI. Interactive browser control is deprecated.
 
 ### Start on Linux
 
-With the 0.2.27 candidate on a Linux machine running systemd, install the user service:
+With the 0.2.28 candidate on a Linux machine running systemd, install the user service:
 
 ```sh
 sessions install

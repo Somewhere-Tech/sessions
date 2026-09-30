@@ -23,7 +23,7 @@ agent CLI you want to run separately.
 
 ## Install
 
-This branch targets the **0.2.27 release candidate**, which is not yet published.
+This branch targets the **0.2.28 release candidate**, which is not yet published.
 The current public release is 0.2.26; candidate-only behavior below requires a
 candidate build, not the current Homebrew or GitHub download.
 
@@ -44,12 +44,12 @@ sessions install
 ```
 
 Release automation produces static archives for macOS arm64 and Linux
-arm64/amd64. Once 0.2.27 is published, an agent can fetch that exact immutable
+arm64/amd64. Once 0.2.28 is published, an agent can fetch that exact immutable
 version without parsing a web page. Until then, use an existing published tag
 or follow the [development build guide](docs/DEV.md):
 
 ```sh
-VERSION=0.2.27 # Requires published v0.2.27 assets; not available yet.
+VERSION=0.2.28 # Requires published v0.2.28 assets; not available yet.
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 gh release download "v${VERSION}" --repo somewhere-tech/sessions \
   --pattern "$ARCHIVE" --pattern "$ARCHIVE.sha256"
@@ -61,7 +61,7 @@ sessions install
 sessions status --json
 ```
 
-In the 0.2.27 candidate, Linux `sessions install` registers and starts a systemd user service.
+In the 0.2.28 candidate, Linux `sessions install` registers and starts a systemd user service.
 Runners are separate processes, so restarting or upgrading the daemon preserves
 their work. After a reboot the service discovers retained conversations as
 paused; resuming one is explicit. Enable user lingering if the daemon must start
@@ -77,7 +77,7 @@ by the command. Print it again later with `sessions token`.
 The candidate [npm distribution](npm/README.md) wraps the same native Go binaries and pins
 their archive and binary checksums. Its checked-in release manifest remains
 unprepared until the matching release assets exist; this is not a claim that
-0.2.27 is available on npm. There is no `curl | sh` installer. See
+0.2.28 is available on npm. There is no `curl | sh` installer. See
 [installation details](docs/INSTALL.md) for exact archive names, agent-safe
 downloads, PATH setup, Linux startup, upgrades, and uninstalling.
 

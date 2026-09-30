@@ -57,8 +57,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.2.27
-        CFBundleVersion: "0.2.27"
+        CFBundleShortVersionString: 0.2.28
+        CFBundleVersion: "0.2.28"
     entitlements:
       path: sessions-app_iOS/sessions-app_iOS.entitlements
     scheme:
