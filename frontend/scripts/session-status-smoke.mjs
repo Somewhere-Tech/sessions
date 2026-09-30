@@ -33,6 +33,10 @@ try {
     sessionWantsAttention
   } = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
 
+  assert.equal(classifySession({ id: 'new', idleReason: 'never-started' }).state, 'not-started');
+  assert.equal(classifySession({ id: 'resumed', idleReason: 'never-started', resumedFrom: 'original' }).state, 'ready');
+  assert.equal(classifySession({ id: 'lost', idleReason: 'never-started', resumedFrom: 'original', unreachable: true }).state, 'unavailable');
+
   const liveMcpWarning = {
     id: 'mcp-warning',
     tool: 'codex',

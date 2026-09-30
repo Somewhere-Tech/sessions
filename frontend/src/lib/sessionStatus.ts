@@ -176,7 +176,9 @@ function statusState(session: SessionInfo, options: ClassifyOptions): SessionSta
   if (options.working ?? session.working) return 'working';
   if (isDegradedSession(session)) return 'limited';
   if (session.idleReason === 'completed') return 'finished';
-  if (session.idleReason === 'never-started') return 'not-started';
+  // A replacement runtime has not started a new turn, but the preserved
+  // conversation has already begun. Do not call that conversation new.
+  if (session.idleReason === 'never-started') return session.resumedFrom ? 'ready' : 'not-started';
   return 'ready';
 }
 
