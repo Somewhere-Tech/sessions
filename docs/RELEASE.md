@@ -9,11 +9,12 @@ update story.
 The checked-in Tauri application builds as `Sessions.app`. It bundles signed Go
 binaries and implements idempotent first install, health/discovery checks,
 live-session baseline verification, rollback for daemon upgrades, and a signed
-Tauri updater. Public releases use immutable GitHub tags, and the signed updater
-manifest is live at
-`https://sessions.somewhere.tech/releases/latest.json`. The archive is
-Developer ID signed, notarized, stapled, and Gatekeeper accepted. Future
-versions must preserve that artifact-first publication order.
+Tauri updater. Public releases use immutable GitHub tags. Published macOS
+archives must be Developer ID signed, notarized, stapled, and Gatekeeper
+accepted before the hosted updater at
+`https://sessions.somewhere.tech/releases/latest.json` or download links are
+promoted. A source version, development build, or signed draft does not establish
+publication or installation acceptance.
 
 Developer builds may use their own updater key:
 
@@ -37,10 +38,11 @@ Before publishing a version:
 5. Exercise a first install and an upgrade against scratch state.
 6. Prove the pre/post session baseline and rollback behavior.
 7. Submit for notarization, staple the ticket, and require `spctl` acceptance.
-8. Sign and publish the updater manifest and immutable app artifact.
-9. Install through the same channel a customer will use and repeat the health
-   and session-adoption check.
-10. From the previous installed app, run the newly built CLI's
+8. Stage the signed updater manifest and immutable app artifacts in a draft.
+9. Download and verify those exact bytes against the producing delivery
+   artifact, then prove native install/update acceptance before publication.
+10. Explicitly publish the unchanged draft and promote the hosted updater and
+    download links. From the previous installed app, run the newly built CLI's
     `sessions update --check`, then `sessions update`; confirm the pinned
     signature, Developer ID, Gatekeeper, atomic swap, app relaunch, managed CLI
     link, daemon version, and complete runner baseline.
@@ -67,12 +69,14 @@ private half lives outside the repository at
 `~/.config/sessions/sessions-updater.key` with mode `0600`. Back it up securely:
 losing it prevents every installed build from accepting future updates.
 
-Keep the version synchronized in `src-tauri/tauri.conf.json`,
-`src-tauri/Cargo.toml`, and `frontend/package.json`, prepare release notes, then
-run the non-mutating preflight:
+Keep the version synchronized in `package.json`, `frontend/package.json`,
+`npm/package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and the
+Go command defaults. Prepare release notes and the macOS source download links,
+then run the non-mutating preflight:
 
 ```sh
-scripts/release-app.sh --version 0.1.0 --notes-file /path/to/notes.md --dry-run
+node scripts/check-release-version.mjs 0.2.27
+scripts/release-app.sh --version 0.2.27 --notes-file release/notes-v0.2.27.md --dry-run
 ```
 
 After exporting Apple notarization credentials, run the same command without
@@ -85,11 +89,12 @@ binaries, validates notarization/stapling/Gatekeeper, and writes
 `.github/workflows/ci.yml` runs the Go, generated-docs, frontend, and Rust gates
 on every pull request and push to `main`. `.github/workflows/release.yml` accepts
 only an existing `vX.Y.Z` tag contained in `main`. On GitHub's Apple Silicon
-macOS runner it repeats the full gate, imports a dedicated Developer ID
-certificate into a temporary keychain, notarizes and staples Sessions.app,
-builds all standalone runtime archives, verifies their checksums, creates a
-draft GitHub Release, uploads every asset, and makes the release visible only
-after all uploads succeed.
+macOS runner it repeats the full source gate and builds without signing
+credentials. Separate jobs verify that producing artifact, sign and notarize
+the existing bytes with step-scoped credentials, prepare and test the exact npm
+tarball without publication authority, and upload the verified delivery to a
+draft GitHub Release. The workflow never publishes the draft, marks it latest,
+publishes npm, or promotes the hosted updater or website.
 
 Configure these secrets in the GitHub `release` environment:
 
@@ -111,27 +116,61 @@ Push a reviewed tag to start a release, or rerun an existing tag from the
 workflow's manual dispatch:
 
 ```sh
-git tag -a v0.1.0 -m 'Sessions 0.1.0'
-git push origin v0.1.0
+git tag -a v0.2.27 -m 'Sessions 0.2.27'
+git push origin v0.2.27
+# Or dispatch an existing reviewed tag:
+gh workflow run release.yml --ref main -f tag=v0.2.27
 ```
 
-The workflow publishes GitHub's immutable artifacts, including an initial-install
-zip, updater archive and signature, static runtime archives, individual
-checksums, and `checksums.txt`. It deliberately does not receive broad Somewhere
-project credentials.
+The draft contains an initial-install zip, updater archive and signature,
+static runtime archives, individual checksums, `checksums.txt`, and the prepared
+npm tarball. The producing delivery artifact additionally retains provenance
+and the prepared npm manifest. Existing draft assets are not overwritten
+automatically, and a published release is never replaced. Inspect a partial
+staging failure before changing assets; changed bytes require renewed acceptance.
+The workflow deliberately does not receive broad Somewhere project credentials.
 
 The initial v0.1.0 release was built and notarized on the signing Mac, then
 uploaded after all local gates and a GitHub download round-trip matched. The
 tag-triggered lane remains the required path for subsequent releases once its
 dedicated Apple certificate and notarization secrets are configured.
 
-Upload `Sessions.app.tar.gz` and its `.sig` to the immutable GitHub release tag
-first; the CI lane performs that upload for subsequent versions. Then use the Somewhere project's
-`project_patch` operation to replace only `releases/latest.json` with the
-rendered manifest from the workflow. Do not deploy a one-file directory: a full
-static deploy can remove the onboarding pages. Read the file back from
-production and install through the app's Settings → Sessions updates flow before
-announcing the release.
+Before promotion, download the draft assets and their producing delivery
+artifact with an authorized GitHub identity. Verify provenance and checksums,
+nested Developer ID signatures, notarization/stapling, Gatekeeper acceptance,
+and the pinned updater signature. Test first install and upgrade using the exact
+signed bytes, including compatible live-runner survival and unreachable-baseline
+recovery or rollback. Development artifacts are not substitutes for this test.
+
+Only after acceptance, explicitly publish the unchanged draft and verify every
+official runtime archive against the prepared npm manifest:
+
+```sh
+gh release edit v0.2.27 --draft=false --latest
+node npm/scripts/verify-release.cjs --manifest /path/to/delivery/npm-manifest.json
+```
+
+With separately authorized npm credentials, publish the verified prepared
+tarball, not the unprepared source directory:
+
+```sh
+npm publish /path/to/delivery/somewhere-tech-sessions-0.2.27.tgz --access public
+```
+
+Then use the Somewhere project's `project_patch` operation to replace only
+`releases/latest.json` with the rendered manifest. Deploy prepared macOS download
+links only after the matching published assets exist and their signatures and
+checksums verify. Do not deploy a one-file directory: a full static deploy can
+remove the onboarding pages. Read the updater back from production and install
+through Settings → Sessions updates before announcing the release.
+
+Linux archives in the release lane are cross-built. Native candidate CI,
+packed-CLI checks, published npm installation, systemd startup, and reboot
+recovery are separate evidence; test the exact release archives on compatible
+Linux hosts before claiming their operational acceptance. Windows signing,
+hardware acceptance, and artifact/updater promotion use the separate Windows
+candidate lane. Existing Windows and Android preview links must not be upgraded
+or presented as physical-device accepted by a macOS release.
 
 For 0.2.2 and later, also exercise the terminal path:
 
