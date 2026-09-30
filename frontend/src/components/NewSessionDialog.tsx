@@ -560,9 +560,17 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         <div className="dialog-body">
           <section className="launcher-hero">
             <h2>{isDelegate ? 'Delegate a task' : 'What would you like to work on?'}</h2>
-            <p>{isDelegate ? 'Give it one focused job. It stays linked to its parent.' : 'Choose an agent and a place to work.'}</p>
+            <p>{isDelegate ? 'Give it one focused job. It stays linked to its parent.' : 'Choose your project folder, then an agent to work with.'}</p>
           </section>
           <div className="launcher-setup" role="group" aria-label="Session setup">
+            <div className="launcher-setup-field is-folder">
+              <span>Project folder</span>
+              <button type="button" className="launcher-intent-control is-workspace" title={cwd || 'Choose a project folder'} onClick={() => setBrowserOpen((open) => !open)} aria-label={`Folder: ${workspaceTitle}`} aria-expanded={browserOpen} disabled={isDelegate}>
+                <span className="workspace-folder-icon" aria-hidden />
+                <strong>{workspaceTitle}</strong>
+                {!isDelegate && <span className="launcher-folder-change">Change</span>}
+              </button>
+            </div>
             <label className="launcher-setup-field">
               <span>Agent</span>
               <span className="launcher-intent-control is-agent">
@@ -596,14 +604,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                 onChange={(next) => { setAccountTouched(true); setProfileChoice(next); }}
               />
             ) : null}
-            <div className="launcher-setup-field is-folder">
-              <span>Folder</span>
-              <button type="button" className="launcher-intent-control is-workspace" title={cwd || 'Choose a project folder'} onClick={() => setBrowserOpen((open) => !open)} aria-label={`Folder: ${workspaceTitle}`} aria-expanded={browserOpen} disabled={isDelegate}>
-                <span className="workspace-folder-icon" aria-hidden />
-                <strong>{workspaceTitle}</strong>
-                {!isDelegate && <span className="launcher-folder-change">Change</span>}
-              </button>
-            </div>
           </div>
           {profileTool && requiresProviderLogin ? (
             <InlineAccountSignIn

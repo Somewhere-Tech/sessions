@@ -1,8 +1,9 @@
 // StatusSidebar — pure render. Data source is useSessionSidebar (which
-// reads Claude's persisted JSONL events). Component never touches the
+// reads the provider's persisted events). Component never touches the
 // data layer directly.
 
 import type { SidebarChecklistItem } from '../types/sidebar';
+import { normalizeProvider, ProviderMark } from './ProviderBadge';
 
 export type { SidebarChecklistItem };
 
@@ -20,6 +21,7 @@ export interface SidebarProps {
 }
 
 export default function StatusSidebar({
+  parserName,
   isWorking,
   timer,
   tokens,
@@ -29,11 +31,12 @@ export default function StatusSidebar({
   checklist,
   statusLabel
 }: SidebarProps) {
+  const provider = normalizeProvider(parserName.toLowerCase());
   return (
     <aside className={`status-sidebar${isWorking ? ' is-working' : ' is-idle'}`}>
       <section className="sidebar-section sidebar-metrics">
         <span className="sidebar-run-state" aria-label={isWorking ? 'Agent working' : statusLabel}>
-          <span aria-hidden>✻</span>
+          {provider ? <ProviderMark provider={provider} size={14} /> : <span aria-hidden>·</span>}
           {isWorking ? 'Working' : statusLabel}{!isWorking && finalElapsed ? ` · ${finalElapsed}` : ''}
         </span>
         {isWorking ? (

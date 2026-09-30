@@ -236,8 +236,8 @@ const launcherComposer = newSession.indexOf('launcher-task-field launcher-compos
 const folderControl = newSession.indexOf('launcher-workspace-shell');
 const advancedControl = newSession.indexOf('launcher-advanced');
 const permissionsControl = newSession.indexOf('aria-label="Access"');
-assert.ok(launcherHero > 0 && launcherHero < agentControl && agentControl < machineControl && machineControl < workspaceControl && workspaceControl < launcherComposer && launcherComposer < folderControl,
-  'new-session must present agent, computer, and folder before the prompt');
+assert.ok(launcherHero > 0 && launcherHero < workspaceControl && workspaceControl < agentControl && agentControl < machineControl && machineControl < launcherComposer && launcherComposer < folderControl,
+  'new-session must present the project folder first, then agent and computer, before the prompt');
 assert.ok(permissionsControl > launcherComposer && permissionsControl < advancedControl,
   'permissions belong in the primary composer before Advanced');
 assert.match(newSession, /Somewhere project/);

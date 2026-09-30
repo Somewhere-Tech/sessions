@@ -47,6 +47,8 @@ describe('capability: create a session', () => {
     useFakeMachines([machine]);
     const user = userEvent.setup();
     render(<Launcher />);
+    const setup = screen.getByRole('group', { name: 'Session setup' });
+    expect(setup.firstElementChild).toHaveTextContent('Project folder');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Agent' }), 'codex');
     await user.click(screen.getByRole('button', { name: /Codex default/ }));
     await user.click(await screen.findByRole('option', { name: /Astra/ }));

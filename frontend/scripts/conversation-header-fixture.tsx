@@ -1,14 +1,25 @@
 import { createRoot } from 'react-dom/client';
+import { useState } from 'react';
 import '../src/styles/globals.css';
 import { SessionView } from '../src/components/SessionView';
 import { RestartConversationHost } from '../src/components/RestartConversation';
+import { SessionNavigator } from '../src/components/SessionNavigator';
+import { NewSessionDialog } from '../src/components/NewSessionDialog';
 import { installFakeDaemon, makeSession, useFakeMachines, type FakeMachine } from '../tests/capability/fake-daemon';
 
 const session = makeSession({ id: 'conversation-preview', name: 'Make this Mac a better place to work',
   tool: 'codex', kind: 'codex-app-server', messageSubmit: true, working: true, model: 'gpt-6.1-sol', effort: 'high',
-  profile: 'acct-413d791d8c697724c3a5c39e', cwd: '/Users/example/projects/sessions' });
+  profile: 'acct-413d791d8c697724c3a5c39e', cwd: '/Users/example/projects/sessions', tags: { project: 'Sessions' } });
+const reviewer = makeSession({ id: 'reviewer-preview', name: 'Release reviewer', tool: 'claude-code',
+  cwd: '/Users/example/projects/sessions', tags: { project: 'Sessions' } });
+const writer = makeSession({ id: 'writer-preview', name: 'Write the launch announcement', tool: 'codex',
+  kind: 'codex-app-server', cwd: '/Users/example/projects/website', tags: { project: 'Website' } });
 const machines: FakeMachine[] = [{ id: 'local', name: 'This Mac', host: 'localhost', port: 8787,
-  isDefault: true, sessions: [session], events: { [session.id]: [
+  isDefault: true, sessions: [session, reviewer, writer],
+  directories: [{ path: session.cwd, label: 'Sessions', kind: 'project' }],
+  projects: [{ id: 'sessions', name: 'Sessions', implicit: false, roots: [session.cwd], session_ids: [session.id, reviewer.id], live: 2, needs_input: 0 },
+    { id: 'website', name: 'Website', implicit: false, roots: [writer.cwd], session_ids: [writer.id], live: 1, needs_input: 0 }],
+  events: { [session.id]: [
     { timestamp: '2026-09-30T16:35:00Z', source: 'codex-app-server', type: 'user', message: { role: 'user', content: 'Can you look at this computer and see what would make it better for coding and creative work?' } },
     { timestamp: '2026-09-30T16:35:05Z', source: 'codex-app-server', type: 'codex', turnId: 'review', subtype: 'turn_started' },
     { timestamp: '2026-09-30T16:36:00Z', source: 'codex-app-server', type: 'codex', turnId: 'review', subtype: 'item_completed', item: {
@@ -23,9 +34,22 @@ useFakeMachines(machines);
 Object.assign(window, { headerDaemon: daemon });
 const theme = new URLSearchParams(location.search).get('theme') === 'light' ? 'light' : 'dark';
 document.documentElement.dataset.theme = theme;
-createRoot(document.getElementById('root')!).render(
-  <div className="app-shell operations-shell text-size-s" data-theme={theme} style={{ height: '100dvh' }}>
-    <SessionView sessionId={session.id} isActive onCloseView={() => {}} onOpenSession={() => {}} onFork={async () => {}} />
+function WorkspacePreview(): JSX.Element {
+  const [activeId, setActiveId] = useState(session.id);
+  const [launcher, setLauncher] = useState(new URLSearchParams(location.search).has('launcher'));
+  const showProjects = new URLSearchParams(location.search).has('workspace');
+  return <div className="app-shell operations-shell text-size-s" data-theme={theme} style={{ height: '100dvh' }}>
+    <div className="operations-frame">
+      {showProjects ? <SessionNavigator sessions={machines[0].sessions} activeId={activeId} machine="This Mac"
+        onOpen={setActiveId} onOpenMachineSession={(_, id) => setActiveId(id)} onNew={() => setLauncher(true)}
+        onContinue={() => {}} onResumeSession={() => {}} onForkSession={async () => {}} onStartLinked={() => {}}
+        openSessionIds={[activeId]} onCloseView={() => {}} onReparent={async () => {}} /> : null}
+      <section className="operations-content">
+        <SessionView sessionId={activeId} isActive onCloseView={() => {}} onOpenSession={setActiveId} onFork={async () => {}} />
+      </section>
+    </div>
+    {launcher ? <NewSessionDialog onClose={() => setLauncher(false)} onStarted={() => setLauncher(false)} /> : null}
     <RestartConversationHost />
-  </div>
-);
+  </div>;
+}
+createRoot(document.getElementById('root')!).render(<WorkspacePreview />);
