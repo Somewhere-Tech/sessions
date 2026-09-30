@@ -13,12 +13,12 @@ const session = makeSession({ id: 'conversation-preview', name: 'Make this Mac a
 const reviewer = makeSession({ id: 'reviewer-preview', name: 'Release reviewer', tool: 'claude-code',
   cwd: '/Users/example/projects/sessions', tags: { project: 'Sessions' } });
 const writer = makeSession({ id: 'writer-preview', name: 'Write the launch announcement', tool: 'codex',
-  kind: 'codex-app-server', cwd: '/Users/example/projects/website', tags: { project: 'Website' } });
+  kind: 'codex-app-server', cwd: '/Users/example/projects/website', lastUserMessageAt: Date.now() - 30_000 });
 const machines: FakeMachine[] = [{ id: 'local', name: 'This Mac', host: 'localhost', port: 8787,
   isDefault: true, sessions: [session, reviewer, writer],
   directories: [{ path: session.cwd, label: 'Sessions', kind: 'project' }],
   projects: [{ id: 'sessions', name: 'Sessions', implicit: false, roots: [session.cwd], session_ids: [session.id, reviewer.id], live: 2, needs_input: 0 },
-    { id: 'website', name: 'Website', implicit: false, roots: [writer.cwd], session_ids: [writer.id], live: 1, needs_input: 0 }],
+    { id: 'website', name: 'Launch site', implicit: false, roots: [writer.cwd], session_ids: [writer.id], live: 1, needs_input: 0 }],
   events: { [session.id]: [
     { timestamp: '2026-09-30T16:35:00Z', source: 'codex-app-server', type: 'user', message: { role: 'user', content: 'Can you look at this computer and see what would make it better for coding and creative work?' } },
     { timestamp: '2026-09-30T16:35:05Z', source: 'codex-app-server', type: 'codex', turnId: 'review', subtype: 'turn_started' },
@@ -32,6 +32,23 @@ const machines: FakeMachine[] = [{ id: 'local', name: 'This Mac', host: 'localho
 const daemon = installFakeDaemon(machines);
 useFakeMachines(machines);
 Object.assign(window, { headerDaemon: daemon });
+// Optional failure journey for visual review; every request still goes to the
+// fake daemon, never a running Sessions service or provider.
+if (new URLSearchParams(location.search).has('delivery')) {
+  const fakeFetch = window.fetch;
+  let operationId = '';
+  window.fetch = async (input, init) => {
+    const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.origin).pathname;
+    if (path.endsWith(`/sessions/${session.id}/submit`) && init?.method === 'POST') {
+      operationId = JSON.parse(String(init.body)).operation_id as string;
+      return Response.json({ operation_id: operationId, session_id: session.id, status: 'unknown', delivered: false, retry: false });
+    }
+    if (operationId && path.endsWith(`/message-deliveries/${operationId}`)) {
+      return Response.json({ operation_id: operationId, session_id: session.id, status: 'accepted', delivered: true, retry: false });
+    }
+    return fakeFetch(input, init);
+  };
+}
 const theme = new URLSearchParams(location.search).get('theme') === 'light' ? 'light' : 'dark';
 document.documentElement.dataset.theme = theme;
 function WorkspacePreview(): JSX.Element {

@@ -145,6 +145,5 @@
 .search-transcript-latest { height: 1px; }
 
 .provider-badge { display: inline-flex; align-items: center; gap: 5px; width: max-content; color: var(--fg-dim); font-size: 12px; font-weight: 620; text-transform: none; }
-.provider-badge.is-claude { color: #e38a65; }
-.provider-badge.is-codex { color: #5eead4; }
+.provider-badge.is-codex { color: var(--accent); }
 .provider-badge.is-compact { gap: 4px; font-size: 12px; }

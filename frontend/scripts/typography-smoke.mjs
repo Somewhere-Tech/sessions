@@ -50,6 +50,11 @@ function contrast(foreground, background) {
 // Theme tokens may live in an imported stylesheet. Inspect the complete style
 // tree instead of assuming globals.css contains every declaration directly.
 const globals = styles.map((path) => readFileSync(path, 'utf8')).join('\n');
+// Provider names are small text, not decorative brand marks. Their colors
+// must follow the AA theme tokens instead of pale dark-theme-only literals.
+if (/\.provider-badge(?:\.is-(?:codex|claude))?\s*\{[^}]*color:\s*#/s.test(globals)) {
+  throw new Error('Provider names must use theme-aware text colors.');
+}
 const darkTheme = globals.match(/:root\s*\{([\s\S]*?)\n\}/)?.[1] ?? '';
 const lightTheme = globals.match(/\.operations-shell\[data-theme="light"\]\s*\{([\s\S]*?)\n\}/)?.[1] ?? '';
 function token(block, name) {

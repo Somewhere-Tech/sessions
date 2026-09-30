@@ -277,7 +277,6 @@
   padding: 13px 16px 9px;
 }
 .session-navigator-head > div:first-child { display: flex; flex-direction: column; gap: 2px; }
-.session-navigator-head span,
 .session-tree-label { color: var(--fg-faint); font-size: 12px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
 .session-navigator-head strong { color: var(--fg); font-size: 16px; letter-spacing: -.02em; }
 .session-navigator-actions { display: flex; align-items: center; gap: 5px; }
@@ -304,7 +303,7 @@
   border-color: var(--accent-border-soft);
   background: var(--accent);
   color: var(--accent-contrast, #071311);
-  font-size: 12px;
+  font-size: 20px;
   font-weight: 750;
 }
 .session-navigator-actions .session-new-action:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 88%, white); color: var(--accent-contrast, #071311); }
