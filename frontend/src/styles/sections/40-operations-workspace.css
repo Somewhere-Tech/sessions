@@ -805,10 +805,12 @@ button.session-tree-group-head { width: 100%; }
 .session-nav-rollup.is-attention { color: var(--warn, #e9b44c); border-color: rgba(233, 180, 76, 0.5); }
 .session-machine-options { margin: 0 14px 6px; color: var(--fg-muted); font-size: 12px; }
 .session-machine-options > summary { cursor: pointer; padding: 6px 0; }
-.agent-project { margin: 12px 8px 20px; }
-.agent-project > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px 8px; }
-.agent-project h3 { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.agent-project { margin: 8px 8px 12px; }
+.agent-project > header { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-top: 1px solid var(--border); }
 .agent-project > header button { border: 0; color: var(--fg-muted); background: transparent; min-width: 32px; min-height: 32px; cursor: pointer; }
+.agent-project > header .agent-project-disclosure { flex: 1; min-width: 0; gap: 6px; padding: 0; text-align: left; }
+.agent-project-name { flex: 1; min-width: 0; color: var(--fg); font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.project-preview-toggle { min-height: 32px; }
 .agent-remote-row { position: relative; }
 .agent-remote-row .session-fleet-row { grid-template-columns: 24px minmax(0, 1fr); padding-right: 36px; min-height: 60px; border-radius: 8px; }
 .agent-rename { position: absolute; right: 0; top: 12px; width: 32px; height: 32px; background: transparent; border: 0; color: var(--fg-muted); cursor: pointer; }

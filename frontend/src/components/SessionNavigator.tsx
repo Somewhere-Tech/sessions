@@ -831,7 +831,7 @@ export function SessionNavigator({
           </button>
           {runningOpen ? (
             <>
-              <Suspense fallback={<div className="session-tree-empty is-compact">Loading agents…</div>}><ProjectAgents groups={agentGroups} activeMachineId={activeMachineId}
+              <Suspense fallback={<div className="session-tree-empty is-compact">Loading agents…</div>}><ProjectAgents groups={agentGroups} activeMachineId={activeMachineId} activeSessionId={activeId} compact={grouping === 'project'}
                 renderLocal={(row) => renderNode(row.session)} onOpen={onOpenMachineSession}
                 onAdd={grouping === 'project' && onAddProjectAgent ? (row) => onAddProjectAgent(row.server.id, row.session.cwd, { ...row.session.tags }) : undefined} /></Suspense>
               {fleetSnapshots.some((snapshot) => snapshot.loading) ? <div className="session-tree-empty is-compact">Loading agents…</div> : null}
@@ -850,7 +850,7 @@ export function SessionNavigator({
           {endedOpen ? (
             <>
               <p className="session-tree-empty is-compact">Saved conversations, including agents that need reconnecting. Opening one does not restart it.</p>
-              <Suspense fallback={<div className="session-tree-empty is-compact">Loading saved conversations…</div>}><ProjectAgents groups={savedGroups.map((group) => ({ ...group, rows: showAllEnded ? group.rows : group.rows.slice(0, 3) }))} activeMachineId={activeMachineId}
+              <Suspense fallback={<div className="session-tree-empty is-compact">Loading saved conversations…</div>}><ProjectAgents groups={savedGroups.map((group) => ({ ...group, rows: showAllEnded ? group.rows : group.rows.slice(0, 3) }))} activeMachineId={activeMachineId} compact={false}
                 renderLocal={(row) => renderNode(row.session, true)} onOpen={onOpenMachineSession} onResume={(row) => onResumeSession(row.session, undefined, undefined, row.server.id)} /></Suspense>
               <button type="button" className="session-all-ended" onClick={onContinue}>Find and resume any conversation →</button>
             </>
@@ -874,7 +874,7 @@ export function SessionNavigator({
         </div> : null}
         {!showingAllMachines && primary !== 'ended' ? (
           <InboxSections
-            layout={inboxLayout}
+            layout={inboxLayout} activeSessionId={activeId}
             renderNode={renderNode}
             onOpen={onOpen}
             onShowAllNeedsYou={() => setPrimary('needs')}
