@@ -13,8 +13,8 @@ import { readWindowScope } from './windowScope';
 // have multiple — their Mac Mini on Tailscale, their local MacBook, a Fly
 // machine, etc. — and switch between them. The frontend changes its REST/WS
 // base URLs based on whichever server is active. Browser builds persist the
-// complete list in localStorage. Windows native builds keep only non-secret
-// metadata there and hydrate tokens from the signed-in user's DPAPI vault
+// complete list in localStorage. Windows and Apple native builds keep only non-secret
+// metadata there and hydrate tokens from the signed-in user's OS credential vault
 // before the first daemon request.
 
 export interface ServerConfig {
@@ -196,11 +196,11 @@ async function persistServers(servers: ServerConfig[]): Promise<void> {
     .then(async () => {
       const previous = await loadNativeMachineCredentials();
       if (!previous.supported) {
-        throw new Error('The protected Windows machine credential store is unavailable.');
+        throw new Error('The protected machine credential store is unavailable.');
       }
       const stored = await saveNativeMachineCredentials(credentials);
       if (!stored.supported || !credentialsMatch(credentials, stored.credentials)) {
-        throw new Error('Sessions could not verify the protected Windows machine credentials.');
+        throw new Error('Sessions could not verify the protected machine credentials.');
       }
       if (!writeServerMetadata(servers)) {
         try {
@@ -213,7 +213,7 @@ async function persistServers(servers: ServerConfig[]): Promise<void> {
           }
         } catch {
           nativeCredentialStoreBlockedError = new Error(
-            'Sessions could not finish or safely roll back the protected Windows credential update. Reopen the app before changing saved machines.'
+            'Sessions could not finish or safely roll back the protected credential update. Reopen the app before changing saved machines.'
           );
           throw nativeCredentialStoreBlockedError;
         }
@@ -313,10 +313,11 @@ interface ServersStore {
   // blocks all connection attempts until restart so no request can run with
   // missing, stale, or unverified credentials.
   credentialError: string | null;
+  credentialProtection: 'protected' | 'local' | 'unknown';
   addServer: (s: Omit<ServerConfig, 'id' | 'isDefault'>) => Promise<ServerConfig>;
   removeServer: (id: string) => Promise<void>;
   // Patch fields on an existing server (e.g. save a token entered after a
-  // 401, or flip scheme). Windows resolves only after DPAPI persistence.
+  // 401, or flip scheme). Protected native builds resolve only after vault persistence.
   updateServer: (
     id: string,
     updates: Partial<Omit<ServerConfig, 'id' | 'isDefault'>>
@@ -350,6 +351,7 @@ export const useServers = create<ServersStore>((set, get) => ({
   tokenRequiredServerId: null,
   pairingError: null,
   credentialError: null,
+  credentialProtection: 'unknown',
 
   addServer: async (s) => {
     const next: ServerConfig = {
@@ -551,13 +553,19 @@ export function currentOriginBootstrapCandidate(): ServerConfig | null {
   return currentOriginServer();
 }
 
-// Windows moves legacy plaintext tokens out of WebView localStorage before
+// Protected native builds move legacy plaintext tokens out of WebView localStorage before
 // any bootstrap path can issue a daemon request. The plaintext copy is removed
-// only after the DPAPI-backed native store has saved and read back every token.
+// only after the OS-backed native store has saved and read back every token.
 export async function hydrateNativeMachineCredentials(): Promise<void> {
-  if (!isTauri()) return;
+  if (!isTauri()) {
+    useServers.setState({ credentialProtection: 'local' });
+    return;
+  }
   const native = await loadNativeMachineCredentials();
-  if (!native.supported) return;
+  if (!native.supported) {
+    useServers.setState({ credentialProtection: 'local' });
+    return;
+  }
   nativeCredentialStoreEnabled = true;
 
   const state = useServers.getState();
@@ -579,7 +587,7 @@ export async function hydrateNativeMachineCredentials(): Promise<void> {
   } else {
     writeServerMetadata(servers);
   }
-  useServers.setState({ servers });
+  useServers.setState({ servers, credentialProtection: 'protected' });
 }
 
 export function blockNativeMachineCredentialPersistence(detail: string): void {

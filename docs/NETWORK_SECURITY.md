@@ -368,6 +368,21 @@ exposes the same pending host decisions as the native inbox. The low-level
 global `--host` flag uses the local daemon token only for a loopback target; a
 non-loopback raw host receives no local credential.
 
+The Windows native client protects saved paired-machine tokens with user-scope
+DPAPI. macOS and iOS native clients use a device-local, non-synchronizing
+Keychain item scoped to the app identifier. WebView storage holds endpoint and
+machine metadata but no token after migration: the app saves and reads back the
+complete native credential set before removing the legacy browser copy or
+contacting a machine. A locked or unreadable vault is an explicit error, not an
+empty list; failed migration preserves the legacy connection metadata and
+credential. Removing a machine updates the protected credential set.
+
+Android, Linux native clients, and browser builds currently retain paired
+tokens in their local WebView/browser storage; they do **not** have this OS
+vault protection. This is separate from provider login credentials and from
+the daemon's CLI machine registry. Do not copy any of these credentials between
+devices as a substitute for pairing.
+
 On macOS 15, Local Network privacy applies to launchd agents as well as apps.
 Darwin release binaries embed an Info.plist section with their stable bundle
 identifier, `NSLocalNetworkUsageDescription`, and

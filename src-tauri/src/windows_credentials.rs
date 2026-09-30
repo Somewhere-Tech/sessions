@@ -30,6 +30,7 @@ pub(crate) struct MachineCredentialStore {
 }
 
 impl MachineCredentialStore {
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
     pub(crate) fn unsupported() -> Self {
         Self {
             supported: false,
@@ -59,7 +60,7 @@ struct ProtectedVault {
     credentials: Vec<ProtectedCredential>,
 }
 
-fn validate_credentials(
+pub(crate) fn validate_credentials(
     credentials: Vec<MachineCredential>,
 ) -> Result<Vec<MachineCredential>, String> {
     if credentials.len() > MAX_CREDENTIALS {

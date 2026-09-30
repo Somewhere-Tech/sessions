@@ -374,7 +374,16 @@ async fn native_machine_credentials_load(app: AppHandle) -> Result<MachineCreden
         .map_err(|error| format!("Windows credential worker failed: {error}"))?;
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            apple_credentials::load(&app.config().identifier)
+        })
+        .await
+        .map_err(|_| "The protected credential worker stopped. Reopen Sessions and try again.".to_string())?
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
     {
         let _ = app;
         Ok(MachineCredentialStore::unsupported())
@@ -399,7 +408,16 @@ async fn native_machine_credentials_save(
         .map_err(|error| format!("Windows credential worker failed: {error}"))?;
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            apple_credentials::save(&app.config().identifier, credentials)
+        })
+        .await
+        .map_err(|_| "The protected credential worker stopped. Reopen Sessions and try again.".to_string())?
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
     {
         let _ = app;
         let _ = credentials;

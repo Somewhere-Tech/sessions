@@ -3,6 +3,8 @@
 // app process never owns sessionsd or a runner, so quitting it cannot affect a
 // durable session.
 
+#[cfg(any(target_os = "macos", target_os = "ios", test))]
+mod apple_credentials;
 mod lifecycle;
 #[cfg(mobile)]
 mod mobile_discovery;

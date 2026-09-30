@@ -258,7 +258,7 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
         </header>
 
         {message ? <div className="connections-message" role="status">{message}</div> : null}
-
+        <CredentialStorageNote />
         <FleetAccountCard clientOnly={clientOnly} />
 
         <section className="connection-ladder" aria-label="Connection options">
@@ -351,6 +351,16 @@ export function ConnectionsView({ clientOnly = false, hostName }: { clientOnly?:
       </div>
     </div>
   );
+}
+
+function CredentialStorageNote(): JSX.Element | null {
+  const protection = useServers((state) => state.credentialProtection);
+  if (protection === 'unknown') return null;
+  return <p className="connection-privacy-note" role="note">
+    {protection === 'protected'
+      ? 'Saved machine access is protected by this device’s credential store.'
+      : 'Saved machine access uses this app’s local storage. OS credential protection is not available on this device yet.'}
+  </p>;
 }
 
 function HostPairingCard({ pairName, onPairName, pair, pairedDevices, busy, incomingLink, incomingMessage, onIncomingLink, onCreate, onRevoke, onAdd, onForget, onCopy }: {

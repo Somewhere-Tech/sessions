@@ -94,12 +94,14 @@ async function bootstrap(): Promise<void> {
   } catch (error) {
     const detail = error instanceof Error
       ? error.message
-      : 'Windows could not unlock the saved machine credentials.';
+      : typeof error === 'string' && error.trim()
+        ? error
+        : 'Sessions could not unlock the saved machine credentials.';
     blockNativeMachineCredentialPersistence(detail);
     credentialHydrationFailed = true;
     const store = useServers.getState();
     store.setCredentialError(
-      `${detail} Sessions stopped before contacting a machine. Reopen the app as the Windows user who saved these machines. If it still fails, revoke this Windows device on each host before clearing its local Sessions credential vault and pairing again.`
+      `${detail} Sessions stopped before contacting a machine. Unlock this device and reopen the app as the user who saved these machines. If it still fails, contact support before clearing credentials or pairing again.`
     );
     store.setActive(null);
   }
