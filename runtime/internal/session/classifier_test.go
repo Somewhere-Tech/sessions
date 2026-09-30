@@ -107,7 +107,7 @@ Enter to confirm · Esc to cancel
 }
 
 func TestClassifySnapshotRecognizesClaudeAppearancePicker(t *testing.T) {
-	// Exact visible text from docs/reviews/2026-09-03-ui-friction.md section 8.
+	// Claude's first-run terminal appearance picker wraps at phone width.
 	snapshot := `
 Let's get started.
 

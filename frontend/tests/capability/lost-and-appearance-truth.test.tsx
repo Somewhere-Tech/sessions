@@ -10,9 +10,8 @@ import { useSessions } from '../../src/store/sessions';
 import { Workbench } from './harness';
 import { installFakeDaemon, makeSession, useFakeMachines, type FakeMachine } from './fake-daemon';
 
-// Exact visible terminal text from docs/reviews/2026-09-03-ui-friction.md
-// section 8. The prompt wraps at phone width and has neither a question mark
-// nor the usual picker footer.
+// Claude's first-run terminal appearance picker wraps at phone width and has
+// neither a question mark nor the usual picker footer.
 const CLAUDE_APPEARANCE_SNAPSHOT = `
 Let's get started.
 

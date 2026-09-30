@@ -10,6 +10,8 @@ docs/CLOUD_VM.md
 docs/CUTOVER.md
 docs/CUTOVER_AUDIT_
 docs/RUNBOOKS.md
+docs/reviews/2026-09-03-ui-friction.md
+docs/reviews/2026-09-03-ui-friction/
 ASSESSMENT.md
 AUDIT.md
 BACKFILL_NOTES.md
@@ -88,6 +90,8 @@ docs/CLOUD_VM.md
 docs/CUTOVER.md
 docs/CUTOVER_AUDIT_
 docs/RUNBOOKS.md
+docs/reviews/2026-09-03-ui-friction.md
+docs/reviews/2026-09-03-ui-friction/
 frontend/CONNECT_NOTES.md
 '
 
