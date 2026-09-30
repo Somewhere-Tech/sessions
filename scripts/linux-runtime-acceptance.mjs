@@ -11,7 +11,9 @@ const delay = (ms) => new Promise((done) => setTimeout(done, ms));
 const nativeAMD64 = process.platform === 'linux' && process.arch === 'x64';
 // Local fixture validation may exercise the harness on another Unix host;
 // its receipt always records that this is NOT native Linux AMD64 acceptance.
-assert.ok(nativeAMD64 || process.env.SESSIONS_ACCEPTANCE_FIXTURE === '1', 'Native Linux AMD64 host required');
+const unixFixture = ['darwin', 'linux'].includes(process.platform)
+  && process.env.SESSIONS_ACCEPTANCE_FIXTURE === '1';
+assert.ok(nativeAMD64 || unixFixture, 'Native Linux AMD64 host or explicitly selected Unix fixture required');
 assert.equal(process.argv.length, 4, 'Usage: node scripts/linux-runtime-acceptance.mjs RUNTIME_DIR RECEIPT_JSON');
 const runtime = resolve(process.argv[2]);
 const receiptPath = resolve(process.argv[3]);
