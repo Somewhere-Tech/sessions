@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { eventsToMessages } from '../../src/lib/claudeEvents';
+import { uniqueCodexEvents } from '../../src/lib/codexEventIdentity';
 import type { StructuredSessionEvent } from '../../src/types';
 
 function event(time: number, fields: Partial<StructuredSessionEvent>): StructuredSessionEvent {
@@ -8,6 +9,31 @@ function event(time: number, fields: Partial<StructuredSessionEvent>): Structure
 }
 
 describe('capability: Codex history reconciliation', () => {
+  it('uses exact nested equality independent of key order, including unknown fields', () => {
+    const first = event(1, { subtype: 'item_completed', item: {
+      id: 'tool', type: 'mcpToolCall', result: { rows: [{ a: 1, b: null }, ['x', 'y']] }
+    } });
+    const reordered = event(1, { subtype: 'item_completed', item: {
+      result: { rows: [{ b: null, a: 1 }, ['x', 'y']] }, type: 'mcpToolCall', id: 'tool'
+    } });
+    const changed = { ...reordered, detail: 'A new unknown notification field' };
+    const reversedArray = event(1, { subtype: 'item_completed', item: {
+      id: 'tool', type: 'mcpToolCall', result: { rows: [{ a: 1, b: null }, ['y', 'x']] }
+    } });
+    expect(uniqueCodexEvents([first, reordered, changed, reversedArray])).toEqual([first, changed, reversedArray]);
+  });
+
+  it('keeps distinct large outputs that collide in metadata buckets, but removes exact copies', () => {
+    const output = 'tool output line\n'.repeat(3200);
+    const first = event(1, { subtype: 'item_completed', item: {
+      id: 'tool', type: 'commandExecution', aggregatedOutput: `${output}first`
+    } });
+    const second = event(1, { subtype: 'item_completed', item: {
+      id: 'tool', type: 'commandExecution', aggregatedOutput: `${output}second`
+    } });
+    expect(uniqueCodexEvents([first, second, JSON.parse(JSON.stringify(first))])).toEqual([first, second]);
+  });
+
   it('keeps no-UUID user and imported-message ids stable when older history is prepended', () => {
     const recent = [event(10, { type: 'user', subtype: 'user_steer',
       message: { role: 'user', content: 'Repeat the check.' } }),

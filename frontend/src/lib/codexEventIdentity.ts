@@ -24,7 +24,7 @@ export function codexEventIdentity(event: ClaudeSessionEvent, occurrences: Map<s
 }
 
 export function uniqueCodexEvents(events: ClaudeSessionEvent[]): ClaudeSessionEvent[] {
-  const seen = new Set<string>();
+  const seen = new Map<string, ClaudeSessionEvent[]>();
   return events.filter((event) => {
     // Without a timestamp or UUID there is no durable event identity. Equal
     // delta strings may be intentional repetitions, so never infer duplicates.
@@ -32,9 +32,26 @@ export function uniqueCodexEvents(events: ClaudeSessionEvent[]): ClaudeSessionEv
     // Submission time is not an operation ID. Identical authored messages
     // without UUIDs can be separate sends, even if their timestamps match.
     if (!event.uuid && (event.type === 'user' || event.type === 'assistant')) return true;
-    const key = canonicalEvent(event);
-    if (seen.has(key)) return false;
-    seen.add(key);
+    // Bucket by small metadata, never by serialized transcript/tool output.
+    // A key collision is only a candidate: exact equality decides duplicates.
+    const key = JSON.stringify([event.uuid, event.timestamp, event.type, event.subtype,
+      event.conversationId, event.turnId, event.itemId]);
+    const bucket = seen.get(key) ?? [];
+    if (bucket.some((previous) => equalJSON(previous, event))) return false;
+    bucket.push(event);
+    seen.set(key, bucket);
     return true;
   });
+}
+
+function equalJSON(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = Object.keys(leftRecord);
+  if (keys.length !== Object.keys(rightRecord).length) return false;
+  return keys.every((key) => Object.prototype.hasOwnProperty.call(rightRecord, key)
+    && equalJSON(leftRecord[key], rightRecord[key]));
 }
