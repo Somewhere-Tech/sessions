@@ -23,6 +23,10 @@ agent CLI you want to run separately.
 
 ## Install
 
+This branch targets the **0.2.27 release candidate**, which is not yet published.
+The current public release is 0.2.26; candidate-only behavior below requires a
+candidate build, not the current Homebrew or GitHub download.
+
 Sessions.app is the primary macOS package. The current signed, notarized Apple
 Silicon build is available from
 [GitHub Releases](https://github.com/somewhere-tech/sessions/releases/latest) or
@@ -39,12 +43,13 @@ brew install somewhere-tech/tap/sessions
 sessions install
 ```
 
-Release automation also produces static archives for macOS arm64 and Linux
-arm64/amd64. An agent can fetch an exact immutable version without parsing a
-web page:
+Release automation produces static archives for macOS arm64 and Linux
+arm64/amd64. Once 0.2.27 is published, an agent can fetch that exact immutable
+version without parsing a web page. Until then, use an existing published tag
+or follow the [development build guide](docs/DEV.md):
 
 ```sh
-VERSION=0.1.0
+VERSION=0.2.27 # Requires published v0.2.27 assets; not available yet.
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 gh release download "v${VERSION}" --repo somewhere-tech/sessions \
   --pattern "$ARCHIVE" --pattern "$ARCHIVE.sha256"
@@ -53,10 +58,10 @@ tar -xzf "$ARCHIVE"
 mkdir -p "$HOME/.local/bin"
 install -m 0755 sessions sessionsd sessions-runner "$HOME/.local/bin/"
 sessions install
-open http://localhost:8787
+sessions status --json
 ```
 
-On Linux, `sessions install` registers and starts a systemd user service.
+In the 0.2.27 candidate, Linux `sessions install` registers and starts a systemd user service.
 Runners are separate processes, so restarting or upgrading the daemon preserves
 their work. After a reboot the service discovers retained conversations as
 paused; resuming one is explicit. Enable user lingering if the daemon must start
@@ -69,9 +74,10 @@ label explicitly with `SESSIONS_DAEMON_LABEL` when needed. Direct loopback use i
 zero-setup; LAN and remote clients normally authenticate with the token printed
 by the command. Print it again later with `sessions token`.
 
-The [npm distribution](npm/README.md) wraps the same native Go binaries and pins
+The candidate [npm distribution](npm/README.md) wraps the same native Go binaries and pins
 their archive and binary checksums. Its checked-in release manifest remains
-unprepared until the matching release assets exist. There is no `curl | sh` installer. See
+unprepared until the matching release assets exist; this is not a claim that
+0.2.27 is available on npm. There is no `curl | sh` installer. See
 [installation details](docs/INSTALL.md) for exact archive names, agent-safe
 downloads, PATH setup, Linux startup, upgrades, and uninstalling.
 
@@ -217,8 +223,9 @@ sessions status <id>
 
 The native app's daemon log on macOS is
 `~/Library/Logs/Sessions/sessionsd.log`. A standalone development daemon logs
-to `~/Library/Logs/sessions/tech.somewhere.sessions.dev.daemon.log`. If the web UI cannot
-authenticate, run `sessions token`. See
+to `~/Library/Logs/sessions/tech.somewhere.sessions.dev.daemon.log`. If a client cannot
+authenticate, inspect its saved connection and run `sessions token` on the host
+when an explicit token connection is needed. See
 [installation troubleshooting](docs/INSTALL.md#troubleshooting).
 
 ## Development

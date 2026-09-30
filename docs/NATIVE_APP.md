@@ -1,8 +1,8 @@
 # Native application contract
 
 Sessions.app is the primary user interface and package for the local Sessions
-runtime. Tauri supplies the native window, tray, permissions, secure client
-storage, installer, and updater around the shared React interface.
+runtime. Tauri supplies the native window, tray, permissions, platform credential
+adapters, installer, and updater around the shared React interface.
 
 The Go runtime remains independently useful through the `sessions` CLI and is
 not owned by the viewer.
@@ -53,7 +53,7 @@ The native shell owns:
 - scoped desktop/mobile windows and platform navigation;
 - tray and native notifications;
 - user-facing OS permission context and the launch-agent responsibility link;
-- secure storage for paired-machine credentials;
+- platform-specific storage for paired-machine credentials, as scoped below;
 - runtime staging, installation status, and signed update UI;
 - native tailnet and mobile Bonjour discovery adapters.
 
@@ -140,11 +140,35 @@ rules.
 ## Mobile clients
 
 Android and iOS builds are paired clients, not mobile daemon hosts. They reuse
-the authenticated daemon contract, store revocable device credentials in
-platform secure storage, and adapt the shared interface to phone and tablet
+the authenticated daemon contract and adapt the shared interface to phone and tablet
 layouts. A phone does not run host onboarding or change host-owned runtime
 choices; it reads those settings from the connected computer and presents them
 read-only while keeping device-local choices editable.
+
+## Paired-machine credential storage
+
+The candidate implements protected native storage for saved machine tokens on
+these platforms:
+
+- **Windows:** user-scope DPAPI with an owner-restricted native credential file.
+- **macOS:** login Keychain, without iCloud synchronization.
+- **iOS:** device-only Keychain items available while the device is unlocked,
+  without iCloud synchronization.
+
+On these platforms, migration removes legacy plaintext tokens from WebView
+local storage only after saving and reading them back from the native store.
+A locked, unreadable, or unverified protected store reports an error rather
+than silently replacing it with an empty store or falling back to plaintext.
+
+Android, Linux native clients, and browser clients do not yet have this
+protected-store implementation in this candidate. Their saved tokens remain
+in local client storage; do not describe that storage as an OS credential vault.
+Interactive browser control is deprecated. Platform source and fixture tests
+are not a substitute for native device acceptance.
+
+This boundary covers Sessions pairing tokens, not Claude, Codex, or other
+provider logins. Provider account authentication remains provider-owned and
+separate from client-to-daemon pairing.
 
 ## Release gate
 

@@ -4,15 +4,21 @@ Sessions.app is the primary macOS package, carrying a bundled-runtime installer
 and a signed updater. Public releases are Developer ID signed, notarized,
 stapled, and backed by an immutable updater artifact; see
 [GitHub Releases](https://github.com/somewhere-tech/sessions/releases/latest)
-for the current version. The standalone instructions below remain useful for
-agents, developers, and headless installs. Do not use them to change the
-production mini.
+for the current version. The current public release is 0.2.26. This branch
+targets the unpublished 0.2.27 candidate; its Linux systemd installer and npm
+package require candidate bytes until that release is published. These
+instructions do not make candidate assets publicly available.
+
+The standalone instructions below remain useful for agents, developers, and
+headless installs. Prefer the native app for interactive macOS use. Do not
+replace an app-managed daemon with a standalone install merely to update the
+viewer; use the app's update path instead.
 
 The standalone runtime ships as three static Go binaries:
 
 - `sessions` — CLI
-- `sessionsd` — daemon and embedded web UI
-- `sessions-runner` — one long-lived PTY owner per session
+- `sessionsd` — daemon and HTTP/WebSocket API
+- `sessions-runner` — independent owner of a PTY, pipe, or provider conversation
 
 Keep all three in the same directory. Sessions uses that adjacency to locate the
 daemon and runner. Node, npm, and the retired repository install script are not
@@ -79,7 +85,7 @@ runtime binaries:
 ```sh
 brew install somewhere-tech/tap/sessions
 sessions install
-open http://localhost:8787
+sessions status --json
 ```
 
 The public `somewhere-tech/homebrew-tap` repository pins immutable release URLs
@@ -108,8 +114,8 @@ Set a release version without the leading `v`, select the archive, and download
 it directly from GitHub Releases. This example is for Apple Silicon macOS:
 
 With GitHub CLI, agents can select an immutable tag without parsing a web page.
-`gh` uses the agent's existing GitHub authentication while the repository is
-private; no repository checkout, npm, Node, or install script is involved:
+`gh` can use existing GitHub authentication when required; no repository
+checkout, npm, Node, or install script is involved:
 
 ```sh
 # Resolve the current release, then pin it for the rest of the install.
@@ -134,9 +140,9 @@ For a public repository, the same command works without authentication. Agents
 that do not have `gh` can use the direct HTTPS form:
 
 ```sh
-# Substitute the version you intend to install. The releases page always shows
-# the current one: https://github.com/somewhere-tech/sessions/releases/latest
-VERSION=0.2.26
+# This candidate example works only after v0.2.27 assets are published.
+# Until then, select an existing tag from the releases page or build from source.
+VERSION=0.2.27
 ARCHIVE="sessions_${VERSION}_darwin_arm64.tar.gz"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}"
 curl -fLO "https://github.com/somewhere-tech/sessions/releases/download/v${VERSION}/${ARCHIVE}.sha256"
@@ -160,12 +166,15 @@ The archive contains plain files at its root, so you can inspect it with
 
 ```sh
 sessions install
-open http://localhost:8787
+sessions status --json
 ```
+
+Use Sessions.app for the interactive interface; a standalone runtime is also
+fully usable from the CLI. Interactive browser control is deprecated.
 
 ### Start on Linux
 
-On a Linux machine running systemd, install the user service:
+With the 0.2.27 candidate on a Linux machine running systemd, install the user service:
 
 ```sh
 sessions install
@@ -195,7 +204,8 @@ systemd user manager, start the daemon with your own supervisor or in the foregr
 SESSIONS_HOST=127.0.0.1 SESSIONS_PORT=8787 sessionsd
 ```
 
-Then open `http://localhost:8787` and run `sessions token` in another terminal.
+Then run `sessions status --json` in another terminal. Use the CLI locally or
+explicitly pair a native client for remote access; do not expose a wildcard listener.
 
 #### What supervises a session on Linux and Windows
 
@@ -320,8 +330,9 @@ Common checks:
   `~/Library/Logs/Sessions/sessionsd.log` on macOS.
 - **Standalone development daemon unhealthy:** inspect
   `~/Library/Logs/sessions/tech.somewhere.sessions.dev.daemon.log` on macOS.
-- **Web UI says unauthorized:** run `sessions token`, then paste the token into
-  the UI's server settings.
+- **Client says unauthorized:** check the saved host and pairing. Re-pair a
+  revoked device; for an explicit token connection, obtain the current token
+  with `sessions token` on the host.
 - **Port already in use:** choose a private scratch port with `SESSIONS_PORT` or
   stop the other local process; do not expose a wildcard listener.
 - **Lost lanes:** run `sessions recover`, review the plan, then opt in with
