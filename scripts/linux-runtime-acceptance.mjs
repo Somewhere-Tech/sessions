@@ -37,6 +37,23 @@ let daemon;
 let sessionId;
 let runnerPid;
 
+async function preserveDaemonDiagnostics() {
+  const source = await open(join(root, 'daemon.log'), 'r');
+  try {
+    const { size } = await source.stat();
+    const bytes = Buffer.alloc(Math.min(size, 16 * 1024));
+    await source.read(bytes, 0, bytes.length, Math.max(0, size - bytes.length));
+    report.daemon_diagnostics = { pid: daemon?.pid || null, exit_code: daemon?.exitCode ?? null,
+      exit_signal: daemon?.signalCode ?? null, configured_http_host: env.SESSIONS_HOST || '127.0.0.1',
+      configured_http_port: port, configured_pprof: env.SESSIONS_PPROF || 'default:127.0.0.1:0',
+      smoke_mode: env.SESSIONS_SMOKE === '1', log_bytes: size, log_tail_truncated: size > bytes.length,
+      log_tail: bytes.toString('utf8') };
+    await writeFile(`${receiptPath}.daemon.log`, bytes);
+  } finally {
+    await source.close();
+  }
+}
+
 async function eventually(label, check) {
   let last;
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -164,6 +181,7 @@ try {
   }
   await log.close();
   await mkdir(resolve(receiptPath, '..'), { recursive: true });
+  await preserveDaemonDiagnostics();
   await writeFile(receiptPath, `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report));
 }
