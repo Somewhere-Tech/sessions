@@ -134,8 +134,19 @@ func (c *Connector) serveStream(stream *stream) {
 		_ = stream.Close()
 		return
 	}
-	defer connection.Close()
 	defer stream.Close()
+	defer connection.Close()
+	stopWatching := make(chan struct{})
+	defer close(stopWatching)
+	go func() {
+		select {
+		case <-stream.closed:
+			_ = connection.Close()
+		case <-stream.tunnel.context.Done():
+			_ = connection.Close()
+		case <-stopWatching:
+		}
+	}()
 	reader := bufio.NewReader(stream)
 	request, err := http.ReadRequest(reader)
 	if err != nil {
@@ -144,17 +155,34 @@ func (c *Connector) serveStream(stream *stream) {
 	request.Host = c.options.Target
 	request.RequestURI = ""
 	request.URL.Scheme, request.URL.Host = "", ""
+	wantsUpgrade := request.Method == http.MethodGet && request.URL.Path == "/ws" && websocketUpgrade(request)
+	if !wantsUpgrade {
+		request.Close = true
+		removeHopHeaders(request.Header)
+		request.Header.Set("Connection", "close")
+	}
+	// Apply trust markers last: a hostile Connection header may name them as
+	// hop-by-hop fields, which ordinary request normalization removes above.
 	secureForwardedRequest(request)
 	if err := request.Write(connection); err != nil {
 		return
 	}
+	daemonReader := bufio.NewReader(connection)
+	upgraded, err := forwardConnectorResponse(stream, daemonReader, request, wantsUpgrade)
+	if err != nil || !upgraded {
+		return
+	}
+	c.serveUpgradedStream(stream, connection, reader, daemonReader)
+}
+
+func (c *Connector) serveUpgradedStream(stream *stream, connection net.Conn, clientReader, daemonReader *bufio.Reader) {
 	done := make(chan struct{}, 1)
 	go func() {
-		_, _ = io.Copy(stream, connection)
+		_, _ = io.Copy(stream, daemonReader)
 		_ = stream.CloseWrite()
 		done <- struct{}{}
 	}()
-	_, _ = io.Copy(connection, reader)
+	_, _ = io.Copy(connection, clientReader)
 	if tcp, ok := connection.(*net.TCPConn); ok {
 		_ = tcp.CloseWrite()
 	}

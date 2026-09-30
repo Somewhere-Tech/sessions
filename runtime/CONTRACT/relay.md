@@ -35,6 +35,13 @@ stream. Duplicate opens and malformed or oversized frames close the tunnel.
 
 Stream data is the HTTP/1.1 byte stream for one client request and response.
 This includes the WebSocket upgrade and later WebSocket framing for `/ws`.
+The connector forwards only one parsed HTTP request, including its framed body
+and trailers. It closes ordinary requests after their response; trailing or
+pipelined HTTP requests are never a trusted loopback byte pipe. Opaque duplex
+bytes are forwarded only after the daemon confirms the requested `/ws`
+WebSocket upgrade with a matching 101 response. A refused upgrade cannot
+forward a second request. Stream closure or tunnel cancellation also closes
+the backend connection; end-of-input alone retains half-close semantics.
 Stream queues are bounded and WebSocket writes are serialized, so a slow
 consumer creates backpressure instead of unbounded memory growth. An idle
 stream closes after two minutes by default. Reconnecting a machine replaces

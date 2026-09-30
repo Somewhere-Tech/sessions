@@ -322,7 +322,7 @@ func removeHopHeaders(headers http.Header) {
 
 func websocketUpgrade(request *http.Request) bool {
 	return strings.EqualFold(request.Header.Get("Upgrade"), "websocket") &&
-		strings.Contains(strings.ToLower(request.Header.Get("Connection")), "upgrade")
+		headerHasToken(request.Header, "Connection", "upgrade")
 }
 
 func remoteIP(address string) string {
