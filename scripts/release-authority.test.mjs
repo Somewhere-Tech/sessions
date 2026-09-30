@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, mkdir, rm, symlink, readFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, mkdir, rm, symlink, readFile, copyFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -117,6 +117,54 @@ releaseTest('release jobs separate dependency execution, signing keys, and publi
   assert.match(signer, /stapler validate/);
   assert.match(signer, /tar -xzf "\$OUTPUT\/Sessions\.app\.tar\.gz"/);
   assert.match(signer, /stapler validate "\$OUTPUT\/verified-package\/Sessions\.app"/);
+});
+
+releaseTest('final ZIP is clean and round-trip verified before delivery checksums', async () => {
+  const signer = await readFile(join(root, 'scripts/sign-release-assets.sh'), 'utf8');
+  const pack = signer.indexOf('ditto -c -k --norsrc --noextattr --noqtn --noacl --keepParent "$APP" "$OUTPUT/Sessions_${VERSION}_darwin_arm64.zip"');
+  assert.ok(pack >= 0);
+  const unpack = signer.indexOf('python3 "$ROOT/scripts/unpack-release-app.py" "$OUTPUT/Sessions_${VERSION}_darwin_arm64.zip" "$OUTPUT/verified-zip"');
+  assert.ok(unpack > pack);
+  let previous = unpack;
+  for (const command of [
+    'codesign --verify --deep --strict --verbose=2 "$OUTPUT/verified-zip/Sessions.app"',
+    'xcrun stapler validate "$OUTPUT/verified-zip/Sessions.app"',
+    'spctl --assess --type execute --verbose=4 "$OUTPUT/verified-zip/Sessions.app"',
+    'node "$ROOT/scripts/runtime-signing-manifest.mjs" verify "$OUTPUT/verified-zip/Sessions.app/Contents/Resources/runtime" "$VERSION"',
+    'python3 -c \'import shutil,sys; shutil.rmtree(sys.argv[1])\' "$OUTPUT/verified-zip"',
+  ]) {
+    const index = signer.indexOf(command);
+    assert.ok(index > previous, `Missing or misordered ZIP check: ${command}`);
+    previous = index;
+  }
+  assert.ok(signer.indexOf('for artifact in ') > previous);
+});
+
+test('clean ZIP extraction preserves native signature and regular ticket-location bytes', { skip: process.platform !== 'darwin' }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'sZ-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const app = join(directory, 'Sessions.app');
+  await mkdir(join(app, 'Contents/MacOS'), { recursive: true });
+  await copyFile('/usr/bin/true', join(app, 'Contents/MacOS/fixture'));
+  await writeFile(join(app, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>tech.somewhere.sessions.zip.fixture</string><key>CFBundleExecutable</key><string>fixture</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>');
+  // A regular marker exercises the ticket location's file preservation only;
+  // it is not a real notarization ticket and claims no notarization acceptance.
+  const marker = Buffer.from('synthetic ticket-location fixture');
+  await writeFile(join(app, 'Contents/CodeResources'), marker);
+  await run('/usr/bin/codesign', ['--force', '--timestamp=none', '--sign', '-', app]);
+  await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
+  const executable = join(app, 'Contents/MacOS/fixture');
+  await run('/usr/bin/xattr', ['-wx', 'com.apple.FinderInfo', `54455354${'00'.repeat(28)}`, executable]);
+  assert.match((await run('/usr/bin/xattr', [executable])).stdout, /com\.apple\.FinderInfo/);
+  const archive = join(directory, 'final.zip');
+  await run('/usr/bin/ditto', ['-c', '-k', '--norsrc', '--noextattr', '--noqtn', '--noacl', '--keepParent', app, archive]);
+  const stage = join(directory, 'extracted');
+  await run('python3', ['scripts/unpack-release-app.py', archive, stage], { cwd: root });
+  const extracted = join(stage, 'Sessions.app');
+  await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', extracted]);
+  assert.deepEqual(await readFile(join(extracted, 'Contents/CodeResources')), marker);
+  assert.deepEqual(await readFile(join(extracted, 'Contents/MacOS/fixture')), await readFile(join(app, 'Contents/MacOS/fixture')));
+  assert.doesNotMatch((await run('/usr/bin/xattr', [join(extracted, 'Contents/MacOS/fixture')])).stdout, /com\.apple\.FinderInfo/);
 });
 
 releaseTest('draft staging requires native acceptance of the exact packaged Linux delivery', async () => {

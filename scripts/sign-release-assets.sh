@@ -82,7 +82,13 @@ node "$ROOT/scripts/render-updater-manifest.mjs" --version "$VERSION" \
   --artifact "$OUTPUT/Sessions.app.tar.gz" \
   --url "https://github.com/somewhere-tech/sessions/releases/download/v$VERSION/Sessions.app.tar.gz" \
   --target darwin-aarch64 --notes-file "$NOTES" --output "$OUTPUT/latest.json"
-ditto -c -k --keepParent "$APP" "$OUTPUT/Sessions_${VERSION}_darwin_arm64.zip"
+ditto -c -k --norsrc --noextattr --noqtn --noacl --keepParent "$APP" "$OUTPUT/Sessions_${VERSION}_darwin_arm64.zip"
+python3 "$ROOT/scripts/unpack-release-app.py" "$OUTPUT/Sessions_${VERSION}_darwin_arm64.zip" "$OUTPUT/verified-zip"
+codesign --verify --deep --strict --verbose=2 "$OUTPUT/verified-zip/Sessions.app"
+xcrun stapler validate "$OUTPUT/verified-zip/Sessions.app"
+spctl --assess --type execute --verbose=4 "$OUTPUT/verified-zip/Sessions.app"
+node "$ROOT/scripts/runtime-signing-manifest.mjs" verify "$OUTPUT/verified-zip/Sessions.app/Contents/Resources/runtime" "$VERSION"
+python3 -c 'import shutil,sys; shutil.rmtree(sys.argv[1])' "$OUTPUT/verified-zip"
 COPYFILE_DISABLE=1 tar -czf "$OUTPUT/cli/sessions_${VERSION}_darwin_arm64.tar.gz" -C "$CLI" .
 for platform in linux_arm64 linux_amd64; do
   cp "$INPUT/cli/sessions_${VERSION}_${platform}.tar.gz" "$OUTPUT/cli/"
