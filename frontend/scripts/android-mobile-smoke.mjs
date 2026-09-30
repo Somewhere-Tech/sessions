@@ -154,6 +154,32 @@ try {
       assert.equal(nativeLayout.headingPadding, 12, 'the session heading must not count the safe area twice');
       assert.equal(nativeLayout.shellBottom, 844, 'safe-area padding must stay inside the viewport height');
     }
+    for (const width of [360, 390, 430]) {
+      await page.setViewport({ width, height: 844 });
+      for (const history of [false, true]) {
+        const title = '<h1 id="title">Mobile terminal acceptance with a long conversation name</h1>';
+        await page.setContent(`<style>${styles}</style><header class="session-active-header">
+          <button class="mobile-session-back">‹</button><div class="session-active-copy" id="copy">
+            <div class="session-active-title-row">${history ? title : `<div class="session-title-display">${title}<button class="session-title-rename-button">Rename</button></div>`}
+              <span class="session-live-pill" id="state">${history ? 'Continued · live' : 'Ready'}</span>
+              <span class="session-runtime-badge">Terminal</span></div>
+            <div class="session-active-meta"><span>Claude</span></div></div>
+          <div class="session-active-actions" id="actions"><button class="btn">Lanes 12</button><button class="btn">End and archive…</button></div>
+        </header>`);
+        const header = await page.evaluate(() => {
+          const rect = (id) => {
+            const r = document.getElementById(id).getBoundingClientRect();
+            return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width };
+          };
+          return { title: rect('title'), state: rect('state'), copy: rect('copy'), actions: rect('actions'), scrollWidth: document.documentElement.scrollWidth };
+        });
+        assert.ok(header.title.width > 150, `session title was squeezed at ${width}px`);
+        assert.ok(header.title.bottom <= header.state.top, `title and status overlapped at ${width}px`);
+        assert.ok(header.copy.bottom <= header.actions.top, `actions competed with the title at ${width}px`);
+        assert.ok(header.actions.left >= 0 && header.actions.right <= width, `actions escaped at ${width}px`);
+        assert.ok(header.scrollWidth <= width, `header caused horizontal scrolling at ${width}px`);
+      }
+    }
   } finally {
     await closeBrowser(browser);
   }
