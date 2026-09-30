@@ -178,8 +178,9 @@ func (a *app) cmdWait(args []string) error {
 	idle := 2 * time.Second
 	timeout := 30 * time.Second
 	var err error
-	if raw, present := pluck(&args, "--idle"); present && raw != "" {
-		idle, err = parseDuration(raw, 0)
+	idleRaw, idleSeen := pluck(&args, "--idle")
+	if idleSeen && idleRaw != "" {
+		idle, err = parseDuration(idleRaw, 0)
 		if err != nil {
 			return err
 		}
@@ -193,9 +194,13 @@ func (a *app) cmdWait(args []string) error {
 	if len(args) != 0 {
 		return fail(1, "usage: sessions wait <id> [--idle 2s] [--timeout 30s] [--summary]")
 	}
-	id, err := a.resolveSessionID(idArg)
+	resolved, err := a.resolveSession(idArg)
 	if err != nil {
 		return err
+	}
+	id := resolved.ID
+	if resolved.Kind == "lane" {
+		return a.waitResolvedLane(id, timeout, includeSummary, idleSeen)
 	}
 	start := a.now()
 	deadline := start.Add(timeout)
@@ -222,6 +227,17 @@ func (a *app) cmdWait(args []string) error {
 		}
 		a.sleep(waitPollInterval(idle))
 	}
+}
+
+func (a *app) waitResolvedLane(id string, timeout time.Duration, includeSummary, idleSeen bool) error {
+	if idleSeen {
+		return fail(1, "--idle describes a settling session, not a lane; a lane wait ends when the process exits — drop --idle or wait on the session instead")
+	}
+	completedID, manifest, err := a.waitForLaneExit([]string{id}, timeout)
+	if err != nil {
+		return err
+	}
+	return a.writeLaneWaitCompletion(completedID, manifest, false, includeSummary)
 }
 
 func (a *app) writeSessionWaitTimeout(id string, timeout time.Duration, probe waitProbe) error {

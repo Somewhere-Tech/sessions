@@ -388,11 +388,15 @@ func (a *app) cmdWaitDispatch(args []string) error {
 		if len(request.ids) == 1 && !request.any && !request.all {
 			return a.cmdWait(args)
 		}
-		sessionID, err := a.resolveSessionID(candidate)
+		resolved, err := a.resolveSession(candidate)
 		if err != nil {
 			return err
 		}
-		refs = append(refs, waitTargetRef{id: sessionID})
+		isLane := resolved.Kind == "lane"
+		if isLane {
+			lanes++
+		}
+		refs = append(refs, waitTargetRef{id: resolved.ID, lane: isLane})
 	}
 	if request.idleSeen && lanes == len(refs) {
 		// The value used to be parsed and thrown away, so a caller who asked

@@ -191,34 +191,54 @@ func (a *app) sessionLabel(value session) string {
 }
 
 func (a *app) resolveSessionID(idOrPrefix string) (string, error) {
+	resolved, err := a.resolveSession(idOrPrefix)
+	return resolved.ID, err
+}
+
+// Keep the row from the same startup-aware lookup that resolved its identity.
+// A wait cannot decide its target kind from an earlier, incomplete listing.
+func (a *app) resolveSession(idOrPrefix string) (session, error) {
 	deadline := a.now().Add(startupWaitBudget)
 	for {
-		id, found, err := a.matchSessionID(idOrPrefix)
+		matched, err := a.matchSession(idOrPrefix)
 		if err != nil {
-			return "", err
+			return session{}, err
 		}
-		if found {
-			return id, nil
+		if matched != nil {
+			return *matched, nil
 		}
 		// A daemon that is still loading has not said this session is gone; it
 		// has not got to it yet. Saying "no live session matches" here is what
 		// sent a teammate looking for a lane that was running the whole time.
 		if !a.waitForLoadingDaemon(deadline) {
-			return "", fail(1, "%s", unknownSessionMessage(idOrPrefix))
+			return session{}, fail(1, "%s", unknownSessionMessage(idOrPrefix))
 		}
 	}
 }
 
 func (a *app) matchSessionID(idOrPrefix string) (string, bool, error) {
-	sessions, err := a.listSessions(true)
-	if err != nil {
+	matched, err := a.matchSession(idOrPrefix)
+	if matched == nil {
 		return "", false, err
 	}
-	id, found, resolveErr := resolveIDPrefix(idOrPrefix, "session", "sessions ls", candidatesForSessions(a, sessions))
-	if resolveErr != nil {
-		return "", false, resolveErr
+	return matched.ID, true, err
+}
+
+func (a *app) matchSession(idOrPrefix string) (*session, error) {
+	sessions, err := a.listSessions(true)
+	if err != nil {
+		return nil, err
 	}
-	return id, found, nil
+	id, found, resolveErr := resolveIDPrefix(idOrPrefix, "session", "sessions ls", candidatesForSessions(a, sessions))
+	if resolveErr != nil || !found {
+		return nil, resolveErr
+	}
+	for index := range sessions {
+		if sessions[index].ID == id {
+			return &sessions[index], nil
+		}
+	}
+	return nil, nil
 }
 
 func prefixString(value string, count int) string {
