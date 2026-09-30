@@ -208,6 +208,9 @@ jobs:
       - name: Verify updater, release, and platform contracts
         run: npm run test:updater-release
 
+      - name: Verify fleet signed-request replay and directory contracts
+        run: npm --prefix cloud/sessions-fleet test
+
       - name: Verify the packed npm installation lifecycle
         run: npm --prefix npm test
 

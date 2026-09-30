@@ -64,7 +64,8 @@ startup and sends a heartbeat every five minutes.
 Every machine write carries the Somewhere app-user access/refresh pair and an
 Ed25519 signature over the machine ID, Unix timestamp, nonce, method, path, and
 SHA-256 of the exact request body. The platform rejects timestamps outside five
-minutes, stores accepted nonces in an owner-scoped replay table, and rate-limits
+minutes, retains accepted nonces for at least 601 seconds in an owner-scoped
+replay table, and rate-limits
 heartbeat retries. The registration public key may establish a new row; once a
 row exists, updates must verify with its stored key. These requests update
 directory presence only. A same-account connection is a separate direct
@@ -74,7 +75,12 @@ The host uses its own Somewhere token to fetch the requester from the same
 owner-scoped directory, rejects signatures from absent or different-account
 keys, timestamps outside five minutes, and replayed nonces, then issues the
 same two-minute-pending, independently revocable device credential as an
-accepted access request. The daemon audit line names the device and `via
+accepted access request. Before issuance, the host writes a private replay
+record retained through the signed timestamp's full validity window, including
+its inclusive endpoint. A daemon restart or account logout does not erase
+these records. Invalid or unwritable replay state refuses account claims with
+an instructional error; normal one-time pairing remains available. The daemon
+audit line names the device and `via
 account`. Somewhere sees the directory lookup but never the issued credential
 or later session traffic. The account directory is not the relay service; it
 stores only the relay endpoint hint.
@@ -161,8 +167,11 @@ unavailable, and use plain LAN HTTP only on a private network the user trusts.
 `sessions-relay` is an optional Sessions service the owner hosts, independently
 of the Somewhere directory. Each daemon opens one outbound WebSocket and signs
 a relay-generated nonce and timestamp with its Ed25519 machine key. The relay
-admits that tunnel only when the public key matches the owner's directory or a
-static allow-list. Duplicate machine connections replace the old tunnel, many
+admits that tunnel only when the public key matches a static allow-list.
+Directory-backed relay authorization is unsupported; retained directory flags
+fail with a `--allow-file` remedy rather than sending a bearer-only request to
+the machine-signature-protected directory. Duplicate machine connections
+replace the old tunnel, many
 client streams are multiplexed per machine, each frame is limited to 64 KiB,
 and bounded queues apply backpressure. The daemon reconnects with bounded
 exponential backoff. `/healthz` exposes only service health and a connected
@@ -183,10 +192,10 @@ storage and authority boundary, not end-to-end content encryption against the
 relay operator: when HTTPS terminates at the relay, a compromised relay host
 can observe, delay, drop, replay, or alter relayed bytes. The destination's
 device authentication detects no general content tampering. Run the relay only
-on infrastructure you trust, protect its TLS key and directory token or static
-allow-list, and prefer direct LAN/tailnet routes. Compromise of the directory
-token can admit registered machine tunnels but still does not mint a device
-credential or bypass the destination daemon.
+on infrastructure you trust, protect its TLS key and static allow-list, and
+prefer direct LAN/tailnet routes. Compromise of the allow-list can admit machine
+tunnels but still does not mint a device credential or bypass the destination
+daemon.
 
 See [`RELAY.md`](RELAY.md) for deployment and configuration.
 

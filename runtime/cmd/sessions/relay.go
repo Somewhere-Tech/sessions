@@ -97,11 +97,11 @@ func parseRelayInstallOptions(args *[]string) (relayInstallOptions, error) {
 	if (options.Cert == "") != (options.Key == "") {
 		return options, fail(1, "--cert and --key must be supplied together")
 	}
-	if options.AllowFile == "" && options.DirectoryURL == "" {
-		return options, fail(1, "relay install needs --allow-file or --directory-url with --owner-token-file")
+	if options.DirectoryURL != "" || options.OwnerTokenFile != "" {
+		return options, fail(1, "directory-backed relay authorization is not available; use --allow-file with the allowed machine public keys")
 	}
-	if options.DirectoryURL != "" && options.OwnerTokenFile == "" {
-		return options, fail(1, "--directory-url needs --owner-token-file")
+	if options.AllowFile == "" {
+		return options, fail(1, "relay install needs --allow-file with the allowed machine public keys")
 	}
 	return options, nil
 }

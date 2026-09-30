@@ -100,6 +100,7 @@ jobs:
           npm --prefix frontend run build
           npm --prefix frontend run test:smoke
           npm run test:updater-release
+          npm --prefix cloud/sessions-fleet test
           npm --prefix npm test
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
           cargo test --manifest-path src-tauri/Cargo.toml

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -35,8 +34,7 @@ type Manager struct {
 	version     string
 	endpoints   func() Endpoints
 	now         func() time.Time
-	claimsMu    sync.Mutex
-	claims      map[string]time.Time
+	claims      *claimReplayStore
 }
 
 func New(options Options) (*Manager, error) {
@@ -63,7 +61,7 @@ func New(options Options) (*Manager, error) {
 		state: state, keys: &keyStore{path: options.KeyPath}, cloud: cloud,
 		machineID: options.MachineID, machineName: options.MachineName,
 		version: options.DaemonVersion, endpoints: options.Endpoints, now: now,
-		claims: make(map[string]time.Time),
+		claims: &claimReplayStore{path: options.KeyPath + ".claim-nonces"},
 	}, nil
 }
 

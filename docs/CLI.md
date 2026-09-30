@@ -1286,11 +1286,11 @@ Examples:
 
 ```text
 Usage:
-  sessions relay <status | set URL | disable | install [--listen :8899] [--cert FILE --key FILE] [--allow-file FILE | --directory-url URL --owner-token-file FILE]>
+  sessions relay <status | set URL | disable | install [--listen :8899] [--cert FILE --key FILE] --allow-file FILE>
 
 configure or install the optional relay
 
-Inspect, set, or disable this daemon's outbound relay fallback, or install sessions-relay as a macOS LaunchAgent. The relay accepts outbound machine tunnels only after an Ed25519 challenge matches either the owner's Somewhere directory or a static allow-list. Put TLS directly on the relay with --cert/--key, or keep its listener behind Tailscale Serve or Caddy. Owner tokens are read from a mode-0600 file rather than command arguments.
+Inspect, set, or disable this daemon's outbound relay fallback, or install sessions-relay as a macOS LaunchAgent. The relay accepts outbound machine tunnels only after an Ed25519 challenge matches a static allow-list. Put TLS directly on the relay with --cert/--key, or keep its listener behind Tailscale Serve or Caddy. Directory-token mode is unsupported; retained --directory-url and --owner-token-file flags return an explicit --allow-file remedy before reading credentials or installing a service.
 
 Examples:
   sessions relay status

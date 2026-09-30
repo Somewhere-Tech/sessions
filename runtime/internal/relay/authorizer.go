@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/relayauth"
 )
@@ -47,41 +45,12 @@ type DirectoryAuthorizer struct {
 	Client     *http.Client
 }
 
-func (a DirectoryAuthorizer) Authorize(ctx context.Context, response relayauth.Response) error {
-	client := a.Client
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
-	endpoint := strings.TrimSuffix(strings.TrimSpace(a.URL), "/") + "/api/machines/index"
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(a.OwnerToken))
-	serverResponse, err := client.Do(request)
-	if err != nil {
-		return fmt.Errorf("query fleet directory: %w", err)
-	}
-	defer serverResponse.Body.Close()
-	if serverResponse.StatusCode != http.StatusOK {
-		return fmt.Errorf("fleet directory returned HTTP %d", serverResponse.StatusCode)
-	}
-	var directory struct {
-		Machines []struct {
-			ID        string `json:"id"`
-			PublicKey string `json:"machine_public_key"`
-		} `json:"machines"`
-	}
-	decoder := json.NewDecoder(io.LimitReader(serverResponse.Body, 1<<20))
-	if err := decoder.Decode(&directory); err != nil {
-		return fmt.Errorf("decode fleet directory: %w", err)
-	}
-	for _, machine := range directory.Machines {
-		if machine.ID == response.MachineID && subtle.ConstantTimeCompare([]byte(machine.PublicKey), []byte(response.PublicKey)) == 1 {
-			return nil
-		}
-	}
-	return errors.New("machine key is not in the owner's directory")
+var ErrDirectoryAuthorizationUnavailable = errors.New("directory-backed relay authorization is not available: the fleet directory requires a machine signature; configure --allow-file with the allowed machine public keys")
+
+// Retain the configuration type for compatibility, but do not send an owner
+// token to an endpoint this relay cannot authenticate to.
+func (a DirectoryAuthorizer) Authorize(_ context.Context, _ relayauth.Response) error {
+	return ErrDirectoryAuthorizationUnavailable
 }
 
 type AnyAuthorizer []Authorizer

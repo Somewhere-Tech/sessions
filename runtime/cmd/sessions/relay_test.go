@@ -40,3 +40,11 @@ func TestRelayInstallRequiresMachineAuthorizer(t *testing.T) {
 		t.Fatalf("missing authorizer error = %v", err)
 	}
 }
+
+func TestRelayInstallRefusesUnsupportedDirectoryBeforeLaunchdMutation(t *testing.T) {
+	args := []string{"--directory-url", "https://fixture.invalid", "--owner-token-file", "/fixture/token", "--allow-file", "/fixture/allow"}
+	_, err := parseRelayInstallOptions(&args)
+	if err == nil || !strings.Contains(err.Error(), "not available") || !strings.Contains(err.Error(), "--allow-file") {
+		t.Fatalf("unsupported directory install = %v, want explicit static allow-list instruction", err)
+	}
+}

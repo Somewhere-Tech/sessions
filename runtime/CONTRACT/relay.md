@@ -19,7 +19,10 @@ sessions-relay-v1 NUL machine_id NUL timestamp NUL nonce
 ```
 
 The relay verifies the signature and resolves the exact machine/public-key
-pair through its owner-scoped directory token or static allow-list. Success is
+pair through its static allow-list. The retained directory-token configuration
+flags are unsupported and return an explicit `--allow-file` remedy before
+reading credentials, installing a service, or sending a directory request;
+the relay has no identity to sign the directory's required machine request. Success is
 `{"ok":true}` as a final text frame. All later frames are binary. Failure closes
 with WebSocket policy violation and registers no tunnel.
 

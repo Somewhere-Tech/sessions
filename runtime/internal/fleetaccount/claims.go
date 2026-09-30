@@ -25,6 +25,7 @@ var (
 	ErrClaimInvalid   = errors.New("account claim is invalid")
 	ErrClaimExpired   = errors.New("account claim is outside the five-minute window")
 	ErrClaimReplay    = errors.New("account claim nonce was already used")
+	ErrClaimStore     = errors.New("account claim replay protection is unavailable; repair the private replay state or use one-time pairing")
 	ErrDifferentOwner = errors.New("requesting device is not in this account")
 )
 
@@ -101,7 +102,8 @@ func (m *Manager) VerifyAccountClaim(ctx context.Context, claim AccountClaim) (M
 		!ed25519.Verify(ed25519.PublicKey(public), accountClaimCanonical(claim), signature) {
 		return Machine{}, fmt.Errorf("%w: signature is invalid", ErrClaimInvalid)
 	}
-	if err := m.consumeClaimNonce(claim.DeviceID, claim.Nonce); err != nil {
+	seconds, _ := strconv.ParseInt(claim.Timestamp, 10, 64) // Already validated above.
+	if err := m.claims.consume(claim.DeviceID, claim.Nonce, time.Unix(seconds, 0).Add(claimWindow), m.now); err != nil {
 		return Machine{}, err
 	}
 	return device, nil
@@ -116,23 +118,6 @@ func (m *Manager) validateClaimTime(value string) error {
 	if delta := m.now().UTC().Sub(when); delta < -claimWindow || delta > claimWindow {
 		return ErrClaimExpired
 	}
-	return nil
-}
-
-func (m *Manager) consumeClaimNonce(deviceID, nonce string) error {
-	m.claimsMu.Lock()
-	defer m.claimsMu.Unlock()
-	now := m.now().UTC()
-	for key, acceptedAt := range m.claims {
-		if now.Sub(acceptedAt) > claimWindow {
-			delete(m.claims, key)
-		}
-	}
-	key := deviceID + "\x00" + nonce
-	if _, exists := m.claims[key]; exists {
-		return ErrClaimReplay
-	}
-	m.claims[key] = now
 	return nil
 }
 

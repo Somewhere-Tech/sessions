@@ -128,4 +128,23 @@ func TestAccountClaimIssuesNormalAcknowledgedDeviceCredential(t *testing.T) {
 	if devices.Code != http.StatusOK || !strings.Contains(devices.Body.String(), "Uzair's phone") {
 		t.Fatalf("account device was not recorded: %d %s", devices.Code, devices.Body.String())
 	}
+	badReplay := filepath.Join(daemon.config.StateRoot, "fleet-machine-key.json.claim-nonces")
+	if err := os.WriteFile(badReplay, []byte("corrupt fixture replay state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	freshClaim, err := requester.CreateAccountClaim(daemon.handler.identity.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshBody, _ := json.Marshal(freshClaim)
+	refused := serve(t, daemon.handler, http.MethodPost, fleetaccount.AccountClaimPath,
+		bytes.NewReader(freshBody), "198.51.100.20:4567", http.Header{"Content-Type": {"application/json"}})
+	if refused.Code != http.StatusServiceUnavailable || strings.Contains(refused.Body.String(), `"token"`) ||
+		!strings.Contains(refused.Body.String(), "one-time pairing") {
+		t.Fatalf("corrupt replay state account claim = %d %s, want instructional refusal without a credential", refused.Code, refused.Body.String())
+	}
+	unchanged := serve(t, daemon.handler, http.MethodGet, "/api/devices", nil, "127.0.0.1:4567", nil)
+	if unchanged.Body.String() != devices.Body.String() {
+		t.Fatalf("failed account claim changed device records")
+	}
 }

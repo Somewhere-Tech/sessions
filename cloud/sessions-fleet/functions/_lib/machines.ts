@@ -21,7 +21,7 @@ export async function signedMachineRequest(
   const publicKey = machine?.machine_public_key || registrationKey;
   if (!publicKey) throw requestError(404, 'MACHINE_NOT_FOUND', 'machine is not registered');
   await verifySignature(req, bodyText, headers, publicKey);
-  await consumeNonce(sw, headers.machineID, headers.nonce);
+  await consumeNonce(sw, headers);
   return { user, machine, machineID: headers.machineID };
 }
 
@@ -64,11 +64,16 @@ async function verifySignature(
   }
 }
 
-async function consumeNonce(sw: any, machineID: string, nonce: string): Promise<void> {
-  const cutoff = new Date(Date.now() - WINDOW_SECONDS * 1000).toISOString();
+async function consumeNonce(sw: any, headers: SignedHeaders): Promise<void> {
+  validateTimestamp(headers.timestamp);
+  // A timestamp may be five minutes ahead when accepted, and remains valid
+  // another five minutes plus the validation clock's second-floor remainder.
+  // Keep the existing deployed replay-table schema and preserve that full window.
+  const cutoff = new Date(Date.now() - (2 * WINDOW_SECONDS + 1) * 1000).toISOString();
   await sw.db.remove('machine_nonces', { where: { created_at: { lt: cutoff } } });
+  validateTimestamp(headers.timestamp);
   const inserted = await sw.db.insert('machine_nonces', {
-    machine_id: machineID, nonce, created_at: new Date().toISOString(),
+    machine_id: headers.machineID, nonce: headers.nonce, created_at: new Date().toISOString(),
   }, { onConflict: 'ignore' });
   if (inserted.changes !== 1) throw requestError(409, 'NONCE_REPLAYED', 'signed request nonce was already used');
 }

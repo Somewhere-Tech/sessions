@@ -229,6 +229,9 @@ func (s *Server) handleFleetAccountClaimRoute(
 			errors.Is(err, fleetaccount.ErrClaimReplay) || errors.Is(err, fleetaccount.ErrDifferentOwner) {
 			status = http.StatusForbidden
 		}
+		if errors.Is(err, fleetaccount.ErrClaimStore) {
+			status = http.StatusServiceUnavailable
+		}
 		s.sendJSON(response, status, map[string]any{"error": err.Error()}, corsOrigin)
 		return true
 	}

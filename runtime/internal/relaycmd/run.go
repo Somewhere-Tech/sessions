@@ -8,9 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -74,10 +72,10 @@ func parse(arguments []string, errorOutput io.Writer) (Config, bool, error) {
 	set.StringVar(&config.Cert, "cert", "", "TLS certificate PEM")
 	set.StringVar(&config.Key, "key", "", "TLS private key PEM")
 	set.StringVar(&config.AllowFile, "allow-file", "", "machine public-key allow-list")
-	set.StringVar(&config.DirectoryURL, "directory-url", "", "fleet directory origin")
-	set.StringVar(&config.OwnerTokenFile, "owner-token-file", "", "file containing the owner's directory token")
+	set.StringVar(&config.DirectoryURL, "directory-url", "", "reserved directory origin (unsupported; use --allow-file)")
+	set.StringVar(&config.OwnerTokenFile, "owner-token-file", "", "reserved owner token file (unsupported; use --allow-file)")
 	set.Usage = func() {
-		fmt.Fprintln(errorOutput, "Usage: sessions-relay [--listen :8899] [--cert cert.pem --key key.pem] (--allow-file machines.json | --directory-url URL --owner-token-file FILE)")
+		fmt.Fprintln(errorOutput, "Usage: sessions-relay [--listen :8899] [--cert cert.pem --key key.pem] --allow-file machines.json")
 	}
 	if err := set.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -100,35 +98,13 @@ func authorizer(config Config) (relay.Authorizer, error) {
 		authorizers = append(authorizers, relay.AllowListAuthorizer{Path: config.AllowFile})
 	}
 	if config.DirectoryURL != "" {
-		token, err := ownerToken(config.OwnerTokenFile)
-		if err != nil {
-			return nil, err
-		}
-		authorizers = append(authorizers, relay.DirectoryAuthorizer{URL: config.DirectoryURL, OwnerToken: token})
+		return nil, relay.ErrDirectoryAuthorizationUnavailable
+	}
+	if config.OwnerTokenFile != "" {
+		return nil, relay.ErrDirectoryAuthorizationUnavailable
 	}
 	if len(authorizers) == 0 {
-		return nil, errors.New("configure --allow-file or --directory-url with an owner token")
+		return nil, errors.New("configure --allow-file with the allowed machine public keys")
 	}
 	return authorizers, nil
-}
-
-func ownerToken(path string) (string, error) {
-	if path == "" {
-		if token := strings.TrimSpace(os.Getenv("SESSIONS_RELAY_OWNER_TOKEN")); token != "" {
-			return token, nil
-		}
-		return "", errors.New("directory authorization requires --owner-token-file or SESSIONS_RELAY_OWNER_TOKEN")
-	}
-	encoded, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read relay owner token: %w", err)
-	}
-	if info, statErr := os.Stat(path); statErr == nil && runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return "", errors.New("relay owner token file must not be readable by group or other users")
-	}
-	token := strings.TrimSpace(string(encoded))
-	if token == "" || strings.ContainsAny(token, "\r\n") {
-		return "", errors.New("relay owner token file is empty or malformed")
-	}
-	return token, nil
 }

@@ -2240,10 +2240,14 @@ machine_id + device_id + timestamp + nonce + "POST" +
 order shown. The target host fetches `device_id` with its own Somewhere token;
 the owner-scoped result, never a caller-supplied key, supplies the public key.
 The target ID must be this daemon, the timestamp must be within five minutes,
-and a `(device_id, nonce)` pair can succeed only once during that window.
+and a `(device_id, nonce)` pair can succeed only once during that window,
+including its endpoint and across daemon process restart or account logout.
+Replay state is written before credential issuance, under the single active
+host-daemon state-root ownership described in `state-dir.md`.
 Invalid signatures, stale claims, replay, and devices absent from this host's
 account all return 403 without issuing a credential. A directory failure is
-502; a host without fleet account support is 503; non-JSON is 415; other
+502; a host without fleet account support or unable to safely record replay
+state is 503 with an instructional one-time-pairing remedy; non-JSON is 415; other
 methods return 405.
 
 Success creates the same two-minute-pending device record as an accepted

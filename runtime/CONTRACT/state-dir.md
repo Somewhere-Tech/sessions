@@ -21,6 +21,7 @@ for explicit lookups; neither changes the source provider history.
 ├── open
 ├── fleet-account.json
 ├── fleet-machine-key.json
+├── fleet-machine-key.json.claim-nonces
 ├── vapid.json
 ├── push-subscriptions.json
 ├── delivery-operations/
@@ -61,7 +62,7 @@ daemon never reads the installed daemon's credentials or ledgers
 override:
 
 - `token` and `open`;
-- `fleet-account.json` and `fleet-machine-key.json`;
+- `fleet-account.json`, `fleet-machine-key.json`, and its `.claim-nonces` replay file;
 - `uploads/` (`runtime/internal/api/files.go` `uploadsDir`), matching how usage
   and integration-error state already resolve;
 - `delivery-operations/`, the content-free idempotency receipts for composer
@@ -141,6 +142,23 @@ account registration and replaced atomically with mode 0600. The private key is
 never returned over the HTTP API. This file follows `SESSIONS_STATE_DIR` and is
 the first account-tier storage form; a future version may move the private key
 to the OS keychain.
+
+### `fleet-machine-key.json.claim-nonces`
+
+Additive version-1, mode-0600 replay state beside the configured machine-key
+path. It stores a SHA-256 hash of the JSON `(device_id, nonce)` tuple and its
+signed Unix-second timestamp plus five minutes; no credential or raw claim is
+stored. The daemon refuses the same tuple until strictly after that expiry,
+including after daemon process restart and account logout/login. Successful
+consumption atomically replaces the complete document through a synced private
+temporary file before any credential is issued. Corrupt, unsupported-version,
+unreadable, unwritable, oversized (1 MiB), or full (4096 live entries) state
+refuses account claims with a safe pairing remedy instead of resetting history.
+Expired entries are pruned on the next claim. This follows `SESSIONS_STATE_DIR`
+through the configured machine-key path. One active host daemon owns each state
+root; concurrent requests within its account manager are serialized. This does
+not promise coordination across multiple daemons sharing a state root or
+filesystem persistence across power loss.
 
 ### `vapid.json`
 

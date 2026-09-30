@@ -8,8 +8,8 @@ tailnet routes fail.
 
 The relay multiplexes many client streams over one WebSocket per machine. A
 machine signs a fresh challenge with its Ed25519 fleet key. The relay admits
-that tunnel only when the public key matches either the owner's Somewhere
-directory or a static allow-list. That decision permits a pipe; it does not
+that tunnel only when the public key matches a static allow-list. That decision
+permits a pipe; it does not
 authorize a Sessions API call. The destination daemon still verifies the
 client's normal revocable device credential on every HTTP request and
 WebSocket connection.
@@ -55,14 +55,13 @@ to the next connection without restarting the service:
 }
 ```
 
-For an account-backed allow-list, use the owner-scoped directory and keep its
-token in a mode-`0600` file:
-
-```sh
-sessions-relay --listen 127.0.0.1:8899 \
-  --directory-url https://sessions-fleet.somewhere.site \
-  --owner-token-file /etc/sessions/owner-token
-```
+Directory-backed relay authorization is not available in this version. The
+fleet directory requires a machine signature in addition to an account token;
+the relay does not have a directory signing identity. The retained
+`--directory-url` and `--owner-token-file` flags return an instructional error
+before reading a token or starting/installing the service. Use `--allow-file`
+instead, and maintain the allowed machine/public-key pairs explicitly. This
+does not change a signed-in daemon's own fleet discovery or registration.
 
 Configure each host in Settings › Fleet, with `sessions relay set
 https://relay.example`, or through the local daemon API's `PUT /api/relay` with

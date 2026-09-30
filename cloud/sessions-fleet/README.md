@@ -63,6 +63,13 @@ machine_id + timestamp + nonce + method + URL pathname + hex(sha256(exact body b
 
 The registration route verifies a new machine with the public key in its body;
 an existing row must verify with its stored key. Every accepted nonce is stored
-in the caller's owner-scoped replay table. Heartbeat additionally allows twelve
+in the caller's owner-scoped replay table for at least 601 seconds, covering
+future clock skew and the timestamp validator's second-floor endpoint.
+Heartbeat additionally allows twelve
 requests per machine per minute, leaving room for bounded retries around the
 normal five-minute daemon interval.
+
+`npm test` (Node 22.6+) runs the production signed helper and directory route
+against a synthetic owner-scoped database fixture, with genuine Ed25519
+signatures. It checks future/fractional expiry and delayed verification; it is
+not proof of a deployed Somewhere database or live account integration.
