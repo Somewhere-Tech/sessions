@@ -154,13 +154,17 @@ these platforms:
 - **macOS:** login Keychain, without iCloud synchronization.
 - **iOS:** device-only Keychain items available while the device is unlocked,
   without iCloud synchronization.
+- **Android:** a bounded AES-256-GCM vault with a non-exportable Android Keystore
+  key and verified write/readback. Local credential data is excluded from
+  backup and device transfer; a replacement device must pair again. This does
+  not guarantee hardware-backed key storage on every Android device.
 
 On these platforms, migration removes legacy plaintext tokens from WebView
 local storage only after saving and reading them back from the native store.
 A locked, unreadable, or unverified protected store reports an error rather
 than silently replacing it with an empty store or falling back to plaintext.
 
-Android, Linux native clients, and browser clients do not yet have this
+Linux native clients and browser clients do not yet have this
 protected-store implementation in this candidate. Their saved tokens remain
 in local client storage; do not describe that storage as an OS credential vault.
 Interactive browser control is deprecated. Platform source and fixture tests

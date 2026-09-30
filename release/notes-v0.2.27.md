@@ -34,8 +34,8 @@ signed releases, and installed apps are distinct delivery states.
   executable checksums. Registry publication is separate from building or
   releasing those archives.
 - Windows uses user-scope DPAPI for saved pairing tokens; macOS and iOS use
-  Keychain with verified migration from legacy client storage. This does not
-  claim protected storage for Android, Linux clients, or browsers, or change
+  Keychain and Android Keystore with verified migration from legacy client
+  storage. This does not claim protected storage for Linux clients or browsers, or change
   provider-owned login credentials.
 - Shared phone layouts use safe areas and readable input sizing. Phone clients
   present connected-host settings as host-owned rather than offering controls
