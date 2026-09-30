@@ -27,6 +27,7 @@
 import type { ClaudeSessionEvent, DispatchMessage, ToolCall } from '../types';
 import { previewToolInput } from './toolPreview';
 import { harnessLine, isHarnessOnly, splitHarnessContent } from './harnessContent';
+import { codexEventIdentity, uniqueCodexEvents } from './codexEventIdentity';
 
 interface AnthropicContentBlock {
   type: string;
@@ -315,13 +316,14 @@ interface CodexTurnProjection {
   tools: Map<string, ToolCall>;
   reasoning: string[];
   completed: boolean;
+  completedItems: Map<string, number>;
 }
 
 function newCodexProjection(turnID: string, at: number, boundary?: string): CodexTurnProjection {
   return {
     message: { id: `codex-turn-${turnID}${boundary ? `-after-${boundary}` : ''}`, role: 'assistant', content: '', status: 'sent',
       createdAt: at, blockId: turnID, streaming: true, turnStatus: 'inProgress' },
-    itemText: new Map(), itemPhase: new Map(), itemOrder: [], tools: new Map(), reasoning: [], completed: false
+    itemText: new Map(), itemPhase: new Map(), itemOrder: [], tools: new Map(), reasoning: [], completed: false, completedItems: new Map()
   };
 }
 
@@ -428,7 +430,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
     projection.itemText.set(itemID, text);
   };
 
-  for (const event of events) {
+  for (const event of uniqueCodexEvents(events)) {
     const at = timestampMs(event.timestamp);
     const subtype = event.subtype ?? '';
     if (appendProviderSystemMessage(event, out)) continue;
@@ -438,7 +440,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
         const content = text || (hasImage ? '[image attached]' : '');
         if (content) {
           out.push({
-            id: event.uuid ?? `codex-import-user-${out.length}`,
+            id: codexEventIdentity(event),
             role: 'user',
             content,
             status: 'sent',
@@ -451,7 +453,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
         const imported = breakdownAssistant(event.message.content);
         if (imported.text) {
           out.push({
-            id: event.uuid ?? `codex-import-assistant-${out.length}`,
+            id: codexEventIdentity(event),
             role: 'assistant',
             content: imported.text,
             status: 'sent',
@@ -468,7 +470,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       const content = text || (hasImage ? '[image attached]' : '');
       if (!content || isSystemUserPseudoMessage(content)) continue;
       const message: DispatchMessage = {
-        id: event.uuid ?? `codex-user-${out.length}`,
+        id: codexEventIdentity(event),
         role: 'user',
         content,
         status: 'sent',
@@ -539,6 +541,9 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
     const projection = itemOwners.get(itemID) ?? ensureTurn(event.turnId || latestTurnID, at);
     if (!projection) continue;
     if (itemID) itemOwners.set(itemID, projection);
+    if (projection.completedItems.has(itemID) && subtype !== 'item_completed') continue;
+    if (at < (projection.completedItems.get(itemID) ?? -Infinity)) continue;
+    if (subtype === 'item_completed' && itemID) projection.completedItems.set(itemID, at);
 
     if (subtype === 'agent_message_delta') {
       const itemID = event.itemId ?? '';
