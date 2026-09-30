@@ -28,6 +28,7 @@ const port = reservation.address().port;
 await new Promise((done) => reservation.close(done));
 const env = { ...process.env, HOME: home, SESSIONS_STATE_DIR: runners,
   SESSIONS_LEDGER_PATH: join(root, 'ledger.sqlite3'), SESSIONS_PORT: String(port),
+  SESSIONS_HOST: '127.0.0.1', SESSIONS_RUNNER: join(runtime, 'sessions-runner'), SESSIONS_SMOKE: '0',
   SHELL: '/bin/bash', PATH: `${runtime}:${process.env.PATH}` };
 const report = { source_sha: process.env.SOURCE_SHA || null, platform: process.platform, architecture: process.arch,
   native_linux_amd64: nativeAMD64, status: 'failed', isolation_root: root, binaries: {}, checks: {},
