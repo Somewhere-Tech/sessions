@@ -383,7 +383,14 @@ async fn native_machine_credentials_load(app: AppHandle) -> Result<MachineCreden
         .map_err(|_| "The protected credential worker stopped. Reopen Sessions and try again.".to_string())?
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
+    #[cfg(target_os = "android")]
+    {
+        tauri::async_runtime::spawn_blocking(move || android_credentials::load(&app))
+            .await
+            .map_err(|_| "The protected credential worker stopped. Reopen Sessions and try again.".to_string())?
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios", target_os = "android")))]
     {
         let _ = app;
         Ok(MachineCredentialStore::unsupported())
@@ -417,7 +424,14 @@ async fn native_machine_credentials_save(
         .map_err(|_| "The protected credential worker stopped. Reopen Sessions and try again.".to_string())?
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
+    #[cfg(target_os = "android")]
+    {
+        tauri::async_runtime::spawn_blocking(move || android_credentials::save(&app, credentials))
+            .await
+            .map_err(|_| "The protected credential worker stopped. Reopen Sessions and try again.".to_string())?
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios", target_os = "android")))]
     {
         let _ = app;
         let _ = credentials;

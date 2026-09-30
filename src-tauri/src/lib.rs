@@ -3,6 +3,8 @@
 // app process never owns sessionsd or a runner, so quitting it cannot affect a
 // durable session.
 
+#[cfg(target_os = "android")]
+mod android_credentials;
 #[cfg(any(target_os = "macos", target_os = "ios", test))]
 mod apple_credentials;
 mod lifecycle;
@@ -400,6 +402,8 @@ pub fn run() {
         .setup(|app| {
             #[cfg(mobile)]
             app.handle().plugin(tauri_plugin_barcode_scanner::init())?;
+            #[cfg(target_os = "android")]
+            app.handle().plugin(android_credentials::init())?;
 
             // One answer to a corrupt connections.json, shared with every
             // reconcile path: fall back to the default port so the management

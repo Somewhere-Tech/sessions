@@ -19,3 +19,7 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Rust registers this app-owned native plugin by its stable class name.
+-keep class tech.somewhere.sessions.MachineCredentialsPlugin { *; }
+-keep class tech.somewhere.sessions.MachineCredentialSaveArgs { *; }

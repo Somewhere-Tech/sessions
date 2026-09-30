@@ -30,7 +30,12 @@ pub(crate) struct MachineCredentialStore {
 }
 
 impl MachineCredentialStore {
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
+    #[cfg(not(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+    )))]
     pub(crate) fn unsupported() -> Self {
         Self {
             supported: false,

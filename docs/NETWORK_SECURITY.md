@@ -377,7 +377,17 @@ contacting a machine. A locked or unreadable vault is an explicit error, not an
 empty list; failed migration preserves the legacy connection metadata and
 credential. Removing a machine updates the protected credential set.
 
-Android, Linux native clients, and browser builds currently retain paired
+Android native clients encrypt the same bounded credential set with AES-256-GCM
+using an app-owned, non-exportable Android Keystore key. Ciphertext lives in the
+app's `noBackupFilesDir`, uses fresh provider-generated nonces and app-identity
+associated data, and is atomically replaced and read back before migration is
+confirmed. A missing key for existing ciphertext is an error, never permission
+to generate a replacement or silently forget the connection. This does not
+claim that every Android device has hardware-backed key storage. Android backup
+and device-transfer rules exclude local app data, including legacy WebView
+pages; a replacement device must pair again rather than inherit a credential.
+
+Linux native clients and browser builds currently retain paired
 tokens in their local WebView/browser storage; they do **not** have this OS
 vault protection. This is separate from provider login credentials and from
 the daemon's CLI machine registry. Do not copy any of these credentials between

@@ -109,6 +109,40 @@ A public release must use the Somewhere production Android keystore or Play App
 Signing; those credentials do not belong in this repository
 ([`src-tauri/gen/android/app/build.gradle.kts`](../src-tauri/gen/android/app/build.gradle.kts)).
 
+## Check the Android credential vault
+
+The Android JVM unit tests exercise bounded encryption and failure-preserving
+transactions with synthetic credentials. They do not exercise Android Keystore.
+For OS-backed tests, `src-tauri/gen/android/vault-fixture` builds a small,
+SDK-only instrumentation app using the exact production vault classes. It has
+its own package and key alias, no network permission, and no real credentials.
+Use only a disposable, task-owned emulator, not a user's phone:
+
+```sh
+cd src-tauri/gen/android/vault-fixture
+../gradlew --offline --no-daemon assembleDebug
+
+# Select the disposable emulator explicitly before installing anything.
+SESSIONS_TEST_DEVICE=emulator-5580
+"$ANDROID_HOME/platform-tools/adb" -s "$SESSIONS_TEST_DEVICE" install -r \
+  build/outputs/apk/debug/sessions-vault-fixture-debug.apk
+"$ANDROID_HOME/platform-tools/adb" -s "$SESSIONS_TEST_DEVICE" shell am instrument -w \
+  -e phase seed tech.somewhere.sessions.vault.fixture/tech.somewhere.sessions.VaultInstrumentation
+"$ANDROID_HOME/platform-tools/adb" -s "$SESSIONS_TEST_DEVICE" shell am force-stop \
+  tech.somewhere.sessions.vault.fixture
+"$ANDROID_HOME/platform-tools/adb" -s "$SESSIONS_TEST_DEVICE" shell am instrument -w \
+  -e phase reopen tech.somewhere.sessions.vault.fixture/tech.somewhere.sessions.VaultInstrumentation
+"$ANDROID_HOME/platform-tools/adb" -s "$SESSIONS_TEST_DEVICE" uninstall \
+  tech.somewhere.sessions.vault.fixture
+```
+
+Both phases must print `passed`; the Android command's exit code alone does not
+establish acceptance. The second phase tests fresh-process readback, tamper
+refusal, verified rollback, and refusal to regenerate a lost key over existing
+ciphertext. These tests prove the native vault backend, not the full
+Rust/Kotlin/frontend migration journey or physical-device behavior. Run the
+frontend credential migration regressions and build the native app separately.
+
 ## Pair a phone
 
 On a Mac that already runs the current Sessions runtime and is on the same
