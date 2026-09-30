@@ -31,6 +31,7 @@ cmd/sessions-runner internal/proto
 cmd/sessions-runner internal/providerargs
 cmd/sessions-runner internal/providerfault
 cmd/sessions-runner internal/state
+cmd/sessions-runner internal/watch
 cmd/sessions-runner internal/winconpty
 cmd/sessionsd internal/api
 cmd/sessionsd internal/background

@@ -362,11 +362,11 @@ function providerSystemMessage(event: ClaudeSessionEvent, index: number): Dispat
       errorResponse: detail
     };
   }
-  if (event.subtype === 'continuation_started') {
+  if (event.subtype === 'continuation_started' || event.subtype === 'resume_history_unavailable') {
     const detail = typeof event.detail === 'string' ? event.detail.trim() : '';
     if (!detail) return null;
     return {
-      id: event.uuid ?? `continuation-started-${index}`,
+      id: event.uuid ?? `${event.subtype}-${index}`,
       role: 'assistant',
       content: '',
       status: 'sent',

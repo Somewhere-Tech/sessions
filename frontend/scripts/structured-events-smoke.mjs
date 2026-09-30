@@ -375,6 +375,15 @@ try {
   assert.equal(continued.length, 1, 'a continued conversation must begin with its source line');
   assert.equal(continued[0].quietStatus, 'Continued from Frozen release plan (Codex) · 84 messages · model Sonnet 5');
 
+  const resumed = eventsToMessages([
+    { type: 'user', source: 'sessions-continuation', uuid: 'old-user', message: { role: 'user', content: 'Original request' } },
+    { type: 'assistant', source: 'sessions-continuation', uuid: 'old-answer', message: { role: 'assistant', content: [{ type: 'text', text: 'Original answer' }] } },
+    { ...codexBase, type: 'user', uuid: 'new-user', message: { role: 'user', content: 'New request' } }
+  ]);
+  assert.deepEqual(resumed.map((message) => message.content), ['Original request', 'Original answer', 'New request'], 'live app-server events must not hide restored display history');
+  const unavailable = eventsToMessages([{ ...codexBase, type: 'system', subtype: 'resume_history_unavailable', detail: 'Earlier display history is unavailable; open the saved runtime.' }]);
+  assert.equal(unavailable[0].quietStatus, 'Earlier display history is unavailable; open the saved runtime.');
+
   process.stdout.write('structured-events smoke passed\n');
 } finally {
   await rm(work, { recursive: true, force: true });

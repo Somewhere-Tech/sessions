@@ -142,7 +142,7 @@ func (r *codexAppRunner) start() error {
 	}
 	r.remoteEndpoint = client.RemoteEndpoint()
 
-	if err := r.openHistory(); err != nil {
+	if err := r.prepareResumeHistory(); err != nil {
 		_ = client.Close()
 		return err
 	}
