@@ -18,6 +18,10 @@ try {
     define: { 'import.meta.env.BASE_URL': '"/"' }, external: ['/claude-icon.svg'], logLevel: 'silent' });
   await writeFile(join(work, 'index.html'), '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script type="module" src="/app.js"></script></body></html>');
   server = createServer(async (request, response) => {
+    if (request.url === '/api/sessions?include_exited=1') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ sessions: [{ id: laneId, args: [], tool: 'claude-code', cwd: '/fixture', createdAt: Date.now(), exited: false }] })); return;
+    }
     if (request.url === '/api/recovery/restart') {
       let body = ''; for await (const chunk of request) body += chunk;
       requests.push(JSON.parse(body)); const needsRepair = partial && requests.length === 1;

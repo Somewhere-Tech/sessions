@@ -34,8 +34,17 @@ export function RestartConversationDialog({ session, onOpen, serverId, initialRe
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
   const machineId = serverId ?? getActiveServer().id;
-  const reopen = (id: string): void => {
+  const reopen = async (id: string): Promise<void> => {
     preserveRestartDraft(machineId, session.id, id);
+    if (getActiveServer().id !== machineId) throw new Error('The replacement is running on the original computer. Select that computer, then choose Open replacement.');
+    const { useSessions } = await import('../store/sessions');
+    // The restart receipt can arrive before the periodic session list. Opening
+    // an unknown row lets that poll prune the new tab and clear its selection.
+    await useSessions.getState().refresh(machineId);
+    const current = useSessions.getState();
+    if (getActiveServer().id !== machineId || current.serverId !== machineId || !current.sessions.some((row) => row.id === id)) {
+      throw new Error('The replacement is running but its computer has not returned the new conversation yet. Reconnect, then choose Open replacement.');
+    }
     onOpen(id); onClose();
   };
   const restart = async (): Promise<void> => {
@@ -53,7 +62,7 @@ export function RestartConversationDialog({ session, onOpen, serverId, initialRe
         setError(next.adoption?.warning ?? 'The replacement is running, but its history link needs repair. Retry these same choices to finish its record.');
         return;
       }
-      reopen(next.laneId);
+      await reopen(next.laneId);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Restart failed. Retry the same choices to check the recorded operation.'); }
     finally { locked.current = false; setBusy(false); }
   };
@@ -73,7 +82,7 @@ export function RestartConversationDialog({ session, onOpen, serverId, initialRe
         {result?.sourceEnded ? <p role="status">Original runtime ended.{result.laneId ? ` Replacement: ${result.laneId}.` : ' Replacement creation is incomplete.'}</p> : null}
         <div className="dialog-actions">
           <button type="button" className="btn" disabled={busy} onClick={onClose}>{result ? 'Close' : 'Cancel'}</button>
-          {result?.laneId ? <button type="button" className="btn" disabled={busy} onClick={() => { try { reopen(result.laneId!); } catch (reason) { setError(String(reason)); } }}>Open replacement</button> : null}
+          {result?.laneId ? <button type="button" className="btn" disabled={busy} onClick={() => { void reopen(result.laneId!).catch((reason) => setError(String(reason))); }}>Open replacement</button> : null}
           <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void restart()}>{busy ? 'Restarting…' : submitted ? 'Retry same restart' : 'End this runtime and reopen'}</button>
         </div>
       </section>

@@ -67,8 +67,10 @@ describe('capability: each computer says which accounts it has', () => {
     expect(within(beta).getByText('Identity not checked')).toBeVisible();
     // Beta's account appears on Alpha only as the offer to log in there too —
     // never as an account Alpha has.
-    expect(within(alpha).getByText('Shared build box').closest('.fleet-account')?.className)
-      .toContain('is-missing');
+    // Peer account offers arrive after that peer's own card. Re-read the
+    // current card instead of inspecting the earlier render's detached node.
+    await waitFor(() => expect(within(cardFor('Alpha')).getByText('Shared build box').closest('.fleet-account')?.className)
+      .toContain('is-missing'));
     expect(within(beta).getByText('Shared build box').closest('.fleet-account')?.className)
       .not.toContain('is-missing');
   }, 20_000);
