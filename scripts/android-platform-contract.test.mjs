@@ -5,6 +5,23 @@ import test from 'node:test';
 const root = new URL('../', import.meta.url);
 const read = (path) => readFile(new URL(path, root), 'utf8');
 
+test('Android SDK setup skips retired tools without weakening license acceptance', async () => {
+  const workflow = await read('.github/workflows/android-preview.yml');
+  const setup = workflow.match(/- name: Set up Android SDK[\s\S]*?(?=\n      - name:|$)/)?.[0];
+  assert.ok(setup, 'the reviewed setup action must remain explicit');
+  assert.match(setup, /android-actions\/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407/);
+  assert.match(setup, /packages: platform-tools\s*\n/,
+    'override the action default that requests the unavailable tools package');
+  assert.match(setup, /accept-android-sdk-licenses: true/);
+  assert.match(setup, /log-accepted-android-sdk-licenses: false/,
+    'suppress license text, not license acceptance or failures');
+  const install = workflow.match(/- name: Install reviewed Android toolchain[\s\S]*?(?=\n      - name:|$)/)?.[0];
+  assert.ok(install);
+  for (const packageName of ['platform-tools', 'platforms;android-36', 'build-tools;36.0.0', 'ndk;${ANDROID_NDK_VERSION}']) {
+    assert.ok(install.includes(`"${packageName}"`), `${packageName} stays in the reviewed install step`);
+  }
+});
+
 test('Android local test packaging is explicit and leaves normal builds unchanged', async () => {
   const [gradle, manifest, workflow, androidDocs] = await Promise.all([
     read('src-tauri/gen/android/app/build.gradle.kts'),
