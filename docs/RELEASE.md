@@ -75,8 +75,8 @@ Go command defaults. Prepare release notes and the macOS source download links,
 then run the non-mutating preflight:
 
 ```sh
-node scripts/check-release-version.mjs 0.2.27
-scripts/release-app.sh --version 0.2.27 --notes-file release/notes-v0.2.27.md --dry-run
+node scripts/check-release-version.mjs 0.2.28
+scripts/release-app.sh --version 0.2.28 --notes-file release/notes-v0.2.28.md --dry-run
 ```
 
 After exporting Apple notarization credentials, run the same command without
@@ -118,10 +118,10 @@ Push a reviewed tag to start a release, or rerun an existing tag from the
 workflow's manual dispatch:
 
 ```sh
-git tag -a v0.2.27 -m 'Sessions 0.2.27'
-git push origin v0.2.27
+git tag -a v0.2.28 -m 'Sessions 0.2.28'
+git push origin v0.2.28
 # Or dispatch an existing reviewed tag:
-gh workflow run release.yml --ref main -f tag=v0.2.27
+gh workflow run release.yml --ref main -f tag=v0.2.28
 ```
 
 The draft contains an initial-install zip, updater archive and signature,
@@ -148,7 +148,7 @@ Only after acceptance, explicitly publish the unchanged draft and verify every
 official runtime archive against the prepared npm manifest:
 
 ```sh
-gh release edit v0.2.27 --draft=false --latest
+gh release edit v0.2.28 --draft=false --latest
 node npm/scripts/verify-release.cjs --manifest /path/to/delivery/npm-manifest.json
 ```
 
@@ -156,7 +156,7 @@ With separately authorized npm credentials, publish the verified prepared
 tarball, not the unprepared source directory:
 
 ```sh
-npm publish /path/to/delivery/somewhere-tech-sessions-0.2.27.tgz --access public
+npm publish /path/to/delivery/somewhere-tech-sessions-0.2.28.tgz --access public
 ```
 
 Then use the Somewhere project's `project_patch` operation to replace only

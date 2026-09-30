@@ -10,7 +10,7 @@ included in this npm package.
 After this package is published, install the exact release:
 
 ```sh
-npm install --global @somewhere-tech/sessions@0.2.27
+npm install --global @somewhere-tech/sessions@0.2.28
 sessions help
 sessions install
 sessions status --json
@@ -47,9 +47,9 @@ removing an unused version and reinstalling it.
 
 ## Preparing a release
 
-The checked-in 0.2.27 manifest is intentionally unprepared until the exact
+The checked-in 0.2.28 manifest is intentionally unprepared until the exact
 tested runtime archives exist. It cannot install or pass the publication gate.
-Do not label 0.2.26 binaries as a 0.2.27 npm release.
+Do not label 0.2.26 binaries as a 0.2.28 npm release.
 
 Prepare a copy of `npm/` for release, with its version matching the tested
 runtime archives and their `.sha256` files:
@@ -81,7 +81,7 @@ authenticated tarball publication, verify its prepared manifest explicitly:
 
 ```sh
 node npm/scripts/verify-release.cjs --manifest /path/to/prepared/release-manifest.json
-npm publish /path/to/somewhere-tech-sessions-0.2.27.tgz --access public
+npm publish /path/to/somewhere-tech-sessions-0.2.28.tgz --access public
 ```
 
 This verifier uses only the reviewed local helper and manifest, then checks

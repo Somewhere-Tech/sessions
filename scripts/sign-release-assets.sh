@@ -63,7 +63,10 @@ xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
 spctl --assess --type execute --verbose=4 "$APP"
 for name in sessions sessionsd sessions-runner sessions-relay; do
-  spctl --assess --type execute --verbose=4 "$CLI/$name"
+  # Apple's executable assessment is for app bundles, not bare CLI tools.
+  # Require the standalone signed code's notarization ticket explicitly.
+  # https://developer.apple.com/forums/thread/130560 (Other code)
+  codesign --verify --strict --verbose=4 -R=notarized --check-notarization "$CLI/$name"
 done
 node "$ROOT/scripts/runtime-signing-manifest.mjs" verify "$APP/Contents/Resources/runtime" "$VERSION"
 rm "$OUTPUT/notarize-app.zip" "$OUTPUT/notarize-app.json" "$OUTPUT/notarize-cli.zip" "$OUTPUT/notarize-cli.json"

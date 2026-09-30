@@ -146,6 +146,30 @@ releaseTest('final ZIP is clean and round-trip verified before delivery checksum
   assert.ok(signer.indexOf('for artifact in ') > previous);
 });
 
+releaseTest('standalone CLI requires notarization rather than an app-bundle assessment', async () => {
+  const signer = await readFile(join(root, 'scripts/sign-release-assets.sh'), 'utf8');
+  const cliCheck = 'codesign --verify --strict --verbose=4 -R=notarized --check-notarization "$CLI/$name"';
+  const afterAppCheck = signer.slice(signer.indexOf('spctl --assess --type execute --verbose=4 "$APP"'));
+  const loop = afterAppCheck.match(/for name in ([^;]+); do([\s\S]*?)\ndone/);
+  assert.ok(loop, 'standalone verification must cover all four CLI executables');
+  assert.equal(loop[1], 'sessions sessionsd sessions-runner sessions-relay');
+  assert.ok(loop[2].includes(cliCheck));
+  assert.ok(signer.indexOf(cliCheck) > signer.indexOf('notarize "$OUTPUT/notarize-cli.zip"'));
+  assert.ok(signer.indexOf(cliCheck) < signer.indexOf('rm "$OUTPUT/notarize-app.zip"'));
+  assert.doesNotMatch(signer, /spctl[^\n]*"\$CLI\/\$name"/);
+  assert.match(signer, /spctl --assess --type execute --verbose=4 "\$APP"/);
+});
+
+test('a valid ad-hoc CLI signature cannot satisfy the notarized requirement', { skip: process.platform !== 'darwin' }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'sN-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const binary = join(directory, 'fixture');
+  await copyFile('/usr/bin/true', binary);
+  await run('/usr/bin/codesign', ['--force', '--timestamp=none', '--sign', '-', binary]);
+  await run('/usr/bin/codesign', ['--verify', '--strict', binary]);
+  await assert.rejects(run('/usr/bin/codesign', ['--verify', '--strict', '--verbose=4', '-R=notarized', '--check-notarization', binary]), /failed to satisfy specified code requirement/);
+});
+
 test('clean ZIP extraction preserves native signature and regular ticket-location bytes', { skip: process.platform !== 'darwin' }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'sZ-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
