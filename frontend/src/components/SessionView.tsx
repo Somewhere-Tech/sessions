@@ -88,6 +88,17 @@ const TERMINAL_NOTICE_ACK_PREFIX = 'sessions:terminal-notice-ack:';
 // even when the user has several Terminal sessions open.
 let terminalNoticeShownThisLaunch = false;
 
+function SessionStreamStatus({ notice, status, lostConversation }: {
+  notice: string | null; status: string; lostConversation: boolean;
+}): JSX.Element | null {
+  const message = lostConversation
+    ? 'Runner gone · conversation saved'
+    : notice ?? (status !== 'open'
+      ? status === 'connecting' || status === 'reconnecting' ? 'Live updates reconnecting…' : 'Live updates unavailable'
+      : null);
+  return message ? <span className="session-stream-status" role="status">{message}</span> : null;
+}
+
 function providerFaultFor(session: SessionInfo | null, onConnectAccount?: () => void): ProviderFaultView | undefined {
   return session?.failureKind
     ? {
@@ -667,7 +678,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
         {session && onOpenSession && !lostConversation ? <RestartConversation session={session} onOpen={onOpenSession} /> : null}
         {richSession && session?.tool === 'claude-code' && onResume && !lostConversation ?
           <ClaudeRuntimeControl working={session.working} onContinue={continueInTerminal} /> : null}
-        {lostConversation ? <span className="session-stream-status" role="status">Runner gone · conversation saved</span> : term.status !== 'open' ? <span className="session-stream-status" role="status">{term.status === 'connecting' || term.status === 'reconnecting' ? 'Live updates reconnecting…' : 'Live updates unavailable'}</span> : null}
+        <SessionStreamStatus notice={term.streamNotice} status={term.status} lostConversation={lostConversation} />
         {supportsConversation && onFork ? (
           <ConversationForkButton
             active={forkMode}

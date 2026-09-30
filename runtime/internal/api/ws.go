@@ -168,39 +168,12 @@ func (s *Server) handleSingle(parent context.Context, peer *wsPeer, request *htt
 	}
 }
 
-type muxAttachment struct {
-	cancel func()
-}
-
 func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 	ctx, cancel := context.WithCancel(parent)
 	work := newMuxWork(ctx, func(ctx context.Context, message clientMessage) { s.handleMuxWork(ctx, peer, message, cancel) })
 	defer work.close()
-	attached := make(map[string]muxAttachment)
-	var attachedMu sync.Mutex
-	detach := func(id string) {
-		attachedMu.Lock()
-		entry, ok := attached[id]
-		if ok {
-			delete(attached, id)
-		}
-		attachedMu.Unlock()
-		if ok {
-			entry.cancel()
-		}
-	}
-	defer func() {
-		attachedMu.Lock()
-		entries := make([]muxAttachment, 0, len(attached))
-		for _, entry := range attached {
-			entries = append(entries, entry)
-		}
-		attached = make(map[string]muxAttachment)
-		attachedMu.Unlock()
-		for _, entry := range entries {
-			entry.cancel()
-		}
-	}()
+	attached := newMuxAttachments()
+	defer attached.close()
 	// Cancel I/O before attachment cleanup, which may need a session lock
 	// currently held by a worker's input. Workers are joined after cleanup.
 	defer func() { cancel(); _ = peer.connection.CloseNow() }()
@@ -221,54 +194,10 @@ func (s *Server) handleMux(parent context.Context, peer *wsPeer, writes bool) {
 		case "ping":
 			_ = peer.send(ctx, map[string]any{"type": "pong"})
 		case "attach":
-			if message.SessionID == "" {
-				continue
-			}
-			attachedMu.Lock()
-			_, exists := attached[message.SessionID]
-			attachedMu.Unlock()
-			if exists {
-				continue
-			}
-			session, ok := s.sessionOnContact(ctx, message.SessionID)
-			if !ok {
-				if pending, paused := s.pendingRestore(message.SessionID); paused {
-					_ = peer.send(ctx, pendingRestoreSocketError(message.SessionID, pending))
-				} else {
-					_ = peer.send(ctx, map[string]any{
-						"type": "error", "message": "unknown session " + message.SessionID,
-						"sessionId": message.SessionID,
-					})
-				}
-				continue
-			}
-			includeOutput := message.OutputReplay == nil || *message.OutputReplay
-			includeClaudeReplay := message.ClaudeReplay == nil || *message.ClaudeReplay
-			includeClaudeLive := message.ClaudeLive == nil || *message.ClaudeLive
-			attachment := session.Attach(state.AttachOptions{
-				LastSeq: message.LastSeq, ClaudeEventsSince: message.ClaudeEventsSince,
-				IncludeClaudeReplay: includeClaudeReplay, InitialReplayCap: 300,
-			})
-			attachedMu.Lock()
-			attached[message.SessionID] = muxAttachment{cancel: attachment.Cancel}
-			attachedMu.Unlock()
-			if err := sendInitial(ctx, peer, session, attachment, message.SessionID, message.LastSeq, includeOutput); err != nil {
-				detach(message.SessionID)
-				continue
-			}
-			if exited, terminal := session.TerminalState(); exited {
-				_ = peer.send(ctx, exitMessage(terminal, message.SessionID))
-				detach(message.SessionID)
-				continue
-			}
-			id := message.SessionID
-			go streamAttachment(ctx, peer, attachment, streamOptions{
-				sessionID: id, includeOutput: includeOutput, includeClaudeLive: includeClaudeLive,
-				onExit: func() { detach(id) }, onUnavailable: func() { detach(id) },
-			})
+			s.handleMuxAttach(ctx, peer, attached, message)
 		case "detach":
 			if message.SessionID != "" {
-				detach(message.SessionID)
+				attached.detach(message.SessionID)
 			}
 		case "snapshot":
 			s.handleMuxSnapshot(ctx, peer, message)

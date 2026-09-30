@@ -348,7 +348,7 @@ export type ServerMsg =
   | { type: 'gap'; oldestAvailableSeq: number; currentSeq: number; sessionId?: string }
   | { type: 'exit'; code: number | null; signal: string | null; seq: number; sessionId?: string }
   | { type: 'unreachable'; reason: string; seq: number; sessionId?: string }
-  | { type: 'error'; message: string; sessionId?: string }
+  | { type: 'error'; message: string; sessionId?: string; code?: string }
   | { type: 'rpcError'; requestId: string; message: string; code?: string; sessionId?: string }
   | { type: 'snapshot'; requestId: string; text: string; seq: number; sessionId: string }
   | {

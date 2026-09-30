@@ -2003,6 +2003,8 @@ of `.git`, `package.json`, `pyproject.toml`, `Cargo.toml`, or `go.mod`.
 Protected broad folders are offered as explicit choices without background
 reads so discovery does not trigger unrelated macOS permission prompts.
 Duplicates are skipped and the result remains bounded to roughly 50 entries.
+Each background project-root enumeration inspects at most 10,000 children;
+recommendations are a bounded sample, not an exhaustive filesystem index.
 
 ### `GET /api/fs/list`
 
@@ -2023,14 +2025,18 @@ Success is 200:
 ```
 
 `parent` is null only at the canonical home. Entry `kind` is `dir`, `file`,
-`symlink`, or `other`; symlinks to readable directories/files are reported by
-their target kind, while an unresolved symlink remains `symlink`. Entries sort
-directories first, then locale-alphabetically with base sensitivity.
+`symlink`, or `other`; symlinks retain the `symlink` kind without opening their
+targets. Entries sort directories first, then case-insensitively by name.
+Complete listings support at most 10,000 entries. Larger directories return an
+explicit error rather than silently presenting an incomplete successful list.
 
 Errors:
 
 - relative input: `400 {"error":"path must be absolute"}`
-- outside home: `403 {"error":"path outside home directory","path":"<canonical>"}`
+- outside home: `403 {"error":"path outside home directory"}`
+- more than 10,000 children: 413 with `code: "DIRECTORY_TOO_LARGE"`,
+  `maxEntries: 10000`, and an instruction to enter the desired folder's full
+  path instead of browsing its oversized parent
 - non-directory: `400 {"error":"not a directory","path":"<canonical>"}`
 - caught filesystem error: status 404 for `ENOENT`, 403 for `EACCES`, otherwise
   500, with `{"error":"<message>","code":"<errno code>"}`. Because nonexistent

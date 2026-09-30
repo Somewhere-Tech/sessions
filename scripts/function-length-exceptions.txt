@@ -18,7 +18,6 @@ go runtime/cmd/sessions/search.go app.cmdSearch 168
 go runtime/internal/session/manager_provenance.go Manager.Create 161
 go runtime/cmd/sessions/move.go app.cmdMove 154
 go runtime/internal/api/integrations_handlers.go Server.handleIntegrationsRoute 133
-go runtime/internal/api/ws.go Server.handleMux 149
 go runtime/cmd/sessions/history.go app.collectConversations 148
 go runtime/cmd/sessions/status.go app.writeStatusCard 145
 go runtime/internal/session/manager_discovery.go Manager.DiscoverWithOptions 138
@@ -50,7 +49,6 @@ go runtime/internal/session/manager_provenance.go Manager.withDurableClosedState
 go runtime/internal/usage/scanner.go Service.syncFile 96
 go runtime/cmd/sessions/conversation.go app.cmdLast 95
 go runtime/cmd/sessions/source.go app.cmdSource 95
-go runtime/internal/api/files.go Server.handleFSList 95
 go runtime/internal/recovery/adopt.go finishAdoptionAnnotations 95
 go runtime/internal/migrate/workspace.go PrepareWorkspace 94
 go runtime/internal/recovery/mutate.go Reopen 92
@@ -72,7 +70,7 @@ go runtime/cmd/sessions/terminal.go app.cmdTail 83
 go runtime/internal/search/index.go refreshIndexedSession 83
 go runtime/cmd/sessions/transcripts.go app.writeTranscriptsText 82
 go runtime/internal/api/onboarding_handlers.go Server.handleOnboardingRoute 81
-typescript frontend/src/hooks/useTerminal.ts useTerminal 851
+typescript frontend/src/hooks/useTerminal.ts useTerminal 850
 typescript frontend/src/components/SessionNavigator.tsx SessionNavigator 778
 typescript frontend/src/App.tsx ConnectedApp 799
 typescript frontend/src/components/SessionView.tsx SessionViewInner 675
@@ -108,5 +106,5 @@ typescript frontend/src/store/sessions.ts useSessions 156
 typescript frontend/src/hooks/useSessionSidebar.ts useSessionSidebar 155
 typescript frontend/src/components/ComposerModelControl.tsx ComposerModelControl 152
 typescript frontend/src/components/FleetView.tsx FleetServerGroup 149
-typescript frontend/src/hooks/useTerminal.ts onMessage 144
+typescript frontend/src/hooks/useTerminal.ts onMessage 134
 typescript frontend/src/components/DirectoryBrowser.tsx DirectoryBrowser 140

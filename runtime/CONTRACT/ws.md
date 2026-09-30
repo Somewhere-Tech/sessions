@@ -69,6 +69,12 @@ and each successful attach starts its own hello/replay/live stream. Every
 session stream message is tagged with `sessionId`. Duplicate attaches are
 ignored both after attachment and while the first async replay is pending.
 Unknown attachment IDs produce an `error` but do not close the socket.
+Each connection supports at most 256 distinct attached or pending session
+streams. Duplicate attaches use no additional capacity. An excess attach gets
+an `error` with `code: "mux_attachment_limit"` and instructions to close an
+unused chat view and reopen the desired view. Existing streams and the socket
+stay open; the underlying session is not stopped or marked exited. Detach,
+lookup/replay failure, runner unavailability, and actual exit free that slot.
 
 Mux input is JSON-only in the application protocol: invalid JSON is ignored and
 there is no untagged raw-input fallback. Detaching/exiting one session leaves
@@ -381,6 +387,8 @@ The terminal consumer:
 - resets xterm on `gap` as described above;
 - flushes output, displays terminal state, and detaches on `exit`;
 - displays and terminally handles unknown-session `error`;
+- shows `mux_attachment_limit` guidance in both conversation and terminal views
+  without manufacturing an exit, and clears it after a successful `hello`;
 - folds `claudeEvent` into UI state only for the active view.
 
 Although both TypeScript copies export protocol version 2, the current frontend

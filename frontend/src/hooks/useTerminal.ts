@@ -22,6 +22,7 @@ type Status = 'connecting' | 'open' | 'reconnecting' | 'closed' | 'error';
 interface UseTerminalResult {
   containerRef: (el: HTMLDivElement | null) => void;
   status: Status;
+  streamNotice: string | null;
   exitInfo: { code: number | null; signal: string | null } | null;
   resumedFromSeq: number | null;
   // Send raw input (text or control bytes) through the live WS. Lets
@@ -70,6 +71,22 @@ const CLAUDE_EVENT_TAIL = 300;
 const CLAUDE_EVENT_PAGE = 300;
 const CLAUDE_EVENT_HELD_CAP = 1200;
 
+function reportTerminalError(
+  msg: Extract<ServerMsg, { type: 'error' }>,
+  term: Pick<import('@xterm/xterm').Terminal, 'writeln'> | null,
+  channel: SessionChannel | null,
+  markMissing: () => void,
+  showNotice: (notice: string) => void
+): void {
+  term?.writeln(`\r\n\x1b[31m[error] ${msg.message}\x1b[0m`);
+  if (msg.code === 'mux_attachment_limit') showNotice(msg.message);
+  // A streaming resource refusal does not mean the underlying runner exited.
+  if (/unknown session/i.test(msg.message)) {
+    markMissing();
+    channel?.detach();
+  }
+}
+
 // Connection model: every session in this window shares ONE multiplexed
 // WebSocket (lib/wsMux) with sessionId-tagged frames. This
 // hook attaches its session to that shared socket and receives exactly
@@ -95,6 +112,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
   const [resumedFromSeq, setResumedFromSeq] = useState<number | null>(null);
   const [claudeEvents, setClaudeEvents] = useState<ClaudeSessionEvent[]>([]);
   const [historyPending, setHistoryPending] = useState(true);
+  const [streamNotice, setStreamNotice] = useState<string | null>(null);
   const [hasEarlierClaudeEvents, setHasEarlierClaudeEvents] = useState(false);
   const [loadingEarlierClaudeEvents, setLoadingEarlierClaudeEvents] = useState(false);
   const containerElRef = useRef<HTMLDivElement | null>(null);
@@ -342,13 +360,16 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       submitMessageRef.current = (data: string): Promise<void> =>
         submitSessionMessage(sessionId, data, activeServerId ?? undefined);
 
-      setExitInfo(null);
-      setResumedFromSeq(null);
-      // Fresh session: start from an empty bounded window. Activation loads
-      // an HTTP tail first; the WS then only replays small race deltas.
-      setClaudeEvents([]);
-      setHasEarlierClaudeEvents(false);
-      setLoadingEarlierClaudeEvents(false);
+      function resetSessionState(): void {
+        setExitInfo(null);
+        setStreamNotice(null);
+        setResumedFromSeq(null);
+        // Activation loads an HTTP tail; WS replay covers small race deltas.
+        setClaudeEvents([]);
+        setHasEarlierClaudeEvents(false);
+        setLoadingEarlierClaudeEvents(false);
+      }
+      resetSessionState();
 
       let ptyExited = false;
       // A runner socket can disappear without the provider process ending.
@@ -597,9 +618,18 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
         }, delay);
       };
 
+      const onError = (msg: Extract<ServerMsg, { type: 'error' }>): void => {
+        reportTerminalError(msg, term, channel, () => {
+          ptyExited = true;
+          setStatus('closed');
+          setExitInfo({ code: null, signal: 'unknown-session' });
+        }, setStreamNotice);
+      };
+
       const onMessage = (msg: ServerMsg): void => {
         if (disposed) return;
         if (msg.type === 'hello') {
+          setStreamNotice(null);
           if (msg.session.unreachable) {
             runnerUnavailable = true;
             setStatus('reconnecting');
@@ -696,18 +726,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
           return;
         }
         if (msg.type === 'error') {
-          term?.writeln(`\r\n\x1b[31m[error] ${msg.message}\x1b[0m`);
-          // "unknown session <id>" means this session id doesn't exist
-          // server-side anymore — typically a stale pop-out window
-          // pointing at a session that's since been killed/recreated.
-          // Mark terminally dead so the user sees ONE error message
-          // instead of a reconnect-spam wave.
-          if (/unknown session/i.test(msg.message)) {
-            ptyExited = true;
-            setStatus('closed');
-            setExitInfo({ code: null, signal: 'unknown-session' });
-            channel?.detach();
-          }
+          onError(msg);
           return;
         }
         if (msg.type === 'claudeEvent') {
@@ -920,6 +939,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
   return {
     containerRef,
     status,
+    streamNotice,
     exitInfo,
     resumedFromSeq,
     sendInputRef,
