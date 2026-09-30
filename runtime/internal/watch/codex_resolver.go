@@ -237,7 +237,9 @@ func readCodexFirstLine(path string) (string, error) {
 	}
 	defer file.Close()
 
-	reader := bufio.NewReaderSize(io.LimitReader(file, codexFirstLineBytes), codexFirstLineBytes)
+	// Start small; ReadString still assembles a complete line up to the same
+	// limit. Reserving the whole limit for every metadata scan causes churn.
+	reader := bufio.NewReader(io.LimitReader(file, codexFirstLineBytes))
 	line, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
