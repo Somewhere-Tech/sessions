@@ -22,8 +22,16 @@ releaseTest('development app build is opt-in, verified, immutable, read-only, an
   assert.equal(trigger.workflow_dispatch.inputs.build_dev_app.type, 'boolean');
   assert.equal(trigger.workflow_dispatch.inputs.build_dev_app.default, false);
   const job = workflow.jobs.dev_app;
-  assert.equal(job.needs, 'verify');
-  assert.equal(job.if, "github.event_name == 'workflow_dispatch' && inputs.build_dev_app == true && needs.verify.result == 'success'");
+  assert.deepEqual(job.needs, ['verify', 'linux_amd64']);
+  assert.equal(job.if, "github.event_name == 'workflow_dispatch' && inputs.build_dev_app == true && needs.verify.result == 'success' && needs.linux_amd64.result == 'success'");
+  const linux = workflow.jobs.linux_amd64;
+  assert.equal(linux['runs-on'], 'ubuntu-24.04');
+  assert.equal(linux.environment, undefined);
+  assert.doesNotMatch(JSON.stringify(linux), /secrets\.|npm publish|gh release/);
+  assert.ok(linux.steps.some((step) => step.run?.includes('linux-runtime-acceptance.mjs')));
+  const linuxCheckout = linux.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
+  assert.equal(linuxCheckout.with['persist-credentials'], false);
+  for (const step of linux.steps) if (step.uses) assert.match(step.uses, /@[a-f0-9]{40}$/);
   assert.equal(job['runs-on'], 'macos-14');
   assert.equal(job.permissions.contents, 'read');
   assert.equal(job.environment, undefined);
