@@ -180,13 +180,12 @@
     box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.4);
   }
 
-  /* Form inputs scale with the text-size picker — see the .text-size-*
-   * blocks above. Note: iOS Safari auto-zooms when an input's
-   * font-size is < 16px and the user taps to focus it. We accept that
-   * trade because the user explicitly asked for smaller input text;
-   * the zoom is a one-time per-focus thing modern iOS recovers from
-   * gracefully. If you're on iOS and want the no-zoom behavior, pick
-   * Large in Settings — at 15px it's still under 16, but only just. */
+  /* WKWebView keeps focus zoom after navigating away from small inputs.
+   * Keep phone form controls readable without disabling user pinch zoom or
+   * changing the desktop text-size preference. */
+  :root :is(.app-shell, .connect-screen) :is(input, select, textarea) {
+    font-size: max(16px, 1em);
+  }
 
   /* Drop the heavy card chrome on mobile. Flush-left prose is easier to
    * read on a narrow column than a gray

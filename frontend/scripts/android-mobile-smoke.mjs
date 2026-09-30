@@ -127,6 +127,33 @@ try {
         `Start was not below configuration at ${width}px`);
       assert.equal(layout.hint.height, 0, `desktop keyboard instructions should not clutter the ${width}px launcher`);
     }
+    // Chromium cannot reproduce WKWebView focus zoom or native safe-area env
+    // values. Pin the computed prevention rules here; simulator acceptance
+    // verifies the actual iOS navigation after focusing these controls.
+    const nativeStyles = styles.replace(/env\(safe-area-inset-top,\s*0px\)/g, 'var(--test-safe-top, 0px)');
+    for (const width of [360, 390, 430]) {
+      await page.setViewport({ width, height: 844 });
+      await page.setContent(`<style>${nativeStyles}</style><style>:root { --test-safe-top: 59px; }</style>
+        <div class="app-shell operations-shell text-size-s">
+          <div class="operations-frame"><section class="operations-content"><main class="app-main operations-main">
+            <aside class="session-navigator"><header class="session-navigator-head"><strong>Projects</strong></header>
+              <label class="session-nav-search"><input aria-label="Search" /></label>
+              <textarea class="input-textarea" aria-label="Message"></textarea>
+              <label class="accounts-add"><input aria-label="Account" /><select aria-label="Provider"><option>Claude</option></select></label>
+            </aside></main></section></div>
+          <nav class="mobile-nav"><button class="mn-btn">Sessions</button></nav>
+        </div><section class="connect-screen"><form class="connect-form"><input aria-label="Endpoint" /></form></section>`);
+      const nativeLayout = await page.evaluate(() => ({
+        fonts: [...document.querySelectorAll('input, textarea, select')].map((el) => parseFloat(getComputedStyle(el).fontSize)),
+        headingTop: document.querySelector('.session-navigator-head').getBoundingClientRect().top,
+        headingPadding: parseFloat(getComputedStyle(document.querySelector('.session-navigator-head')).paddingTop),
+        shellBottom: document.querySelector('.app-shell').getBoundingClientRect().bottom
+      }));
+      assert.ok(nativeLayout.fonts.every((size) => size >= 16), `phone fields must not trigger focus zoom at ${width}px`);
+      assert.equal(nativeLayout.headingTop, 59, 'the shell protects the complete in-flow view from the status bar');
+      assert.equal(nativeLayout.headingPadding, 12, 'the session heading must not count the safe area twice');
+      assert.equal(nativeLayout.shellBottom, 844, 'safe-area padding must stay inside the viewport height');
+    }
   } finally {
     await closeBrowser(browser);
   }
