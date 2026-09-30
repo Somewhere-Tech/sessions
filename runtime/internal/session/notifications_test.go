@@ -63,6 +63,66 @@ func TestStructuredTurnCompletionRecognizesBothProviders(t *testing.T) {
 	}
 }
 
+func TestStructuredActivityTickCannotReplaceOrderedLifecycleState(t *testing.T) {
+	for _, kind := range []string{state.KindCodexAppServer, state.KindClaudeStructured} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			notifications := make(chan PushPayload, 4)
+			manager := NewManager(testConfig(root), prototest.NewLauncher(), ManagerOptions{
+				DisableWatchers: true, ActivityInterval: time.Hour,
+				Notify: func(payload PushPayload) { notifications <- payload },
+			})
+			t.Cleanup(manager.Close)
+			cmd := "codex"
+			if kind == state.KindClaudeStructured {
+				cmd = "claude"
+			}
+			created, err := manager.Create(t.Context(), state.CreateSessionRequest{Cmd: cmd, Cwd: root, Kind: kind})
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, _ := manager.Get(created.ID)
+			manager.mu.Lock()
+			runtime := manager.runtimes[created.ID]
+			manager.mu.Unlock()
+			// Model a stale lifecycle sample while the event observer has already
+			// committed the opposite state. A periodic tick must not replay it.
+			for _, working := range []bool{false, true} {
+				current.SetWorking(working)
+				if !working {
+					current.SetIdleResult(state.IdleReasonCompleted, "", "retained result", 1)
+				}
+				stale := !working
+				runtime.mu.Lock()
+				runtime.structuredLifecycleWorking = &stale
+				runtime.structuredDone = !working
+				runtime.pushWorkingObserved = true
+				runtime.mu.Unlock()
+				runtime.tick()
+				got := current.Info()
+				if got.Working != working || (!working && got.IdleReason != state.IdleReasonCompleted) {
+					t.Fatalf("activity tick replaced ordered state: working=%t idle=%q", got.Working, got.IdleReason)
+				}
+			}
+			// Even before the first lifecycle event, output volume or silence is
+			// not authority to end an exact runner/HELLO working state.
+			runtime.mu.Lock()
+			runtime.structuredLifecycleWorking = nil
+			runtime.recentBytes = 0
+			runtime.mu.Unlock()
+			runtime.tick()
+			if !current.Info().Working {
+				t.Fatal("silent structured runner was classified idle without a lifecycle event")
+			}
+			select {
+			case payload := <-notifications:
+				t.Fatalf("activity tick emitted a lifecycle notification: %#v", payload)
+			default:
+			}
+		})
+	}
+}
+
 func TestProviderFaultNotificationIsOncePerEpisode(t *testing.T) {
 	root := t.TempDir()
 	notifications := make(chan PushPayload, 4)

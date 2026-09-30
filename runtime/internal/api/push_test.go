@@ -365,6 +365,7 @@ func emitCodexTurn(runner *prototest.Runner, turnID, message string) {
 	})
 	runner.AddCodexEvent(map[string]any{
 		"type": "codex", "subtype": "turn_completed", "source": "codex-app-server", "turnId": turnID,
+		"status": "completed",
 	})
 }
 

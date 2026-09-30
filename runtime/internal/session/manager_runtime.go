@@ -412,6 +412,13 @@ func (r *runtimeSession) tick() {
 	if info.Exited {
 		return
 	}
+	// Rich working state belongs to the ordered event observer (or reconnect
+	// HELLO), never the periodic output classifier. Reapplying a copied lifecycle
+	// sample here can race a newer event, reopen a completed turn, and notify its
+	// completion again. Silence is not evidence that a structured turn ended.
+	if info.Kind == state.KindCodexAppServer || info.Kind == state.KindClaudeStructured {
+		return
+	}
 	r.mu.Lock()
 	r.recentBytes /= 2
 	recent := r.recentBytes
