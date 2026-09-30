@@ -163,10 +163,11 @@ describe('capability: Accounts manages sign-ins on any computer', () => {
 
     await screen.findByRole('list', { name: 'Computers for Shared build box' });
     await user.click(screen.getByRole('button', { name: 'Add account' }));
-    await user.selectOptions(screen.getByLabelText('Computer'), 'beta');
-    expect(screen.getByRole('heading', { name: 'Add an account on Beta' })).toBeInTheDocument();
-    await user.type(screen.getByLabelText('Account label'), 'Second plan');
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    const picker = screen.getByRole('dialog', { name: 'Add account' });
+    await user.click(within(picker).getByRole('button', { name: 'Beta' }));
+    expect(within(picker).getByRole('button', { name: 'Beta' })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(within(picker).getByRole('button', { name: 'Claude' }));
+    await user.click(within(picker).getByRole('button', { name: 'Sign in to Claude' }));
 
     await waitFor(() => expect(machines[1]!.profiles?.some((account) => account.name === 'acct-fixture')).toBe(true));
     expect(lastRequest(daemon, '/api/profiles')?.origin).toBe(BETA_ORIGIN);

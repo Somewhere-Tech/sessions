@@ -3,6 +3,7 @@ import { createAccount, fetchProfiles, type AccountProfile } from '../api/sessio
 import { accountLoginRequest, type AccountLogin } from '../api/sessionsd/accountLogin';
 import { DaemonResponseError } from '../api/sessionsd/core';
 import { openExternalURL } from '../lib/tauriBridge';
+import { DeviceSignInHelp } from './AddAccountDialog';
 import '../styles/accounts.css';
 
 export const loginPending = (operation: AccountLogin | null): boolean => operation?.state === 'opening' || operation?.state === 'waiting';
@@ -132,6 +133,7 @@ export function SigningInCard({ account, operation, busy, machineName, onCode, o
     {operation?.state === 'waiting' ? <>
       <p>Sign in in your browser. Check that you choose the account you want to add; your other accounts stay signed in.</p>
       {operation.code ? <p>Enter this code on the provider’s page: <strong className="account-device-code">{operation.code}</strong></p> : null}
+      {account.tool === 'codex' ? <DeviceSignInHelp /> : null}
       <button className="btn btn-primary" type="button" onClick={() => {
         if (operation.url) void openExternalURL(operation.url).catch(() => setError('Could not open your browser. Use the sign-in link below.'));
       }}>Continue to {provider}</button>

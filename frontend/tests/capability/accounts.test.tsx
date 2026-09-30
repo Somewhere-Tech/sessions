@@ -152,13 +152,15 @@ describe('capability: adding an account is a guided login', () => {
 
     await user.click(screen.getByRole('button', { name: 'Add account' }));
     expect(screen.queryByLabelText('Account name')).not.toBeInTheDocument();
-    await user.type(screen.getByLabelText('Account label'), 'Second plan');
+    const picker = screen.getByRole('dialog', { name: 'Add account' });
+    expect(within(picker).queryByRole('textbox')).not.toBeInTheDocument();
+    await user.click(within(picker).getByRole('button', { name: 'Claude' }));
     expect(screen.getByText(/No API key needed/i)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(within(picker).getByRole('button', { name: 'Sign in to Claude' }));
 
     // The account was registered on this computer…
     await waitFor(() => expect(daemon.machines[0]!.profiles?.some(
-      (account) => account.name === 'acct-fixture' && account.label === 'Second plan'
+      (account) => account.name === 'acct-fixture'
     )).toBe(true));
     // …and the provider's own login was opened in that account's home.
     await screen.findByRole('button', { name: 'Continue to Claude' });
@@ -177,7 +179,7 @@ describe('capability: adding an account is a guided login', () => {
     expect(await screen.findByText(/Check that you choose the account/i)).toBeInTheDocument();
     await user.type(screen.getByLabelText('Claude confirmation code'), 'fixture-code');
     await user.click(screen.getByRole('button', { name: 'Connect account' }));
-    expect(await screen.findByText('second@example.test')).toBeVisible();
+    expect(await within(screen.getByRole('region', { name: 'Sign in to account' })).findByText('second@example.test')).toBeVisible();
   }, 20_000);
 
   it('says only what it can see: whether a login file is there', async () => {

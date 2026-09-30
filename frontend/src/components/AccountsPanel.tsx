@@ -3,7 +3,8 @@ import { forgetAccount, renameAccount, type AccountProfile } from '../api/sessio
 import { useAccountFleet } from '../hooks/useAccountFleet';
 import { computersWithout, coverageNotes, groupTitle, rollUpAccounts, type AccountGroup, type AccountPlacement, type MachineAccounts } from '../lib/accountRollup';
 import { useServers } from '../lib/servers';
-import { AccountPlacementRow, AddAccountForm, AddOnComputer } from './AccountRowParts';
+import { AccountPlacementRow, AddOnComputer } from './AccountRowParts';
+import { AddAccountDialog } from './AddAccountDialog';
 import { loginPending, SigningInCard, useGuidedAccountLogin } from './AccountSignIn';
 import { AccountUsageSummary } from './AccountUsageSummary';
 import { ProviderMark } from './ProviderBadge';
@@ -92,7 +93,7 @@ export function AccountsPanel({ profiles, machineName, serverId, onReload }: Pro
       <AccountsIntroduction />
       <div className="settings-card accounts-card">
         <div className="accounts-card-head">
-          <h2>Accounts added in Sessions</h2>
+          <h2>Your accounts</h2>
           <button type="button" className="btn btn-ghost accounts-refresh" disabled={fleet.refreshing} onClick={() => void fleet.refreshUsage()}>
             {fleet.refreshing ? 'Reading usage…' : 'Refresh usage'}
           </button>
@@ -119,16 +120,17 @@ export function AccountsPanel({ profiles, machineName, serverId, onReload }: Pro
             ))}
           </ul>
         )}
-        {!adding && !signInPending ? (
-          <button type="button" className="btn btn-secondary accounts-add-button" onClick={startAdding}>Add account</button>
+        {!signInPending ? (
+          <button type="button" className="btn btn-secondary accounts-add-button" aria-label="Add account" disabled={adding} onClick={startAdding}><span aria-hidden="true">+</span> Add account</button>
         ) : null}
       </div>
 
       {adding && !login.signingInFor ? (
-        <AddAccountForm
+        <AddAccountDialog
           busy={login.busy}
           computers={fleet.machines.filter((machine) => !machine.profilesError)}
           initialComputer={target}
+          error={login.message}
           onCancel={() => { setAdding(false); login.setMessage(null); }}
           onAdd={(computer, tool, label) => on(computer, (current) => {
             void current.addAccount(tool, '', label).then((added) => { if (added) setAdding(false); });
