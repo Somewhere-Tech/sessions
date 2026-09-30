@@ -24,6 +24,12 @@ of the exact signed delivery artifacts.
 - Fleet reads return partial coverage when a computer cannot be reached, use
   bounded per-machine work, and report the observed connection failure rather
   than guessing that macOS denied Local Network permission.
+- Optional account claims retain replay protection across daemon process
+  restart and account logout, through the full accepted timestamp window.
+  Optional relay authorization supports explicit machine-key allow-lists;
+  unsupported directory-token configuration returns setup instructions.
+  Relay connectors keep each parsed request outside loopback authority and
+  allow opaque duplex traffic only after a confirmed WebSocket upgrade.
 - Incremental search indexing, retained history-listing caches, lazy secondary
   views, and bounded terminal buffers reduce repeated work on long histories.
   Codex metadata readers also avoid allocating the full 64 KiB bound upfront;
@@ -49,6 +55,9 @@ of the exact signed delivery artifacts.
   exact-byte native install/update acceptance; npm and updater promotion stay
   separate. Optional Apple Silicon development artifacts include a
   verified provenance receipt and are not stable updater releases.
+  Initial-install ZIPs must also pass signature, stapled-ticket, Gatekeeper,
+  and runtime-hash checks after extraction. Update convergence distinguishes
+  authoritative session endings from missing or unreachable runners.
 
 ## Verification boundaries
 
