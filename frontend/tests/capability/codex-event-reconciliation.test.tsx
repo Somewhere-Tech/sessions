@@ -22,7 +22,7 @@ describe('capability: Codex history reconciliation', () => {
   });
 
   it('deduplicates exact overlapping replay without losing intentional repeated messages or deltas', () => {
-    const user = event(1, { type: 'user', message: { role: 'user', content: 'Continue.' } });
+    const user = event(1, { type: 'user', uuid: 'durable-user-1', message: { role: 'user', content: 'Continue.' } });
     const delta = event(2, { subtype: 'agent_message_delta', itemId: 'answer', delta: 'yes ' });
     const repeatedUser = event(3, { type: 'user', message: { role: 'user', content: 'Continue.' } });
     const repeatedDelta = event(4, { subtype: 'agent_message_delta', itemId: 'answer', delta: 'yes ' });
@@ -36,6 +36,18 @@ describe('capability: Codex history reconciliation', () => {
   it('does not infer duplicate deltas when timestamp and UUID are unavailable', () => {
     const delta = event(1, { timestamp: undefined, subtype: 'agent_message_delta', itemId: 'answer', delta: 'ha' });
     expect(eventsToMessages([delta, { ...delta }])[0]?.content).toBe('haha');
+  });
+
+  it.each([undefined, '2026-09-30T12:00:01Z'])('preserves identical authored sends with distinct keys when UUID is absent (timestamp %s)', (timestamp) => {
+    for (const role of ['user', 'assistant'] as const) {
+      const message = event(1, { timestamp, type: role, provider: 'codex', source: role === 'assistant' ? 'sessions-continuation' : 'codex-app-server',
+        message: { role, content: 'Continue.' } });
+      const messages = eventsToMessages([message, { ...message }]);
+      expect(messages).toHaveLength(2);
+      expect(new Set(messages.map((value) => value.id)).size).toBe(2);
+      expect(messages[1]?.id).toBe(`${messages[0]?.id}-occurrence-2`);
+      expect(eventsToMessages([message])[0]?.id).toBe(messages[0]?.id);
+    }
   });
 
   it('completed snapshots supersede late replayed deltas and started snapshots', () => {
@@ -59,6 +71,16 @@ describe('capability: Codex history reconciliation', () => {
     expect(messages[0]?.updates).toBeUndefined();
     expect(messages[0]?.toolCalls?.[0]?.status).toBe('completed');
     expect(messages[0]?.toolCalls?.[0]?.resultFull).toBe('exit code: 0');
+  });
+
+  it('gives repeated ambiguous steering messages distinct assistant segment keys too', () => {
+    const steer = event(2, { type: 'user', subtype: 'user_steer', message: { role: 'user', content: 'Continue.' } });
+    const answer = (time: number, id: string): StructuredSessionEvent => event(time, {
+      subtype: 'item_completed', item: { id, type: 'agentMessage', phase: 'commentary', text: id }
+    });
+    const messages = eventsToMessages([answer(1, 'before'), steer, answer(3, 'middle'), { ...steer }, answer(4, 'after')]);
+    expect(messages.map((message) => message.role)).toEqual(['assistant', 'user', 'user', 'assistant', 'assistant']);
+    expect(new Set(messages.map((message) => message.id)).size).toBe(messages.length);
   });
 
   it('does not let an older completed snapshot overwrite the latest completed item', () => {

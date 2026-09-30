@@ -413,6 +413,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
   const completedTurns = new Set<string>();
   const boundaries = new Map<string, string>();
   const steeringByTurn = new Map<string, DispatchMessage[]>();
+  const occurrences = new Map<string, number>();
   let latestTurnID = '';
   const ensureTurn = (turnID: string, at: number): CodexTurnProjection | null => {
     if (!turnID) return null;
@@ -440,7 +441,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
         const content = text || (hasImage ? '[image attached]' : '');
         if (content) {
           out.push({
-            id: codexEventIdentity(event),
+            id: codexEventIdentity(event, occurrences),
             role: 'user',
             content,
             status: 'sent',
@@ -453,7 +454,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
         const imported = breakdownAssistant(event.message.content);
         if (imported.text) {
           out.push({
-            id: codexEventIdentity(event),
+            id: codexEventIdentity(event, occurrences),
             role: 'assistant',
             content: imported.text,
             status: 'sent',
@@ -470,7 +471,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       const content = text || (hasImage ? '[image attached]' : '');
       if (!content || isSystemUserPseudoMessage(content)) continue;
       const message: DispatchMessage = {
-        id: codexEventIdentity(event),
+        id: codexEventIdentity(event, occurrences),
         role: 'user',
         content,
         status: 'sent',
@@ -482,7 +483,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       };
       out.push(message);
       const previous = event.turnId ? turns.get(event.turnId) : undefined;
-      if (subtype === 'user_steer' && event.turnId) boundaries.set(event.turnId, event.uuid ?? `${at}-${content}`);
+      if (subtype === 'user_steer' && event.turnId) boundaries.set(event.turnId, message.id);
       if (previous && !previous.completed) {
         previous.completed = true;
         previous.message.streaming = false;
