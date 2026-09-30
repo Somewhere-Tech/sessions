@@ -20,6 +20,7 @@ export function ProjectAgents({ groups, activeMachineId, renderLocal, onOpen, on
   return <>{groups.map((group) => <section className="agent-project" key={group.id} aria-label={group.name}>
     <header><h3>{group.name}</h3>{onAdd ? <button type="button" aria-label={`Add agent to ${group.name}`} onClick={() => onAdd(group.rows[0], group.name)}>＋</button> : <span>{group.rows.length}</span>}</header>
     {group.rows.map((row) => <div key={`${row.server.id}:${row.session.id}`}>
+      {row.projectName ? <small className="session-nav-project">{row.projectName}</small> : null}
       <RemoteAgent row={row} onOpen={onOpen} onResume={onResume} localRow={row.server.id === activeMachineId ? renderLocal(row) : undefined} />
     </div>)}
   </section>)}</>;

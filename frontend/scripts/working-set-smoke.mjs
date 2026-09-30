@@ -125,6 +125,7 @@ try {
   assert.equal(cycleGroups.setAsideIds.has('cycle-a'), true);
 
   console.log('working-set smoke: ok');
+  await import('./project-navigation-smoke.mjs');
 } finally {
   await rm(scratch, { recursive: true, force: true });
 }
