@@ -657,7 +657,7 @@ export async function sendInput(sessionId: string, data: string, serverId?: stri
   await json<{ ok: boolean }>(r);
 }
 
-interface MessageDeliveryReceipt {
+export interface MessageDeliveryReceipt {
   operation_id: string;
   session_id: string;
   status: 'accepted' | 'not-delivered' | 'unknown' | 'text-delivered';
@@ -665,6 +665,15 @@ interface MessageDeliveryReceipt {
   retry: boolean;
   reason?: string;
   duplicate?: boolean;
+}
+
+// Read-only recovery: checking a receipt never executes the submission again.
+export async function checkMessageDelivery(operationId: string, serverId?: string): Promise<MessageDeliveryReceipt> {
+  const server = requestedServer(serverId);
+  const response = await serverFetch(server, `${httpBaseForServer(server)}/api/message-deliveries/${encodeURIComponent(operationId)}`);
+  const receipt = await readDeliveryResponse(response);
+  if ('ok' in receipt || receipt.operation_id !== operationId) throw new Error('The delivery receipt could not be verified. Check the conversation before sending again.');
+  return receipt;
 }
 
 function deliveryError(receipt: MessageDeliveryReceipt): Error {

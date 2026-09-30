@@ -4,6 +4,8 @@ import type { SessionTool } from '../types';
 import { ComposerModelControl } from './ComposerModelControl';
 import { MessageDeliveryError } from '../lib/messageDelivery';
 import { useDurableDraft } from '../hooks/useDurableDraft';
+import { useDeliveryReview } from '../hooks/useDeliveryReview';
+import { DeliveryReviews } from './MessageDeliveryStatus';
 
 interface Props {
   // Acknowledged sender from useTerminal. Failed sends leave the draft visible
@@ -23,10 +25,7 @@ interface Props {
   // dropped file as a result of drag-drop).
   sessionId: string;
   draftMachineId?: string;
-  // Fires AFTER bytes leave (immediately after submit). Used by the
-  // parent to render an optimistic "pending" message in the Sessions
-  // view so the user sees their message land instantly, instead of
-  // waiting for Claude's TUI redraw + parser throttle (~500ms-1s).
+  // Capture matching-history baseline before IO; record only after acknowledgement.
   onSubmitting?: (text: string) => number;
   onSubmitted?: (text: string, queued: boolean, baseline?: number) => void;
   // Failed Remote sends restore their text here so the user's draft is
@@ -128,13 +127,9 @@ export function InputBar({
   onContinueInTerminal
 }: Props): JSX.Element {
   const draft = useDurableDraft(draftMachineId ?? 'local', sessionId);
+  const delivery = useDeliveryReview(draftMachineId ?? 'local', sessionId);
   const { text, setText, clearAcknowledged, key: draftKey, warning: draftWarning } = draft;
-  // 'idle' | 'sent' — sent briefly turns the Send button green so the
-  // user can see the bytes left this client. The button text stays
-  // "Send" the entire time; the green flash IS the feedback. (No ✓
-  // overlay or "Sent" label — those read as "task completed" or
-  // "message acknowledged by the recipient", which is a different
-  // claim than "the bytes left your browser".)
+  // Acknowledgement is not task completion; the transcript shows the receipt.
   const [feedback, setFeedback] = useState<'idle' | 'sent'>('idle');
   const [submitting, setSubmitting] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -142,18 +137,12 @@ export function InputBar({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [composerNotice, setComposerNotice] = useState<ComposerNotice | null>(null);
   const [continuingInTerminal, setContinuingInTerminal] = useState(false);
-  // React state does not update synchronously. Two Enter/click events in the
-  // same browser turn both saw submitting=false and sent the same message;
-  // the daemon accepted the first and the duplicate failed. This ref is the
-  // synchronous, per-composer exactly-once gate while state remains the UI.
+  // Coalesce rapid Enter/click events while this composer awaits a receipt.
   const submitInFlightRef = useRef(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handledRecoveryKeysRef = useRef<Set<string>>(new Set());
   const restoredDraftRef = useRef<{ key: string; text: string } | null>(null);
-  // Auto-dismiss the upload error after 8s — the user may have moved on
-  // and it's annoying to have a persistent red stripe that they can't
-  // dismiss. Refreshes the timer each time a new error is set.
   useEffect(() => {
     if (!uploadError) return;
     const id = window.setTimeout(() => setUploadError(null), 8000);
@@ -180,7 +169,7 @@ export function InputBar({
   }, [recoverDraft, setText, text]);
 
   const submit = async (steer = Boolean(provider === 'codex' && providerWorking && steerMessage)): Promise<void> => {
-    if (!sendAvailable || submitInFlightRef.current) return;
+    if (!sendAvailable || submitInFlightRef.current || delivery.reviews.some((review) => review.text.trim() === text.trim())) return;
     setUploadError(null); // clear any lingering upload error on submit
     setComposerNotice(null);
     const submittedText = text, submittedDraftKey = draftKey;
@@ -245,9 +234,7 @@ export function InputBar({
       return;
     }
 
-    // Take the synchronous gate only when this invocation is actually about
-    // to send. Validation-only slash-command paths above must leave the
-    // composer usable.
+    // Validation-only slash commands must leave the composer usable.
     submitInFlightRef.current = true;
     setSubmitting(true);
     const submittedToActiveCodex = provider === 'codex' && providerWorking;
@@ -255,9 +242,7 @@ export function InputBar({
     const baseline = submittedText ? onSubmitting?.(submittedText) : undefined;
     try {
       if (submittedText) {
-        // The daemon chooses acknowledged whole-message control when the
-        // runner supports it, or serializes the legacy terminal paste/Enter.
-        // The composer never retries either path as a second send.
+        // The daemon acknowledges whole-message control or legacy paste/Enter.
         if (steer && steerMessage) await steerMessage(submittedText);
         else await submitMessage('\x1b[200~' + submittedText + '\x1b[201~');
       } else {
@@ -270,12 +255,14 @@ export function InputBar({
       setFeedback('sent');
       window.setTimeout(() => setFeedback('idle'), 500);
     } catch (reason) {
-      setComposerNotice({
+      if (reason instanceof MessageDeliveryError && reason.deliveryStatus !== 'not-delivered') {
+        delivery.remember(reason, submittedText, submittedToActiveCodex, baseline);
+      } else setComposerNotice({
         tone: 'error',
-        title: reason instanceof MessageDeliveryError && reason.deliveryStatus !== 'not-delivered' ? 'Delivery not confirmed' : 'Message not sent',
+        title: reason instanceof MessageDeliveryError ? 'Message not sent' : 'Send failed',
         detail: reason instanceof Error
           ? `${reason.message} Your draft is still here.`
-          : 'Sessions is reconnecting. Your draft is still here; send it again after the connection returns.'
+          : 'The send could not be confirmed. Your draft is still here; check the conversation before trying again.'
       });
     } finally {
       setSubmitting(false);
@@ -414,7 +401,11 @@ export function InputBar({
           >×</button>
         </div>
       ) : null}
-      {draftWarning ? <div className="input-bar-upload-state is-error" role="alert">{draftWarning}</div> : null}
+      {draftWarning || delivery.warning ? <div className="input-bar-upload-state is-error" role="alert">{draftWarning} {delivery.warning}</div> : null}
+      {submitting ? <div className="input-delivery-pending" role="status">Sending · waiting for acknowledgement…</div> : null}
+      <DeliveryReviews reviews={delivery.reviews} machineId={draftMachineId} sessionId={sessionId} clear={delivery.clear}
+        acknowledged={(review) => { onSubmitted?.(review.text, review.queued, review.baseline); clearAcknowledged(review.text, draftKey); }}
+        notDelivered={() => setComposerNotice({ tone: 'info', title: 'Message not sent', detail: 'The receipt confirms nothing was delivered. Your draft is still here; you can send it when ready.' })} />
       {composerNotice && (composerNotice.kind !== 'busy' || providerWorking) ? (
         <div className={`input-composer-notice is-${composerNotice.tone}`} role={composerNotice.tone === 'error' ? 'alert' : 'status'}>
           <div>
@@ -515,7 +506,7 @@ export function InputBar({
             />
           ) : null}
           {provider === 'codex' ? <CodexTurnControl key={sessionId} working={providerWorking} available={sendAvailable} send={send} /> : null}
-          <SendControls disabled={!sendAvailable} submitting={submitting} feedback={feedback}
+          <SendControls disabled={!sendAvailable || delivery.reviews.some((review) => review.text.trim() === text.trim())} submitting={submitting} feedback={feedback}
             steer={Boolean(provider === 'codex' && providerWorking && steerMessage && text.trim())} submit={submit} />
         </div>
       </div>

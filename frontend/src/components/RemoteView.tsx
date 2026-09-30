@@ -4,6 +4,7 @@ import { renderContent } from '../lib/contentRender';
 import type { SessionSidebarState } from '../hooks/useSessionSidebar';
 import type { ClaudeSessionEvent, HarnessEventView, SessionTool, ApprovalDecision, PendingApproval, ProviderFailureKind, ProviderRetry } from '../types';
 import { InputBar } from './InputBar';
+import { MessageDeliveryStatus } from './MessageDeliveryStatus';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import StatusSidebar from './StatusSidebar';
 import { saveScrollPosition, readScrollPosition } from '../lib/scrollMemory';
@@ -764,18 +765,7 @@ function RemoteMessageInner({
                 <span>{m.errorResponse}</span>
               </div>
             ) : null}
-            {m.status === 'failed' ? (
-              <div className="remote-bubble-status remote-bubble-failed">
-                <span>{m.failureReason ? `not delivered: ${m.failureReason}` : 'not delivered'}</span>
-                <button type="button" className="remote-bubble-retry" onClick={onRetry}>restore draft</button>
-                <button
-                  type="button"
-                  className="remote-bubble-delete"
-                  onClick={onDelete}
-                  title="Remove this entry from your local log. If Claude actually received the message, it'll reappear as a delivered entry on the next refresh."
-                >delete</button>
-              </div>
-            ) : null}
+            <MessageDeliveryStatus message={m} restore={onRetry} remove={onDelete} />
             {m.status !== 'failed' ? (
               <button
                 type="button"

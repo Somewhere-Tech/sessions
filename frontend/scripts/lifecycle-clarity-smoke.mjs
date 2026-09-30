@@ -201,14 +201,16 @@ assert.match(input, /<ComposerModelControl/);
 assert.match(input, /Remote Control needs a Terminal session/);
 assert.match(input, /This command was not sent as a chat message/);
 assert.match(input, /Your draft is kept here and was not sent or queued/);
-assert.match(input, /reason instanceof MessageDeliveryError && reason.deliveryStatus !== 'not-delivered' \? 'Delivery not confirmed' : 'Message not sent'/,
+assert.match(input, /reason instanceof MessageDeliveryError && reason.deliveryStatus !== 'not-delivered'[\s\S]*delivery\.remember\(reason/,
   'An uncertain receipt must not claim the message was definitely not sent');
+const deliveryStatus = await source('src/components/MessageDeliveryStatus.tsx');
+assert.match(deliveryStatus, /Text delivered · Enter not confirmed.*Delivery not confirmed/);
 assert.match(input, /Your draft is still here/);
 assert.ok(input.includes("await submitMessage('\\x1b[200~' + submittedText + '\\x1b[201~')"));
 assert.doesNotMatch(mux, /return msg\.type === 'input' \|\|/);
 assert.match(mux, /Sessions is reconnecting\. Your message was not sent\./);
 assert.doesNotMatch(remote, />retry<\/button>/);
-assert.match(remote, />restore draft<\/button>/);
+assert.match(deliveryStatus, />Restore draft<\/button>/);
 assert.doesNotMatch(await source('src/hooks/useDispatch.ts'), /ENTER_RETRY_OFFSETS_MS|scheduleEnterRetries|send\('\\r'\)/);
 assert.match(input, /\/rename\(\?:\\s\|\$\)/);
 // The snapshot heuristic runs only for a terminal-backed session, and only

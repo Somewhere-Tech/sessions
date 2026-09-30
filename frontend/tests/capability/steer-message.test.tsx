@@ -155,7 +155,7 @@ describe('capability: steer a working Codex turn', () => {
     await user.type(composer, 'Run the signing check before finishing');
     await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Message not sent');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Send failed');
     expect(screen.getByRole('alert')).toHaveTextContent('The active turn is no longer accepting input. Your draft is still here.');
     expect(composer).toHaveValue('Run the signing check before finishing');
     expect(submitMessage).not.toHaveBeenCalled();
