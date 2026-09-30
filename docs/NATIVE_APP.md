@@ -81,6 +81,12 @@ or roll back.
 macOS releases require Developer ID signatures for the app and nested
 binaries, notarization, stapling, Gatekeeper acceptance, a pinned updater
 signature, immutable download identity, and checksum verification.
+Release automation stages verified assets in a GitHub draft; it does not
+publish the release, mark it latest, or promote the hosted updater. Maintainers
+verify and install the exact signed draft bytes before explicitly authorizing
+publication. Existing draft assets are not overwritten automatically, and
+changing their bytes requires repeating acceptance. Public runtime-pin checks,
+npm publication, and hosted download/updater promotion are separate steps.
 Each Darwin runtime binary also carries a Mach-O `__TEXT,__info_plist` section
 with its stable bundle identifier, Local Network usage description, and
 `_sessions._tcp` Bonjour declaration. The app-managed sessionsd launch agent

@@ -82,6 +82,14 @@ releaseTest('release jobs separate dependency execution, signing keys, and publi
   assert.match(runs(packaging), /test-packed-release\.cjs/);
   assert.doesNotMatch(runs(sign), /\bnpm\s+(ci|install|exec|run|pack)|\bcargo\b|\bgo\s+(build|test)|tauri\s+build|release-app\.sh/);
   assert.doesNotMatch(runs(publish), /\bnpm\s+(ci|install|exec|run|pack)|\bcargo\b|\bgo\s+(build|test)/);
+  assert.match(runs(publish), /gh release create[^\n]*--draft[^\n]*--verify-tag/);
+  assert.match(runs(publish), /gh release upload/);
+  assert.doesNotMatch(JSON.stringify(workflow), /gh release edit|--draft(?:=|\s+)false|--latest|--clobber|\bnpm\s+publish\b/,
+    'no job may bypass exact-byte acceptance by automatically promoting a release');
+  assert.doesNotMatch(runs(publish), /node npm\/scripts\/verify-release\.cjs/,
+    'public asset verification follows explicit publication, not draft staging');
+  assert.match(runs(publish), /Install and test those exact signed bytes/);
+  assert.match(runs(publish), /Only after acceptance, explicitly authorize publication/);
   const credentialSteps = sign.steps.filter((step) => /secrets\./.test(JSON.stringify(step.env)));
   assert.equal(credentialSteps.length, 1, 'all signing credentials are scoped to one artifact signing step');
   assert.doesNotMatch(JSON.stringify(credentialSteps[0]), /GITHUB_TOKEN/);

@@ -289,7 +289,7 @@ jobs:
           retention-days: 7
 
   publish:
-    name: Publish verified assets without signing keys or build tools
+    name: Stage verified draft assets without signing keys or build tools
     needs: [build, package]
     runs-on: macos-14
     timeout-minutes: 15
@@ -312,9 +312,9 @@ jobs:
           artifact-ids: ${{ needs.package.outputs.artifact }}
           path: ${{ runner.temp }}/delivery
           merge-multiple: true
-      - name: Verify the complete artifact before publication authority is exposed
+      - name: Verify the complete artifact before draft-write authority is exposed
         run: node scripts/release-artifacts.mjs verify "$RUNNER_TEMP/delivery" '${{ needs.build.outputs.version }}' '${{ needs.build.outputs.commit }}' delivery '${{ needs.package.outputs.manifest }}'
-      - name: Publish immutable GitHub assets
+      - name: Stage immutable GitHub assets in a draft only
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.build.outputs.tag }}
@@ -327,13 +327,14 @@ jobs:
           fi
           assets=("$RUNNER_TEMP/delivery/Sessions.app.tar.gz" "$RUNNER_TEMP/delivery/Sessions.app.tar.gz.sig" "$RUNNER_TEMP/delivery/Sessions.app.tar.gz.sha256" "$RUNNER_TEMP/delivery/Sessions_${VERSION}_darwin_arm64.zip" "$RUNNER_TEMP/delivery/Sessions_${VERSION}_darwin_arm64.zip.sha256" "$RUNNER_TEMP/delivery/checksums.txt" "$RUNNER_TEMP/delivery/latest.json" "$RUNNER_TEMP/delivery/somewhere-tech-sessions-${VERSION}.tgz" "$RUNNER_TEMP/delivery/somewhere-tech-sessions-${VERSION}.tgz.sha256")
           for asset in "$RUNNER_TEMP/delivery"/cli/*; do assets+=("$asset"); done
-          gh release upload "$TAG" "${assets[@]}" --clobber
-          gh release edit "$TAG" --draft=false --latest
-      - name: Verify the public assets required for separate npm publication
+          gh release upload "$TAG" "${assets[@]}"
+      - name: Explain exact-byte acceptance and explicit promotion
         run: |
-          node npm/scripts/verify-release.cjs --manifest "$RUNNER_TEMP/delivery/npm-manifest.json"
           {
-            echo 'GitHub release assets published and verified. npm registry publication has not occurred.'
-            echo 'The prepared npm tarball is a GitHub release asset. Publish it with a separately authorized npm identity only after verifying the published runtime pins.'
-            echo 'Updater promotion remains explicit after package installation acceptance.'
+            echo 'Verified artifacts are staged in a GitHub draft only. No public release, latest promotion, updater promotion, or npm publication has occurred.'
+            echo 'Download the draft assets with an authorized GitHub identity and verify their checksums against this producing delivery artifact.'
+            echo 'Install and test those exact signed bytes, recording native signing acceptance, compatible live-runner survival, and unreachable-baseline recovery or rollback.'
+            echo 'Only after acceptance, explicitly authorize publication of the unchanged draft and verify the public runtime pins with npm/scripts/verify-release.cjs and the producing npm-manifest.json.'
+            echo 'Publish the prepared npm tarball with a separately authorized npm identity; promote the hosted updater and download links separately after installation acceptance.'
+            echo 'An existing draft asset is never overwritten automatically. Inspect any partial staging failure before manually changing draft assets, and repeat acceptance if their bytes change.'
           } >> "$GITHUB_STEP_SUMMARY"

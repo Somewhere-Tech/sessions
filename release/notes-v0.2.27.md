@@ -41,7 +41,9 @@ signed releases, and installed apps are distinct delivery states.
   present connected-host settings as host-owned rather than offering controls
   they cannot apply locally.
 - Release automation separates source builds, signing authority, packaging,
-  and publication. Optional Apple Silicon development artifacts include a
+  and draft staging. Publishing the unchanged signed draft is explicit after
+  exact-byte native install/update acceptance; npm and updater promotion stay
+  separate. Optional Apple Silicon development artifacts include a
   verified provenance receipt and are not stable updater releases.
 
 ## Verification boundaries
