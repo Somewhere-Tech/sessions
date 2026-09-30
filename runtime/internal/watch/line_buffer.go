@@ -126,5 +126,7 @@ func (b *lineBuffer) next() ([]byte, bool) {
 		b.carry = nil
 		return line, true
 	}
+	// Even an empty remainder can retain the staged chunk's backing allocation.
+	b.pending = nil
 	return nil, false
 }
