@@ -95,7 +95,7 @@ localStorage.setItem('sessions:active-server','fixture');
   await t.waitForSelector(page, '#surface-search .search-query-row input', 'the search box to mount');
 
   // Type it and press Search, the way a person does.
-  const search = async (text) => {
+  const submit = async (text) => {
     const input = await page.$('#surface-search .search-query-row input');
     await input.evaluate((element) => {
       element.focus();
@@ -103,16 +103,25 @@ localStorage.setItem('sessions:active-server','fixture');
     });
     await page.keyboard.type(text);
     await page.click('#surface-search .search-ai-submit');
-    // The view goes busy synchronously on submit and leaves busy in the same
-    // commit that publishes the results, so this brackets exactly one search.
-    // Both halves are named: "never went busy" means the submit never fired,
-    // "never left busy" means the fixture daemon never answered. Those are
-    // different bugs and used to produce the same message.
+  };
+
+  const search = async (text) => {
+    await page.evaluate((query) => window.__searchGate.arm(query), text);
+    await submit(text);
+    // Hold the matching daemon response until the driver has inspected busy.
+    // A synchronous fixture can finish before page.click returns on a loaded
+    // CI host; missing that transient state is not a failed product submission.
+    await t.waitForFunction(
+      page,
+      () => window.__searchGate.pending,
+      `the fixture to receive the submitted search for "${text}"`
+    );
     await t.waitForFunction(
       page,
       () => Boolean(document.querySelector('#surface-search .search-progress')),
       `the search for "${text}" to enter its busy state after submit`
     );
+    await page.evaluate(() => window.__searchGate.release());
     await t.waitForFunction(
       page,
       () => !document.querySelector('#surface-search .search-progress'),
@@ -272,6 +281,19 @@ localStorage.setItem('sessions:active-server','fixture');
   assert.deepEqual(legacy.notices, []);
   assert.doesNotMatch(legacy.body, /at least|shown here|none shown/, 'no rollup language without a rollup');
   assert.doesNotMatch(legacy.body, /undefined|NaN|\[object Object\]/, 'missing fields must not reach the screen');
+
+  // Pin the fast-response case which exposed the old polling race: let the
+  // fixture answer immediately, then deliberately inspect only after results.
+  // The request succeeded even though there is no longer a busy state to see.
+  t.scenario('an immediate response can finish before the driver observes loading');
+  await submit('partial');
+  await t.waitForFunction(
+    page,
+    () => document.querySelector('#surface-search .search-result-count')?.textContent.includes('at least 12 conversations'),
+    'the immediate partial result to publish before loading is inspected'
+  );
+  assert.equal(await page.$('#surface-search .search-progress'), null, 'completed results must not remain busy');
+  assert.equal((await readScreen()).summary, 'at least 12 conversations · 31 matches · 1 shown');
 
   assert.deepEqual(pageErrors, []);
   if (process.env.SEARCH_ROLLUP_SCREENSHOT) {
