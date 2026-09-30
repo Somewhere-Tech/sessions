@@ -9,12 +9,13 @@ export function AccountBadge(
 ): JSX.Element | null {
   const account = session.profile?.trim();
   if (!account) return null;
+  const name = label || (/^acct-[a-f0-9]+$/i.test(account) ? `${session.tool === 'codex' ? 'ChatGPT' : 'Claude'} account` : account);
   return (
     <span
       className={`account-badge${className ? ` ${className}` : ''}`}
       title={`This session uses the ${label || account} account`}
     >
-      {label || account}
+      {name}
     </span>
   );
 }

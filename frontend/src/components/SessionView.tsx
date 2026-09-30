@@ -13,7 +13,7 @@ import { ProviderBadge, normalizeProvider } from './ProviderBadge';
 import { getActiveServer, serverDisplayName } from '../lib/servers';
 import { resolvedSessionLabel } from '../lib/tabLabels';
 import { AccountBadge } from './AccountBadge';
-import { SessionLastMessage } from './SessionLastMessage';
+const SessionActionsMenu = lazy(() => import('./SessionActionsMenu').then((module) => ({ default: module.SessionActionsMenu })));
 import { SessionArchiveButton } from './SessionArchiveButton';
 import { ClaudeRuntimeControl } from './ClaudeRuntimeControl';
 import { RestartConversation, reviewConversationRestart } from './RestartConversation';
@@ -126,14 +126,13 @@ function TerminalProviderFault({ session, onOpenTerminal, onConnectAccount }: { 
   );
 }
 
-// What the header says about the session itself: the last thing said, and —
-// when the runner is gone — why it is gone and what to do about it.
+// Keep actionable start and recovery information near the title without
+// repeating the conversation's last message in the header.
 function SessionHeaderNotes({ session, onOpenAccounts }: { session: SessionInfo; onOpenAccounts?: () => void }): JSX.Element {
   const lost = lostSessionNote(session);
   const startPhase = session.start?.phase;
   return (
     <>
-      <SessionLastMessage session={session} />
       {lost ? <span className="session-last-message is-fault" role="status">{lost}</span> : null}
       {startPhase && startPhase !== 'working' && startPhase !== 'completed' ? (
         <Suspense fallback={null}><StartReceiptNote session={session} onOpenAccounts={onOpenAccounts} /></Suspense>
@@ -540,7 +539,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
 
   return (
     <div ref={sessionViewRef} className={`session-view view-${effectiveView}${terminalDrawerOpen ? ' has-terminal-drawer' : ''}${terminalDrawerOpen && terminalExpanded ? ' terminal-drawer-expanded' : ''}${detailsOpen ? ' view-details' : ''}${subagentsOpen ? ' has-subagents-panel' : ''}${session?.continuedFromHistoryId ? ' has-continuation' : ''}`}>
-      <header className="session-active-header">
+      <header className="session-active-header is-conversation-header">
         {onBack ? <button type="button" className="mobile-session-back" onClick={onBack} aria-label="Back to sessions">‹</button> : null}
         <div className="session-active-copy">
           {parent ? (
@@ -559,10 +558,13 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
                 onRename={(name) => updateName(session.id, name)}
               />
             ) : <h1>Session</h1>}
+          </div>
+          <div className="session-active-meta">
+            {provider ? <ProviderBadge provider={provider} compact size={20} /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}
+            <MachineMark machine={serverDisplayName(getActiveServer(), true)} size={18} />
+            <span className="session-header-workspace" title={session?.cwd}>{workspaceName}</span>
             <span className={`session-live-pill${statusTone}`}>{statusLabel}</span>
-            {session ? <AccountBadge session={session} className="is-session-head" /> : null}
-            {session ? <SessionHeaderNotes session={session} onOpenAccounts={onOpenAccounts} /> : null}
-            {session ? (
+            {session && terminalCompatibilityAgent ? (
               <span className="session-runtime-anchor">
                 <span
                   ref={terminalModePillRef}
@@ -597,12 +599,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               </span>
             ) : null}
           </div>
-          <div className="session-active-meta">
-            {provider ? <ProviderBadge provider={provider} compact size={20} /> : <span className="provider-badge is-shell is-compact">⌘ Shell</span>}
-            <MachineMark machine={serverDisplayName(getActiveServer(), true)} size={18} />
-            {session?.profile ? <span>{session.profile}</span> : null}
-            <span title={session?.cwd}>{workspaceName}</span>
-          </div>
+          {session ? <SessionHeaderNotes session={session} onOpenAccounts={onOpenAccounts} /> : null}
         </div>
         <div className="session-active-actions">
           {subagents.length > 0 && onOpenSession && onReparent ? (
@@ -639,14 +636,28 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
               {handingBack ? 'Handing back…' : 'Hand back'}
             </button>
           ) : null}
+          <Suspense fallback={<button type="button" disabled aria-label="Loading conversation actions">•••</button>}><SessionActionsMenu>
+          {session ? <div className="session-actions-context"><AccountBadge session={session} /><span>{sessionModeName(session)}</span></div> : null}
           {session ? <SessionPopOutButton sessionId={session.id} label={resolvedSessionLabel(session)} /> : null}
+          {session && onOpenSession && !lostConversation ? <RestartConversation session={session} onOpen={onOpenSession} /> : null}
+          {richSession && session?.tool === 'claude-code' && onResume && !lostConversation ?
+            <ClaudeRuntimeControl working={session.working} onContinue={continueInTerminal} /> : null}
+          {supportsConversation && onFork ? <ConversationForkButton active={forkMode} onClick={() => {
+            const next = !forkMode; setForkMode(next);
+            if (next) { setDetailsOpen(false); setTerminalExpanded(false); setViewMode('remote'); }
+          }} /> : null}
+          {session ? <button type="button" className={`details-inspector-button${detailsOpen ? ' is-active' : ''}`} onClick={() => {
+            if (!detailsOpen && supportsConversation) { setForkMode(false); setTerminalExpanded(false); setViewMode('remote'); }
+            setDetailsOpen((current) => !current);
+          }}>{detailsOpen ? 'Close details' : 'Details'}</button> : null}
           {session ? (
             <SessionArchiveButton
               session={session}
               onArchived={(id) => onCloseView?.(id)}
             />
           ) : null}
-          {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(sessionId)} title="Close this tab. The agent keeps running and remains in Live.">Close tab</button> : null}
+          </SessionActionsMenu></Suspense>
+          {onCloseView ? <button type="button" className="btn btn-ghost session-close-view" onClick={() => onCloseView(sessionId)} aria-label="Close tab" title="Close this tab. The agent keeps running.">×</button> : null}
         </div>
       </header>
 
@@ -675,40 +686,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
             {lostConversation ? 'Terminal unavailable' : effectiveView === 'terminal' && supportsConversation ? 'Hide terminal' : 'Terminal'}
           </button>}
         </div>
-        {session && onOpenSession && !lostConversation ? <RestartConversation session={session} onOpen={onOpenSession} /> : null}
-        {richSession && session?.tool === 'claude-code' && onResume && !lostConversation ?
-          <ClaudeRuntimeControl working={session.working} onContinue={continueInTerminal} /> : null}
         <SessionStreamStatus notice={term.streamNotice} status={term.status} lostConversation={lostConversation} />
-        {supportsConversation && onFork ? (
-          <ConversationForkButton
-            active={forkMode}
-            onClick={() => {
-              const next = !forkMode;
-              setForkMode(next);
-              if (next) {
-                setDetailsOpen(false);
-                setTerminalExpanded(false);
-                setViewMode('remote');
-              }
-            }}
-          />
-        ) : null}
-        {session ? (
-          <button
-            type="button"
-            className={`details-inspector-button${detailsOpen ? ' is-active' : ''}`}
-            onClick={() => {
-              if (!detailsOpen && supportsConversation) {
-                setForkMode(false);
-                setTerminalExpanded(false);
-                setViewMode('remote');
-              }
-              setDetailsOpen((current) => !current);
-            }}
-          >
-            {detailsOpen ? 'Close details' : 'Details'}
-          </button>
-        ) : null}
         {pickerNotice ? (
           <span className="status-picker-notice" aria-live="polite">
             Switched to Terminal for picker — your draft is preserved in Sessions view

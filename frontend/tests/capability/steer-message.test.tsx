@@ -46,7 +46,7 @@ describe('capability: steer a working Codex turn', () => {
     expect(screen.getByRole('button', { name: 'Stop requested' })).toBeDisabled();
     await act(async () => acknowledge());
     expect(screen.getByRole('button', { name: 'Stop requested' })).toBeDisabled();
-    expect(screen.getByText(/Accepted follow-ups are not resent/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop requested' })).toHaveAttribute('title', expect.stringContaining('Accepted follow-ups are not resent'));
     expect(steerMessage).not.toHaveBeenCalled();
     expect(submitMessage).not.toHaveBeenCalled();
     view.rerender(inputBar({ send, steerMessage, submitMessage, providerWorking: false }));

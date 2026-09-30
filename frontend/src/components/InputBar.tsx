@@ -93,15 +93,13 @@ function CodexTurnControl({ working, available, send }: {
       setRequested(false);
     } finally { inFlight.current = false; }
   };
-  return <div className="input-composer-notice is-info" role="status">
-    <div><strong>{requested ? 'Stop requested' : 'Codex is working'}</strong>
-      <span>{requested
-        ? 'Wait for this turn to finish before sending a revised instruction. Accepted follow-ups are not resent; they may already have applied.'
-        : 'Follow-ups are accepted for this turn, but may wait for the current tool. Stopping does not resend them.'}</span>
-      {error ? <span role="alert">{error}</span> : null}</div>
-    <button type="button" className="btn btn-secondary" disabled={!available || requested}
-      onClick={() => void stop()}>{requested ? 'Stop requested' : 'Stop current turn'}</button>
-  </div>;
+  return <span className="input-turn-control">
+    <button type="button" className="btn btn-ghost" disabled={!available || requested}
+      aria-label={requested ? 'Stop requested' : 'Stop current turn'}
+      title={requested ? 'Waiting for this turn to finish. Accepted follow-ups are not resent; they may already have applied.' : 'Request interruption of the current turn. Accepted follow-ups are not resent.'}
+      onClick={() => void stop()}>{requested ? 'Stop requested' : 'Stop'}</button>
+    {error ? <span role="alert">{error}</span> : null}
+  </span>;
 }
 
 // Bottom composer for the Sessions view. xterm itself accepts input fine
@@ -417,7 +415,6 @@ export function InputBar({
         </div>
       ) : null}
       {draftWarning ? <div className="input-bar-upload-state is-error" role="alert">{draftWarning}</div> : null}
-      {provider === 'codex' ? <CodexTurnControl key={sessionId} working={providerWorking} available={sendAvailable} send={send} /> : null}
       {composerNotice && (composerNotice.kind !== 'busy' || providerWorking) ? (
         <div className={`input-composer-notice is-${composerNotice.tone}`} role={composerNotice.tone === 'error' ? 'alert' : 'status'}>
           <div>
@@ -517,6 +514,7 @@ export function InputBar({
               onChange={onConfigureModel}
             />
           ) : null}
+          {provider === 'codex' ? <CodexTurnControl key={sessionId} working={providerWorking} available={sendAvailable} send={send} /> : null}
           <SendControls disabled={!sendAvailable} submitting={submitting} feedback={feedback}
             steer={Boolean(provider === 'codex' && providerWorking && steerMessage && text.trim())} submit={submit} />
         </div>

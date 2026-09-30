@@ -56,7 +56,7 @@ export function SessionTitleRename({ label, onRename }: Props): JSX.Element {
 
   return (
     <div className="session-title-display">
-      <h1>{label}</h1>
+      <h1 title={label}>{label}</h1>
       <button
         type="button"
         className="session-title-rename-button"
@@ -64,7 +64,7 @@ export function SessionTitleRename({ label, onRename }: Props): JSX.Element {
         title="Rename session"
         onClick={() => { setValue(label); setError(null); setEditing(true); }}
       >
-        Rename
+        <svg width="14" height="14" viewBox="0 0 18 18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="m11 3 4 4M3 11l9-9 4 4-9 9-5 1z" /></svg>
       </button>
     </div>
   );
