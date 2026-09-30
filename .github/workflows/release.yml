@@ -29,7 +29,7 @@ jobs:
     permissions:
       contents: read
     env:
-      PUPPETEER_CACHE_DIR: ${{ runner.temp }}/puppeteer
+      PUPPETEER_CACHE_DIR: /tmp/sR/puppeteer
     outputs:
       tag: ${{ steps.source.outputs.tag }}
       version: ${{ steps.source.outputs.version }}
