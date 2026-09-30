@@ -1,12 +1,14 @@
 # Sessions 0.2.27
 
-## Release status
+## Distribution and verification
 
-0.2.27 is a release candidate, not a published GitHub or npm release. The
-current public downloads remain 0.2.26. Source changes, development artifacts,
-signed releases, and installed apps are distinct delivery states.
+Source changes, development artifacts, signed drafts, published GitHub releases,
+npm packages, and installed apps are distinct delivery states. These notes
+describe the version's changes; they do not establish publication on every
+channel or acceptance on every platform. Public promotion follows verification
+of the exact signed delivery artifacts.
 
-## Changes in this candidate
+## Changes
 
 - More trustworthy message delivery: durable receipts distinguish accepted,
   refused, and unknown outcomes, retain late acknowledgments, and make safe
@@ -24,6 +26,8 @@ signed releases, and installed apps are distinct delivery states.
   than guessing that macOS denied Local Network permission.
 - Incremental search indexing, retained history-listing caches, lazy secondary
   views, and bounded terminal buffers reduce repeated work on long histories.
+  Codex metadata readers also avoid allocating the full 64 KiB bound upfront;
+  the read limit and accepted metadata remain unchanged.
 - Filesystem listings are complete up to 10,000 entries and return an explicit
   error beyond that limit. Each multiplexed connection admits at most 256
   attached or pending session streams; reaching the limit does not end work.
