@@ -9,6 +9,43 @@ function event(timestamp: string, fields: Partial<StructuredSessionEvent>): Stru
 }
 
 describe('capability: Codex final answers follow in-turn steering', () => {
+  it('keeps segment ids stable when unrelated older history is loaded or the turn starts outside the window', () => {
+    const history = [
+      event('2026-09-05T16:06:00Z', { subtype: 'turn_started' }),
+      event('2026-09-05T16:06:01Z', { subtype: 'item_completed', item: {
+        id: 'comment', type: 'agentMessage', phase: 'commentary', text: 'Checking.'
+      } }),
+      event('2026-09-05T16:06:02Z', { type: 'user', subtype: 'user_steer', uuid: 'steer-stable',
+        message: { role: 'user', content: 'Check again.' } }),
+      event('2026-09-05T16:06:03Z', { subtype: 'item_completed', item: {
+        id: 'final', type: 'agentMessage', phase: 'final_answer', text: 'Checked.'
+      } })
+    ];
+    const ids = (events: StructuredSessionEvent[]): string[] => eventsToMessages(events)
+      .filter((message) => message.role === 'assistant').map((message) => message.id);
+    expect(ids(history)).toEqual(['codex-turn-turn-1', 'codex-turn-turn-1-after-steer-stable']);
+    expect(ids([event('2026-09-05T16:05:00Z', { type: 'user', uuid: 'earlier',
+      message: { role: 'user', content: 'Older history.' } }), ...history])).toEqual(ids(history));
+    expect(ids(history.slice(2))).toEqual(['codex-turn-turn-1-after-steer-stable']);
+  });
+
+  it('never moves a sealed segment after steering when a preexisting final item completes late', () => {
+    const messages = eventsToMessages([
+      event('2026-09-05T16:06:00Z', { subtype: 'turn_started' }),
+      event('2026-09-05T16:06:01Z', { subtype: 'item_started', item: {
+        id: 'late-final', type: 'agentMessage', phase: 'final_answer', text: ''
+      } }),
+      event('2026-09-05T16:06:02Z', { type: 'user', subtype: 'user_steer', uuid: 'steer',
+        message: { role: 'user', content: 'Updated requirements.' } }),
+      event('2026-09-05T16:06:03Z', { subtype: 'item_completed', item: {
+        id: 'late-final', type: 'agentMessage', phase: 'final_answer', text: 'Original item completed.'
+      } })
+    ]);
+    expect(messages.map((message) => message.role)).toEqual(['assistant', 'user']);
+    expect(messages[0]?.content).toBe('Original item completed.');
+    expect(messages[0]?.createdAt).toBe(Date.parse('2026-09-05T16:06:00Z'));
+  });
+
   it('does not invent a persistent queue for accepted steering without a turn identity', () => {
     const history = [
       event('2026-09-05T16:06:00Z', { subtype: 'turn_started' }),

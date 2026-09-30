@@ -317,16 +317,12 @@ interface CodexTurnProjection {
   completed: boolean;
 }
 
-function newCodexProjection(turnID: string, at: number, segment: number): CodexTurnProjection {
+function newCodexProjection(turnID: string, at: number, boundary?: string): CodexTurnProjection {
   return {
-    message: { id: `codex-turn-${turnID}-${segment}`, role: 'assistant', content: '', status: 'sent',
+    message: { id: `codex-turn-${turnID}${boundary ? `-after-${boundary}` : ''}`, role: 'assistant', content: '', status: 'sent',
       createdAt: at, blockId: turnID, streaming: true, turnStatus: 'inProgress' },
     itemText: new Map(), itemPhase: new Map(), itemOrder: [], tools: new Map(), reasoning: [], completed: false
   };
-}
-
-function hasCodexActivity(projection: CodexTurnProjection): boolean {
-  return projection.itemOrder.length > 0 || projection.tools.size > 0 || projection.reasoning.length > 0;
 }
 
 function refreshCodexTurn(projection: CodexTurnProjection): void {
@@ -349,6 +345,7 @@ function refreshCodexTurn(projection: CodexTurnProjection): void {
 }
 
 function markFinalTextTime(projection: CodexTurnProjection, itemID: string, at: number): void {
+  if (projection.completed) return;
   if (projection.itemPhase.get(itemID) !== 'final_answer') return;
   if (!projection.itemText.get(itemID)?.trim()) return;
   if (projection.message.confirmedAt !== undefined) return;
@@ -412,13 +409,14 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
   const turns = new Map<string, CodexTurnProjection>();
   const itemOwners = new Map<string, CodexTurnProjection>();
   const completedTurns = new Set<string>();
+  const boundaries = new Map<string, string>();
   const steeringByTurn = new Map<string, DispatchMessage[]>();
   let latestTurnID = '';
   const ensureTurn = (turnID: string, at: number): CodexTurnProjection | null => {
     if (!turnID) return null;
     const existing = turns.get(turnID);
     if (existing) return existing;
-    const projection = newCodexProjection(turnID, at, out.length);
+    const projection = newCodexProjection(turnID, at, boundaries.get(turnID));
     turns.set(turnID, projection);
     out.push(projection.message);
     return projection;
@@ -482,7 +480,8 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       };
       out.push(message);
       const previous = event.turnId ? turns.get(event.turnId) : undefined;
-      if (previous && !previous.completed && hasCodexActivity(previous)) {
+      if (subtype === 'user_steer' && event.turnId) boundaries.set(event.turnId, event.uuid ?? `${at}-${content}`);
+      if (previous && !previous.completed) {
         previous.completed = true;
         previous.message.streaming = false;
         previous.message.turnStatus = undefined;
