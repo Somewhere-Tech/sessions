@@ -1,22 +1,23 @@
-import { useRef, useState } from 'react';
+import { create } from 'zustand';
 import { updateProvider, type ProviderStatus } from '../api/sessionsd/operations';
 import { serverDisplayName, useServers, type ServerConfig } from '../lib/servers';
 
 interface UpdateResult { id: string; name: string; status: 'waiting' | 'updating' | 'updated' | 'unknown' | 'skipped'; detail: string }
 
+// Installing outlives this Settings panel. Keep its lock and results when a
+// person checks a conversation and comes back; never restart an installer.
+const useUpdateJob = create<{ busy: boolean; results: UpdateResult[] }>(() => ({ busy: false, results: [] }));
+
 /** Per-machine results, never an all-or-nothing fleet success claim. */
 export function FleetProviderUpdates(): JSX.Element {
   const servers = useServers((state) => state.servers);
-  const [busy, setBusy] = useState(false);
-  const locked = useRef(false);
-  const [results, setResults] = useState<UpdateResult[]>([]);
+  const { busy, results } = useUpdateJob();
   const update = async (provider: ProviderStatus['id']): Promise<void> => {
-    if (locked.current) return;
-    locked.current = true; setBusy(true);
+    if (useUpdateJob.getState().busy) return;
     const targets = [...servers];
-    setResults(targets.map((server) => ({ id: server.id, name: serverDisplayName(server, true), status: 'waiting', detail: '' })));
+    useUpdateJob.setState({ busy: true, results: targets.map((server) => ({ id: server.id, name: serverDisplayName(server, true), status: 'waiting', detail: '' })) });
     const publish = (server: ServerConfig, status: UpdateResult['status'], detail: string): void => {
-      setResults((previous) => previous.map((result) => result.id === server.id ? { ...result, status, detail } : result));
+      useUpdateJob.setState((previous) => ({ results: previous.results.map((result) => result.id === server.id ? { ...result, status, detail } : result) }));
     };
     const queue = [...targets];
     const worker = async (): Promise<void> => {
@@ -34,7 +35,7 @@ export function FleetProviderUpdates(): JSX.Element {
       }
     };
     try { await Promise.all([worker(), worker()]); }
-    finally { locked.current = false; setBusy(false); }
+    finally { useUpdateJob.setState({ busy: false }); }
   };
   if (servers.length < 2) return <></>;
   return <div className="settings-card">

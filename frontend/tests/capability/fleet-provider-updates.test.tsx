@@ -21,9 +21,12 @@ describe('capability: provider updates keep per-computer outcomes', () => {
         : new Response(JSON.stringify({ error: 'Pair Studio again' }), { status: 403 });
     });
     vi.stubGlobal('fetch', fetch);
-    render(<FleetProviderUpdates />);
+    const panel = render(<FleetProviderUpdates />);
     fireEvent.click(screen.getByRole('button', { name: 'Update Codex everywhere' }));
     expect(screen.getByRole('button', { name: 'Update Claude everywhere' })).toBeDisabled();
+    panel.unmount();
+    const reopened = render(<FleetProviderUpdates />);
+    expect(screen.getByRole('button', { name: 'Update Codex everywhere' })).toBeDisabled();
     await act(async () => { useServers.setState({ activeId: 'two' }); finish(); });
     await screen.findByText('fixture-new');
     await waitFor(() => expect(screen.getByText(/Pair Studio again/)).toBeInTheDocument());
@@ -31,5 +34,10 @@ describe('capability: provider updates keep per-computer outcomes', () => {
     expect(screen.getByText('Pair this computer first.')).toBeInTheDocument();
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(useServers.getState().activeId).toBe('two');
+    reopened.unmount();
+    render(<FleetProviderUpdates />);
+    expect(screen.getByText('fixture-new')).toBeInTheDocument();
+    expect(screen.getByText(/Pair Studio again/)).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });
