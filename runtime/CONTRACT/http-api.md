@@ -578,8 +578,10 @@ Auth required. Every request field is optional:
 | `prompt_operation_id` | string | optional lowercase UUID v4, different from `operation_id`: the `/submit` operation id the caller will use for the first request, recorded so the start receipt can follow it |
 
 `RUNNER_*`, `NODE_OPTIONS`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, and
-`LD_PRELOAD` caller keys are stripped. User-created Claude/Codex sessions are
-constrained unless full access is explicitly requested. An agent-created child
+`LD_PRELOAD` caller keys are stripped. New user-created Claude/Codex sessions
+default to full access (YOLO) when no permission policy is supplied. Explicit
+`permissions:"constrained"` and provider permission flags preserve Ask me or
+Plan mode. Existing runtimes are not changed. An agent-created child
 inherits the parent's exact Claude permission mode or Codex sandbox and
 approval flags. When no exact Codex policy is inherited or supplied, the
 constrained default is a workspace-write sandbox with the provider's untrusted
@@ -1406,6 +1408,15 @@ Timeout, partial input, and unavailable history return `unknown`,
 No extra Enter or automatic message resend is attempted. Existing stream
 subscriptions are unaffected by history inspection.
 
+An additive content-free transcript intent retains the pre-input cursor, hash
+of its preceding event (when present), normalized message hash and runtime
+creation time. Later receipt reads can settle `unknown` as `accepted` when the
+same runtime still has the same retained anchor and a complete authored user
+event after that cursor matches the message hash with a provider timestamp no
+earlier than the submit. Missing/replaced anchors, pruned history, unavailable
+timestamps and a changed runtime preserve uncertainty. No input is sent during
+this reconciliation, including after the delivery store is reopened.
+
 The response is a delivery receipt with `operation_id`, `session_id`, `status`,
 `delivered`, `retry`, `reason`, `duplicate`, `created_at_ms`, and
 `updated_at_ms`. `status` is one of `accepted`, `not-delivered`, `unknown`, or
@@ -1752,7 +1763,8 @@ runtime. `permissions:"constrained"` records and enforces the app's **Ask me**
 access plan. An explicit `permissions:"full"` selects full access for a native
 same-provider resume; transcript-only restoration and cross-provider copies
 reject that override. Other values are rejected. The resume dialog defaults
-to Ask me and offers Full access (YOLO) explicitly. Omitting these additive
+to Full access (YOLO) for native resumes, with Ask me available explicitly.
+Transcript-only restoration retains its supported permission policy. Omitting these additive
 fields keeps the earlier provider-default behavior for existing clients.
 
 `claudePermissionMode` is an optional per-launch Claude override using the same

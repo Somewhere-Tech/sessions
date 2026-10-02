@@ -38,7 +38,7 @@ describe('confirmed conversation restart', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('fixture-model');
     expect(screen.getByRole('dialog')).toHaveTextContent('Restart interrupts its current turn');
     expect(posted).toHaveLength(0);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Restart permissions' }), 'full');
+    expect(screen.getByRole('combobox', { name: 'Restart permissions' })).toHaveValue('full');
     await user.click(screen.getByRole('checkbox'));
     await user.click(screen.getByRole('button', { name: 'End this runtime and reopen' }));
     await waitFor(() => expect(onOpen).toHaveBeenCalledExactlyOnceWith(laneId));

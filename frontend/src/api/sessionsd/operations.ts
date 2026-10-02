@@ -141,23 +141,26 @@ export async function cancelContinuationJob(id: string): Promise<ContinuationJob
   return json<ContinuationJob>(r);
 }
 
-export async function updateProvider(id: ProviderStatus['id']): Promise<{ provider: ProviderStatus; output: string }> {
+export async function updateProvider(id: ProviderStatus['id'], serverId?: string): Promise<{ provider: ProviderStatus; output: string }> {
+  const server = requestedServer(serverId);
   const controller = new AbortController();
   // Current runtimes stop the complete installer tree after five minutes.
   // Keep a slightly wider client boundary so an older remote runtime can
   // never leave the native sidebar in an endless busy state.
   const timer = window.setTimeout(() => controller.abort(), 5 * 60_000 + 20_000);
   try {
-    const r = await apiFetch(`${httpBase()}/api/providers/${id}/update`, {
+    const r = await serverFetch(server, `${httpBaseForServer(server)}/api/providers/${id}/update`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',
       signal: controller.signal
     });
-    return await featureJSON<{ provider: ProviderStatus; output: string }>(r, 'Provider update');
+    const result = await featureJSON<{ provider: ProviderStatus; output: string }>(r, 'Provider update');
+    if (result.provider?.id !== id || !result.provider.installed) throw new Error('Update returned no usable provider result. Check the installed version before trying again.');
+    return result;
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new Error('The update took too long and was stopped. Running sessions were not affected.');
+      throw new Error('Update confirmation timed out. Check the installed version before trying again; the installer may still be running. Existing sessions were not restarted.');
     }
     throw error;
   } finally {

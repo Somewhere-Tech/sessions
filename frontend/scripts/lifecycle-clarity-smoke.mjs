@@ -254,7 +254,9 @@ assert.match(newSession, /listNewSessionCodexModels\(controller\.signal, machine
 assert.match(newSession, /create\(withStartOperation\(request, ids, Boolean\(task\.trim\(\)\)\), machineId\)/);
 // The first request goes to the chosen machine under the operation id recorded
 // at create, so a retry cannot deliver it twice.
-assert.match(newSession, /submitInitialRequest\(info\.id, task\.trim\(\), machineId, recordedPromptOperationId\(info, ids\.prompt\)\)/);
+assert.match(newSession, /const promptOperation = recordedPromptOperationId\(info, ids\.prompt\)/);
+assert.match(newSession, /prepareInitialRequest\(machineId, info\.id, task\.trim\(\), promptOperation\)/);
+assert.match(newSession, /onStarted\(info\.id\);\s*onClose\(\);\s*if \(task\.trim\(\)\) void deliverInitialRequest\(machineId, info\.id, task\.trim\(\), promptOperation\)/);
 assert.match(newSession, /startOperationIds\(startIdsRef\.current, JSON\.stringify\(\[machineId, request\]\)\)/);
 assert.match(newSession, /<DirectoryBrowser[\s\S]*serverId=\{machineId\}/);
 assert.doesNotMatch(newSession, /resumeId|sessionsForCwd|--resume/);

@@ -13,7 +13,7 @@ export const NEW_SESSION_DEFAULTS_KEY = 'sessions:new-session-defaults';
 
 export const DEFAULT_NEW_SESSION_DEFAULTS: NewSessionDefaults = {
   tool: 'claude-code',
-  skipPerms: false,
+  skipPerms: true,
   cwd: '',
   cols: 300,
   rows: 50,

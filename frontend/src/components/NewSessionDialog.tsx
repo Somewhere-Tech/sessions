@@ -5,7 +5,6 @@ import {
   fetchProfiles,
   listDirectories,
   listNewSessionCodexModels,
-  submitMessage,
   type AccountProfile,
   type SessionModelOption
 } from '../api/sessionsd';
@@ -19,7 +18,8 @@ import { ProviderMark } from './ProviderBadge';
 import { MachineMark } from './MachineMark';
 import { CLAUDE_MODEL_OPTIONS, ModelPicker, type ModelPickerOption } from './ModelPicker';
 import { InlineAccountSignIn } from './InlineAccountSignIn';
-import { firstRequestFailureMessage, recordedPromptOperationId, startFailureMessage, startOperationIds, withStartOperation, type StartOperationIds } from '../lib/startOperation';
+import { recordedPromptOperationId, startFailureMessage, startOperationIds, withStartOperation, type StartOperationIds } from '../lib/startOperation';
+import { prepareInitialRequest, deliverInitialRequest } from '../lib/initialRequest';
 
 interface ToolDef {
   id: NewSessionTool;
@@ -96,10 +96,6 @@ function inheritedProfile(parent: SessionInfo | null, tool: NewSessionTool): str
   if (!parent?.profile) return '';
   const parentTool: NewSessionTool = parent.tool === 'terminal' ? 'shell' : parent.tool;
   return providerForTool(parentTool) === providerForTool(tool) ? parent.profile : '';
-}
-
-async function submitInitialRequest(sessionId: string, text: string, serverId: string, operationId: string): Promise<void> {
-  await submitMessage(sessionId, `\x1b[200~${text}\x1b[201~`, serverId, undefined, undefined, operationId);
 }
 
 interface Props {
@@ -241,7 +237,10 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     parentSession?.tool === 'terminal' ? 'shell' : parentSession?.tool ?? initialDefaults.tool,
     parentSession
   ));
-  const [access, setAccess] = useState<AccessChoice>(initialDefaults.skipPerms ? 'full' : 'ask');
+  // Access is a choice for this launch, not an old device-local preference.
+  // Older clients persisted their implicit "Ask me" default as though the
+  // person had selected it. Never carry that accidental override forward.
+  const [access, setAccess] = useState<AccessChoice>('full');
   const [claudeOptions, setClaudeOptions] = useState<ClaudeSessionOptions>({});
   const [claudeSafeMode, setClaudeSafeMode] = useState(false);
   const [codexModel, setCodexModel] = useState('');
@@ -481,17 +480,20 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       if (profileTool && !parentSession) {
         rememberAccount(machineId, profileTool, cwd.trim(), selectedProfile);
       }
-      onStarted(info.id);
+      const promptOperation = recordedPromptOperationId(info, ids.prompt);
       if (task.trim()) {
         try {
-          await submitInitialRequest(info.id, task.trim(), machineId, recordedPromptOperationId(info, ids.prompt));
+          prepareInitialRequest(machineId, info.id, task.trim(), promptOperation);
         } catch (reason) {
+          onStarted(info.id);
           setCreatedWithDeliveryError(info.id);
-          setError(firstRequestFailureMessage(info.id, reason));
+          setError(`Your chat is ready, but its first message was not sent: ${reason instanceof Error ? reason.message : String(reason)} Copy the message before opening the chat.`);
           return;
         }
       }
+      onStarted(info.id);
       onClose();
+      if (task.trim()) void deliverInitialRequest(machineId, info.id, task.trim(), promptOperation);
     } catch (err) {
       setError(startFailureMessage(err));
     } finally {

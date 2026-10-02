@@ -30,6 +30,7 @@ const ConnectionsView = lazy(() => import('./ConnectionsView').then((module) => 
 import type { ThemeMode } from './ProductSidebar';
 import { SomewhereCard } from './SomewhereCard';
 import { useSessions } from '../store/sessions';
+import { FleetProviderUpdates } from './FleetProviderUpdates';
 
 type Section = 'general' | 'agents' | 'fleet' | 'cloud' | 'notifications' | 'support';
 
@@ -579,6 +580,7 @@ function NotificationSettings(props: NotificationSettingsProps): JSX.Element {
         {props.providerMessage ? <div className="settings-message" role="status">{props.providerMessage}</div> : null}
         <div className="settings-message">The action runs on {props.providerUpdateTarget} and replaces only that machine's CLI executable. Existing Claude and Codex processes continue unchanged; new sessions there use the updated version.</div>
       </div>
+      <FleetProviderUpdates />
     </section>
   );
 }

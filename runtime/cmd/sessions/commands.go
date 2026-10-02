@@ -104,11 +104,8 @@ func applyToolDefault(body *createSessionRequest, fullAccess bool) error {
 	if !ok || preset.args == nil {
 		return nil
 	}
-	for _, argument := range body.Args {
-		switch argument {
-		case "--dangerously-bypass-approvals-and-sandbox", "--dangerously-skip-permissions", "--sandbox", "--ask-for-approval", "--full-auto":
-			return nil
-		}
+	if providerargs.Has(body.Args, "--dangerously-bypass-approvals-and-sandbox", "--dangerously-skip-permissions", "--sandbox", "--ask-for-approval", "--full-auto", "--permission-mode") {
+		return nil
 	}
 	defaults := preset.args
 	if fullAccess {
@@ -331,7 +328,8 @@ func (a *app) cmdNew(args []string) error {
 		}
 		body.Permissions = state.PermissionsFull
 	}
-	fullAccess = body.Permissions == state.PermissionsFull
+	explicitFullAccess := body.Permissions == state.PermissionsFull
+	fullAccess = explicitFullAccess || body.Permissions == ""
 	if value, present := pluck(&args, "--lifecycle"); present {
 		value = strings.ToLower(strings.TrimSpace(value))
 		if value != state.LifecycleTask && value != state.LifecycleSession {
@@ -345,11 +343,13 @@ func (a *app) cmdNew(args []string) error {
 		}
 		body.Lifecycle = state.LifecycleSession
 	}
-	// Compatibility for scripts written before constrained execution became
-	// the public default. It is now an explicit no-op, not a mode switch.
+	// The compatibility spelling now explicitly opts out of the YOLO default.
 	noSkipPermissions := removeFirst(&args, "--no-skip-perms")
-	if fullAccess && noSkipPermissions {
+	if body.Permissions == state.PermissionsFull && noSkipPermissions {
 		return fail(1, "--full-access and --no-skip-perms cannot be combined")
+	}
+	if noSkipPermissions {
+		body.Permissions, fullAccess = state.PermissionsConstrained, false
 	}
 	if hasTool {
 		preset, ok := toolPresets[strings.ToLower(tool)]
@@ -371,7 +371,7 @@ func (a *app) cmdNew(args []string) error {
 			if forceStructuredClaude || forcePTYClaude {
 				return fail(1, "--structured and --pty-claude are only valid with --tool claude")
 			}
-			if !forcePTYCodex && (forceAppServer || (fullAccess && codexAppServerEnabled())) {
+			if !forcePTYCodex && (forceAppServer || (explicitFullAccess && codexAppServerEnabled())) {
 				body.Kind = "codex-app-server"
 				// The app-server runtime does not consume positional CLI arguments.
 				// Treat them as the first user request and deliver them through the

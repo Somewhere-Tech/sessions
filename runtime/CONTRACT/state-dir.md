@@ -217,6 +217,12 @@ recorded in the lane ledger's `created` event (with the create
 `start_operation_id`), which is how its start receipt survives a restart. This directory follows `SESSIONS_STATE_DIR` so an
 isolated daemon cannot read or write the installed daemon's receipts.
 
+Legacy provider receipts may also contain `transcript`: an additive pre-input
+absolute `cursor`, preceding-event `anchor` SHA-256 when the cursor is nonzero,
+normalized `message_sha256`, and `runtime_created_at`. No message body is stored.
+These permit later history-only confirmation under the checks in `http-api.md`;
+older readers ignore the field and preserve their conservative unknown result.
+
 ### `idle/<id>`
 
 A best-effort completion sentinel written on an observed `working: true ->

@@ -79,6 +79,12 @@ through Sessions itself: the request stays open, the lane reads as needing you,
 and the person or the lane that delegated the work answers it. Nothing is
 approved on silence, and the answer is recorded with who gave it.
 
+New user-created Claude and Codex chats start with full access (YOLO), so work
+does not stop at an unexpected approval prompt. The launcher, native resume,
+and restart surfaces make that choice visible and allow an explicit Ask me
+policy. This default never elevates an existing process or changes the
+machine's separately recorded delegation or Remote Control consent.
+
 Agent-created children are durable sessions by default. A final response is not
 proof that the caller is done with the runtime: the child may own a server,
 watcher, follow-up context, or work the manager intends to revisit. A caller may

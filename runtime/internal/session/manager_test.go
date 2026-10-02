@@ -1294,8 +1294,8 @@ func TestLaunchdFreeCreateWritesMetadataAndPlist(t *testing.T) {
 			t.Fatalf("args %q missing %q", joinedArgs, want)
 		}
 	}
-	if strings.Contains(joinedArgs, "--dangerously-skip-permissions") {
-		t.Fatalf("default Claude args unexpectedly enable full access: %q", joinedArgs)
+	if !strings.Contains(joinedArgs, "--dangerously-skip-permissions") || created.Permissions != state.PermissionsFull {
+		t.Fatalf("default Claude args did not enable full access: %q", joinedArgs)
 	}
 
 	metadataPath := filepath.Join(config.RunnerStateDir, created.ID+".json")

@@ -17,14 +17,15 @@ type providerStatus struct {
 
 func (a *app) cmdProviders(args []string) error {
 	if len(args) >= 1 && args[0] == "update" {
+		all := removeFirst(&args, "--all")
 		if len(args) != 2 || (args[1] != "claude" && args[1] != "codex") {
-			return fail(1, "usage: sessions providers update claude|codex")
+			return fail(1, "usage: sessions providers update claude|codex [--all]")
 		}
-		var result struct {
-			Provider providerStatus `json:"provider"`
-			Output   string         `json:"output"`
+		if all {
+			return a.updateFleetProvider(args[1])
 		}
-		if err := a.postJSON("/api/providers/"+args[1]+"/update", map[string]any{}, &result, 2); err != nil {
+		result, err := updateProviderOnClient(a.api, args[1])
+		if err != nil {
 			return err
 		}
 		if a.wantJSON {
@@ -34,7 +35,7 @@ func (a *app) cmdProviders(args []string) error {
 		if version == "" {
 			version = "unknown"
 		}
-		_, err := fmt.Fprintf(a.stdout, "%s updated to %s. Running sessions keep their existing process; new sessions use this version.\n",
+		_, err = fmt.Fprintf(a.stdout, "%s updated to %s. Running sessions keep their existing process; new sessions use this version.\n",
 			result.Provider.Name, version)
 		return err
 	}

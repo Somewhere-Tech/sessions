@@ -19,7 +19,7 @@ function preserveRestartDraft(machineId: string, source: string, destination: st
 
 /** A runtime id is the confirmation boundary; never follow a retired row's successor. */
 export function RestartConversationDialog({ session, onOpen, serverId, initialRemoteControl, initialRuntimeMode, onClose }: RestartConversationProps & { onClose: () => void }): JSX.Element | null {
-  const [permissions, setPermissions] = useState<'constrained' | 'full'>(session.permissions === 'full' ? 'full' : 'constrained');
+  const [permissions, setPermissions] = useState<'constrained' | 'full'>('full');
   const [remoteControl, setRemoteControl] = useState(initialRemoteControl ?? session.args.some((arg) => arg === '--remote-control' || arg.startsWith('--remote-control=')));
   const [runtimeMode, setRuntimeMode] = useState<'rich' | 'terminal'>(initialRuntimeMode ?? sessionMode(session));
   const [submitted, setSubmitted] = useState(false);

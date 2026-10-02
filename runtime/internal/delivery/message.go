@@ -1,9 +1,12 @@
 package delivery
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 )
 
 const PasteStart = "\x1b[200~"
@@ -38,6 +41,32 @@ func NormalizedMessage(text string) string {
 // MatchingUserText accepts a complete fresh authored user event, never a
 // timestamp, a suffix, a tool result, or the provider's working state.
 func MatchingUserText(raw json.RawMessage, intended string) (string, bool) {
+	text, ok := UserText(raw)
+	wanted := NormalizedMessage(MessageText(intended))
+	return text, ok && wanted != "" && NormalizedMessage(text) == wanted
+}
+
+func MessageHash(text string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(NormalizedMessage(MessageText(text)))))
+}
+
+func EventHash(raw json.RawMessage) string { return fmt.Sprintf("%x", sha256.Sum256(raw)) }
+
+// A late observation must be a complete authored message, recorded no earlier
+// than this submit. Historical replays and tool results are never acceptance.
+func MatchesLateUserEvent(raw json.RawMessage, hash string, createdAtMS int64) bool {
+	text, ok := UserText(raw)
+	var event struct {
+		Timestamp string `json:"timestamp"`
+	}
+	if !ok || strings.TrimSpace(text) == "" || json.Unmarshal(raw, &event) != nil {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339Nano, event.Timestamp)
+	return err == nil && at.UnixMilli() >= createdAtMS && MessageHash(text) == hash
+}
+
+func UserText(raw json.RawMessage) (string, bool) {
 	var event struct {
 		Type    string `json:"type"`
 		Message struct {
@@ -66,6 +95,5 @@ func MatchingUserText(raw json.RawMessage, intended string) (string, bool) {
 		}
 		text = joined.String()
 	}
-	wanted := NormalizedMessage(MessageText(intended))
-	return text, wanted != "" && NormalizedMessage(text) == wanted
+	return text, true
 }

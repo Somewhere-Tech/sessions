@@ -8,8 +8,42 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
 	"github.com/somewhere-tech/sessions/runtime/internal/state"
 )
+
+func TestRootYOLODefaultPreservesExplicitConstrainedChoices(t *testing.T) {
+	manager := &Manager{}
+	for _, tool := range []string{"claude", "codex"} {
+		for _, explicit := range []bool{false, true} {
+			request := state.CreateSessionRequest{Cmd: tool}
+			if explicit {
+				request.Permissions = state.PermissionsConstrained
+			}
+			resolved, err := manager.resolveDelegatedExecution(context.Background(), request, ledger.CreatorUser, "fixture")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := state.PermissionsFull
+			if explicit {
+				want = state.PermissionsConstrained
+			}
+			if resolved.Permissions != want {
+				t.Fatalf("%s explicit=%v: %+v", tool, explicit, resolved)
+			}
+		}
+	}
+	for _, request := range []state.CreateSessionRequest{
+		{Cmd: "claude", Args: []string{"--permission-mode", "plan"}},
+		{Cmd: "claude", Args: []string{"--permission-mode=plan"}},
+		{Cmd: "codex", Args: []string{"--sandbox=read-only", "--ask-for-approval=untrusted"}},
+	} {
+		resolved, err := manager.resolveDelegatedExecution(context.Background(), request, ledger.CreatorUser, "fixture")
+		if err != nil || resolved.Permissions != state.PermissionsConstrained || !reflect.DeepEqual(resolved.Args, request.Args) {
+			t.Fatalf("explicit provider policy changed: %+v, %v", resolved, err)
+		}
+	}
+}
 
 func TestApplyInheritedPermissionsPreservesProviderSpecificMode(t *testing.T) {
 	tests := []struct {

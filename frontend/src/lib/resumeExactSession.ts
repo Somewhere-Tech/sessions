@@ -27,7 +27,7 @@ export function resumeExactSession(
     undefined,
     session.model,
     session.effort,
-    session.permissions === 'constrained' ? 'constrained' : undefined,
+    providerId && !destinationProvider ? 'full' : undefined,
     serverId
   );
 }

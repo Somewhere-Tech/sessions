@@ -89,7 +89,7 @@ describe('capability: resume a conversation', () => {
     expect(rows[0]).toHaveAttribute('data-session-id', resumedLaneId);
   });
 
-  it('lets a person explicitly resume the same conversation with full access', async () => {
+  it('defaults native resume to full access and lets a person choose constrained access', async () => {
     const machine = localMachine();
     const daemon = installFakeDaemon([machine]);
     useFakeMachines([machine]);
@@ -98,6 +98,8 @@ describe('capability: resume a conversation', () => {
     await user.click(screen.getByRole('button', { name: 'Resume' }));
     await user.click(await screen.findByRole('button', { name: /Thursday migration plan/ }));
     const permissions = screen.getByRole('combobox', { name: 'Resume permissions' });
+    expect(permissions).toHaveValue('full');
+    await user.selectOptions(permissions, 'constrained');
     expect(permissions).toHaveValue('constrained');
     await user.selectOptions(permissions, 'full');
     expect(screen.getByRole('group', { name: 'Start plan' })).toHaveTextContent('Full access (YOLO)');
