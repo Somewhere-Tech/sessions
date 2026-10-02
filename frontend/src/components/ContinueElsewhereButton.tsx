@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   isTauri,
@@ -8,7 +8,23 @@ import {
   type NativeSavedMachine
 } from '../lib/tauriBridge';
 import { useSessions } from '../store/sessions';
-import { isLocalServer, serverDisplayName, useServers } from '../lib/servers';
+import { killSession } from '../api/sessionsd';
+import { isLocalServer, serverDisplayName, syncNativeAgentMachineAccess, useServers, type ServerConfig } from '../lib/servers';
+
+function moveMachineChoices(values: NativeSavedMachine[], source: ServerConfig, local: ServerConfig | null): { sourceMachine: string; destinations: NativeSavedMachine[] } {
+  const remote = !isLocalServer(source);
+  const endpoint = `${source.scheme ?? 'http'}://${source.host}:${source.port}`.replace(/\/$/, '');
+  const matched = remote ? values.find((machine) => source.machineId
+    ? machine.machine_id === source.machineId
+    : machine.endpoint.replace(/\/$/, '') === endpoint) : undefined;
+  if (remote && !matched) throw new Error(`Sessions could not use the saved connection to ${serverDisplayName(source, true)}. Check its connection in Fleet, then try again. Nothing has moved.`);
+  const destinations = values.filter((machine) => machine.machine_id !== matched?.machine_id);
+  if (remote && local) destinations.unshift({
+    alias: '__local__', machine_id: 'local', name: serverDisplayName(local, true),
+    endpoint: `http://127.0.0.1:${local.port}`, transport: 'local', device_id: '', connected_at: ''
+  });
+  return { sourceMachine: matched?.alias ?? '', destinations };
+}
 
 export function ContinueElsewhereButton({
   sessionId,
@@ -22,7 +38,6 @@ export function ContinueElsewhereButton({
   onOpen?: () => void;
 }): JSX.Element | null {
   const refresh = useSessions((state) => state.refresh);
-  const endSession = useSessions((state) => state.kill);
   const serverId = useSessions((state) => state.serverId);
   const source = useSessions((state) => state.sessions.find((session) => session.id === sessionId)) ?? null;
   const sourceServer = useServers((state) => state.servers.find((server) => server.id === serverId)) ?? null;
@@ -39,35 +54,32 @@ export function ContinueElsewhereButton({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [complete, setComplete] = useState<NativeMovePlan | null>(null);
+  const sourceServerId = useRef(serverId);
+  const sourceAtOpen = useRef(source);
+  const sourceLabelAtOpen = useRef('');
 
   if (!isTauri() || !sourceServer) return null;
-  const sourceLabel = serverDisplayName(sourceServer, true);
+  const sourceLabel = open ? sourceLabelAtOpen.current : serverDisplayName(sourceServer, true);
+  const moveSource = open ? sourceAtOpen.current : source;
 
   const show = async (): Promise<void> => {
+    sourceServerId.current = serverId;
+    sourceAtOpen.current = source;
+    sourceLabelAtOpen.current = serverDisplayName(sourceServer, true);
     setOpen(true);
     setPlan(null);
     setComplete(null);
     setError(null);
+    setMachines([]);
+    setSelected('');
+    setSourceMachine('');
     setRuntimeMode(source?.tool === 'claude-code' ? 'terminal' : 'rich');
     setBusy(true);
     try {
+      await syncNativeAgentMachineAccess();
       const values = await listNativeMoveMachines();
-      const remoteSource = !isLocalServer(sourceServer);
-      const normalizedSourceEndpoint = `${sourceServer.scheme ?? 'http'}://${sourceServer.host}:${sourceServer.port}`.replace(/\/$/, '');
-      const matchedSource = remoteSource
-        ? values.find((machine) => machine.machine_id === sourceServer.machineId || machine.endpoint.replace(/\/$/, '') === normalizedSourceEndpoint)
-        : undefined;
-      if (remoteSource && !matchedSource) {
-        throw new Error('This source computer is not in the protected native machine registry. Reconnect it from Fleet, then try again.');
-      }
-      setSourceMachine(matchedSource?.alias ?? '');
-      const destinations = values.filter((machine) => machine.machine_id !== matchedSource?.machine_id);
-      if (remoteSource && localServer) {
-        destinations.unshift({
-          alias: '__local__', machine_id: 'local', name: serverDisplayName(localServer, true),
-          endpoint: `http://127.0.0.1:${localServer.port}`, transport: 'local', device_id: '', connected_at: ''
-        });
-      }
+      const { sourceMachine: matchedSource, destinations } = moveMachineChoices(values, sourceServer, localServer);
+      setSourceMachine(matchedSource);
       setMachines(destinations);
       setSelected((current) => destinations.some((machine) => machine.alias === current) ? current : destinations[0]?.alias || '');
     } catch (reason) {
@@ -82,8 +94,8 @@ export function ContinueElsewhereButton({
     setBusy(true);
     setError(null);
     try {
-      if (source && !source.exited) {
-        await endSession(sessionId, 'Moved to another computer through Sessions');
+      if (moveSource && !moveSource.exited) {
+        await killSession(sessionId, 'Moved to another computer through Sessions', sourceServerId.current ?? undefined);
       }
       setPlan(await moveNativeSession(sessionId, selected, { dryRun: true, allowDirty, runtimeMode, sourceMachine }));
     } catch (reason) {
@@ -100,7 +112,7 @@ export function ContinueElsewhereButton({
     try {
       const result = await moveNativeSession(sessionId, selected, { dryRun: false, allowDirty, runtimeMode, sourceMachine });
       setComplete(result);
-      await refresh();
+      await refresh(sourceServerId.current ?? undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not resume this conversation.');
     } finally {
@@ -143,7 +155,7 @@ export function ContinueElsewhereButton({
             ) : (
               <>
                 <p className="continue-elsewhere-explainer">
-                  {source && !source.exited
+                  {moveSource && !moveSource.exited
                     ? `Moving stops this session on ${sourceLabel}, then starts its conversation on the computer you choose. The source history stays there so nothing is deleted.`
                     : `Sessions starts this conversation on the computer you choose. The source history stays on ${sourceLabel} so nothing is deleted.`}
                 </p>
@@ -161,7 +173,7 @@ export function ContinueElsewhereButton({
                       ))}
                     </select>
                   </label>
-                ) : !busy ? (
+                ) : !busy && !error ? (
                   <div className="continue-elsewhere-empty">
                     <strong>No saved machines yet.</strong>
                     <p>Pair another computer from Fleet. The app uses protected device credentials without placing them in a command or the web view.</p>
@@ -174,7 +186,7 @@ export function ContinueElsewhereButton({
                   }} />
                   <span><strong>Include uncommitted Git work in a temporary checkpoint</strong><small>The original files and branch stay unchanged.</small></span>
                 </label>
-                {source?.tool === 'claude-code' ? (
+                {moveSource?.tool === 'claude-code' ? (
                   <div className="continue-elsewhere-runtime">
                     <strong>Conversation + Terminal</strong>
                     <small>Claude continues as one interactive session. The destination machine’s Remote Control setting decides whether it also appears on claude.ai and mobile.</small>
@@ -212,7 +224,7 @@ export function ContinueElsewhereButton({
                     </button>
                   ) : (
                     <button type="button" className="btn btn-primary" disabled={busy || !selected} onClick={() => void review()}>
-                      {busy ? 'Checking…' : source && !source.exited ? 'End here and review move' : 'Review move'}
+                      {busy ? 'Checking…' : moveSource && !moveSource.exited ? 'End here and review move' : 'Review move'}
                     </button>
                   )}
                 </footer>

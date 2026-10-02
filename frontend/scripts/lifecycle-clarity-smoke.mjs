@@ -163,9 +163,9 @@ assert.match(view, /terminalAvailable=\{!richSession\}/);
 // Terminal / Remote Control must review the selected runtime through the same
 // confirmed restart boundary as the toolbar and menu. The browser restart suite
 // drives confirmation, cancellation, draft retention and partial retry.
-assert.match(view, /reviewConversationRestart\(\{ session, onOpen: onOpenSession, initialRemoteControl: enableRemoteControl, initialRuntimeMode: 'terminal' \}\)/);
+assert.match(view, /reviewConversationRestart\(\{ session, onOpen: onOpenSession, serverId: sourceServerId, initialRemoteControl: enableRemoteControl, initialRuntimeMode: 'terminal' \}\)/);
 assert.match(view, /<RestartConversation session=\{session\} onOpen=\{onOpenSession\}/);
-assert.match(navigator, /<RestartConversation session=\{session\} onOpen=\{onOpen\} appearance="menuitem"/);
+assert.match(navigator, /<RestartConversation session=\{session\} onOpen=\{onOpen\} serverId=\{sourceServerId\} appearance="menuitem"/);
 assert.match(app, /<RestartConversationHost \/>/);
 assert.match(restartControl, /lazy\(\(\) => import\('\.\/RestartConversationDialog'\)/);
 assert.match(restartDialog, /This ends only runtime <code>\{session\.id\}<\/code>/);

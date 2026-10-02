@@ -3,6 +3,10 @@ package main
 import "fmt"
 
 func (a *app) cmdRestart(args []string) error {
+	preview := removeFirst(&args, "--preview")
+	if preview {
+		return a.cmdRestartPreview(args)
+	}
 	confirm, confirmed := pluck(&args, "--confirm")
 	permissions, chosen := pluck(&args, "--permissions")
 	remote := removeFirst(&args, "--remote-control")
@@ -64,4 +68,19 @@ func (a *app) cmdRestart(args []string) error {
 		a.exitCode = 2
 	}
 	return nil
+}
+
+func (a *app) cmdRestartPreview(args []string) error {
+	if len(args) != 1 {
+		return fail(1, "usage: sessions restart SESSION --preview [--json]")
+	}
+	id, err := a.resolveSessionID(args[0])
+	if err != nil {
+		return err
+	}
+	var result map[string]any
+	if err := a.postJSON("/api/recovery/restart/preview", map[string]string{"sourceSessionId": id}, &result, 2); err != nil {
+		return err
+	}
+	return writeJSON(a.stdout, result, true)
 }

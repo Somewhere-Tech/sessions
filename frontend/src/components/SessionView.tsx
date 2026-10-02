@@ -16,6 +16,7 @@ import { AccountBadge } from './AccountBadge';
 const SessionActionsMenu = lazy(() => import('./SessionActionsMenu').then((module) => ({ default: module.SessionActionsMenu })));
 import { SessionArchiveButton } from './SessionArchiveButton';
 import { ClaudeRuntimeControl } from './ClaudeRuntimeControl';
+import { ClaudeRemoteControlLink } from './ClaudeRemoteControlLink';
 import { RestartConversation, reviewConversationRestart } from './RestartConversation';
 import { observedSessionModel } from '../lib/sessionModelLabel';
 const SessionHistoryView = lazy(() => import('./SessionHistoryView').then((module) => ({ default: module.SessionHistoryView })));
@@ -198,6 +199,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   const session = useSessions((s) => s.sessions.find((x) => x.id === sessionId)) ?? null;
   const { handingBack, handBackToManager } = useHandBack(session, onOpenSession);
   const allSessions = useSessions((s) => s.sessions);
+  const sourceServerId = useSessions((s) => s.serverId) ?? undefined;
   const endSession = useSessions((s) => s.kill);
   const updateName = useSessions((s) => s.updateName);
   const updateModel = useSessions((s) => s.updateModel);
@@ -424,8 +426,8 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
 
   const continueInTerminal = useCallback(async (enableRemoteControl: boolean): Promise<void> => {
     if (!session || !onOpenSession) throw new Error('Open the main Sessions window to restart this conversation.');
-    reviewConversationRestart({ session, onOpen: onOpenSession, initialRemoteControl: enableRemoteControl, initialRuntimeMode: 'terminal' });
-  }, [onOpenSession, session]);
+    reviewConversationRestart({ session, onOpen: onOpenSession, serverId: sourceServerId, initialRemoteControl: enableRemoteControl, initialRuntimeMode: 'terminal' });
+  }, [onOpenSession, session, sourceServerId]);
 
   const forkFromVisibleMessage = useCallback(async (
     message: { role: 'user' | 'assistant'; content: string; createdAt: number },
@@ -639,7 +641,8 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
           <Suspense fallback={<button type="button" disabled aria-label="Loading conversation actions">•••</button>}><SessionActionsMenu>
           {session ? <div className="session-actions-context"><AccountBadge session={session} /><span>{sessionModeName(session)}</span></div> : null}
           {session ? <SessionPopOutButton sessionId={session.id} label={resolvedSessionLabel(session)} /> : null}
-          {session && onOpenSession && !lostConversation ? <RestartConversation session={session} onOpen={onOpenSession} /> : null}
+          {session && onOpenSession && !lostConversation ? <RestartConversation session={session} onOpen={onOpenSession} serverId={sourceServerId} /> : null}
+          {session?.tool === 'claude-code' && sourceServerId ? <ClaudeRemoteControlLink key={`${sourceServerId}:${session.id}`} sessionId={session.id} serverId={sourceServerId} /> : null}
           {richSession && session?.tool === 'claude-code' && onResume && !lostConversation ?
             <ClaudeRuntimeControl working={session.working} onContinue={continueInTerminal} /> : null}
           {supportsConversation && onFork ? <ConversationForkButton active={forkMode} onClick={() => {

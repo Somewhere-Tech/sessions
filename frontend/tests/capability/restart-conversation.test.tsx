@@ -8,6 +8,13 @@ import { getActiveServer, useServers } from '../../src/lib/servers';
 import { draftStorageKey, readDraft, saveDraft } from '../../src/lib/draftStore';
 import { useSessions } from '../../src/store/sessions';
 
+// Keep these tests focused on mutating restart requests. The read-only account
+// preview has its own host/account capability tests and daemon contract tests.
+vi.mock('../../src/api/sessionsd/restart', async (original) => ({
+  ...await original<typeof import('../../src/api/sessionsd/restart')>(),
+  previewRestart: vi.fn().mockResolvedValue({ accountChanged: false })
+}));
+
 const source = makeSession({ id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', name: 'Restart fixture', tool: 'claude-code', kind: 'claude-structured', model: 'fixture-model', profile: 'fixture-work', permissions: 'constrained', working: true });
 const laneId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 

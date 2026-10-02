@@ -201,6 +201,7 @@ export function SessionNavigator({
   const updatePinned = useSessions((state) => state.updatePinned);
   const configuredMachines = useServers((state) => state.servers);
   const activeMachineId = useServers((state) => state.activeId);
+  const sourceServerId = useSessions((state) => state.serverId) ?? undefined;
   const selectMachine = useServers((state) => state.setActive);
   const [machineScope, setMachineScopeState] = useState<MachineScope>(readMachineScope);
   const [grouping, setGroupingState] = useState<SessionGrouping>(readGrouping);
@@ -671,7 +672,7 @@ export function SessionNavigator({
                 onClick={(event) => event.stopPropagation()}
               >
                 <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.id); }}>{session.exited ? 'View history' : 'Open in tab'}</button>
-                <RestartConversation session={session} onOpen={onOpen} appearance="menuitem" />
+                <RestartConversation session={session} onOpen={onOpen} serverId={sourceServerId} appearance="menuitem" />
                 {openSessionIds.includes(session.id) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onCloseView(session.id); }}>Close tab <small>keeps running</small></button> : null}
                 {/*
                   * On an ended session the item is shown DISABLED rather than

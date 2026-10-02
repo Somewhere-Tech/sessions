@@ -147,18 +147,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/machine" && request.Method == http.MethodGet {
-		if s.identityError != nil || s.identity.ID == "" {
-			detail := "machine identity is unavailable"
-			if s.identityError != nil {
-				detail = s.identityError.Error()
-			}
-			s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": detail}, corsOrigin)
-			return
-		}
-		s.sendJSON(response, http.StatusOK, map[string]any{
-			"machine_id": s.identity.ID,
-			"name":       s.identity.Name,
-		}, corsOrigin)
+		s.handleMachineIdentity(response, request, corsOrigin)
 		return
 	}
 	if path == "/ws" {
@@ -328,7 +317,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/recovery" || path == "/api/recovery/reopen" ||
-		path == "/api/recovery/restart" || path == "/api/recovery/adopt" || path == "/api/recovery/fork" || path == "/api/recovery/collaborator" || path == "/api/recovery/briefing" {
+		path == "/api/recovery/restart" || path == "/api/recovery/restart/preview" || path == "/api/recovery/adopt" || path == "/api/recovery/fork" || path == "/api/recovery/collaborator" || path == "/api/recovery/briefing" {
 		s.handleRecovery(response, request, corsOrigin)
 		return
 	}

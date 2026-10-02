@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { restartConversation, type RestartResult } from '../api/sessionsd/restart';
-import { getActiveServer } from '../lib/servers';
+import { previewRestart, restartConversation, type RestartPreview, type RestartResult } from '../api/sessionsd/restart';
+import { getActiveServer, getServer, serverDisplayName } from '../lib/servers';
 import { draftStorageKey, flushDraft, readDraft, saveDraft } from '../lib/draftStore';
 import { sessionMode } from '../lib/sessionMode';
 import { resolvedSessionLabel } from '../lib/tabLabels';
@@ -26,6 +26,17 @@ export function RestartConversationDialog({ session, onOpen, serverId, initialRe
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RestartResult | null>(null);
+  const [preview, setPreview] = useState<RestartPreview | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const machineId = serverId ?? getActiveServer().id;
+  const machineName = serverDisplayName(getServer(machineId), true);
+  useEffect(() => {
+    const controller = new AbortController();
+    void previewRestart(session.id, machineId, controller.signal).then(setPreview).catch((reason) => {
+      if (!controller.signal.aborted) setPreviewError(`Account check unavailable: ${String(reason)}. Restart still uses ${machineName}'s current login.`);
+    });
+    return () => controller.abort();
+  }, [session.id, machineId, machineName]);
   const locked = useRef(false);
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => { if (event.key === 'Escape' && !locked.current) onClose(); };
@@ -33,7 +44,6 @@ export function RestartConversationDialog({ session, onOpen, serverId, initialRe
     document.querySelector<HTMLSelectElement>('[aria-label="Restart permissions"]')?.focus();
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
-  const machineId = serverId ?? getActiveServer().id;
   const reopen = async (id: string): Promise<void> => {
     preserveRestartDraft(machineId, session.id, id);
     if (getActiveServer().id !== machineId) throw new Error('The replacement is running on the original computer. Select that computer, then choose Open replacement.');
@@ -69,8 +79,13 @@ export function RestartConversationDialog({ session, onOpen, serverId, initialRe
   return createPortal(<div className="dialog-backdrop" onClick={(event) => event.stopPropagation()}>
       <section className="dialog restart-conversation-dialog" role="dialog" aria-modal="true" aria-labelledby={`restart-title-${session.id}`}>
         <h2 id={`restart-title-${session.id}`}>Restart “{resolvedSessionLabel(session)}”</h2>
-        <p>This ends only runtime <code>{session.id}</code>{session.pid ? ` (PID ${session.pid})` : ''} and reopens the same {session.tool === 'codex' ? 'Codex' : 'Claude'} conversation.</p>
-        <p>The {session.profile || 'default'} account, {session.model || 'current'} model, saved history and your unsent draft are kept. Running commands and unsaved process state are interrupted. Your draft is never sent automatically.</p>
+        <p><strong>On {machineName}</strong> · This does not move the conversation to another computer.</p>
+        <p>Keeps the saved conversation and your unsent draft. Running commands are interrupted. Your draft is never sent automatically.</p>
+        <details><summary>What restarts</summary><p>This ends only runtime <code>{session.id}</code>{session.pid ? ` (PID ${session.pid})` : ''} and reopens the same {session.tool === 'codex' ? 'Codex' : 'Claude'} conversation.</p><p>Login profile: {session.profile || 'default'} · Model: {session.model || 'current'}</p></details>
+        <p>Uses this profile’s current sign-in, not necessarily the account that originally opened this chat.</p>
+        {preview?.savedLoginEmail ? <p>Saved sign-in: {preview.savedLoginEmail} (not verified live).</p> : null}
+        {preview?.warning || previewError ? <p role="status">{preview?.warning ?? previewError}</p> : null}
+        {remoteControl && !preview?.accountChanged ? <p>A changed Claude login may use a different Remote Control link.</p> : null}
         {session.working ? <p role="status">This agent is working. Restart interrupts its current turn.</p> : null}
         <label>Permissions <select aria-label="Restart permissions" value={permissions} disabled={busy || submitted} onChange={(event) => setPermissions(event.target.value as 'constrained' | 'full')}>
           <option value="constrained">Ask for approval</option><option value="full">Full access (YOLO)</option>

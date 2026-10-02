@@ -142,11 +142,11 @@ Run `sessions help <command>` for one command or `sessions docs` for the complet
 
 ```text
 Usage:
-  sessions restart SESSION --confirm EXACT-RUNTIME-ID --permissions constrained|full [--terminal|--structured] [--remote-control]
+  sessions restart SESSION [--preview | --confirm EXACT-RUNTIME-ID --permissions constrained|full [--terminal|--structured] [--remote-control]]
 
 end one runtime and reopen its exact conversation
 
-Explicitly end only the confirmed runtime and reopen the same provider conversation, preserving its account profile, model, history and runtime kind. Full access (YOLO) applies only to the replacement, never global defaults. --remote-control selects Claude Terminal and requires existing user consent in Settings. Running work is interrupted. Inspect status first and pass its full runtime UUID to --confirm. Repeating the same source and choices recovers the recorded restart without starting a duplicate. Different choices on an already recorded restart are refused. JSON reports sourceEnded, laneId, partial and error; exit 2 means the operation needs attention. The native app retains its unsent draft; CLI has no composer draft.
+Explicitly end only the confirmed runtime and reopen the same provider conversation, preserving its login profile, model, history and runtime kind. A profile uses its current sign-in, not necessarily the account that originally opened the conversation. --preview reads saved Claude Remote Control and login observations without ending anything or creating a restart receipt; it always returns JSON. A recorded URL is not proof of a live connection, and the saved login is not a live authentication check. Full access (YOLO) applies only to the replacement, never global defaults. --remote-control selects Claude Terminal and requires existing user consent in Settings; a changed login may produce a different Claude-app link. Running work is interrupted. Inspect status first and pass its full runtime UUID to --confirm. Repeating the same source and choices recovers the recorded restart without starting a duplicate. Different choices on an already recorded restart are refused. JSON reports sourceEnded, laneId, partial and error; exit 2 means the operation needs attention. The native app retains its unsent draft; CLI has no composer draft.
 
 Examples:
   sessions status SESSION

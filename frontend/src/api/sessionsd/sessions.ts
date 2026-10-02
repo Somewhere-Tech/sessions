@@ -517,6 +517,7 @@ export async function revokeServerDevice(
 export interface ServerMachineIdentity {
   machineId: string;
   name: string;
+  deviceId?: string;
 }
 
 export async function fetchServerMachineIdentity(
@@ -528,11 +529,11 @@ export async function fetchServerMachineIdentity(
     `${httpBaseForServer(server)}/api/machine`,
     { signal }
   );
-  const body = await json<{ machine_id?: string; machineId?: string; name: string }>(r);
+  const body = await json<{ machine_id?: string; machineId?: string; name: string; device_id?: string }>(r);
   const machineId = (body.machineId ?? body.machine_id ?? '').trim();
   const name = body.name?.trim();
   if (!machineId || !name) throw new Error('machine identity response was incomplete');
-  return { machineId, name };
+  return { machineId, name, ...(body.device_id?.trim() ? { deviceId: body.device_id.trim() } : {}) };
 }
 
 export async function listServerSessions(

@@ -55,6 +55,8 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		s.sendJSON(response, http.StatusOK, result, corsOrigin)
 	case request.URL.Path == "/api/recovery/restart" && request.Method == http.MethodPost:
 		s.handleRestart(response, request, corsOrigin)
+	case request.URL.Path == "/api/recovery/restart/preview" && request.Method == http.MethodPost:
+		s.handleRestartPreview(response, request, corsOrigin)
 	case request.URL.Path == "/api/recovery/fork" && request.Method == http.MethodPost:
 		s.handleRecoveryFork(response, request, corsOrigin)
 	case request.URL.Path == "/api/recovery/collaborator" && request.Method == http.MethodPost:

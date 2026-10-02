@@ -51,3 +51,37 @@ func TestRestartCLIRequiresExactConfirmationAndReportsPartialJSON(t *testing.T) 
 		t.Fatalf("result=%+v", result)
 	}
 }
+
+func TestRestartPreviewCLIIsReadOnlyAndNeedsNoConfirmation(t *testing.T) {
+	const source = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	previews := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/sessions":
+			w.Write([]byte(`{"sessions":[{"id":"` + source + `","name":"New PM"}]}`))
+		case "/api/recovery/restart/preview":
+			previews++
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			if r.Method != "POST" || body["sourceSessionId"] != source {
+				t.Errorf("preview request=%s %+v", r.Method, body)
+			}
+			w.Write([]byte(`{"sourceSessionId":"` + source + `","accountChanged":true,"warning":"changed saved login"}`))
+		default:
+			t.Errorf("preview attempted unexpected route %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("SESSIONS_STATE_DIR", root+"/runners")
+	t.Setenv("SESSIONS_LEDGER_PATH", root+"/lanes.sqlite3")
+	t.Setenv("SESSIONS_PORT", "8899")
+	var out, errOut bytes.Buffer
+	code := run([]string{"--host", server.URL, "--json", "restart", source, "--preview"}, strings.NewReader(""), &out, &errOut)
+	if code != 0 || previews != 1 || !strings.Contains(out.String(), `"accountChanged": true`) {
+		t.Fatalf("code=%d previews=%d out=%s err=%s", code, previews, out.String(), errOut.String())
+	}
+}

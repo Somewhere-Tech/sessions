@@ -18,6 +18,10 @@ try {
     define: { 'import.meta.env.BASE_URL': '"/"' }, external: ['/claude-icon.svg'], logLevel: 'silent' });
   await writeFile(join(work, 'index.html'), '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script type="module" src="/app.js"></script></body></html>');
   server = createServer(async (request, response) => {
+    if (request.url === '/api/recovery/restart/preview') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ sourceSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', accountChanged: true, savedLoginEmail: 'fixture@example.test', warning: 'Saved login differs from the recorded Remote Control owner.' })); return;
+    }
     if (request.url === '/api/sessions?include_exited=1') {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ sessions: [{ id: laneId, args: [], tool: 'claude-code', cwd: '/fixture', createdAt: Date.now(), exited: false }] })); return;
@@ -51,6 +55,7 @@ try {
   await clickText('Restart / change permissions…'); await page.waitForSelector('[role=dialog]');
   const review = await page.$eval('[role=dialog]', (element) => element.textContent);
   assert.match(review, /aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/); assert.match(review, /PID 4242/); assert.match(review, /fixture-work/); assert.match(review, /fixture-model/);
+  assert.match(review, /On This computer/); assert.match(review, /not necessarily the account/);
   await clickText('Cancel'); assert.equal(requests.length, 0);
   await page.type('textarea', 'My exact unsent draft');
   await clickText('Restart / change permissions…');

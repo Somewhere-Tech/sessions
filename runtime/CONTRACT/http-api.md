@@ -403,6 +403,13 @@ Auth required. Returns the daemon's stable machine identity, the same
 {"machine_id":"<stable machine UUID>","name":"<computer name>"}
 ```
 
+For a caller authenticated with a paired-device credential, the response also
+includes `device_id`, the caller's own revocation identity. Loopback,
+administrator-token and open-access callers do not receive this field. No
+other device identities or credentials are returned. Native clients may repair
+missing pairing metadata only when this authenticated response matches the
+already saved stable machine identity; a token alone is not proof of pairing.
+
 `name` is the operating system's user-facing computer name, truncated to the
 machine-name limit. A legacy DNS-derived name is upgraded without changing the
 stable machine UUID. When the identity file could not be created or read, the
@@ -1692,6 +1699,17 @@ JSON is 400; a ledger open or report failure is 500.
 
 ### `POST /api/recovery/restart`
 
+`POST /api/recovery/restart/preview` is an authenticated, read-only companion.
+Its body is `{ "sourceSessionId": "<runtime UUID>" }`. It returns the source
+id, login profile, optional recorded Claude `remoteUrl`, optional
+`savedLoginEmail`, `accountChanged`, and an instructional `warning` when the
+saved login differs from the transcript's Remote Control owner or cannot be
+compared. These are provider-owned saved observations, not proof of a live
+connection or verified current authentication. The transcript scan reads at
+most its last 1 MiB; absent metadata is unknown. No credential is exposed and
+no receipt, history, account, or runtime is changed. Unknown sources return
+404; malformed requests return 400. CLI: `sessions restart SESSION --preview`.
+
 Auth required. Ends exactly one live Claude or Codex runtime and creates a
 replacement for its native provider conversation. It never follows the source's
 successor chain. The request must identify the same full runtime id twice and
@@ -1706,6 +1724,8 @@ replacement. `runtimeMode` is optional `rich` or `terminal`; omission retains th
 source's runtime. `remoteControl:true` requires Claude and existing user consent
 in Settings and selects Terminal. The recorded account profile, model, effort,
 name, workspace and native provider conversation identity are retained. The
+profile uses its current sign-in, not necessarily the original account; a
+changed login may create a different Claude Remote Control link. The
 provider transcript must still be available before ending the source. Running
 work is interrupted; process memory is not restored. No provider credential or
 machine permission default is changed.
