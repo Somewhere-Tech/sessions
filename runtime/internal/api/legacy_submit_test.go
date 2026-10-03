@@ -24,6 +24,22 @@ type legacyEchoInput struct {
 	test    *testing.T
 }
 
+func TestLegacyClaudePastedHistoryAcknowledgesOneSubmitWithoutResending(t *testing.T) {
+	text := "# Start now\n" + strings.Repeat("Keep the complete instructions 🙂\n", 256)
+	echo := "\n\n<pasted_content id=\"7ab0\">\n" + text + "\n</pasted_content id=\"7ab0\">\n"
+	daemon, input := legacySubmitFixture(t, &echo)
+	const operation = "11111111-2222-4333-8444-555555555555"
+	for attempt := 0; attempt < 2; attempt++ {
+		receipt := legacySubmit(t, daemon, text, operation)
+		if receipt["status"] != "accepted" || receipt["acceptance"] != "transcript" {
+			t.Fatalf("wrapped provider history was not acknowledged: %v", receipt)
+		}
+	}
+	if len(input.inputs) != 2 || input.session.ClaudeEventCount() != 1 {
+		t.Fatalf("paste was resent: writes=%d user events=%d", len(input.inputs), input.session.ClaudeEventCount())
+	}
+}
+
 func TestLegacyCompleteReceiptsPreserveRepeatedMessagesAndSubscribers(t *testing.T) {
 	text := strings.Repeat("é🙂\n", 1024)
 	daemon, input := legacySubmitFixture(t, &text)

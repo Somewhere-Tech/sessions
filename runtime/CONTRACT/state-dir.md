@@ -463,9 +463,12 @@ launchctl bootstrap gui/<uid> <plist-path>
 ```
 
 Exit status 17 or stderr matching “already loaded/bootstrapped” is accepted as
-success. Bootout invokes `launchctl bootout
-gui/<uid>/tech.somewhere.sessions.runner.<id>` and then unlinks the plist regardless of
-the command result.
+success. Service-manager commands honor caller cancellation and have a
+ten-second command budget; cancellation does not prove whether launchd accepted
+the operation. Bootout invokes `launchctl bootout
+gui/<uid>/tech.somewhere.sessions.runner.<id>` and unlinks the plist only after
+success or an explicit absent-job response. An uncertain or refused bootout
+preserves the registration for inspection. Cleanup never targets other sessions.
 
 New plists run the configured native `sessions-runner` executable directly.
 An adopted pre-native plist may retain its earlier argv until the session exits

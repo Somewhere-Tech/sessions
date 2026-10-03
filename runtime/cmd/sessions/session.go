@@ -39,6 +39,7 @@ type session struct {
 	MessageSubmit     bool              `json:"messageSubmit,omitempty"`
 	RunnerVersion     string            `json:"runnerVersion,omitempty"`
 	Tool              string            `json:"tool"`
+	Launching         bool              `json:"launching,omitempty"`
 	Working           bool              `json:"working"`
 	LastDataAt        int64             `json:"lastDataAt"`
 	LastUserMessageAt *int64            `json:"lastUserMessageAt"`

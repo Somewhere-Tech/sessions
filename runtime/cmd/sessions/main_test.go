@@ -286,6 +286,7 @@ func TestLiveStatusNeverLooksTerminalBecauseOfLastTurn(t *testing.T) {
 		{name: "completed turn remains live", session: session{IdleReason: "completed"}, want: "idle"},
 		{name: "failed turn remains live", session: session{IdleReason: "failed"}, want: "idle"},
 		{name: "never started remains live", session: session{IdleReason: "never-started"}, want: "idle"},
+		{name: "recorded launch is starting, not idle", session: session{Launching: true}, want: "starting"},
 		{name: "approval is actionable", session: session{IdleReason: "needs-input"}, want: "needs-you"},
 		{name: "reboot pause needs recovery", session: session{Unreachable: true, UnreachableReason: "restart-restore-pending"}, want: "needs-recovery"},
 		{name: "lost runner is unreachable", session: session{Unreachable: true, UnreachableReason: "runner-lost"}, want: "unreachable"},

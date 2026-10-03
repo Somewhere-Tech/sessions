@@ -199,7 +199,9 @@ type Manager struct {
 	pausedRetiredCount  int
 	artifactRetired     int
 	artifactPending     int
-	bindMu              sync.Mutex
+	bindGate            chan struct{}
+	// Starting lanes are owned by Create until launch and registration settle.
+	starting sync.Map
 	// completionGeneration records the newest delegated-task completion
 	// attempt per session so a fresh idle classification supersedes an
 	// in-flight one instead of racing it.
@@ -328,6 +330,7 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 		boundaries: selected.Boundaries, observations: selected.Observations,
 		retention: selected.Retention, worktrees: selected.Worktrees, attributions: selected.Attributions,
 		ledgerReader: selected.LedgerReader,
+		bindGate:     make(chan struct{}, 1),
 		usage:        selected.UsageRecorder,
 		runtimes:     make(map[string]*runtimeSession), hooks: loadGlobalHooks(config.GlobalHooksPath),
 		laneDeaths: make(map[string]laneDeathBurst), notifications: make(map[string]*sessionNotificationState),
@@ -462,6 +465,7 @@ func (m *Manager) ListTimed(includeExited bool) ([]state.SessionInfo, ListTiming
 	// from the default list because a socket died is a kill wearing sleep's
 	// clothes. withDurableClosed adds ended records only when they were asked
 	// for.
+	infos = m.withStartingSessions(infos, states)
 	infos = m.withDurableClosedStates(infos, states, includeExited)
 	restoreStart := time.Now()
 	infos = m.withPendingRestores(infos)

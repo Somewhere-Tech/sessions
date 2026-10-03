@@ -795,6 +795,22 @@ export async function getPushVapidPublicKey(): Promise<string> {
   return body.publicKey;
 }
 
+export interface NotificationDeliveryStatus {
+  notify: { done: boolean; waiting: boolean; lost: boolean };
+  subscribed: boolean;
+}
+
+export async function fetchNotificationDeliveryStatus(serverId: string, signal?: AbortSignal): Promise<NotificationDeliveryStatus> {
+  const server = requestedServer(serverId);
+  const response = await serverFetch(server, `${httpBaseForServer(server)}/api/notify`, { signal });
+  const status = await json<NotificationDeliveryStatus>(response);
+  if (typeof status.subscribed !== 'boolean' || !status.notify
+    || [status.notify.done, status.notify.waiting, status.notify.lost].some((value) => typeof value !== 'boolean')) {
+    throw new Error('This computer returned an unreadable push-notification status.');
+  }
+  return status;
+}
+
 export async function subscribePush(subscription: PushSubscription): Promise<void> {
   const r = await apiFetch(`${httpBase()}/api/push/subscribe`, {
     method: 'POST',

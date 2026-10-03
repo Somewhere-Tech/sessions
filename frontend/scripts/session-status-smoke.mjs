@@ -27,6 +27,7 @@ try {
     endedSummary,
     isCrashedSession,
     isDegradedSession,
+    lostSessionNote,
     providerConversationId,
     sessionIsFinished,
     sessionNeedsYou,
@@ -36,6 +37,7 @@ try {
   assert.equal(classifySession({ id: 'new', idleReason: 'never-started' }).state, 'not-started');
   assert.equal(classifySession({ id: 'resumed', idleReason: 'never-started', resumedFrom: 'original' }).state, 'ready');
   assert.equal(classifySession({ id: 'lost', idleReason: 'never-started', resumedFrom: 'original', unreachable: true }).state, 'unavailable');
+  assert.equal(lostSessionNote({ id: 'launch-failed', lostReason: 'runner startup was never confirmed' }), 'Startup was not confirmed · Inspect before restarting');
 
   const liveMcpWarning = {
     id: 'mcp-warning',
@@ -266,6 +268,8 @@ try {
   assert.equal(classifySession(ready).state, 'ready');
   assert.equal(classifySession({ ...ready, idleReason: 'completed' }).state, 'finished');
   assert.equal(classifySession({ ...ready, idleReason: 'never-started' }).state, 'not-started');
+  assert.equal(classifySession({ ...ready, launching: true }).label, 'Starting');
+  assert.equal(sessionIsFinished({ ...ready, launching: true }), false);
 
   // The caller-supplied live activity signal replaces the daemon flag at its
   // own step, and cannot promote a session past exited-ness.

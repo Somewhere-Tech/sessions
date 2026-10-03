@@ -284,7 +284,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
   // display reconnect must not turn a daemon-confirmed live session into a
   // disabled composer: the acknowledged send path reports a real failure and
   // keeps the draft if delivery cannot be confirmed.
-  const sendAvailable = Boolean(session && !session.exited && !session.unreachable);
+  const sendAvailable = Boolean(session && !session.exited && !session.unreachable && !session.launching);
   const sidebar = useSessionSidebar({
     session,
     events: term.claudeEvents,

@@ -158,6 +158,9 @@ func liveStatusState(current session) string {
 		}
 		return "unreachable"
 	}
+	if current.Launching {
+		return "starting"
+	}
 	if current.SetAsideAt != nil {
 		return "set-aside"
 	}

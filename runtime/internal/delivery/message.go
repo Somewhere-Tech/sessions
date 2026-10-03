@@ -43,7 +43,14 @@ func NormalizedMessage(text string) string {
 func MatchingUserText(raw json.RawMessage, intended string) (string, bool) {
 	text, ok := UserText(raw)
 	wanted := NormalizedMessage(MessageText(intended))
-	return text, ok && wanted != "" && NormalizedMessage(text) == wanted
+	if !ok || wanted == "" {
+		return text, false
+	}
+	if NormalizedMessage(text) == wanted {
+		return text, true
+	}
+	pasted, wrapped := ClaudePastedText(text)
+	return pasted, wrapped && NormalizedMessage(pasted) == wanted
 }
 
 func MessageHash(text string) string {
@@ -63,7 +70,14 @@ func MatchesLateUserEvent(raw json.RawMessage, hash string, createdAtMS int64) b
 		return false
 	}
 	at, err := time.Parse(time.RFC3339Nano, event.Timestamp)
-	return err == nil && at.UnixMilli() >= createdAtMS && MessageHash(text) == hash
+	if err != nil || at.UnixMilli() < createdAtMS {
+		return false
+	}
+	if MessageHash(text) == hash {
+		return true
+	}
+	pasted, wrapped := ClaudePastedText(text)
+	return wrapped && strings.TrimSpace(pasted) != "" && MessageHash(pasted) == hash
 }
 
 func UserText(raw json.RawMessage) (string, bool) {

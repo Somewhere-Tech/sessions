@@ -316,6 +316,9 @@ func (m *Manager) reconcileLedger(ctx context.Context) {
 		if !lane.Created || closed || lane.RunnerLost {
 			continue
 		}
+		if _, starting := m.starting.Load(lane.LaneID); starting {
+			continue
+		}
 		if _, present := m.registry.Get(lane.LaneID); present {
 			continue
 		}
@@ -358,33 +361,17 @@ func (m *Manager) reconcileLedger(ctx context.Context) {
 }
 
 func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest) (state.SessionInfo, error) {
-	if request.Profile != "" {
-		configDir, err := m.prepareProfile(request.Cmd, request.Profile)
-		if err != nil {
-			return state.SessionInfo{}, err
-		}
-		request.ConfigDir = configDir
-	}
-	resolvedRuntimeRequest, err := resolveDelegatedRuntimeDefault(request)
+	request, err := m.prepareCreateRequest(ctx, request)
 	if err != nil {
 		return state.SessionInfo{}, err
 	}
-	request = resolvedRuntimeRequest
-	resolvedClaudeRequest, err := m.applyClaudeDefaults(request)
+	// Serialize operation lookup with the durable creation intent. This is
+	// idempotency, not a guarantee of exclusive provider-conversation access.
+	release, err := m.acquireCreation(ctx)
 	if err != nil {
 		return state.SessionInfo{}, err
 	}
-	request = resolvedClaudeRequest
-	resolvedRequest, err := m.resolveCodexModelChoice(ctx, request)
-	if err != nil {
-		return state.SessionInfo{}, err
-	}
-	request = resolvedRequest
-
-	// Serialize the ledger query with the pre-launch binding write. Without
-	// this lock two concurrent resume requests could both observe no owner.
-	m.bindMu.Lock()
-	defer m.bindMu.Unlock()
+	defer release()
 	if replayed, found, err := m.replayStart(ctx, request); found || err != nil {
 		return replayed, err
 	}
@@ -492,11 +479,11 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 		}
 		return nil
 	}
-	info, err := m.registry.CreateWithLifecycle(ctx, request, state.CreateLifecycle{
+	info, err := m.createRegistryTracked(ctx, request, state.CreateLifecycle{
 		BeforeLaunch:  beforeLaunch,
 		LaunchStarted: m.recordLaunchStarted,
 		RunnerReady:   m.recordRunnerReady,
-	})
+	}, release)
 	if err != nil {
 		if preparedWorktree != nil && !creationRecorded {
 			if rollbackErr := rollbackCreatedGitWorktree(ctx, *preparedWorktree); rollbackErr != nil {
@@ -535,7 +522,7 @@ func (m *Manager) finishCreate(ctx context.Context, id string, request state.Cre
 
 // replayStart returns the session an earlier create with the same operation
 // id produced, so a caller that lost the first response cannot start the same
-// work twice. Create holds bindMu around this lookup and the created-event
+// work twice. Create holds bindGate around this lookup and the created-event
 // write, so a concurrent duplicate waits for the first request to be recorded
 // instead of racing it. The ledger is the only durable record of the id; a
 // daemon without one cannot honor the promise and says so.
@@ -564,8 +551,10 @@ func (m *Manager) replayStart(ctx context.Context, request state.CreateSessionRe
 		session, live := m.registry.Get(lane.LaneID)
 		if !live || session.Info().Exited {
 			reason := fmt.Sprintf("has ended (`sessions resume %s` continues its conversation)", lane.LaneID)
-			if !live && !lane.RunnerReady && !lane.Attached {
-				reason = "never reported ready, so its launch did not complete"
+			if _, starting := m.starting.Load(lane.LaneID); starting {
+				reason = "is still starting on this daemon; wait and inspect the recorded session, without creating another"
+			} else if !live && !lane.RunnerReady && !lane.Attached {
+				reason = "never reported ready; inspect the recorded runner before deciding how to recover"
 			} else if !live && !durablyClosed(lane) {
 				reason = "is not attached to this daemon yet (it may still be reconnecting after a restart; ask again in a moment)"
 			}

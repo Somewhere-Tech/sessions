@@ -123,6 +123,7 @@ export interface SessionInfo {
   runnerProtocol?: number;
   runnerVersion?: string;
   tool: SessionTool;
+  launching?: boolean;
   working: boolean;
   lastDataAt: number;
   // Latest provider-transcript user-role record. Provider-internal injections

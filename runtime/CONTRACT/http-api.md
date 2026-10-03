@@ -141,6 +141,7 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `runnerVersion` | string, optional | Sessions runtime release reported by the runner |
 | `tool` | `"claude-code" \| "codex" \| "terminal"` | classification derived from `cmd` |
 | `working` | boolean | current activity classification |
+| `launching` | boolean, optional | recorded creation is still executing in this daemon, before runner registration. Shown as Starting, not Working; startup is unconfirmed. The row's `start` object includes the original operation ID when one was recorded. Omitted after creation settles or the daemon restarts; absence is not proof the command started or stopped |
 | `lastDataAt` | number | Unix epoch milliseconds of latest PTY output |
 | `lastUserMessageAt` | number or null | latest user-role record in the provider transcript. Transcript-derived, so it includes the provider's own internal injections — a scheduled prompt or cron tick is written straight into the transcript and is indistinguishable there from a person. Do not read it as human contact; use `lastHumanMessageAt` for that |
 | `lastHumanMessageAt` | number or null | Unix epoch milliseconds of the latest input that reached Sessions **without** source-session attribution: a person at a keyboard, a composer, an attached terminal, `sessions send` run by hand. Stamped at the input boundary, which a provider's internal injection never crosses. Null means no person has spoken into this session |
@@ -1409,6 +1410,11 @@ Legacy provider delivery is accepted only when a user event after the
 pre-input absolute history cursor matches the entire message, allowing CRLF
 and outer-whitespace normalization. The daemon waits up to five seconds after
 Enter, bounded by the request context. A match returns `acceptance:"transcript"`.
+Claude's complete outer `<pasted_content>` envelope may be removed for this
+comparison, including its repeated-id closing tag. The enclosed text must still
+match in full; mismatched ids, partial envelopes, extra text outside the envelope
+and tool-result events do not confirm delivery. The original wrapped user event
+is retained in conversation reads and durable mirrors.
 A suffix, unrelated event, timestamp change, or Working state is insufficient.
 Timeout, partial input, and unavailable history return `unknown`,
 `delivered:false`, `retry:false`. This does not prove that nothing was sent.
@@ -2690,10 +2696,17 @@ distinguishes them must wait rather than report the session unknown; the CLI
 does, bounded by each command's own timeout.
 
 A session whose runner is gone carries `lostReason` — one of
-`machine rebooted`, `runner exited`, `daemon lost contact` — and `lostAt`, the
+`machine rebooted`, `runner exited`, `daemon lost contact`, or
+`runner startup was never confirmed` — and `lostAt`, the
 moment it names. Both are additive and omitted when the daemon cannot say: a
 machine that cannot read its own boot time reports `daemon lost contact`, which
-is what such a daemon knows, rather than guessing a reboot. `POST
+is what such a daemon knows, rather than guessing a reboot. An unconfirmed
+startup means a recorded launch has no ready or attached observation; it does
+not prove that its command never ran and does not authorize a duplicate.
+While this daemon is executing a creation, discovery does not classify that
+same launch as lost. An unreachable runner projects a start receipt as blocked
+with `blocked_by: runner-unavailable` and an inspect action, preserving any
+uncertain delivery receipt. `POST
 /api/recovery/adopt` follows a source's `reopened_as` chain to its newest link
 and resumes that; when the newest link is still running it answers 409 naming
 the session to open instead, and `force:true` continues from the record as

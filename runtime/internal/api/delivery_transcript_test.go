@@ -31,7 +31,8 @@ func TestLateLegacyReceiptSettlesWithoutInputIncludingReloadedStore(t *testing.T
 	recordUserEvent(t, input.session, time.Now(), "second line")
 	check("unknown") // A suffix is not the original message.
 	daemon.handler.deliveries = delivery.New(daemon.handler.config.StateRoot)
-	recordUserEvent(t, input.session, time.Now(), text)
+	// Real Claude history repeats the paste id on the closing tag.
+	recordUserEvent(t, input.session, time.Now(), "\n\n<pasted_content id=\"7ab0\">\n"+text+"\n</pasted_content id=\"7ab0\">\n")
 	check("accepted")
 	check("accepted")
 	replayed := legacySubmit(t, daemon, text, operation)

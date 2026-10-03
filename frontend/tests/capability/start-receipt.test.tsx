@@ -181,6 +181,10 @@ describe('capability: the header says how far a start got', () => {
   it('distinguishes sending, not sent, refused, uncertain, delivered and blocked', () => {
     expect(startNotice({ exited: false, start: receipt({ prompt: { status: 'sending', retry: false } }) })?.tone).toBe('progress');
     expect(startNotice({ exited: false, start: receipt({ prompt: { status: 'not-sent', retry: true } }) })?.text).toMatch(/not sent/);
+    const starting = startNotice({ exited: false, launching: true, start: receipt({ prompt: { status: 'not-sent', retry: true } }) });
+    expect(starting?.tone).toBe('progress');
+    expect(starting?.text).toMatch(/Wait for runner readiness/);
+    expect(starting?.text).not.toMatch(/Send it from the composer/);
     expect(startNotice({ exited: false, start: receipt({ phase: 'prompt-not-delivered', prompt: { status: 'not-delivered', retry: true } }) })?.text).toMatch(/safe/);
     expect(startNotice({ exited: false, start: receipt({ phase: 'prompt-unknown', prompt: { status: 'unknown', retry: false } }) })?.text).toMatch(/did not resend/);
     expect(startNotice({ exited: false, start: receipt({ phase: 'prompt-delivered' }) })?.tone).toBe('progress');

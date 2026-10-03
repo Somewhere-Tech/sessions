@@ -111,6 +111,9 @@ func (m *Manager) DiscoverWithOptions(ctx context.Context, options DiscoverOptio
 	if err == nil {
 		for _, id := range artifactIDs {
 			m.startup.advance()
+			if m.skipStartingArtifact(id, candidates, deadArtifacts) {
+				continue
+			}
 			if existing, exists := m.registry.Get(id); exists && !existing.Info().Unreachable {
 				continue
 			}

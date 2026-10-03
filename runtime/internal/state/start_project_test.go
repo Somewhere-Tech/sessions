@@ -35,8 +35,13 @@ func TestProjectStartDistinguishesEveryStep(t *testing.T) {
 	}{
 		{name: "created, first request never submitted", prompt: &StartPrompt{Status: StartPromptNotSent, Retry: true},
 			phase: StartPhaseCreated, recovery: StartRecoverySendPrompt, evidenceIn: "nothing was sent"},
+		{name: "launching waits instead of sending or recreating", info: SessionInfo{Launching: true},
+			prompt: &StartPrompt{Status: StartPromptNotSent, Retry: true}, phase: StartPhaseCreated,
+			recovery: StartRecoveryWait, evidenceIn: "readiness has not been confirmed"},
 		{name: "delivery in flight", prompt: &StartPrompt{Status: StartPromptSending},
 			phase: StartPhaseCreated, recovery: StartRecoveryWait},
+		{name: "unreachable runner is blocked, not idle or ready", info: SessionInfo{Unreachable: true, LostReason: "runner startup was never confirmed"},
+			prompt: &StartPrompt{Status: StartPromptUnknown}, phase: StartPhaseBlocked, recovery: StartRecoveryInspect, evidenceIn: "startup was never confirmed"},
 		{name: "refused before the provider, safe to send again", prompt: &StartPrompt{Status: StartPromptNotDelivered, Retry: true, Reason: "turn active"},
 			phase: StartPhasePromptNotDelivered, recovery: StartRecoverySendPrompt, evidenceIn: "turn active"},
 		{name: "refused without proof nothing arrived", prompt: &StartPrompt{Status: StartPromptNotDelivered, Reason: "odd"},

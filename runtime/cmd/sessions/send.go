@@ -264,6 +264,9 @@ func isRealUserEvent(event map[string]any) bool {
 		}
 	}
 	text := strings.TrimLeftFunc(extractEventText(event), unicode.IsSpace)
+	if _, pasted := delivery.ClaudePastedText(text); pasted {
+		return true
+	}
 	return !strings.HasPrefix(text, "<") &&
 		!strings.HasPrefix(text, "Caveat:") &&
 		!strings.HasPrefix(text, "This session is being continued") &&

@@ -107,8 +107,11 @@ type SessionInfo struct {
 	RunnerVersion     string            `json:"runnerVersion,omitempty"`
 	MessageSubmit     bool              `json:"messageSubmit,omitempty"`
 	Tool              SessionTool       `json:"tool"`
-	Working           bool              `json:"working"`
-	LastDataAt        int64             `json:"lastDataAt"`
+	// Launching is a process-local Create call with a recorded identity but
+	// no registered runner yet. It does not claim the command started.
+	Launching  bool  `json:"launching,omitempty"`
+	Working    bool  `json:"working"`
+	LastDataAt int64 `json:"lastDataAt"`
 	// LastUserMessageAt is transcript-derived and says nothing about who wrote
 	// the message. It moves whenever a user-role record appears in the
 	// provider's own conversation file, and a provider writes those records for
