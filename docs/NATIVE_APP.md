@@ -96,6 +96,23 @@ privacy. Onboarding's Fleet step and Settings › Fleet › **Allow local networ
 start the first daemon-owned browse so any macOS prompt appears in context;
 the app does not fabricate or preflight a permission result.
 
+New app-managed runner jobs carry the same association when their executable
+comes from `~/Library/Application Support/Sessions/runtime/`. Standalone and
+scratch runners do not borrow that association. This identifies the responsible
+app; it does not grant file access, override a denied macOS privacy decision, or
+change the provider's approval/sandbox policy. Existing runner jobs are not
+restarted or rewritten by this change.
+The app and runtime binaries also declare a removable-volume usage description
+explaining project and shared Git metadata access when macOS requests consent.
+
+A Git worktree can keep its shared metadata on a different drive from its
+working files. Failed worktree inspections retain the Git error and, when the
+daemon cannot read the `.git` target or its `commondir`, name that inaccessible
+path. Reconnect the source drive and review Sessions' Files and Folders access
+in macOS Privacy & Security. A successful daemon inspection does not prove
+access inside a provider sandbox; grant only the additional workspace access
+that provider requests. Do not substitute copied source trees for recovery.
+
 Windows releases require a current-user installer, Authenticode, the pinned
 updater signature, manifest verification, and the hardware matrix in
 [`WINDOWS_TEST.md`](WINDOWS_TEST.md).

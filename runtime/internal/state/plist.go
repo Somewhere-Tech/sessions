@@ -20,6 +20,7 @@ type plistArgs struct {
 	Cwd              string
 	LogPath          string
 	KeepAlivePath    string
+	AppBundleID      string
 }
 
 func plistPath(launchAgentsDir, id string) string {
@@ -82,7 +83,7 @@ func plistXML(args plistArgs) string {
 <dict>
   <key>Label</key>
   <string>` + launchdLabelPrefix + escape(args.ID) + `</string>
-  <key>ProgramArguments</key>
+` + runnerAppAssociation(args.AppBundleID) + `  <key>ProgramArguments</key>
   <array>
 ` + strings.Join(program, "\n") + `
   </array>
@@ -115,4 +116,12 @@ func plistXML(args plistArgs) string {
 </dict>
 </plist>
 `
+}
+
+func runnerAppAssociation(bundleID string) string {
+	if bundleID == "" {
+		return ""
+	}
+	escaped := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(bundleID)
+	return "  <key>AssociatedBundleIdentifiers</key>\n  <array>\n    <string>" + escaped + "</string>\n  </array>\n"
 }

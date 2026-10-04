@@ -456,6 +456,14 @@ Comments explaining KeepAlive and ProcessType are also emitted in the actual
 file, but have no plist semantics. Environment entries are sorted by key. XML
 escaping replaces `&`, `<`, and `>` in text values.
 
+On macOS, newly prepared app-managed jobs additionally include
+`AssociatedBundleIdentifiers: ["tech.somewhere.sessions"]`. The native managed
+location is `~/Library/Application Support/Sessions/runtime/`, with executable
+basename `sessions-runner` and launch agents in that home's `Library/LaunchAgents`.
+Standalone/scratch jobs omit this relationship. It is OS app attribution, not a
+permission grant; provider policy is unchanged. Existing jobs are not rewritten
+or restarted to add it.
+
 Bootstrap invokes:
 
 ```text

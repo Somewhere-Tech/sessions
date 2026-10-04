@@ -51,6 +51,7 @@ func (l *LaunchdLauncher) Prepare(request proto.LaunchRequest) error {
 		Cwd:              request.Info.Cwd,
 		LogPath:          filepath.Join(l.config.RunnerStateDir, request.Info.ID+".log"),
 		KeepAlivePath:    paths.KeepAlive,
+		AppBundleID:      nativeRunnerAppAssociation(l.config),
 	})
 	if err != nil {
 		_ = os.Remove(paths.KeepAlive)

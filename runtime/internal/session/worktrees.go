@@ -66,7 +66,7 @@ func createGitWorktree(ctx context.Context, cwd, sessionName, requestedBase stri
 	}
 	inside, insideErr := gitOutput(ctx, resolvedCwd, "rev-parse", "--is-inside-work-tree")
 	if insideErr != nil || strings.TrimSpace(inside) != "true" {
-		return createdWorktree{}, errors.New("--worktree needs --cwd (or $PWD) inside a Git repository; cd into a repository or pass --cwd and retry")
+		return createdWorktree{}, worktreeSourceError(resolvedCwd, insideErr)
 	}
 	shallow, err := gitOutput(ctx, resolvedCwd, "rev-parse", "--is-shallow-repository")
 	if err != nil {
@@ -219,7 +219,7 @@ func gitOutput(ctx context.Context, cwd string, args ...string) (string, error) 
 	if detail == "" {
 		return "", err
 	}
-	return "", fmt.Errorf("%w: %s", err, detail)
+	return "", explainGitMetadataAccess(cwd, fmt.Errorf("%w: %s", err, detail))
 }
 
 func rollbackCreatedGitWorktree(ctx context.Context, worktree createdWorktree) error {
