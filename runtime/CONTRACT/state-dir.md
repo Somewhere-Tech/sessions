@@ -460,9 +460,10 @@ On macOS, newly prepared app-managed jobs additionally include
 `AssociatedBundleIdentifiers: ["tech.somewhere.sessions"]`. The native managed
 location is `~/Library/Application Support/Sessions/runtime/`, with executable
 basename `sessions-runner` and launch agents in that home's `Library/LaunchAgents`.
-Standalone/scratch jobs omit this relationship. It is OS app attribution, not a
-permission grant; provider policy is unchanged. Existing jobs are not rewritten
-or restarted to add it.
+Standalone/scratch jobs omit this relationship. It is System Settings Login
+Items attribution, not a permission grant: macOS privacy still treats the runner
+process as responsible for its provider's requests, and provider policy is
+unchanged. Existing jobs are not rewritten or restarted to add it.
 
 Bootstrap invokes:
 

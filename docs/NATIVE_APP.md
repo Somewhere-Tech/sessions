@@ -98,12 +98,28 @@ the app does not fabricate or preflight a permission result.
 
 New app-managed runner jobs carry the same association when their executable
 comes from `~/Library/Application Support/Sessions/runtime/`. Standalone and
-scratch runners do not borrow that association. This identifies the responsible
-app; it does not grant file access, override a denied macOS privacy decision, or
-change the provider's approval/sandbox policy. Existing runner jobs are not
-restarted or rewritten by this change.
+scratch runners do not borrow that association. `launchd.plist(5)` documents
+the key as attribution in System Settings › Login Items. It does not make the
+app the responsible process for a runner's privacy requests, grant file access,
+override a denied macOS privacy decision, or change the provider's
+approval/sandbox policy. Existing runner jobs are not restarted or rewritten by
+this change.
 The app and runtime binaries also declare a removable-volume usage description
 explaining project and shared Git metadata access when macOS requests consent.
+
+Each runner is its own launchd job, so macOS treats that `sessions-runner`
+process as responsible for everything its provider runs: the agent itself,
+shells, hooks, and commands such as `find`. Privacy prompts that name the
+runner come from those commands; Sessions' own runner and daemon code does not
+read other apps' containers, Photos, Contacts, Calendars, or Reminders. Folder
+and removable-volume decisions persist for the signed runner identity. The
+"would like to access data from other apps" decision does not: macOS keeps it
+only for the lifetime of the runner process that asked, so every other live
+runner, and every new or restarted one, can ask again when its agent searches
+another app's container, typically through a home-wide search. Denying it
+leaves the session running and only blocks that read. Sessions cannot make
+this decision permanent and does not request Full Disk Access; scoping agent
+searches to the project avoids the prompt.
 
 A Git worktree can keep its shared metadata on a different drive from its
 working files. Failed worktree inspections retain the Git error and, when the
