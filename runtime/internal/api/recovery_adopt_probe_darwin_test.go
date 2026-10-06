@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/ledger"
+	"github.com/somewhere-tech/sessions/runtime/internal/recovery"
 )
 
 // Adoption writes to the ledger; it does not reconcile every lane the ledger
@@ -46,8 +47,17 @@ func TestAdoptionDoesNotProbeEveryRecordedLane(t *testing.T) {
 	if report.Code != http.StatusOK {
 		t.Fatalf("report status=%d body=%s", report.Code, report.Body.String())
 	}
-	if probes := launchctlCalls(t, calls); probes < lanes {
-		t.Fatalf("report made %d launchd probes, want at least %d; the counter is not seeing probes", probes, lanes)
+	var body recovery.Report
+	decodeBody(t, report, &body)
+	if len(body.Lanes) != lanes {
+		t.Fatalf("report has %d lanes, want %d", len(body.Lanes), lanes)
+	}
+	// A probe has a 350 ms production deadline. Under concurrent package
+	// tests it can expire before the counting shell starts. This control only
+	// needs to establish that the counter sees report probes, not require every
+	// child process to start within that deadline. Adoption must still make zero.
+	if probes := launchctlCalls(t, calls); probes == 0 {
+		t.Fatal("report made no launchd probes; the counter is not seeing probes")
 	}
 }
 
