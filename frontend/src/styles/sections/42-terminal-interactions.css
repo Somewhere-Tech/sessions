@@ -293,7 +293,12 @@
 
 @media (max-width: 1180px) {
   .session-view.has-subagents-panel { position: relative; grid-template-columns: minmax(0, 1fr); }
+  /* An absolutely positioned grid child is placed in its grid area. The wide
+     layout's grid-column: 2 no longer exists here, which left a zero-width
+     containing block at the right edge: the panel opened at 0px. Span the
+     single column so width and right: 0 measure against the whole view. */
   .subagents-panel-slot {
+    grid-column: 1 / -1;
     position: absolute;
     z-index: 12;
     top: 0;
