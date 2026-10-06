@@ -90,36 +90,36 @@ npm publication, and hosted download/updater promotion are separate steps.
 Each Darwin runtime binary also carries a Mach-O `__TEXT,__info_plist` section
 with its stable bundle identifier, Local Network usage description, and
 `_sessions._tcp` Bonjour declaration. The app-managed sessionsd launch agent
-declares `AssociatedBundleIdentifiers = [tech.somewhere.sessions]`, making the
-signed app the responsible code for sessionsd under macOS Local Network
-privacy. Onboarding's Fleet step and Settings › Fleet › **Allow local network**
+declares `AssociatedBundleIdentifiers = [tech.somewhere.sessions]`, which
+`launchd.plist(5)` documents as System Settings › Login Items attribution.
+macOS Local Network privacy can still identify sessionsd by its own runtime
+identifier, and that binary carries its own usage description.
+Onboarding's Fleet step and Settings › Fleet › **Allow local network**
 start the first daemon-owned browse so any macOS prompt appears in context;
 the app does not fabricate or preflight a permission result.
 
 New app-managed runner jobs carry the same association when their executable
 comes from `~/Library/Application Support/Sessions/runtime/`. Standalone and
-scratch runners do not borrow that association. `launchd.plist(5)` documents
-the key as attribution in System Settings › Login Items. It does not make the
-app the responsible process for a runner's privacy requests, grant file access,
+scratch runners do not borrow that association. It does not grant file access,
 override a denied macOS privacy decision, or change the provider's
-approval/sandbox policy. Existing runner jobs are not restarted or rewritten by
-this change.
+approval/sandbox policy, and macOS privacy logs for associated runners still
+name `sessions-runner` as the responsible process. Existing runner jobs are not
+restarted or rewritten by this change.
 The app and runtime binaries also declare a removable-volume usage description
 explaining project and shared Git metadata access when macOS requests consent.
 
-Each runner is its own launchd job, so macOS treats that `sessions-runner`
-process as responsible for everything its provider runs: the agent itself,
-shells, hooks, and commands such as `find`. Privacy prompts that name the
-runner come from those commands; Sessions' own runner and daemon code does not
-read other apps' containers, Photos, Contacts, Calendars, or Reminders. Folder
-and removable-volume decisions persist for the signed runner identity. The
-"would like to access data from other apps" decision does not: macOS keeps it
-only for the lifetime of the runner process that asked, so every other live
-runner, and every new or restarted one, can ask again when its agent searches
-another app's container, typically through a home-wide search. Denying it
-leaves the session running and only blocks that read. Sessions cannot make
-this decision permanent and does not request Full Disk Access; scoping agent
-searches to the project avoids the prompt.
+Each runner is its own launchd job, so macOS may name `sessions-runner` in a
+privacy prompt caused by anything its provider runs: the agent, shells, hooks,
+or commands such as `find`. Approved folder and removable-volume access has
+been observed to apply to later runners. "Would like to access data from other
+apps" consent is different: Apple documents it as lasting only for the
+requesting process, so a new or restarted runner can ask again. It is a known
+issue that the same running runner can also ask again immediately after
+approval; the cause is not yet established, and Sessions cannot make this
+consent permanent or approve it on the user's behalf. Denying it makes that
+protected read fail, which can stop or change the provider's work even though
+the session stays running. Keeping agent searches inside the project reduces
+unnecessary requests but does not guarantee none.
 
 A Git worktree can keep its shared metadata on a different drive from its
 working files. Failed worktree inspections retain the Git error and, when the

@@ -9,9 +9,9 @@ import (
 
 // Match the native shell's managed runtime location, not an arbitrary runner
 // executable. Scratch and standalone launchers must not borrow the installed
-// app's Login Items attribution. Association is display attribution only: macOS
-// privacy still holds the runner responsible for its children, and it does not
-// grant access or change provider approval/sandbox policy.
+// app's Login Items attribution. Observed macOS privacy logs still name the
+// runner as responsible for its children; association does not grant access or
+// change provider approval/sandbox policy.
 func nativeRunnerAppAssociation(config Config) string {
 	if runtime.GOOS != "darwin" {
 		return ""
