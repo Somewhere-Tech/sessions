@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -228,7 +229,7 @@ func TestCodexDaemonDisconnectDoesNotCancelActiveTurn(t *testing.T) {
 func TestCodexRejectedSteeringIsExplicit(t *testing.T) {
 	r := newCodexTestRunner(t)
 	r.active = true
-	r.turnClient.(*fakeCodexTurnClient).steerErr = errors.New("active turn is no longer steerable")
+	r.turnClient.(*fakeCodexTurnClient).steerErr = fmt.Errorf("%w: conversation \"thread-1\" has no active turn", codexapp.ErrSteerRefused)
 
 	r.handleInput("follow up\r")
 
@@ -240,8 +241,37 @@ func TestCodexRejectedSteeringIsExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 	message, _ := event["error"].(string)
-	if event["subtype"] != "input_rejected" || message == "" {
+	if event["subtype"] != "input_rejected" || message == "" || event["input"] != "follow up" {
 		t.Fatalf("rejected steering event = %#v", event)
+	}
+}
+
+// A steer Codex never answered may already be applied. Its record must not
+// claim the message was refused, and must not offer the text back as an unsent
+// draft that a person would naturally send again.
+func TestCodexUnconfirmedSteeringIsNotRecordedAsRefused(t *testing.T) {
+	for _, failure := range []string{
+		"steer Codex turn: context deadline exceeded",
+		"steer Codex turn: JSON-RPC error -32603: internal error",
+	} {
+		r := newCodexTestRunner(t)
+		r.active = true
+		r.turnClient.(*fakeCodexTurnClient).steerErr = errors.New(failure)
+
+		r.handleInput("follow up\r")
+
+		if len(r.history) != 1 {
+			t.Fatalf("%s: history after unconfirmed steering = %d events", failure, len(r.history))
+		}
+		var event map[string]any
+		if err := json.Unmarshal(r.history[0], &event); err != nil {
+			t.Fatal(err)
+		}
+		message, _ := event["error"].(string)
+		if _, restorable := event["input"]; restorable || event["unconfirmed"] != true ||
+			event["unconfirmedInput"] != "follow up" || strings.Contains(message, "not queued") {
+			t.Fatalf("%s: unconfirmed steering event = %#v", failure, event)
+		}
 	}
 }
 

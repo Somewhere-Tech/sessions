@@ -219,7 +219,10 @@ id and reports `accepted`, `boundary`, and an optional `error`.
 has answered. `boundary:"provider"` means Codex acknowledged active-turn
 steering. A failed provider transport can return `boundary:"unknown"`: callers
 must not automatically resend. `accepted:false` without that boundary is a
-known refusal. The daemon records intent before this request and its outcome
+known refusal: a Codex runner reports one only when no active turn existed
+before it wrote the steer. After the steer is written, an app-server error
+answer, a timeout and a lost connection all stay `unknown`, because app-server
+may queue the input before it answers. The daemon records intent before this request and its outcome
 afterward. If disconnected before acknowledgment, delivery remains unknown.
 
 The runner decides and commits before it answers, so MESSAGE_RES may arrive

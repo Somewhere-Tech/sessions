@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
@@ -55,9 +56,15 @@ func (r *codexAppRunner) submitMessage(control proto.MessageControl) proto.Messa
 	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
 	defer cancel()
 	turnID, err := r.turnClient.SteerTurn(ctx, r.conversationID, control.Text)
+	if errors.Is(err, codexapp.ErrSteerRefused) {
+		// The turn ended before the request was written. A known refusal.
+		result.Error = "Codex finished its turn before this message could be sent: " + err.Error() + "."
+		return result
+	}
 	if err != nil {
 		result.Error = "Codex did not confirm steering: " + err.Error()
-		// A provider transport error is ambiguous, not a safe-to-retry refusal.
+		// Once written, any failure (an error answer included) is ambiguous:
+		// Codex may already have queued the input. Never a safe-to-retry refusal.
 		result.Boundary = "unknown"
 		return result
 	}

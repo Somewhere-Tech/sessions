@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,28 @@ func TestMessageControlFailedSteeringIsUnknown(t *testing.T) {
 	result := runner.submitMessage(proto.MessageControl{OperationID: "lost", Text: "hello", Mode: "steer"})
 	if result.Accepted || result.Boundary != "unknown" || !strings.Contains(result.Error, "connection closed") {
 		t.Fatalf("failed steering = %#v", result)
+	}
+}
+
+func TestMessageControlSteerWithoutActiveTurnIsAKnownRefusal(t *testing.T) {
+	runner := newCodexTestRunner(t)
+	runner.active = true
+	runner.turnClient.(*fakeCodexTurnClient).steerErr = fmt.Errorf("%w: conversation \"thread-1\" has no active turn", codexapp.ErrSteerRefused)
+	result := runner.submitMessage(proto.MessageControl{OperationID: "refused", Text: "hello", Mode: "steer"})
+	if result.Accepted || result.Boundary != "" || !strings.Contains(result.Error, "has no active turn") {
+		t.Fatalf("refused steering = %#v", result)
+	}
+}
+
+// An error answer after the steer was written is not a refusal: Codex may have
+// queued the input first.
+func TestMessageControlErrorAnswerAfterSteerIsUnknown(t *testing.T) {
+	runner := newCodexTestRunner(t)
+	runner.active = true
+	runner.turnClient.(*fakeCodexTurnClient).steerErr = errors.New("steer Codex turn: JSON-RPC error -32603: internal error")
+	result := runner.submitMessage(proto.MessageControl{OperationID: "answered", Text: "hello", Mode: "steer"})
+	if result.Accepted || result.Boundary != "unknown" || !strings.Contains(result.Error, "-32603") {
+		t.Fatalf("error answer after steer = %#v", result)
 	}
 }
 

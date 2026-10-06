@@ -551,12 +551,21 @@ func (r *codexAppRunner) steerActiveTurn(text string) {
 	defer cancel()
 	turnID, err := r.turnClient.SteerTurn(ctx, r.conversationID, text)
 	if err != nil {
-		event, encodeErr := codexapp.SteeringRejectedEvent(
+		event, encodeErr := codexapp.SteeringUnconfirmedEvent(
 			r.conversationID,
 			text,
-			"Codex did not accept the message for its active turn: "+err.Error()+" The message was not queued.",
+			"Codex did not confirm the message sent to its active turn: "+err.Error()+
+				". It may still apply it; check the conversation before sending it again.",
 			time.Now(),
 		)
+		if errors.Is(err, codexapp.ErrSteerRefused) {
+			event, encodeErr = codexapp.SteeringRejectedEvent(
+				r.conversationID,
+				text,
+				"Codex finished its turn before this message could be sent: "+err.Error()+".",
+				time.Now(),
+			)
+		}
 		if encodeErr == nil {
 			r.appendStructured(event)
 		}

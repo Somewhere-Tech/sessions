@@ -196,8 +196,10 @@ func (c *Client) handleServerRequest(message wireMessage) {
 		return
 	}
 	// The decision can take as long as a person takes; it must not hold the
-	// read loop, which still has to deliver the turn's other events.
-	go reply(handler(context.Background(), request))
+	// read loop, which still has to deliver the turn's other events. A go
+	// statement evaluates its arguments first, so the handler call must be
+	// inside the goroutine rather than an argument to reply.
+	go func() { reply(handler(context.Background(), request)) }()
 }
 
 func (c *Client) handleNotification(method string, params json.RawMessage) {

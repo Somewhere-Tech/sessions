@@ -35,6 +35,25 @@
    `<uuid>.sock` name and its separator cost 42 bytes, so `SESSIONS_STATE_DIR`
    itself must stay at or below 61 bytes. A scratch directory nested inside a
    worktree can exceed that; `/tmp/sX/runners` cannot.
+
+   A fake provider on the daemon's `PATH` is not enough. Runners do not inherit
+   that `PATH`: the daemon prepends `$HOME/.local/bin`, `.npm-global/bin`,
+   `.bun/bin`, `.cargo/bin`, Homebrew and `/usr/local/bin`, dropping any already
+   present (`runtime/internal/state/registry_runtime.go` `launchdPath`). An
+   installed `codex` or `claude` therefore shadows a fake placed only on the
+   daemon `PATH`, and the real provider may update itself or contact its
+   backend. Put the fake in the scratch `$HOME/.local/bin`, keep that directory
+   out of the daemon `PATH` (listing it there moves it behind Homebrew), and
+   check the resolution before the first launch rather than by launching:
+
+   ```sh
+   HOME=/tmp/sX/home PATH=/tmp/sX/home/.local/bin:/opt/homebrew/bin:/usr/local/bin:$DAEMON_PATH \
+     command -v codex   # must print /tmp/sX/home/.local/bin/codex
+   cmp /tmp/sX/home/.local/bin/codex ./your-fake-codex   # and it must be your fake
+   ```
+
+   Rich Codex runners always resolve `codex` this way; they do not use an
+   absolute `--cmd`.
 4. **Protect the daily driver.** The manual development daemon label is
    `tech.somewhere.sessions.dev.daemon`. Record the live-session baseline before a
    reload and verify `soak-d2` plus the full baseline afterward. Isolated native

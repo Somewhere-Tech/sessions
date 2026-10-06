@@ -88,6 +88,18 @@ func SteeringRejectedEvent(conversationID, text, message string, at time.Time) (
 	})
 }
 
+// SteeringUnconfirmedEvent records a steering message whose outcome Codex
+// never reported. Codex may already have applied it, so the text is kept as
+// unconfirmedInput rather than input: clients offer input back as an unsent
+// draft, and sending it again could give Codex the same message twice.
+func SteeringUnconfirmedEvent(conversationID, text, message string, at time.Time) (json.RawMessage, error) {
+	return marshalHistory(map[string]any{
+		"type": "system", "subtype": "input_rejected", "source": HistorySource,
+		"timestamp": historyTimestamp(at), "conversationId": conversationID,
+		"unconfirmed": true, "unconfirmedInput": text, "error": message,
+	})
+}
+
 // HistoryEvent preserves every structured app-server notification while
 // projecting completed assistant items into the existing message shape.
 func HistoryEvent(event Event, at time.Time) (json.RawMessage, error) {

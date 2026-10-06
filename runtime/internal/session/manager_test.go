@@ -276,6 +276,71 @@ func TestRichRunnerReconnectRestoresExactTurnStateAndConversation(t *testing.T) 
 	}
 }
 
+// reattachHoldingApproval registers a Rich runner that is holding approval-1
+// open, the way a replacement daemon finds it.
+func reattachHoldingApproval(t *testing.T) (*Manager, *state.Session, *prototest.Runner) {
+	t.Helper()
+	root := t.TempDir()
+	id := "00000000-0000-4000-8000-000000000072"
+	info := proto.RunnerInfo{
+		ID: id, Cmd: "codex", Cwd: root, Cols: 120, Rows: 40, PID: 4242,
+		ProtocolVersion: proto.ProtocolVersion, Turn: &proto.TurnState{Working: true},
+	}
+	runner := prototest.NewRunner(info)
+	user, _ := codexapp.UserHistoryEvent("conversation-1", "clean the build", time.Unix(1, 0))
+	runner.AddCodexEvent(json.RawMessage(user))
+	started, _ := codexapp.HistoryEvent(codexapp.TurnStarted{ConversationID: "conversation-1", TurnID: "turn-1"}, time.Unix(2, 0))
+	runner.AddCodexEvent(json.RawMessage(started))
+	requested, _ := codexapp.ApprovalRequestedEvent("approval-1", codexapp.ApprovalRequest{
+		Kind: codexapp.ApprovalCommand, ConversationID: "conversation-1", TurnID: "turn-1",
+		Command: "rm -rf build", CWD: root, Reason: "clean",
+	}, time.Unix(3, 0))
+	runner.AddCodexEvent(json.RawMessage(requested))
+
+	manager := NewManager(testConfig(root), prototest.NewLauncher(), ManagerOptions{
+		DisableWatchers: true, Notify: func(PushPayload) {},
+	})
+	t.Cleanup(manager.Close)
+	session, err := manager.registry.RegisterMetadata(context.Background(), runner, state.RunnerMetadata{
+		Info: info, Kind: state.KindCodexAppServer,
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.manage(session)
+	return manager, session, runner
+}
+
+func assertWaitingOnApproval(t *testing.T, session *state.Session, runner *prototest.Runner) {
+	t.Helper()
+	got := session.Info()
+	if got.PendingApproval == nil || got.PendingApproval.ID != "approval-1" {
+		t.Fatalf("pending approval = %+v", got.PendingApproval)
+	}
+	if got.Working || got.IdleReason != state.IdleReasonNeedsInput || !strings.HasPrefix(got.IdleDetail, "Allow? ") {
+		t.Fatalf("approval state = working %v, idle %q (%q)", got.Working, got.IdleReason, got.IdleDetail)
+	}
+	if len(runner.Approvals()) != 0 {
+		t.Fatalf("the approval was answered: %+v", runner.Approvals())
+	}
+}
+
+// A runner holding an approval keeps its provider turn open, so its reconnect
+// HELLO reports working. The lane is waiting on an answer, not working, and a
+// replacement daemon must say so exactly as the live stream did.
+func TestRichRunnerReconnectHoldingAnApprovalNeedsInput(t *testing.T) {
+	_, session, runner := reattachHoldingApproval(t)
+	assertWaitingOnApproval(t, session, runner)
+}
+
+// A message sent while an approval is open goes to the turn as text; it does
+// not answer the approval. The lane must keep reading as needing that answer.
+func TestInputDoesNotHideAPendingApproval(t *testing.T) {
+	manager, session, runner := reattachHoldingApproval(t)
+	manager.afterInput(context.Background(), session.Info().ID, "yes", ledger.ActivityHumanInput)
+	assertWaitingOnApproval(t, session, runner)
+}
+
 type codexBoundLauncher struct{ *prototest.Launcher }
 
 func (l codexBoundLauncher) Launch(ctx context.Context, request proto.LaunchRequest) (proto.Runner, error) {

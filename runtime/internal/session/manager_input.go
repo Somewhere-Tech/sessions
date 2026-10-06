@@ -331,7 +331,9 @@ func normalizedTerminalPrompt(value string) string {
 }
 
 func (m *Manager) clearIdleAfterInput(id string) {
-	if current, ok := m.registry.Get(id); ok {
+	// Input never answers a Rich approval; only the approve route does. While
+	// one is open the lane still needs that answer, whatever else was sent.
+	if current, ok := m.registry.Get(id); ok && current.Info().PendingApproval == nil {
 		current.ClearIdleResult()
 	}
 }
