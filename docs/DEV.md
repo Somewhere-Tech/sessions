@@ -65,6 +65,10 @@ contract. All four state roots use a short temporary directory. No provider
 credentials are required; this does not prove provider login, OS reboot,
 systemd installation, or installation of a published npm release. The separate
 npm wrapper lifecycle suite uses synthetic executables and local HTTPS fixtures.
+The same job then runs `go build`, `go vet`, and `go test ./...` natively on
+Linux, each with a scratch `HOME` scoped to that command, so Linux-only code paths execute rather than only
+cross-compile. The systemd installer's recovery tests use a substitute service
+manager; they do not prove behaviour against a real systemd user manager.
 
 For harness development on another Unix host, `SESSIONS_ACCEPTANCE_FIXTURE=1`
 allows running against existing local binaries. Its receipt explicitly records

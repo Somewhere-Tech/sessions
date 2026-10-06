@@ -153,7 +153,9 @@ type app struct {
 	runUpdate            func(context.Context, bool) (nativeUpdateResult, error)
 	cliIsCurrent         func(string) bool
 	attachSupport        func(context.Context, supportAttachmentRequest) (supportAttachmentReceipt, error)
-	commands             []commandSpec
+	// linuxService replaces systemctl and health checks in installer tests.
+	linuxService *linuxServiceManager
+	commands     []commandSpec
 }
 
 func explainAPIClientNetworkError(client *apiClient, err error) error {

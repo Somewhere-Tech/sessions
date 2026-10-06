@@ -182,16 +182,27 @@ sessions status --json
 ```
 
 The unit is `~/.config/systemd/user/sessions.service`. It starts the daemon,
-checks its health, and uses `Restart=on-failure` with `KillMode=process`, so
-stopping the service leaves independently owned runners alive. All three runtime
+checks its health, and declares `Restart=on-failure` with `KillMode=process`,
+under which a systemd stop signals only the daemon process. A drop-in or an
+administrator can change the effective policy, so `sessions install` reports the
+`kill_mode` systemd actually applies, and `--restart-daemon` restarts an
+existing daemon only when that is `process`; otherwise it leaves the running
+daemon as it was, restores the previous definition, and says why. All three runtime
 binaries are copied to an immutable directory under
 `~/.local/share/sessions/runtime/`, preserving executable paths across package
 updates and removal. Reinstalling stages the new service definition without
 interrupting an active daemon. Apply it explicitly with
 `sessions install --restart-daemon`.
 
-For startup before login and continued service after logout, enable lingering
-for your user (this may require administrator authorization):
+Under standard systemd defaults, logging out without lingering ends your
+sessions: about 10 seconds after your last login session (including SSH) ends,
+systemd stops your user manager and ends every runner the daemon started.
+`sessions install` reports the observed `loginctl` setting as `linger`
+(`enabled`, `disabled`, or `unknown`) with a descriptive `linger_note`. It does
+not inspect host logind policy such as `UserStopDelaySec`, and lingering does
+not protect work from crashes or shutdown. For startup before login and
+continued work after logout, enable lingering for your user (this may require
+administrator authorization):
 
 ```sh
 loginctl enable-linger "$USER"
@@ -265,8 +276,36 @@ binaries together. Restart only `sessionsd`; per-session runner processes are
 separate and continue to own their PTYs.
 
 On Linux, run `sessions install` to stage the new immutable runtime and service
-definition, then `sessions install --restart-daemon` to switch the daemon while
-retaining live runners. The [npm package](../npm/README.md) uses a separate
+definition, then `sessions install --restart-daemon` to switch the daemon. The
+restart happens only when systemd reports the loaded unit's effective
+`KillMode=process`. A successful install reports what it did and observed --
+`daemon_action`, `configuration`, `loaded`, `kill_mode`, `service_state`,
+`healthy` (`null` when no daemon was started or restarted), and
+`runtime_identity` (`not_verified`) -- rather than a promise about runner
+lifetime. Login enablement is made persistent (`systemctl --user enable`) only
+when the unit was disabled or absent; a runtime-only `enabled-runtime` setup,
+which systemd drops at reboot, and other states such as `static` are left as
+found and reported as `enablement` and `unit_file_state`. After a recovery,
+Sessions compares the observed enablement with what it found and reports any
+difference. If writing the new unit fails, the file on disk decides: an
+unchanged file is reported as unchanged, and a candidate that already landed is
+replaced by the previous bytes (or removed) without any reload or restart. If the reload, restart, or health check fails, the
+installer returns to what it found: it writes the previous unit back byte for
+byte (or removes a unit that did not exist), restores the previous enablement,
+and reloads systemd. Only once the previous definition is both restored and
+loaded does it restart the previous runtime, and only if that had been running.
+Sessions never signals runners itself, and it issues a recovery stop or restart
+only after `systemctl --user show` reports the unit's effective
+`KillMode=process`; any other or unreadable value leaves the unit unsignalled.
+The JSON `recovery` object keeps observations apart: `configuration`
+(`restored`, `removed`, `not_restored`), `loaded`, `kill_mode`, `service_state`
+from `systemctl is-active`, `healthy` (`null` when no health check ran), and
+`runtime_identity`, always `not_verified` because a healthy endpoint does not
+identify which binary answered. `outcome` is `restored`, `not_installed` for a
+failed first install, or `restore_failed`, and `next` lists the safe next
+actions; when the previous unit could not be written back it is included as
+`previous_unit`. This recovery is unit-tested with a substitute service manager
+and has not yet been exercised against a real systemd host. The [npm package](../npm/README.md) uses a separate
 immutable cache; npm updates and uninstall do not start or stop runtime processes.
 
 ## Uninstall

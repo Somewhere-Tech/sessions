@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -55,7 +57,7 @@ WantedBy=default.target
 `, systemdQuote(strings.ReplaceAll(config.Daemon, "$", "$$")), environment.String())
 }
 
-func (a *app) linuxServiceConfig() (linuxServiceConfig, error) {
+func (a *app) linuxServiceConfig(m *linuxServiceManager) (linuxServiceConfig, error) {
 	name := os.Getenv("SESSIONS_DAEMON_LABEL")
 	if name == "" {
 		name = "sessions"
@@ -64,7 +66,7 @@ func (a *app) linuxServiceConfig() (linuxServiceConfig, error) {
 	if err != nil {
 		return linuxServiceConfig{}, err
 	}
-	cli, err := os.Executable()
+	cli, err := m.executable()
 	if err != nil {
 		return linuxServiceConfig{}, err
 	}
@@ -168,11 +170,33 @@ func userSystemctl(arguments ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, "systemctl", append([]string{"--user"}, arguments...)...).CombinedOutput()
 }
 
-func requireUserSystemd() error {
-	if _, err := exec.LookPath("systemctl"); err != nil {
+// linuxServiceManager is every outside effect the Linux installer has. The
+// command uses systemctl --user and the daemon's health endpoint; tests
+// substitute a fake so no test ever restarts a real service.
+type linuxServiceManager struct {
+	lookPath   func(string) (string, error)
+	systemctl  func(arguments ...string) ([]byte, error)
+	healthy    func(name string) error
+	linger     func() ([]byte, error)
+	executable func() (string, error)
+	writeUnit  func(path, content string) error
+	chmodUnit  func(path string, mode fs.FileMode) error
+}
+
+func (a *app) linuxServices() *linuxServiceManager {
+	if a.linuxService != nil {
+		return a.linuxService
+	}
+	return &linuxServiceManager{lookPath: exec.LookPath, systemctl: userSystemctl,
+		healthy: a.waitLinuxServiceHealthy, linger: loginctlLinger, executable: os.Executable,
+		writeUnit: writeDaemonPlist, chmodUnit: os.Chmod}
+}
+
+func requireUserSystemd(m *linuxServiceManager) error {
+	if _, err := m.lookPath("systemctl"); err != nil {
 		return fail(2, "Linux service install requires systemd and systemctl; run sessionsd directly on hosts without systemd")
 	}
-	output, err := userSystemctl("show-environment")
+	output, err := m.systemctl("show-environment")
 	if err != nil {
 		return fail(2, "cannot reach your systemd user manager: %s; log in as the intended non-root user; for boot operation enable lingering with `loginctl enable-linger USER`", outputOrError(output, err))
 	}
@@ -186,15 +210,19 @@ func (a *app) installLinuxService(args []string) error {
 	} else if len(args) != 0 {
 		return fail(1, "usage: sessions install [--restart-daemon]")
 	}
-	if err := requireUserSystemd(); err != nil {
+	m := a.linuxServices()
+	if err := requireUserSystemd(m); err != nil {
 		return err
 	}
-	config, err := a.linuxServiceConfig()
+	config, err := a.linuxServiceConfig(m)
 	if err != nil {
 		return err
 	}
-	_, activeErr := userSystemctl("is-active", "--quiet", config.Name)
-	if activeErr != nil {
+	baseline, err := readLinuxUnitBaseline(m, config)
+	if err != nil {
+		return err
+	}
+	if !baseline.active {
 		if err := a.waitForDaemonPortAvailable(time.Second); err != nil {
 			return err
 		}
@@ -202,39 +230,151 @@ func (a *app) installLinuxService(args []string) error {
 	if err := os.MkdirAll(filepath.Dir(config.Path), 0o700); err != nil {
 		return err
 	}
-	if err := writeDaemonPlist(config.Path, linuxServiceUnit(config)); err != nil {
-		return err
+	if err := m.writeUnit(config.Path, linuxServiceUnit(config)); err != nil {
+		return a.reportLinuxUnitWriteFailure(m, config, baseline, err)
 	}
-	for _, arguments := range [][]string{{"daemon-reload"}, {"enable", config.Name}} {
-		if output, err := userSystemctl(arguments...); err != nil {
-			return fail(2, "systemctl %s failed: %s", strings.Join(arguments, " "), outputOrError(output, err))
+	activation, stepErr := applyLinuxUnit(m, config, baseline, restart)
+	if stepErr != nil {
+		return a.reportLinuxInstallFailure(config, stepErr, recoverLinuxInstall(m, config, baseline, stepErr))
+	}
+	return a.reportLinuxInstallSuccess(m, config, baseline.active && !restart, activation)
+}
+
+// linuxActivation is what the forward install did and observed. Health is
+// null when no daemon was started or restarted; a healthy endpoint still does
+// not identify the runtime binary that answered.
+type linuxActivation struct {
+	action             string
+	killMode           string
+	healthy            *bool
+	enablement         string
+	priorUnitFileState string
+}
+
+// applyLinuxUnit loads and enables a unit file that is already written. A
+// first start stops nothing, so it needs no policy. A restart stops the
+// running daemon under the loaded unit's effective KillMode -- which a drop-in
+// or an administrator can change -- so it happens only when systemd reports
+// process; otherwise the running daemon is left as it was.
+func applyLinuxUnit(m *linuxServiceManager, config linuxServiceConfig, baseline linuxUnitBaseline, restart bool) (linuxActivation, *linuxInstallStepError) {
+	steps := [][]string{{"daemon-reload"}}
+	enablement := linuxEnablementAction(baseline.unitFileState)
+	if enablement == linuxEnablementEnable {
+		steps = append(steps, []string{"enable", config.Name})
+	}
+	for _, arguments := range steps {
+		if output, err := m.systemctl(arguments...); err != nil {
+			return linuxActivation{}, &linuxInstallStepError{step: arguments[0], detail: outputOrError(output, err)}
 		}
 	}
-	action := "preserved"
-	if activeErr != nil || restart {
-		verb := "start"
-		if restart && activeErr == nil {
-			verb = "restart"
-		}
-		if output, err := userSystemctl(verb, config.Name); err != nil {
-			return fail(2, "systemctl %s failed: %s; inspect `journalctl --user -u %s`", verb, outputOrError(output, err), config.Name)
-		}
-		if err := a.waitLinuxServiceHealthy(config.Name); err != nil {
-			return err
-		}
-		action = verb
+	mode, modeErr := effectiveKillMode(m, config.Name)
+	activation := linuxActivation{action: "preserved", killMode: mode, enablement: enablement, priorUnitFileState: baseline.unitFileState}
+	if baseline.active && !restart {
+		return activation, nil
 	}
-	result := map[string]any{"ok": true, "service": config.Name, "unit_path": config.Path, "runtime_path": filepath.Dir(config.Daemon), "daemon_action": action,
-		"restart_required": activeErr == nil && !restart, "boot_requirement": "loginctl enable-linger USER (explicit user/admin action)", "runners_preserved": true}
+	activation.action = "start"
+	if baseline.active {
+		activation.action = "restart"
+		if modeErr != nil || mode != "process" {
+			reason := "systemd reports its effective KillMode as " + mode
+			if modeErr != nil {
+				reason = "its effective KillMode could not be read (" + modeErr.Error() + ")"
+			}
+			return activation, &linuxInstallStepError{step: "kill_mode", detail: "the running daemon was not restarted because " + reason +
+				", and a restart under any policy but process could signal runners; review systemctl --user cat " + config.Name + " and its drop-ins"}
+		}
+	}
+	if output, err := m.systemctl(activation.action, config.Name); err != nil {
+		return activation, &linuxInstallStepError{step: activation.action, detail: outputOrError(output, err), daemonTouched: true}
+	}
+	if err := m.healthy(config.Name); err != nil {
+		return activation, &linuxInstallStepError{step: "health", detail: err.Error(), daemonTouched: true}
+	}
+	healthy := true
+	activation.healthy = &healthy
+	return activation, nil
+}
+
+// reportLinuxInstallSuccess states what was done and observed. It makes no
+// promise about runner lifetime: that depends on the effective KillMode it
+// reports and on policy outside Sessions.
+func (a *app) reportLinuxInstallSuccess(m *linuxServiceManager, config linuxServiceConfig, restartRequired bool, activation linuxActivation) error {
+	linger := userLingerFrom(m.linger())
+	state := observedServiceState(m, config.Name)
+	policy := "Effective KillMode: " + activation.killMode + "."
+	if activation.killMode == "process" {
+		policy += " Under it a systemd stop or restart signals only the daemon process."
+	} else {
+		policy += " A later stop or restart under this policy could signal runners; review systemctl --user cat " + config.Name + " and its drop-ins."
+	}
+	health := "not checked (no daemon was started or restarted)"
+	if activation.healthy != nil {
+		health = "answered its health check"
+	}
+	result := map[string]any{"ok": true, "service": config.Name, "unit_path": config.Path, "runtime_path": filepath.Dir(config.Daemon),
+		"configuration": "installed", "loaded": true, "daemon_action": activation.action, "kill_mode": activation.killMode,
+		"service_state": state, "healthy": activation.healthy, "runtime_identity": "not_verified", "restart_required": restartRequired,
+		"enablement": activation.enablement, "unit_file_state": observedUnitFileState(m, config.Name),
+		"boot_requirement": "loginctl enable-linger USER (explicit user/admin action)", "linger": linger.State, "linger_note": linger.note()}
 	if a.wantJSON {
 		return writeJSON(a.stdout, result, true)
 	}
-	fmt.Fprintf(a.stdout, "Installed %s; daemon action: %s. Runners were not stopped.\nUnit: %s\n", config.Name, action, config.Path)
-	if activeErr == nil && !restart {
+	fmt.Fprintf(a.stdout, "Installed and loaded %s; daemon action: %s; service state: %s; health: %s; runtime identity not verified.\nUnit: %s\n%s\n",
+		config.Name, activation.action, state, health, config.Path, policy)
+	if restartRequired {
 		fmt.Fprintln(a.stdout, "The running daemon keeps its current version. Apply the staged version with sessions install --restart-daemon.")
 	}
-	fmt.Fprintln(a.stdout, "For operation before login and after logout, explicitly enable lingering: loginctl enable-linger USER\nLogs: journalctl --user -u "+config.Name)
+	if note := linuxEnablementNote(activation.enablement, activation.priorUnitFileState, config.Name); note != "" {
+		fmt.Fprintln(a.stdout, note)
+	}
+	fmt.Fprintln(a.stdout, linger.note()+"\nLogs: journalctl --user -u "+config.Name)
 	return nil
+}
+
+// userLinger is the Linger property logind reports for this user: an
+// observed setting, not a forecast. Under standard systemd defaults a user
+// without lingering loses user@UID.service shortly after the last login
+// session ends (UserStopDelaySec=10s), and that unit's KillMode=mixed kills
+// every process left in its control group -- including each runner this
+// service's daemon started. A host can change that (UserStopDelaySec=infinity,
+// distribution or administrator policy), and lingering does not protect work
+// from crashes or shutdown, so Sessions reports the setting and the standard
+// behaviour, never a guarantee. Enabling lingering is the user's decision.
+type userLinger struct {
+	State  string // enabled, disabled, or unknown
+	Detail string
+}
+
+func loginctlLinger() ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "loginctl", "show-user", strconv.Itoa(os.Getuid()), "--property=Linger", "--value").CombinedOutput()
+}
+
+func userLingerFrom(output []byte, err error) userLinger {
+	if err != nil {
+		return userLinger{State: "unknown", Detail: outputOrError(output, err)}
+	}
+	switch value := strings.TrimSpace(string(output)); value {
+	case "yes":
+		return userLinger{State: "enabled"}
+	case "no":
+		return userLinger{State: "disabled"}
+	default:
+		return userLinger{State: "unknown", Detail: fmt.Sprintf("loginctl reported Linger=%q", value)}
+	}
+}
+
+const lingerPolicyCaveat = "This host's logind policy was not inspected and can differ."
+
+func (l userLinger) note() string {
+	switch l.State {
+	case "enabled":
+		return "Lingering is enabled (loginctl Linger=yes): systemd keeps your user manager, and the services it runs, after you log out and starts it at boot. It does not protect work from crashes, shutdown, or other host policy."
+	case "disabled":
+		return "Lingering is off (loginctl Linger=no). Under standard systemd defaults your user manager stops about 10 seconds after your last login session, including SSH, ends, and that ends every runner this service started. " + lingerPolicyCaveat + " To keep work running after logout, run: loginctl enable-linger \"$USER\" (may need administrator authorization)."
+	}
+	return "Could not read this user's lingering state (" + l.Detail + "). Under standard systemd defaults, without lingering, logging out ends every runner this service started. " + lingerPolicyCaveat + " Check with: loginctl show-user \"$USER\" --property=Linger; enable with: loginctl enable-linger \"$USER\"."
 }
 
 func (a *app) waitLinuxServiceHealthy(name string) error {
@@ -254,7 +394,8 @@ func (a *app) uninstallLinuxService(args []string) error {
 	if len(args) != 0 {
 		return fail(1, "usage: sessions uninstall")
 	}
-	if err := requireUserSystemd(); err != nil {
+	m := a.linuxServices()
+	if err := requireUserSystemd(m); err != nil {
 		return err
 	}
 	name := os.Getenv("SESSIONS_DAEMON_LABEL")
@@ -266,14 +407,14 @@ func (a *app) uninstallLinuxService(args []string) error {
 		return err
 	}
 	name += ".service"
-	if output, err := userSystemctl("disable", name); err != nil {
+	if output, err := m.systemctl("disable", name); err != nil {
 		return fail(2, "disable %s: %s", name, outputOrError(output, err))
 	}
 	path := filepath.Join(a.home, ".config", "systemd", "user", name)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if output, err := userSystemctl("daemon-reload"); err != nil {
+	if output, err := m.systemctl("daemon-reload"); err != nil {
 		return fail(2, "reload user services: %s", outputOrError(output, err))
 	}
 	if a.wantJSON {
