@@ -296,7 +296,7 @@ function rememberLastMachine(serverId: string): void {
 
 /**
  * Move the one big key to per-machine slices and delete it. Runs once, at
- * import: the point of the slice is that the 1.43 MB value stops existing, not
+ * import: the point of the slice is that the old combined value stops existing, not
  * that it stops growing.
  */
 export function migrateLegacyCaches(): void {

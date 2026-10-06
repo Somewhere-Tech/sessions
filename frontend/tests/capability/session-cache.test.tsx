@@ -20,7 +20,7 @@ import {
 import { makeSession } from './fake-daemon';
 import type { SessionInfo } from '../../src/types';
 
-/** Counts what actually reaches storage, which is what the WAL counts too. */
+/** Counts serialized values passed to storage, not WebKit's on-disk WAL cost. */
 function countingStorage(): { writes: Array<{ key: string; bytes: number }>; removed: string[] } {
   const writes: Array<{ key: string; bytes: number }> = [];
   const removed: string[] = [];
@@ -55,9 +55,9 @@ function fleet(count: number, machine: string, since = Date.now()): SessionInfo[
 }
 
 /**
- * A row the size real ones are. The Mini's cache held 594 sessions in about
- * 1.43 MB — roughly 2.4 KB each — and that is what the fields this cache used
- * to carry cost: a long last-message summary, a worktree and its repo, the
+ * A large-row fixture: several hundred sessions at roughly 2.4 KB each.
+ * It covers fields a previous cache carried: a long last-message summary,
+ * a worktree and its repo, the
  * creator ancestry, model and effort, the ending bookkeeping.
  */
 function heavyFleet(count: number, machine: string, since = Date.now()): SessionInfo[] {
@@ -194,8 +194,8 @@ describe('capability: the cache is per machine, bounded, and hydrates', () => {
     // Newest first: the row dropped is an old one, not a recent one.
     expect(bounded.sessions.some((row) => row.id === sessions[0]!.id)).toBe(true);
 
-    // The measurement this slice exists for: the Mini's 594 rows, before and
-    // after. "Before" is the shape the v3 cache wrote — every field of every
+    // Compare the same large fixture before and after. "Before" is the shape
+    // the v3 cache wrote — every field of every
     // row, every machine in one value.
     const before = JSON.stringify({
       version: 3, lastServerId: 'mini', machines: { mini: { sessions, activeId: active.id } }
@@ -203,7 +203,7 @@ describe('capability: the cache is per machine, bounded, and hydrates', () => {
     const after = JSON.stringify(bounded).length;
     console.log(`594 rows: v3 value ${before} bytes, v4 slice ${after} bytes ` +
       `(${(before / after).toFixed(1)}x smaller, ${Math.round(before / sessions.length)} B/row before)`);
-    // The fixture is the size the Mini's really was: about 1.4 MB for 594 rows.
+    // The fixture is deliberately large: about 1.4 MB for 594 rows.
     expect(before).toBeGreaterThan(1_200_000);
     // And a slice is a fraction of it — the bytes a first frame actually needs.
     expect(after).toBeLessThan(before / 5);
