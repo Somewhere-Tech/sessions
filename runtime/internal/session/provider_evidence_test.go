@@ -195,3 +195,83 @@ func newEvidenceSession(t *testing.T) *state.Session {
 	}
 	return session
 }
+
+// A structured runner's provider_fault event is the provider's own word. It
+// carries the line it was read from as evidence, but that line was never on a
+// terminal screen, so the scroll-away rule must not retire it: a signed-out
+// structured Claude child has to read as auth, not as an ordinary failed turn.
+// Structured runners deliver every provider frame as EventCodex.
+func TestStructuredProviderFaultSurvivesIdleClassification(t *testing.T) {
+	root := t.TempDir()
+	launcher := prototest.NewLauncher()
+	manager := NewManager(testConfig(root), launcher, ManagerOptions{
+		DisableWatchers: true, ActivityInterval: 10 * time.Millisecond,
+	})
+	t.Cleanup(manager.Close)
+	created, err := manager.Create(context.Background(), state.CreateSessionRequest{
+		Cmd: "claude", Cwd: root, Kind: state.KindClaudeStructured,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := launcher.Runner(created.ID)
+	now := time.Now().UTC()
+	stamp := func(offset time.Duration) string { return now.Add(offset).Format(time.RFC3339Nano) }
+	const source = "claude-p-stream-json"
+	runner.AddCodexEvent(map[string]any{"type": "user", "subtype": "user_message", "source": source,
+		"session_id": "c", "timestamp": stamp(0), "message": map[string]any{"role": "user", "content": "start"}})
+	runner.AddCodexEvent(map[string]any{"type": "claude", "subtype": "turn_started", "source": source,
+		"session_id": "c", "timestamp": stamp(time.Millisecond)})
+	runner.AddCodexEvent(map[string]any{"type": "system", "subtype": "provider_fault", "provider": "claude",
+		"kind": providerfault.KindAuth, "detail": "Claude is not logged in",
+		"evidence": "Invalid API key · Please run /login", "timestamp": stamp(2 * time.Millisecond)})
+	runner.AddCodexEvent(map[string]any{"type": "result", "subtype": "success", "is_error": true, "source": source,
+		"session_id": "c", "result": "Invalid API key · Please run /login", "timestamp": stamp(3 * time.Millisecond)})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if current, _ := manager.Get(created.ID); current.Info().IdleReason == state.IdleReasonFailed {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	current, _ := manager.Get(created.ID)
+	info := current.Info()
+	if info.IdleReason != state.IdleReasonFailed {
+		t.Fatalf("the failed structured turn never settled: idle=%q working=%t", info.IdleReason, info.Working)
+	}
+	if info.FailureKind != providerfault.KindAuth {
+		t.Fatalf("structured auth fault was cleared by idle classification: kind=%q detail=%q", info.FailureKind, info.IdleDetail)
+	}
+}
+
+// Re-attaching after a daemon restart replays the same fault into a fresh
+// session and runs the same sweep, with whatever the runner renders as its
+// screen. Neither structured provider's fault may be retired by that screen.
+func TestStructuredFaultIsNotRetiredByAnUnrelatedScreen(t *testing.T) {
+	for _, test := range []struct{ kind, cmd, provider string }{
+		{state.KindClaudeStructured, "claude", "claude"},
+		{state.KindCodexAppServer, "codex", "codex"},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			root := t.TempDir()
+			manager := NewManager(testConfig(root), prototest.NewLauncher(), ManagerOptions{
+				DisableWatchers: true, ActivityInterval: time.Hour,
+			})
+			t.Cleanup(manager.Close)
+			created, err := manager.Create(context.Background(), state.CreateSessionRequest{Cmd: test.cmd, Cwd: root, Kind: test.kind})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, _ := manager.registry.Get(created.ID)
+			session.SetProviderFault(test.provider, providerfault.Fault{
+				Kind: providerfault.KindAuth, Detail: "not logged in", Evidence: "Please run /login",
+			}, time.Now().UnixMilli())
+
+			clearFaultWithoutEvidence(session, IdleClassification{Outcome: IdleError}, "")
+			if session.Info().FailureKind != providerfault.KindAuth {
+				t.Fatalf("%s fault was retired by a screen it was never shown on", test.kind)
+			}
+		})
+	}
+}
