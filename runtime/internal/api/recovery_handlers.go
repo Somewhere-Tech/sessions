@@ -105,7 +105,7 @@ func (s *Server) handleRecovery(response http.ResponseWriter, request *http.Requ
 		}
 		recoveryMutationMu.Lock()
 		defer recoveryMutationMu.Unlock()
-		store, _, ok := s.openRecoveryReport(request.Context(), response, corsOrigin)
+		store, ok := s.openRecoveryLedger(request.Context(), response, corsOrigin)
 		if !ok {
 			return
 		}
@@ -898,14 +898,31 @@ func adoptSourceFromSession(candidate state.SessionInfo) *recovery.AdoptSource {
 	}
 }
 
+// openRecoveryLedger opens the ledger a recovery mutation writes to. Adoption
+// needs only this. A report probes every recorded lane's socket, launchd job
+// and process one after another, under recoveryMutationMu, and adoption used
+// to build one and discard it: a resume that ended in "history conversation
+// not found" took about two seconds on a ledger of 312 lanes.
+func (s *Server) openRecoveryLedger(
+	ctx context.Context,
+	response http.ResponseWriter,
+	corsOrigin string,
+) (*ledger.Store, bool) {
+	store, err := ledger.Open(ctx, ledger.Options{})
+	if err != nil {
+		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
+		return nil, false
+	}
+	return store, true
+}
+
 func (s *Server) openRecoveryReport(
 	ctx context.Context,
 	response http.ResponseWriter,
 	corsOrigin string,
 ) (*ledger.Store, recovery.Report, bool) {
-	store, err := ledger.Open(ctx, ledger.Options{})
-	if err != nil {
-		s.sendJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()}, corsOrigin)
+	store, ok := s.openRecoveryLedger(ctx, response, corsOrigin)
+	if !ok {
 		return nil, recovery.Report{}, false
 	}
 	report, err := recovery.New(recovery.Options{
