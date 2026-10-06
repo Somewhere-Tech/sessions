@@ -70,13 +70,18 @@ inherently visual or an OS-owned prompt.
 
 ## Packaging and updates
 
-Runtime binaries are staged as immutable versioned bytes with a manifest. The
-managed daemon may advance while compatible existing runners keep their
-original runtime until they exit. A package update must re-adopt every baseline
-session that remains live. A session that exits during the readiness check, or
-whose user-end boundary is already recorded, satisfies that baseline; one that
-disappears or remains unreachable without either fact makes the update refuse
-or roll back.
+Runtime binaries are staged as immutable versioned bytes with a manifest, and
+the managed daemon runs from its versioned copy. The daemon may advance while
+compatible existing runners keep running. On macOS, runner jobs launch one
+stable `sessions-runner` path, which an update replaces with the new runner
+once the updated daemon is ready. A runner already running keeps the process
+image it started with, but macOS may then report that its code no longer
+matches the file on disk, and any later launch, wake, or crash restart from
+that path uses the bytes currently there. A package update must re-adopt every
+baseline session that remains live. A session that exits during the readiness
+check, or whose user-end boundary is already recorded, satisfies that
+baseline; one that disappears or remains unreachable without either fact makes
+the update refuse or roll back.
 
 macOS releases require Developer ID signatures for the app and nested
 binaries, notarization, stapling, Gatekeeper acceptance, a pinned updater
