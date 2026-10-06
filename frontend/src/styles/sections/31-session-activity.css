@@ -454,8 +454,10 @@
 .remote-system-event summary { cursor: pointer; }
 .remote-system-event pre { max-height: 320px; margin: 4px 0 0; overflow: auto; white-space: pre-wrap; }
 .remote-system-note { margin: 6px 0 0; font-size: 12px; opacity: 0.75; }
-.remote-queued-status { display: flex; gap: 6px; overflow: hidden; white-space: nowrap; }
-.remote-queued-text { overflow: hidden; text-overflow: ellipsis; }
+.remote-queued-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; white-space: normal; font-family: var(--font-ui); }
+.remote-queued-status details { min-width: 0; flex-basis: 100%; }
+.remote-queued-status summary { cursor: pointer; }
+.remote-queued-text { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .provider-control-card-terminal {
   border: 0;
   background: none;

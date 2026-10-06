@@ -1378,9 +1378,15 @@ Structured runners advertising `messageSubmit:true` accept the whole message
 through an acknowledged runner control, without terminal paste/Enter frames.
 The additive body field `mode:"steer"` asks Codex to steer its active turn;
 unsupported runners refuse without input. `mode` omitted or `auto` starts a
-new turn when idle and steers Codex when active. Claude rejects active-turn
-input rather than reporting silent success. Receipts optionally report
-`acceptance:"runner"|"provider"`; neither means the turn completed. Ambiguous
+new turn when idle and steers Codex when active. Updated structured Claude
+runners save active-turn input for the next turn; older live runners still
+refuse it explicitly. Receipts optionally report
+`acceptance:"runner"|"queue"|"provider"`; none means the turn completed.
+`queue` means stored by the runner, not read by Claude. Queued work pauses on
+failure, interruption or runner restart; use Retry to resolve the failed turn
+or continue only undispatched entries. Never resend an accepted queued message.
+`delivered:true` at this boundary describes queue acceptance, not provider
+consumption. Ambiguous
 provider transport failures remain `unknown`, never automatically retried.
 Steering submits a new message to the active turn. It does not edit, withdraw,
 or expedite a previously accepted message. Provider acceptance is not proof of

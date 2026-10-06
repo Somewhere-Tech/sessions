@@ -77,18 +77,9 @@ func (r *codexAppRunner) submitMessage(control proto.MessageControl) proto.Messa
 
 func (r *claudeStructuredRunner) submitMessage(control proto.MessageControl) proto.MessageResult {
 	result := proto.MessageResult{OperationID: control.OperationID}
-	r.mu.Lock()
-	if r.active || control.Mode == "steer" {
-		r.mu.Unlock()
-		result.Error = "Claude cannot accept this message during an active turn. Your draft was not sent."
+	if control.Mode == "steer" {
+		result.Error = "This Claude runtime cannot steer the current turn. Send normally to save a message for the next turn. Your draft was not sent."
 		return result
 	}
-	r.active = true
-	r.mu.Unlock()
-	if r.retry != nil {
-		r.retry.Replace()
-	}
-	go r.runTurn(control.Text, 0, true)
-	result.Accepted, result.Boundary = true, "runner"
-	return result
+	return r.admitClaudeMessage(control)
 }

@@ -216,7 +216,16 @@ it is not processed by the terminal composer. MESSAGE_RES echoes the operation
 id and reports `accepted`, `boundary`, and an optional `error`.
 
 `boundary:"runner"` means the runner accepted a new turn, not that the provider
-has answered. `boundary:"provider"` means Codex acknowledged active-turn
+has answered. `boundary:"queue"` means a structured Claude runner saved the
+message in its bounded next-turn queue (32 pending messages / 1 MiB), not that
+Claude has read it. The queue is committed before acknowledgment and dispatched
+in order after successful turns. Failure or interruption pauses it; retrying
+the failed turn successfully continues it. After runner restart, Retry may
+continue only entries not yet dispatched. Dispatch intent is committed before
+provider launch; a previously dispatched entry is never automatically replayed.
+Recent operation receipts are retained (64 completed entries plus pending
+entries); the daemon's durable receipt remains the authority for older IDs.
+`boundary:"provider"` means Codex acknowledged active-turn
 steering. A failed provider transport can return `boundary:"unknown"`: callers
 must not automatically resend. `accepted:false` without that boundary is a
 known refusal: a Codex runner reports one only when no active turn existed
@@ -242,7 +251,10 @@ still unknown: a receipt already resolved from this evidence is durable and
 stays accepted. A runner that never answers leaves the receipt unknown too.
 
 `steer` requires an active Codex turn; it never silently starts a new turn.
-Claude rejects active-turn messages explicitly. Missing capability uses the
+Claude refuses explicit steering; ordinary active-turn messages are saved for
+the next turn with a `queue` boundary. This is not immediate steering or a
+guarantee of future execution. Older live Claude runners still refuse busy
+messages explicitly. Missing capability uses the
 legacy input path for ordinary sends; explicit steering is refused without
 writing input. The version remains 5: older daemons ignore the additive HELLO
 field and use INPUT; newer daemons never send MESSAGE_REQ to an old runner.

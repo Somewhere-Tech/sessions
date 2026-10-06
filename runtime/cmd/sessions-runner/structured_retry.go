@@ -140,6 +140,12 @@ func (c *structuredRetryController) RunNow() error {
 	return nil
 }
 
+func (c *structuredRetryController) hasFailedInput() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.input != ""
+}
+
 func (c *structuredRetryController) Stop() error {
 	c.mu.Lock()
 	if c.retry == nil {

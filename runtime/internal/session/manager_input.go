@@ -273,7 +273,13 @@ func (m *Manager) InputAttributed(ctx context.Context, id, data string, attribut
 }
 
 func (m *Manager) afterInput(ctx context.Context, id, data string, source ledger.ActivitySource) {
-	m.clearIdleAfterInput(id)
+	m.afterAcceptedInput(ctx, id, data, source, true)
+}
+
+func (m *Manager) afterAcceptedInput(ctx context.Context, id, data string, source ledger.ActivitySource, started bool) {
+	if started {
+		m.clearIdleAfterInput(id)
+	}
 	m.mu.Lock()
 	runtime := m.runtimes[id]
 	m.mu.Unlock()

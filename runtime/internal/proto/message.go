@@ -19,7 +19,7 @@ type MessageControl struct {
 type MessageResult struct {
 	OperationID string `json:"operation_id"`
 	Accepted    bool   `json:"accepted"`
-	Boundary    string `json:"boundary,omitempty"` // runner or provider, not turn completion
+	Boundary    string `json:"boundary,omitempty"` // runner, queue or provider; not turn completion
 	Error       string `json:"error,omitempty"`
 }
 

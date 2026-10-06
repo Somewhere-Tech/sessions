@@ -47,14 +47,17 @@ type claudeStructuredRunner struct {
 	cancel context.CancelFunc
 	done   chan int
 
-	streamMu   sync.Mutex
-	mu         sync.Mutex
-	clients    map[*client]struct{}
-	history    []json.RawMessage
-	composer   strings.Builder
-	active     bool
-	turnCancel context.CancelFunc
-	retry      *structuredRetryController
+	streamMu     sync.Mutex
+	mu           sync.Mutex
+	clients      map[*client]struct{}
+	history      []json.RawMessage
+	composer     strings.Builder
+	active       bool
+	turnCancel   context.CancelFunc
+	retry        *structuredRetryController
+	queueMu      sync.Mutex
+	queue        claudeMessageQueue
+	queueCurrent string
 
 	shutdownOnce sync.Once
 }
@@ -117,6 +120,10 @@ func (r *claudeStructuredRunner) start() error {
 	if r.historyWorking() {
 		recovery, _ := claudep.FailureHistoryEvent(r.sessionID, errors.New("structured runner restarted during an unfinished Claude turn"), time.Now())
 		r.appendStructured(recovery)
+	}
+	if err := r.loadMessageQueue(); err != nil {
+		r.closeHistory()
+		return err
 	}
 	if err := r.prepareContinuation(); err != nil {
 		r.closeHistory()
@@ -406,7 +413,13 @@ func (r *claudeStructuredRunner) handleRetryControl(c *client, stop bool) error 
 		if active {
 			err = errors.New("Claude turn is active")
 		} else {
-			err = r.retry.RunNow()
+			if r.retry.hasFailedInput() {
+				err = r.retry.RunNow()
+			} else if started, queueErr := r.resumeClaudeQueue(); queueErr != nil {
+				err = queueErr
+			} else if !started {
+				err = errors.New("no failed turn or saved next-turn message to retry")
+			}
 		}
 	}
 	result := proto.RetryControlResult{}
@@ -421,6 +434,8 @@ func (r *claudeStructuredRunner) handleRetryControl(c *client, stop bool) error 
 }
 
 func (r *claudeStructuredRunner) startRetryTurn(text string, attempt int) bool {
+	r.queueMu.Lock()
+	defer r.queueMu.Unlock()
 	r.mu.Lock()
 	if r.active || r.ctx.Err() != nil {
 		r.mu.Unlock()
@@ -428,7 +443,7 @@ func (r *claudeStructuredRunner) startRetryTurn(text string, attempt int) bool {
 	}
 	r.active = true
 	r.mu.Unlock()
-	go r.runTurn(text, attempt, false)
+	go r.runTurn(text, attempt, false, r.queueCurrent)
 	return true
 }
 
@@ -490,21 +505,19 @@ func (r *claudeStructuredRunner) handleInput(data string) {
 	}
 }
 
-func (r *claudeStructuredRunner) runTurn(text string, attempt int, recordUser bool) {
+func (r *claudeStructuredRunner) runTurn(text string, attempt int, recordUser bool, operationID ...string) {
 	turnCtx, turnCancel := context.WithCancel(r.ctx)
 	r.mu.Lock()
 	r.turnCancel = turnCancel
 	r.mu.Unlock()
-	defer func() {
-		turnCancel()
-		r.mu.Lock()
-		r.active = false
-		r.turnCancel = nil
-		r.mu.Unlock()
-	}()
+	successful := false
+	id := ""
+	if len(operationID) > 0 {
+		id = operationID[0]
+	}
+	defer func() { turnCancel(); r.finishClaudeTurn(id, successful) }()
 	if recordUser {
-		user, _ := claudep.UserHistoryEvent(r.sessionID, text, time.Now())
-		r.appendStructured(user)
+		r.appendClaudeUser(text, id)
 	}
 	started, _ := claudep.TurnStartedEvent(r.sessionID, time.Now())
 	r.appendStructured(started)
@@ -553,7 +566,7 @@ func (r *claudeStructuredRunner) runTurn(text string, attempt int, recordUser bo
 			r.mu.Unlock()
 		}
 	}
-	r.consumeTurn(text, attempt, cfg.profile, turnCtx, stream)
+	successful = r.consumeTurn(text, attempt, cfg.profile, turnCtx, stream)
 }
 
 func (r *claudeStructuredRunner) consumeTurn(
@@ -562,7 +575,7 @@ func (r *claudeStructuredRunner) consumeTurn(
 	profile string,
 	turnCtx context.Context,
 	stream *claudep.TurnStream,
-) {
+) bool {
 	completed := false
 	failed := false
 	for event := range stream.Events {
@@ -581,13 +594,17 @@ func (r *claudeStructuredRunner) consumeTurn(
 		r.appendStructured(event.Raw)
 	}
 	_, err := stream.Result(turnCtx)
-	if err != nil && !errors.Is(err, context.Canceled) && (!completed || profile != "") {
-		r.recordTurnFailure(text, attempt, structuredProfileLoginHint(err, profile))
-		return
+	if err != nil {
+		if !errors.Is(err, context.Canceled) && !failed {
+			r.recordTurnFailure(text, attempt, structuredProfileLoginHint(err, profile))
+		}
+		return false
 	}
-	if !failed && r.retry != nil {
+	successful := completed && !failed && turnCtx.Err() == nil
+	if successful && r.retry != nil {
 		r.retry.Succeeded()
 	}
+	return successful
 }
 
 func structuredProfileLoginHint(err error, profile string) error {

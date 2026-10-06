@@ -798,19 +798,22 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
     }
 
     if (ev.type === 'queue-operation') {
+      if (appendUnknownQueueDispatch(ev, out)) continue;
       const op = (ev as Record<string, unknown>).operation;
       const text = (ev as Record<string, unknown>).content;
       if (op !== 'enqueue' || typeof text !== 'string' || !text.trim() || isHarnessOnly(text)) continue;
       const trimmed = text.trim();
-      if (queuedContents.has(trimmed)) continue;
+      const queueKey = ev.uuid ?? trimmed;
+      if (queuedContents.has(queueKey)) continue;
       flushPendingTools();
       pendingHadThinking = false;
-      queuedContents.add(trimmed);
+      queuedContents.add(queueKey);
       // Typed while Claude was busy. The waiting is composer status, not a
       // line in the record of what was said, so this entry carries the text
       // and is lifted out of the transcript by the view.
       out.push({
-        id: `queue-${out.length}-${trimmed.slice(-12)}`,
+        id: ev.uuid ?? `queue-${out.length}-${trimmed.slice(-12)}`,
+        blockId: ev.uuid,
         role: 'user',
         content: text,
         status: 'sent',
@@ -844,10 +847,31 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
 
   // Final pass: drop queued entries already superseded by the real
   // user_input event further down the list.
+  return filterConsumedQueue(out);
+}
+
+function appendUnknownQueueDispatch(ev: ClaudeSessionEvent, out: DispatchMessage[]): boolean {
+  if (ev.source !== 'sessions-next-turn' || ev.operation !== 'dispatch-unknown' || typeof ev.content !== 'string' || typeof ev.operation_id !== 'string') return false;
+  // A claimed entry may have reached Claude before the runner stopped. Do
+  // not project it as pending, confirmed provider input, or a retryable draft.
+  const errorResponse = 'Delivery to Claude is unknown after runner restart. This saved message was already claimed and will not be resent. Inspect the conversation before deliberately sending it again.';
+  const existing = out.find((message) => message.blockId === ev.operation_id && !message.pendingQueue);
+  if (existing) { existing.status = 'accepted'; existing.errorResponse = errorResponse; return true; }
+  out.push({ id: ev.uuid ?? `${ev.operation_id}:unknown`, blockId: ev.operation_id,
+    role: 'user', content: ev.content, status: 'accepted', createdAt: timestampMs(ev.timestamp),
+    errorResponse });
+  return true;
+}
+
+function filterConsumedQueue(out: DispatchMessage[]): DispatchMessage[] {
   return out.filter((m, i) => {
     if (!m.queued) return true;
     for (let j = i + 1; j < out.length; j++) {
       const other = out[j];
+      if (m.blockId?.startsWith('sessions-message:')) {
+        if (other?.role === 'user' && !other.queued && other.blockId === m.blockId) return false;
+        continue;
+      }
       if ((other?.role === 'user' && !other.queued ? other.content : other?.systemEvent?.detail)?.trim() === m.content.trim()) {
         return false;
       }

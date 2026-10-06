@@ -200,7 +200,8 @@ assert.match(grid, /<CopyButton getText=\{m\.content\} iconOnly/);
 assert.match(input, /<ComposerModelControl/);
 assert.match(input, /Remote Control needs a Terminal session/);
 assert.match(input, /This command was not sent as a chat message/);
-assert.match(input, /Your draft is kept here and was not sent or queued/);
+assert.match(input, /Saved for next turn/);
+assert.doesNotMatch(input, /if \(richSession && providerWorking && provider !== 'codex'\)/);
 assert.match(input, /reason instanceof MessageDeliveryError && reason.deliveryStatus !== 'not-delivered'[\s\S]*delivery\.remember\(reason/,
   'An uncertain receipt must not claim the message was definitely not sent');
 const deliveryStatus = await source('src/components/MessageDeliveryStatus.tsx');

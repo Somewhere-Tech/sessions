@@ -198,13 +198,29 @@ recursively with requested mode 0700 and files are written mode 0600. Names and
 the 25 MiB limit are specified in `http-api.md`. There is no automatic cleanup.
 This directory follows an explicit `SESSIONS_STATE_DIR` as described above.
 
+### `<id>.message-queue.json`
+
+Go structured-Claude runners own this additive mode-0600 sidecar. Version 1
+contains a paused flag and entries with operation ID, content hash, acceptance
+boundary, timestamp, and `queued`, `dispatched`, or `done` phase. Pending message
+text is local private data, bounded to 32 messages / 1 MiB. Completed entries
+drop text and retain at most 64 recent receipts. The runner syncs the temporary
+file and atomically renames it before acknowledging or claiming a message.
+
+Daemon/UI restarts do not stop the queue. Runner restart pauses it and never
+replays a dispatched entry: a crash after claim is an uncertain outcome, even
+if provider launch had not yet happened. Retry can explicitly continue only
+undispatched entries. Queued history events carry the same operation identity
+as their later user event so repeated identical messages reconcile separately.
+This sidecar is not runner metadata and must not create a discovery entry.
+
 ### `delivery-operations/<operation-id>.json`
 
 Go-runtime-only, mode 0600 files below a mode-0700 directory. Each file is a
 durable receipt for one logical `/submit` operation: UUID, target session id,
 content SHA-256, content byte count, status, delivery/retry booleans, optional
 reason, optional `mode` (`steer`; omitted for ordinary sends), optional
-`acceptance` evidence (`runner`, `provider`, or `unknown`), and
+`acceptance` evidence (`runner`, `queue`, `provider`, or `unknown`), and
 creation/update times. It deliberately does not store the message
 body. A `pending` file left by a crash is treated as `unknown` and must not be
 retried automatically. Reusing an operation id with different content or a

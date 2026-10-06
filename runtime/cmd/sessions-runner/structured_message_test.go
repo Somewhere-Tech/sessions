@@ -128,9 +128,4 @@ func TestMessageControlClaudeRefusalDoesNotLaunchTurn(t *testing.T) {
 			t.Fatalf("Claude steering changed turn state: %#v", result)
 		}
 	}
-	runner := &claudeStructuredRunner{active: true}
-	result := runner.submitMessage(proto.MessageControl{OperationID: "claude-auto", Text: "hello"})
-	if result.Accepted || result.Error == "" {
-		t.Fatalf("busy Claude should refuse without hidden queue: %#v", result)
-	}
 }

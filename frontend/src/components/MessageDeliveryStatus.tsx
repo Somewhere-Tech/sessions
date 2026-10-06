@@ -12,9 +12,9 @@ export function DeliveryReviews({ reviews, machineId, sessionId, clear, acknowle
 }): JSX.Element {
   return <>{reviews.map((review) => <DeliveryReviewNotice key={review.operationId} review={review}
     machineId={machineId} sessionId={sessionId} reviewed={() => { clear(review.operationId); }}
-    settled={(status) => {
+    settled={(status, queued) => {
       if (!clear(review.operationId)) return;
-      if (status === 'accepted') acknowledged(review);
+      if (status === 'accepted') acknowledged({ ...review, queued: queued ?? review.queued });
       else notDelivered();
     }} />)}</>;
 }
@@ -34,7 +34,7 @@ export function MessageDeliveryStatus({ message, restore, remove }: {
 
 export function DeliveryReviewNotice({ review, machineId, sessionId, settled, reviewed }: {
   review: DeliveryReview; machineId?: string; sessionId: string;
-  settled: (status: 'accepted' | 'not-delivered') => void; reviewed: () => void;
+  settled: (status: 'accepted' | 'not-delivered', queued?: boolean) => void; reviewed: () => void;
 }): JSX.Element {
   const [checking, setChecking] = useState(false);
   const [confirmationTimedOut, setConfirmationTimedOut] = useState(false);
@@ -47,7 +47,7 @@ export function DeliveryReviewNotice({ review, machineId, sessionId, settled, re
     try {
       const receipt = await checkMessageDelivery(review.operationId, machineId);
       if (receipt.session_id !== sessionId) throw new Error('The receipt belongs to another session. Check this conversation before sending again.');
-      if (receipt.status === 'accepted' || (receipt.status === 'not-delivered' && receipt.retry)) settled(receipt.status);
+      if (receipt.status === 'accepted' || (receipt.status === 'not-delivered' && receipt.retry)) settled(receipt.status, receipt.acceptance === 'queue' || review.queued);
       else setDetail('The receipt still cannot confirm a complete message. Check the conversation before choosing to send again.');
     } catch (error) { setDetail(error instanceof Error ? error.message : 'The receipt is unavailable. Check the conversation before sending again.'); }
     finally { locked.current = false; setChecking(false); }

@@ -139,7 +139,7 @@ describe('capability: a queued send waits on the composer, not in the record', (
     // to have picked up. It is not a line in the record of what was said.
     await waitFor(() => {
       const status = screen.getByRole('status', { name: '' });
-      expect(status.textContent).toMatch(/queued — Claude is finishing the previous turn/);
+      expect(status.textContent).toMatch(/1 saved for Claude's next turn · not yet read/);
     });
     expect(screen.queryByText('and then push the branch', {
       selector: '.remote-bubble-content'

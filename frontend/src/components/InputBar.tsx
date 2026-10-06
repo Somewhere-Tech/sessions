@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type 
 import { uploadFile } from '../api/sessionsd';
 import type { SessionTool } from '../types';
 import { ComposerModelControl } from './ComposerModelControl';
-import { MessageDeliveryError } from '../lib/messageDelivery';
+import { MessageDeliveryError, type MessageSubmission } from '../lib/messageDelivery';
 import { useDurableDraft } from '../hooks/useDurableDraft';
 import { useDeliveryReview } from '../hooks/useDeliveryReview';
 import { DeliveryReviews } from './MessageDeliveryStatus';
@@ -11,8 +11,8 @@ interface Props {
   // Acknowledged sender from useTerminal. Failed sends leave the draft visible
   // for retry; active Codex turns use the provider's native steering queue.
   send: (data: string) => Promise<void>;
-  submitMessage: (data: string) => Promise<void>;
-  steerMessage?: (data: string) => Promise<void>;
+  submitMessage: (data: string) => Promise<MessageSubmission>;
+  steerMessage?: (data: string) => Promise<MessageSubmission>;
   // Display-stream status. This may reconnect independently of the durable
   // session and must not, by itself, disable an acknowledged message send.
   connected: boolean;
@@ -62,13 +62,13 @@ function quotePath(p: string): string {
   return "'" + p.replace(/'/g, "'\"'\"'") + "'";
 }
 
-function SendControls({ disabled, submitting, feedback, steer, submit }: {
+function SendControls({ disabled, submitting, feedback, steer, queue, submit }: {
   disabled: boolean; submitting: boolean; feedback: string;
-  steer: boolean; submit: (steer?: boolean) => Promise<void>;
+  steer: boolean; queue: boolean; submit: (steer?: boolean) => Promise<void>;
 }): JSX.Element {
   return <button type="button" className={`btn btn-primary input-send${steer ? ' is-steering' : ''}${feedback === 'sent' ? ' is-sent' : ''}`}
     onClick={() => void submit(steer)} disabled={disabled || submitting} aria-label={steer ? 'Send follow-up' : 'Send'}
-    title={submitting ? 'Sending…' : steer ? 'Send a new follow-up to the active turn (Enter)' : 'Send (Enter)'}>
+    title={submitting ? 'Sending…' : steer ? 'Send a new follow-up to the active turn (Enter)' : queue ? 'Save for next turn (Enter) — current work continues' : 'Send (Enter)'}>
     {steer ? 'Send follow-up' : <span aria-hidden>↑</span>}
   </button>;
 }
@@ -225,15 +225,6 @@ export function InputBar({
       return;
     }
 
-    if (richSession && providerWorking && provider !== 'codex') {
-      setComposerNotice({
-        tone: 'info', kind: 'busy',
-        title: 'Claude is still working',
-        detail: 'Your draft is kept here and was not sent or queued. Send it when this turn finishes.'
-      });
-      return;
-    }
-
     // Validation-only slash commands must leave the composer usable.
     submitInFlightRef.current = true;
     setSubmitting(true);
@@ -241,15 +232,17 @@ export function InputBar({
     // Capture before IO: provider history can arrive before the HTTP receipt.
     const baseline = submittedText ? onSubmitting?.(submittedText) : undefined;
     try {
+      let queued = submittedToActiveCodex;
       if (submittedText) {
         // The daemon acknowledges whole-message control or legacy paste/Enter.
         if (steer && steerMessage) await steerMessage(submittedText);
-        else await submitMessage('\x1b[200~' + submittedText + '\x1b[201~');
+        else queued = (await submitMessage('\x1b[200~' + submittedText + '\x1b[201~'))?.queued ?? queued;
       } else {
         // Empty buffer — just an Enter, e.g. to accept a y/n prompt.
         await send('\r');
       }
-      if (submittedText && onSubmitted) onSubmitted(submittedText, submittedToActiveCodex, baseline);
+      if (submittedText && onSubmitted) onSubmitted(submittedText, queued, baseline);
+      if (queued && provider !== 'codex') setComposerNotice({ tone: 'info', title: 'Saved for next turn', detail: 'Claude will read this after the current turn succeeds. If it fails, the saved queue pauses for recovery. Do not send it again.' });
       clearAcknowledged(submittedText, submittedDraftKey);
       restoredDraftRef.current = null;
       setFeedback('sent');
@@ -507,6 +500,7 @@ export function InputBar({
           ) : null}
           {provider === 'codex' ? <CodexTurnControl key={sessionId} working={providerWorking} available={sendAvailable} send={send} /> : null}
           <SendControls disabled={!sendAvailable || delivery.reviews.some((review) => review.text.trim() === text.trim())} submitting={submitting} feedback={feedback}
+            queue={richSession && providerWorking && provider === 'claude-code'}
             steer={Boolean(provider === 'codex' && providerWorking && steerMessage && text.trim())} submit={submit} />
         </div>
       </div>

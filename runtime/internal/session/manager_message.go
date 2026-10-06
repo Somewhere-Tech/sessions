@@ -39,7 +39,7 @@ func (m *Manager) SubmitMessage(ctx context.Context, id string, control proto.Me
 		principal, source = state.PrincipalAgent, ledger.ActivitySessionInput
 	}
 	m.registry.RecordInputPrincipal(id, principal, control.Text)
-	m.afterInput(ctx, id, control.Text, source)
+	m.afterAcceptedInput(ctx, id, control.Text, source, result.Boundary != "queue")
 	if attribution.SourceSessionID != "" {
 		exact, normalized := sha256.Sum256([]byte(control.Text)), sha256.Sum256([]byte(strings.TrimSpace(control.Text)))
 		err = m.attributions.RecordMessageRelayed(ctx, ledger.MessageRelayed{

@@ -512,7 +512,7 @@ func acknowledgedSendResult(receipt deliveryReceipt, tool string) (sendResult, b
 			ExitCode: exitCode, Reason: receipt.Reason, Retry: receipt.Retry, Tool: tool,
 		}, true
 	}
-	if receipt.Acceptance == "runner" || receipt.Acceptance == "provider" || receipt.Acceptance == "transcript" {
+	if receipt.Acceptance == "runner" || receipt.Acceptance == "queue" || receipt.Acceptance == "provider" || receipt.Acceptance == "transcript" {
 		confirmed := true
 		confidence := "accepted"
 		if receipt.Acceptance != "" {
@@ -523,7 +523,7 @@ func acknowledgedSendResult(receipt deliveryReceipt, tool string) (sendResult, b
 		}
 		return sendResult{
 			OperationID: receipt.OperationID, Confirmed: &confirmed,
-			Confidence: confidence, ExitCode: 0, Tool: tool,
+			Confidence: confidence, ExitCode: 0, Tool: tool, Reason: receipt.Reason,
 		}, true
 	}
 	if receipt.Duplicate && isConfirmableTool(tool) {
@@ -755,7 +755,7 @@ func (a *app) cmdSend(args []string) error {
 	}
 	if *result.Confirmed {
 		if a.wantJSON {
-			output := sendJSONResult{OperationID: result.OperationID, Submitted: boolPointer(true), Confidence: result.Confidence, Text: result.Text}
+			output := sendJSONResult{OperationID: result.OperationID, Submitted: boolPointer(true), Confidence: result.Confidence, Text: result.Text, Reason: result.Reason}
 			if result.Confidence == "accepted" {
 				output.Reason = "working-jsonl-pending"
 			}
@@ -767,6 +767,10 @@ func (a *app) cmdSend(args []string) error {
 		}
 		if result.Confidence == "runner-accepted" {
 			_, err := io.WriteString(a.stdout, "accepted by runner; provider response pending\n")
+			return err
+		}
+		if result.Confidence == "queue-accepted" {
+			_, err := fmt.Fprintln(a.stdout, strings.TrimSpace("saved for next turn; not yet read by Claude (do not resend) "+result.Reason))
 			return err
 		}
 		_, err := io.WriteString(a.stdout, "delivered\n")

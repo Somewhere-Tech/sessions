@@ -20,21 +20,19 @@ const events: ClaudeSessionEvent[] = [
 ];
 
 describe('structured Claude controls', () => {
-  it('keeps a refused draft and allows exactly one send after completion', async () => {
+  it('sends mid-turn once and shows a saved-next-turn receipt', async () => {
     const user = userEvent.setup();
-    const submitMessage = vi.fn().mockResolvedValue(undefined);
-    const props = { send: vi.fn(), submitMessage, connected: true, sessionId: 'draft-test', richSession: true };
-    const { rerender } = render(<InputBar {...props} providerWorking />);
+    const submitMessage = vi.fn().mockResolvedValue({ queued: true });
+    const onSubmitted = vi.fn();
+    const props = { send: vi.fn(), submitMessage, onSubmitted, connected: true, sessionId: 'draft-test', richSession: true, provider: 'claude-code' as const };
+    render(<InputBar {...props} providerWorking />);
     const input = screen.getByRole('textbox');
     await user.type(input, 'Please use my own words');
     await user.click(screen.getByRole('button', { name: 'Send' }));
-    expect(submitMessage).not.toHaveBeenCalled();
-    expect(screen.getByText('Claude is still working')).toBeInTheDocument();
-    rerender(<InputBar {...props} providerWorking={false} />);
-    expect(screen.queryByText('Claude is still working')).not.toBeInTheDocument();
-    expect(input).toHaveValue('Please use my own words');
-    await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(submitMessage).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Saved for next turn')).toBeInTheDocument();
+    expect(input).toHaveValue('');
+    expect(onSubmitted).toHaveBeenCalledWith('Please use my own words', true, undefined);
   });
   it('does not let a replayed tool call overrule runner completion', () => {
     const session = makeSession({ id: 'structured', tool: 'claude-code', kind: 'claude-structured' });

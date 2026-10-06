@@ -668,6 +668,7 @@ export interface MessageDeliveryReceipt {
   retry: boolean;
   reason?: string;
   duplicate?: boolean;
+  acceptance?: 'runner' | 'provider' | 'transcript' | 'queue' | 'unknown';
 }
 
 // Read-only recovery: checking a receipt never executes the submission again.
@@ -706,7 +707,7 @@ async function readDeliveryResponse(response: Response): Promise<MessageDelivery
 // fromSessionId records another lane as the author of the message, the way
 // `sessions send --from` does, so a hand-back reads in the manager's history
 // as coming from the lane rather than from the person.
-export async function submitMessage(sessionId: string, data: string, serverId?: string, fromSessionId?: string, mode?: 'steer', knownOperationId?: string): Promise<void> {
+export async function submitMessage(sessionId: string, data: string, serverId?: string, fromSessionId?: string, mode?: 'steer', knownOperationId?: string): Promise<void | { queued: true }> {
   const server = requestedServer(serverId);
   // A caller that recorded the id beforehand (a session's first request) makes
   // a retry of this exact message read its receipt instead of sending twice.
@@ -732,7 +733,7 @@ export async function submitMessage(sessionId: string, data: string, serverId?: 
         `${httpBaseForServer(server)}/api/message-deliveries/${encodeURIComponent(operationId)}`
       );
       const recovered = await readDeliveryResponse(receiptResponse);
-      if ('ok' in recovered || recovered.status === 'accepted') return;
+      if ('ok' in recovered || recovered.status === 'accepted') return 'acceptance' in recovered && recovered.acceptance === 'queue' ? { queued: true } : undefined;
       throw deliveryError(recovered);
     } catch (receiptError) {
       if (receiptError instanceof AuthError) throw receiptError;
@@ -740,7 +741,7 @@ export async function submitMessage(sessionId: string, data: string, serverId?: 
       throw new MessageDeliveryError('The connection changed while sending. Sessions could not confirm delivery, so it did not retry. Check the conversation before sending again.', 'unknown', operationId);
     }
   }
-  if ('ok' in receipt || receipt.status === 'accepted') return;
+  if ('ok' in receipt || receipt.status === 'accepted') return 'acceptance' in receipt && receipt.acceptance === 'queue' ? { queued: true } : undefined;
   throw deliveryError(receipt);
 }
 

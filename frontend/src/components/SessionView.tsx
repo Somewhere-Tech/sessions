@@ -408,7 +408,7 @@ function SessionViewInner({ sessionId, onStatusChange, isActive = false, onResum
     return term.sendConfirmedInputRef.current(data);
   }, [term.sendConfirmedInputRef]);
 
-  const submitMessage = useCallback((data: string): Promise<void> => {
+  const submitMessage = useCallback((data: string) => {
     return term.submitMessageRef.current(data);
   }, [term.submitMessageRef]);
 
