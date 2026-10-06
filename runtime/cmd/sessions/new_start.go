@@ -77,8 +77,24 @@ func (a *app) createAndStart(body createSessionRequest, initialInput string) err
 			result.Error = fmt.Sprintf("session %s was created, but its first request was not confirmed: %s", id, firstRequestProblem(sent, sendErr))
 		}
 	}
-	result.Start, result.StartError = a.readStartReceipt(id)
+	current, start, startError := a.readCurrentSession(id)
+	result.Start, result.StartError = start, startError
+	if current != nil {
+		info = currentCreateRecord(info, current, result.Start)
+	}
 	return a.writeNewStartResult(id, info, result)
+}
+
+// currentCreateRecord answers with the record read after the first request
+// rather than the create answer, so working, idleReason and start.phase in one
+// document describe the same moment. Only the create answer knows it was a
+// replay, so that mark is carried onto the fresh receipt.
+func currentCreateRecord(created, current map[string]any, start *state.StartReceipt) map[string]any {
+	createdStart, _ := created["start"].(map[string]any)
+	if replayed, _ := createdStart["replayed"].(bool); replayed && start != nil {
+		start.Replayed = true
+	}
+	return current
 }
 
 // rerunAdvice promises an idempotent re-run only when this daemon echoed the
@@ -205,22 +221,31 @@ func firstRequestProblem(sent sendResult, sendErr error) string {
 	return firstNonBlank(sent.Reason, sent.Confidence, "delivery was not confirmed")
 }
 
-// readStartReceipt asks the daemon what it knows now. A failed read is
-// reported, never replaced by a guess about how far the session got.
-func (a *app) readStartReceipt(id string) (*state.StartReceipt, string) {
-	sessions, err := a.listSessions(false)
-	if err != nil {
-		return nil, "could not read the start receipt: " + err.Error()
+// readCurrentSession asks the daemon what it knows now: the session's whole
+// record and its start receipt, from one read. A failed read is reported,
+// never replaced by a guess about how far the session got.
+func (a *app) readCurrentSession(id string) (map[string]any, *state.StartReceipt, string) {
+	var response struct {
+		Sessions []json.RawMessage `json:"sessions"`
 	}
-	for _, current := range sessions {
-		if current.ID == id {
-			if current.Start == nil {
-				return nil, "this daemon does not report start receipts; update Sessions to see delivery and working evidence"
-			}
-			return current.Start, ""
+	if err := a.getJSON("/api/sessions", &response); err != nil {
+		return nil, nil, "could not read the start receipt: " + err.Error()
+	}
+	for _, raw := range response.Sessions {
+		var current map[string]any
+		var decoded struct {
+			ID    string              `json:"id"`
+			Start *state.StartReceipt `json:"start"`
 		}
+		if json.Unmarshal(raw, &decoded) != nil || decoded.ID != id || json.Unmarshal(raw, &current) != nil {
+			continue
+		}
+		if decoded.Start == nil {
+			return current, nil, "this daemon does not report start receipts; update Sessions to see delivery and working evidence"
+		}
+		return current, decoded.Start, ""
 	}
-	return nil, fmt.Sprintf("session %s is no longer listed; inspect it with `sessions status %s`", id, id)
+	return nil, nil, fmt.Sprintf("session %s is no longer listed; inspect it with `sessions status %s`", id, id)
 }
 
 func (a *app) writeNewStartResult(id string, info map[string]any, result newStartResult) error {

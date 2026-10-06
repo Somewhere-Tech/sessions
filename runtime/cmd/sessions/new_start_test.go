@@ -22,6 +22,9 @@ type startDaemon struct {
 	promptOp      string
 	submitReceipt map[string]any
 	start         map[string]any
+	// listed adds fields to the listing's record, so it can differ from the
+	// create answer the way a session that has since started does.
+	listed map[string]any
 	// legacy answers like a daemon from before start receipts: it ignores
 	// operation ids and returns the session without a start object.
 	legacy bool
@@ -49,7 +52,8 @@ func (d *startDaemon) serve(t *testing.T) *httptest.Server {
 				status = http.StatusOK
 			}
 			start["prompt_operation_id"] = d.promptOp
-			created := map[string]any{"id": startSessionID, "cmd": "claude", "kind": "claude-structured", "start": start}
+			created := map[string]any{"id": startSessionID, "cmd": "claude", "kind": "claude-structured", "start": start,
+				"working": false, "idleReason": "never-started"}
 			if d.legacy {
 				delete(created, "start")
 				status = http.StatusCreated
@@ -57,10 +61,14 @@ func (d *startDaemon) serve(t *testing.T) *httptest.Server {
 			response.WriteHeader(status)
 			_ = json.NewEncoder(response).Encode(created)
 		case request.Method == http.MethodGet && request.URL.Path == "/api/sessions":
-			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{map[string]any{
+			listed := map[string]any{
 				"id": startSessionID, "cmd": "claude", "tool": "claude-code", "kind": "claude-structured",
 				"messageSubmit": true, "start": d.start,
-			}}})
+			}
+			for key, value := range d.listed {
+				listed[key] = value
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{listed}})
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/events"):
 			_ = json.NewEncoder(response).Encode(map[string]any{"events": []any{}, "nextIndex": 0})
 		case request.Method == http.MethodPost && request.URL.Path == "/api/sessions/"+startSessionID+"/submit":
@@ -332,5 +340,37 @@ func TestNewCreateFailuresAreStructuredReceipts(t *testing.T) {
 				t.Fatalf("unknown outcome promised a safe re-run: %q", failure.Next)
 			}
 		})
+	}
+}
+
+// The create answer is taken before the first request; the start receipt
+// after it. Printing the first's working:false/never-started beside the
+// second's phase:working read as a contradiction, so the record must be the
+// later read as a whole. A re-run must still say it was a replay.
+func TestNewJSONRecordAndStartReceiptAreOneSnapshot(t *testing.T) {
+	daemon := &startDaemon{
+		submitReceipt: map[string]any{"status": "accepted", "delivered": true, "acceptance": "runner"},
+		start:         map[string]any{"phase": "working", "evidence": "the provider reported an active turn", "evidence_source": "provider-events"},
+		listed:        map[string]any{"working": true},
+	}
+	server := daemon.serve(t)
+	defer server.Close()
+	const operationID = "dddddddd-eeee-4fff-8000-000000000002"
+	for attempt := 0; attempt < 2; attempt++ {
+		code, stdout, stderr := runStartCLI(t, server, "--json", "new", "--tool", "claude", "--structured", "--operation-id", operationID, "start now")
+		var record map[string]any
+		if err := json.Unmarshal([]byte(stdout), &record); err != nil || code != 0 {
+			t.Fatalf("attempt %d exit=%d stdout=%q stderr=%q err=%v", attempt, code, stdout, stderr, err)
+		}
+		start, _ := record["start"].(map[string]any)
+		if record["working"] != true || record["idleReason"] != nil || start["phase"] != "working" {
+			t.Fatalf("attempt %d mixed snapshots: working=%v idleReason=%v phase=%v", attempt, record["working"], record["idleReason"], start["phase"])
+		}
+		if replayed, _ := start["replayed"].(bool); replayed != (attempt == 1) {
+			t.Fatalf("attempt %d start.replayed=%v", attempt, start["replayed"])
+		}
+		if record["ok"] != true || record["first_request"] == nil {
+			t.Fatalf("attempt %d lost the additive fields: %v", attempt, record)
+		}
 	}
 }
