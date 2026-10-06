@@ -20,6 +20,7 @@ import { RemoteEmptyState } from './RemoteEmptyState';
 import { useProviderControl } from '../hooks/useProviderControl';
 import { retryProviderSession } from '../api/sessionsd';
 import type { MessageSubmission } from '../lib/messageDelivery';
+import '../styles/queued-messages.css';
 
 const LostConversationCard = lazy(() => import('./LostConversationCard').then((module) => ({ default: module.LostConversationCard })));
 
