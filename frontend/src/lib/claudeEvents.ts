@@ -124,6 +124,27 @@ function isSystemUserPseudoMessage(text: string): boolean {
   return false;
 }
 
+// A terminal Claude session receives every composer message as a bracketed
+// paste, and some Claude versions record it inside one
+// <pasted_content id="…"> envelope, repeating the id on the closing tag. The
+// person wrote the enclosed text, so that is what the chat shows and what an
+// acknowledged send is reconciled against; matching the envelope left the
+// send waiting beside its own delivered copy. The delivery receipt applies
+// the same rule (runtime/internal/delivery/claude_paste.go). Only one
+// complete outer envelope is removed: partial, mismatched or surrounded
+// markup and an empty envelope stay exactly as recorded.
+const CLAUDE_PASTE_OPENING = /^<pasted_content(?: id="[A-Za-z0-9_-]+")?>/;
+
+export function claudeAuthoredText(recorded: string): string {
+  const trimmed = recorded.trim();
+  const opening = CLAUDE_PASTE_OPENING.exec(trimmed)?.[0];
+  if (!opening) return recorded;
+  const closing = [`</${opening.slice(1)}`, '</pasted_content>'].find((tag) => trimmed.endsWith(tag));
+  if (!closing || trimmed.length < opening.length + closing.length) return recorded;
+  const enclosed = trimmed.slice(opening.length, trimmed.length - closing.length).trim();
+  return enclosed || recorded;
+}
+
 // Extract user-typed text from a user message. Content can be a plain
 // string (the typical case) OR an array containing text + image blocks.
 function extractUserContent(content: unknown): { text: string; hasImage: boolean } {
@@ -721,13 +742,13 @@ export function eventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[
       const content = ev.message?.content;
       if (isUserToolResultOnly(content)) continue;
       const { text, hasImage } = extractUserContent(content);
-      let body = text;
-      if (!body && hasImage) body = '[image attached]';
-      else if (!body) continue;
+      const recorded = text || (hasImage ? '[image attached]' : '');
+      if (!recorded) continue;
       // System-inserted control flow (compact, continue, resume caveats).
       // These are user-role events Claude writes for its own bookkeeping,
       // not human typing — skip them in the chat.
-      if (isSystemUserPseudoMessage(body)) continue;
+      if (isSystemUserPseudoMessage(recorded)) continue;
+      const body = claudeAuthoredText(recorded);
 
       flushPendingTools();
       pendingHadThinking = false;
