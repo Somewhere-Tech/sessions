@@ -826,7 +826,12 @@ usage or a guarantee that future inference will succeed. The identity is also
 included in profile listings when known; legacy `signed_in` remains unchanged.
 
 Helpers have a ten-minute lifetime, run in the selected provider home and never
-create an agent conversation. Claude uses `auth login --claudeai` and
+create an agent conversation. Provider executables are resolved from the service
+PATH and common per-user installation locations, including `~/.local/bin` on
+Unix. The helper PATH also includes those locations; account homes and
+credentials are not inherited from the calling agent. If no executable can be
+found, the failed operation names the missing provider and asks the user to
+install it before trying again. Claude uses `auth login --claudeai` and
 `auth status --json`; Codex uses a private stdio app-server with
 `account/login/start` device authorization and `account/read`. Only the provider
 stores or refreshes credentials. Login codes and URLs are memory-only; after a

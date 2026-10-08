@@ -4,20 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/agentcall"
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
 )
+
+var errAccountProviderUnavailable = errors.New("account provider executable unavailable")
 
 // Do not inherit API keys, ambient provider homes, gateways or auth helpers.
 // Sign-in and verification run in the same private home used by the account.
 func accountLoginEnvironment(tool, home string) []string {
 	var env []string
-	for _, item := range os.Environ() {
+	// Share GUI/service-safe executable discovery and PATH with agent calls,
+	// but retain the narrower account allowlist below. In particular, never
+	// inherit the caller's CLAUDE_CONFIG_DIR or CODEX_HOME.
+	for _, item := range agentcall.Environment() {
 		key, _, _ := strings.Cut(item, "=")
 		switch strings.ToUpper(key) {
 		case "PATH", "HOME", "USER", "USERNAME", "USERPROFILE", "LOGNAME", "SHELL",
@@ -41,9 +46,9 @@ func accountLoginEnvironment(tool, home string) []string {
 }
 
 func loginProviderAccount(ctx context.Context, tool, home string, op *accountLoginOperation) (*AccountIdentity, error) {
-	executable, err := exec.LookPath(tool)
+	executable, err := agentcall.Executable(tool)
 	if err != nil {
-		return nil, errors.New("provider is not installed")
+		return nil, errAccountProviderUnavailable
 	}
 	env := accountLoginEnvironment(tool, home)
 	if tool == "claude" {

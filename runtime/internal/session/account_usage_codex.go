@@ -3,10 +3,10 @@ package session
 import (
 	"context"
 	"errors"
-	"os/exec"
 	"sort"
 	"time"
 
+	"github.com/somewhere-tech/sessions/runtime/internal/agentcall"
 	"github.com/somewhere-tech/sessions/runtime/internal/codexapp"
 )
 
@@ -21,7 +21,7 @@ func readProviderUsage(ctx context.Context, tool, home string) AccountUsage {
 			Message: "Claude usage is not connected in Sessions yet. Check Claude for your current limits.",
 		}
 	}
-	executable, err := exec.LookPath("codex")
+	executable, err := agentcall.Executable("codex")
 	if err != nil {
 		return AccountUsage{State: AccountUsageUnavailable, Message: "Codex is not installed on this computer; install it to read this account's usage."}
 	}

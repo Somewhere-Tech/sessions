@@ -162,9 +162,22 @@ func (m *Manager) runAccountLogin(ctx context.Context, op *accountLoginOperation
 			s.State, s.Identity = "connected", identity
 			return
 		}
-		s.State, s.Message = "failed", "Sign-in did not complete. Try again; existing accounts were not changed."
+		s.State, s.Message = "failed", accountLoginFailureMessage(s.Tool, err)
 		if ctx.Err() != nil {
 			s.State, s.Message = "expired", "Sign-in expired. Start again when you are ready."
 		}
 	})
+}
+
+// Only our own error categories reach the UI; provider errors may contain
+// authentication details. Explain missing executables without publishing them.
+func accountLoginFailureMessage(tool string, err error) string {
+	if !errors.Is(err, errAccountProviderUnavailable) {
+		return "Sign-in did not complete. Try again; your other account sign-ins were not changed."
+	}
+	provider := "Claude Code"
+	if tool == "codex" {
+		provider = "Codex"
+	}
+	return "Sessions could not find " + provider + " on this computer. Install it, then try Sign in again."
 }
