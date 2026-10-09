@@ -50,15 +50,47 @@ func (m *Manager) acquireCreation(ctx context.Context) (func(), error) {
 	}
 }
 
-func (m *Manager) prepareCreateRequest(ctx context.Context, request state.CreateSessionRequest) (state.CreateSessionRequest, error) {
-	if request.Profile != "" {
-		configDir, err := m.prepareProfile(request.Cmd, request.Profile)
-		if err != nil {
-			return request, err
-		}
-		request.ConfigDir = configDir
+// validateCreateFields refuses a malformed request from its fields alone: the
+// operation ids, and the account choice. It reads no ledger, settings,
+// provider or disk, so it can run before anything else.
+func validateCreateFields(request state.CreateSessionRequest) error {
+	if err := state.ValidateStartOperationIDs(request.OperationID, request.PromptOperationID); err != nil {
+		return err
 	}
-	request, err := resolveDelegatedRuntimeDefault(request)
+	if request.DefaultProfile && request.Profile != "" {
+		return errAccountChoiceConflict
+	}
+	if request.Profile != "" {
+		if _, err := profileTool(request.Cmd, request.Profile); err != nil {
+			return err
+		}
+	}
+	// The providerTerminal escape hatch is checked against the command and
+	// kind alone; the resolved request itself is prepared later.
+	_, err := resolveDelegatedRuntimeDefault(request)
+	return err
+}
+
+// answerRecordedStart answers a repeated operation id from the ledger before
+// any account, settings or provider work. That work describes a new launch;
+// a recorded launch is already decided and is never re-resolved. It takes no
+// lock: an operation, once recorded, stays recorded, and Create repeats the
+// lookup under the creation lock so two first attempts still launch once.
+func (m *Manager) answerRecordedStart(ctx context.Context, request state.CreateSessionRequest) (state.SessionInfo, bool, error) {
+	if err := validateCreateFields(request); err != nil {
+		return state.SessionInfo{}, true, err
+	}
+	return m.replayStart(ctx, request)
+}
+
+func (m *Manager) prepareCreateRequest(ctx context.Context, request state.CreateSessionRequest) (state.CreateSessionRequest, error) {
+	// Settle the account before the Claude defaults read its home. The home is
+	// created only after a replayed operation id has been ruled out.
+	request, err := m.resolveRequestedProfile(ctx, request)
+	if err != nil {
+		return request, err
+	}
+	request, err = resolveDelegatedRuntimeDefault(request)
 	if err != nil {
 		return request, err
 	}

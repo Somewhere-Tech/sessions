@@ -18,6 +18,20 @@ type Session struct {
 	runner proto.Runner
 	mirror *mirror.Mirror
 
+	// controlMu orders the frames Sessions sends to the runner on a person's
+	// or agent's behalf: input is admitted shared, and a model change, an
+	// approval or a retry control exclusively, so a model change still reaches
+	// the runner before any later input and controls do not interleave. It is
+	// always taken before mu and never while mu is held. It does not order
+	// SubmitMessage, which has never been ordered against these frames.
+	//
+	// Input and ConfigureModel hold only controlMu across runner I/O, so the
+	// state lock below stays free for readers and the event pump while their
+	// frames are in flight. Approve, RetryProvider and StopProviderRetry still
+	// hold mu across their frames as well; readers of this session wait for
+	// those exactly as before.
+	controlMu sync.RWMutex
+
 	mu           sync.RWMutex
 	info         SessionInfo
 	outputs      []proto.OutputEvent
@@ -557,14 +571,21 @@ func (s *Session) snapshot(cols int, includeScrollback bool) (string, uint32, er
 }
 
 func (s *Session) Input(ctx context.Context, data string) bool {
+	s.controlMu.RLock()
+	defer s.controlMu.RUnlock()
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	exited := s.info.Exited
+	s.mu.RUnlock()
+	// The runner is fixed for the session's life, so the write needs no state
+	// lock. Success reports only a frame write, not provider consumption: a
+	// concurrent exit may happen after that write was accepted.
 	return !exited && s.runner.Input(ctx, data) == nil
 }
 
 // Approve answers the approval this session's runner is holding open.
 func (s *Session) Approve(ctx context.Context, control proto.ApprovalControl) error {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.info.Exited {
@@ -582,6 +603,8 @@ func (s *Session) Approve(ctx context.Context, control proto.ApprovalControl) er
 }
 
 func (s *Session) RetryProvider(ctx context.Context) error {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.retryEligibilityLocked(false); err != nil {
@@ -595,6 +618,8 @@ func (s *Session) RetryProvider(ctx context.Context) error {
 }
 
 func (s *Session) StopProviderRetry(ctx context.Context) error {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.retryEligibilityLocked(true); err != nil {
@@ -637,11 +662,35 @@ func (s *Session) retryEligibilityLocked(stop bool) error {
 }
 
 // ConfigureModel updates the defaults used by the next structured-provider
-// turn. Holding the session write lock across the runner frame orders this
-// change before any later user input through Session.Input.
+// turn. The exclusive control-order admission keeps this change ahead of any
+// later input through Session.Input and serializes model changes, so an
+// earlier change can never be applied after a later one. The state lock is
+// held only to check eligibility and to record the acknowledged change, not
+// across the runner frame.
 func (s *Session) ConfigureModel(ctx context.Context, model, effort string) error {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	if err := s.modelChangeEligible(); err != nil {
+		return err
+	}
+	if err := s.runner.ConfigureModel(ctx, proto.ModelControl{Model: model, Effort: effort}); err != nil {
+		return fmt.Errorf("configure runner model: %w", err)
+	}
+	// The runner acknowledged the change, so it is recorded even if the
+	// session exited or started a turn meanwhile: only these three fields are
+	// written, from the current record, and Exited, Working and Unreachable
+	// stay whatever the event pump has recorded.
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.info.Args = withModelControls(s.info.Tool, s.info.Args, model, effort)
+	s.info.Model = model
+	s.info.Effort = effort
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Session) modelChangeEligible() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.info.Exited {
 		return ErrSessionEnded
 	}
@@ -651,12 +700,6 @@ func (s *Session) ConfigureModel(ctx context.Context, model, effort string) erro
 	if s.info.RunnerProtocol < 2 {
 		return fmt.Errorf("%w: runner protocol v%d cannot change models live; update Sessions and start or resume this conversation with the current runtime", ErrRunnerProtocol, s.info.RunnerProtocol)
 	}
-	if err := s.runner.ConfigureModel(ctx, proto.ModelControl{Model: model, Effort: effort}); err != nil {
-		return fmt.Errorf("configure runner model: %w", err)
-	}
-	s.info.Args = withModelControls(s.info.Tool, s.info.Args, model, effort)
-	s.info.Model = model
-	s.info.Effort = effort
 	return nil
 }
 

@@ -34,18 +34,38 @@ type ProfileStatus struct {
 	LastUsed int64            `json:"last_used"`
 }
 
-func (m *Manager) prepareProfile(command, name string) (string, error) {
+// profileTool checks a named profile from the request alone: its spelling and
+// that the command is Claude or Codex. It reads no configuration or disk.
+func profileTool(command, name string) (string, error) {
 	if err := state.ValidateProfileName(name); err != nil {
 		return "", err
-	}
-	if m.config.UserStateRoot == "" {
-		return "", errors.New("--profile requires a configured Sessions user state root")
 	}
 	tool, supported := state.ProfileToolName(state.CommandTool(command))
 	if !supported {
 		return "", errors.New("--profile is only for Claude or Codex sessions; remove it for shell sessions")
 	}
-	path := filepath.Join(m.config.UserStateRoot, "profiles", tool, name)
+	return tool, nil
+}
+
+// profileDirectory validates a profile choice and names its provider home
+// without touching the disk, so a create can be checked before it is replayed.
+func (m *Manager) profileDirectory(command, name string) (string, error) {
+	tool, err := profileTool(command, name)
+	if err != nil {
+		return "", err
+	}
+	if m.config.UserStateRoot == "" {
+		return "", errors.New("--profile requires a configured Sessions user state root")
+	}
+	return filepath.Join(m.config.UserStateRoot, "profiles", tool, name), nil
+}
+
+// prepareProfile creates the private provider home a launch is about to use.
+func (m *Manager) prepareProfile(command, name string) (string, error) {
+	path, err := m.profileDirectory(command, name)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return "", fmt.Errorf("create profile directory %s: %w", path, err)
 	}

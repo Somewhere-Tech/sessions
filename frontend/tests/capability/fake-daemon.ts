@@ -94,6 +94,8 @@ export interface FakeMachine {
   /** How this machine answers /api/search while it is running but failing. */
   searchFailure?: { status: number; message: string };
   teamFailure?: { status: number; message: string };
+  /** How this machine answers GET /api/sessions while its durable record is unreadable. */
+  sessionListFailure?: { status: number; body: Record<string, unknown> };
   /**
    * Machines this host has approved and relays to, as GET /api/fleet/machines
    * reports them. A peer with no relayFailure is forwarded to its own fake
@@ -417,6 +419,9 @@ export function installFakeDaemon(machines: FakeMachine[]): FakeDaemon {
     if (path === '/api/lanes/mine' && machine.team) return jsonResponse(machine.team);
 
     // ── session list & lifecycle ────────────────────────────────────────
+    if (path === '/api/sessions' && method === 'GET' && machine.sessionListFailure) {
+      return jsonResponse(machine.sessionListFailure.body, machine.sessionListFailure.status);
+    }
     if (path === '/api/sessions' && method === 'GET') {
       const includeExited = url.searchParams.get('include_exited') === '1';
       return jsonResponse({

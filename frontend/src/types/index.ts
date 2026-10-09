@@ -281,6 +281,8 @@ export interface CreateSessionRequest {
   description?: string;
   tags?: Record<string, string>;
   profile?: string;
+  /** Use the provider's default login, even where a parent's account would be inherited. */
+  defaultProfile?: boolean;
   worktree?: boolean;
   base?: string;
   kind?: string;

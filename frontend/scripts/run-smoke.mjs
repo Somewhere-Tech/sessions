@@ -49,6 +49,7 @@ const GATE = [
   'launcher-layout',
   'account-login',
   'account-usage',
+  'account-choice',
   'session-status',
   'local-network',
   'title-clarity',

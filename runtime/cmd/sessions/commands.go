@@ -76,6 +76,7 @@ type createSessionRequest struct {
 	Description       string            `json:"description,omitempty"`
 	Tags              map[string]string `json:"tags,omitempty"`
 	Profile           string            `json:"profile,omitempty"`
+	DefaultProfile    bool              `json:"defaultProfile,omitempty"`
 	Worktree          bool              `json:"worktree,omitempty"`
 	NoWorktree        bool              `json:"noWorktree,omitempty"`
 	Base              string            `json:"base,omitempty"`
@@ -93,6 +94,28 @@ type agentControls struct {
 	model  *string
 	effort *string
 	fast   bool
+}
+
+// pluckProfileChoice reads the account flags. --profile names an account;
+// --default-profile chooses the default login on purpose. With neither, the
+// daemon decides: a Claude or Codex child keeps its parent's account.
+func pluckProfileChoice(args *[]string, body *createSessionRequest) error {
+	body.DefaultProfile = removeFirst(args, "--default-profile")
+	value, present := pluck(args, "--profile")
+	if !present {
+		return nil
+	}
+	if strings.HasPrefix(value, "-") || value == "" {
+		return fail(1, "--profile needs a name; use --default-profile for the default account")
+	}
+	if body.DefaultProfile {
+		return fail(1, "--profile and --default-profile cannot be combined; choose one account")
+	}
+	if err := state.ValidateProfileName(value); err != nil {
+		return fail(1, "%s", err)
+	}
+	body.Profile = value
+	return nil
 }
 
 func applyToolDefault(body *createSessionRequest, fullAccess bool) error {
@@ -255,14 +278,8 @@ func (a *app) cmdNew(args []string) error {
 	if err != nil {
 		return err
 	}
-	if value, present := pluck(&args, "--profile"); present {
-		if strings.HasPrefix(value, "-") || value == "" {
-			return fail(1, "--profile needs a name")
-		}
-		if err := state.ValidateProfileName(value); err != nil {
-			return fail(1, "%s", err)
-		}
-		body.Profile = value
+	if err := pluckProfileChoice(&args, &body); err != nil {
+		return err
 	}
 	body.Worktree, body.Base, err = pluckWorktreeOptions(&args)
 	if err != nil {
@@ -442,10 +459,10 @@ func (a *app) cmdNew(args []string) error {
 	if err := applyAgentControls(&body, agentControls{model: model, effort: effort, fast: fast}); err != nil {
 		return err
 	}
-	if body.Profile != "" {
+	if body.Profile != "" || body.DefaultProfile {
 		tool := state.CommandTool(body.Cmd)
 		if _, supported := state.ProfileToolName(tool); !supported {
-			return fail(1, "--profile is only for Claude or Codex sessions; remove it for shell sessions")
+			return fail(1, "--profile and --default-profile are only for Claude or Codex sessions; remove them for shell sessions")
 		}
 	}
 	// A child starts from the folder where its manager invoked the CLI. The

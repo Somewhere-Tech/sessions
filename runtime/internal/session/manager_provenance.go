@@ -361,6 +361,9 @@ func (m *Manager) reconcileLedger(ctx context.Context) {
 }
 
 func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest) (state.SessionInfo, error) {
+	if replayed, answered, err := m.answerRecordedStart(ctx, request); answered || err != nil {
+		return replayed, err
+	}
 	request, err := m.prepareCreateRequest(ctx, request)
 	if err != nil {
 		return state.SessionInfo{}, err
@@ -389,6 +392,11 @@ func (m *Manager) Create(ctx context.Context, request state.CreateSessionRequest
 		}
 	} else if request.DelegationKind != "" {
 		return state.SessionInfo{}, errors.New("delegation kind requires a parent session")
+	}
+	if request.Profile != "" {
+		if request.ConfigDir, err = m.prepareProfile(request.Cmd, request.Profile); err != nil {
+			return state.SessionInfo{}, err
+		}
 	}
 	request, err = m.resolveDelegatedExecution(ctx, request, creatorKind, creatorID)
 	if err != nil {

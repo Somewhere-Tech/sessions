@@ -9,7 +9,7 @@ import {
   type SessionModelOption
 } from '../api/sessionsd';
 import { readNewSessionDefaults, type NewSessionTool } from '../lib/newSessionDefaults';
-import { accountLabel, accountNeedsLogin, rememberAccount, rememberedAccount } from '../lib/accountChoice';
+import { accountLabel, accountNeedsLogin, accountRequestFields, rememberAccount, rememberedAccount } from '../lib/accountChoice';
 import { TagEditor } from './TagEditor';
 import type { ClaudeSessionOptions, CreateSessionRequest, DirectoryCandidate, SessionInfo } from '../types';
 import { getActiveServer, isLocalServer, serverDisplayName, useServers } from '../lib/servers';
@@ -467,7 +467,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         name: task.trim() ? sessionTitleFromPrompt(task) : undefined,
         description: task.trim() || undefined,
         tags,
-        profile: selectedProfile || undefined,
+        ...accountRequestFields(selectedProfile, Boolean(parentSession && profileTool)),
         waitReady: task.trim().length > 0,
         claude: tool === 'claude-code' ? resolvedClaudeOptions : undefined,
         creatorSessionId: parentSession?.id,

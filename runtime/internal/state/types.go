@@ -309,8 +309,12 @@ type CreateSessionRequest struct {
 	Description       string            `json:"description,omitempty"`
 	Tags              map[string]string `json:"tags,omitempty"`
 	Profile           string            `json:"profile,omitempty"`
-	Worktree          bool              `json:"worktree,omitempty"`
-	Base              string            `json:"base,omitempty"`
+	// DefaultProfile explicitly chooses the provider's default login. Without
+	// it, an omitted profile lets a same-provider child start on its parent's
+	// recorded account; with it, the child uses the default login instead.
+	DefaultProfile bool   `json:"defaultProfile,omitempty"`
+	Worktree       bool   `json:"worktree,omitempty"`
+	Base           string `json:"base,omitempty"`
 	// NoWorktree declines the worktree an agent-created child would otherwise
 	// get by default, so a lane can deliberately share its manager's checkout.
 	NoWorktree bool   `json:"noWorktree,omitempty"`

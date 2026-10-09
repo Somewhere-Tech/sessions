@@ -131,7 +131,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 				},
 			},
 			"discovering":    s.registry.IsDiscovering(),
-			"sessionsLoaded": len(s.registry.List(true)),
+			"sessionsLoaded": s.loadedSessionCount(),
 			"startup":        s.startupHealth(),
 			// What the daemon has done on its own initiative, per named pass.
 			// A burst that is happening right now can be read here rather than
@@ -219,8 +219,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if path == "/api/sessions" && request.Method == http.MethodGet {
-		includeExited := request.URL.Query().Get("include_exited") == "1"
-		s.sendJSON(response, http.StatusOK, map[string]any{"sessions": s.withStartReceipts(s.registry.List(includeExited))}, corsOrigin)
+		s.handleListSessions(response, request, corsOrigin)
 		return
 	}
 	if path == "/api/sessions/end-batch" && request.Method == http.MethodPost {
@@ -439,7 +438,7 @@ func (s *Server) plainHealth(request *http.Request) map[string]any {
 			},
 		},
 		"discovering":    s.registry.IsDiscovering(),
-		"sessionsLoaded": len(s.registry.List(true)),
+		"sessionsLoaded": s.loadedSessionCount(),
 		"startup":        s.startupHealth(),
 		"restore":        restore,
 	}

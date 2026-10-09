@@ -278,8 +278,15 @@ hostname. `compatibility.api` is the authoritative client acceptance range;
 `compatibility.runner` describes the living runners this daemon can adopt.
 Clients preserve their legacy behavior when an older daemon omits the additive
 object, but must stop before normal use when their protocol is outside an
-advertised range. The count includes exited sessions still in their 30-second
-grace period. The deep-health response carries the same `compatibility`,
+advertised range. `sessionsLoaded` counts the sessions this daemon has loaded
+in memory, including exited sessions still in their 30-second grace period. The
+count is collected under the in-memory registry's own lock, without the durable
+ledger, any session's lock, or any runner, so collecting it does not wait for
+those. That is a property of this field, not of the whole response: deep
+health also reports per-session diagnostics, which take each session's lock
+and can wait for it. The count does not include durable records of ended
+sessions and is not evidence that any session is working. Deep health reports
+the same count. The deep-health response carries the same `compatibility`,
 `access`, and `tailscale` objects but no `listen` or `lan`. `restore.pending` counts runners
 Sessions deliberately left stopped after reboot rather than starting an
 unbounded retained fleet; their recovery evidence is preserved.
@@ -559,6 +566,32 @@ sessions. Other values and duplicates do not. Returns 200:
 
 The order is the daemon map's insertion order; the route does not sort.
 
+Ended sessions, `start` receipts, and creator and delegation provenance come
+from the durable lane ledger. When the daemon cannot read it, the route
+returns no listing rather than one missing them:
+
+```json
+{"error":"Sessions could not read its durable session record (<reason>), so it returned no listing rather than one missing ended sessions and start receipts. Nothing was changed. Retry; if it keeps failing, run `sessions doctor`.","code":"SESSION_STATE_UNAVAILABLE","action":"retry"}
+```
+
+with status **503**. A 503 means the listing is unknown, not empty; clients
+keep what they last showed.
+
+The route creates one context when it starts, ending when the request ends or
+15 seconds later, whichever is first. It then reads the in-memory sessions,
+which does not observe that context: each session is read under its own lock,
+and that lock can be held while the daemon exchanges a frame with the
+session's runner. The ledger read follows with whatever remains of the context.
+Waiting for the ledger connection and waiting for another request's ledger
+fold stop when the context ends; the ledger query itself stops only as far as
+the ledger reader honors its context, and a SQLite statement that is already
+executing is not promised to stop. If the context has ended, or ends during
+the ledger read, the route answers this 503. The work after the ledger read
+(reading paused-restore markers and probing lost runners' processes) does not
+observe the context. The 15 seconds therefore bounds waiting on the ledger, not
+the whole response. A daemon without a durable ledger lists its in-memory
+sessions as before.
+
 ### `POST /api/sessions`
 
 Auth required. Every request field is optional:
@@ -573,6 +606,7 @@ Auth required. Every request field is optional:
 | `env` | object of string values | caller environment after filtering reserved/injection keys |
 | `name` | string | trimmed; empty becomes absent |
 | `profile` | string | optional `[a-z0-9-]{1,32}` Claude/Codex login profile; rejected for shell sessions |
+| `defaultProfile` | boolean | optional; `true` explicitly chooses the provider's default login instead of an inherited account; combining it with `profile` is 400 |
 | `worktree` | boolean | when true, create an isolated Git worktree and use it as `cwd` |
 | `base` | string | optional worktree base ref; requires `worktree`; defaults to the source checkout's current branch |
 | `initialInput` | string | optional; the first request when the provider consumes it from `args` (a terminal Codex session), carried so the transcript watcher binds to the rollout that records it |
@@ -617,8 +651,16 @@ nothing is launched. A repeat whose session has ended, whose launch failed, or
 that this daemon has not re-attached yet after a restart returns
 `409 {"error":"<message>","operation_id":"<id>","session_id":"<session>"}`
 rather than starting the same work again. A repeat for a different Claude or
-Codex tool is 400. A malformed id is 400, and a daemon without ledger access
-refuses `operation_id` with 400 because it cannot keep the promise. Requests
+Codex tool is also 409 with that body, naming the session the id already
+created; nothing is launched. A malformed id is 400, and a daemon without ledger access
+refuses `operation_id` with 400 because it cannot keep the promise. A repeat
+is answered from the recorded operation before account inheritance, Claude
+settings, or the live Codex model catalog are consulted: it contacts no
+provider and never re-decides the recorded account, model, or settings.
+Malformed operation ids, including a malformed `prompt_operation_id` sent
+alone, and a `profile` combined with `defaultProfile` are still refused first,
+from the request fields alone. Two first attempts with the same id are
+settled under the creation lock, so only one launches. Requests
 without an operation id behave exactly as before, except for one failure that
 now keeps its session: the ledger records a session before its runner
 launches, so a launch that fails after that point returns
@@ -646,6 +688,21 @@ same root for watcher, transcript, search, backup, and recovery resolution
 ([`internal/session/profiles.go`](../internal/session/profiles.go),
 [`internal/state/registry.go`](../internal/state/registry.go),
 [`internal/backup/sessions.go`](../internal/backup/sessions.go)).
+
+A Claude or Codex child (a create carrying a validated
+`X-Sessions-Creator-Session` parent) that omits both `profile` and
+`defaultProfile` starts on the account recorded in its parent's creation record
+when the parent is the same provider. The daemon reads that record from its own
+ledger; the caller cannot supply it, and no credential is copied. A named
+`profile` always wins, and `defaultProfile: true` keeps the child on the default
+login. An account is never carried across providers, to command lanes, or from
+an unprofiled parent, and a parent that cannot be validated is rejected as
+before. Requests without a parent are unchanged. A create replayed by
+`operation_id` is answered before any profile directory is created or touched.
+Resume, adoption, restart and fork keep the account recorded for the source and
+do not consult this rule. An older daemon ignores `defaultProfile`, which there
+already means the default login
+([`internal/session/delegated_account.go`](../internal/session/delegated_account.go)).
 
 ### `GET /api/lanes`
 

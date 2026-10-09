@@ -342,6 +342,7 @@ func TestCommandTableDocumentsTheFlagsParsersAccept(t *testing.T) {
 			"--model", "--effort", "--fast", "--structured", "--pty-claude",
 			"--codex-appserver", "--pty-codex", "--wait-ready", "--on-idle",
 			"--force", "--no-skip-perms", "--owner", "--detach", "--cmd", "--base",
+			"--profile", "--default-profile",
 		},
 		"run":    {"--owner", "--detach", "--spec", "--base"},
 		"tail":   {"--follow", "--lines", "-f", "-n"},
