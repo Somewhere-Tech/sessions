@@ -33,6 +33,11 @@ func systemdQuote(value string) string {
 	return "\"" + value + "\""
 }
 
+// linuxServiceUnit is the only definition install writes. Uninstall acts
+// only on a file byte-identical to this template's output for this home's
+// managed runtime (eligibleLinuxUnit), so a change here must still accept the
+// units earlier versions generated;
+// TestLinuxUninstallRecognisesEveryShippedUnitTemplate pins the shipped text.
 func linuxServiceUnit(config linuxServiceConfig) string {
 	var environment strings.Builder
 	for _, entry := range config.Env {
@@ -57,12 +62,36 @@ WantedBy=default.target
 `, systemdQuote(strings.ReplaceAll(config.Daemon, "$", "$$")), environment.String())
 }
 
-func (a *app) linuxServiceConfig(m *linuxServiceManager) (linuxServiceConfig, error) {
+// linuxServiceName and linuxUnitPath are the unit name and file install
+// writes, in one place so uninstall cannot look anywhere else.
+func linuxServiceName() (string, error) {
 	name := os.Getenv("SESSIONS_DAEMON_LABEL")
 	if name == "" {
 		name = "sessions"
 	}
 	name, err := resolveDaemonLabel(name)
+	if err != nil {
+		return "", err
+	}
+	return name + ".service", nil
+}
+
+func linuxUnitPath(home, name string) string {
+	return filepath.Join(home, ".config", "systemd", "user", name)
+}
+
+// linuxRuntimeRoot holds the content-addressed runtime directories install
+// stages; each is named by the hex SHA-256 of its three binaries.
+func linuxRuntimeRoot(home string) string {
+	return filepath.Join(home, ".local", "share", "sessions", "runtime")
+}
+
+// linuxOptionalEnvironment is passed through to the unit, in this order, only
+// when set at install time.
+var linuxOptionalEnvironment = []string{"SESSIONS_STATE_DIR", "SESSIONS_LEDGER_PATH", "SESSIONS_WEB_DIR", "SESSIONS_PPROF", "SHELL"}
+
+func (a *app) linuxServiceConfig(m *linuxServiceManager) (linuxServiceConfig, error) {
+	name, err := linuxServiceName()
 	if err != nil {
 		return linuxServiceConfig{}, err
 	}
@@ -85,19 +114,19 @@ func (a *app) linuxServiceConfig(m *linuxServiceManager) (linuxServiceConfig, er
 		{Key: "SESSIONS_HOST", Value: a.host}, {Key: "SESSIONS_PORT", Value: a.port},
 		{Key: "SESSIONS_RUNNER", Value: filepath.Join(staged, "sessions-runner")},
 	}
-	for _, key := range []string{"SESSIONS_STATE_DIR", "SESSIONS_LEDGER_PATH", "SESSIONS_WEB_DIR", "SESSIONS_PPROF", "SHELL"} {
+	for _, key := range linuxOptionalEnvironment {
 		if value := os.Getenv(key); value != "" {
 			environment = append(environment, plistEnvironment{Key: key, Value: value})
 		}
 	}
-	return linuxServiceConfig{Name: name + ".service", Path: filepath.Join(a.home, ".config", "systemd", "user", name+".service"),
+	return linuxServiceConfig{Name: name, Path: linuxUnitPath(a.home, name),
 		Daemon: filepath.Join(staged, "sessionsd"), Runner: filepath.Join(staged, "sessions-runner"), Env: environment}, nil
 }
 
 // Stage a content-addressed snapshot outside the package installation. npm
 // upgrades may remove their old directory while old runners still execute it.
 func stageLinuxRuntime(home string, sources map[string]string) (string, error) {
-	root := filepath.Join(home, ".local", "share", "sessions", "runtime")
+	root := linuxRuntimeRoot(home)
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", err
 	}
@@ -387,39 +416,4 @@ func (a *app) waitLinuxServiceHealthy(name string) error {
 		a.sleep(250 * time.Millisecond)
 	}
 	return fail(2, "daemon did not become healthy within 15 seconds; inspect `journalctl --user -u %s`", name)
-}
-
-// Removing login integration never stops the daemon or any runner.
-func (a *app) uninstallLinuxService(args []string) error {
-	if len(args) != 0 {
-		return fail(1, "usage: sessions uninstall")
-	}
-	m := a.linuxServices()
-	if err := requireUserSystemd(m); err != nil {
-		return err
-	}
-	name := os.Getenv("SESSIONS_DAEMON_LABEL")
-	if name == "" {
-		name = "sessions"
-	}
-	name, err := resolveDaemonLabel(name)
-	if err != nil {
-		return err
-	}
-	name += ".service"
-	if output, err := m.systemctl("disable", name); err != nil {
-		return fail(2, "disable %s: %s", name, outputOrError(output, err))
-	}
-	path := filepath.Join(a.home, ".config", "systemd", "user", name)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if output, err := m.systemctl("daemon-reload"); err != nil {
-		return fail(2, "reload user services: %s", outputOrError(output, err))
-	}
-	if a.wantJSON {
-		return writeJSON(a.stdout, map[string]any{"ok": true, "service": name, "removed": path, "daemon_stopped": false, "runners_preserved": true, "state_preserved": true}, true)
-	}
-	fmt.Fprintln(a.stdout, "Removed login integration for "+name+". The daemon, runners, runtime bytes, and history were preserved.")
-	return nil
 }

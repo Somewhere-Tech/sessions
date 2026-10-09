@@ -319,9 +319,36 @@ development daemon and removes its launchd registration idempotently on macOS:
 sessions uninstall
 ```
 
-On Linux, this removes and disables the systemd user unit while leaving the
-running daemon and runners alive. It preserves state, transcripts, and immutable
-runtime copies. Stop only runtimes you own when you actually intend to end work.
+On Linux, this removes the systemd user unit only when it is exactly the
+definition `sessions install` generates for your home: byte-identical to its
+template, with `ExecStart` running `sessionsd` from a content-addressed
+directory under `~/.local/share/sessions/runtime` and only the environment
+install writes. That checks what the file is, not who wrote it. An edited
+`ExecStart`, environment, or setting, another program's unit, or a file it
+cannot read is left in place and reported with exit status 2 and the commands
+to remove it yourself; a mask or other symbolic link at that path is left as
+found. For a matching file, `systemctl --user disable` runs only when systemd
+loads the unit name from that file, because `disable` acts on the name: if a
+higher-precedence file or a mask provides the name, only the Sessions file is
+removed and the enablement reported before and after is that other unit's.
+Uninstall then reloads systemd. Runtime-only enablement (`enable --runtime`) and
+drop-ins are left in place and listed under `kept`. It issues no stop, restart,
+or signal to the daemon or its runners, and it deletes no state, transcripts,
+credentials, or immutable runtime copies; it does not observe whether systemd or
+host policy later ends them. Running it again is safe: with no unit file it only
+completes a reload that an interrupted run left pending. A failed step is
+reported with what already happened (`actions`), `errors`, and `next`; the
+commands in `next` are quoted for a POSIX shell, with `--` before each path or
+unit name, so a home directory with spaces or quotes stays one argument. In the
+JSON result, `removed` is still a string, as in earlier releases: the path of
+the unit file this run removed, or empty when it removed none (earlier releases
+printed the path even then); `unit_file` says why. Earlier releases also
+reported `runners_preserved: true`; that field is gone because uninstall does not
+observe runners, and `daemon_stopped: false` now means only that this command
+stopped nothing. This is
+unit-tested with a substitute service manager and has not yet been exercised
+against a real systemd host. Stop only runtimes you own when you actually intend
+to end work.
 
 Then use `brew uninstall sessions`, or remove `sessions`, `sessionsd`, and `sessions-runner`
 from the directory where you installed the static archive.

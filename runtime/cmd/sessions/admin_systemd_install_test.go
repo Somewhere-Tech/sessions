@@ -31,12 +31,23 @@ type fakeUserSystemd struct {
 	unitFileOverride string // another systemd state such as static or linked
 	unitFileErr      error  // fails a UnitFileState-only query
 	unitPath         string // a unit with no file reports an empty UnitFileState
-	observeErr       error
-	killMode         string
-	killModeErr      error
-	killModes        []string
-	fail             map[string][]error
-	health           []error
+	// held is a definition systemd loaded from unitPath; it outlives the file
+	// until the next daemon-reload re-reads the directory.
+	held bool
+	// foreignFragment is a unit of the same name in another directory.
+	foreignFragment string
+	// shadowFragment is a higher-precedence file systemd loads for the name
+	// even while unitPath exists (user.control, /run, a generator); shadowMask
+	// is a mask of the name in such a directory. Enablement stays per name.
+	shadowFragment string
+	shadowMask     bool
+	dropIns        string
+	observeErr     error
+	killMode       string
+	killModeErr    error
+	killModes      []string
+	fail           map[string][]error
+	health         []error
 }
 
 // unitFileState models systemd: persistent links win over runtime links, and
@@ -45,7 +56,7 @@ func (f *fakeUserSystemd) unitFileState() string {
 	if f.unitFileOverride != "" {
 		return f.unitFileOverride
 	}
-	if f.unitPath != "" {
+	if f.unitPath != "" && f.foreignFragment == "" {
 		if _, err := os.Stat(f.unitPath); err != nil {
 			return ""
 		}
@@ -70,6 +81,13 @@ func (f *fakeUserSystemd) show(arguments []string) ([]byte, error) {
 		}
 		return []byte("ActiveState=" + state + "\nUnitFileState=" + f.unitFileState() + "\n"), nil
 	}
+	if slices.Contains(arguments, "--property=LoadState,UnitFileState,FragmentPath,DropInPaths") {
+		if f.observeErr != nil {
+			return []byte("Failed to connect to bus: No such file or directory"), f.observeErr
+		}
+		load, fragment := f.loaded()
+		return []byte("LoadState=" + load + "\nUnitFileState=" + f.unitFileState() + "\nFragmentPath=" + fragment + "\nDropInPaths=" + f.dropIns + "\n"), nil
+	}
 	if slices.Contains(arguments, "--property=UnitFileState") {
 		if f.unitFileErr != nil {
 			return []byte("Failed to connect to bus"), f.unitFileErr
@@ -87,6 +105,24 @@ func (f *fakeUserSystemd) show(arguments []string) ([]byte, error) {
 		mode = "process"
 	}
 	return []byte(mode + "\n"), nil
+}
+
+// loaded models the LoadState and FragmentPath systemd reports for the name.
+func (f *fakeUserSystemd) loaded() (string, string) {
+	info, err := os.Lstat(f.unitPath)
+	switch {
+	case f.shadowMask:
+		return "masked", ""
+	case f.shadowFragment != "":
+		return "loaded", f.shadowFragment
+	case err == nil && info.Mode()&os.ModeSymlink != 0:
+		return "masked", ""
+	case err == nil, f.held:
+		return "loaded", f.unitPath
+	case f.foreignFragment != "":
+		return "loaded", f.foreignFragment
+	}
+	return "not-found", ""
 }
 
 func (f *fakeUserSystemd) systemctl(arguments ...string) ([]byte, error) {
@@ -113,7 +149,14 @@ func (f *fakeUserSystemd) systemctl(arguments ...string) ([]byte, error) {
 		}
 	case "show":
 		return f.show(arguments)
+	case "daemon-reload":
+		_, err := os.Lstat(f.unitPath)
+		f.held = err == nil
 	case "enable", "disable":
+		// systemd resolves the name through a unit file; with none it refuses.
+		if _, err := os.Lstat(f.unitPath); err != nil && f.foreignFragment == "" {
+			return []byte("Failed to " + verb + " unit: Unit file " + arguments[len(arguments)-1] + " does not exist."), errors.New("exit status 1")
+		}
 		if slices.Contains(arguments, "--runtime") {
 			f.runtimeEnabled = verb == "enable"
 		} else {
