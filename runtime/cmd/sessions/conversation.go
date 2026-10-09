@@ -214,7 +214,7 @@ func conversationTurns(events []map[string]any, role string) []messageTurn {
 				Author: eventAuthor(event),
 			}
 		}
-		if turn.Role == "" || (role != "" && turn.Role != role) {
+		if turn.Role == "" || turn.Text == "" || (role != "" && turn.Role != role) {
 			continue
 		}
 		turn.index = index
