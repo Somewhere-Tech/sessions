@@ -560,6 +560,9 @@ func (w attributionWriter) RecordMessageRelayed(ctx context.Context, value Messa
 	if value.ContentBytes <= 0 || value.NormalizedBytes < 0 || value.NormalizedBytes > value.ContentBytes {
 		return errors.New("record message relayed: invalid byte counts")
 	}
+	if len(value.OperationID) > 128 || strings.IndexFunc(value.OperationID, unicode.IsControl) >= 0 {
+		return errors.New("record message relayed: invalid operation id")
+	}
 	if value.Actor == "" {
 		value.Actor = ActorDaemon
 	}
@@ -567,6 +570,7 @@ func (w attributionWriter) RecordMessageRelayed(ctx context.Context, value Messa
 		Author:        value.Author,
 		ContentSHA256: value.ContentSHA256, ContentBytes: value.ContentBytes,
 		NormalizedSHA256: value.NormalizedSHA256, NormalizedBytes: value.NormalizedBytes,
+		OperationID: value.OperationID,
 	}
 	return w.store.append(ctx, EventMessageRelayed, value.Meta, payload, false)
 }
@@ -928,6 +932,7 @@ type messageRelayedPayload struct {
 	ContentBytes     int           `json:"content_bytes"`
 	NormalizedSHA256 string        `json:"normalized_sha256"`
 	NormalizedBytes  int           `json:"normalized_bytes"`
+	OperationID      string        `json:"operation_id,omitempty"`
 }
 
 type worktreeCleanRequestedPayload struct {
@@ -959,6 +964,7 @@ func DecodeMessageRelayed(event Event) (MessageRelayed, error) {
 		Author:        payload.Author,
 		ContentSHA256: payload.ContentSHA256, ContentBytes: payload.ContentBytes,
 		NormalizedSHA256: payload.NormalizedSHA256, NormalizedBytes: payload.NormalizedBytes,
+		OperationID: payload.OperationID,
 	}, nil
 }
 

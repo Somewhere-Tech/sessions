@@ -427,6 +427,113 @@ function appendProviderSystemMessage(event: ClaudeSessionEvent, out: DispatchMes
   return true;
 }
 
+// A message sent while Codex was mid-turn that did not become a turn. A
+// refusal proved before anything was written shows the text as not sent. A
+// steer Codex received but never confirmed shows the exact text as the
+// person's, unconfirmed: it may have been applied, so it is neither hidden
+// nor offered back for sending. Anything else is a notice, mirroring the
+// Claude branch in eventsToMessages.
+function codexInputRejection(event: ClaudeSessionEvent, at: number, occurrences: Map<string, number>): DispatchMessage | null {
+  const record = event as Record<string, unknown>;
+  const reason = typeof record.error === 'string' && record.error.trim() ? record.error : undefined;
+  // The key, and the boundary named after it, must survive loading older
+  // history, so it comes from the operation or the event, never its position.
+  const operation = typeof record.operationId === 'string' && record.operationId ? record.operationId : '';
+  const id = !event.uuid && operation ? `codex-unconfirmed-${operation}` : codexEventIdentity(event, occurrences);
+  if (record.unconfirmed === true && typeof record.unconfirmedInput === 'string' && record.unconfirmedInput.trim()) {
+    return { id, role: 'user', content: record.unconfirmedInput, status: 'unconfirmed', createdAt: at, failureReason: reason, author: event.author };
+  }
+  if (!reason) return null;
+  if (typeof record.input === 'string' && record.input.trim()) {
+    return { id, role: 'user', content: record.input, status: 'failed', createdAt: at, failureReason: reason };
+  }
+  return { id, role: 'assistant', content: '', status: 'sent', createdAt: at, errorResponse: reason };
+}
+
+function isUnconfirmedSteer(event: ClaudeSessionEvent): boolean {
+  return event.type === 'system' && event.subtype === 'input_rejected' && (event as Record<string, unknown>).unconfirmed === true;
+}
+
+function isAcceptedSteer(event: ClaudeSessionEvent): boolean {
+  return event.type === 'user' && event.subtype === 'user_steer';
+}
+
+// An accepted steer can be placed only when its record establishes where it
+// belongs: a readable submission time, its own turn, and a durable identity no
+// other record shares. Identical records without a UUID may be one submission
+// or several, so their recorded order is the only honest one.
+function placeableAcceptedSteers(events: ClaudeSessionEvent[]): Set<ClaudeSessionEvent> {
+  const steers = events.filter((event) => isAcceptedSteer(event) && event.turnId);
+  const occurrences = new Map<string, number>();
+  const identities = steers.map((event) => codexEventIdentity(event, occurrences));
+  return new Set(steers.filter((_event, index) => {
+    const identity = identities[index]!;
+    return !identity.includes('-occurrence-') && (occurrences.get(identity) ?? 0) <= 1;
+  }));
+}
+
+// Whether a placed accepted steer may move back past an earlier-positioned
+// event: never past another person's message or steer, another turn's event,
+// or the start of its own turn.
+function acceptedSteerMayCross(steer: ClaudeSessionEvent, event: ClaudeSessionEvent): boolean {
+  if (event.type === 'user' || isUnconfirmedSteer(event)) return false;
+  if (event.turnId && event.turnId !== steer.turnId) return false;
+  return !(event.subtype === 'turn_started' && event.turnId === steer.turnId);
+}
+
+// The runner records a steer when Codex answers it, which can be after the
+// turn's later output or even its completion, but stamps the record with the
+// time it began sending the steer. Each placeable record goes back to that
+// time, so output recorded later renders after it. A record moves only past
+// events whose own timestamps are readable and later; nothing else is sorted.
+export function placeSubmittedSteers(events: ClaudeSessionEvent[]): ClaudeSessionEvent[] {
+  const accepted = placeableAcceptedSteers(events);
+  const placed: ClaudeSessionEvent[] = [];
+  for (const event of events) {
+    const movable = isUnconfirmedSteer(event) || accepted.has(event);
+    const at = movable ? Date.parse(event.timestamp ?? '') : NaN;
+    let index = placed.length;
+    while (Number.isFinite(at) && index > 0 && Date.parse(placed[index - 1]!.timestamp ?? '') > at &&
+      (!accepted.has(event) || acceptedSteerMayCross(event, placed[index - 1]!))) index -= 1;
+    placed.splice(index, 0, event);
+  }
+  return placed;
+}
+
+// Text an agent item had already shown in entries before a steer.
+interface CarriedItem { from: CodexTurnProjection[]; prefix: string }
+
+function carryItemsAcrossSteer(
+  previous: CodexTurnProjection, carried: Map<string, CarriedItem>, itemOwners: Map<string, CodexTurnProjection>
+): void {
+  for (const [itemID, text] of previous.itemText) {
+    // An item that had shown nothing yet completes in the segment it began.
+    if (!text) continue;
+    const earlier = carried.get(itemID);
+    carried.set(itemID, { from: [...(earlier?.from ?? []), previous], prefix: (earlier?.prefix ?? '') + text });
+    if (itemOwners.get(itemID) === previous) itemOwners.delete(itemID);
+  }
+}
+
+// The full text of an item that spans a steer. What was already shown before
+// the steer stays there and only the continuation is shown after it. A full
+// text that does not continue what was shown cannot be split honestly, so the
+// item stays whole, once, in the segment it began in, as it would without a
+// steer, and nothing is guessed into the later segment.
+function textAfterSteer(carry: CarriedItem | undefined, projection: CodexTurnProjection, itemID: string, text: string): string {
+  if (!text || !carry || !carry.prefix || carry.from.includes(projection)) return text;
+  if (text.startsWith(carry.prefix)) return text.slice(carry.prefix.length);
+  // An earlier snapshot of text already shown adds nothing after the steer.
+  if (carry.prefix.startsWith(text)) return '';
+  carry.from.forEach((earlier, index) => {
+    if (index === 0) earlier.itemText.set(itemID, text);
+    else earlier.itemText.set(itemID, '');
+    refreshCodexTurn(earlier);
+  });
+  carry.prefix = text;
+  return '';
+}
+
 function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] {
   const out: DispatchMessage[] = [];
   const turns = new Map<string, CodexTurnProjection>();
@@ -435,6 +542,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
   const boundaries = new Map<string, string>();
   const steeringByTurn = new Map<string, DispatchMessage[]>();
   const occurrences = new Map<string, number>();
+  const carried = new Map<string, CarriedItem>();
   let latestTurnID = '';
   const ensureTurn = (turnID: string, at: number): CodexTurnProjection | null => {
     if (!turnID) return null;
@@ -446,13 +554,27 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
     return projection;
   };
 
+  // A message sent into a working turn ends the agent text before it, so
+  // later text for that turn starts a new entry after the message. Only a
+  // steer (named by its boundary) carries a streaming item's later text over.
+  const splitTurn = (turnID: string, boundary?: string): void => {
+    const previous = turnID ? turns.get(turnID) : undefined;
+    if (boundary && turnID) boundaries.set(turnID, boundary);
+    if (!previous || previous.completed) return;
+    if (boundary) carryItemsAcrossSteer(previous, carried, itemOwners);
+    previous.completed = true;
+    previous.message.streaming = false;
+    previous.message.turnStatus = undefined;
+    turns.delete(turnID);
+  };
+
   const rememberItemText = (projection: CodexTurnProjection, itemID: string, text: string): void => {
     if (!itemID) return;
     if (!projection.itemOrder.includes(itemID)) projection.itemOrder.push(itemID);
     projection.itemText.set(itemID, text);
   };
 
-  for (const event of uniqueCodexEvents(events)) {
+  for (const event of placeSubmittedSteers(uniqueCodexEvents(events))) {
     const at = timestampMs(event.timestamp);
     const subtype = event.subtype ?? '';
     if (appendProviderSystemMessage(event, out)) continue;
@@ -503,14 +625,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
         queued: subtype === 'user_steer' && event.turnId ? !completedTurns.has(event.turnId) : undefined
       };
       out.push(message);
-      const previous = event.turnId ? turns.get(event.turnId) : undefined;
-      if (subtype === 'user_steer' && event.turnId) boundaries.set(event.turnId, message.id);
-      if (previous && !previous.completed) {
-        previous.completed = true;
-        previous.message.streaming = false;
-        previous.message.turnStatus = undefined;
-        turns.delete(event.turnId!);
-      }
+      splitTurn(event.turnId ?? '', subtype === 'user_steer' ? message.id : undefined);
       if (message.queued && event.turnId) {
         const queued = steeringByTurn.get(event.turnId) ?? [];
         queued.push(message);
@@ -525,36 +640,15 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       continue;
     }
 
-    // A message the user typed while Codex was mid-turn. The runner refuses
-    // it rather than queuing it, so the only honest thing the UI can do is
-    // show that it was not sent. Handled here, ahead of the turn projection
-    // below, because a rejection carries no turnId: routed through
-    // ensureTurn it would either be folded into whichever turn happened to be
-    // latest or dropped outright when none was. Mirrors the Claude branch in
-    // eventsToMessages so a rejection reads the same for both providers.
+    // Handled here, ahead of the turn projection below, because a rejection
+    // carries no turnId: routed through ensureTurn it would either be folded
+    // into whichever turn happened to be latest or dropped outright.
     if (event.type === 'system' && subtype === 'input_rejected') {
-      const rejection = (event as Record<string, unknown>).error;
-      if (typeof rejection !== 'string' || !rejection.trim()) continue;
-      const rejectedInput = (event as Record<string, unknown>).input;
-      if (typeof rejectedInput === 'string' && rejectedInput.trim()) {
-        out.push({
-          id: event.uuid ?? `codex-input-rejected-${out.length}`,
-          role: 'user',
-          content: rejectedInput,
-          status: 'failed',
-          createdAt: at,
-          failureReason: rejection
-        });
-        continue;
-      }
-      out.push({
-        id: event.uuid ?? `codex-input-rejected-${out.length}`,
-        role: 'assistant',
-        content: '',
-        status: 'sent',
-        createdAt: at,
-        errorResponse: rejection
-      });
+      const message = codexInputRejection(event, at, occurrences);
+      if (message) out.push(message);
+      // Codex may have applied an unconfirmed steer, so it splits a working
+      // turn exactly as an accepted steer does.
+      if (message?.status === 'unconfirmed' && !completedTurns.has(latestTurnID)) splitTurn(latestTurnID, message.id);
       continue;
     }
 
@@ -563,6 +657,9 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
     const projection = itemOwners.get(itemID) ?? ensureTurn(event.turnId || latestTurnID, at);
     if (!projection) continue;
     if (itemID) itemOwners.set(itemID, projection);
+    const carry = carried.get(itemID);
+    const carriedPhase = carry?.from[carry.from.length - 1]?.itemPhase.get(itemID);
+    if (carriedPhase && !projection.itemPhase.has(itemID)) projection.itemPhase.set(itemID, carriedPhase);
     if (projection.completedItems.has(itemID) && subtype !== 'item_completed') continue;
     if (at < (projection.completedItems.get(itemID) ?? -Infinity)) continue;
     if (subtype === 'item_completed' && itemID) projection.completedItems.set(itemID, at);
@@ -582,7 +679,7 @@ function codexEventsToMessages(events: ClaudeSessionEvent[]): DispatchMessage[] 
       const itemID = recordString(item, 'id');
       const itemType = recordString(item, 'type');
       if (itemType === 'agentMessage') {
-        const text = recordString(item, 'text');
+        const text = textAfterSteer(carry, projection, itemID, recordString(item, 'text'));
         if (text || !projection.itemText.has(itemID)) rememberItemText(projection, itemID, text);
         const phase = recordString(item, 'phase');
         if (phase) projection.itemPhase.set(itemID, phase);

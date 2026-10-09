@@ -206,7 +206,7 @@ var commandTable = []commandSpec{
 	{
 		name: "last", usage: "last <id> [--role user|assistant] [-n N]",
 		summary: "print recent conversation or lane output", group: dailyCommandGroup, localJSON: true,
-		longHelp: "For sessions, print recent user and assistant messages from the event log. For completed lanes, print the captured output tail.",
+		longHelp: "For sessions, print recent user and assistant messages from the event log. For completed lanes, print the captured output tail. A steer Codex never confirmed is shown once as the user's text with delivery \"unconfirmed\" and its operation_id: Codex may or may not have applied it. Read its receipt with `sessions send-status`; never resend it automatically. It is listed at the time it was sent and an agent message at the time it completed, so text the agent was already writing when the steer was sent can be part of the message listed after it.",
 		examples: []string{"sessions last 0123abcd", "sessions last 0123abcd --role assistant -n 1", "sessions --json last 0123abcd"}, run: (*app).cmdLastDispatch,
 	},
 	{
@@ -291,7 +291,7 @@ var commandTable = []commandSpec{
 	{
 		name: "transcript", usage: "transcript <id>",
 		summary: "print the full conversation transcript", group: dailyCommandGroup, localJSON: true,
-		longHelp: "Print all user and assistant turns decoded from the session event log. Use the global --json flag for structured turns.",
+		longHelp: "Print all user and assistant turns decoded from the session event log. Use the global --json flag for structured turns. A steer Codex never confirmed is shown once as the user's text with delivery \"unconfirmed\" and its operation_id: Codex may or may not have applied it. Read its receipt with `sessions send-status`; never resend it automatically. It is listed at the time it was sent and an agent message at the time it completed, so text the agent was already writing when the steer was sent can be part of the message listed after it.",
 		examples: []string{"sessions transcript 0123abcd", "sessions --json transcript 0123abcd"}, run: (*app).cmdTranscript,
 	},
 	{

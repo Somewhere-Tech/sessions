@@ -551,29 +551,42 @@ func (r *codexAppRunner) steerActiveTurn(text string) {
 	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
 	defer cancel()
 	turnID, err := r.turnClient.SteerTurn(ctx, r.conversationID, text)
-	if err != nil {
-		event, encodeErr := codexapp.SteeringUnconfirmedEvent(
+	if errors.Is(err, codexapp.ErrSteerRefused) {
+		event, encodeErr := codexapp.SteeringRejectedEvent(
 			r.conversationID,
 			text,
-			"Codex did not confirm the message sent to its active turn: "+err.Error()+
-				". It may still apply it; check the conversation before sending it again.",
+			"Codex finished its turn before this message could be sent: "+err.Error()+".",
 			time.Now(),
 		)
-		if errors.Is(err, codexapp.ErrSteerRefused) {
-			event, encodeErr = codexapp.SteeringRejectedEvent(
-				r.conversationID,
-				text,
-				"Codex finished its turn before this message could be sent: "+err.Error()+".",
-				time.Now(),
-			)
-		}
 		if encodeErr == nil {
 			r.appendStructured(event)
 		}
 		return
 	}
+	if err != nil {
+		r.recordUnconfirmedSteer("", text, err, submittedAt)
+		return
+	}
 	event, err := codexapp.SteeringHistoryEvent(r.conversationID, turnID, text, submittedAt)
 	if err == nil {
+		r.appendStructured(event)
+	}
+}
+
+// recordUnconfirmedSteer keeps the exact text of a steer written to Codex
+// whose outcome never came back, once, in the history every client reads.
+// Codex may have applied it, so it must not vanish from the conversation; it
+// may not have, so it is never recorded as a delivered user message.
+func (r *codexAppRunner) recordUnconfirmedSteer(operationID, text string, err error, submittedAt time.Time) {
+	event, encodeErr := codexapp.SteeringUnconfirmedEvent(
+		r.conversationID,
+		operationID,
+		text,
+		"Codex did not confirm the message sent to its active turn: "+err.Error()+
+			". It may still apply it; check the conversation before sending it again.",
+		submittedAt,
+	)
+	if encodeErr == nil {
 		r.appendStructured(event)
 	}
 }

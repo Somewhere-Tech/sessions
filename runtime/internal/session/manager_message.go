@@ -31,21 +31,28 @@ func (m *Manager) SubmitMessage(ctx context.Context, id string, control proto.Me
 		return proto.MessageResult{}, &MessageInputUnavailableError{SessionID: id}
 	}
 	result, err := current.SubmitMessage(ctx, control)
-	if err != nil || !result.Accepted {
+	// A runner-reported unknown outcome means the text reached the provider
+	// and may be in the conversation. Its history keeps the text, so its
+	// authorship is recorded too; nothing else treats it as delivered.
+	unknown := err == nil && !result.Accepted && result.Boundary == "unknown"
+	if err != nil || (!result.Accepted && !unknown) {
 		return result, err
 	}
-	principal, source := state.PrincipalHuman, ledger.ActivityHumanInput
-	if attribution.SourceSessionID != "" {
-		principal, source = state.PrincipalAgent, ledger.ActivitySessionInput
+	if !unknown {
+		principal, source := state.PrincipalHuman, ledger.ActivityHumanInput
+		if attribution.SourceSessionID != "" {
+			principal, source = state.PrincipalAgent, ledger.ActivitySessionInput
+		}
+		m.registry.RecordInputPrincipal(id, principal, control.Text)
+		m.afterAcceptedInput(ctx, id, control.Text, source, result.Boundary != "queue")
 	}
-	m.registry.RecordInputPrincipal(id, principal, control.Text)
-	m.afterAcceptedInput(ctx, id, control.Text, source, result.Boundary != "queue")
 	if attribution.SourceSessionID != "" {
 		exact, normalized := sha256.Sum256([]byte(control.Text)), sha256.Sum256([]byte(strings.TrimSpace(control.Text)))
 		err = m.attributions.RecordMessageRelayed(ctx, ledger.MessageRelayed{
 			Meta: ledger.Meta{LaneID: id}, Author: author,
 			ContentSHA256: fmt.Sprintf("%x", exact[:]), ContentBytes: len([]byte(control.Text)),
 			NormalizedSHA256: fmt.Sprintf("%x", normalized[:]), NormalizedBytes: len([]byte(strings.TrimSpace(control.Text))),
+			OperationID: control.OperationID,
 		})
 		if err != nil {
 			return result, &MessageAttributionCommitError{Err: err}

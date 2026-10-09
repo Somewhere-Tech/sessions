@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
@@ -19,7 +20,11 @@ type messageTurn struct {
 	Author    *messageAuthor `json:"author,omitempty"`
 	Subtype   string         `json:"subtype,omitempty"`
 	Approval  map[string]any `json:"approval,omitempty"`
-	index     int
+	// Delivery is "unconfirmed" for text the provider may or may not have
+	// applied; OperationID then names its receipt for `sessions send-status`.
+	Delivery    string `json:"delivery,omitempty"`
+	OperationID string `json:"operation_id,omitempty"`
+	index       int
 }
 
 type messageAuthor struct {
@@ -108,6 +113,127 @@ func providerFaultTurn(event map[string]any) (messageTurn, bool) {
 	return messageTurn{Role: "error", Text: detail, Timestamp: eventTimestamp(event), Subtype: "provider_fault"}, true
 }
 
+// unconfirmedInputTurn shows a steer whose outcome Codex never confirmed as
+// the user's words, labelled unconfirmed. Codex may have applied it, so it is
+// not left out of the conversation; it may not have, so it is never shown as
+// a delivered message. A pre-write refusal carries no unconfirmedInput.
+func unconfirmedInputTurn(event map[string]any) (messageTurn, bool) {
+	if event["type"] != "system" || event["subtype"] != "input_rejected" || event["unconfirmed"] != true {
+		return messageTurn{}, false
+	}
+	text, _ := event["unconfirmedInput"].(string)
+	if strings.TrimSpace(text) == "" {
+		return messageTurn{}, false
+	}
+	operationID, _ := event["operationId"].(string)
+	return messageTurn{
+		Role: "user", Text: text, Timestamp: eventTimestamp(event), Author: eventAuthor(event),
+		Delivery: "unconfirmed", OperationID: operationID,
+	}, true
+}
+
+func isUnconfirmedSteer(event map[string]any) bool {
+	return event["type"] == "system" && event["subtype"] == "input_rejected" && event["unconfirmed"] == true
+}
+
+// placeableAcceptedSteers names the accepted steer records whose placement the
+// record itself establishes: a turn of its own and content no other record
+// repeats exactly. Identical records may be one submission or several, so
+// they keep their recorded order.
+func placeableAcceptedSteers(events []map[string]any) map[int]bool {
+	keys := make(map[int]string)
+	counts := make(map[string]int)
+	for index, event := range events {
+		turnID, _ := event["turnId"].(string)
+		if event["type"] != "user" || event["subtype"] != "user_steer" || turnID == "" {
+			continue
+		}
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			continue
+		}
+		keys[index] = string(encoded)
+		counts[string(encoded)]++
+	}
+	placeable := make(map[int]bool)
+	for index, key := range keys {
+		placeable[index] = counts[key] == 1
+	}
+	return placeable
+}
+
+// acceptedSteerMayCross reports whether an accepted steer may move back past
+// an event: never past another person's message or steer, another turn's
+// event, or the start of its own turn.
+func acceptedSteerMayCross(steer, event map[string]any) bool {
+	if event["type"] == "user" || isUnconfirmedSteer(event) {
+		return false
+	}
+	turnID, _ := event["turnId"].(string)
+	if turnID != "" && turnID != steer["turnId"] {
+		return false
+	}
+	return event["subtype"] != "turn_started" || turnID != steer["turnId"]
+}
+
+// placeSubmittedSteers puts each steer record back at its submission time.
+// The runner appends it when Codex answers or fails to, which can follow later
+// output or the turn's completion, but stamps it with when it began sending.
+// Unconfirmed records and placeable accepted ones move only past events whose
+// own timestamps are readable and later; nothing else is reordered. An agent
+// message is still listed whole at the time it completed.
+func placeSubmittedSteers(events []map[string]any) []map[string]any {
+	accepted := placeableAcceptedSteers(events)
+	placed := make([]map[string]any, 0, len(events))
+	for position, event := range events {
+		index := len(placed)
+		if at, ok := parseEventTime(eventTimestamp(event)); ok && (isUnconfirmedSteer(event) || accepted[position]) {
+			for index > 0 {
+				previous, ok := parseEventTime(eventTimestamp(placed[index-1]))
+				if !ok || !previous.After(at) || (accepted[position] && !acceptedSteerMayCross(event, placed[index-1])) {
+					break
+				}
+				index--
+			}
+		}
+		placed = append(placed, nil)
+		copy(placed[index+1:], placed[index:])
+		placed[index] = event
+	}
+	return placed
+}
+
+// conversationTurns selects the user and assistant messages `last` reads.
+func conversationTurns(events []map[string]any, role string) []messageTurn {
+	matched := make([]messageTurn, 0)
+	for index, event := range events {
+		turn, ok := unconfirmedInputTurn(event)
+		if !ok {
+			turn = messageTurn{
+				Role: eventRole(event), Text: extractEventText(event), Timestamp: eventTimestamp(event),
+				Author: eventAuthor(event),
+			}
+		}
+		if turn.Role == "" || (role != "" && turn.Role != role) {
+			continue
+		}
+		turn.index = index
+		matched = append(matched, turn)
+	}
+	return matched
+}
+
+func turnLabel(turn messageTurn) string {
+	label := turn.Role
+	if turn.Author != nil {
+		label = turn.Author.Name + " · via Sessions"
+	}
+	if turn.Delivery == "unconfirmed" {
+		label += " · delivery unconfirmed"
+	}
+	return label
+}
+
 func (a *app) cmdLast(args []string) error {
 	if len(args) == 0 || args[0] == "" {
 		return fail(1, "usage: sessions last <id> [--role user|assistant] [-n N]")
@@ -141,17 +267,7 @@ func (a *app) cmdLast(args []string) error {
 	if err := a.getJSON(fmt.Sprintf("/api/sessions/%s/events?tail=%d", escapeID(id), tail), &response); err != nil {
 		return err
 	}
-	matched := make([]messageTurn, 0)
-	for index, event := range response.Events {
-		eventRole := eventRole(event)
-		if eventRole == "" || (role != "" && eventRole != role) {
-			continue
-		}
-		matched = append(matched, messageTurn{
-			Role: eventRole, Text: extractEventText(event), Timestamp: eventTimestamp(event),
-			Author: eventAuthor(event), index: index,
-		})
-	}
+	matched := conversationTurns(placeSubmittedSteers(response.Events), role)
 	lastOfRole := func(want string) []messageTurn {
 		selected := make([]messageTurn, 0)
 		for _, turn := range matched {
@@ -186,10 +302,7 @@ func (a *app) cmdLast(args []string) error {
 		return err
 	}
 	for _, turn := range toShow {
-		header := "[" + turn.Role + "]"
-		if turn.Author != nil {
-			header = "[" + turn.Author.Name + " · via Sessions]"
-		}
+		header := "[" + turnLabel(turn) + "]"
 		if parsed, ok := parseEventTime(turn.Timestamp); ok {
 			header += "  " + a.ageOf(parsed.UnixMilli()) + " ago"
 		}
@@ -233,13 +346,17 @@ func (a *app) writeSessionTranscript(id string) error {
 		return err
 	}
 	turns := make([]messageTurn, 0)
-	for _, event := range response.Events {
+	for _, event := range placeSubmittedSteers(response.Events) {
 		if fault, ok := providerFaultTurn(event); ok {
 			turns = append(turns, fault)
 			continue
 		}
 		if audit, ok := approvalAuditTurn(event); ok {
 			turns = append(turns, audit)
+			continue
+		}
+		if unconfirmed, ok := unconfirmedInputTurn(event); ok {
+			turns = append(turns, unconfirmed)
 			continue
 		}
 		role := eventRole(event)
@@ -287,11 +404,7 @@ func (a *app) writeSessionTranscript(id string) error {
 		return err
 	}
 	for index, turn := range turns {
-		label := turn.Role
-		if turn.Author != nil {
-			label = turn.Author.Name + " · via Sessions"
-		}
-		fmt.Fprintf(a.stdout, "[%s]\n", label)
+		fmt.Fprintf(a.stdout, "[%s]\n", turnLabel(turn))
 		body := trimEndJS(turn.Text)
 		if body != "" {
 			fmt.Fprintln(a.stdout, body)

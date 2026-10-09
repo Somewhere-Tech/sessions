@@ -247,6 +247,36 @@ answer, a timeout and a lost connection all stay `unknown`, because app-server
 may queue the input before it answers. The daemon records intent before this request and its outcome
 afterward. If disconnected before acknowledgment, delivery remains unknown.
 
+Whatever a steer's outcome, its text is in the structured history at most once,
+written by the runner. An accepted steer is a `user` record. An unknown steer —
+on this path or on the raw INPUT path — is the existing `system`
+`input_rejected` record with `unconfirmed:true` and the exact text in
+`unconfirmedInput`, timestamped at submission; on this path it also carries the
+additive `operationId` of its receipt. Clients show that text as the person's
+words with delivery unconfirmed, never as a delivered message or a draft to
+send again. A known refusal records no text on this path. Runners from before
+this record existed wrote nothing for an unknown MESSAGE_REQ steer, and that
+history is not rewritten.
+
+Both records are appended only once Codex answers or the answer fails to
+come, which can be after the turn's later output or completion. Each is
+timestamped when the runner began sending the steer (after any wait for an
+earlier steer to the same runner), so readers place it by that timestamp
+rather than by position: provider output recorded before that time stays
+before it and output recorded after it follows. An accepted record is placed
+only when it establishes its place itself: a readable timestamp, its own
+`turnId`, and content no other record repeats exactly. It never moves past
+another user or steer record, another turn's event, or its own turn's start.
+Identical repeated records keep their recorded order. Runners before steer
+records carried the submission time stamped the acknowledgment, which is
+never earlier than the output it followed. An agent item
+that was already showing text when a steer was recorded is split there only
+where its later text continues what was shown; otherwise it stays whole in the
+segment it began in. The daemon's
+content-free authorship record for a message submit carries its
+`operation_id`, and a steer record naming an `operationId` takes its author
+only from that operation.
+
 The runner decides and commits before it answers, so MESSAGE_RES may arrive
 after its requesting caller is gone. A daemon must not treat that frame as
 unsolicited: it keeps the acknowledgment against its operation id — bounded, and

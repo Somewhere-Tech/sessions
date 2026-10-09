@@ -326,6 +326,130 @@ try {
     'a refused steering message must remain recoverable on every client'
   );
 
+  // A steer Codex received but never confirmed. Its exact text is the
+  // person's and is shown once, unconfirmed: never as sent, never as a failed
+  // draft to send again, and a later provider echo of it adds nothing. Codex
+  // may have applied it, so agent text after it starts a new entry.
+  const unconfirmedText = 'Ändere den Plan:\n\tzweite Zeile — 日本語 ✓';
+  const unconfirmedSteer = eventsToMessages([
+    { ...codexBase, type: 'user', subtype: 'user_message', timestamp: '2026-07-20T10:00:00Z', message: { role: 'user', content: 'Long task' } },
+    { ...codexBase, type: 'codex', subtype: 'turn_started', turnId: 'turn-1', timestamp: '2026-07-20T10:00:00.5Z' },
+    { ...codexBase, type: 'codex', subtype: 'agent_message_delta', turnId: 'turn-1', itemId: 'a1', delta: 'Before.', timestamp: '2026-07-20T10:00:01Z' },
+    {
+      ...codexBase, type: 'system', subtype: 'input_rejected', timestamp: '2026-07-20T10:00:02Z', unconfirmed: true,
+      unconfirmedInput: unconfirmedText, operationId: 'op-1', error: 'Codex did not confirm the message sent to its active turn',
+      author: { kind: 'session', id: 'lane-1', name: 'PM Claude', client: 'sessions-cli' }
+    },
+    { ...codexBase, type: 'codex', subtype: 'item_completed', turnId: 'turn-1', timestamp: '2026-07-20T10:00:03Z',
+      item: { id: 'echo', type: 'userMessage', content: [{ type: 'text', text: unconfirmedText }] } },
+    { ...codexBase, type: 'codex', subtype: 'agent_message_delta', turnId: 'turn-1', itemId: 'a2', delta: 'After.', timestamp: '2026-07-20T10:00:04Z' },
+    { ...codexBase, type: 'codex', subtype: 'turn_completed', turnId: 'turn-1', status: 'completed', timestamp: '2026-07-20T10:00:05Z' }
+  ]);
+  assert.deepEqual(
+    unconfirmedSteer.map((message) => [message.role, message.status, message.content]),
+    [['user', 'sent', 'Long task'], ['assistant', 'sent', 'Before.'], ['user', 'unconfirmed', unconfirmedText], ['assistant', 'sent', 'After.']],
+    'an unconfirmed steer must appear once, exactly, in order, and labelled unconfirmed'
+  );
+  assert.equal(unconfirmedSteer[2].author?.name, 'PM Claude', 'an unconfirmed steer keeps its sender');
+  assert.equal(unconfirmedSteer[2].errorResponse, undefined, 'an unconfirmed steer is not an error');
+
+  // Chronology of a steer whose record is written late. The runner stamps the
+  // record with its submission time but appends it when Codex answers, which
+  // can be after later output or after the turn completed, and one agent item
+  // can stream across the steer. Output recorded before the submission stays
+  // before it, output after stays after, and no text is lost or repeated.
+  const steerAt = '2026-07-20T10:00:02Z';
+  const at = (second) => `2026-07-20T10:00:0${second}Z`;
+  const turnEvent = (subtype, second, rest = {}) => ({ ...codexBase, type: 'codex', subtype, turnId: 'turn-1', timestamp: at(second), ...rest });
+  const longTask = { ...codexBase, type: 'user', subtype: 'user_message', timestamp: at(0), message: { role: 'user', content: 'Long task' } };
+  const unconfirmedRecord = (rest = {}) => ({ ...codexBase, type: 'system', subtype: 'input_rejected', timestamp: steerAt, unconfirmed: true,
+    unconfirmedInput: unconfirmedText, error: 'Codex did not confirm the message sent to its active turn', ...rest });
+  const acceptedRecord = { ...codexBase, type: 'user', subtype: 'user_steer', turnId: 'turn-1', timestamp: steerAt, message: { role: 'user', content: unconfirmedText } };
+  const delta = (second, itemId, text) => turnEvent('agent_message_delta', second, { itemId, delta: text });
+  const completed = (second, id, text) => turnEvent('item_completed', second, { item: { id, type: 'agentMessage', text } });
+  const done = turnEvent('turn_completed', 5, { status: 'completed' });
+  const started = turnEvent('turn_started', 0);
+  const chronology = (events) => eventsToMessages(events).map((message) => [message.role, message.status, message.content]);
+  const expectedChronology = (status) => [['user', 'sent', 'Long task'], ['assistant', 'sent', 'Before.'], ['user', status, unconfirmedText], ['assistant', 'sent', 'After.']];
+  for (const [name, status, events] of [
+    ['unknown recorded after the turn completed', 'unconfirmed',
+      [longTask, started, delta(1, 'a1', 'Before.'), delta(3, 'a2', 'After.'), done, unconfirmedRecord({ operationId: 'op-late' })]],
+    ['raw-input unknown recorded late, no operation', 'unconfirmed',
+      [longTask, started, delta(1, 'a1', 'Before.'), delta(3, 'a2', 'After.'), unconfirmedRecord()]],
+    ['one item streams across the steer', 'unconfirmed',
+      [longTask, started, delta(1, 'a1', 'Before.'), unconfirmedRecord({ operationId: 'op-span' }), delta(3, 'a1', 'After.'), done]],
+    ['one item streams across a late record and completes cumulatively', 'unconfirmed',
+      [longTask, started, delta(1, 'a1', 'Before.'), delta(3, 'a1', 'After.'), completed(4, 'a1', 'Before.After.'), done, unconfirmedRecord({ operationId: 'op-cumulative' })]],
+    ['one item streams across an accepted steer', 'sent',
+      [longTask, started, delta(1, 'a1', 'Before.'), acceptedRecord, delta(3, 'a1', 'After.'), completed(4, 'a1', 'Before.After.'), done]]
+  ]) {
+    assert.deepEqual(chronology(events), expectedChronology(status), `${name}: output must keep its place around the steer`);
+  }
+  // An accepted steer is also recorded when Codex answers, stamped with the
+  // time it was sent. A uniquely identified record in its own turn is placed
+  // there, whether the answer came before or after the turn completed.
+  const lateAccepted = (rest = {}) => ({ ...acceptedRecord, ...rest });
+  for (const [name, events] of [
+    ['accepted, answered after completion, different items', [longTask, started, delta(1, 'a1', 'Before.'), delta(3, 'a2', 'After.'), done, lateAccepted()]],
+    ['accepted, answered after completion, one cumulative item', [longTask, started, delta(1, 'a1', 'Before.'), delta(3, 'a1', 'After.'), completed(4, 'a1', 'Before.After.'), done, lateAccepted()]],
+    ['accepted, answered before completion, different items', [longTask, started, delta(1, 'a1', 'Before.'), delta(3, 'a2', 'After.'), lateAccepted(), done]],
+    ['accepted, answered before completion, one streamed item', [longTask, started, delta(1, 'a1', 'Before.'), delta(3, 'a1', 'After.'), lateAccepted(), done]],
+    ['accepted, answered late, provider echoes it', [longTask, started, delta(1, 'a1', 'Before.'),
+      turnEvent('item_completed', 3, { item: { id: 'echo', type: 'userMessage', content: [{ type: 'text', text: unconfirmedText }] } }),
+      delta(3, 'a2', 'After.'), done, lateAccepted()]]
+  ]) {
+    const projected = eventsToMessages(events);
+    assert.deepEqual(projected.map((message) => [message.role, message.status, message.content]), expectedChronology('sent'), `${name}: placed where it was sent`);
+    assert.equal(projected[2].queued, false, `${name}: a steer in a completed turn is not still queued`);
+  }
+  // Two late steers keep their recorded order relative to each other.
+  const secondText = 'Zweiter Hinweis ✓';
+  assert.deepEqual(
+    chronology([longTask, started, delta(1, 'a1', 'Before.'), delta(4, 'a2', 'After.'), done,
+      lateAccepted(), lateAccepted({ timestamp: at(3), message: { role: 'user', content: secondText } })]).map((entry) => entry[2]),
+    ['Long task', 'Before.', unconfirmedText, secondText, 'After.'],
+    'several late steers are placed in order'
+  );
+  // What the record cannot establish stays where it was recorded: an
+  // unreadable time, no turn of its own, or another turn's events in between.
+  for (const [name, record, between] of [
+    ['unreadable time', lateAccepted({ timestamp: 'not a time' }), []],
+    ['no turn identity', lateAccepted({ turnId: undefined }), []],
+    ['another turn in between', lateAccepted(), [{ ...codexBase, type: 'codex', subtype: 'turn_started', turnId: 'turn-2', timestamp: at(6) }]]
+  ]) {
+    const contents = chronology([longTask, started, delta(1, 'a1', 'Before.'), delta(3, 'a2', 'After.'), done, ...between, record]).map((entry) => entry[2]);
+    assert.equal(contents.indexOf(unconfirmedText) > contents.indexOf('Before.\n\nAfter.'), true, `${name}: not moved`);
+  }
+  // Identical records without a UUID are not independent submissions.
+  assert.deepEqual(
+    chronology([longTask, started, delta(1, 'a1', 'Before.'), delta(3, 'a2', 'After.'), done, lateAccepted(), lateAccepted()]).map((entry) => entry[2]),
+    ['Long task', 'Before.\n\nAfter.', unconfirmedText, unconfirmedText],
+    'ambiguous identical late steers keep their recorded order'
+  );
+  // A completed text that does not continue what was shown cannot be split
+  // honestly: the item stays whole, once, where it began, as without a steer.
+  assert.deepEqual(
+    chronology([longTask, started, delta(1, 'a1', 'Before.'), unconfirmedRecord({ operationId: 'op-rewrite' }), completed(4, 'a1', 'Rewritten answer.'), done]),
+    [['user', 'sent', 'Long task'], ['assistant', 'sent', 'Rewritten answer.'], ['user', 'unconfirmed', unconfirmedText]],
+    'a completed item that rewrites its streamed text is shown once, where it began'
+  );
+  // Loading older history must not re-key the steer or the entry after it.
+  const older = [{ ...codexBase, type: 'user', subtype: 'user_message', timestamp: '2026-07-20T09:00:00Z', message: { role: 'user', content: 'Older' } },
+    { ...codexBase, type: 'codex', subtype: 'turn_started', turnId: 'turn-0', timestamp: '2026-07-20T09:00:01Z' },
+    { ...codexBase, type: 'codex', subtype: 'agent_message_delta', turnId: 'turn-0', itemId: 'o1', delta: 'Older answer.', timestamp: '2026-07-20T09:00:02Z' }];
+  for (const record of [unconfirmedRecord({ operationId: 'op-page' }), unconfirmedRecord()]) {
+    const window = [longTask, started, delta(1, 'a1', 'Before.'), record, delta(3, 'a2', 'After.'), done];
+    const keys = (events) => eventsToMessages(events).slice(-3).map((message) => message.id);
+    assert.deepEqual(keys([...older, ...window]), keys(window), 'an unconfirmed steer keeps its identity when older history loads');
+  }
+  // Loading older history must not re-key a placed accepted steer or the
+  // entry after it.
+  {
+    const window = [longTask, started, delta(1, 'a1', 'Before.'), delta(3, 'a2', 'After.'), done, lateAccepted()];
+    const keys = (events) => eventsToMessages(events).slice(-3).map((message) => message.id);
+    assert.deepEqual(keys([...older, ...window]), keys(window), 'a placed accepted steer keeps its identity when older history loads');
+  }
+
   // Same event with no turn ever started: previously ensureTurn returned null
   // here and the event was dropped on the floor.
   const codexRejectedNoTurn = eventsToMessages([

@@ -129,3 +129,77 @@ func TestMessageControlClaudeRefusalDoesNotLaunchTurn(t *testing.T) {
 		}
 	}
 }
+
+// Steer text with two lines, a tab and multibyte characters, so any
+// normalization of the retained text shows up as a mismatch.
+const unconfirmedSteerText = "Ändere den Plan:\n\tzweite Zeile — 日本語 ✓"
+
+func historyEventsWithText(t *testing.T, history []json.RawMessage, text string) []map[string]any {
+	t.Helper()
+	var matches []map[string]any
+	for _, raw := range history {
+		var event map[string]any
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		message, _ := event["message"].(map[string]any)
+		if event["unconfirmedInput"] == text || event["input"] == text || (message != nil && message["content"] == text) {
+			matches = append(matches, event)
+		}
+	}
+	return matches
+}
+
+// A steer whose outcome Codex never confirmed may still have been applied, so
+// shared history must hold its exact text once, marked unconfirmed, on both
+// the acknowledged message path and the raw input path. It is never offered
+// back as a restorable draft.
+func TestUnknownSteerKeepsExactTextInSharedHistoryOnBothPaths(t *testing.T) {
+	for _, steerErr := range []error{
+		errors.New("steer Codex turn: JSON-RPC error -32603: internal error"),
+		context.DeadlineExceeded,
+	} {
+		for _, typed := range []bool{true, false} {
+			runner := newCodexTestRunner(t)
+			runner.active = true
+			runner.turnClient.(*fakeCodexTurnClient).steerErr = steerErr
+			if typed {
+				result := runner.submitMessage(proto.MessageControl{OperationID: "op-unknown", Text: unconfirmedSteerText, Mode: "steer"})
+				if result.Accepted || result.Boundary != "unknown" {
+					t.Fatalf("result = %#v", result)
+				}
+			} else {
+				runner.steerActiveTurn(unconfirmedSteerText)
+			}
+			events := historyEventsWithText(t, runner.history, unconfirmedSteerText)
+			if len(events) != 1 {
+				t.Fatalf("typed=%v err=%v: history holds the steer %d times: %s", typed, steerErr, len(events), runner.history)
+			}
+			event := events[0]
+			if event["unconfirmed"] != true || event["unconfirmedInput"] != unconfirmedSteerText {
+				t.Fatalf("typed=%v: steer not recorded as unconfirmed exact text: %#v", typed, event)
+			}
+			if _, restorable := event["input"]; restorable || event["type"] == "user" {
+				t.Fatalf("typed=%v: unknown steer recorded as a draft or a delivered message: %#v", typed, event)
+			}
+			if typed && event["operationId"] != "op-unknown" {
+				t.Fatalf("message-path steer lost its operation: %#v", event)
+			}
+		}
+	}
+}
+
+// A refusal proved before anything was written is not a message: the
+// acknowledged path records no text, so no client can show it as sent.
+func TestKnownSteerRefusalAddsNoMessageToSharedHistory(t *testing.T) {
+	runner := newCodexTestRunner(t)
+	runner.active = true
+	runner.turnClient.(*fakeCodexTurnClient).steerErr = fmt.Errorf("%w: no active turn", codexapp.ErrSteerRefused)
+	result := runner.submitMessage(proto.MessageControl{OperationID: "op-refused", Text: unconfirmedSteerText, Mode: "steer"})
+	if result.Accepted || result.Boundary != "" {
+		t.Fatalf("result = %#v", result)
+	}
+	if events := historyEventsWithText(t, runner.history, unconfirmedSteerText); len(events) != 0 {
+		t.Fatalf("known refusal added text to shared history: %#v", events)
+	}
+}

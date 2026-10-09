@@ -66,6 +66,7 @@ func (r *codexAppRunner) submitMessage(control proto.MessageControl) proto.Messa
 		// Once written, any failure (an error answer included) is ambiguous:
 		// Codex may already have queued the input. Never a safe-to-retry refusal.
 		result.Boundary = "unknown"
+		r.recordUnconfirmedSteer(control.OperationID, control.Text, err, submittedAt)
 		return result
 	}
 	if event, err := codexapp.SteeringHistoryEvent(r.conversationID, turnID, control.Text, submittedAt); err == nil {

@@ -18,6 +18,10 @@ import (
 const (
 	relayClockLead = 5 * time.Second
 	relayMatchAge  = 2 * time.Minute
+	// An unconfirmed steer is timestamped when it was submitted, but its
+	// relay is recorded only once the runner answers: after the provider
+	// call gives up (5s) and within the daemon's acknowledgment wait (10s).
+	unconfirmedRelayLag = 15 * time.Second
 )
 
 type relayMatcher struct {
@@ -36,8 +40,26 @@ func newRelayMatcher(relays []ledger.MessageRelayed) *relayMatcher {
 	return &relayMatcher{relays: values, consumed: make([]bool, len(values))}
 }
 
-func (m *relayMatcher) match(text string, atMS int64) *ledger.MessageAuthor {
-	if atMS <= 0 || text == "" {
+// matchOperation consumes the relay recorded under exactly this delivery
+// operation. That association is durable, so it outranks any time window.
+func (m *relayMatcher) matchOperation(operationID string) *ledger.MessageAuthor {
+	for index, relay := range m.relays {
+		if operationID == "" || m.consumed[index] || relay.OperationID != operationID {
+			continue
+		}
+		m.consumed[index] = true
+		author := relay.Author
+		return &author
+	}
+	return nil
+}
+
+// match pairs text with a relay of the same content recorded close to it.
+// A record that names its own operation is attributed only by that operation
+// (matchOperation): identical text relayed by someone else around the same
+// time, with or without an operation, is not evidence of its author.
+func (m *relayMatcher) match(text string, atMS int64, operationID string) *ledger.MessageAuthor {
+	if atMS <= 0 || text == "" || operationID != "" {
 		return nil
 	}
 	exact := sha256.Sum256([]byte(text))
@@ -121,14 +143,27 @@ func (s *Server) annotateRawEvents(
 		return nil, err
 	}
 	annotated := make([]json.RawMessage, len(events))
+	decoded := make([]map[string]any, len(events))
+	authors := make([]*ledger.MessageAuthor, len(events))
 	for index, encoded := range events {
 		annotated[index] = append(json.RawMessage(nil), encoded...)
-		var event map[string]any
-		if json.Unmarshal(encoded, &event) != nil {
+		if json.Unmarshal(encoded, &decoded[index]) != nil {
+			decoded[index] = nil
 			continue
 		}
-		text, atMS := rawUserMessage(event)
-		author := matcher.match(text, atMS)
+		// Durable operation associations first, so the time window below
+		// cannot hand their relay to an earlier identical message.
+		authors[index] = matcher.matchOperation(eventOperationID(decoded[index]))
+	}
+	for index, event := range decoded {
+		if event == nil {
+			continue
+		}
+		author := authors[index]
+		if author == nil {
+			text, atMS := rawUserMessage(event)
+			author = matcher.match(text, atMS, eventOperationID(event))
+		}
 		if author == nil {
 			continue
 		}
@@ -176,7 +211,7 @@ func (s *Server) annotateTranscript(ctx context.Context, transcript *integration
 		if err != nil {
 			continue
 		}
-		author := matcher.match(message.Text, at.UnixMilli())
+		author := matcher.match(message.Text, at.UnixMilli(), "")
 		if author == nil {
 			continue
 		}
@@ -194,21 +229,37 @@ func (s *Server) annotateTranscript(ctx context.Context, transcript *integration
 	return nil
 }
 
+// eventOperationID is the delivery operation an unconfirmed steer record names.
+func eventOperationID(event map[string]any) string {
+	if event["type"] != "system" || event["unconfirmed"] != true {
+		return ""
+	}
+	operationID, _ := event["operationId"].(string)
+	return operationID
+}
+
 func rawUserMessage(event map[string]any) (string, int64) {
-	if event["type"] != "user" {
-		return "", 0
+	var text string
+	var lag time.Duration
+	if unconfirmed, ok := event["unconfirmedInput"].(string); ok && event["type"] == "system" && event["unconfirmed"] == true {
+		// A steer whose outcome is unknown is still someone's words.
+		text, lag = unconfirmed, unconfirmedRelayLag
+	} else {
+		if event["type"] != "user" {
+			return "", 0
+		}
+		message, ok := event["message"].(map[string]any)
+		if !ok || message["role"] != "user" {
+			return "", 0
+		}
+		text = rawContentText(message["content"])
 	}
-	message, ok := event["message"].(map[string]any)
-	if !ok || message["role"] != "user" {
-		return "", 0
-	}
-	text := rawContentText(message["content"])
 	timestamp, _ := event["timestamp"].(string)
 	at, err := time.Parse(time.RFC3339Nano, timestamp)
 	if err != nil {
 		return "", 0
 	}
-	return text, at.UnixMilli()
+	return text, at.Add(lag).UnixMilli()
 }
 
 func rawContentText(content any) string {

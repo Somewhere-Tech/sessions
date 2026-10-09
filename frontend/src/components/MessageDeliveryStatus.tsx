@@ -24,6 +24,8 @@ export function MessageDeliveryStatus({ message, restore, remove }: {
 }): JSX.Element | null {
   if (message.status === 'accepted') return <div className="message-delivery-status" role="status"
     title="Sessions acknowledged this submission. It has not yet appeared in provider history; this does not mean work has completed.">Accepted · waiting for conversation</div>;
+  if (message.status === 'unconfirmed') return <div className="message-delivery-status" role="status"
+    title={message.failureReason}>Delivery unconfirmed · the agent may or may not have applied this</div>;
   if (message.status !== 'failed') return null;
   return <div className="remote-bubble-status message-delivery-status">
     <span title={message.failureReason}>Older local send · check the conversation</span>
