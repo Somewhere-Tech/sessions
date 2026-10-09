@@ -31,9 +31,9 @@ var version = "0.2.29"
 // isWildcardHost reports whether a bind host would expose the daemon on every
 // interface. A literal denylist is not enough, and neither is netip.ParseAddr
 // alone: net.Listen resolves the host through the system resolver, which is
-// more permissive than the parser. "0.0.0.000" is rejected by netip but still
-// binds every interface, so the final check asks the resolver the same question
-// the listener will ask.
+// more permissive than the parser on some platforms. "0.0.0.000" is rejected
+// by netip but binds every interface on macOS. The final check asks the resolver
+// the same question the listener will ask.
 func isWildcardHost(host string) bool {
 	trimmed := strings.Trim(strings.TrimSpace(host), "[]")
 	if trimmed == "" || trimmed == "*" {

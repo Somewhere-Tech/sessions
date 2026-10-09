@@ -148,7 +148,11 @@ func TestCreateRefusesMissingSessionCommandBeforeWritingState(t *testing.T) {
 		DefaultShell: "/bin/bash", DefaultCwd: root, DefaultCols: 300, DefaultRows: 50,
 		RunnerPath: runner, RunnerStateDir: filepath.Join(root, "runners"), LaunchAgentsDir: filepath.Join(root, "agents"),
 	}
-	registry := NewRegistry(config, NewLaunchdLauncher(config))
+	var launcher proto.RunnerLauncher = NewDetachedLauncher(config)
+	if runtime.GOOS == "darwin" {
+		launcher = NewLaunchdLauncher(config)
+	}
+	registry := NewRegistry(config, launcher)
 	launchStarted := false
 	_, err := registry.CreateWithLifecycle(context.Background(), CreateSessionRequest{
 		Cmd: "missing-agent", Cwd: root, Env: map[string]string{"PATH": filepath.Join(root, "bin")},
