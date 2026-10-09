@@ -35,15 +35,15 @@ else
 fi
 `
 
-// installFakeClaude puts an inert fake first and alone on PATH, and proves the
-// effective environment cannot reach a real provider binary.
+// installFakeClaude puts an inert fake first on both inherited and service
+// discovery paths. Account sign-in deliberately adds GUI-safe search paths.
 func installFakeClaude(t *testing.T, root string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")
 	}
-	bin := filepath.Join(root, "bin")
-	if err := os.Mkdir(bin, 0o700); err != nil {
+	bin := filepath.Join(root, ".local", "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fakeClaudeCheck), 0o700); err != nil {
@@ -58,8 +58,8 @@ func installFakeClaude(t *testing.T, root string) {
 		t.Fatalf("a real codex is reachable at %s", found)
 	}
 	for _, item := range accountLoginEnvironment("claude", root) {
-		if strings.HasPrefix(item, "PATH=") && item != "PATH="+os.Getenv("PATH") {
-			t.Fatalf("login environment widened PATH: %s", item)
+		if strings.HasPrefix(item, "PATH=") && filepath.SplitList(strings.TrimPrefix(item, "PATH="))[0] != bin {
+			t.Fatalf("login environment does not put the inert provider first: %s", item)
 		}
 	}
 }
