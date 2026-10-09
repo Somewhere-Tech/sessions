@@ -13,6 +13,11 @@ func TestReadCLIForwardsCursorAndReportsErrors(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	const id = "11111111-2222-4333-8444-555555555555"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/history" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"sessions":[{"id":"` + id + `","tool":"claude"}]}`))
+			return
+		}
 		if r.URL.Path != "/api/history/"+id+"/read" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 			http.NotFound(w, r)
