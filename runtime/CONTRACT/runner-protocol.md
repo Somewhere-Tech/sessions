@@ -183,6 +183,19 @@ Eviction advances the daemon's absolute event cursor without deleting history
 from disk. Restoring the runner window reads a bounded tail (the byte target
 plus one scanner-sized record), rather than loading the complete history file.
 
+Structured runners append each event to their history file as one JSON line,
+before retaining it in memory or sending it to clients; appends are not
+fsynced. A failed append is logged with the byte count its write reported, and
+the event is never written again, whatever that count was. When the count shows
+an unterminated line (part of an event, or a history file reopened with an
+unterminated last line), the runner writes a newline before its next event. If
+that newline is not reported stored, or its write returns an error, the event is
+not written. Until a newline is reported stored, each later event tries the
+newline first; once one is, the next event needs no other. Bytes already in the
+file are never rewritten or removed, and readers skip lines that are not valid
+JSON. An event whose append failed is still kept in memory and sent to clients
+and may have no durable copy.
+
 ### MODEL_RES (`0x26`)
 
 Protocol-2 Rich runners send exactly one response for each MODEL_REQ, in request
@@ -216,11 +229,53 @@ it is not processed by the terminal composer. MESSAGE_RES echoes the operation
 id and reports `accepted`, `boundary`, and an optional `error`.
 
 `boundary:"runner"` means the runner accepted a new turn, not that the provider
-has answered. `boundary:"provider"` means Codex acknowledged active-turn
+has answered. `boundary:"queue"` means a structured Claude runner saved the
+message in its bounded next-turn queue (32 pending messages / 1 MiB), not that
+Claude has read it. The queue is committed before acknowledgment and dispatched
+in order after successful turns. Failure or interruption pauses it; retrying
+the failed turn successfully continues it. After runner restart, Retry may
+continue only entries not yet dispatched. Dispatch intent is committed before
+provider launch; a previously dispatched entry is never automatically replayed.
+Recent operation receipts are retained (64 completed entries plus pending
+entries); the daemon's durable receipt remains the authority for older IDs.
+`boundary:"provider"` means Codex acknowledged active-turn
 steering. A failed provider transport can return `boundary:"unknown"`: callers
 must not automatically resend. `accepted:false` without that boundary is a
-known refusal. The daemon records intent before this request and its outcome
+known refusal: a Codex runner reports one only when no active turn existed
+before it wrote the steer. After the steer is written, an app-server error
+answer, a timeout and a lost connection all stay `unknown`, because app-server
+may queue the input before it answers. The daemon records intent before this request and its outcome
 afterward. If disconnected before acknowledgment, delivery remains unknown.
+
+Whatever a steer's outcome, its text is in the structured history at most once,
+written by the runner. An accepted steer is a `user` record. An unknown steer —
+on this path or on the raw INPUT path — is the existing `system`
+`input_rejected` record with `unconfirmed:true` and the exact text in
+`unconfirmedInput`, timestamped at submission; on this path it also carries the
+additive `operationId` of its receipt. Clients show that text as the person's
+words with delivery unconfirmed, never as a delivered message or a draft to
+send again. A known refusal records no text on this path. Runners from before
+this record existed wrote nothing for an unknown MESSAGE_REQ steer, and that
+history is not rewritten.
+
+Both records are appended only once Codex answers or the answer fails to
+come, which can be after the turn's later output or completion. Each is
+timestamped when the runner began sending the steer (after any wait for an
+earlier steer to the same runner), so readers place it by that timestamp
+rather than by position: provider output recorded before that time stays
+before it and output recorded after it follows. An accepted record is placed
+only when it establishes its place itself: a readable timestamp, its own
+`turnId`, and content no other record repeats exactly. It never moves past
+another user or steer record, another turn's event, or its own turn's start.
+Identical repeated records keep their recorded order. Runners before steer
+records carried the submission time stamped the acknowledgment, which is
+never earlier than the output it followed. An agent item
+that was already showing text when a steer was recorded is split there only
+where its later text continues what was shown; otherwise it stays whole in the
+segment it began in. The daemon's
+content-free authorship record for a message submit carries its
+`operation_id`, and a steer record naming an `operationId` takes its author
+only from that operation.
 
 The runner decides and commits before it answers, so MESSAGE_RES may arrive
 after its requesting caller is gone. A daemon must not treat that frame as
@@ -239,7 +294,10 @@ still unknown: a receipt already resolved from this evidence is durable and
 stays accepted. A runner that never answers leaves the receipt unknown too.
 
 `steer` requires an active Codex turn; it never silently starts a new turn.
-Claude rejects active-turn messages explicitly. Missing capability uses the
+Claude refuses explicit steering; ordinary active-turn messages are saved for
+the next turn with a `queue` boundary. This is not immediate steering or a
+guarantee of future execution. Older live Claude runners still refuse busy
+messages explicitly. Missing capability uses the
 legacy input path for ordinary sends; explicit steering is refused without
 writing input. The version remains 5: older daemons ignore the additive HELLO
 field and use INPUT; newer daemons never send MESSAGE_REQ to an old runner.

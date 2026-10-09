@@ -33,7 +33,7 @@ import { useProjects } from '../hooks/useProjects';
 import { buildInboxLayout, buildProviderFaultNotices, type ProviderFaultNotice, type SessionGrouping } from '../lib/inboxSections';
 import { InboxSections, ProviderFaultBanners } from './InboxSections';
 import { useFleetProjects } from '../hooks/useFleetProjects';
-import { groupAgents, isSavedAgent } from '../lib/projectAgents';
+import { groupAgents, isSavedAgent, recentAgents, resolvedProjects, projectMembershipKey, matchesResolvedProject, navigationProjectOptions } from '../lib/projectAgents';
 
 const ContinueElsewhereButton = lazy(() => import('./ContinueElsewhereButton').then((module) => ({ default: module.ContinueElsewhereButton })));
 const ProjectAgents = lazy(() => import('./ProjectAgents').then((module) => ({ default: module.ProjectAgents })));
@@ -201,6 +201,7 @@ export function SessionNavigator({
   const updatePinned = useSessions((state) => state.updatePinned);
   const configuredMachines = useServers((state) => state.servers);
   const activeMachineId = useServers((state) => state.activeId);
+  const sourceServerId = useSessions((state) => state.serverId) ?? undefined;
   const selectMachine = useServers((state) => state.setActive);
   const [machineScope, setMachineScopeState] = useState<MachineScope>(readMachineScope);
   const [grouping, setGroupingState] = useState<SessionGrouping>(readGrouping);
@@ -381,7 +382,11 @@ export function SessionNavigator({
   const providerFaultNotices = useProviderFaultNotices(fleetSnapshots, sessions, activeMachineId, configuredMachines[0]?.id ?? '');
   const openProviderFault = (notice: ProviderFaultNotice): void => openProviderFaultNotice(notice, activeMachineId, onOpen, onOpenMachineSession);
   const scopedSessions = showingAllMachines ? fleetSessions : navigatorSessions;
-  const projects = useMemo(() => [...new Set(scopedSessions.map(projectName).filter(Boolean))].sort(), [scopedSessions]);
+  const localServerId = activeMachineId ?? configuredMachines[0]?.id ?? '';
+  const projectLookup = useProjects(navigatorSessions.map((session) => session.id), !showingAllMachines, localServerId);
+  const projectSnapshots = fleetSnapshots.map((snapshot) => snapshot.server.id === activeMachineId ? { ...snapshot, sessions } : snapshot);
+  const membership = resolvedProjects(showingAllMachines ? projectSnapshots : projectSnapshots.filter((snapshot) => snapshot.server.id === localServerId), showingAllMachines ? fleetProjects : { [localServerId]: projectLookup.projects });
+  const projects = navigationProjectOptions(membership, configuredMachines);
   const counts = useMemo(() => ({
     needs: scopedSessions.filter(sessionNeedsYou).length,
     // Everything the working set is holding, pinned or not. This is the number
@@ -396,34 +401,24 @@ export function SessionNavigator({
     working: scopedSessions.filter((session) => session.working && !session.exited).length
   }), [liveIds, navigatorSessions, pinnedIds, scopedSessions, showingAllMachines]);
 
-  const matches = (session: SessionInfo): boolean => {
+  const matches = (session: SessionInfo, serverId = localServerId): boolean => {
     if (!sessionMatchesWindowScope(session)) return false;
     if (primary === 'needs' && !sessionNeedsYou(session)) return false;
     if (primary === 'working' && (!session.working || session.exited)) return false;
     if (primary === 'ended' && !isSavedAgent(session)) return false;
     const normalized = normalizeProvider(session.tool);
     if (provider !== 'all' && (provider === 'shell' ? session.tool !== 'terminal' : normalized !== provider)) return false;
-    if (project !== 'all' && projectName(session) !== project) return false;
+    const resolvedProject = membership.get(projectMembershipKey(serverId, session.id));
     const age = Date.now() - lastActivity(session);
     if (date === 'today' && age > 86_400_000) return false;
     if (date === 'week' && age > 7 * 86_400_000) return false;
-    const needle = query.trim().toLowerCase();
-    if (needle) {
-      const haystack = `${resolvedSessionLabel(session)} ${session.name ?? ''} ${session.description ?? ''} ${session.cwd} ${session.lastSummary ?? ''} ${Object.values(session.tags ?? {}).join(' ')}`.toLowerCase();
-      if (!haystack.includes(needle)) return false;
-    }
-    return true;
+    return matchesResolvedProject(session, resolvedProject, project, query);
   };
 
-  const filteredLiveSessions = liveSessions.filter(matches);
-  const projectSnapshots = fleetSnapshots.map((snapshot) => snapshot.server.id === activeMachineId
-    ? { ...snapshot, sessions }
-    : snapshot);
-  const agentGroups = groupAgents(projectSnapshots, fleetProjects, false, matches);
-  const savedGroups = groupAgents(projectSnapshots, fleetProjects, true, matches);
-  // Project membership comes from the daemon; the inbox groups the single
-  // machine's live rows by it and folds recent finished ones per project.
-  const projectLookup = useProjects(navigatorSessions.map((session) => session.id), !showingAllMachines);
+  const filteredLiveSessions = liveSessions.filter((session) => matches(session));
+  const arrange = grouping === 'recent' ? recentAgents : (groups: ReturnType<typeof groupAgents>) => groups;
+  const agentGroups = arrange(groupAgents(projectSnapshots, fleetProjects, false, matches));
+  const savedGroups = arrange(groupAgents(projectSnapshots, fleetProjects, true, matches));
   const inboxLayout = useMemo(() => buildInboxLayout({
     live: filteredLiveSessions,
     ended: navigatorSessions.filter((session) => session.exited && matches(session)),
@@ -439,10 +434,10 @@ export function SessionNavigator({
     const ref = projectLookup.bySession.get(session.id);
     return ref && !ref.implicit ? ref.name : projectName(session);
   };
-  const filteredPinnedSessions = pinnedSessions.filter(matches);
+  const filteredPinnedSessions = pinnedSessions.filter((session) => matches(session));
   const filteredEnded = navigatorSessions
     .filter((session) => session.exited)
-    .filter(matches)
+    .filter((session) => matches(session))
     .sort((left, right) => lastActivity(right) - lastActivity(left));
   const recentCutoff = Date.now() - RECENTLY_ENDED_DAYS * 86_400_000;
   const recentEnded = filteredEnded
@@ -677,7 +672,7 @@ export function SessionNavigator({
                 onClick={(event) => event.stopPropagation()}
               >
                 <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpen(session.id); }}>{session.exited ? 'View history' : 'Open in tab'}</button>
-                <RestartConversation session={session} onOpen={onOpen} appearance="menuitem" />
+                <RestartConversation session={session} onOpen={onOpen} serverId={sourceServerId} appearance="menuitem" />
                 {openSessionIds.includes(session.id) ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onCloseView(session.id); }}>Close tab <small>keeps running</small></button> : null}
                 {/*
                   * On an ended session the item is shown DISABLED rather than
@@ -757,10 +752,10 @@ export function SessionNavigator({
   return (
     <aside className="session-navigator">
       <header className="session-navigator-head">
-        <div><span>Your workspace</span><strong>{grouping === 'recent' ? 'Most recent' : 'Projects'}</strong></div>
+        <div><strong>{grouping === 'recent' ? 'Most recent' : 'Projects'}</strong></div>
         <div className="session-navigator-actions">
           <button type="button" className="session-continue-action" onClick={onContinue}>Resume</button>
-          <button type="button" className="session-new-action" onClick={onNew} aria-label="New session"><span aria-hidden>＋</span> Add agent</button>
+          <button type="button" className="session-new-action" onClick={onNew} aria-label="New session" title="Add an agent"><span aria-hidden>＋</span></button>
         </div>
       </header>
       <GroupingControl grouping={grouping} onChange={selectGrouping} />
@@ -791,7 +786,7 @@ export function SessionNavigator({
           <div className="session-filter-popover">
             <label>Provider<select value={provider} onChange={(event) => setProvider(event.currentTarget.value as ProviderFilter)}><option value="all">All providers</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="shell">Shell</option></select></label>
             <label>Computer<select value={machineScope} onChange={(event) => selectMachineScope(event.currentTarget.value)}><option value={ALL_MACHINES_SCOPE}>All machines</option>{configuredMachines.map((configured) => <option key={configured.id} value={configured.id}>{serverDisplayName(configured, true)}</option>)}</select></label>
-            <label>Project<select value={project} onChange={(event) => setProject(event.currentTarget.value)}><option value="all">All projects</option>{projects.map((item) => <option key={item}>{item}</option>)}</select></label>
+            <label>Project<select value={project} onChange={(event) => setProject(event.currentTarget.value)}><option value="all">All projects</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
             <label>Date<select value={date} onChange={(event) => setDate(event.currentTarget.value as DateFilter)}><option value="all">Any time</option><option value="today">Today</option><option value="week">Past 7 days</option></select></label>
           </div>
         </details>
@@ -811,7 +806,7 @@ export function SessionNavigator({
         {moveError ? <div className="session-move-error" role="alert">{moveError}</div> : null}
         {archiveError ? <div className="session-move-error" role="alert">{archiveError}</div> : null}
         {!showingAllMachines && projectLookup.error ? (
-          <div className="inbox-projects-note" role="status">Project grouping could not be refreshed. Sessions are shown together. {projectLookup.error}</div>
+          <div className="inbox-projects-note" role="status">Project names could not be refreshed. {projectLookup.projects.length ? 'Showing last-known project names.' : 'Showing known folders for now.'} {projectLookup.error}</div>
         ) : null}
         {!showingAllMachines && selectingEnded ? (
           <div className="session-bulk-actions">
@@ -837,9 +832,9 @@ export function SessionNavigator({
           </button>
           {runningOpen ? (
             <>
-              <Suspense fallback={<div className="session-tree-empty is-compact">Loading agents…</div>}><ProjectAgents groups={agentGroups} activeMachineId={activeMachineId}
+              <Suspense fallback={<div className="session-tree-empty is-compact">Loading agents…</div>}><ProjectAgents groups={agentGroups} activeMachineId={activeMachineId} activeSessionId={activeId} compact={grouping === 'project'}
                 renderLocal={(row) => renderNode(row.session)} onOpen={onOpenMachineSession}
-                onAdd={onAddProjectAgent ? (row) => onAddProjectAgent(row.server.id, row.session.cwd, { ...row.session.tags }) : undefined} /></Suspense>
+                onAdd={grouping === 'project' && onAddProjectAgent ? (row) => onAddProjectAgent(row.server.id, row.session.cwd, { ...row.session.tags }) : undefined} /></Suspense>
               {fleetSnapshots.some((snapshot) => snapshot.loading) ? <div className="session-tree-empty is-compact">Loading agents…</div> : null}
               {incompleteProjects ? <p role="status" className="session-tree-empty is-compact">Some project names could not be refreshed. Known agents remain visible, grouped by folder where needed.</p> : null}
               {fleetSnapshots.some((snapshot) => snapshot.error) ? <div className="session-tree-empty is-compact">Some computers haven’t answered. Known projects stay visible.</div> : null}
@@ -856,7 +851,7 @@ export function SessionNavigator({
           {endedOpen ? (
             <>
               <p className="session-tree-empty is-compact">Saved conversations, including agents that need reconnecting. Opening one does not restart it.</p>
-              <Suspense fallback={<div className="session-tree-empty is-compact">Loading saved conversations…</div>}><ProjectAgents groups={savedGroups.map((group) => ({ ...group, rows: showAllEnded ? group.rows : group.rows.slice(0, 3) }))} activeMachineId={activeMachineId}
+              <Suspense fallback={<div className="session-tree-empty is-compact">Loading saved conversations…</div>}><ProjectAgents groups={savedGroups.map((group) => ({ ...group, rows: showAllEnded ? group.rows : group.rows.slice(0, 3) }))} activeMachineId={activeMachineId} compact={false}
                 renderLocal={(row) => renderNode(row.session, true)} onOpen={onOpenMachineSession} onResume={(row) => onResumeSession(row.session, undefined, undefined, row.server.id)} /></Suspense>
               <button type="button" className="session-all-ended" onClick={onContinue}>Find and resume any conversation →</button>
             </>
@@ -880,7 +875,7 @@ export function SessionNavigator({
         </div> : null}
         {!showingAllMachines && primary !== 'ended' ? (
           <InboxSections
-            layout={inboxLayout}
+            layout={inboxLayout} activeSessionId={activeId}
             renderNode={renderNode}
             onOpen={onOpen}
             onShowAllNeedsYou={() => setPrimary('needs')}

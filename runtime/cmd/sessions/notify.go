@@ -118,6 +118,6 @@ func (a *app) printNotifyStatus(current notifyStatus, selected string) error {
 		_, err := io.WriteString(a.stdout, "Push subscription: active.\n")
 		return err
 	}
-	_, err := io.WriteString(a.stdout, "Push subscription: none. Subscribe in the Sessions web UI to opt in.\n")
+	_, err := io.WriteString(a.stdout, "Push subscription: none. Enabled preferences alone do not activate push delivery. On the receiving device, open this computer's Sessions HTTPS web view, turn on Push notifications in its settings menu, and allow the browser notification request. Native app notifications are separate.\n")
 	return err
 }

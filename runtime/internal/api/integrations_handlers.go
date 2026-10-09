@@ -59,6 +59,10 @@ func (s *Server) handleIntegrationsRoute(response http.ResponseWriter, request *
 		s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "not found", "path": path}, corsOrigin)
 		return true
 	}
+	if variant == "read" {
+		s.handleConversationRead(response, request, id, corsOrigin)
+		return true
+	}
 	if variant == "raw" {
 		encoded, err := s.integrationEndpoints.Raw(s.registry.List(true), id)
 		if errors.Is(err, integrations.ErrHistoryNotFound) {
@@ -73,16 +77,7 @@ func (s *Server) handleIntegrationsRoute(response http.ResponseWriter, request *
 		return true
 	}
 	if variant == "source" {
-		source, err := s.integrationEndpoints.Source(s.registry.List(true), id)
-		if errors.Is(err, integrations.ErrHistoryNotFound) {
-			s.sendJSON(response, http.StatusNotFound, map[string]any{"error": "history session not found", "id": id}, corsOrigin)
-			return true
-		}
-		if err != nil {
-			s.integrationError(response, corsOrigin, "history source lookup failed", err)
-			return true
-		}
-		s.sendJSON(response, http.StatusOK, source, corsOrigin)
+		s.handleHistorySource(response, request, id, corsOrigin)
 		return true
 	}
 
@@ -419,7 +414,7 @@ func historyPath(path string) (id, variant string, ok bool) {
 		return "", "", false
 	}
 	rest := strings.TrimPrefix(path, prefix)
-	for _, candidate := range []string{"raw", "source", "preview", "window"} {
+	for _, candidate := range []string{"raw", "source", "preview", "window", "read"} {
 		if strings.HasSuffix(rest, "/"+candidate) {
 			rest = strings.TrimSuffix(rest, "/"+candidate)
 			variant = candidate

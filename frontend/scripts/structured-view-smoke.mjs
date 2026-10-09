@@ -158,7 +158,7 @@ try {
       right: element.getBoundingClientRect().right,
       viewport: window.innerWidth
     }));
-    assert.equal(control.label, 'Steer now');
+    assert.equal(control.label, 'Send follow-up');
     assert.equal(control.fits, true);
     assert.ok(control.right <= control.viewport);
     if (process.env.STEERING_VIEW_SCREENSHOT) {

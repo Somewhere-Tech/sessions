@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // between "instant tap-to-content" and "wait for the terminal lib to
 // download even though you didn't open Terminal view."
 import { muxEndpointKey, snapshot as fetchServerSnapshot, fetchClaudeEvents, submitMessage as submitSessionMessage } from '../api/sessionsd';
+import type { MessageSubmission } from '../lib/messageDelivery';
 import { attachSession, sendSessionInput, type SessionChannel, type MuxStatus } from '../lib/wsMux';
 import { useServers } from '../lib/servers';
 import { isTauri } from '../lib/tauriBridge';
@@ -33,7 +34,7 @@ interface UseTerminalResult {
   // keystrokes, they are never queued through a reconnect: failure leaves the
   // user's draft in place so delivery is explicit and retryable.
   sendConfirmedInputRef: { current: (data: string) => Promise<void> };
-  submitMessageRef: { current: (data: string) => Promise<void> };
+  submitMessageRef: { current: (data: string) => Promise<MessageSubmission> };
   // Scroll position state for the floating "scroll to latest" button.
   // True when the user has explicitly chosen to follow the live tail. Output,
   // replay, fit, and buffer changes never change this intent by themselves.
@@ -124,7 +125,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
   const sendConfirmedInputRef = useRef<(data: string) => Promise<void>>(() =>
     Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'))
   );
-  const submitMessageRef = useRef<(data: string) => Promise<void>>(() =>
+  const submitMessageRef = useRef<(data: string) => Promise<MessageSubmission>>(() =>
     Promise.reject(new Error('Sessions is reconnecting. Your message was not sent.'))
   );
   const scrollTerminalToBottomRef = useRef<() => void>(() => {});
@@ -357,7 +358,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
       // old one — the composer looked healthy while the terminal was dead.
       sendConfirmedInputRef.current = (data: string): Promise<void> =>
         sendSessionInput(muxUrl, sessionId, data);
-      submitMessageRef.current = (data: string): Promise<void> =>
+      submitMessageRef.current = (data: string): Promise<MessageSubmission> =>
         submitSessionMessage(sessionId, data, activeServerId ?? undefined);
 
       function resetSessionState(): void {
@@ -640,7 +641,7 @@ export function useTerminal(sessionId: string | null, mountTerminal: boolean = t
             sendInputRef.current = (data: string): void => { channel?.sendInput(data); };
             sendConfirmedInputRef.current = (data: string): Promise<void> =>
               sendSessionInput(muxUrl, sessionId, data);
-            submitMessageRef.current = (data: string): Promise<void> =>
+            submitMessageRef.current = (data: string): Promise<MessageSubmission> =>
               submitSessionMessage(sessionId, data, activeServerId ?? undefined);
             setStatus('open');
           }

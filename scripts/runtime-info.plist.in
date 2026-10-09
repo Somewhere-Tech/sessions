@@ -12,6 +12,8 @@
   <string>APPL</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Sessions discovers and connects to Sessions machines on private networks you trust.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Sessions agents need access to your chosen projects and their shared Git metadata on external drives.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_sessions._tcp</string>

@@ -265,13 +265,14 @@ func (m *Manager) handleIdle(session *state.Session, duration time.Duration) Idl
 // took its place. A fault must never outlive the evidence for it.
 //
 // Structured faults are untouched: they come from the provider's own event
-// stream, which no amount of scrolling contradicts.
+// stream, which no amount of scrolling contradicts. They carry evidence too,
+// but that line was never on a screen, so its absence from one proves nothing.
 func clearFaultWithoutEvidence(session *state.Session, classification IdleClassification, snapshot string) {
 	if classification.Evidence.proven() {
 		return
 	}
 	info := session.Info()
-	if info.FailureKind == "" || info.FailureEvidence == "" {
+	if providerEventRuntime(info) || info.FailureKind == "" || info.FailureEvidence == "" {
 		return
 	}
 	if evidenceStillOnScreen(providerForSession(info), info.FailureEvidence, snapshot) {
@@ -358,6 +359,12 @@ func providerForSession(info state.SessionInfo) string {
 }
 
 func supportsStructuredRetry(info state.SessionInfo) bool {
+	return providerEventRuntime(info)
+}
+
+// providerEventRuntime reports a runtime whose turns and faults come from the
+// provider's structured event stream rather than from a rendered terminal.
+func providerEventRuntime(info state.SessionInfo) bool {
 	return info.Kind == state.KindCodexAppServer || info.Kind == state.KindClaudeStructured
 }
 

@@ -100,7 +100,13 @@ directory and answers
 An optional mode-0600 sidecar beside the provider-owned home records the user's
 `label`, `removed` flag, and optional last checked `identity` (email, plan,
 organization, checked_at milliseconds). It contains no provider credential.
-Older clients may ignore `identity`. Provider sign-in helpers are memory-only
+Older clients may ignore `identity`. Optional `last_check` (`at` milliseconds,
+`outcome`) records what the most recent check established, with the outcomes
+described under provider account sign-in in [`http-api.md`](http-api.md);
+`identity` is kept only while that check verified it, and an earlier verified
+identity a newer check did not confirm moves to `previous_identity`. A sidecar
+without `last_check` reads as verified at its identity's `checked_at`. An older
+daemon ignores both new keys and drops them when it rewrites the file. Provider sign-in helpers are memory-only
 and expire after ten minutes; they do not create runner artifacts or sessions.
 Named subscription launches discard ambient provider authentication overrides
 before assigning their private `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
@@ -198,13 +204,29 @@ recursively with requested mode 0700 and files are written mode 0600. Names and
 the 25 MiB limit are specified in `http-api.md`. There is no automatic cleanup.
 This directory follows an explicit `SESSIONS_STATE_DIR` as described above.
 
+### `<id>.message-queue.json`
+
+Go structured-Claude runners own this additive mode-0600 sidecar. Version 1
+contains a paused flag and entries with operation ID, content hash, acceptance
+boundary, timestamp, and `queued`, `dispatched`, or `done` phase. Pending message
+text is local private data, bounded to 32 messages / 1 MiB. Completed entries
+drop text and retain at most 64 recent receipts. The runner syncs the temporary
+file and atomically renames it before acknowledging or claiming a message.
+
+Daemon/UI restarts do not stop the queue. Runner restart pauses it and never
+replays a dispatched entry: a crash after claim is an uncertain outcome, even
+if provider launch had not yet happened. Retry can explicitly continue only
+undispatched entries. Queued history events carry the same operation identity
+as their later user event so repeated identical messages reconcile separately.
+This sidecar is not runner metadata and must not create a discovery entry.
+
 ### `delivery-operations/<operation-id>.json`
 
 Go-runtime-only, mode 0600 files below a mode-0700 directory. Each file is a
 durable receipt for one logical `/submit` operation: UUID, target session id,
 content SHA-256, content byte count, status, delivery/retry booleans, optional
 reason, optional `mode` (`steer`; omitted for ordinary sends), optional
-`acceptance` evidence (`runner`, `provider`, or `unknown`), and
+`acceptance` evidence (`runner`, `queue`, `provider`, or `unknown`), and
 creation/update times. It deliberately does not store the message
 body. A `pending` file left by a crash is treated as `unknown` and must not be
 retried automatically. Reusing an operation id with different content or a
@@ -216,6 +238,12 @@ first request uses one of these receipts under the `prompt_operation_id`
 recorded in the lane ledger's `created` event (with the create
 `start_operation_id`), which is how its start receipt survives a restart. This directory follows `SESSIONS_STATE_DIR` so an
 isolated daemon cannot read or write the installed daemon's receipts.
+
+Legacy provider receipts may also contain `transcript`: an additive pre-input
+absolute `cursor`, preceding-event `anchor` SHA-256 when the cursor is nonzero,
+normalized `message_sha256`, and `runtime_created_at`. No message body is stored.
+These permit later history-only confirmation under the checks in `http-api.md`;
+older readers ignore the field and preserve their conservative unknown result.
 
 ### `idle/<id>`
 
@@ -363,7 +391,7 @@ exactly one transcript path and no reader can count a conversation twice
 provider's file cannot be resolved at all, and it is deliberately outside every
 cleanup path: it is not truncated, rotated, repaired, or unlinked when the
 session ends, when discovery reaps a dead runner, or when retention archives the
-record. Reaching the 512 MiB cap stops appends and is recorded in the sidecar
+record. Reaching the 4 GiB cap stops appends and is recorded in the sidecar
 instead of discarding stored conversation.
 
 `.transcript.meta.json` is one compact JSON object plus newline, carrying
@@ -450,6 +478,16 @@ Comments explaining KeepAlive and ProcessType are also emitted in the actual
 file, but have no plist semantics. Environment entries are sorted by key. XML
 escaping replaces `&`, `<`, and `>` in text values.
 
+On macOS, newly prepared app-managed jobs additionally include
+`AssociatedBundleIdentifiers: ["tech.somewhere.sessions"]`. The native managed
+location is `~/Library/Application Support/Sessions/runtime/`, with executable
+basename `sessions-runner` and launch agents in that home's `Library/LaunchAgents`.
+Standalone/scratch jobs omit this relationship. It is System Settings Login
+Items attribution, not a permission grant: observed macOS privacy logs still
+name the runner process as responsible for its provider's requests, and
+provider policy is unchanged. Existing jobs are not rewritten or restarted to
+add it.
+
 Bootstrap invokes:
 
 ```text
@@ -457,9 +495,12 @@ launchctl bootstrap gui/<uid> <plist-path>
 ```
 
 Exit status 17 or stderr matching “already loaded/bootstrapped” is accepted as
-success. Bootout invokes `launchctl bootout
-gui/<uid>/tech.somewhere.sessions.runner.<id>` and then unlinks the plist regardless of
-the command result.
+success. Service-manager commands honor caller cancellation and have a
+ten-second command budget; cancellation does not prove whether launchd accepted
+the operation. Bootout invokes `launchctl bootout
+gui/<uid>/tech.somewhere.sessions.runner.<id>` and unlinks the plist only after
+success or an explicit absent-job response. An uncertain or refused bootout
+preserves the registration for inspection. Cleanup never targets other sessions.
 
 New plists run the configured native `sessions-runner` executable directly.
 An adopted pre-native plist may retain its earlier argv until the session exits

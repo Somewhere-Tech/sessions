@@ -30,6 +30,8 @@ const ConnectionsView = lazy(() => import('./ConnectionsView').then((module) => 
 import type { ThemeMode } from './ProductSidebar';
 import { SomewhereCard } from './SomewhereCard';
 import { useSessions } from '../store/sessions';
+import { FleetProviderUpdates } from './FleetProviderUpdates';
+import { NotificationDeliveryStatus } from './NotificationDeliveryStatus';
 
 type Section = 'general' | 'agents' | 'fleet' | 'cloud' | 'notifications' | 'support';
 
@@ -516,11 +518,13 @@ interface NotificationSettingsProps {
 }
 
 function NotificationSettings(props: NotificationSettingsProps): JSX.Element {
+  const serverId = useServers((state) => state.activeId);
   return (
     <section className="settings-page">
       <span className="settings-kicker">Signed {props.clientOnly ? 'device' : 'desktop'} delivery</span>
       <h1>Notifications & updates</h1>
       <p>Sessions checks the signed release feed automatically, while installation always stays an explicit action.</p>
+      <NotificationDeliveryStatus key={serverId} serverId={serverId} hostName={props.providerUpdateTarget} />
       <div className="settings-card">
         <h2>Sessions updates</h2>
         <div className="settings-static-row">
@@ -579,6 +583,7 @@ function NotificationSettings(props: NotificationSettingsProps): JSX.Element {
         {props.providerMessage ? <div className="settings-message" role="status">{props.providerMessage}</div> : null}
         <div className="settings-message">The action runs on {props.providerUpdateTarget} and replaces only that machine's CLI executable. Existing Claude and Codex processes continue unchanged; new sessions there use the updated version.</div>
       </div>
+      <FleetProviderUpdates />
     </section>
   );
 }

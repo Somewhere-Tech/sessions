@@ -93,7 +93,14 @@ describe('capability: one account, one allowance, on every computer it is signed
   });
 
   it('keeps email-only accounts apart and says why', async () => {
-    const { list } = await openAccounts();
+    const machines = fleet();
+    // The latest observation must still verify this identity. A signed-out
+    // reading intentionally supersedes the older email instead of matching it.
+    machines[0]!.accountUsage = {
+      ...machines[0]!.accountUsage,
+      'codex/mail': reading(10, Date.now())
+    };
+    const { list } = await openAccounts(machines);
     await screen.findByText('Beta personal', { selector: 'strong' });
     const personal = rowFor(list, 'Personal');
     expect(within(personal).getByText(/same email is also listed on .*Beta.*cannot confirm it is the same workspace/)).toBeVisible();
@@ -109,7 +116,7 @@ describe('capability: one account, one allowance, on every computer it is signed
     expect(within(other).queryByText('Signed out')).not.toBeInTheDocument();
     // A provider that reports no sign-in says so, and shows no usage.
     const personal = rowFor(list, 'Personal');
-    expect(within(personal).getByText('Signed out')).toBeVisible();
+    expect(within(personal).getByText(/^Signed out, checked/)).toBeVisible();
     expect(within(personal).getByText(/Signed out, so there is no usage to show/)).toBeVisible();
     expect(within(personal).getByRole('button', { name: 'Sign in' })).toBeEnabled();
     expect(within(personal).queryByRole('meter')).not.toBeInTheDocument();

@@ -76,6 +76,7 @@ type createSessionRequest struct {
 	Description       string            `json:"description,omitempty"`
 	Tags              map[string]string `json:"tags,omitempty"`
 	Profile           string            `json:"profile,omitempty"`
+	DefaultProfile    bool              `json:"defaultProfile,omitempty"`
 	Worktree          bool              `json:"worktree,omitempty"`
 	NoWorktree        bool              `json:"noWorktree,omitempty"`
 	Base              string            `json:"base,omitempty"`
@@ -95,6 +96,28 @@ type agentControls struct {
 	fast   bool
 }
 
+// pluckProfileChoice reads the account flags. --profile names an account;
+// --default-profile chooses the default login on purpose. With neither, the
+// daemon decides: a Claude or Codex child keeps its parent's account.
+func pluckProfileChoice(args *[]string, body *createSessionRequest) error {
+	body.DefaultProfile = removeFirst(args, "--default-profile")
+	value, present := pluck(args, "--profile")
+	if !present {
+		return nil
+	}
+	if strings.HasPrefix(value, "-") || value == "" {
+		return fail(1, "--profile needs a name; use --default-profile for the default account")
+	}
+	if body.DefaultProfile {
+		return fail(1, "--profile and --default-profile cannot be combined; choose one account")
+	}
+	if err := state.ValidateProfileName(value); err != nil {
+		return fail(1, "%s", err)
+	}
+	body.Profile = value
+	return nil
+}
+
 func applyToolDefault(body *createSessionRequest, fullAccess bool) error {
 	if body.Cmd == "" {
 		return nil
@@ -104,11 +127,8 @@ func applyToolDefault(body *createSessionRequest, fullAccess bool) error {
 	if !ok || preset.args == nil {
 		return nil
 	}
-	for _, argument := range body.Args {
-		switch argument {
-		case "--dangerously-bypass-approvals-and-sandbox", "--dangerously-skip-permissions", "--sandbox", "--ask-for-approval", "--full-auto":
-			return nil
-		}
+	if providerargs.Has(body.Args, "--dangerously-bypass-approvals-and-sandbox", "--dangerously-skip-permissions", "--sandbox", "--ask-for-approval", "--full-auto", "--permission-mode") {
+		return nil
 	}
 	defaults := preset.args
 	if fullAccess {
@@ -258,14 +278,8 @@ func (a *app) cmdNew(args []string) error {
 	if err != nil {
 		return err
 	}
-	if value, present := pluck(&args, "--profile"); present {
-		if strings.HasPrefix(value, "-") || value == "" {
-			return fail(1, "--profile needs a name")
-		}
-		if err := state.ValidateProfileName(value); err != nil {
-			return fail(1, "%s", err)
-		}
-		body.Profile = value
+	if err := pluckProfileChoice(&args, &body); err != nil {
+		return err
 	}
 	body.Worktree, body.Base, err = pluckWorktreeOptions(&args)
 	if err != nil {
@@ -331,7 +345,8 @@ func (a *app) cmdNew(args []string) error {
 		}
 		body.Permissions = state.PermissionsFull
 	}
-	fullAccess = body.Permissions == state.PermissionsFull
+	explicitFullAccess := body.Permissions == state.PermissionsFull
+	fullAccess = explicitFullAccess || body.Permissions == ""
 	if value, present := pluck(&args, "--lifecycle"); present {
 		value = strings.ToLower(strings.TrimSpace(value))
 		if value != state.LifecycleTask && value != state.LifecycleSession {
@@ -345,11 +360,13 @@ func (a *app) cmdNew(args []string) error {
 		}
 		body.Lifecycle = state.LifecycleSession
 	}
-	// Compatibility for scripts written before constrained execution became
-	// the public default. It is now an explicit no-op, not a mode switch.
+	// The compatibility spelling now explicitly opts out of the YOLO default.
 	noSkipPermissions := removeFirst(&args, "--no-skip-perms")
-	if fullAccess && noSkipPermissions {
+	if body.Permissions == state.PermissionsFull && noSkipPermissions {
 		return fail(1, "--full-access and --no-skip-perms cannot be combined")
+	}
+	if noSkipPermissions {
+		body.Permissions, fullAccess = state.PermissionsConstrained, false
 	}
 	if hasTool {
 		preset, ok := toolPresets[strings.ToLower(tool)]
@@ -371,7 +388,7 @@ func (a *app) cmdNew(args []string) error {
 			if forceStructuredClaude || forcePTYClaude {
 				return fail(1, "--structured and --pty-claude are only valid with --tool claude")
 			}
-			if !forcePTYCodex && (forceAppServer || (fullAccess && codexAppServerEnabled())) {
+			if !forcePTYCodex && (forceAppServer || (explicitFullAccess && codexAppServerEnabled())) {
 				body.Kind = "codex-app-server"
 				// The app-server runtime does not consume positional CLI arguments.
 				// Treat them as the first user request and deliver them through the
@@ -442,10 +459,10 @@ func (a *app) cmdNew(args []string) error {
 	if err := applyAgentControls(&body, agentControls{model: model, effort: effort, fast: fast}); err != nil {
 		return err
 	}
-	if body.Profile != "" {
+	if body.Profile != "" || body.DefaultProfile {
 		tool := state.CommandTool(body.Cmd)
 		if _, supported := state.ProfileToolName(tool); !supported {
-			return fail(1, "--profile is only for Claude or Codex sessions; remove it for shell sessions")
+			return fail(1, "--profile and --default-profile are only for Claude or Codex sessions; remove them for shell sessions")
 		}
 	}
 	// A child starts from the folder where its manager invoked the CLI. The

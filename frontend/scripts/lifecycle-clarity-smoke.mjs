@@ -163,9 +163,9 @@ assert.match(view, /terminalAvailable=\{!richSession\}/);
 // Terminal / Remote Control must review the selected runtime through the same
 // confirmed restart boundary as the toolbar and menu. The browser restart suite
 // drives confirmation, cancellation, draft retention and partial retry.
-assert.match(view, /reviewConversationRestart\(\{ session, onOpen: onOpenSession, initialRemoteControl: enableRemoteControl, initialRuntimeMode: 'terminal' \}\)/);
+assert.match(view, /reviewConversationRestart\(\{ session, onOpen: onOpenSession, serverId: sourceServerId, initialRemoteControl: enableRemoteControl, initialRuntimeMode: 'terminal' \}\)/);
 assert.match(view, /<RestartConversation session=\{session\} onOpen=\{onOpenSession\}/);
-assert.match(navigator, /<RestartConversation session=\{session\} onOpen=\{onOpen\} appearance="menuitem"/);
+assert.match(navigator, /<RestartConversation session=\{session\} onOpen=\{onOpen\} serverId=\{sourceServerId\} appearance="menuitem"/);
 assert.match(app, /<RestartConversationHost \/>/);
 assert.match(restartControl, /lazy\(\(\) => import\('\.\/RestartConversationDialog'\)/);
 assert.match(restartDialog, /This ends only runtime <code>\{session\.id\}<\/code>/);
@@ -200,15 +200,18 @@ assert.match(grid, /<CopyButton getText=\{m\.content\} iconOnly/);
 assert.match(input, /<ComposerModelControl/);
 assert.match(input, /Remote Control needs a Terminal session/);
 assert.match(input, /This command was not sent as a chat message/);
-assert.match(input, /Your draft is kept here and was not sent or queued/);
-assert.match(input, /reason instanceof MessageDeliveryError && reason.deliveryStatus !== 'not-delivered' \? 'Delivery not confirmed' : 'Message not sent'/,
+assert.match(input, /Saved for next turn/);
+assert.doesNotMatch(input, /if \(richSession && providerWorking && provider !== 'codex'\)/);
+assert.match(input, /reason instanceof MessageDeliveryError && reason.deliveryStatus !== 'not-delivered'[\s\S]*delivery\.remember\(reason/,
   'An uncertain receipt must not claim the message was definitely not sent');
+const deliveryStatus = await source('src/components/MessageDeliveryStatus.tsx');
+assert.match(deliveryStatus, /Text delivered · Enter not confirmed.*Delivery not confirmed/);
 assert.match(input, /Your draft is still here/);
 assert.ok(input.includes("await submitMessage('\\x1b[200~' + submittedText + '\\x1b[201~')"));
 assert.doesNotMatch(mux, /return msg\.type === 'input' \|\|/);
 assert.match(mux, /Sessions is reconnecting\. Your message was not sent\./);
 assert.doesNotMatch(remote, />retry<\/button>/);
-assert.match(remote, />restore draft<\/button>/);
+assert.match(deliveryStatus, />Restore draft<\/button>/);
 assert.doesNotMatch(await source('src/hooks/useDispatch.ts'), /ENTER_RETRY_OFFSETS_MS|scheduleEnterRetries|send\('\\r'\)/);
 assert.match(input, /\/rename\(\?:\\s\|\$\)/);
 // The snapshot heuristic runs only for a terminal-backed session, and only
@@ -236,8 +239,8 @@ const launcherComposer = newSession.indexOf('launcher-task-field launcher-compos
 const folderControl = newSession.indexOf('launcher-workspace-shell');
 const advancedControl = newSession.indexOf('launcher-advanced');
 const permissionsControl = newSession.indexOf('aria-label="Access"');
-assert.ok(launcherHero > 0 && launcherHero < agentControl && agentControl < machineControl && machineControl < workspaceControl && workspaceControl < launcherComposer && launcherComposer < folderControl,
-  'new-session must present agent, computer, and folder before the prompt');
+assert.ok(launcherHero > 0 && launcherHero < workspaceControl && workspaceControl < agentControl && agentControl < machineControl && machineControl < launcherComposer && launcherComposer < folderControl,
+  'new-session must present the project folder first, then agent and computer, before the prompt');
 assert.ok(permissionsControl > launcherComposer && permissionsControl < advancedControl,
   'permissions belong in the primary composer before Advanced');
 assert.match(newSession, /Somewhere project/);
@@ -252,7 +255,9 @@ assert.match(newSession, /listNewSessionCodexModels\(controller\.signal, machine
 assert.match(newSession, /create\(withStartOperation\(request, ids, Boolean\(task\.trim\(\)\)\), machineId\)/);
 // The first request goes to the chosen machine under the operation id recorded
 // at create, so a retry cannot deliver it twice.
-assert.match(newSession, /submitInitialRequest\(info\.id, task\.trim\(\), machineId, recordedPromptOperationId\(info, ids\.prompt\)\)/);
+assert.match(newSession, /const promptOperation = recordedPromptOperationId\(info, ids\.prompt\)/);
+assert.match(newSession, /prepareInitialRequest\(machineId, info\.id, task\.trim\(\), promptOperation\)/);
+assert.match(newSession, /onStarted\(info\.id\);\s*onClose\(\);\s*if \(task\.trim\(\)\) void deliverInitialRequest\(machineId, info\.id, task\.trim\(\), promptOperation\)/);
 assert.match(newSession, /startOperationIds\(startIdsRef\.current, JSON\.stringify\(\[machineId, request\]\)\)/);
 assert.match(newSession, /<DirectoryBrowser[\s\S]*serverId=\{machineId\}/);
 assert.doesNotMatch(newSession, /resumeId|sessionsForCwd|--resume/);

@@ -25,8 +25,9 @@ export function stripAnsi(s: string): string {
 // color format just works, and the colors stay faithful to whatever the
 // source program emitted instead of being remapped to a theme palette.
 //
-// `anser` HTML-escapes &, <, > internally, so it's safe to set the result via
-// dangerouslySetInnerHTML even when the source contains markup-like text.
+// This does not HTML-escape: `<`, `>` and `&` in the source pass through as
+// markup. renderContent's final DOMPurify allow-list is what makes the result
+// safe for dangerouslySetInnerHTML.
 export function ansiToHtml(text: string): string {
   return Anser.ansiToHtml(text, {
     use_classes: false,

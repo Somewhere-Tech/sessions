@@ -33,6 +33,7 @@ type Paths struct {
 	Structured   string
 	ClaudeP      string
 	Continuation string
+	MessageQueue string
 	// Transcript is Sessions' own append-only copy of the provider
 	// conversation, and TranscriptMeta records where it came from. The
 	// provider owns the original and prunes it on its own schedule; these are
@@ -57,6 +58,7 @@ func For(dir, id string) Paths {
 		Structured:     base + ".codexapp.jsonl",
 		ClaudeP:        base + ".claudep.jsonl",
 		Continuation:   base + ".continuation.json",
+		MessageQueue:   base + ".message-queue.json",
 
 		Transcript:     base + ".transcript.jsonl",
 		TranscriptMeta: base + ".transcript.meta.json",
@@ -73,6 +75,7 @@ var runnerSidecarJSONSuffixes = []string{
 	".restore-pending.json",
 	".launch.json",
 	".continuation.json",
+	".message-queue.json",
 	".transcript.meta.json",
 }
 

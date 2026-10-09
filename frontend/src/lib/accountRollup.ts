@@ -54,13 +54,132 @@ export interface AccountGroup {
   sameEmailOn: string[];
 }
 
-/** The freshest identity a computer has for this home: its read, or its saved check. */
+/**
+ * When this home's most recent check did not confirm an identity: signed out,
+ * another kind of login, a failed check or a re-add. Anything this computer
+ * observed before then is history. Zero when the latest check verified.
+ */
+export function supersededAt(profile: AccountProfile): number {
+  const check = profile.last_check;
+  return !profile.identity && check && check.outcome !== 'verified' ? check.at : 0;
+}
+
+/** What one computer last established about who is signed in to its home. */
+export type PlacementCheck =
+  | { kind: 'signed_in'; at: number; identity?: AccountIdentity }
+  | { kind: 'verified'; at: number; identity: AccountIdentity }
+  | { kind: 'signed_out' | 'not_subscription' | 'failed'; at?: number; message?: string; previous?: AccountIdentity }
+  | { kind: 'unchecked'; at?: number; previous?: AccountIdentity };
+
+type PositiveCheck = Extract<PlacementCheck, { kind: 'signed_in' | 'verified' }>;
+const positive = (check: PlacementCheck): check is PositiveCheck => check.kind === 'signed_in' || check.kind === 'verified';
+
+/**
+ * Which observation wins when two were made in the same millisecond: an answer
+ * that the home is signed out or on another login, then a failed check or a
+ * re-add, then a successful read, then a saved verification. Conservative: a
+ * cached positive reading never contradicts a negative or unknown check made
+ * at the same time.
+ */
+const tieRank: Record<PlacementCheck['kind'], number> = {
+  signed_out: 3, not_subscription: 3, failed: 2, unchecked: 2, signed_in: 1, verified: 0
+};
+
+/**
+ * Everything this computer observed about the home, each with its time: the
+ * saved check (a verified identity or a newer outcome that superseded it) and
+ * the usage read (a successful read, a signed-out answer, or the identity an
+ * otherwise unavailable read reported). An undated answer is the oldest.
+ *
+ * A usage read asks who is signed in first and reads the limits afterwards, so
+ * its identity is dated by the identity's own `checked_at`, not by the later
+ * limits answer: a limits answer alone does not make an identity read before a
+ * newer check current again. The two steps are not one atomic answer.
+ */
+function observationsOf(placement: AccountPlacement): PlacementCheck[] {
+  const { usage, profile } = placement;
+  const previous = profile.previous_identity;
+  const found: PlacementCheck[] = [];
+  const check = profile.last_check;
+  if (profile.identity) {
+    const at = check?.outcome === 'verified' ? Math.max(check.at, profile.identity.checked_at) : profile.identity.checked_at;
+    found.push({ kind: 'verified', at, identity: profile.identity });
+  } else if (check && check.outcome !== 'verified') {
+    const { at, outcome } = check;
+    found.push(outcome === 'signed_out' || outcome === 'not_subscription' || outcome === 'failed'
+      ? { kind: outcome, at, previous }
+      : { kind: 'unchecked', at, previous });
+  }
+  if (usage?.state === 'available' && !usage.stale && usage.checked_at) {
+    found.push({ kind: 'signed_in', at: usage.identity?.checked_at ?? usage.checked_at, identity: usage.identity });
+  } else if (usage?.state === 'signed_out') {
+    found.push({ kind: 'signed_out', at: usage.checked_at, message: usage.message, previous });
+  } else if (usage?.identity) {
+    found.push({ kind: 'verified', at: usage.identity.checked_at, identity: usage.identity });
+  }
+  return found;
+}
+
+const observedAt = (check: PlacementCheck): number => check.at ?? Number.NEGATIVE_INFINITY;
+
+/**
+ * The freshest thing this computer established about its home. A usage read
+ * that succeeded is a provider check; a saved identity is a check that
+ * happened once; a login file on disk is only a file, so it never reads as
+ * ready. Whichever observation is newest wins, ties follow `tieRank`, and a
+ * failed check is an unknown, not a sign-out.
+ */
+export function placementCheck(placement: AccountPlacement): PlacementCheck {
+  let best: PlacementCheck | undefined;
+  for (const check of observationsOf(placement)) {
+    const newer = !best || observedAt(check) > observedAt(best)
+      || (observedAt(check) === observedAt(best) && tieRank[check.kind] > tieRank[best.kind]);
+    if (newer) best = check;
+  }
+  return best ?? { kind: 'unchecked', previous: placement.profile.previous_identity };
+}
+
+/**
+ * The identity this computer currently has for the home, consistent with
+ * `placementCheck`: none unless the freshest observation is a positive one,
+ * and then the freshest identity any positive observation reported.
+ */
 export function placementIdentity(placement: AccountPlacement): AccountIdentity | undefined {
-  const saved = placement.profile.identity;
-  const read = placement.usage?.identity;
-  if (!read) return saved;
-  if (!saved) return read;
-  return read.checked_at >= saved.checked_at ? read : saved;
+  if (!positive(placementCheck(placement))) return undefined;
+  let best: AccountIdentity | undefined;
+  for (const check of observationsOf(placement)) {
+    if (positive(check) && check.identity && (!best || check.identity.checked_at > best.checked_at)) best = check.identity;
+  }
+  return best;
+}
+
+/**
+ * Whether two reported identities are known to be different accounts: a
+ * different stable provider ID when both have one, otherwise a different email
+ * or organization. A matching email is not proof of the same subscription; it
+ * only means no difference is known.
+ */
+function knownDifferent(left: AccountIdentity, right: AccountIdentity): boolean {
+  const leftId = left.account_id?.trim();
+  const rightId = right.account_id?.trim();
+  if (leftId && rightId) return leftId !== rightId;
+  if (left.email.trim().toLowerCase() !== right.email.trim().toLowerCase()) return true;
+  return Boolean(left.organization && right.organization && left.organization !== right.organization);
+}
+
+/**
+ * Whether this computer's usage reading may be shown as the account's
+ * allowance. Not when a newer check that did not confirm the sign-in came
+ * after the identity the reading was taken under (or after the reading, when
+ * it reported none), and not when that identity is known to differ from the
+ * account this home is currently verified as.
+ */
+function readingBelongs(placement: AccountPlacement, usage: AccountUsage): boolean {
+  const barrier = supersededAt(placement.profile);
+  const observed = usage.identity?.checked_at ?? usage.read_at ?? 0;
+  if (observed <= barrier || (usage.read_at ?? 0) <= barrier) return false;
+  const current = placementIdentity(placement);
+  return !(usage.identity && current && knownDifferent(usage.identity, current));
 }
 
 function groupKey(placement: AccountPlacement): string {
@@ -89,6 +208,7 @@ export function freshestReading(placements: AccountPlacement[]): AccountReading 
   for (const placement of placements) {
     const usage = placement.usage;
     if (!usage?.read_at || !usage.buckets || (usage.state !== 'available' && !usage.stale)) continue;
+    if (!readingBelongs(placement, usage)) continue;
     const better = !best
       || rank(usage) > rank(best.usage)
       || (rank(usage) === rank(best.usage) && usage.read_at > (best.usage.read_at ?? 0));
@@ -138,7 +258,7 @@ export function rollUpAccounts(machines: MachineAccounts[]): AccountGroup[] {
 
 const providerName = (tool: 'claude' | 'codex'): string => tool === 'codex' ? 'ChatGPT' : 'Claude';
 
-/** A row leads with the owner's nickname, then the verified email. */
+/** A row leads with the owner's nickname, then the currently verified email. */
 export function groupTitle(group: AccountGroup): string {
   const nickname = group.placements.map((placement) => placement.profile.label?.trim()).find(Boolean);
   return nickname || group.identity?.email || `${providerName(group.tool)} account`;

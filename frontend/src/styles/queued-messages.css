@@ -1,0 +1,4 @@
+.remote-queued-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; white-space: normal; font-family: var(--font-ui); }
+.remote-queued-status details { min-width: 0; flex-basis: 100%; }
+.remote-queued-status summary { cursor: pointer; }
+.remote-queued-text { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }

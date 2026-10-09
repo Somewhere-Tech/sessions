@@ -172,6 +172,7 @@ function statusState(session: SessionInfo, options: ClassifyOptions): SessionSta
   if (session.failureKind === 'provider-unavailable' || session.failureKind === 'rate-limited') return 'provider-down';
   if (session.failureKind === 'other') return 'failed';
   if (session.exited) return 'ended';
+  if (session.launching) return 'not-started';
   if (session.idleReason === 'needs-input') return 'needs-you';
   if (options.working ?? session.working) return 'working';
   if (isDegradedSession(session)) return 'limited';
@@ -193,7 +194,7 @@ export function classifySession(session: SessionInfo, options: ClassifyOptions =
         : session.failureProvider === 'claude'
           ? 'Claude unavailable'
           : STATE_LABELS[state]
-    : STATE_LABELS[state];
+    : state === 'not-started' && session.launching ? 'Starting' : STATE_LABELS[state];
   return {
     state,
     label,
@@ -223,6 +224,8 @@ export function lostSessionNote(session: SessionInfo): string {
   if (!session.lostReason) return '';
   const when = session.lostAt ? ` ${relativeWhen(session.lostAt)}` : '';
   switch (session.lostReason) {
+    case 'runner startup was never confirmed':
+      return `Startup was not confirmed${when} · Inspect before restarting`;
     case 'machine rebooted':
       return `Lost when this machine restarted${when} · Resume to continue`;
     case 'runner exited':

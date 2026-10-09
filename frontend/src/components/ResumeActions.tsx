@@ -312,8 +312,8 @@ function useSameProviderResume(
   onResumed: (laneId: string) => void,
   onClose: () => void
 ): { busy: boolean; error: string | null; partialResult: AdoptOutcome | null; resume: () => Promise<void>; repair: () => Promise<void>; permissions: 'constrained' | 'full'; setPermissions: (value: 'constrained' | 'full') => void } {
-  const [permissions, setPermissions] = useState<'constrained' | 'full'>('constrained');
-  useEffect(() => setPermissions('constrained'), [selected?.sessionId]);
+  const [permissions, setPermissions] = useState<'constrained' | 'full'>('full');
+  useEffect(() => setPermissions('full'), [selected?.sessionId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [partialResult, setPartialResult] = useState<AdoptOutcome | null>(null);
@@ -331,7 +331,7 @@ function useSameProviderResume(
         undefined,
         model,
         effort,
-        permissions
+        selected.transcriptRecovery ? undefined : permissions
       );
       await refresh();
       preferNextSessionView(outcome.result.laneId, runtimeMode === 'terminal' && !outcome.result.transcriptRecovery ? 'terminal' : 'remote');

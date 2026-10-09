@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { RestartConversation, RestartConversationHost } from '../src/components/RestartConversation';
 import { useDurableDraft } from '../src/hooks/useDurableDraft';
 import { useServers } from '../src/lib/servers';
+import { useSessions } from '../src/store/sessions';
 import type { SessionInfo } from '../src/types';
 import '../src/styles/globals.css';
 
@@ -12,6 +13,7 @@ const source = {
   cwd: '/fixture', createdAt: Date.now(), exited: false
 } as SessionInfo;
 useServers.setState({ servers: [{ id: 'fixture', name: 'Fixture', host: '127.0.0.1', port: Number(window.location.port), isDefault: true }], activeId: 'fixture' });
+useSessions.setState({ serverId: 'fixture', sessions: [source], activeId: source.id, hydrated: true });
 
 function Draft({ id }: { id: string }): JSX.Element {
   const draft = useDurableDraft('fixture', id);

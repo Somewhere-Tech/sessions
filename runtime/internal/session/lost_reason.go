@@ -18,9 +18,10 @@ import (
 // deliberately not a guess: a machine that cannot say when it booted reports
 // "daemon lost contact", which is exactly what such a daemon knows.
 const (
-	LostToReboot    = "machine rebooted"
-	LostToExit      = "runner exited"
-	LostToNoContact = "daemon lost contact"
+	LostToReboot           = "machine rebooted"
+	LostToExit             = "runner exited"
+	LostToNoContact        = "daemon lost contact"
+	LostStartupUnconfirmed = "runner startup was never confirmed"
 )
 
 // lostReason decides between them for one lane. startedAtMS is when the runner
@@ -32,6 +33,11 @@ func lostReason(lane ledger.LaneState, startedAtMS, lastEventAtMS, bootAtMS int6
 			at = lastEventAtMS
 		}
 		return LostToExit, at
+	}
+	if lane.Created && lane.LaunchStarted && !lane.RunnerReady && !lane.Attached {
+		// This is missing startup evidence, not proof that the command never
+		// ran. Never turn this into permission to launch a duplicate.
+		return LostStartupUnconfirmed, lastEventAtMS
 	}
 	// A runner that started before this boot cannot have been ended by
 	// anything on this boot: the machine restarted under it.

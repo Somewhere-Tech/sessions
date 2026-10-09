@@ -141,23 +141,26 @@ export async function cancelContinuationJob(id: string): Promise<ContinuationJob
   return json<ContinuationJob>(r);
 }
 
-export async function updateProvider(id: ProviderStatus['id']): Promise<{ provider: ProviderStatus; output: string }> {
+export async function updateProvider(id: ProviderStatus['id'], serverId?: string): Promise<{ provider: ProviderStatus; output: string }> {
+  const server = requestedServer(serverId);
   const controller = new AbortController();
   // Current runtimes stop the complete installer tree after five minutes.
   // Keep a slightly wider client boundary so an older remote runtime can
   // never leave the native sidebar in an endless busy state.
   const timer = window.setTimeout(() => controller.abort(), 5 * 60_000 + 20_000);
   try {
-    const r = await apiFetch(`${httpBase()}/api/providers/${id}/update`, {
+    const r = await serverFetch(server, `${httpBaseForServer(server)}/api/providers/${id}/update`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',
       signal: controller.signal
     });
-    return await featureJSON<{ provider: ProviderStatus; output: string }>(r, 'Provider update');
+    const result = await featureJSON<{ provider: ProviderStatus; output: string }>(r, 'Provider update');
+    if (result.provider?.id !== id || !result.provider.installed) throw new Error('Update returned no usable provider result. Check the installed version before trying again.');
+    return result;
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new Error('The update took too long and was stopped. Running sessions were not affected.');
+      throw new Error('Update confirmation timed out. Check the installed version before trying again; the installer may still be running. Existing sessions were not restarted.');
     }
     throw error;
   } finally {
@@ -657,7 +660,7 @@ export async function sendInput(sessionId: string, data: string, serverId?: stri
   await json<{ ok: boolean }>(r);
 }
 
-interface MessageDeliveryReceipt {
+export interface MessageDeliveryReceipt {
   operation_id: string;
   session_id: string;
   status: 'accepted' | 'not-delivered' | 'unknown' | 'text-delivered';
@@ -665,6 +668,16 @@ interface MessageDeliveryReceipt {
   retry: boolean;
   reason?: string;
   duplicate?: boolean;
+  acceptance?: 'runner' | 'provider' | 'transcript' | 'queue' | 'unknown';
+}
+
+// Read-only recovery: checking a receipt never executes the submission again.
+export async function checkMessageDelivery(operationId: string, serverId?: string): Promise<MessageDeliveryReceipt> {
+  const server = requestedServer(serverId);
+  const response = await serverFetch(server, `${httpBaseForServer(server)}/api/message-deliveries/${encodeURIComponent(operationId)}`);
+  const receipt = await readDeliveryResponse(response);
+  if ('ok' in receipt || receipt.operation_id !== operationId) throw new Error('The delivery receipt could not be verified. Check the conversation before sending again.');
+  return receipt;
 }
 
 function deliveryError(receipt: MessageDeliveryReceipt): Error {
@@ -694,7 +707,7 @@ async function readDeliveryResponse(response: Response): Promise<MessageDelivery
 // fromSessionId records another lane as the author of the message, the way
 // `sessions send --from` does, so a hand-back reads in the manager's history
 // as coming from the lane rather than from the person.
-export async function submitMessage(sessionId: string, data: string, serverId?: string, fromSessionId?: string, mode?: 'steer', knownOperationId?: string): Promise<void> {
+export async function submitMessage(sessionId: string, data: string, serverId?: string, fromSessionId?: string, mode?: 'steer', knownOperationId?: string): Promise<void | { queued: true }> {
   const server = requestedServer(serverId);
   // A caller that recorded the id beforehand (a session's first request) makes
   // a retry of this exact message read its receipt instead of sending twice.
@@ -720,7 +733,7 @@ export async function submitMessage(sessionId: string, data: string, serverId?: 
         `${httpBaseForServer(server)}/api/message-deliveries/${encodeURIComponent(operationId)}`
       );
       const recovered = await readDeliveryResponse(receiptResponse);
-      if ('ok' in recovered || recovered.status === 'accepted') return;
+      if ('ok' in recovered || recovered.status === 'accepted') return 'acceptance' in recovered && recovered.acceptance === 'queue' ? { queued: true } : undefined;
       throw deliveryError(recovered);
     } catch (receiptError) {
       if (receiptError instanceof AuthError) throw receiptError;
@@ -728,7 +741,7 @@ export async function submitMessage(sessionId: string, data: string, serverId?: 
       throw new MessageDeliveryError('The connection changed while sending. Sessions could not confirm delivery, so it did not retry. Check the conversation before sending again.', 'unknown', operationId);
     }
   }
-  if ('ok' in receipt || receipt.status === 'accepted') return;
+  if ('ok' in receipt || receipt.status === 'accepted') return 'acceptance' in receipt && receipt.acceptance === 'queue' ? { queued: true } : undefined;
   throw deliveryError(receipt);
 }
 
@@ -781,6 +794,22 @@ export async function getPushVapidPublicKey(): Promise<string> {
   const r = await apiFetch(`${httpBase()}/api/push/vapid`);
   const body = await json<{ publicKey: string }>(r);
   return body.publicKey;
+}
+
+export interface NotificationDeliveryStatus {
+  notify: { done: boolean; waiting: boolean; lost: boolean };
+  subscribed: boolean;
+}
+
+export async function fetchNotificationDeliveryStatus(serverId: string, signal?: AbortSignal): Promise<NotificationDeliveryStatus> {
+  const server = requestedServer(serverId);
+  const response = await serverFetch(server, `${httpBaseForServer(server)}/api/notify`, { signal });
+  const status = await json<NotificationDeliveryStatus>(response);
+  if (typeof status.subscribed !== 'boolean' || !status.notify
+    || [status.notify.done, status.notify.waiting, status.notify.lost].some((value) => typeof value !== 'boolean')) {
+    throw new Error('This computer returned an unreadable push-notification status.');
+  }
+  return status;
 }
 
 export async function subscribePush(subscription: PushSubscription): Promise<void> {

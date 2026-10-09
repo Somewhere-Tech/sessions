@@ -67,7 +67,7 @@ func (m *Manager) resolveDelegatedExecution(
 				inheritExact = true
 			}
 		} else {
-			request.Permissions = inferPermissions(request.Args)
+			request.Permissions = defaultRootPermissions(state.CommandTool(request.Cmd), request.Args)
 		}
 	}
 	tool := state.CommandTool(request.Cmd)
@@ -96,6 +96,13 @@ func (m *Manager) resolveDelegatedExecution(
 		request.Lifecycle = state.LifecycleSession
 	}
 	return request, nil
+}
+
+func defaultRootPermissions(tool state.SessionTool, args []string) string {
+	if (tool == state.ToolClaude || tool == state.ToolCodex) && len(extractPermissionArgs(tool, args)) == 0 {
+		return state.PermissionsFull
+	}
+	return inferPermissions(args)
 }
 
 func inferPermissions(args []string) string {
@@ -155,6 +162,9 @@ func stripAllPermissionArgs(tool state.SessionTool, args []string) []string {
 	cleaned := make([]string, 0, len(args))
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
+		if joinedPermissionArg(tool, argument) {
+			continue
+		}
 		if argument == "--dangerously-bypass-approvals-and-sandbox" || argument == "--dangerously-skip-permissions" || argument == "--full-auto" {
 			continue
 		}
@@ -174,6 +184,10 @@ func extractPermissionArgs(tool state.SessionTool, args []string) []string {
 	result := make([]string, 0, 4)
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
+		if joinedPermissionArg(tool, argument) {
+			result = append(result, argument)
+			continue
+		}
 		if argument == "--dangerously-bypass-approvals-and-sandbox" || argument == "--dangerously-skip-permissions" || argument == "--full-auto" {
 			result = append(result, argument)
 			continue
@@ -187,4 +201,9 @@ func extractPermissionArgs(tool state.SessionTool, args []string) []string {
 		}
 	}
 	return result
+}
+
+func joinedPermissionArg(tool state.SessionTool, argument string) bool {
+	return (tool == state.ToolClaude && strings.HasPrefix(argument, "--permission-mode=")) ||
+		(tool == state.ToolCodex && (strings.HasPrefix(argument, "--sandbox=") || strings.HasPrefix(argument, "--ask-for-approval=")))
 }

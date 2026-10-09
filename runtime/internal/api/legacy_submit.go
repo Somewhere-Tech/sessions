@@ -15,7 +15,7 @@ func legacyProvider(info state.SessionInfo) bool {
 }
 
 func (s *Server) submitLegacyProvider(w http.ResponseWriter, request *http.Request, id, data, operationID, origin string, attribution state.InputAttribution) {
-	status, delivered, reason := s.deliverLegacyProvider(request.Context(), id, data, attribution)
+	status, delivered, reason := s.deliverLegacyProvider(request.Context(), id, data, attribution, operationID)
 	acceptance := ""
 	if delivered {
 		acceptance = "transcript"
@@ -28,7 +28,7 @@ func (s *Server) submitLegacyProvider(w http.ResponseWriter, request *http.Reque
 	s.sendDeliveryRecord(w, record, false, origin)
 }
 
-func (s *Server) deliverLegacyProvider(ctx context.Context, id, data string, attribution state.InputAttribution) (delivery.Status, bool, string) {
+func (s *Server) deliverLegacyProvider(ctx context.Context, id, data string, attribution state.InputAttribution, operationID ...string) (delivery.Status, bool, string) {
 	paste, err := delivery.LegacyPaste(data)
 	if err != nil {
 		return delivery.StatusNotDelivered, false, err.Error()
@@ -39,7 +39,18 @@ func (s *Server) deliverLegacyProvider(ctx context.Context, id, data string, att
 	}
 	// Capture the absolute stream cursor before any input. Historical identical
 	// messages cannot confirm this operation, and subscribers keep their stream.
-	baseline := current.ClaudeEventCount()
+	tail := int64(1)
+	window := current.EventsWindow(nil, &tail, nil)
+	baseline := window.NextIndex
+	if len(operationID) > 0 {
+		intent := delivery.TranscriptIntent{Cursor: baseline, MessageHash: delivery.MessageHash(data), RuntimeCreatedAt: current.Info().CreatedAt}
+		if len(window.Events) > 0 {
+			intent.Anchor = delivery.EventHash(window.Events[len(window.Events)-1])
+		}
+		if err := s.deliveries.RecordTranscriptIntent(operationID[0], intent); err != nil {
+			return delivery.StatusNotDelivered, false, "could not record the confirmation boundary; no message was sent"
+		}
+	}
 	if err := s.writeSessionInput(ctx, id, paste, attribution, attribution.SourceSessionID != ""); err != nil {
 		return delivery.StatusUnknown, false, "terminal input was not acknowledged: " + err.Error() + "; inspect the conversation before resending"
 	}

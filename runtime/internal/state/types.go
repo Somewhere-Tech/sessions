@@ -107,8 +107,11 @@ type SessionInfo struct {
 	RunnerVersion     string            `json:"runnerVersion,omitempty"`
 	MessageSubmit     bool              `json:"messageSubmit,omitempty"`
 	Tool              SessionTool       `json:"tool"`
-	Working           bool              `json:"working"`
-	LastDataAt        int64             `json:"lastDataAt"`
+	// Launching is a process-local Create call with a recorded identity but
+	// no registered runner yet. It does not claim the command started.
+	Launching  bool  `json:"launching,omitempty"`
+	Working    bool  `json:"working"`
+	LastDataAt int64 `json:"lastDataAt"`
 	// LastUserMessageAt is transcript-derived and says nothing about who wrote
 	// the message. It moves whenever a user-role record appears in the
 	// provider's own conversation file, and a provider writes those records for
@@ -306,8 +309,12 @@ type CreateSessionRequest struct {
 	Description       string            `json:"description,omitempty"`
 	Tags              map[string]string `json:"tags,omitempty"`
 	Profile           string            `json:"profile,omitempty"`
-	Worktree          bool              `json:"worktree,omitempty"`
-	Base              string            `json:"base,omitempty"`
+	// DefaultProfile explicitly chooses the provider's default login. Without
+	// it, an omitted profile lets a same-provider child start on its parent's
+	// recorded account; with it, the child uses the default login instead.
+	DefaultProfile bool   `json:"defaultProfile,omitempty"`
+	Worktree       bool   `json:"worktree,omitempty"`
+	Base           string `json:"base,omitempty"`
 	// NoWorktree declines the worktree an agent-created child would otherwise
 	// get by default, so a lane can deliberately share its manager's checkout.
 	NoWorktree bool   `json:"noWorktree,omitempty"`

@@ -237,7 +237,8 @@ func TestCreateFailureAfterRecordingKeepsTheSessionID(t *testing.T) {
 	}
 	daemon.launcher.Err = nil
 	status, again := daemon.create(t, shellStartBody(daemon.root))
-	if status != http.StatusConflict || again["session_id"] != sessionID || !strings.Contains(again["error"].(string), "did not complete") {
+	if status != http.StatusConflict || again["session_id"] != sessionID || again["operation_id"] != apiStartOperation ||
+		!strings.Contains(again["error"].(string), "never reported ready") || !strings.Contains(again["error"].(string), "inspect the recorded runner") {
 		t.Fatalf("retry after failed launch = %d %#v", status, again)
 	}
 	if len(daemon.launcher.Launches) != 0 {

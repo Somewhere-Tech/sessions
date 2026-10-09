@@ -59,8 +59,10 @@ fn install_runtime(config: &RuntimeConfig) -> LifecycleResult<(InstallOutcome, S
     let installed = stage_runtime(config)?;
     // launchd receives one stable runner path for the lifetime of the app.
     // Existing runner processes keep their already-open executable when this
-    // file is atomically replaced, while future sessions retain a consistent
-    // macOS privacy identity across versioned runtime updates.
+    // file is atomically replaced; macOS then reports their code no longer
+    // matches the file on disk. A stable path does not make process-lifetime
+    // privacy grants, such as access to other apps' data, carry over to a new
+    // runner.
     let stable_runner = stable_runner_path(config);
     if !runner_is_usable(config, &stable_runner) {
         activate_stable_runner(config, &installed)?;

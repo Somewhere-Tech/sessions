@@ -143,35 +143,37 @@ describe('capability: renaming an account is a daemon change', () => {
 });
 
 describe('capability: adding an account is one flow at a time', () => {
-  it('closes a finished sign-in before showing the next add form', async () => {
+  it('closes a finished sign-in before showing the next account picker', async () => {
     const { list, user } = await openAccounts();
     await user.click(screen.getByRole('button', { name: 'Add account' }));
-    await user.type(screen.getByLabelText('Account label'), 'Second');
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('button', { name: 'Claude' }));
+    await user.click(screen.getByRole('button', { name: 'Sign in to Claude' }));
 
     // While the provider sign-in is open there is no second form to start.
     const card = await screen.findByRole('region', { name: 'Sign in to account' });
-    expect(screen.queryByRole('form', { name: 'Add an account' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Add account' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add account' })).not.toBeInTheDocument();
     expect(within(row(list, 'Work')).getByRole('button', { name: 'Rename' })).toBeDisabled();
 
     await user.type(within(card).getByLabelText('Claude confirmation code'), 'fixture-code{Enter}');
     expect(await within(card).findByText('second@example.test')).toBeVisible();
-    await waitFor(() => expect(within(list).getByText('Second', { selector: 'strong' })).toBeInTheDocument());
+    await waitFor(() => expect(within(list).getByText('second@example.test', { selector: 'strong' })).toBeInTheDocument());
 
     // Adding again replaces the completion card rather than stacking under it.
     await user.click(screen.getByRole('button', { name: 'Add account' }));
-    expect(screen.getByRole('form', { name: 'Add an account' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Add account' })).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Sign in to account' })).not.toBeInTheDocument();
     expect(screen.queryByText('Account connected')).not.toBeInTheDocument();
   });
 
-  it('closes the add form when a row sign-in starts', async () => {
+  it('returns focus to + on Escape, then lets a row sign-in start', async () => {
     const { list, user } = await openAccounts();
     await user.click(screen.getByRole('button', { name: 'Add account' }));
-    expect(screen.getByRole('form', { name: 'Add an account' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Add account' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('button', { name: 'Add account' })).toHaveFocus();
     await user.click(within(row(list, 'Claude account')).getByRole('button', { name: 'Sign in' }));
     await screen.findByRole('region', { name: 'Sign in to account' });
-    expect(screen.queryByRole('form', { name: 'Add an account' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Add account' })).not.toBeInTheDocument();
   });
 });

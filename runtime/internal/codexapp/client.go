@@ -33,6 +33,13 @@ const (
 
 var ErrClosed = errors.New("codex app-server client closed")
 
+// ErrSteerRefused marks a steering message that was never written because no
+// active turn existed to receive it. Once the request is written, nothing the
+// client observes proves the input was not applied: app-server may queue the
+// input and still answer with an error, and a timeout or lost connection says
+// nothing either way. Those failures stay ambiguous and must not be resent.
+var ErrSteerRefused = errors.New("no active Codex turn took the steering message; nothing was sent")
+
 // Options controls the proxy process. The zero value starts the managed
 // daemon and connects through `codex app-server proxy`. If this Codex install
 // cannot run the managed daemon, the client falls back to an owned Unix-socket
@@ -692,7 +699,7 @@ func (c *Client) SteerTurn(ctx context.Context, conversationID, text string) (st
 	}
 	state, turnID, err := c.activeTurn(ctx, conversationID)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", ErrSteerRefused, err)
 	}
 	var response TurnSteerResponse
 	if err := c.call(ctx, "turn/steer", TurnSteerParams{
@@ -700,6 +707,8 @@ func (c *Client) SteerTurn(ctx context.Context, conversationID, text string) (st
 		ExpectedTurnID: turnID,
 		Input:          []UserInput{{Type: "text", Text: text}},
 	}, &response); err != nil {
+		// Even an error answer can follow an applied input, so it is not a
+		// refusal Sessions can prove.
 		return "", fmt.Errorf("steer Codex turn: %w", err)
 	}
 	if response.TurnID == "" {

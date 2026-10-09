@@ -78,8 +78,8 @@ typescript frontend/src/components/SearchView.tsx SearchView 578
 typescript frontend/src/components/NewSessionDialog.tsx NewSessionDialog 564
 typescript frontend/src/components/ResumeDialog.tsx ResumeDialog 501
 typescript frontend/src/components/SettingsMenu.tsx SettingsMenu 494
-typescript frontend/src/components/RemoteView.tsx RemoteView 468
-typescript frontend/src/components/InputBar.tsx InputBar 415
+typescript frontend/src/components/RemoteView.tsx RemoteView 444
+typescript frontend/src/components/InputBar.tsx InputBar 401
 typescript frontend/src/components/ConnectScreen.tsx ConnectScreen 402
 typescript frontend/src/components/GridView.tsx GridCell 337
 typescript frontend/src/components/SettingsView.tsx SettingsView 336
@@ -96,7 +96,7 @@ typescript frontend/src/components/RemoteView.tsx RemoteMessageInner 192
 typescript frontend/src/components/SessionNavigator.tsx renderNode 181
 typescript frontend/src/components/CommandPalette.tsx CommandPalette 184
 typescript frontend/src/components/SessionTabs.tsx SessionTabs 184
-typescript frontend/src/lib/claudeEvents.ts eventsToMessages 176
+typescript frontend/src/lib/claudeEvents.ts eventsToMessages 170
 typescript frontend/src/components/FleetView.tsx FleetView 178
 typescript frontend/src/components/ServerSelector.tsx ServerSelector 176
 typescript frontend/src/components/SomewhereCard.tsx SomewhereCard 175

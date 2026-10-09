@@ -1,21 +1,28 @@
 import type { SessionInfo } from '../types';
 
-// The first frame, written down — without rewriting it every three seconds.
+// The first frame, written down — without rewriting it on every refresh.
 //
-// From the storage inventory on the Mini, 11 September: WebKit's
-// localstorage.sqlite3-wal had grown to 8,503,029,072 bytes against a 1,531,904
-// byte database, and the largest key in it was the session cache at about
-// 1.43 MB. The app refreshes every three seconds and the cache was one value
-// holding every machine, serialised and written on each refresh whether
-// anything had changed or not. Eight gigabytes of write-ahead log is what a
-// 1.4 MB value written twenty times a minute looks like to a database that
-// cannot checkpoint while the app holds it open. The MacBook had ~195 MB of the
-// same thing.
+// This is a disposable cold-start frame: what the tab strip and navigator draw
+// for the second before the live listing lands. It is neither state nor
+// history, and deleting it costs one empty first frame.
 //
-// So: one key per machine, a bounded row, and a write only when the bytes have
-// actually changed — at most one per machine every thirty seconds, plus a flush
-// when the tab goes away. Nothing here changes what the person sees: this is
-// the cold-start frame, overwritten by the live listing about a second later.
+// It is still not free to keep. WebKit keeps localStorage in an SQLite
+// database, so every setItem of this value writes all of it again, and the app
+// refreshes every three seconds. When that database's log is checkpointed is
+// WebKit's business; this module cannot see it or rely on it, so it limits
+// what it asks to write instead.
+//
+// One key per machine, a bounded row, and two kinds of change:
+//
+// - What the frame shows — which rows, their names and titles, pins, set-aside,
+//   ending, parent and delegation, the open row, a row waiting on you — is
+//   written at most once per machine every thirty seconds.
+// - Activity alone — timestamps, the last-message summary, a turn starting or
+//   finishing — only moves clocks and reorders rows the live listing reorders
+//   anyway, so it waits up to ten minutes.
+//
+// Both are written at once when the tab is hidden or closing. Nothing here
+// changes what the person sees once the live listing has landed.
 
 const KEY_PREFIX = 'sessions:cache:v4:';
 // Which machine to draw before a machine has been chosen. Its own key, so the
@@ -36,8 +43,16 @@ export const CACHED_ROWS_PER_MACHINE = 300;
 /** At most one write per machine per this interval, unless the tab is going. */
 export const CACHE_WRITE_INTERVAL_MS = 30_000;
 
+/**
+ * How long a change to activity alone waits, when nothing the frame shows has
+ * changed. A working agent moves its timestamps on every refresh; written each
+ * time, the cache would be rewritten whole every thirty seconds for as long as
+ * anything works.
+ */
+export const CACHE_ACTIVITY_INTERVAL_MS = 10 * 60_000;
+
 // Text a first frame shows in one line. Anything longer is the conversation
-// leaking into the cache, which is what made the value 1.43 MB.
+// leaking into the cache, which is what once made this value megabytes.
 const NAME_LIMIT = 120;
 const SUMMARY_LIMIT = 160;
 const PATH_LIMIT = 200;
@@ -59,6 +74,19 @@ const CACHED_FIELDS = [
   'claudeCustomTitle', 'claudeAiTitle'
 ] as const;
 
+/**
+ * Fields that move while a session simply works. They are cached, so a first
+ * frame can say "4 min ago", but a change to them alone is not a reason to
+ * rewrite the value. idleReason is here for 'completed' and 'never-started'
+ * only: needing you and having failed are kept in the shape below, so moving
+ * into or out of either is written within the write interval like a rename,
+ * not held behind the activity.
+ */
+const ACTIVITY_FIELDS = new Set<string>([
+  'lastDataAt', 'lastUserMessageAt', 'lastHumanMessageAt', 'lastAgentMessageAt',
+  'lastSummary', 'working', 'idleReason'
+]);
+
 export type CachedSession =
   Partial<Pick<SessionInfo, typeof CACHED_FIELDS[number]>>
   & { id: string; tool: SessionInfo['tool']; createdAt: number };
@@ -74,14 +102,16 @@ interface PendingWrite {
 }
 
 const pending = new Map<string, PendingWrite>();
-const timers = new Map<string, number>();
-const lastWriteAt = new Map<string, number>();
-// The signature of what was last written, so an unchanged refresh writes
-// nothing. Length plus an FNV-1a hash of the serialised slice: two different
-// slices of the same length colliding would cost one stale cold-start frame
-// until the next change, which is cheaper than keeping a second copy of the
-// string in memory.
-const lastSignature = new Map<string, string>();
+const timers = new Map<string, { handle: number; due: number }>();
+// When a write was last attempted, successful or not: a store refusing writes
+// is retried at the same pace as one accepting them, not on every refresh.
+const lastAttemptAt = new Map<string, number>();
+// Signatures of what was last written: the whole value, so an unchanged
+// refresh writes nothing, and its shape (below), so a refresh that changed only
+// activity can wait. Length plus an FNV-1a hash: two different values of the
+// same length colliding would cost one stale cold-start frame until the next
+// change, which is cheaper than keeping a second copy of the string in memory.
+const lastWritten = new Map<string, { value: string; shape: string }>();
 let lastMachineWritten: string | null = null;
 
 function keyFor(serverId: string): string {
@@ -116,6 +146,28 @@ function boundedSession(session: SessionInfo): CachedSession {
     row[field] = typeof value === 'string' ? clip(value, limitFor(field)) : value;
   }
   return row as CachedSession;
+}
+
+/**
+ * What a first frame shows, without the activity: the rows kept, in id order —
+ * the stored order follows activity, and four agents taking turns reorder it on
+ * every refresh — each without its activity fields, but keeping a reason that
+ * means a person is needed.
+ */
+function shapeOf(machine: CachedMachine): string {
+  const rows = [...machine.sessions]
+    .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+    .map((row) => {
+      const shape: Record<string, unknown> = {};
+      for (const [field, value] of Object.entries(row)) {
+        if (!ACTIVITY_FIELDS.has(field)) shape[field] = value;
+      }
+      if (row.idleReason === 'needs-input' || row.idleReason === 'failed') {
+        shape.idleReason = row.idleReason;
+      }
+      return shape;
+    });
+  return JSON.stringify({ activeId: machine.activeId, rows });
 }
 
 function activityOf(session: SessionInfo): number {
@@ -158,56 +210,77 @@ export function lastCachedMachine(): string | null {
 }
 
 /**
- * Record this machine's rows. The write is debounced and skipped entirely when
- * the bytes are identical to the last ones written, which is what a refresh
- * against an idle daemon produces.
+ * Record this machine's rows. Nothing is written when the bytes are identical
+ * to the last ones written, which is what a refresh against an idle daemon
+ * produces; a change to what the frame shows is written within thirty seconds,
+ * and a change to activity alone within ten minutes.
  */
 export function cacheMachineSessions(
   serverId: string | null, sessions: SessionInfo[], activeId: string | null
 ): void {
   if (!serverId) return;
   pending.set(serverId, { sessions, activeId });
-  const since = Date.now() - (lastWriteAt.get(serverId) ?? 0);
+  const since = Date.now() - (lastAttemptAt.get(serverId) ?? 0);
   if (since >= CACHE_WRITE_INTERVAL_MS) {
-    writePending(serverId);
+    writePending(serverId, false);
     return;
   }
-  if (timers.has(serverId)) return;
-  const timer = window.setTimeout(() => {
-    timers.delete(serverId);
-    writePending(serverId);
-  }, CACHE_WRITE_INTERVAL_MS - since);
-  timers.set(serverId, timer);
+  writeLater(serverId, CACHE_WRITE_INTERVAL_MS - since);
 }
 
-/** Write whatever is waiting, now: the tab is going away. */
+/** Write whatever is waiting, now, activity included: the tab is going away. */
 export function flushCachedSessions(): void {
-  for (const serverId of [...pending.keys()]) {
-    const timer = timers.get(serverId);
-    if (timer !== undefined) {
-      window.clearTimeout(timer);
-      timers.delete(serverId);
-    }
-    writePending(serverId);
-  }
+  for (const serverId of [...pending.keys()]) writePending(serverId, true);
 }
 
-function writePending(serverId: string): void {
+// One timer per machine, due at the earliest time anything waiting may be
+// written. A later request never pushes an earlier one back.
+function writeLater(serverId: string, delay: number): void {
+  const due = Date.now() + delay;
+  const existing = timers.get(serverId);
+  if (existing && existing.due <= due) return;
+  if (existing) window.clearTimeout(existing.handle);
+  const handle = window.setTimeout(() => {
+    timers.delete(serverId);
+    writePending(serverId, false);
+  }, delay);
+  timers.set(serverId, { handle, due });
+}
+
+function writePending(serverId: string, immediately: boolean): void {
   const entry = pending.get(serverId);
   if (!entry) return;
+  const machine = boundedMachine(entry.sessions, entry.activeId);
+  const text = JSON.stringify(machine);
+  const value = signatureOf(text);
+  const written = lastWritten.get(serverId);
+  // An unchanged refresh is the common case: nothing to write, nothing to wait for.
+  if (written?.value === value) {
+    pending.delete(serverId);
+    return;
+  }
+  const shape = signatureOf(shapeOf(machine));
+  const since = Date.now() - (lastAttemptAt.get(serverId) ?? 0);
+  if (!immediately && written?.shape === shape && since < CACHE_ACTIVITY_INTERVAL_MS) {
+    // Only activity moved. Hold the newest rows; the timer or the tab going
+    // away writes them.
+    writeLater(serverId, CACHE_ACTIVITY_INTERVAL_MS - since);
+    return;
+  }
   pending.delete(serverId);
-  const text = JSON.stringify(boundedMachine(entry.sessions, entry.activeId));
-  const signature = signatureOf(text);
-  // An unchanged refresh is the common case, and it is the one that was
-  // costing gigabytes of write-ahead log.
-  if (lastSignature.get(serverId) === signature) return;
+  const timer = timers.get(serverId);
+  if (timer) {
+    window.clearTimeout(timer.handle);
+    timers.delete(serverId);
+  }
+  lastAttemptAt.set(serverId, Date.now());
   try {
     window.localStorage.setItem(keyFor(serverId), text);
+    lastWritten.set(serverId, { value, shape });
     rememberLastMachine(serverId);
-    lastSignature.set(serverId, signature);
-    lastWriteAt.set(serverId, Date.now());
   } catch {
-    // quota / private mode — drop the cache silently
+    // Quota or private mode. The cache keeps whatever it last held, and the
+    // next refresh after the write interval tries again.
   }
 }
 
@@ -223,7 +296,7 @@ function rememberLastMachine(serverId: string): void {
 
 /**
  * Move the one big key to per-machine slices and delete it. Runs once, at
- * import: the point of the slice is that the 1.43 MB value stops existing, not
+ * import: the point of the slice is that the old combined value stops existing, not
  * that it stops growing.
  */
 export function migrateLegacyCaches(): void {

@@ -45,9 +45,12 @@ const GATE = [
   'external-links',
   'lifecycle-clarity',
   'workspace-ux',
+  'project-groups',
   'launcher-layout',
   'account-login',
   'account-usage',
+  'account-choice',
+  'account-freshness',
   'session-status',
   'local-network',
   'title-clarity',
@@ -67,6 +70,8 @@ const GATE = [
   'fork-conversation',
   'onboarding-consent',
   'provider-fault',
+  'notification-delivery',
+  'subagents-panel',
   // Capability tests mount real product components against an in-process
   // contract-faithful daemon. Keep them last so a capability regression does
   // not hide the focused smoke-suite results above it.

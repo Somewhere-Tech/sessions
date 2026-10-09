@@ -5,12 +5,11 @@ import {
   fetchProfiles,
   listDirectories,
   listNewSessionCodexModels,
-  submitMessage,
   type AccountProfile,
   type SessionModelOption
 } from '../api/sessionsd';
 import { readNewSessionDefaults, type NewSessionTool } from '../lib/newSessionDefaults';
-import { accountLabel, accountNeedsLogin, rememberAccount, rememberedAccount } from '../lib/accountChoice';
+import { accountLabel, accountNeedsLogin, accountRequestFields, rememberAccount, rememberedAccount } from '../lib/accountChoice';
 import { TagEditor } from './TagEditor';
 import type { ClaudeSessionOptions, CreateSessionRequest, DirectoryCandidate, SessionInfo } from '../types';
 import { getActiveServer, isLocalServer, serverDisplayName, useServers } from '../lib/servers';
@@ -19,7 +18,8 @@ import { ProviderMark } from './ProviderBadge';
 import { MachineMark } from './MachineMark';
 import { CLAUDE_MODEL_OPTIONS, ModelPicker, type ModelPickerOption } from './ModelPicker';
 import { InlineAccountSignIn } from './InlineAccountSignIn';
-import { firstRequestFailureMessage, recordedPromptOperationId, startFailureMessage, startOperationIds, withStartOperation, type StartOperationIds } from '../lib/startOperation';
+import { recordedPromptOperationId, startFailureMessage, startOperationIds, withStartOperation, type StartOperationIds } from '../lib/startOperation';
+import { prepareInitialRequest, deliverInitialRequest } from '../lib/initialRequest';
 
 interface ToolDef {
   id: NewSessionTool;
@@ -96,10 +96,6 @@ function inheritedProfile(parent: SessionInfo | null, tool: NewSessionTool): str
   if (!parent?.profile) return '';
   const parentTool: NewSessionTool = parent.tool === 'terminal' ? 'shell' : parent.tool;
   return providerForTool(parentTool) === providerForTool(tool) ? parent.profile : '';
-}
-
-async function submitInitialRequest(sessionId: string, text: string, serverId: string, operationId: string): Promise<void> {
-  await submitMessage(sessionId, `\x1b[200~${text}\x1b[201~`, serverId, undefined, undefined, operationId);
 }
 
 interface Props {
@@ -241,7 +237,10 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
     parentSession?.tool === 'terminal' ? 'shell' : parentSession?.tool ?? initialDefaults.tool,
     parentSession
   ));
-  const [access, setAccess] = useState<AccessChoice>(initialDefaults.skipPerms ? 'full' : 'ask');
+  // Access is a choice for this launch, not an old device-local preference.
+  // Older clients persisted their implicit "Ask me" default as though the
+  // person had selected it. Never carry that accidental override forward.
+  const [access, setAccess] = useState<AccessChoice>('full');
   const [claudeOptions, setClaudeOptions] = useState<ClaudeSessionOptions>({});
   const [claudeSafeMode, setClaudeSafeMode] = useState(false);
   const [codexModel, setCodexModel] = useState('');
@@ -468,7 +467,7 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         name: task.trim() ? sessionTitleFromPrompt(task) : undefined,
         description: task.trim() || undefined,
         tags,
-        profile: selectedProfile || undefined,
+        ...accountRequestFields(selectedProfile, Boolean(parentSession && profileTool)),
         waitReady: task.trim().length > 0,
         claude: tool === 'claude-code' ? resolvedClaudeOptions : undefined,
         creatorSessionId: parentSession?.id,
@@ -481,17 +480,20 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
       if (profileTool && !parentSession) {
         rememberAccount(machineId, profileTool, cwd.trim(), selectedProfile);
       }
-      onStarted(info.id);
+      const promptOperation = recordedPromptOperationId(info, ids.prompt);
       if (task.trim()) {
         try {
-          await submitInitialRequest(info.id, task.trim(), machineId, recordedPromptOperationId(info, ids.prompt));
+          prepareInitialRequest(machineId, info.id, task.trim(), promptOperation);
         } catch (reason) {
+          onStarted(info.id);
           setCreatedWithDeliveryError(info.id);
-          setError(firstRequestFailureMessage(info.id, reason));
+          setError(`Your chat is ready, but its first message was not sent: ${reason instanceof Error ? reason.message : String(reason)} Copy the message before opening the chat.`);
           return;
         }
       }
+      onStarted(info.id);
       onClose();
+      if (task.trim()) void deliverInitialRequest(machineId, info.id, task.trim(), promptOperation);
     } catch (err) {
       setError(startFailureMessage(err));
     } finally {
@@ -560,9 +562,17 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
         <div className="dialog-body">
           <section className="launcher-hero">
             <h2>{isDelegate ? 'Delegate a task' : 'What would you like to work on?'}</h2>
-            <p>{isDelegate ? 'Give it one focused job. It stays linked to its parent.' : 'Choose an agent and a place to work.'}</p>
+            <p>{isDelegate ? 'Give it one focused job. It stays linked to its parent.' : 'Choose your project folder, then an agent to work with.'}</p>
           </section>
           <div className="launcher-setup" role="group" aria-label="Session setup">
+            <div className="launcher-setup-field is-folder">
+              <span>Project folder</span>
+              <button type="button" className="launcher-intent-control is-workspace" title={cwd || 'Choose a project folder'} onClick={() => setBrowserOpen((open) => !open)} aria-label={`Folder: ${workspaceTitle}`} aria-expanded={browserOpen} disabled={isDelegate}>
+                <span className="workspace-folder-icon" aria-hidden />
+                <strong>{workspaceTitle}</strong>
+                {!isDelegate && <span className="launcher-folder-change">Change</span>}
+              </button>
+            </div>
             <label className="launcher-setup-field">
               <span>Agent</span>
               <span className="launcher-intent-control is-agent">
@@ -596,14 +606,6 @@ export function NewSessionDialog({ onClose, onStarted, onOpenResume, parentSessi
                 onChange={(next) => { setAccountTouched(true); setProfileChoice(next); }}
               />
             ) : null}
-            <div className="launcher-setup-field is-folder">
-              <span>Folder</span>
-              <button type="button" className="launcher-intent-control is-workspace" title={cwd || 'Choose a project folder'} onClick={() => setBrowserOpen((open) => !open)} aria-label={`Folder: ${workspaceTitle}`} aria-expanded={browserOpen} disabled={isDelegate}>
-                <span className="workspace-folder-icon" aria-hidden />
-                <strong>{workspaceTitle}</strong>
-                {!isDelegate && <span className="launcher-folder-change">Change</span>}
-              </button>
-            </div>
           </div>
           {profileTool && requiresProviderLogin ? (
             <InlineAccountSignIn

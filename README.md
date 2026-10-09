@@ -62,10 +62,13 @@ sessions status --json
 ```
 
 In the 0.2.28 candidate, Linux `sessions install` registers and starts a systemd user service.
-Runners are separate processes, so restarting or upgrading the daemon preserves
-their work. After a reboot the service discovers retained conversations as
-paused; resuming one is explicit. Enable user lingering if the daemon must start
-before login and continue after logout. See [installation details](docs/INSTALL.md).
+Runners are separate processes; `sessions install --restart-daemon` switches the
+daemon only when systemd reports the unit's effective `KillMode=process`, under
+which a stop signals only the daemon. After a reboot the service discovers retained conversations as
+paused; resuming one is explicit. Under standard systemd defaults, logging out
+without user lingering ends every runner the service started; `sessions install`
+reports the observed lingering setting.
+See [installation details](docs/INSTALL.md).
 Windows still requires starting `sessionsd` yourself.
 
 On macOS, `sessions install` registers `sessionsd` as the per-user development LaunchAgent

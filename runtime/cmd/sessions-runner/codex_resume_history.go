@@ -75,11 +75,16 @@ func (r *codexAppRunner) restoreResumeHistory(conversationID string) error {
 			history = retainStructuredEvent(history, raw)
 		}
 	}
+	// The same append boundary as every live record, under the same lock, so
+	// a partial import write cannot absorb the record written after it.
+	r.streamMu.Lock()
 	for _, event := range history {
-		if _, err := r.historyFile.Write(append(append([]byte(nil), event...), '\n')); err != nil {
+		if err := appendStructuredRecord(r.historyFile, &r.historyEnd, event); err != nil {
+			r.streamMu.Unlock()
 			return err
 		}
 	}
+	r.streamMu.Unlock()
 	if err := r.historyFile.Sync(); err != nil {
 		return err
 	}

@@ -6,6 +6,14 @@ import { RestartConversation, RestartConversationHost } from '../../src/componen
 import { makeSession } from './fake-daemon';
 import { getActiveServer, useServers } from '../../src/lib/servers';
 import { draftStorageKey, readDraft, saveDraft } from '../../src/lib/draftStore';
+import { useSessions } from '../../src/store/sessions';
+
+// Keep these tests focused on mutating restart requests. The read-only account
+// preview has its own host/account capability tests and daemon contract tests.
+vi.mock('../../src/api/sessionsd/restart', async (original) => ({
+  ...await original<typeof import('../../src/api/sessionsd/restart')>(),
+  previewRestart: vi.fn().mockResolvedValue({ accountChanged: false })
+}));
 
 const source = makeSession({ id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', name: 'Restart fixture', tool: 'claude-code', kind: 'claude-structured', model: 'fixture-model', profile: 'fixture-work', permissions: 'constrained', working: true });
 const laneId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -16,10 +24,14 @@ function FixtureDraft(): JSX.Element {
 }
 
 describe('confirmed conversation restart', () => {
-  beforeEach(() => useServers.setState({ servers: [{ id: 'fixture', name: 'Fixture', host: '127.0.0.1', port: 8899, isDefault: true }], activeId: 'fixture' }));
+  beforeEach(() => {
+    useServers.setState({ servers: [{ id: 'fixture', name: 'Fixture', host: '127.0.0.1', port: 8899, isDefault: true }], activeId: 'fixture' });
+    useSessions.setState({ serverId: 'fixture', sessions: [source], activeId: source.id, hydrated: true });
+  });
   it('shows the exact runtime, selects YOLO, reopens automatically and retains the draft', async () => {
     const user = userEvent.setup(); const onOpen = vi.fn(); const posted: unknown[] = [];
     vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
+      if (!options?.body) return new Response(JSON.stringify({ sessions: [makeSession({ id: laneId })] }));
       posted.push(JSON.parse(options.body));
       return new Response(JSON.stringify({ ok: true, sourceEnded: true, sourceSessionId: source.id, operationId: 'operation', laneId }), { status: 200 });
     }));
@@ -33,10 +45,11 @@ describe('confirmed conversation restart', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('fixture-model');
     expect(screen.getByRole('dialog')).toHaveTextContent('Restart interrupts its current turn');
     expect(posted).toHaveLength(0);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Restart permissions' }), 'full');
+    expect(screen.getByRole('combobox', { name: 'Restart permissions' })).toHaveValue('full');
     await user.click(screen.getByRole('checkbox'));
     await user.click(screen.getByRole('button', { name: 'End this runtime and reopen' }));
     await waitFor(() => expect(onOpen).toHaveBeenCalledExactlyOnceWith(laneId));
+    expect(useSessions.getState().sessions.some((row) => row.id === laneId)).toBe(true);
     expect(posted).toEqual([{ sourceSessionId: source.id, confirmSessionId: source.id, permissions: 'full', remoteControl: true, runtimeMode: 'terminal' }]);
     expect(readDraft(draftStorageKey(machine, laneId)).text).toBe('My exact unsent draft');
     expect(readDraft(draftStorageKey(machine, source.id)).text).toBe('My exact unsent draft');
@@ -46,6 +59,7 @@ describe('confirmed conversation restart', () => {
   it('keeps progress mounted when the source ends, locks choices and retries the same operation', async () => {
     const user = userEvent.setup(); const onOpen = vi.fn(); const posted: unknown[] = [];
     vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
+      if (!options?.body) return new Response(JSON.stringify({ sessions: [makeSession({ id: laneId })] }));
       posted.push(JSON.parse(options.body)); const partial = posted.length === 1;
       return new Response(JSON.stringify({ ok: !partial, partial, sourceEnded: true, sourceSessionId: source.id, operationId: 'operation', laneId,
         adoption: partial ? { warning: 'Replacement is running; its history link needs repair.' } : undefined }), { status: partial ? 202 : 200 });
@@ -66,6 +80,7 @@ describe('confirmed conversation restart', () => {
   it('keeps the submitted choices after a lost response and retries without changing them', async () => {
     const user = userEvent.setup(); const onOpen = vi.fn(); const posted: unknown[] = [];
     vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
+      if (!options?.body) return new Response(JSON.stringify({ sessions: [makeSession({ id: laneId })] }));
       posted.push(JSON.parse(options.body));
       if (posted.length === 1) throw new TypeError('Fixture response was lost');
       return new Response(JSON.stringify({ ok: true, sourceEnded: true, sourceSessionId: source.id, operationId: 'operation', laneId }), { status: 200 });
@@ -81,6 +96,25 @@ describe('confirmed conversation restart', () => {
     await user.click(screen.getByRole('button', { name: 'Retry same restart' }));
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith(laneId));
     expect(posted[0]).toEqual(posted[1]);
+  });
+
+  it('keeps an explicit open action when the replacement list is delayed without recreating it', async () => {
+    const user = userEvent.setup(); const onOpen = vi.fn(); let posted = 0; let listed = false;
+    vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
+      if (!options?.body) return new Response(JSON.stringify({ sessions: listed ? [makeSession({ id: laneId })] : [] }));
+      posted++;
+      return new Response(JSON.stringify({ ok: true, sourceEnded: true, sourceSessionId: source.id, operationId: 'operation', laneId }));
+    }));
+    render(<><RestartConversation session={source} onOpen={onOpen} /><RestartConversationHost /></>);
+    await user.click(screen.getByRole('button', { name: 'Restart / change permissions…' }));
+    await screen.findByRole('dialog');
+    await user.click(screen.getByRole('button', { name: 'End this runtime and reopen' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('replacement is running');
+    expect(onOpen).not.toHaveBeenCalled();
+    listed = true;
+    await user.click(screen.getByRole('button', { name: 'Open replacement' }));
+    await waitFor(() => expect(onOpen).toHaveBeenCalledExactlyOnceWith(laneId));
+    expect(posted).toBe(1);
   });
 
   it('refuses to end the runtime when its latest unsent draft cannot be saved', async () => {

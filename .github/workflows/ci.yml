@@ -27,7 +27,7 @@ jobs:
   linux_amd64:
     name: Native Linux AMD64 runtime acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - name: Check out the exact candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,6 +63,28 @@ jobs:
         run: node scripts/linux-runtime-acceptance.mjs "$RUNNER_TEMP/linux-runtime" "$RUNNER_TEMP/linux-acceptance.json"
       - name: Verify offline npm wrapper lifecycle fixtures on Linux
         run: npm --prefix npm test
+      # The macOS job is the only other place Go tests run, so Linux-only code
+      # (/proc liveness and ancestry, boot identity, resource enumeration, the
+      # detached launcher, the systemd installer's fake-service tests) was
+      # otherwise compiled and never executed. Runs even when the acceptance
+      # step failed so both results are visible. Each Go invocation gets a
+      # fresh scratch HOME through env, scoped to that one command, so no test
+      # reads or writes the runner user's real state and the shell's own HOME
+      # is never reassigned. The Go caches are pinned first so they stay where
+      # setup-go put them. Tests that start a scratch daemon still set all four
+      # isolation roots themselves.
+      - name: Verify the Go runtime natively on Linux
+        if: ${{ !cancelled() }}
+        working-directory: runtime
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          [[ "$(uname -s)/$(uname -m)" == Linux/x86_64 ]]
+          export GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)"
+          scratch_home="$(mktemp -d "$RUNNER_TEMP/go-home.XXXXXX")"
+          env HOME="$scratch_home" go build ./...
+          env HOME="$scratch_home" go vet ./...
+          env HOME="$scratch_home" go test -timeout 10m -count=1 ./...
       - name: Preserve the native acceptance receipt
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

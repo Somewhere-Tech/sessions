@@ -37,6 +37,8 @@
 .input-composer-footer {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
   align-items: center;
   min-height: 43px;
   padding: 4px 7px 7px 9px;

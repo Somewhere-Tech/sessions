@@ -60,16 +60,16 @@
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev-1);
 }
-.session-active-copy { min-width: 0; }
+.session-active-copy { flex: 1 1 auto; min-width: 0; }
 .session-parent-breadcrumb { display: block; margin-bottom: 2px; color: var(--fg-faint); font-size: 12px; }
 button.session-parent-breadcrumb { appearance: none; background: none; border: 0; padding: 0; margin-bottom: 2px; font: inherit; font-size: 12px; color: var(--fg-faint); cursor: pointer; text-align: left; }
 button.session-parent-breadcrumb:hover, button.session-parent-breadcrumb:focus-visible { color: var(--fg); text-decoration: underline; outline: none; }
 .session-parent-breadcrumb span { padding: 0 4px; }
 .session-active-title-row { display: flex; align-items: center; gap: 9px; }
-.session-active-title-row h1 { min-width: 0; overflow: hidden; margin: 0; color: var(--fg); font-size: 17px; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
-.session-title-display { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.session-active-title-row h1 { min-width: 0; margin: 0; color: var(--fg); font-size: 17px; line-height: 1.4; letter-spacing: -.025em; overflow-wrap: anywhere; }
+.session-title-display { display: flex; flex: 1; min-width: 0; align-items: baseline; gap: 6px; }
 .session-title-display h1 { flex: 1 1 auto; }
-.session-title-rename-button { flex: 0 0 auto; padding: 2px 5px; border: 0; border-radius: 4px; background: transparent; color: var(--fg-faint); font: inherit; font-size: 12px; cursor: pointer; }
+.session-title-rename-button { display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; padding: 4px; border: 0; border-radius: 6px; background: transparent; color: var(--fg-faint); font: inherit; font-size: 12px; cursor: pointer; }
 .session-title-rename-button:hover, .session-title-rename-button:focus-visible { background: var(--bg-elev-3); color: var(--fg); outline: none; }
 .session-title-rename { display: flex; min-width: 0; align-items: center; gap: 5px; }
 .session-title-rename input { min-width: 120px; width: min(260px, 30vw); height: 29px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--bg-base); color: var(--fg); font: 600 13px var(--font-ui); outline: none; }
@@ -89,7 +89,7 @@ button.session-parent-breadcrumb:hover, button.session-parent-breadcrumb:focus-v
 .session-live-pill.is-ended,
 .session-live-pill.is-unavailable { color: var(--fg-dim); }
 .session-live-pill.is-lost { border-color: color-mix(in srgb, var(--warn) 42%, transparent); color: var(--warn); }
-.session-active-meta { display: flex; align-items: center; gap: 7px; min-width: 0; margin-top: 3px; color: var(--fg-faint); font-size: 12px; }
+.session-active-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; margin-top: 3px; color: var(--fg-faint); font-size: 12px; }
 .session-active-meta > span:not(.provider-badge) { overflow: hidden; max-width: 190px; text-overflow: ellipsis; white-space: nowrap; }
 .session-active-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .subagents-panel-trigger {

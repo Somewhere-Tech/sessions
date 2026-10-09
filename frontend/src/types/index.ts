@@ -49,7 +49,10 @@ export interface DispatchMessage {
   // accepted means sessionsd acknowledged the complete composer submission.
   // sent means the provider's own history also contains the turn. Failed is
   // retained only for old local records written before receipt-backed sends.
-  status: 'accepted' | 'queued' | 'sent' | 'failed';
+  // unconfirmed is text the provider received but never confirmed: it may or
+  // may not have been applied, so it is neither sent nor failed, and it is
+  // never offered back for sending.
+  status: 'accepted' | 'queued' | 'sent' | 'failed' | 'unconfirmed';
   createdAt: number;
   author?: MessageAuthor;
   confirmedAt?: number;
@@ -123,6 +126,7 @@ export interface SessionInfo {
   runnerProtocol?: number;
   runnerVersion?: string;
   tool: SessionTool;
+  launching?: boolean;
   working: boolean;
   lastDataAt: number;
   // Latest provider-transcript user-role record. Provider-internal injections
@@ -280,6 +284,8 @@ export interface CreateSessionRequest {
   description?: string;
   tags?: Record<string, string>;
   profile?: string;
+  /** Use the provider's default login, even where a parent's account would be inherited. */
+  defaultProfile?: boolean;
   worktree?: boolean;
   base?: string;
   kind?: string;

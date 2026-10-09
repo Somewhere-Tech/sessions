@@ -67,6 +67,12 @@ func (m *Manager) manage(session *state.Session) *runtimeSession {
 			}
 		}
 		if working, exact := session.RunnerTurnState(); exact {
+			// A runner holding an approval keeps its provider turn open, so
+			// HELLO says working. The replayed request says the lane is
+			// waiting on an answer, which is what the live stream reported.
+			if working && session.Info().PendingApproval != nil {
+				working = false
+			}
 			runtime.structuredLifecycleWorking = &working
 			session.SetWorking(working)
 		} else if runtime.structuredLifecycleWorking != nil {

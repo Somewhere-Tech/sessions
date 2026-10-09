@@ -32,15 +32,15 @@ func TestRelayMatcherKeepsRapidDuplicateUnicodeAuthorsInOrder(t *testing.T) {
 		testRelay(start+20, "Second lane", text),
 		testRelay(start, "First lane", text),
 	})
-	first := matcher.match(text, start+100)
-	second := matcher.match(text, start+200)
+	first := matcher.match(text, start+100, "")
+	second := matcher.match(text, start+200, "")
 	if first == nil || first.Name != "First lane" {
 		t.Fatalf("first author = %#v", first)
 	}
 	if second == nil || second.Name != "Second lane" {
 		t.Fatalf("second author = %#v", second)
 	}
-	if duplicate := matcher.match(text, start+300); duplicate != nil {
+	if duplicate := matcher.match(text, start+300, ""); duplicate != nil {
 		t.Fatalf("one relay matched twice: %#v", duplicate)
 	}
 }
@@ -50,12 +50,12 @@ func TestRelayMatcherRejectsStaleAndDifferentContent(t *testing.T) {
 	start := time.Now().UnixMilli()
 	if got := newRelayMatcher([]ledger.MessageRelayed{
 		testRelay(start-3*time.Minute.Milliseconds(), "Old lane", text),
-	}).match(text, start); got != nil {
+	}).match(text, start, ""); got != nil {
 		t.Fatalf("stale relay matched: %#v", got)
 	}
 	if got := newRelayMatcher([]ledger.MessageRelayed{
 		testRelay(start, "Other lane", "different"),
-	}).match(text, start+100); got != nil {
+	}).match(text, start+100, ""); got != nil {
 		t.Fatalf("different relay matched: %#v", got)
 	}
 }

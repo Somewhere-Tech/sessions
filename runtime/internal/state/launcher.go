@@ -51,6 +51,7 @@ func (l *LaunchdLauncher) Prepare(request proto.LaunchRequest) error {
 		Cwd:              request.Info.Cwd,
 		LogPath:          filepath.Join(l.config.RunnerStateDir, request.Info.ID+".log"),
 		KeepAlivePath:    paths.KeepAlive,
+		AppBundleID:      nativeRunnerAppAssociation(l.config),
 	})
 	if err != nil {
 		_ = os.Remove(paths.KeepAlive)
@@ -107,8 +108,7 @@ func (l *LaunchdLauncher) Launch(ctx context.Context, request proto.LaunchReques
 	}
 	plist := plistPath(l.config.LaunchAgentsDir, request.Info.ID)
 	domain := fmt.Sprintf("gui/%d", os.Getuid())
-	command := exec.Command("launchctl", "bootstrap", domain, plist)
-	output, err := command.CombinedOutput()
+	output, err := runLaunchctl(ctx, "bootstrap", domain, plist)
 	if err != nil {
 		var exitError *exec.ExitError
 		alreadyLoaded := errors.As(err, &exitError) && exitError.ExitCode() == 17
@@ -256,13 +256,13 @@ func (l *LaunchdLauncher) Wake(ctx context.Context, id string) (proto.Runner, er
 	}
 	// The job is usually still loaded from boot, in which case bootstrap
 	// would refuse; load it only when launchd does not know it.
-	if exec.Command("launchctl", "print", domain+"/"+label).Run() != nil {
-		if output, bootErr := exec.Command("launchctl", "bootstrap", domain, plist).CombinedOutput(); bootErr != nil {
+	if _, printErr := runLaunchctl(ctx, "print", domain+"/"+label); printErr != nil {
+		if output, bootErr := runLaunchctl(ctx, "bootstrap", domain, plist); bootErr != nil {
 			restorePaused("launchctl bootstrap: " + strings.TrimSpace(string(output)))
 			return nil, fmt.Errorf("launchctl bootstrap %s: %w: %s", id, bootErr, strings.TrimSpace(string(output)))
 		}
 	}
-	if output, kickErr := exec.Command("launchctl", "kickstart", domain+"/"+label).CombinedOutput(); kickErr != nil {
+	if output, kickErr := runLaunchctl(ctx, "kickstart", domain+"/"+label); kickErr != nil {
 		restorePaused("launchctl kickstart: " + strings.TrimSpace(string(output)))
 		return nil, fmt.Errorf("launchctl kickstart %s: %w: %s", id, kickErr, strings.TrimSpace(string(output)))
 	}
@@ -277,6 +277,10 @@ func (l *LaunchdLauncher) Wake(ctx context.Context, id string) (proto.Runner, er
 // Reap unloads a cleanly exited runner so launchd cannot retain a stale
 // service registration after its plist is removed.
 func (l *LaunchdLauncher) Reap(id string) error {
+	return l.reapContext(context.Background(), id)
+}
+
+func (l *LaunchdLauncher) reapContext(ctx context.Context, id string) error {
 	candidates := []struct {
 		label string
 		path  string
@@ -295,10 +299,14 @@ func (l *LaunchdLauncher) Reap(id string) error {
 		}
 		found = true
 		domain := fmt.Sprintf("gui/%d/%s", os.Getuid(), candidate.label)
-		output, bootoutErr := exec.Command("launchctl", "bootout", domain).CombinedOutput()
-		if bootoutErr != nil && !launchdJobAbsent(output) {
+		output, bootoutErr := runLaunchctl(ctx, "bootout", domain)
+		absent := launchdJobAbsent(output) && !errors.Is(bootoutErr, context.DeadlineExceeded) && !errors.Is(bootoutErr, context.Canceled)
+		if bootoutErr != nil && !absent {
 			reapErrors = append(reapErrors,
 				fmt.Errorf("launchctl bootout %s: %w: %s", candidate.label, bootoutErr, strings.TrimSpace(string(output))))
+			// Keep the registration available for inspection when unloading is
+			// uncertain. Removing it would conceal a possibly live service.
+			continue
 		}
 		if removeErr := os.Remove(candidate.path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			reapErrors = append(reapErrors, removeErr)
@@ -316,6 +324,21 @@ func (l *LaunchdLauncher) Reap(id string) error {
 		return nil
 	}
 	return errors.Join(reapErrors...)
+}
+
+// Bound the service-manager client, not the runner. Cancellation or a timeout
+// does not prove whether launchd accepted an operation. Creation keeps the
+// recorded session identity; uncertain cleanup preserves its registration.
+func runLaunchctl(ctx context.Context, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "launchctl", args...)
+	command.WaitDelay = time.Second
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		return output, errors.Join(err, ctx.Err())
+	}
+	return output, err
 }
 
 func launchdJobAbsent(output []byte) bool {

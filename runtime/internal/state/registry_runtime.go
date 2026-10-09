@@ -88,6 +88,23 @@ func (r *Registry) List(includeExited bool) []SessionInfo {
 	return result
 }
 
+// LoadedSessionCount is how many sessions this registry holds right now,
+// counted under its map lock alone. It takes no session lock and asks no
+// runner, ledger or process anything, so it says only what is loaded here,
+// not that any of it is working or reachable. Exited sessions still in their
+// grace period are included, as in List(true).
+func (r *Registry) LoadedSessionCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, id := range r.order {
+		if r.sessions[id] != nil {
+			count++
+		}
+	}
+	return count
+}
+
 func (r *Registry) removeOrderLocked(id string) {
 	for index, existing := range r.order {
 		if existing == id {

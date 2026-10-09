@@ -164,7 +164,29 @@ func writeTestUpdateArchive(t *testing.T, destination string, headers []tar.Head
 	}
 }
 
+func TestUpdateCommandDoesNotRunAppUpdaterOnOtherPlatforms(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("non-macOS app-update refusal")
+	}
+	t.Setenv("HOME", t.TempDir())
+	application, err := newApp([]string{"update", "--check"}, strings.NewReader(""), io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.close()
+	application.runUpdate = func(context.Context, bool) (nativeUpdateResult, error) {
+		t.Fatal("unsupported platform started an app updater")
+		return nativeUpdateResult{}, nil
+	}
+	if err := application.dispatch(); err == nil || !strings.Contains(err.Error(), "requires macOS") {
+		t.Fatalf("unsupported update = %v", err)
+	}
+}
+
 func TestUpdateCommandUsesSecureRunnerAndSupportsCheck(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the app updater is a macOS-only command")
+	}
 	t.Setenv("HOME", t.TempDir())
 	var captured bytes.Buffer
 	application, err := newApp([]string{"update", "--check"}, strings.NewReader(""), &captured, &bytes.Buffer{})
@@ -192,6 +214,9 @@ func TestUpdateCommandUsesSecureRunnerAndSupportsCheck(t *testing.T) {
 }
 
 func TestUpdateCommandWaitsForDaemonCLIAndLiveSessionConvergence(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the app updater is a macOS-only command")
+	}
 	t.Setenv("HOME", t.TempDir())
 	updated := false
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

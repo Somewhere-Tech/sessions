@@ -4,6 +4,7 @@ import { renderContent } from '../lib/contentRender';
 import type { SessionSidebarState } from '../hooks/useSessionSidebar';
 import type { ClaudeSessionEvent, HarnessEventView, SessionTool, ApprovalDecision, PendingApproval, ProviderFailureKind, ProviderRetry } from '../types';
 import { InputBar } from './InputBar';
+import { MessageDeliveryStatus } from './MessageDeliveryStatus';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import StatusSidebar from './StatusSidebar';
 import { saveScrollPosition, readScrollPosition } from '../lib/scrollMemory';
@@ -17,6 +18,9 @@ import { ProviderControlCard } from './ProviderControlCard';
 import { ProviderFaultCard } from './ProviderFaultCard';
 import { RemoteEmptyState } from './RemoteEmptyState';
 import { useProviderControl } from '../hooks/useProviderControl';
+import { retryProviderSession } from '../api/sessionsd';
+import type { MessageSubmission } from '../lib/messageDelivery';
+import '../styles/queued-messages.css';
 
 const LostConversationCard = lazy(() => import('./LostConversationCard').then((module) => ({ default: module.LostConversationCard })));
 
@@ -32,11 +36,43 @@ function renderFileReference(path: string, cwd = ''): string {
 function countProviderUserMessages(messages: DispatchMessage[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const message of messages) {
-    if (message.role !== 'user' || message.status !== 'sent') continue;
+    if (message.role !== 'user' || message.status !== 'sent' || message.pendingQueue) continue;
     const content = message.content.trim();
     counts.set(content, (counts.get(content) ?? 0) + 1);
   }
   return counts;
+}
+
+function mergeRemoteMessages(eventMessages: DispatchMessage[], dispatchMessages: DispatchMessage[]): DispatchMessage[] {
+  if (eventMessages.length === 0) return dispatchMessages;
+  const providerFailures = new Map<string, number>();
+  const queuedCounts = new Map<string, number>();
+  const uncertainCounts = new Map<string, number>();
+  for (const message of eventMessages) {
+    const content = message.content.trim();
+    if (message.pendingQueue) queuedCounts.set(content, (queuedCounts.get(content) ?? 0) + 1);
+    if (message.status === 'accepted' && message.blockId?.startsWith('sessions-message:') && message.errorResponse) uncertainCounts.set(content, (uncertainCounts.get(content) ?? 0) + 1);
+    if (message.role === 'user' && message.status === 'failed') providerFailures.set(content, (providerFailures.get(content) ?? 0) + 1);
+  }
+  const locallyHeld = dispatchMessages.filter((message) => {
+    if (message.role !== 'user' || !['accepted', 'queued', 'failed'].includes(message.status)) return false;
+    const content = message.content.trim();
+    const queuedCount = queuedCounts.get(content) ?? 0;
+    if (message.status === 'queued' && queuedCount > 0) {
+      queuedCounts.set(content, queuedCount - 1);
+      return false;
+    }
+    const uncertainCount = uncertainCounts.get(content) ?? 0;
+    if (message.status !== 'failed' && uncertainCount > 0) { uncertainCounts.set(content, uncertainCount - 1); return false; }
+    const failedCount = providerFailures.get(content) ?? 0;
+    if (failedCount === 0) return true;
+    providerFailures.set(content, failedCount - 1);
+    return false;
+  });
+  return [...eventMessages, ...locallyHeld]
+    .map((message, index) => ({ message, index }))
+    .sort((left, right) => left.message.createdAt - right.message.createdAt || left.index - right.index)
+    .map(({ message }) => message);
 }
 
 export interface ProviderFaultView {
@@ -83,8 +119,8 @@ interface Props {
   // Composer sends use the acknowledged path. Raw terminal keystrokes stay
   // inside SessionView and are never used for conversation dispatch.
   sendConfirmed: (data: string) => Promise<void>;
-  submitMessage: (data: string) => Promise<void>;
-  steerMessage?: (data: string) => Promise<void>;
+  submitMessage: (data: string) => Promise<MessageSubmission>;
+  steerMessage?: (data: string) => Promise<MessageSubmission>;
   connected: boolean;
   sendAvailable?: boolean;
   hasEarlierClaudeEvents: boolean;
@@ -195,31 +231,7 @@ export function RemoteView({
   // 'sent' (dropping it from this merge) as soon as a matching JSONL
   // occurrence appears. It is count-aware, so repeated identical turns are
   // matched one-for-one instead of being hidden by an old occurrence.
-  const messages = useMemo<DispatchMessage[]>(() => {
-    if (eventMessages.length === 0) return dispatchMessages;
-    const providerFailures = new Map<string, number>();
-    for (const message of eventMessages) {
-      if (message.role !== 'user' || message.status !== 'failed') continue;
-      const content = message.content.trim();
-      providerFailures.set(content, (providerFailures.get(content) ?? 0) + 1);
-    }
-    const locallyHeld = dispatchMessages.filter(
-      (message) => {
-        if (message.role !== 'user' || (
-          message.status !== 'accepted' && message.status !== 'queued' && message.status !== 'failed'
-        )) return false;
-        const content = message.content.trim();
-        const failedCount = providerFailures.get(content) ?? 0;
-        if (failedCount === 0) return true;
-        providerFailures.set(content, failedCount - 1);
-        return false;
-      }
-    );
-    return [...eventMessages, ...locallyHeld]
-      .map((message, index) => ({ message, index }))
-      .sort((left, right) => left.message.createdAt - right.message.createdAt || left.index - right.index)
-      .map(({ message }) => message);
-  }, [eventMessages, dispatchMessages]);
+  const messages = useMemo(() => mergeRemoteMessages(eventMessages, dispatchMessages), [eventMessages, dispatchMessages]);
   const changedFiles = useMemo(() => {
     const files = new Set<string>();
     for (const message of eventMessages) {
@@ -264,7 +276,7 @@ export function RemoteView({
   // the composer where they are waiting.
   const transcript = useMemo(() => messages.filter((m) => !m.pendingQueue), [messages]);
   const queuedSend = useMemo(
-    () => [...messages].reverse().find((m) => m.pendingQueue) ?? null,
+    () => messages.filter((m) => m.pendingQueue || m.status === 'queued'),
     [messages]
   );
   const visibleMessages = useMemo(() => {
@@ -582,7 +594,7 @@ export function RemoteView({
 
 
       <div className="remote-input-wrap">
-        {queuedSend ? <QueuedComposerStatus text={queuedSend.content} providerName={providerName} /> : null}
+        {queuedSend.length ? <QueuedComposerStatus messages={queuedSend} providerName={providerName} sessionId={sessionId} resumable={!terminalAvailable && provider === 'claude-code' && !sidebar.isWorking} /> : null}
         <InputBar
           send={sendConfirmed}
           submitMessage={submitMessage}
@@ -646,12 +658,24 @@ function QueuedBadge({ agentName }: { agentName: string }): JSX.Element {
 
 // A send the provider has not picked up yet: status where the person is
 // waiting, rather than a line in the record of what was said.
-function QueuedComposerStatus({ text, providerName }: { text: string; providerName: string }): JSX.Element {
+function QueuedComposerStatus({ messages, providerName, sessionId, resumable }: { messages: DispatchMessage[]; providerName: string; sessionId: string; resumable: boolean }): JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const resume = async (): Promise<void> => {
+    if (busy) return;
+    setBusy(true); setError('');
+    try { await retryProviderSession(sessionId); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not continue saved messages. Nothing was resent.'); }
+    finally { setBusy(false); }
+  };
   return (
     <div className="remote-provider-retry remote-queued-status" role="status">
       <span aria-hidden>⏳</span>
-      <span>queued — {providerName} is finishing the previous turn</span>
-      <span className="remote-queued-text">{text}</span>
+      <span>{messages.length} saved for {providerName}'s next turn · not yet read</span>
+      <details><summary>View saved messages</summary>{messages.map((message) => <p key={message.id} className="remote-queued-text">{message.content}</p>)}</details>
+      {resumable ? <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void resume()}
+        title="Retry the failed current turn, if any; otherwise continue only saved messages not yet dispatched. Inspect the conversation first.">{busy ? 'Continuing…' : 'Retry / continue saved messages'}</button> : null}
+      {error ? <span role="alert">{error}</span> : null}
     </div>
   );
 }
@@ -764,18 +788,7 @@ function RemoteMessageInner({
                 <span>{m.errorResponse}</span>
               </div>
             ) : null}
-            {m.status === 'failed' ? (
-              <div className="remote-bubble-status remote-bubble-failed">
-                <span>{m.failureReason ? `not delivered: ${m.failureReason}` : 'not delivered'}</span>
-                <button type="button" className="remote-bubble-retry" onClick={onRetry}>restore draft</button>
-                <button
-                  type="button"
-                  className="remote-bubble-delete"
-                  onClick={onDelete}
-                  title="Remove this entry from your local log. If Claude actually received the message, it'll reappear as a delivered entry on the next refresh."
-                >delete</button>
-              </div>
-            ) : null}
+            <MessageDeliveryStatus message={m} restore={onRetry} remove={onDelete} />
             {m.status !== 'failed' ? (
               <button
                 type="button"

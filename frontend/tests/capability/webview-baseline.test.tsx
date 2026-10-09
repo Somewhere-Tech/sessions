@@ -11,7 +11,7 @@
 // main, read September 2026); `safari_ios: mirror` there means the iOS version
 // equals the Safari version quoted.
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 interface BannedAPI {
@@ -63,20 +63,35 @@ function sourceFiles(directory: string, found: string[] = []): string[] {
   return found;
 }
 
+function allowedSourcePath(path: string, allowed: string[] | undefined): boolean {
+  return allowed?.includes(path.replace(/\\/g, '/')) ?? false;
+}
+
 describe('capability: the shipped code stays inside the declared WebView baseline', () => {
   it('calls nothing the baseline phones lack', () => {
     const root = join(process.cwd(), 'src');
     const offenders: string[] = [];
     for (const path of sourceFiles(root)) {
-      const relative = path.slice(root.length + 1);
+      const sourcePath = relative(root, path);
       const source = readFileSync(path, 'utf8');
       for (const banned of BANNED) {
         if (!source.includes(banned.call)) continue;
-        if (banned.allow?.some((allowed) => relative === allowed)) continue;
-        offenders.push(`${relative}: ${banned.call} — ${banned.why}`);
+        if (allowedSourcePath(sourcePath, banned.allow)) continue;
+        offenders.push(`${sourcePath}: ${banned.call} — ${banned.why}`);
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it('matches only exact guarded helper paths on POSIX and Windows', () => {
+    for (const separator of ['/', '\\']) {
+      for (const file of ['copyText.ts', 'uuid.ts']) {
+        expect(allowedSourcePath(`lib${separator}${file}`, [`lib/${file}`])).toBe(true);
+        expect(allowedSourcePath(`other${separator}${file}`, [`lib/${file}`])).toBe(false);
+        expect(allowedSourcePath(`lib${separator}${file}.extra`, [`lib/${file}`])).toBe(false);
+        expect(allowedSourcePath(`lib${separator}${file}`, undefined)).toBe(false);
+      }
+    }
   });
 
   // The two guarded ways to reach an API the baseline gates rather than lacks.

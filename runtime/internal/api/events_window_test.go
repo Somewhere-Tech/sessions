@@ -190,3 +190,109 @@ func allocatedBytesPerCall(do func()) uint64 {
 	goruntime.ReadMemStats(&after)
 	return (after.TotalAlloc - before.TotalAlloc) / repetitions
 }
+
+// An unconfirmed raw-input steer keeps its text in history as
+// unconfirmedInput, not as a user event, and names no operation. The agent
+// that sent it is still its author there, matched by content and time even
+// though its relay is recorded only after the provider call gave up; the event
+// is not reshaped into a delivered user message by being attributed.
+func TestEventsAttributeAnUnconfirmedSteerToItsSender(t *testing.T) {
+	daemon := newTestDaemon(t)
+	info, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{Cmd: "/bin/bash", Cwd: daemon.root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := daemon.registry.Get(info.ID)
+	const steered = "Ändere den Plan:\n\tzweite Zeile — 日本語 ✓"
+	at := time.Now()
+	encoded, err := json.Marshal(map[string]any{
+		"type": "system", "subtype": "input_rejected", "source": "codex-app-server",
+		"timestamp": at.Format(time.RFC3339Nano), "unconfirmed": true,
+		"unconfirmedInput": steered, "error": "Codex did not confirm",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.RecordClaudeEvent(encoded)
+	daemon.handler.registry = &relayAttributionRegistry{
+		sessionService: daemon.registry,
+		// The relay is recorded when the runner answers, after a timed-out
+		// provider call: later than the submission the record is stamped with.
+		relays: []ledger.MessageRelayed{testRelay(at.Add(6*time.Second).UnixMilli(), "Release lane", steered)},
+	}
+	response := serve(t, daemon.handler, http.MethodGet, "/api/sessions/"+info.ID+"/events?tail=1", nil, "127.0.0.1:1", nil)
+	var body struct {
+		Events []map[string]any `json:"events"`
+	}
+	decodeBody(t, response, &body)
+	if len(body.Events) != 1 {
+		t.Fatalf("events = %#v", body.Events)
+	}
+	event := body.Events[0]
+	author, _ := event["author"].(map[string]any)
+	if author["name"] != "Release lane" || event["type"] != "system" || event["unconfirmedInput"] != steered {
+		t.Fatalf("unconfirmed steer = %#v", event)
+	}
+}
+
+// A record naming its delivery operation is attributed only by that
+// operation, not by matching text: an identical message relayed by another
+// lane around the same time is not its author, and a person's own unconfirmed
+// steer stays unattributed. A raw-input record names no operation, so it still
+// matches a relay without one by content and time.
+func TestUnconfirmedSteerAuthorshipFollowsItsOperation(t *testing.T) {
+	daemon := newTestDaemon(t)
+	info, err := daemon.registry.Create(context.Background(), state.CreateSessionRequest{Cmd: "/bin/bash", Cwd: daemon.root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := daemon.registry.Get(info.ID)
+	const steered, typed = "Bitte erneut prüfen ✓", "Raw input steer ✓"
+	at := time.Now()
+	record := func(text, operationID string) {
+		value := map[string]any{
+			"type": "system", "subtype": "input_rejected", "source": "codex-app-server",
+			"timestamp": at.Format(time.RFC3339Nano), "unconfirmed": true,
+			"unconfirmedInput": text, "error": "Codex did not confirm",
+		}
+		if operationID != "" {
+			value["operationId"] = operationID
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		session.RecordClaudeEvent(encoded)
+	}
+	record(steered, "op-person")
+	record(steered, "op-agent")
+	record(typed, "")
+	relay := func(offset time.Duration, name, text, operationID string) ledger.MessageRelayed {
+		value := testRelay(at.Add(offset).UnixMilli(), name, text)
+		value.EventID, value.OperationID = "relay-"+name, operationID
+		return value
+	}
+	daemon.handler.registry = &relayAttributionRegistry{
+		sessionService: daemon.registry,
+		relays: []ledger.MessageRelayed{
+			relay(time.Second, "Unrelated lane", steered, "op-unrelated"),
+			relay(2*time.Second, "Operationless lane", steered, ""),
+			relay(6*time.Second, "Release lane", steered, "op-agent"),
+			relay(7*time.Second, "Raw input lane", typed, ""),
+		},
+	}
+	response := serve(t, daemon.handler, http.MethodGet, "/api/sessions/"+info.ID+"/events?tail=3", nil, "127.0.0.1:1", nil)
+	var body struct {
+		Events []map[string]any `json:"events"`
+	}
+	decodeBody(t, response, &body)
+	names := make(map[string]any)
+	for _, event := range body.Events {
+		author, _ := event["author"].(map[string]any)
+		operationID, _ := event["operationId"].(string)
+		names[operationID] = author["name"]
+	}
+	if names["op-agent"] != "Release lane" || names[""] != "Raw input lane" || names["op-person"] != nil {
+		t.Fatalf("authors by operation = %#v", names)
+	}
+}

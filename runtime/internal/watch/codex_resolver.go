@@ -78,9 +78,11 @@ type CodexResolveOptions struct {
 }
 
 type rolloutCandidate struct {
-	path    string
-	modTime time.Time
-	meta    *codexSessionMeta
+	path             string
+	modTime          time.Time
+	meta             *codexSessionMeta
+	recordedActivity time.Time
+	hasActivity      bool
 }
 
 type codexSessionMeta struct {
@@ -405,7 +407,15 @@ func resolveResumedCodex(root string, args []string) (CodexResolution, bool) {
 	matches := listRolloutsRecursive(root)
 	filtered := matches[:0]
 	for _, match := range matches {
-		if strings.Contains(filepath.Base(match.path), resumeID) {
+		if !strings.Contains(strings.ToLower(filepath.Base(match.path)), strings.ToLower(resumeID)) {
+			continue
+		}
+		match.meta = readCodexSessionMeta(match.path)
+		// Older, torn, and temporarily unreadable rollouts retain the filename
+		// fallback. When metadata is readable, it is authoritative and prevents
+		// a second UUID in a compound filename from stealing the conversation.
+		if match.meta == nil || match.meta.id == "" || strings.HasPrefix(strings.ToLower(match.meta.id), strings.ToLower(resumeID)) {
+			match.recordedActivity, match.hasActivity = ConversationRecordedActivity(match.path)
 			filtered = append(filtered, match)
 		}
 	}
@@ -413,10 +423,11 @@ func resolveResumedCodex(root string, args []string) (CodexResolution, bool) {
 		return CodexResolution{Reason: CodexResumeMissing}, true
 	}
 	sort.Slice(filtered, func(i, j int) bool {
-		iMillis := filtered[i].modTime.UnixMilli()
-		jMillis := filtered[j].modTime.UnixMilli()
-		if iMillis != jMillis {
-			return iMillis > jMillis
+		if filtered[i].hasActivity != filtered[j].hasActivity {
+			return filtered[i].hasActivity
+		}
+		if filtered[i].hasActivity && !filtered[i].recordedActivity.Equal(filtered[j].recordedActivity) {
+			return filtered[i].recordedActivity.After(filtered[j].recordedActivity)
 		}
 		return filtered[i].path > filtered[j].path
 	})

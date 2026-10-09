@@ -24,6 +24,13 @@ func ProjectStart(info SessionInfo, start StartReceipt, prompt *StartPrompt) Sta
 	if projectStartBlocked(info, &start) {
 		return start
 	}
+	if info.Launching && !info.Exited {
+		start.Phase, start.EvidenceSource = StartPhaseCreated, "launch"
+		start.Evidence = "runner launch is in progress; readiness has not been confirmed"
+		start.Recovery = &StartRecovery{Action: StartRecoveryWait, Command: "sessions status " + info.ID,
+			Detail: "Wait for this recorded session's startup result. Do not create another lane or send its first request while startup is unconfirmed."}
+		return start
+	}
 	deliveredAt, delivered := projectStartPrompt(info, &start)
 	if delivered {
 		projectStartActivity(info, &start, deliveredAt)
@@ -45,6 +52,11 @@ func projectStartBlocked(info SessionInfo, start *StartReceipt) bool {
 		start.Evidence = "waiting on approval: " + firstNonEmpty(info.PendingApproval.Summary, info.PendingApproval.Kind)
 		start.Recovery = &StartRecovery{Action: StartRecoveryAnswer, Detail: fmt.Sprintf(
 			"Review the request, then answer it with `sessions approve %s` or `sessions approve %s --deny`. Sessions never answers it for you.", info.ID, info.ID)}
+	case !info.Exited && (info.Unreachable || info.RunnerGone):
+		start.Phase, start.BlockedBy, start.EvidenceSource = StartPhaseBlocked, "runner-unavailable", "session"
+		start.Evidence = firstNonEmpty(info.LostReason, "Sessions cannot reach this session's runner")
+		start.Recovery = &StartRecovery{Action: StartRecoveryInspect, Command: "sessions status " + info.ID,
+			Detail: "Inspect this recorded session and its delivery receipt before recovery. Startup or delivery may be uncertain; do not create another lane or resend automatically."}
 	case info.IdleReason == IdleReasonNeedsInput && !info.Working && !info.Exited:
 		start.Phase, start.BlockedBy, start.EvidenceSource = StartPhaseBlocked, IdleReasonNeedsInput, activitySource(info)
 		start.Evidence = "the provider is waiting for an answer: " + firstNonEmpty(info.IdleDetail, "a question or prompt is open")

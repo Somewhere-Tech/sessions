@@ -34,6 +34,16 @@ func TestALostRunnerSaysWhichOfTheThreeThingsHappened(t *testing.T) {
 			startedAt: boot + 1_000, lastEvent: boot + 90_000,
 			wantReason: LostToNoContact, wantAt: boot + 90_000,
 		},
+		"startup never acknowledged": {
+			lane:      ledger.LaneState{Created: true, LaunchStarted: true},
+			startedAt: boot + 1_000, lastEvent: boot + 90_000,
+			wantReason: LostStartupUnconfirmed, wantAt: boot + 90_000,
+		},
+		"attached runner is not a startup failure": {
+			lane:      ledger.LaneState{Created: true, LaunchStarted: true, Attached: true},
+			startedAt: boot + 1_000, lastEvent: boot + 90_000,
+			wantReason: LostToNoContact, wantAt: boot + 90_000,
+		},
 		"machine that cannot say when it booted": {
 			lane:      ledger.LaneState{},
 			startedAt: boot - 3_600_000, lastEvent: boot - 60_000,

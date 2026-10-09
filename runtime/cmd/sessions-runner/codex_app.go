@@ -39,6 +39,7 @@ type codexAppRunner struct {
 	remoteEndpoint string
 	listener       net.Listener
 	historyFile    *os.File
+	historyEnd     structuredLogEnd
 	continuation   *state.ContinuationContext
 
 	ctx    context.Context
@@ -285,7 +286,7 @@ func (r *codexAppRunner) openHistory() error {
 		return err
 	}
 	r.history = history
-	r.historyFile = file
+	r.historyFile, r.historyEnd = file, structuredLogEnd{}
 	return nil
 }
 
@@ -550,11 +551,11 @@ func (r *codexAppRunner) steerActiveTurn(text string) {
 	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
 	defer cancel()
 	turnID, err := r.turnClient.SteerTurn(ctx, r.conversationID, text)
-	if err != nil {
+	if errors.Is(err, codexapp.ErrSteerRefused) {
 		event, encodeErr := codexapp.SteeringRejectedEvent(
 			r.conversationID,
 			text,
-			"Codex did not accept the message for its active turn: "+err.Error()+" The message was not queued.",
+			"Codex finished its turn before this message could be sent: "+err.Error()+".",
 			time.Now(),
 		)
 		if encodeErr == nil {
@@ -562,8 +563,30 @@ func (r *codexAppRunner) steerActiveTurn(text string) {
 		}
 		return
 	}
+	if err != nil {
+		r.recordUnconfirmedSteer("", text, err, submittedAt)
+		return
+	}
 	event, err := codexapp.SteeringHistoryEvent(r.conversationID, turnID, text, submittedAt)
 	if err == nil {
+		r.appendStructured(event)
+	}
+}
+
+// recordUnconfirmedSteer keeps the exact text of a steer written to Codex
+// whose outcome never came back, once, in the history every client reads.
+// Codex may have applied it, so it must not vanish from the conversation; it
+// may not have, so it is never recorded as a delivered user message.
+func (r *codexAppRunner) recordUnconfirmedSteer(operationID, text string, err error, submittedAt time.Time) {
+	event, encodeErr := codexapp.SteeringUnconfirmedEvent(
+		r.conversationID,
+		operationID,
+		text,
+		"Codex did not confirm the message sent to its active turn: "+err.Error()+
+			". It may still apply it; check the conversation before sending it again.",
+		submittedAt,
+	)
+	if encodeErr == nil {
 		r.appendStructured(event)
 	}
 }
@@ -654,8 +677,7 @@ func (r *codexAppRunner) appendStructured(raw json.RawMessage) {
 	}
 	r.streamMu.Lock()
 	defer r.streamMu.Unlock()
-	encoded := append(append([]byte(nil), raw...), '\n')
-	if _, err := r.historyFile.Write(encoded); err != nil {
+	if err := appendStructuredRecord(r.historyFile, &r.historyEnd, raw); err != nil {
 		r.logger.Printf("append structured history failed: %v", err)
 	}
 	r.mu.Lock()

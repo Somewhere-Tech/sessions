@@ -70,13 +70,18 @@ inherently visual or an OS-owned prompt.
 
 ## Packaging and updates
 
-Runtime binaries are staged as immutable versioned bytes with a manifest. The
-managed daemon may advance while compatible existing runners keep their
-original runtime until they exit. A package update must re-adopt every baseline
-session that remains live. A session that exits during the readiness check, or
-whose user-end boundary is already recorded, satisfies that baseline; one that
-disappears or remains unreachable without either fact makes the update refuse
-or roll back.
+Runtime binaries are staged as immutable versioned bytes with a manifest, and
+the managed daemon runs from its versioned copy. The daemon may advance while
+compatible existing runners keep running. On macOS, runner jobs launch one
+stable `sessions-runner` path, which an update replaces with the new runner
+once the updated daemon is ready. A runner already running keeps the process
+image it started with, but macOS may then report that its code no longer
+matches the file on disk, and any later launch, wake, or crash restart from
+that path uses the bytes currently there. A package update must re-adopt every
+baseline session that remains live. A session that exits during the readiness
+check, or whose user-end boundary is already recorded, satisfies that
+baseline; one that disappears or remains unreachable without either fact makes
+the update refuse or roll back.
 
 macOS releases require Developer ID signatures for the app and nested
 binaries, notarization, stapling, Gatekeeper acceptance, a pinned updater
@@ -90,11 +95,44 @@ npm publication, and hosted download/updater promotion are separate steps.
 Each Darwin runtime binary also carries a Mach-O `__TEXT,__info_plist` section
 with its stable bundle identifier, Local Network usage description, and
 `_sessions._tcp` Bonjour declaration. The app-managed sessionsd launch agent
-declares `AssociatedBundleIdentifiers = [tech.somewhere.sessions]`, making the
-signed app the responsible code for sessionsd under macOS Local Network
-privacy. Onboarding's Fleet step and Settings › Fleet › **Allow local network**
+declares `AssociatedBundleIdentifiers = [tech.somewhere.sessions]`, which
+`launchd.plist(5)` documents as System Settings › Login Items attribution.
+macOS Local Network privacy can still identify sessionsd by its own runtime
+identifier, and that binary carries its own usage description.
+Onboarding's Fleet step and Settings › Fleet › **Allow local network**
 start the first daemon-owned browse so any macOS prompt appears in context;
 the app does not fabricate or preflight a permission result.
+
+New app-managed runner jobs carry the same association when their executable
+comes from `~/Library/Application Support/Sessions/runtime/`. Standalone and
+scratch runners do not borrow that association. It does not grant file access,
+override a denied macOS privacy decision, or change the provider's
+approval/sandbox policy, and macOS privacy logs for associated runners still
+name `sessions-runner` as the responsible process. Existing runner jobs are not
+restarted or rewritten by this change.
+The app and runtime binaries also declare a removable-volume usage description
+explaining project and shared Git metadata access when macOS requests consent.
+
+Each runner is its own launchd job, so macOS may name `sessions-runner` in a
+privacy prompt caused by anything its provider runs: the agent, shells, hooks,
+or commands such as `find`. Approved folder and removable-volume access has
+been observed to apply to later runners. "Would like to access data from other
+apps" consent is different: Apple documents it as lasting only for the
+requesting process, so a new or restarted runner can ask again. It is a known
+issue that the same running runner can also ask again immediately after
+approval; the cause is not yet established, and Sessions cannot make this
+consent permanent or approve it on the user's behalf. Denying it makes that
+protected read fail, which can stop or change the provider's work even though
+the session stays running. Keeping agent searches inside the project reduces
+unnecessary requests but does not guarantee none.
+
+A Git worktree can keep its shared metadata on a different drive from its
+working files. Failed worktree inspections retain the Git error and, when the
+daemon cannot read the `.git` target or its `commondir`, name that inaccessible
+path. Reconnect the source drive and review Sessions' Files and Folders access
+in macOS Privacy & Security. A successful daemon inspection does not prove
+access inside a provider sandbox; grant only the additional workspace access
+that provider requests. Do not substitute copied source trees for recovery.
 
 Windows releases require a current-user installer, Authenticode, the pinned
 updater signature, manifest verification, and the hardware matrix in

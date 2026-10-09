@@ -48,8 +48,9 @@ identity is already live. The ended Sessions runtime is linked to its
 successor; the provider history is not copied or rewritten.
 
 Before the successor starts, the app shows a compact plan with the resolved
-agent, provider-default model, effort, Rich or Terminal runtime, and **Ask me**
-access. The model, effort, and runtime can be reviewed or changed there. Because
+agent, provider-default model, effort, Rich or Terminal runtime, and **Full access**
+(YOLO) for native resumes. Access, model, effort, and runtime can be reviewed or
+changed there; transcript-only recovery keeps its supported permission policy. Because
 this is a native resume, there is no transfer-size claim: the provider reopens
 its own history. Nothing runs until the person presses **Start**, and the button
 names the chosen agent and model.

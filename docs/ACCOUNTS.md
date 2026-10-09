@@ -28,7 +28,12 @@ the fleet. You can complete the browser steps from another device.
 Each row leads with the account's nickname, or with the verified email when it
 has none. **Verified** means the provider reported that identity at the date
 shown; **Identity not checked** means Sessions has not asked the provider yet,
-even if a login file is present. **Rename** changes only the nickname on that
+even if a login file is present, including after a removed account is added
+again. When a newer check finds the account **Signed out** or **Not a
+subscription** (for example an API-key login), or the **Check failed** because
+Sessions could not read who is signed in, the earlier email is shown only as
+"Last verified as …", never as the account signed in now. A failed check is not
+a sign-out; check again. **Rename** changes only the nickname on that
 computer (up to 64 characters; leave it empty to clear it). The account's
 sign-in, history and chats are unchanged.
 

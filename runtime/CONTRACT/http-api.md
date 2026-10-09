@@ -141,6 +141,7 @@ fields. Optional fields are omitted when their value is `undefined`.
 | `runnerVersion` | string, optional | Sessions runtime release reported by the runner |
 | `tool` | `"claude-code" \| "codex" \| "terminal"` | classification derived from `cmd` |
 | `working` | boolean | current activity classification |
+| `launching` | boolean, optional | recorded creation is still executing in this daemon, before runner registration. Shown as Starting, not Working; startup is unconfirmed. The row's `start` object includes the original operation ID when one was recorded. Omitted after creation settles or the daemon restarts; absence is not proof the command started or stopped |
 | `lastDataAt` | number | Unix epoch milliseconds of latest PTY output |
 | `lastUserMessageAt` | number or null | latest user-role record in the provider transcript. Transcript-derived, so it includes the provider's own internal injections — a scheduled prompt or cron tick is written straight into the transcript and is indistinguishable there from a person. Do not read it as human contact; use `lastHumanMessageAt` for that |
 | `lastHumanMessageAt` | number or null | Unix epoch milliseconds of the latest input that reached Sessions **without** source-session attribution: a person at a keyboard, a composer, an attached terminal, `sessions send` run by hand. Stamped at the input boundary, which a provider's internal injection never crosses. Null means no person has spoken into this session |
@@ -277,8 +278,15 @@ hostname. `compatibility.api` is the authoritative client acceptance range;
 `compatibility.runner` describes the living runners this daemon can adopt.
 Clients preserve their legacy behavior when an older daemon omits the additive
 object, but must stop before normal use when their protocol is outside an
-advertised range. The count includes exited sessions still in their 30-second
-grace period. The deep-health response carries the same `compatibility`,
+advertised range. `sessionsLoaded` counts the sessions this daemon has loaded
+in memory, including exited sessions still in their 30-second grace period. The
+count is collected under the in-memory registry's own lock, without the durable
+ledger, any session's lock, or any runner, so collecting it does not wait for
+those. That is a property of this field, not of the whole response: deep
+health also reports per-session diagnostics, which take each session's lock
+and can wait for it. The count does not include durable records of ended
+sessions and is not evidence that any session is working. Deep health reports
+the same count. The deep-health response carries the same `compatibility`,
 `access`, and `tailscale` objects but no `listen` or `lan`. `restore.pending` counts runners
 Sessions deliberately left stopped after reboot rather than starting an
 unbounded retained fleet; their recovery evidence is preserved.
@@ -402,6 +410,13 @@ Auth required. Returns the daemon's stable machine identity, the same
 ```json
 {"machine_id":"<stable machine UUID>","name":"<computer name>"}
 ```
+
+For a caller authenticated with a paired-device credential, the response also
+includes `device_id`, the caller's own revocation identity. Loopback,
+administrator-token and open-access callers do not receive this field. No
+other device identities or credentials are returned. Native clients may repair
+missing pairing metadata only when this authenticated response matches the
+already saved stable machine identity; a token alone is not proof of pairing.
 
 `name` is the operating system's user-facing computer name, truncated to the
 machine-name limit. A legacy DNS-derived name is upgraded without changing the
@@ -551,6 +566,32 @@ sessions. Other values and duplicates do not. Returns 200:
 
 The order is the daemon map's insertion order; the route does not sort.
 
+Ended sessions, `start` receipts, and creator and delegation provenance come
+from the durable lane ledger. When the daemon cannot read it, the route
+returns no listing rather than one missing them:
+
+```json
+{"error":"Sessions could not read its durable session record (<reason>), so it returned no listing rather than one missing ended sessions and start receipts. Nothing was changed. Retry; if it keeps failing, run `sessions doctor`.","code":"SESSION_STATE_UNAVAILABLE","action":"retry"}
+```
+
+with status **503**. A 503 means the listing is unknown, not empty; clients
+keep what they last showed.
+
+The route creates one context when it starts, ending when the request ends or
+15 seconds later, whichever is first. It then reads the in-memory sessions,
+which does not observe that context: each session is read under its own lock,
+and that lock can be held while the daemon exchanges a frame with the
+session's runner. The ledger read follows with whatever remains of the context.
+Waiting for the ledger connection and waiting for another request's ledger
+fold stop when the context ends; the ledger query itself stops only as far as
+the ledger reader honors its context, and a SQLite statement that is already
+executing is not promised to stop. If the context has ended, or ends during
+the ledger read, the route answers this 503. The work after the ledger read
+(reading paused-restore markers and probing lost runners' processes) does not
+observe the context. The 15 seconds therefore bounds waiting on the ledger, not
+the whole response. A daemon without a durable ledger lists its in-memory
+sessions as before.
+
 ### `POST /api/sessions`
 
 Auth required. Every request field is optional:
@@ -565,6 +606,7 @@ Auth required. Every request field is optional:
 | `env` | object of string values | caller environment after filtering reserved/injection keys |
 | `name` | string | trimmed; empty becomes absent |
 | `profile` | string | optional `[a-z0-9-]{1,32}` Claude/Codex login profile; rejected for shell sessions |
+| `defaultProfile` | boolean | optional; `true` explicitly chooses the provider's default login instead of an inherited account; combining it with `profile` is 400 |
 | `worktree` | boolean | when true, create an isolated Git worktree and use it as `cwd` |
 | `base` | string | optional worktree base ref; requires `worktree`; defaults to the source checkout's current branch |
 | `initialInput` | string | optional; the first request when the provider consumes it from `args` (a terminal Codex session), carried so the transcript watcher binds to the rollout that records it |
@@ -578,8 +620,10 @@ Auth required. Every request field is optional:
 | `prompt_operation_id` | string | optional lowercase UUID v4, different from `operation_id`: the `/submit` operation id the caller will use for the first request, recorded so the start receipt can follow it |
 
 `RUNNER_*`, `NODE_OPTIONS`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, and
-`LD_PRELOAD` caller keys are stripped. User-created Claude/Codex sessions are
-constrained unless full access is explicitly requested. An agent-created child
+`LD_PRELOAD` caller keys are stripped. New user-created Claude/Codex sessions
+default to full access (YOLO) when no permission policy is supplied. Explicit
+`permissions:"constrained"` and provider permission flags preserve Ask me or
+Plan mode. Existing runtimes are not changed. An agent-created child
 inherits the parent's exact Claude permission mode or Codex sandbox and
 approval flags. When no exact Codex policy is inherited or supplied, the
 constrained default is a workspace-write sandbox with the provider's untrusted
@@ -607,8 +651,16 @@ nothing is launched. A repeat whose session has ended, whose launch failed, or
 that this daemon has not re-attached yet after a restart returns
 `409 {"error":"<message>","operation_id":"<id>","session_id":"<session>"}`
 rather than starting the same work again. A repeat for a different Claude or
-Codex tool is 400. A malformed id is 400, and a daemon without ledger access
-refuses `operation_id` with 400 because it cannot keep the promise. Requests
+Codex tool is also 409 with that body, naming the session the id already
+created; nothing is launched. A malformed id is 400, and a daemon without ledger access
+refuses `operation_id` with 400 because it cannot keep the promise. A repeat
+is answered from the recorded operation before account inheritance, Claude
+settings, or the live Codex model catalog are consulted: it contacts no
+provider and never re-decides the recorded account, model, or settings.
+Malformed operation ids, including a malformed `prompt_operation_id` sent
+alone, and a `profile` combined with `defaultProfile` are still refused first,
+from the request fields alone. Two first attempts with the same id are
+settled under the creation lock, so only one launches. Requests
 without an operation id behave exactly as before, except for one failure that
 now keeps its session: the ledger records a session before its runner
 launches, so a launch that fails after that point returns
@@ -636,6 +688,21 @@ same root for watcher, transcript, search, backup, and recovery resolution
 ([`internal/session/profiles.go`](../internal/session/profiles.go),
 [`internal/state/registry.go`](../internal/state/registry.go),
 [`internal/backup/sessions.go`](../internal/backup/sessions.go)).
+
+A Claude or Codex child (a create carrying a validated
+`X-Sessions-Creator-Session` parent) that omits both `profile` and
+`defaultProfile` starts on the account recorded in its parent's creation record
+when the parent is the same provider. The daemon reads that record from its own
+ledger; the caller cannot supply it, and no credential is copied. A named
+`profile` always wins, and `defaultProfile: true` keeps the child on the default
+login. An account is never carried across providers, to command lanes, or from
+an unprofiled parent, and a parent that cannot be validated is rejected as
+before. Requests without a parent are unchanged. A create replayed by
+`operation_id` is answered before any profile directory is created or touched.
+Resume, adoption, restart and fork keep the account recorded for the source and
+do not consult this rule. An older daemon ignores `defaultProfile`, which there
+already means the default login
+([`internal/session/delegated_account.go`](../internal/session/delegated_account.go)).
 
 ### `GET /api/lanes`
 
@@ -815,8 +882,52 @@ and `checked_at` milliseconds. This reports identity at check time, not remainin
 usage or a guarantee that future inference will succeed. The identity is also
 included in profile listings when known; legacy `signed_in` remains unchanged.
 
+Profile listings, creation and rename answers also carry `last_check`:
+`{"at":<ms>,"outcome":"…"}`, what the most recent check of that home
+established. `verified` means `identity` was reported then. `signed_out` means
+the provider answered that nobody is signed in (Claude `auth status` with
+`loggedIn:false`, Codex `account/read` with no account); it is recorded as soon
+as it is observed, so cancelling or letting the sign-in it leads to expire does
+not erase it. `not_subscription` means the provider reported another kind of
+login, such as an API key. `failed` means the check could not read who is
+signed in — the helper could not start, or the provider's answer could not
+be read or omitted how it is signed in — and is an unknown, never a sign-out. `not_checked` means a forgotten
+account was added again at `at` and has not been checked since. A cancelled or
+expired helper records nothing by itself. An observation older than the one
+recorded is discarded, so a slow helper finishing late cannot overwrite a newer
+answer. `identity` is present only while the latest check verified it; after a
+newer outcome it moves to `previous_identity`, which is history and must not be
+presented as the account signed in now. A successful check restores `identity`
+and clears `previous_identity`. Profiles saved before `last_check` existed
+carry only `identity` and read as verified at its `checked_at`. Recording an
+outcome never edits or removes a provider file and never logs an account out.
+If Sessions cannot save an outcome (for example on a full disk), the sign-in
+ends `failed` with a `message` saying what the provider reported and that
+Sessions could not save the check, and the saved check stays as it was; check
+again once the cause is fixed. A signed-out answer that cannot be saved stops
+the helper before any provider login starts. An outcome saved at the end of a
+check comes after any provider login, which may already have completed: the
+message then reports what the provider confirmed and does not claim the
+provider's sign-in is unchanged. Sessions never repeats a sign-in or signs out
+on its own.
+
+Clients combining `last_check` with an account-usage answer show the newer
+observation, dating a reading's `identity` by its own `checked_at` (a usage
+read asks who is signed in before it reads the limits, and the two are not one
+atomic answer); at the same millisecond an outcome that did not verify wins
+over a successful reading. A reading is not presented as an account's
+allowance when its identity predates a newer check that did not verify, or
+when its identity is known to differ from the one the home is verified as now
+(a different `account_id`, or without one a different email or organization).
+A matching email is not proof of the same subscription.
+
 Helpers have a ten-minute lifetime, run in the selected provider home and never
-create an agent conversation. Claude uses `auth login --claudeai` and
+create an agent conversation. Provider executables are resolved from the service
+PATH and common per-user installation locations, including `~/.local/bin` on
+Unix. The helper PATH also includes those locations; account homes and
+credentials are not inherited from the calling agent. If no executable can be
+found, the failed operation names the missing provider and asks the user to
+install it before trying again. Claude uses `auth login --claudeai` and
 `auth status --json`; Codex uses a private stdio app-server with
 `account/login/start` device authorization and `account/read`. Only the provider
 stores or refreshes credentials. Login codes and URLs are memory-only; after a
@@ -1368,9 +1479,15 @@ Structured runners advertising `messageSubmit:true` accept the whole message
 through an acknowledged runner control, without terminal paste/Enter frames.
 The additive body field `mode:"steer"` asks Codex to steer its active turn;
 unsupported runners refuse without input. `mode` omitted or `auto` starts a
-new turn when idle and steers Codex when active. Claude rejects active-turn
-input rather than reporting silent success. Receipts optionally report
-`acceptance:"runner"|"provider"`; neither means the turn completed. Ambiguous
+new turn when idle and steers Codex when active. Updated structured Claude
+runners save active-turn input for the next turn; older live runners still
+refuse it explicitly. Receipts optionally report
+`acceptance:"runner"|"queue"|"provider"`; none means the turn completed.
+`queue` means stored by the runner, not read by Claude. Queued work pauses on
+failure, interruption or runner restart; use Retry to resolve the failed turn
+or continue only undispatched entries. Never resend an accepted queued message.
+`delivered:true` at this boundary describes queue acceptance, not provider
+consumption. Ambiguous
 provider transport failures remain `unknown`, never automatically retried.
 Steering submits a new message to the active turn. It does not edit, withdraw,
 or expedite a previously accepted message. Provider acceptance is not proof of
@@ -1400,11 +1517,25 @@ Legacy provider delivery is accepted only when a user event after the
 pre-input absolute history cursor matches the entire message, allowing CRLF
 and outer-whitespace normalization. The daemon waits up to five seconds after
 Enter, bounded by the request context. A match returns `acceptance:"transcript"`.
+Claude's complete outer `<pasted_content>` envelope may be removed for this
+comparison, including its repeated-id closing tag. The enclosed text must still
+match in full; mismatched ids, partial envelopes, extra text outside the envelope
+and tool-result events do not confirm delivery. The original wrapped user event
+is retained in conversation reads and durable mirrors.
 A suffix, unrelated event, timestamp change, or Working state is insufficient.
 Timeout, partial input, and unavailable history return `unknown`,
 `delivered:false`, `retry:false`. This does not prove that nothing was sent.
 No extra Enter or automatic message resend is attempted. Existing stream
 subscriptions are unaffected by history inspection.
+
+An additive content-free transcript intent retains the pre-input cursor, hash
+of its preceding event (when present), normalized message hash and runtime
+creation time. Later receipt reads can settle `unknown` as `accepted` when the
+same runtime still has the same retained anchor and a complete authored user
+event after that cursor matches the message hash with a provider timestamp no
+earlier than the submit. Missing/replaced anchors, pruned history, unavailable
+timestamps and a changed runtime preserve uncertainty. No input is sent during
+this reconciliation, including after the delivery store is reopened.
 
 The response is a delivery receipt with `operation_id`, `session_id`, `status`,
 `delivered`, `retry`, `reason`, `duplicate`, `created_at_ms`, and
@@ -1681,6 +1812,17 @@ JSON is 400; a ledger open or report failure is 500.
 
 ### `POST /api/recovery/restart`
 
+`POST /api/recovery/restart/preview` is an authenticated, read-only companion.
+Its body is `{ "sourceSessionId": "<runtime UUID>" }`. It returns the source
+id, login profile, optional recorded Claude `remoteUrl`, optional
+`savedLoginEmail`, `accountChanged`, and an instructional `warning` when the
+saved login differs from the transcript's Remote Control owner or cannot be
+compared. These are provider-owned saved observations, not proof of a live
+connection or verified current authentication. The transcript scan reads at
+most its last 1 MiB; absent metadata is unknown. No credential is exposed and
+no receipt, history, account, or runtime is changed. Unknown sources return
+404; malformed requests return 400. CLI: `sessions restart SESSION --preview`.
+
 Auth required. Ends exactly one live Claude or Codex runtime and creates a
 replacement for its native provider conversation. It never follows the source's
 successor chain. The request must identify the same full runtime id twice and
@@ -1695,6 +1837,8 @@ replacement. `runtimeMode` is optional `rich` or `terminal`; omission retains th
 source's runtime. `remoteControl:true` requires Claude and existing user consent
 in Settings and selects Terminal. The recorded account profile, model, effort,
 name, workspace and native provider conversation identity are retained. The
+profile uses its current sign-in, not necessarily the original account; a
+changed login may create a different Claude Remote Control link. The
 provider transcript must still be available before ending the source. Running
 work is interrupted; process memory is not restored. No provider credential or
 machine permission default is changed.
@@ -1752,7 +1896,8 @@ runtime. `permissions:"constrained"` records and enforces the app's **Ask me**
 access plan. An explicit `permissions:"full"` selects full access for a native
 same-provider resume; transcript-only restoration and cross-provider copies
 reject that override. Other values are rejected. The resume dialog defaults
-to Ask me and offers Full access (YOLO) explicitly. Omitting these additive
+to Full access (YOLO) for native resumes, with Ask me available explicitly.
+Transcript-only restoration retains its supported permission policy. Omitting these additive
 fields keeps the earlier provider-default behavior for existing clients.
 
 `claudePermissionMode` is an optional per-launch Claude override using the same
@@ -2591,6 +2736,46 @@ entries are evicted on their expiry timer even without another lookup.
 
 ## Go runtime extensions: history views
 
+### Incremental conversation reads
+
+`GET /api/history/:id/read?cursor=<opaque>&limit=20` is an authenticated,
+read-only addition. `sessions read` exposes the same contract. No cursor starts
+at the beginning; `limit` is 1–100 message fragments (default 20).
+The response contains `conversation`, `messages`, `next_cursor`, and `has_more`.
+It never saves a reader position or acknowledges another reader's messages.
+Keep the input cursor until the response has been processed; retries start at
+the same position, although newly appended output may now also be available.
+
+The view includes readable user/assistant text and provider faults. Tool
+records do not consume the message limit; use the existing transcript/raw
+routes for tool details. Text is bounded to 64 KiB per response. Large messages
+are returned in UTF-8-safe fragments with `byte_offset` and `continued:true`
+until complete; no omitted suffix is consumed. A page scans up to 8 MiB of
+source records plus at most one 8 MiB boundary record, even if none contain
+readable text. `has_more:true` therefore also permits an empty intermediate
+page. An incomplete final JSONL record sets `pending_record:true`; it is not
+consumed and the caller should retry later, not busy-loop. Malformed complete
+records are counted in `skipped_records`. Known damaged mirrors expose
+`mirror_damaged` and `mirror_detail`.
+
+Cursors identify the provider conversation when known, otherwise the retained
+Sessions identity, and carry byte positions, not timestamps. Reopening the
+same conversation with an identical transcript does not invalidate the cursor.
+The append-only reader verifies a bounded file-prefix anchor and the full
+record at its previous read boundary. Truncation or replacement detected there
+returns 409 `HISTORY_CHANGED` and never silently starts over. This is not a
+whole-file integrity audit: edits confined to already-read middle records are
+not detected. Rewritten/compacted histories require explicit reconciliation;
+there is no claim that edited streaming messages can be merged automatically.
+
+Malformed or wrong-conversation cursors return 400 `INVALID_CURSOR`; missing
+or prompt-index-only history returns 404 `CONVERSATION_UNAVAILABLE`. A source
+record exceeding 8 MiB returns 413 `RECORD_TOO_LARGE`, without advancing, and
+directs the caller to the raw transcript. Read failures return a non-success
+status rather than an empty successful page. Existing history routes and
+runner protocols are unchanged. Automatic per-reader bookmarks are not part
+of this first cursor API.
+
 The existing authenticated `GET /api/history/<id>` route remains complete by
 default. The transcript response assigns a stable zero-based `index` to every
 normalized message.
@@ -2658,10 +2843,17 @@ distinguishes them must wait rather than report the session unknown; the CLI
 does, bounded by each command's own timeout.
 
 A session whose runner is gone carries `lostReason` — one of
-`machine rebooted`, `runner exited`, `daemon lost contact` — and `lostAt`, the
+`machine rebooted`, `runner exited`, `daemon lost contact`, or
+`runner startup was never confirmed` — and `lostAt`, the
 moment it names. Both are additive and omitted when the daemon cannot say: a
 machine that cannot read its own boot time reports `daemon lost contact`, which
-is what such a daemon knows, rather than guessing a reboot. `POST
+is what such a daemon knows, rather than guessing a reboot. An unconfirmed
+startup means a recorded launch has no ready or attached observation; it does
+not prove that its command never ran and does not authorize a duplicate.
+While this daemon is executing a creation, discovery does not classify that
+same launch as lost. An unreachable runner projects a start receipt as blocked
+with `blocked_by: runner-unavailable` and an inspect action, preserving any
+uncertain delivery receipt. `POST
 /api/recovery/adopt` follows a source's `reopened_as` chain to its newest link
 and resumes that; when the newest link is still running it answers 409 naming
 the session to open instead, and `force:true` continues from the record as

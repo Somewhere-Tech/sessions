@@ -31,6 +31,10 @@ the orientation you cannot get from a command list.
   conversation on this machine, not just the live ones.
 - **Handing work between agents.** A Claude session can drive a Codex one and
   back, with the requester recorded.
+- **Checking only what came next.** `read` pages a saved conversation and
+  returns a reusable position. Keep your own position per conversation rather
+  than repeatedly exporting its whole transcript; consult `help read` for the
+  installed version's paging and changed-history rules.
 
 ## Rules that outrank convenience
 

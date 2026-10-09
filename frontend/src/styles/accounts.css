@@ -26,20 +26,45 @@
 .accounts-rename input { flex: 1 1 180px; min-width: 0; min-height: 36px; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-base); color: var(--fg); font: inherit; }
 .accounts-rename .btn { min-height: 36px; }
 .accounts-empty { margin: 0; color: var(--fg-dim); font-size: 13px; }
-.accounts-add-button { justify-self: start; }
+.accounts-add-button { justify-self: start; display: inline-flex; align-items: center; gap: 8px; min-height: 40px; }
+.accounts-add-button > span { font-size: 22px; font-weight: 400; line-height: 1; }
 .accounts-ready { color: var(--ok, #48aa99); }
 .accounts-pending { color: var(--fg-faint); }
-.accounts-add { display: grid; gap: 10px; }
-.accounts-add h2 { margin: 0; }
-.accounts-add label { display: grid; gap: 4px; font-size: 12px; }
-.accounts-add input, .accounts-add select, .accounts-signing-in input { width: 100%; min-width: 0; min-height: 44px; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-base); color: var(--fg); font: inherit; }
+.accounts-signing-in input { width: 100%; min-width: 0; min-height: 44px; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-base); color: var(--fg); font: inherit; }
 .accounts-signing-in { display: grid; gap: 14px; }
 .accounts-signing-in h2, .accounts-signing-in p { margin: 0; }
 .account-confirmation, .accounts-signing-in label { display: grid; gap: 10px; font-size: 14px; }
 .accounts-signing-in .btn { min-height: 44px; justify-self: start; }
 .account-device-code { display: block; margin-top: 10px; font-size: 20px; letter-spacing: 0.08em; }
-.accounts-add-actions { display: flex; gap: 8px; }
-.accounts-add-actions .btn { min-height: 44px; }
+.account-picker-backdrop { z-index: 1500; padding: 16px; box-sizing: border-box; }
+.account-picker { width: min(460px, 100%); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; background: var(--bg-elev-1); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 20px; box-shadow: var(--shadow-2); font-family: var(--font-ui); }
+.account-picker-head { display: flex; justify-content: space-between; align-items: start; gap: 16px; padding: 24px 24px 18px; }
+.account-picker-head h2 { margin: 0; font-size: 23px; letter-spacing: -.035em; }
+.account-picker-head p { margin: 6px 0 0; color: var(--fg-dim); font-size: 14px; }
+.account-picker-close { flex: 0 0 36px; width: 36px; height: 36px; border: 0; border-radius: 10px; background: transparent; color: var(--fg-dim); font: inherit; font-size: 24px; cursor: pointer; }
+.account-picker-close:hover { background: var(--bg-elev-2); }
+.account-picker-body { display: grid; gap: 18px; padding: 0 24px 22px; }
+.account-picker-computers { display: flex; flex-wrap: wrap; gap: 6px; }
+.account-picker-computers button { min-height: 36px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--fg-dim); font: inherit; font-size: 13px; cursor: pointer; }
+.account-picker-computers button[aria-pressed="true"] { border-color: var(--accent-border-soft); background: var(--accent-bg-soft); color: var(--fg); }
+.account-picker-location { margin: 0; color: var(--fg-dim); font-size: 13px; }
+.account-picker-providers { display: grid; gap: 10px; }
+.account-provider-choice { display: grid; grid-template-columns: 36px minmax(0, 1fr) 20px; align-items: center; gap: 14px; min-height: 82px; padding: 15px; border: 1px solid var(--border); border-radius: 13px; background: var(--bg-base); color: var(--fg); font: inherit; text-align: left; cursor: pointer; }
+.account-provider-choice:hover { background: var(--bg-elev-2); border-color: var(--border-strong); }
+.account-provider-choice[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-bg-soft); }
+.account-provider-choice > span:nth-child(2) { display: grid; gap: 4px; min-width: 0; }
+.account-provider-choice strong { font-size: 15px; font-weight: 650; }
+.account-provider-choice small { color: var(--fg-dim); font-size: 13px; line-height: 1.4; }
+.account-provider-selection { font-size: 20px; color: var(--fg-faint); text-align: center; }
+.account-provider-choice[aria-pressed="true"] .account-provider-selection { color: var(--accent); }
+.account-picker-note { margin: 0; color: var(--fg-dim); font-size: 13px; line-height: 1.5; }
+.account-picker-footer { display: grid; gap: 14px; padding: 18px 24px 24px; border-top: 1px solid var(--border); }
+.account-picker-footer > span { color: var(--fg-dim); font-size: 12px; text-align: center; }
+.account-picker-footer .btn { min-height: 44px; width: 100%; justify-content: center; border-radius: 10px; }
+.account-device-help { padding: 13px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-base); font-size: 13px; line-height: 1.5; }
+.account-device-help strong { font-weight: 600; }
+.account-device-help p { margin: 5px 0 8px; color: var(--fg-dim); }
+.account-device-help a { color: var(--accent); }
 
 /* Account-first rows: who, how much is used, and where it is signed in. */
 .accounts-group { grid-template-columns: 32px minmax(0, 1fr); grid-template-areas: "mark identity" "mark usage" "mark computers"; align-items: start; gap: 10px 12px; }

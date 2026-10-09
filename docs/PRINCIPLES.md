@@ -30,9 +30,12 @@ explicit; names or output text are not reliable evidence of an org chart.
 The team is separate from its computers. Process liveness is separate from
 whether a conversation deserves the user's attention. Retained and recoverable
 work stays findable without dominating the everyday view or being silently
-deleted. A task board such as Somewhere's tasks records outcomes, ownership,
-decisions, and relationships; Sessions should complement that durable memory,
-not recreate it as another board.
+deleted. Durable work belongs to the project, not to a particular chat or
+runtime. The direction is for task identity, outcomes, ownership, decisions,
+and handoffs to survive changes of agent, provider, and computer. Conversations
+are places to carry out that work; commits and optional pull requests are
+linked evidence. A project must not require GitHub or an external task board.
+This is a product direction, not a claim that a durable task system ships today.
 
 Projects are the primary workspace: a project's collaborators can use different
 providers, computers, and explicitly selected accounts. Those are execution
@@ -75,6 +78,12 @@ by blindly typing into a terminal. A Rich lane that inherits permissions asks
 through Sessions itself: the request stays open, the lane reads as needing you,
 and the person or the lane that delegated the work answers it. Nothing is
 approved on silence, and the answer is recorded with who gave it.
+
+New user-created Claude and Codex chats start with full access (YOLO), so work
+does not stop at an unexpected approval prompt. The launcher, native resume,
+and restart surfaces make that choice visible and allow an explicit Ask me
+policy. This default never elevates an existing process or changes the
+machine's separately recorded delegation or Remote Control consent.
 
 Agent-created children are durable sessions by default. A final response is not
 proof that the caller is done with the runtime: the child may own a server,

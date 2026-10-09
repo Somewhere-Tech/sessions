@@ -32,6 +32,9 @@ export default defineConfig({
     // Fail loudly rather than silently passing an empty run.
     passWithNoTests: false,
     restoreMocks: true,
-    css: true
+    css: true,
+    // Do not turn dozens of independent DOM environments into CPU contention
+    // timeouts on small CI hosts. Each file still keeps its capability bound.
+    maxWorkers: 2
   }
 });

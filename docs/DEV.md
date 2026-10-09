@@ -35,6 +35,25 @@
    `<uuid>.sock` name and its separator cost 42 bytes, so `SESSIONS_STATE_DIR`
    itself must stay at or below 61 bytes. A scratch directory nested inside a
    worktree can exceed that; `/tmp/sX/runners` cannot.
+
+   A fake provider on the daemon's `PATH` is not enough. Runners do not inherit
+   that `PATH`: the daemon prepends `$HOME/.local/bin`, `.npm-global/bin`,
+   `.bun/bin`, `.cargo/bin`, Homebrew and `/usr/local/bin`, dropping any already
+   present (`runtime/internal/state/registry_runtime.go` `launchdPath`). An
+   installed `codex` or `claude` therefore shadows a fake placed only on the
+   daemon `PATH`, and the real provider may update itself or contact its
+   backend. Put the fake in the scratch `$HOME/.local/bin`, keep that directory
+   out of the daemon `PATH` (listing it there moves it behind Homebrew), and
+   check the resolution before the first launch rather than by launching:
+
+   ```sh
+   HOME=/tmp/sX/home PATH=/tmp/sX/home/.local/bin:/opt/homebrew/bin:/usr/local/bin:$DAEMON_PATH \
+     command -v codex   # must print /tmp/sX/home/.local/bin/codex
+   cmp /tmp/sX/home/.local/bin/codex ./your-fake-codex   # and it must be your fake
+   ```
+
+   Rich Codex runners always resolve `codex` this way; they do not use an
+   absolute `--cmd`.
 4. **Protect the daily driver.** The manual development daemon label is
    `tech.somewhere.sessions.dev.daemon`. Record the live-session baseline before a
    reload and verify `soak-d2` plus the full baseline afterward. Isolated native
@@ -65,6 +84,10 @@ contract. All four state roots use a short temporary directory. No provider
 credentials are required; this does not prove provider login, OS reboot,
 systemd installation, or installation of a published npm release. The separate
 npm wrapper lifecycle suite uses synthetic executables and local HTTPS fixtures.
+The same job then runs `go build`, `go vet`, and `go test ./...` natively on
+Linux, each with a scratch `HOME` scoped to that command, so Linux-only code paths execute rather than only
+cross-compile. The systemd installer's recovery tests use a substitute service
+manager; they do not prove behaviour against a real systemd user manager.
 
 For harness development on another Unix host, `SESSIONS_ACCEPTANCE_FIXTURE=1`
 allows running against existing local binaries. Its receipt explicitly records

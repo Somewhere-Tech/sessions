@@ -1,4 +1,4 @@
-import { useState, type JSX } from 'react';
+import { useId, useState, type JSX } from 'react';
 import type { SessionInfo } from '../types';
 import { type InboxLayout, type InboxSection, type ProviderFaultNotice, notConnectedReason } from '../lib/inboxSections';
 import { classifySession } from '../lib/sessionStatus';
@@ -7,9 +7,11 @@ import { ProviderMark, normalizeProvider } from './ProviderBadge';
 import { AccountBadge } from './AccountBadge';
 import { SessionLastMessage } from './SessionLastMessage';
 import { lastMessage } from '../lib/lastMessage';
+import { projectPreview } from '../lib/projectPreview';
 
 interface Props {
   layout: InboxLayout;
+  activeSessionId?: string | null;
   renderNode: (session: SessionInfo, endedFlat?: boolean, projectLabel?: string) => JSX.Element | null;
   onOpen: (id: string) => void;
   onShowAllNeedsYou: () => void;
@@ -26,7 +28,7 @@ interface Props {
 // then everything unnamed under Other projects. Rows come from the
 // navigator's own renderer so pins, drag, menus, and child folding behave the
 // same everywhere; this component only decides where each row sits.
-export function InboxSections({ layout, renderNode, onOpen, onShowAllNeedsYou, folderOf, relativeTime, lastActivity, providerNotices = [], onOpenProviderFault, projectLabelOf }: Props) {
+export function InboxSections({ layout, activeSessionId, renderNode, onOpen, onShowAllNeedsYou, folderOf, relativeTime, lastActivity, providerNotices = [], onOpenProviderFault, projectLabelOf }: Props) {
   const sections = layout.other ? [...layout.sections, layout.other] : layout.sections;
   return (
     <>
@@ -72,7 +74,7 @@ export function InboxSections({ layout, renderNode, onOpen, onShowAllNeedsYou, f
       {layout.flat
         ? <RecentList section={layout.flat} renderNode={renderNode} projectLabelOf={projectLabelOf} />
         : sections.map((section) => (
-          <ProjectSection key={section.id} section={section} renderNode={renderNode} />
+          <ProjectSection key={section.id} section={section} activeSessionId={activeSessionId} renderNode={renderNode} />
         ))}
     </>
   );
@@ -168,12 +170,16 @@ function RecentList({ section, renderNode, projectLabelOf }: {
   );
 }
 
-function ProjectSection({ section, renderNode }: { section: InboxSection; renderNode: Props['renderNode'] }) {
+function ProjectSection({ section, activeSessionId, renderNode }: { section: InboxSection; activeSessionId?: string | null; renderNode: Props['renderNode'] }) {
   const [open, setOpen] = useState(true);
+  const [showAll, setShowAll] = useState(false);
+  const rowsId = useId();
+  const preview = projectPreview(section.live, (session) => session, (session) => session.id === activeSessionId);
+  const remaining = section.live.length - preview.length;
   const count = section.live.length + section.notConnected.length;
   return (
     <div className={`session-tree-group inbox-project${section.implicit ? ' is-implicit' : ''}`}>
-      <button type="button" className="session-tree-group-head inbox-project-head" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
+      <button type="button" className="session-tree-group-head inbox-project-head" onClick={() => setOpen((current) => !current)} aria-expanded={open} aria-controls={rowsId}>
         <span className="session-group-disclosure">
           <span className={`inbox-chevron${open ? ' is-open' : ''}`} aria-hidden>▸</span>
           {section.name}
@@ -183,9 +189,12 @@ function ProjectSection({ section, renderNode }: { section: InboxSection; render
           {count}
         </strong>
       </button>
-      {open ? (
+      <div id={rowsId} hidden={!open}>{open ? (
         <>
-          {section.live.map((session) => renderNode(session))}
+          {(showAll ? section.live : preview).map((session) => renderNode(session))}
+          {remaining > 0 ? <button type="button" className="inbox-fold project-preview-toggle" aria-expanded={showAll} aria-controls={rowsId} onClick={() => setShowAll((current) => !current)}>
+            {showAll ? 'Show fewer agents' : `Show ${remaining} remaining agents`}
+          </button> : null}
           {section.live.length === 0 && section.notConnected.length === 0 ? <div className="session-tree-empty is-compact">Nothing live here.</div> : null}
           {section.notConnected.length > 0 ? (
             <Fold label="Not connected" count={section.notConnected.length} detail={notConnectedReason(section.notConnected[0]!)}>
@@ -202,7 +211,7 @@ function ProjectSection({ section, renderNode }: { section: InboxSection; render
             </Fold>
           ) : null}
         </>
-      ) : null}
+      ) : null}</div>
     </div>
   );
 }

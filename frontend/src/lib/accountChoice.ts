@@ -62,3 +62,16 @@ export function accountNeedsLogin(profiles: AccountProfile[], provider: AccountP
   const match = profiles.find((profile) => profile.tool === provider && profile.name === name);
   return Boolean(match && !match.identity && !match.signed_in);
 }
+
+/**
+ * The account part of a create request. sessionsd starts a same-provider
+ * delegate on its manager's account when no account is named, so a delegate
+ * whose Default was chosen must say so; anyone else gets the default by
+ * leaving the account out.
+ */
+export function accountRequestFields(
+  selectedProfile: string, delegate: boolean
+): { profile?: string; defaultProfile?: true } {
+  if (selectedProfile) return { profile: selectedProfile };
+  return delegate ? { defaultProfile: true } : {};
+}

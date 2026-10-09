@@ -18,11 +18,12 @@ export interface StartNotice {
  * Blocked-on-provider states other than authentication are already shown by
  * the provider fault card, so they are not repeated here.
  */
-export function startNotice(session: Pick<SessionInfo, 'start' | 'exited'>): StartNotice | null {
+export function startNotice(session: Pick<SessionInfo, 'start' | 'exited' | 'launching'>): StartNotice | null {
   const start: StartReceipt | undefined = session.start;
   if (!start) return null;
   switch (start.phase) {
     case 'created':
+      if (session.launching) return { tone: 'progress', text: 'Starting this session… Wait for runner readiness before sending' };
       if (start.prompt?.status === 'sending') return { tone: 'progress', text: 'Delivering the first request…' };
       if (start.prompt?.status === 'not-sent') return { tone: 'attention', text: `First request not sent · ${session.exited ? 'Start a new session' : 'Send it from the composer'}` };
       return null;

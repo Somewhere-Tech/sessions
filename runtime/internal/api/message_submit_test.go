@@ -159,6 +159,46 @@ func TestStructuredSubmitRefusalAndUnknownNeverBecomeSuccessOrTerminalInput(t *t
 	}
 }
 
+// Codex applied the exact steer and then answered with an internal error, so
+// the runner reports an unknown boundary. The receipt must stay unknown and
+// non-retryable, and the same operation must read that receipt rather than
+// steer the provider a second time.
+func TestUnknownSteerAfterProviderErrorIsNeverSubmittedAgain(t *testing.T) {
+	daemon := newTestDaemon(t)
+	session := registerStructuredSession(t, daemon, "structured-steer-error")
+	const operationID = "20000000-0000-4000-8000-000000000003"
+	service := &structuredMessageService{
+		sessionService: daemon.registry,
+		result: proto.MessageResult{OperationID: operationID, Boundary: "unknown",
+			Error: "Codex did not confirm steering: steer Codex turn: JSON-RPC error -32603: internal error"},
+	}
+	daemon.handler.registry = service
+	steer := func() map[string]any {
+		body := `{"data":"keep the exact text","operation_id":"` + operationID + `","mode":"steer"}`
+		response := serve(t, daemon.handler, http.MethodPost, "/api/sessions/"+session.ID+"/submit", strings.NewReader(body), "127.0.0.1:4567", nil)
+		var receipt map[string]any
+		decodeBody(t, response, &receipt)
+		return receipt
+	}
+	first, second := steer(), steer()
+	for _, receipt := range []map[string]any{first, second} {
+		if receipt["status"] != "unknown" || receipt["retry"] != false || receipt["delivered"] != false {
+			t.Fatalf("receipt = %#v", receipt)
+		}
+	}
+	if first["duplicate"] != false || second["duplicate"] != true {
+		t.Fatalf("duplicate flags = first %v, second %v", first["duplicate"], second["duplicate"])
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if len(service.calls) != 1 || service.calls[0].Text != "keep the exact text" || service.calls[0].Mode != "steer" {
+		t.Fatalf("structured calls = %#v, want the original steer exactly once", service.calls)
+	}
+	if len(service.inputCalls) != 0 {
+		t.Fatalf("unknown steer fell back to terminal input: %#v", service.inputCalls)
+	}
+}
+
 // One operation, accepted at the provider boundary, whose answer never reached
 // the client. The runner commits the turn before it acknowledges, so a caller
 // that disconnects mid-request leaves a delivered message recorded as unknown.

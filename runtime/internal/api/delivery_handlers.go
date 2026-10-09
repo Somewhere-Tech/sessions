@@ -57,6 +57,9 @@ func (s *Server) reconcileLateAcceptance(record delivery.Record) delivery.Record
 	if !ok {
 		return record
 	}
+	if record.Transcript != nil {
+		return s.reconcileTranscriptAcceptance(record, current)
+	}
 	result, answered := current.LateMessageResult(record.OperationID)
 	if !answered || !result.Accepted || result.Boundary == "" {
 		return record

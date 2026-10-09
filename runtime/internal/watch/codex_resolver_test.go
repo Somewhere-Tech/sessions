@@ -222,8 +222,8 @@ func TestResolveCodexRolloutResumeIsGlobalAndNewest(t *testing.T) {
 	resumeID := "aaaaaaaa-1111-2222-3333-444444444444"
 	older := filepath.Join(root, "2000", "01", "01", "rollout-old-"+resumeID+".jsonl")
 	newer := filepath.Join(root, "2001", "01", "01", "rollout-new-"+resumeID+".jsonl")
-	writeRolloutFixture(t, older, "/tmp/old", now.Add(-time.Hour), "")
-	writeRolloutFixture(t, newer, "/tmp/new", now.Add(-time.Hour), "")
+	writeIdentifiedRolloutFixture(t, older, resumeID, "/tmp/old", now.Add(-time.Hour), now.Add(-time.Minute))
+	writeIdentifiedRolloutFixture(t, newer, resumeID, "/tmp/new", now.Add(-time.Hour), now)
 	if err := os.Chtimes(older, now.Add(-time.Minute), now.Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -238,6 +238,34 @@ func TestResolveCodexRolloutResumeIsGlobalAndNewest(t *testing.T) {
 	missing := resolveCodexFixture(root, "", []string{"--resume=bbbbbbbb-2222"}, now, now)
 	if missing.Reason != CodexResumeMissing || missing.Path != "" {
 		t.Fatalf("missing resolution = %+v", missing)
+	}
+}
+
+func TestResolveCodexRolloutResumeValidatesIdentityAndRecordedActivity(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, time.September, 5, 18, 0, 0, 0, time.UTC)
+	originalID := "01a0726c-ac6e-7e52-aa1e-0ca475c112e0"
+	childID := "01a073bd-8a34-7263-b6e6-db0eba799ecb"
+	oldPath := filepath.Join(root, "2026", "09", "05", "rollout-2026-09-05T09-35-19-"+originalID+".jsonl")
+	suffixPath := filepath.Join(root, "2026", "09", "05", "rollout-2026-09-05T15-43-16-"+originalID+"_"+childID+".jsonl")
+	writeIdentifiedRolloutFixture(t, oldPath, originalID, "/tmp/work", now.Add(-8*time.Hour), now.Add(-7*time.Hour))
+	writeIdentifiedRolloutFixture(t, suffixPath, originalID, "/tmp/work", now.Add(-3*time.Hour), now.Add(-time.Hour))
+	// A copied older file can have the newest filesystem timestamp. Provider
+	// record time, not mtime, identifies the copy that contains later work.
+	if err := os.Chtimes(oldPath, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(suffixPath, now.Add(-time.Minute), now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	got := ResolveCodexRolloutPath(CodexResolveOptions{SessionsDir: root, Args: []string{"resume", originalID}})
+	if got.Path != suffixPath || got.Reason != CodexResumeMatch {
+		t.Fatalf("original id resolution = %+v, want later recorded copy %q", got, suffixPath)
+	}
+	got = ResolveCodexRolloutPath(CodexResolveOptions{SessionsDir: root, Args: []string{"resume", childID}})
+	if got.Path != "" || got.Reason != CodexResumeMissing {
+		t.Fatalf("suffix id resolution = %+v, want metadata-validated miss", got)
 	}
 }
 
@@ -294,6 +322,27 @@ func writeRolloutFixtureWithPrompt(t *testing.T, path, cwd string, timestamp tim
 	}
 }
 
+func writeIdentifiedRolloutFixture(t *testing.T, path, id, cwd string, started, active time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	encoder := json.NewEncoder(file)
+	for _, record := range []map[string]any{
+		{"timestamp": started.Format(time.RFC3339Nano), "type": "session_meta", "payload": map[string]any{"id": id, "cwd": cwd, "timestamp": started.Format(time.RFC3339Nano)}},
+		{"timestamp": active.Format(time.RFC3339Nano), "type": "event_msg", "payload": map[string]any{"type": "task_complete"}},
+	} {
+		if err := encoder.Encode(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // History resolution has one shot at naming the right rollout. With
 // StrictStart set, a session that recorded no thread id and sent no first
 // message claims a rollout only when exactly one started with it; the
@@ -335,7 +384,7 @@ func TestResolveCodexRolloutStrictStartRefusesToGuess(t *testing.T) {
 
 	// A recorded thread id identifies the rollout wherever it is.
 	elsewhere := filepath.Join(root, "2000", "01", "01", "rollout-2000-01-01T00-00-00-0000000c-aaaa-bbbb-cccc-dddddddddddd.jsonl")
-	writeRolloutFixture(t, elsewhere, "/tmp/other", createdAt.Add(-time.Hour), "")
+	writeIdentifiedRolloutFixture(t, elsewhere, "0000000c-aaaa-bbbb-cccc-dddddddddddd", "/tmp/other", createdAt.Add(-time.Hour), createdAt)
 	got = ResolveCodexRolloutPath(CodexResolveOptions{CWD: cwd, CreatedAt: createdAt, SessionsDir: root, Now: now, StrictStart: 5 * time.Minute, ConversationID: "0000000c-aaaa-bbbb-cccc-dddddddddddd"})
 	if got.Reason != CodexResumeMatch || got.Path != elsewhere {
 		t.Fatalf("thread id resolution = %+v, want %q", got, elsewhere)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net"
 	"strings"
 	"testing"
 )
@@ -53,7 +54,6 @@ func TestIsWildcardHost(t *testing.T) {
 		"0:0:0:0:0:0:0:0",
 		"0000::0",
 		"[::]",
-		"0.0.0.000",
 	}
 	for _, host := range wildcard {
 		if !isWildcardHost(host) {
@@ -74,5 +74,16 @@ func TestIsWildcardHost(t *testing.T) {
 		if isWildcardHost(host) {
 			t.Errorf("isWildcardHost(%q) = true, want false", host)
 		}
+	}
+}
+
+// Noncanonical numeric spellings are accepted by macOS's resolver but may be
+// rejected by Linux's. Pin the same resolution that net.Listen will use.
+func TestIsWildcardHostFollowsSystemResolution(t *testing.T) {
+	const host = "0.0.0.000"
+	address, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(host, "0"))
+	want := err == nil && address.IP.IsUnspecified()
+	if got := isWildcardHost(host); got != want {
+		t.Fatalf("isWildcardHost(%q) = %v; listener resolution = %v, %v", host, got, address, err)
 	}
 }

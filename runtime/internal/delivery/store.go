@@ -33,21 +33,49 @@ const (
 var operationIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type Record struct {
-	OperationID  string `json:"operation_id"`
-	SessionID    string `json:"session_id"`
-	ContentHash  string `json:"content_sha256"`
-	ContentBytes int    `json:"content_bytes"`
-	Mode         string `json:"mode,omitempty"`
-	Status       Status `json:"status"`
-	Delivered    bool   `json:"delivered"`
-	Retry        bool   `json:"retry"`
-	Reason       string `json:"reason,omitempty"`
-	Acceptance   string `json:"acceptance,omitempty"`
+	OperationID  string            `json:"operation_id"`
+	SessionID    string            `json:"session_id"`
+	ContentHash  string            `json:"content_sha256"`
+	ContentBytes int               `json:"content_bytes"`
+	Mode         string            `json:"mode,omitempty"`
+	Status       Status            `json:"status"`
+	Delivered    bool              `json:"delivered"`
+	Retry        bool              `json:"retry"`
+	Reason       string            `json:"reason,omitempty"`
+	Acceptance   string            `json:"acceptance,omitempty"`
+	Transcript   *TranscriptIntent `json:"transcript,omitempty"`
 	// Attempts counts executions after the first. Only a refusal proven to
 	// have sent nothing (not-delivered with retry) may be executed again.
 	Attempts    int   `json:"attempts,omitempty"`
 	CreatedAtMS int64 `json:"created_at_ms"`
 	UpdatedAtMS int64 `json:"updated_at_ms"`
+}
+
+// TranscriptIntent stores only hashes and a pre-input cursor, never message text.
+// The anchor and runtime identity keep a history replay from confirming old input.
+type TranscriptIntent struct {
+	Cursor           int64  `json:"cursor"`
+	Anchor           string `json:"anchor,omitempty"`
+	MessageHash      string `json:"message_sha256"`
+	RuntimeCreatedAt int64  `json:"runtime_created_at"`
+}
+
+func (s *Store) RecordTranscriptIntent(operationID string, intent TranscriptIntent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := s.path(operationID)
+	record, err := read(path)
+	if err != nil {
+		return err
+	}
+	if record.Status != StatusPending {
+		return errors.New("delivery is no longer pending")
+	}
+	if intent.Cursor < 0 || len(intent.MessageHash) != 64 || (intent.Cursor > 0 && len(intent.Anchor) != 64) {
+		return errors.New("invalid transcript confirmation boundary")
+	}
+	record.Transcript = &intent
+	return writeAtomic(path, record)
 }
 
 type Store struct {

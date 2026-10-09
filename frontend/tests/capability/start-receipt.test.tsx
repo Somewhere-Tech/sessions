@@ -16,6 +16,8 @@ import { recordedPromptOperationId, startFailureMessage, startOperationIds, with
 import { DaemonResponseError } from '../../src/api/sessionsd/core';
 import type { StartReceipt } from '../../src/types';
 import { Workbench } from './harness';
+import { InputBar } from '../../src/components/InputBar';
+import { NEW_SESSION_DEFAULTS_KEY } from '../../src/lib/newSessionDefaults';
 import { installFakeDaemon, makeSession, useFakeMachines, type FakeMachine } from './fake-daemon';
 
 function machineWithFolder(): FakeMachine {
@@ -26,12 +28,45 @@ function machineWithFolder(): FakeMachine {
   };
 }
 
-function Launcher(): JSX.Element {
+function Launcher({ conversation = false }: { conversation?: boolean }): JSX.Element {
   const [open, setOpen] = useState(true);
-  return <Workbench>{open ? <NewSessionDialog onClose={() => setOpen(false)} onStarted={() => {}} embedded /> : null}</Workbench>;
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  return <Workbench>{open ? <NewSessionDialog onClose={() => setOpen(false)} onStarted={setSessionId} embedded /> : null}
+    {conversation && sessionId ? <InputBar sessionId={sessionId} draftMachineId="local" connected send={async () => {}} submitMessage={async () => {}} /> : null}
+  </Workbench>;
 }
 
 describe('capability: a start that fails halfway is not started twice', () => {
+  it('defaults to YOLO even when an old client saved its implicit Ask me choice', async () => {
+    window.localStorage.setItem(NEW_SESSION_DEFAULTS_KEY, JSON.stringify({ skipPerms: false }));
+    const machine = machineWithFolder();
+    const daemon = installFakeDaemon([machine]); useFakeMachines([machine]);
+    const user = userEvent.setup(); render(<Launcher />);
+    const start = await screen.findByRole('button', { name: 'Start session' });
+    await waitFor(() => expect(start).toBeEnabled());
+    expect(screen.getByRole('combobox', { name: 'Access' })).toHaveValue('full');
+    await user.click(start);
+    await waitFor(() => expect(daemon.created).toHaveLength(1));
+    const body = daemon.requests.find((request) => request.method === 'POST' && request.path === '/api/sessions')!.body as { args: string[]; claude: { permissionMode: string } };
+    expect(body.claude.permissionMode).toBe('bypassPermissions');
+  });
+
+  it('opens the chat before a slow first delivery finishes and settles its unchanged draft once', async () => {
+    const machine = { ...machineWithFolder(), submitDelayMS: 1500 };
+    const daemon = installFakeDaemon([machine]); useFakeMachines([machine]);
+    const user = userEvent.setup(); render(<Launcher conversation />);
+    const start = await screen.findByRole('button', { name: 'Start session' });
+    await waitFor(() => expect(start).toBeEnabled());
+    await user.type(screen.getByRole('textbox', { name: 'First request (optional)' }), 'My one delegation');
+    await user.click(start);
+    await screen.findByText('Sending your first message…');
+    expect(screen.queryByRole('button', { name: 'Start session' })).toBeNull();
+    expect(screen.getByPlaceholderText(/Message Claude/)).toHaveValue('My one delegation');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByPlaceholderText(/Message Claude/)).toHaveValue(''), { timeout: 3000 });
+    expect(daemon.delivered[daemon.created[0]!.id]).toEqual(['My one delegation']);
+    expect(daemon.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/submit'))).toHaveLength(1);
+  });
   it('sends the first request under the operation id recorded at create', async () => {
     const machine = machineWithFolder();
     const daemon = installFakeDaemon([machine]);
@@ -146,6 +181,10 @@ describe('capability: the header says how far a start got', () => {
   it('distinguishes sending, not sent, refused, uncertain, delivered and blocked', () => {
     expect(startNotice({ exited: false, start: receipt({ prompt: { status: 'sending', retry: false } }) })?.tone).toBe('progress');
     expect(startNotice({ exited: false, start: receipt({ prompt: { status: 'not-sent', retry: true } }) })?.text).toMatch(/not sent/);
+    const starting = startNotice({ exited: false, launching: true, start: receipt({ prompt: { status: 'not-sent', retry: true } }) });
+    expect(starting?.tone).toBe('progress');
+    expect(starting?.text).toMatch(/Wait for runner readiness/);
+    expect(starting?.text).not.toMatch(/Send it from the composer/);
     expect(startNotice({ exited: false, start: receipt({ phase: 'prompt-not-delivered', prompt: { status: 'not-delivered', retry: true } }) })?.text).toMatch(/safe/);
     expect(startNotice({ exited: false, start: receipt({ phase: 'prompt-unknown', prompt: { status: 'unknown', retry: false } }) })?.text).toMatch(/did not resend/);
     expect(startNotice({ exited: false, start: receipt({ phase: 'prompt-delivered' }) })?.tone).toBe('progress');

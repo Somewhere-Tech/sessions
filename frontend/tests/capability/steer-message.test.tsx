@@ -32,6 +32,37 @@ function inputBar(overrides: Partial<React.ComponentProps<typeof InputBar>> = {}
 }
 
 describe('capability: steer a working Codex turn', () => {
+  it('can request a stop with an empty composer exactly once without resending accepted input', async () => {
+    let acknowledge!: () => void;
+    const send = vi.fn(() => new Promise<void>((resolve) => { acknowledge = resolve; }));
+    const steerMessage = vi.fn().mockResolvedValue(undefined);
+    const submitMessage = vi.fn().mockResolvedValue(undefined);
+    const view = render(inputBar({ send, steerMessage, submitMessage }));
+    const stop = screen.getByRole('button', { name: 'Stop current turn' });
+    expect(stop).toBeEnabled();
+    fireEvent.click(stop);
+    fireEvent.click(stop);
+    expect(send).toHaveBeenCalledExactlyOnceWith('\x1b');
+    expect(screen.getByRole('button', { name: 'Stop requested' })).toBeDisabled();
+    await act(async () => acknowledge());
+    expect(screen.getByRole('button', { name: 'Stop requested' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Stop requested' })).toHaveAttribute('title', expect.stringContaining('Accepted follow-ups are not resent'));
+    expect(steerMessage).not.toHaveBeenCalled();
+    expect(submitMessage).not.toHaveBeenCalled();
+    view.rerender(inputBar({ send, steerMessage, submitMessage, providerWorking: false }));
+    expect(screen.queryByRole('button', { name: 'Stop requested' })).not.toBeInTheDocument();
+  });
+
+  it('preserves the revised draft when requesting a stop', async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    render(inputBar({ send }));
+    const composer = screen.getByPlaceholderText(/Message Codex/);
+    fireEvent.change(composer, { target: { value: 'Use these revised requirements.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Stop current turn' }));
+    expect(composer).toHaveValue('Use these revised requirements.');
+    expect(send).toHaveBeenCalledExactlyOnceWith('\x1b');
+  });
+
   it('uses explicit steering for Enter and ignores repeated input while acknowledgment is pending', async () => {
     let acknowledge!: () => void;
     const steerMessage = vi.fn(() => new Promise<void>((resolve) => { acknowledge = resolve; }));
@@ -41,7 +72,7 @@ describe('capability: steer a working Codex turn', () => {
     fireEvent.change(composer, { target: { value: 'Change the final answer' } });
     fireEvent.keyDown(composer, { key: 'Enter' });
     fireEvent.keyDown(composer, { key: 'Enter' });
-    fireEvent.click(screen.getByRole('button', { name: 'Steer now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send follow-up' }));
     expect(steerMessage).toHaveBeenCalledTimes(1);
     expect(submitMessage).not.toHaveBeenCalled();
     expect(composer).toHaveValue('Change the final answer');
@@ -62,7 +93,7 @@ describe('capability: steer a working Codex turn', () => {
     expect(composer).toHaveValue('Change the final answer');
     expect(screen.getByRole('alert')).toHaveTextContent('Message not sent');
     expect(submitMessage).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Steer now' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send follow-up' })).not.toBeInTheDocument();
   });
 
   it('offers steering only for a supported working Codex composer', async () => {
@@ -71,16 +102,16 @@ describe('capability: steer a working Codex turn', () => {
     const composer = screen.getByPlaceholderText(/Message Codex/);
 
     await user.type(composer, 'Check the Windows artifact too');
-    expect(screen.getByRole('button', { name: 'Steer now' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Send follow-up' })).toBeEnabled();
 
     rerender(inputBar({ providerWorking: false, steerMessage: vi.fn().mockResolvedValue(undefined) }));
-    expect(screen.queryByRole('button', { name: 'Steer now' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send follow-up' })).not.toBeInTheDocument();
 
     rerender(inputBar({ provider: 'claude-code', steerMessage: vi.fn().mockResolvedValue(undefined) }));
-    expect(screen.queryByRole('button', { name: 'Steer now' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send follow-up' })).not.toBeInTheDocument();
   });
 
-  it('routes Steer now exactly once through the steer callback, not normal send', async () => {
+  it('routes Send follow-up exactly once through the steer callback, not normal send', async () => {
     const user = userEvent.setup();
     const steerMessage = vi.fn().mockResolvedValue(undefined);
     const submitMessage = vi.fn().mockResolvedValue(undefined);
@@ -105,7 +136,7 @@ describe('capability: steer a working Codex turn', () => {
 
     const composer = screen.getByPlaceholderText(/Message Codex/);
     await user.type(composer, 'Check the Windows artifact too');
-    await user.click(screen.getByRole('button', { name: 'Steer now' }));
+    await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
 
     expect(steerMessage).toHaveBeenCalledTimes(1);
     expect(steerMessage).toHaveBeenCalledWith('Check the Windows artifact too');
@@ -122,9 +153,9 @@ describe('capability: steer a working Codex turn', () => {
 
     const composer = screen.getByPlaceholderText(/Message Codex/);
     await user.type(composer, 'Run the signing check before finishing');
-    await user.click(screen.getByRole('button', { name: 'Steer now' }));
+    await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Message not sent');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Send failed');
     expect(screen.getByRole('alert')).toHaveTextContent('The active turn is no longer accepting input. Your draft is still here.');
     expect(composer).toHaveValue('Run the signing check before finishing');
     expect(submitMessage).not.toHaveBeenCalled();
@@ -142,7 +173,7 @@ describe('capability: steer a working Codex turn', () => {
 
     const composer = screen.getByPlaceholderText(/Message Codex/);
     await user.type(composer, 'Verify whether the release upload finished');
-    await user.click(screen.getByRole('button', { name: 'Steer now' }));
+    await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Delivery not confirmed');

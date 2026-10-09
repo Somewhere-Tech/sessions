@@ -199,7 +199,9 @@ type Manager struct {
 	pausedRetiredCount  int
 	artifactRetired     int
 	artifactPending     int
-	bindMu              sync.Mutex
+	bindGate            chan struct{}
+	// Starting lanes are owned by Create until launch and registration settle.
+	starting sync.Map
 	// completionGeneration records the newest delegated-task completion
 	// attempt per session so a fresh idle classification supersedes an
 	// in-flight one instead of racing it.
@@ -328,6 +330,7 @@ func NewManager(config state.Config, launcher proto.RunnerLauncher, options ...M
 		boundaries: selected.Boundaries, observations: selected.Observations,
 		retention: selected.Retention, worktrees: selected.Worktrees, attributions: selected.Attributions,
 		ledgerReader: selected.LedgerReader,
+		bindGate:     make(chan struct{}, 1),
 		usage:        selected.UsageRecorder,
 		runtimes:     make(map[string]*runtimeSession), hooks: loadGlobalHooks(config.GlobalHooksPath),
 		laneDeaths: make(map[string]laneDeathBurst), notifications: make(map[string]*sessionNotificationState),
@@ -401,6 +404,12 @@ func (m *Manager) Push() *PushService        { return m.push }
 func (m *Manager) Config() state.Config      { return m.config }
 func (m *Manager) Uptime() time.Duration     { return time.Since(m.started) }
 func (m *Manager) IsDiscovering() bool       { return m.registry.IsDiscovering() }
+
+// LoadedSessionCount is the registry's own count of loaded sessions. It reads
+// no ledger and takes no session lock, so health can answer it while either is
+// busy. It does not include durable records of ended sessions.
+func (m *Manager) LoadedSessionCount() int { return m.registry.LoadedSessionCount() }
+
 func (m *Manager) List(includeExited bool) []state.SessionInfo {
 	infos, _ := m.ListTimed(includeExited)
 	return infos
@@ -440,8 +449,40 @@ type ListTiming struct {
 
 // ListTimed is List with the breakdown. Callers that can report it use this;
 // everything else keeps calling List.
+//
+// It is best effort and cannot be cancelled: it reads the ledger without a
+// deadline, and when that read fails it logs and answers without durable
+// state, so ended sessions, start receipts and provenance are missing from
+// the answer. Callers that must not present that as a complete listing use
+// ListContext instead.
 func (m *Manager) ListTimed(includeExited bool) ([]state.SessionInfo, ListTiming) {
-	ctx := context.Background()
+	infos, timing, err := m.listTimed(context.Background(), includeExited, false)
+	if err != nil {
+		log.Printf("[ledger] read session list: %v", err)
+	}
+	return infos, timing
+}
+
+// ListContext is the listing a caller can trust or reject. Its ledger read
+// follows ctx: waiting for the ledger's connection, for another caller's fold,
+// and the read itself (as far as the reader honors ctx). When durable state
+// cannot be read it returns the error and no sessions, never a listing that
+// silently lacks recorded sessions.
+//
+// It bounds only the ledger. The in-memory registry is read first, and each
+// session's own lock, the runner-reality process snapshot and paused-restore
+// reads are not governed by ctx.
+func (m *Manager) ListContext(ctx context.Context, includeExited bool) ([]state.SessionInfo, error) {
+	infos, _, err := m.listTimed(ctx, includeExited, true)
+	if err != nil {
+		return nil, err
+	}
+	return infos, nil
+}
+
+// listTimed builds a listing. strict stops at a ledger failure; otherwise the
+// failure is returned beside a listing built without durable state.
+func (m *Manager) listTimed(ctx context.Context, includeExited, strict bool) ([]state.SessionInfo, ListTiming, error) {
 	var timing ListTiming
 	infos := m.registry.List(includeExited)
 	ledgerStart := time.Now()
@@ -454,14 +495,15 @@ func (m *Manager) ListTimed(includeExited bool) ([]state.SessionInfo, ListTiming
 	timing.LedgerFold = answer.timing.Fold
 	timing.LedgerConnWait = answer.timing.ConnWait
 	timing.Mark = answer.mark
-	if err != nil {
-		log.Printf("[ledger] read session list: %v", err)
+	if err != nil && strict {
+		return nil, timing, err
 	}
 	// Restored unconditionally, not only for the include-ended listing: a
 	// session the daemon cannot currently reach has not ended, and dropping it
 	// from the default list because a socket died is a kill wearing sleep's
 	// clothes. withDurableClosed adds ended records only when they were asked
 	// for.
+	infos = m.withStartingSessions(infos, states)
 	infos = m.withDurableClosedStates(infos, states, includeExited)
 	restoreStart := time.Now()
 	infos = m.withPendingRestores(infos)
@@ -470,7 +512,7 @@ func (m *Manager) ListTimed(includeExited bool) ([]state.SessionInfo, ListTiming
 	infos = m.withRunnerReality(infos)
 	timing.Reality = time.Since(realityStart)
 	infos = withLostReason(infos, states, bootAtMS())
-	return m.withProvenanceStates(infos, states), timing
+	return m.withProvenanceStates(infos, states), timing, err
 }
 
 func (m *Manager) withRunnerReality(infos []state.SessionInfo) []state.SessionInfo {

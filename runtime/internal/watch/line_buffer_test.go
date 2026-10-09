@@ -57,6 +57,9 @@ func TestLineBufferSplitsRecordsAcrossChunkBoundaries(t *testing.T) {
 		for {
 			line, ok := buffer.next()
 			if !ok {
+				if buffer.pending != nil {
+					t.Fatal("exhausted chunk retained its backing buffer")
+				}
 				return lines
 			}
 			lines = append(lines, string(line))
@@ -101,5 +104,45 @@ func TestLineBufferSplitsRecordsAcrossChunkBoundaries(t *testing.T) {
 	buffer.reset()
 	if buffer.records != 0 || buffer.skipped != 1 || buffer.carry != nil {
 		t.Fatalf("after reset: records=%d skipped=%d carry=%d", buffer.records, buffer.skipped, len(buffer.carry))
+	}
+}
+
+func TestLineBufferReleasesExhaustedPending(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		chunk    []byte
+		dropping bool
+		lines    int
+		records  int
+		skipped  int
+	}{
+		{name: "record", chunk: []byte("one\n"), lines: 1, records: 1},
+		{name: "blank records", chunk: []byte("\n\n"), lines: 2, records: 2},
+		{name: "oversized record", chunk: []byte("oversized\n"), records: 1, skipped: 1},
+		{name: "dropping record", chunk: []byte("end\n"), dropping: true, records: 1},
+		{name: "empty allocated chunk", chunk: make([]byte, 0, 1024)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			buffer := lineBuffer{max: 4, dropping: test.dropping}
+			buffer.feed(test.chunk)
+			lines := 0
+			for {
+				_, ok := buffer.next()
+				if !ok {
+					break
+				}
+				lines++
+			}
+			if buffer.pending != nil {
+				t.Fatal("exhausted pending must be nil, not an empty slice retaining the chunk")
+			}
+			if lines != test.lines || buffer.records != test.records || buffer.skipped != test.skipped {
+				t.Fatalf("lines=%d records=%d skipped=%d, want %d/%d/%d",
+					lines, buffer.records, buffer.skipped, test.lines, test.records, test.skipped)
+			}
+			if buffer.carry != nil || buffer.dropping {
+				t.Fatalf("exhausted record left carry=%q dropping=%v", buffer.carry, buffer.dropping)
+			}
+		})
 	}
 }

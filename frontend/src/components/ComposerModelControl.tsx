@@ -107,7 +107,7 @@ export function ComposerModelControl({
         aria-expanded={open}
         title={supported
           ? 'Choose the model and effort for the next message'
-          : 'This session keeps Claude’s native live controls'}
+          : `Model changes are unavailable for this ${providerName} session`}
       >
         <span>{compactModel(model)}</span>
         {effort ? <span>{effort}</span> : null}
@@ -120,7 +120,7 @@ export function ComposerModelControl({
             <button type="button" aria-label="Close model selector" onClick={() => setOpen(false)}>×</button>
           </header>
           {!supported ? (
-            <p>This native interactive session keeps model changes inside Claude today. Choose the model when starting the session, or use Claude’s control in Terminal. A verified Sessions control is the next compatibility step.</p>
+            <p>Model changes are unavailable in this conversation. Choose a model when starting a new {providerName} session.</p>
           ) : (
             <>
               <div className="composer-model-field">

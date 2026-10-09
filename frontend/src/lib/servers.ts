@@ -8,6 +8,7 @@ import {
   type NativeMachineCredential
 } from './tauriBridge';
 import { readWindowScope } from './windowScope';
+import { abortBudget } from './abortBudget';
 
 // A "server" is a sessionsd instance reachable over the network. The user can
 // have multiple — their Mac Mini on Tailscale, their local MacBook, a Fly
@@ -596,12 +597,13 @@ export function blockNativeMachineCredentialPersistence(detail: string): void {
 }
 
 // Keep the native UI and the agent-facing CLI on one approved-machine list.
-// Only paired machines have a stable identity and device credential; manual
-// endpoint drafts remain UI-local until the host approves them.
+// Only paired-device access is exported, never manually supplied host-admin
+// credentials, unsigned endpoint drafts, or inherited relay credentials.
 export async function syncNativeAgentMachineAccess(): Promise<void> {
   if (!isTauri()) return;
+  await repairSavedPairingMetadata();
   const machines = useServers.getState().servers.flatMap((server) => {
-    if (server.isDefault || server.relayMachineId || !server.machineId || !server.deviceId || !server.token) return [];
+    if (server.isDefault || server.relayMachineId || server.directoryOnly || !server.machineId || !server.token || !server.deviceId) return [];
     return [{
       machineId: server.machineId,
       name: serverDisplayName(server),
@@ -615,6 +617,37 @@ export async function syncNativeAgentMachineAccess(): Promise<void> {
     }];
   });
   await syncNativeAgentMachines(machines);
+}
+
+async function repairSavedPairingMetadata(): Promise<void> {
+  const candidates = useServers.getState().servers.filter((server) =>
+    !server.isDefault && !server.relayMachineId && !server.directoryOnly && server.machineId && server.token && !server.deviceId
+  );
+  if (!candidates.length) return;
+  const { fetchServerMachineIdentity } = await import('../api/sessionsd/sessions');
+  const identities = await Promise.all(candidates.map(async (server) => {
+    const budget = abortBudget(5000);
+    let identity;
+    try {
+      identity = await fetchServerMachineIdentity(server, budget.signal);
+    } catch {
+      // Offline, revoked and older hosts remain unexported; no authority is
+      // inferred from a stored token or invented to make a move succeed.
+      return undefined;
+    } finally {
+      budget.release();
+    }
+    return identity;
+  }));
+  for (const [index, server] of candidates.entries()) {
+    const identity = identities[index];
+    if (!identity?.deviceId || identity.machineId !== server.machineId) continue;
+    const current = useServers.getState().servers.find((entry) => entry.id === server.id);
+    if (!current || current.deviceId || current.token !== server.token || current.machineId !== server.machineId
+      || current.host !== server.host || current.port !== server.port || current.scheme !== server.scheme
+      || current.relayMachineId || current.directoryOnly) continue;
+    await useServers.getState().updateServer(server.id, { deviceId: identity.deviceId });
+  }
 }
 
 // Non-reactive accessor for use inside api/sessionsd.ts and similar — those

@@ -185,6 +185,10 @@ type MessageRelayed struct {
 	ContentBytes     int
 	NormalizedSHA256 string
 	NormalizedBytes  int
+	// OperationID is the delivery operation the bytes were submitted under,
+	// when they went through an acknowledged message submit. Older records
+	// and raw input carry none.
+	OperationID string
 }
 
 type Rename struct {

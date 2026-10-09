@@ -114,6 +114,45 @@ func TestApprovalRequestsRouteThroughTheHandler(t *testing.T) {
 	}
 }
 
+// A person can take as long as they like to answer. Meanwhile the read loop
+// must keep delivering the turn's other frames, including the replies to a
+// steer or interrupt sent while the approval is open; a held loop turns those
+// accepted controls into timeouts.
+func TestPendingApprovalDoesNotHoldTheReadLoop(t *testing.T) {
+	transport := &captureTransport{writes: make(chan []byte, 8)}
+	client := &Client{
+		transport: transport,
+		pending:   make(map[string]chan callResponse),
+		turns:     make(map[string]*turnState),
+		convs:     make(map[string]conversationDefaults),
+	}
+	asked := make(chan struct{})
+	answer := make(chan ApprovalDecision)
+	client.HandleApprovals(func(context.Context, ApprovalRequest) ApprovalDecision {
+		close(asked)
+		return <-answer
+	})
+	returned := make(chan struct{})
+	go func() {
+		client.handleServerRequest(wireMessage{
+			ID: json.RawMessage(`"7"`), Method: "item/commandExecution/requestApproval",
+			Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","command":"rm -rf build"}`),
+		})
+		close(returned)
+	}()
+	<-asked
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		answer <- ApprovalDeny
+		t.Fatal("an unanswered approval held the JSON-RPC read loop")
+	}
+	answer <- ApprovalDeny
+	if reply := nextWrite(t, transport); reply["id"] != "7" || reply["result"].(map[string]any)["decision"] != "decline" {
+		t.Fatalf("approval reply = %#v", reply)
+	}
+}
+
 func TestApprovalEventsDriveLifecycle(t *testing.T) {
 	requested, err := ApprovalRequestedEvent("approval-1", ApprovalRequest{
 		Kind: ApprovalFileChange, ConversationID: "thread-1", TurnID: "turn-1", Reason: "write outside the workspace",

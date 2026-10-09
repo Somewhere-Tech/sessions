@@ -286,6 +286,7 @@ func TestLiveStatusNeverLooksTerminalBecauseOfLastTurn(t *testing.T) {
 		{name: "completed turn remains live", session: session{IdleReason: "completed"}, want: "idle"},
 		{name: "failed turn remains live", session: session{IdleReason: "failed"}, want: "idle"},
 		{name: "never started remains live", session: session{IdleReason: "never-started"}, want: "idle"},
+		{name: "recorded launch is starting, not idle", session: session{Launching: true}, want: "starting"},
 		{name: "approval is actionable", session: session{IdleReason: "needs-input"}, want: "needs-you"},
 		{name: "reboot pause needs recovery", session: session{Unreachable: true, UnreachableReason: "restart-restore-pending"}, want: "needs-recovery"},
 		{name: "lost runner is unreachable", session: session{Unreachable: true, UnreachableReason: "runner-lost"}, want: "unreachable"},
@@ -1081,9 +1082,11 @@ func TestCodexNewSelectsStructuredKindWithRevertibleGate(t *testing.T) {
 		kind    string
 		wantArg string
 	}{
-		{name: "safe-default-terminal", wantArg: "--sandbox"},
-		{name: "environment-off", env: "0", wantArg: "--sandbox"},
-		{name: "flag-off", args: []string{"--pty-codex"}, wantArg: "--sandbox"},
+		{name: "yolo-default-terminal", wantArg: "--dangerously-bypass-approvals-and-sandbox"},
+		{name: "environment-off", env: "0", wantArg: "--dangerously-bypass-approvals-and-sandbox"},
+		{name: "flag-off", args: []string{"--pty-codex"}, wantArg: "--dangerously-bypass-approvals-and-sandbox"},
+		{name: "ask-explicit", args: []string{"--permissions", "constrained"}, wantArg: "--sandbox"},
+		{name: "no-skip-explicit", args: []string{"--no-skip-perms"}, wantArg: "--sandbox"},
 		{name: "full-access-default-rich", args: []string{"--full-access"}, kind: "codex-app-server", wantArg: "--dangerously-bypass-approvals-and-sandbox"},
 		{name: "flag-on-overrides-environment", env: "0", args: []string{"--codex-appserver", "--full-access"}, kind: "codex-app-server", wantArg: "--dangerously-bypass-approvals-and-sandbox"},
 		{name: "constrained-flag-on-overrides-environment", env: "0", args: []string{"--codex-appserver", "--permissions", "constrained"}, kind: "codex-app-server", wantArg: "untrusted"},
@@ -1248,13 +1251,14 @@ func TestClaudeNewUsesStructuredRuntimeForInheritedAgentChildren(t *testing.T) {
 		providerTerminal bool
 		delegationKind   string
 	}{
-		{name: "interactive-default"},
-		{name: "structured-explicit", args: []string{"--structured"}, kind: "claude-structured"},
-		{name: "terminal-explicit", args: []string{"--pty-claude"}, providerTerminal: true},
+		{name: "interactive-default", fullAccess: true},
+		{name: "structured-explicit", args: []string{"--structured"}, kind: "claude-structured", fullAccess: true},
+		{name: "terminal-explicit", args: []string{"--pty-claude"}, providerTerminal: true, fullAccess: true},
+		{name: "ask-explicit", args: []string{"--permissions", "constrained"}},
 		{name: "interactive-full-access-explicit", args: []string{"--full-access"}, fullAccess: true},
-		{name: "agent-child-default-structured", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", kind: "claude-structured", delegationKind: "agent"},
-		{name: "agent-child-terminal-explicit", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", args: []string{"--pty-claude"}, providerTerminal: true, delegationKind: "agent"},
-		{name: "detached-external-root-stays-interactive", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", args: []string{"--owner", "external", "--detach"}},
+		{name: "agent-child-default-structured", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", kind: "claude-structured", delegationKind: "agent", fullAccess: true},
+		{name: "agent-child-terminal-explicit", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", args: []string{"--pty-claude"}, providerTerminal: true, delegationKind: "agent", fullAccess: true},
+		{name: "detached-external-root-stays-interactive", creator: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", args: []string{"--owner", "external", "--detach"}, fullAccess: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

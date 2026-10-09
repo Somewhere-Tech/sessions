@@ -7,3 +7,7 @@
 .team-handoff-section { margin-top: 8px; }
 .team-handoff-section ul { margin: 4px 0; padding-left: 18px; }
 .team-checkout-warning { color: var(--warning, #c99b35); font-size: 12px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+/* A lane card has room for the whole next action ("Sessions did not resend
+   it; check the conversation first"); clipping it hid the instruction. The
+   session header keeps its one-line form. */
+.subagent-card .session-start-note { flex-wrap: wrap; margin: 0 0 8px 17px; overflow: visible; line-height: 1.4; white-space: normal; }

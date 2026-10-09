@@ -38,10 +38,14 @@ type ledgerCache struct {
 	// folding: the fold runs outside this lock and only its publication holds
 	// it.
 	mu sync.RWMutex
-	// foldMu admits one folder at a time. Two callers that both missed would
+	// foldSlot admits one folder at a time. Two callers that both missed would
 	// otherwise read the same events twice on the one connection the writers
-	// are also using.
-	foldMu sync.Mutex
+	// are also using. It is a one-slot channel rather than a mutex so that a
+	// caller whose context ends stops waiting for somebody else's fold; the
+	// fold already running is not interrupted by that, only by its own reader
+	// honoring its own context.
+	foldOnce sync.Once
+	foldSlot chan struct{}
 	// mark is the ledger sequence these answers describe. ready distinguishes
 	// "nothing cached" from "cached at an empty ledger", whose mark is zero.
 	mark  int64
@@ -109,7 +113,7 @@ func (m *Manager) readLedger(ctx context.Context) (answer ledgerAnswer, err erro
 	connBefore, hasConnWait := m.ledgerConnWait()
 
 	markStart := time.Now()
-	seq, marked := m.ledgerMark(ctx)
+	seq, marked, markErr := m.ledgerMark(ctx)
 	answer.timing.HighWater = time.Since(markStart)
 	answer.mark = LedgerMark{Seq: seq, Known: marked}
 	defer func() {
@@ -117,6 +121,14 @@ func (m *Manager) readLedger(ctx context.Context) (answer ledgerAnswer, err erro
 			answer.timing.ConnWait = connAfter - connBefore
 		}
 	}()
+	// A high-water read that failed because this caller's context ended is
+	// not a reader that cannot say where it is: folding anyway would turn a
+	// cancelled request into one that waits for the whole ledger.
+	if markErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return answer, ctxErr
+		}
+	}
 
 	waitStart := time.Now()
 	states, archived, hit := m.cachedAt(seq, marked)
@@ -130,9 +142,12 @@ func (m *Manager) readLedger(ctx context.Context) (answer ledgerAnswer, err erro
 	// and then find the answer already published, which is cheaper than each of
 	// them reading the same events on the same connection.
 	foldWait := time.Now()
-	m.ledgerCache.foldMu.Lock()
-	defer m.ledgerCache.foldMu.Unlock()
+	release, admitErr := m.ledgerCache.admitFold(ctx)
 	answer.timing.Wait += time.Since(foldWait)
+	if admitErr != nil {
+		return answer, admitErr
+	}
+	defer release()
 	if states, archived, hit := m.cachedAt(seq, marked); hit {
 		answer.states, answer.archived, answer.cached = states, archived, true
 		return answer, nil
@@ -148,6 +163,29 @@ func (m *Manager) readLedger(ctx context.Context) (answer ledgerAnswer, err erro
 	answer.archived = archivedIDs(folded)
 	m.publishLedger(seq, marked, answer.states, answer.archived)
 	return answer, nil
+}
+
+// admitFold waits for the fold slot until the caller's context ends. The
+// returned release must be called exactly once by the caller that was
+// admitted. A caller that gives up holds nothing and changes nothing.
+func (c *ledgerCache) admitFold(ctx context.Context) (func(), error) {
+	c.foldOnce.Do(func() { c.foldSlot = make(chan struct{}, 1) })
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case c.foldSlot <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	release := func() { <-c.foldSlot }
+	// Both cases can be ready at once; an admission that arrives after the
+	// context ended is handed straight back rather than used.
+	if err := ctx.Err(); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
 }
 
 // cachedAt is the answer for one exact ledger snapshot, or nothing.
@@ -215,17 +253,18 @@ func archivedIDs(states []ledger.LaneState) []string {
 }
 
 // ledgerMark is the ledger's own cursor. A reader that cannot answer it — an
-// older store, a test double — simply never gets a cache hit.
-func (m *Manager) ledgerMark(ctx context.Context) (int64, bool) {
+// older store, a test double — simply never gets a cache hit. The error is
+// returned so readLedger can tell a cancelled caller from such a reader.
+func (m *Manager) ledgerMark(ctx context.Context) (int64, bool, error) {
 	reader, ok := m.ledgerReader.(ledger.HighWaterReader)
 	if !ok {
-		return 0, false
+		return 0, false, nil
 	}
 	mark, err := reader.HighWaterMark(ctx)
 	if err != nil {
-		return 0, false
+		return 0, false, err
 	}
-	return mark, true
+	return mark, true, nil
 }
 
 // ledgerConnWait is the pool's own total wait for its single connection, which

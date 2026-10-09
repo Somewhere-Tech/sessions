@@ -127,6 +127,11 @@ localStorage.setItem('sessions:projects-machine-scope','fixture');
     (element) => element.click()
   );
   await page.$eval('#surface-fleet .fleet-history-toggle input', (element) => element.click());
+  // Project previews are deliberately bounded; this comparison asks every
+  // surface to show the complete fixture set, so explicitly reveal it first.
+  await page.$$eval('#surface-navigator .project-preview-toggle', (buttons) => {
+    buttons.filter((button) => button.getAttribute('aria-expanded') === 'false').forEach((button) => button.click());
+  });
   await t.waitForFunction(
     page,
     () => document.querySelectorAll('#surface-fleet .fleet-session-row').length === 5

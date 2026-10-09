@@ -79,11 +79,11 @@ type StartReceipt struct {
 	// Evidence is the fact the phase rests on, in Sessions' words.
 	Evidence string `json:"evidence"`
 	// EvidenceSource names where that fact came from: delivery-receipt,
-	// provider-events, terminal, provider-fault, approval, or session.
+	// provider-events, terminal, provider-fault, approval, launch, or session.
 	EvidenceSource string `json:"evidence_source"`
 	// BlockedBy is set only in the blocked phase: a provider failure kind
 	// (auth, provider-unavailable, rate-limited, other), approval, or
-	// needs-input.
+	// needs-input, or runner-unavailable.
 	BlockedBy string         `json:"blocked_by,omitempty"`
 	Recovery  *StartRecovery `json:"recovery,omitempty"`
 	// Replayed marks a create response that returned the session an earlier
@@ -134,7 +134,7 @@ type StartCreateFailedError struct {
 }
 
 func (e *StartCreateFailedError) Error() string {
-	return fmt.Sprintf("session %s was recorded, but its launch did not complete: %v; inspect it with `sessions status %s` before creating another",
+	return fmt.Sprintf("session %s was recorded, but runner startup was not confirmed: %v; inspect it with `sessions status %s` before creating another",
 		e.SessionID, e.Err, e.SessionID)
 }
 

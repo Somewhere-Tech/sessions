@@ -1,0 +1,26 @@
+.session-active-header { align-items: flex-start; padding-block: 12px; }
+.session-active-header .session-live-pill { padding: 0; border: 0; background: transparent; text-transform: none; font-weight: 500; overflow: visible; }
+.is-conversation-header .session-active-meta > .session-header-workspace { max-width: none; white-space: normal; overflow-wrap: anywhere; }
+.is-conversation-header .session-active-meta > span { display: inline-flex; }
+.is-conversation-header + .session-toolbar .session-stream-status { color: var(--fg-dim); font-weight: 400; }
+.session-active-header .session-close-view { display: grid; place-items: center; min-width: 32px; width: 32px; height: 32px; padding: 0; border: 0; font-size: 23px; }
+.session-actions-menu { position: relative; }
+.session-actions-menu > summary { display: grid; place-items: center; width: 34px; height: 32px; border-radius: 8px; color: var(--fg-dim); cursor: pointer; list-style: none; letter-spacing: 2px; }
+.session-actions-menu > summary::-webkit-details-marker { display: none; }
+.session-actions-menu > summary:hover, .session-actions-menu[open] > summary { background: var(--bg-elev-2); color: var(--fg); }
+.session-actions-popover { position: absolute; z-index: 120; top: calc(100% + 8px); right: 0; width: 260px; max-width: calc(100vw - 24px); padding: 7px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elev-1); box-shadow: var(--shadow-2); }
+.session-actions-popover > button, .session-actions-popover > .claude-runtime-control > button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 38px; height: auto; padding: 8px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--fg-dim); font: inherit; font-size: 13px; text-align: left; white-space: normal; }
+.session-actions-popover > button:hover, .session-actions-popover > .claude-runtime-control > button:hover { background: var(--bg-elev-2); color: var(--fg); }
+.session-actions-context { display: grid; gap: 5px; padding: 8px 10px 12px; margin-bottom: 4px; border-bottom: 1px solid var(--border); color: var(--fg-faint); font-size: 12px; }
+.session-actions-context .account-badge { border: 0; padding: 0; color: var(--fg-dim); white-space: normal; }
+.session-actions-popover .claude-runtime-panel { position: static; width: auto; margin-top: 6px; }
+.session-actions-popover .claude-runtime-panel > div { flex-wrap: wrap; }
+@media (max-width: 720px) {
+  .is-conversation-header .session-active-copy { flex: 1 1 0; }
+  .is-conversation-header .session-active-actions { gap: 2px; max-width: 100%; width: auto; }
+  .is-conversation-header:has(.mobile-session-back) .session-active-actions { margin-left: 0; width: auto; }
+  .is-conversation-header .session-active-actions .session-popout-view { display: flex; }
+  .is-conversation-header .session-active-actions .session-close-view { display: grid; }
+  .session-actions-popover { position: fixed; top: auto; right: 12px; bottom: calc(72px + env(safe-area-inset-bottom, 0px)); left: 12px; width: auto; }
+  .session-actions-popover > button, .session-actions-popover > .claude-runtime-control > button { min-height: 44px; }
+}

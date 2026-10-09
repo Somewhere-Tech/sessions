@@ -158,7 +158,10 @@ account…**. The list follows the computer, because an account exists on the
 machine that holds its login. A project's last choice is remembered per
 computer, so a folder that belongs to the work plan keeps using it. A delegated
 lane starts on its manager's account, shown as *from this session*, and can be
-changed before it starts.
+changed before it starts. Sessions itself makes that choice, so a Claude or Codex
+lane an agent starts with `sessions new` also keeps its manager's account unless
+it passes `--profile NAME` or `--default-profile`; an account is never carried
+to the other provider.
 
 **Per computer.** Each machine card in Fleet lists the accounts that computer
 has — the label its owner typed, the provider, and the same login-file fact —
