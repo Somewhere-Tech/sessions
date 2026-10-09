@@ -1,5 +1,5 @@
 import { useId, useState, type FormEvent } from 'react';
-import type { AccountPlacement, MachineAccounts } from '../lib/accountRollup';
+import { placementCheck, type AccountPlacement, type MachineAccounts, type PlacementCheck } from '../lib/accountRollup';
 import { relativeTime } from './AccountUsageSummary';
 
 // The per-computer parts of an account row: where it is signed in, what that
@@ -20,8 +20,11 @@ export function AccountPlacementRow(
   const [error, setError] = useState<string | null>(null);
   const account = placement.profile;
   const ownName = account.label?.trim();
+  const check = placementCheck(placement);
+  const previous = 'previous' in check ? check.previous : undefined;
   const activity = [
     ownName && ownName !== title ? `Called “${ownName}” here` : null,
+    previous ? `Last verified as ${previous.email} on ${new Date(previous.checked_at).toLocaleDateString()}` : null,
     account.sessions.length > 0 ? `${account.sessions.length} active` : null,
     account.last_used > 0 ? `Last used ${new Date(account.last_used).toLocaleDateString()}` : null
   ].filter(Boolean).join(' · ');
@@ -29,7 +32,7 @@ export function AccountPlacementRow(
     <li className="accounts-placement">
       <div className="accounts-placement-head">
         <span id={labelId} className="accounts-placement-name">{placement.machineName}</span>
-        <PlacementStatus placement={placement} />
+        <PlacementStatus check={check} signedIn={account.signed_in} />
       </div>
       {editing ? (
         <NicknameEditor
@@ -50,7 +53,7 @@ export function AccountPlacementRow(
       {!editing ? (
         <div className="accounts-actions" role="group" aria-labelledby={labelId}>
           <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => onSignIn(placement)}>
-            {account.identity && placement.usage?.state !== 'signed_out' ? 'Check account' : 'Sign in'}
+            {check.kind === 'signed_in' || check.kind === 'verified' || check.kind === 'failed' ? 'Check account' : 'Sign in'}
           </button>
           <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => { setError(null); setEditing(true); }}>
             Rename
@@ -64,40 +67,55 @@ export function AccountPlacementRow(
   );
 }
 
-/**
- * What this computer actually knows about its sign-in. A usage read that
- * succeeded is a provider check that just happened; a saved identity is a
- * check that happened once; a login file on disk is only a file, so it never
- * reads as ready.
- */
-function PlacementStatus({ placement }: { placement: AccountPlacement }): JSX.Element {
-  const { usage, profile } = placement;
-  if (usage?.state === 'available' && !usage.stale && usage.checked_at) {
-    return (
-      <span className="accounts-status is-verified" title={`The provider answered for this account on ${new Date(usage.checked_at).toLocaleString()}.`}>
-        Signed in, checked {relativeTime(usage.checked_at)}
-      </span>
-    );
-  }
-  if (usage?.state === 'signed_out') {
-    return <span className="accounts-status" title={usage.message}>Signed out</span>;
-  }
-  if (profile.identity) {
-    return (
-      <span
-        className="accounts-status is-verified"
-        title={`The provider reported this account on ${new Date(profile.identity.checked_at).toLocaleString()}. That is not a check of the sign-in now.`}
-      >
-        Verified {new Date(profile.identity.checked_at).toLocaleDateString()}
-      </span>
-    );
+const on = (at?: number): string => (at ? ` on ${new Date(at).toLocaleString()}` : '');
+const checked = (at?: number): string => (at ? `, checked ${relativeTime(at)}` : '');
+
+/** What this computer actually knows about its sign-in; see `placementCheck`. */
+function PlacementStatus({ check, signedIn }: { check: PlacementCheck; signedIn: boolean }): JSX.Element {
+  const history = 'previous' in check && check.previous
+    ? ` Earlier it was verified as ${check.previous.email}; that is history, not the account signed in now.`
+    : '';
+  switch (check.kind) {
+    case 'signed_in':
+      return (
+        <span className="accounts-status is-verified" title={`The provider answered for this account on ${new Date(check.at).toLocaleString()}.`}>
+          Signed in, checked {relativeTime(check.at)}
+        </span>
+      );
+    case 'verified':
+      return (
+        <span
+          className="accounts-status is-verified"
+          title={`The provider reported this account on ${new Date(check.at).toLocaleString()}. That is not a check of the sign-in now.`}
+        >
+          Verified {new Date(check.at).toLocaleDateString()}
+        </span>
+      );
+    case 'signed_out':
+      return (
+        <span className="accounts-status" title={`${check.message ?? `The provider reported no sign-in here${on(check.at)}.`}${history}`}>
+          Signed out{checked(check.at)}
+        </span>
+      );
+    case 'not_subscription':
+      return (
+        <span className="accounts-status" title={`The provider reported a sign-in here${on(check.at)} that is not a subscription, such as an API key. Sign in with a subscription account.${history}`}>
+          Not a subscription{checked(check.at)}
+        </span>
+      );
+    case 'failed':
+      return (
+        <span className="accounts-status" title={`The check${on(check.at)} could not read who is signed in. That does not mean signed out; check again.${history}`}>
+          Check failed{check.at ? ` ${relativeTime(check.at)}` : ''}
+        </span>
+      );
   }
   return (
     <span
       className="accounts-status"
-      title={profile.signed_in
+      title={(signedIn
         ? 'A provider login file is present, but Sessions has not confirmed who is signed in. Check this account to confirm who is signed in.'
-        : 'Check this account to confirm who is signed in.'}
+        : 'Check this account to confirm who is signed in.') + history}
     >
       Identity not checked
     </span>

@@ -100,7 +100,13 @@ directory and answers
 An optional mode-0600 sidecar beside the provider-owned home records the user's
 `label`, `removed` flag, and optional last checked `identity` (email, plan,
 organization, checked_at milliseconds). It contains no provider credential.
-Older clients may ignore `identity`. Provider sign-in helpers are memory-only
+Older clients may ignore `identity`. Optional `last_check` (`at` milliseconds,
+`outcome`) records what the most recent check established, with the outcomes
+described under provider account sign-in in [`http-api.md`](http-api.md);
+`identity` is kept only while that check verified it, and an earlier verified
+identity a newer check did not confirm moves to `previous_identity`. A sidecar
+without `last_check` reads as verified at its identity's `checked_at`. An older
+daemon ignores both new keys and drops them when it rewrites the file. Provider sign-in helpers are memory-only
 and expire after ten minutes; they do not create runner artifacts or sessions.
 Named subscription launches discard ambient provider authentication overrides
 before assigning their private `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
@@ -385,7 +391,7 @@ exactly one transcript path and no reader can count a conversation twice
 provider's file cannot be resolved at all, and it is deliberately outside every
 cleanup path: it is not truncated, rotated, repaired, or unlinked when the
 session ends, when discovery reaps a dead runner, or when retention archives the
-record. Reaching the 512 MiB cap stops appends and is recorded in the sidecar
+record. Reaching the 4 GiB cap stops appends and is recorded in the sidecar
 instead of discarding stored conversation.
 
 `.transcript.meta.json` is one compact JSON object plus newline, carrying

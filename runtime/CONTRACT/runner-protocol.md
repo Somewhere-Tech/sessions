@@ -183,6 +183,19 @@ Eviction advances the daemon's absolute event cursor without deleting history
 from disk. Restoring the runner window reads a bounded tail (the byte target
 plus one scanner-sized record), rather than loading the complete history file.
 
+Structured runners append each event to their history file as one JSON line,
+before retaining it in memory or sending it to clients; appends are not
+fsynced. A failed append is logged with the byte count its write reported, and
+the event is never written again, whatever that count was. When the count shows
+an unterminated line (part of an event, or a history file reopened with an
+unterminated last line), the runner writes a newline before its next event. If
+that newline is not reported stored, or its write returns an error, the event is
+not written. Until a newline is reported stored, each later event tries the
+newline first; once one is, the next event needs no other. Bytes already in the
+file are never rewritten or removed, and readers skip lines that are not valid
+JSON. An event whose append failed is still kept in memory and sent to clients
+and may have no durable copy.
+
 ### MODEL_RES (`0x26`)
 
 Protocol-2 Rich runners send exactly one response for each MODEL_REQ, in request

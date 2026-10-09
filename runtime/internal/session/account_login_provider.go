@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -64,6 +65,9 @@ func loginProviderAccount(ctx context.Context, tool, home string, op *accountLog
 	if identity, err := readCodexIdentity(ctx, client); err != nil || identity != nil {
 		return identity, err
 	}
+	if err := op.observe(AccountCheckSignedOut); err != nil {
+		return nil, err
+	}
 	loginCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	login, err := client.StartAccountLogin(loginCtx)
 	cancel()
@@ -96,13 +100,25 @@ func readCodexIdentity(ctx context.Context, client *codexapp.Client) (*AccountId
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	account, err := client.ReadAccount(ctx)
-	if err != nil || account == nil {
-		return nil, err
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errAccountStatusUnreadable, err)
 	}
-	if account.Type != "chatgpt" || account.Email == "" {
-		return nil, errors.New("sign in with a ChatGPT subscription")
+	return codexAccountIdentity(account, time.Now().UnixMilli())
+}
+
+// codexAccountIdentity classifies one account/read answer: no account is
+// signed out, a non-ChatGPT login is not a subscription, and a ChatGPT login
+// without an email is an answer Sessions cannot verify.
+func codexAccountIdentity(account *codexapp.Account, checkedAt int64) (*AccountIdentity, error) {
+	switch {
+	case account == nil:
+		return nil, nil
+	case account.Type != "chatgpt":
+		return nil, errAccountNotSubscription
+	case account.Email == "":
+		return nil, fmt.Errorf("%w: ChatGPT reported no account email", errAccountStatusUnreadable)
 	}
-	return &AccountIdentity{Email: account.Email, Plan: account.PlanType, CheckedAt: time.Now().UnixMilli()}, nil
+	return &AccountIdentity{Email: account.Email, Plan: account.PlanType, CheckedAt: checkedAt}, nil
 }
 
 func readClaudeIdentity(ctx context.Context, executable, home string, env []string) (*AccountIdentity, error) {
@@ -111,28 +127,42 @@ func readClaudeIdentity(ctx context.Context, executable, home string, env []stri
 	cmd := exec.CommandContext(ctx, executable, "auth", "status", "--json")
 	cmd.Env, cmd.Dir = env, home
 	output, err := cmd.Output()
+	return claudeAccountIdentity(output, err, time.Now().UnixMilli())
+}
+
+// claudeAccountIdentity classifies one `auth status --json` answer. Only an
+// explicit loggedIn:false is signed out; output that does not parse, or that
+// omits loggedIn, establishes nothing about the home.
+func claudeAccountIdentity(output []byte, runErr error, checkedAt int64) (*AccountIdentity, error) {
 	var status struct {
-		LoggedIn         bool   `json:"loggedIn"`
+		LoggedIn         *bool  `json:"loggedIn"`
 		AuthMethod       string `json:"authMethod"`
 		Email            string `json:"email"`
 		OrgName          string `json:"orgName"`
 		SubscriptionType string `json:"subscriptionType"`
 	}
-	if json.Unmarshal(output, &status) != nil {
-		return nil, errors.New("could not read Claude account status")
+	if json.Unmarshal(output, &status) != nil || status.LoggedIn == nil {
+		return nil, fmt.Errorf("%w: Claude account status did not parse", errAccountStatusUnreadable)
 	}
-	if !status.LoggedIn {
+	switch {
+	case !*status.LoggedIn:
 		return nil, nil
+	case runErr != nil || status.AuthMethod == "":
+		return nil, fmt.Errorf("%w: Claude did not report how it is signed in", errAccountStatusUnreadable)
+	case status.AuthMethod != "claude.ai":
+		return nil, errAccountNotSubscription
+	case status.Email == "":
+		return nil, fmt.Errorf("%w: Claude reported no account email", errAccountStatusUnreadable)
 	}
-	if err != nil || status.Email == "" || status.AuthMethod != "claude.ai" {
-		return nil, errors.New("Claude did not report a subscription account identity")
-	}
-	return &AccountIdentity{Email: status.Email, Plan: status.SubscriptionType, Organization: status.OrgName, CheckedAt: time.Now().UnixMilli()}, nil
+	return &AccountIdentity{Email: status.Email, Plan: status.SubscriptionType, Organization: status.OrgName, CheckedAt: checkedAt}, nil
 }
 
 func loginClaudeAccount(ctx context.Context, executable, home string, env []string, op *accountLoginOperation) (*AccountIdentity, error) {
 	if identity, err := readClaudeIdentity(ctx, executable, home, env); err != nil || identity != nil {
 		return identity, err
+	}
+	if err := op.observe(AccountCheckSignedOut); err != nil {
+		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, executable, "auth", "login", "--claudeai")
 	cmd.Env, cmd.Dir = env, home

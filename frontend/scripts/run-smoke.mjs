@@ -50,6 +50,7 @@ const GATE = [
   'account-login',
   'account-usage',
   'account-choice',
+  'account-freshness',
   'session-status',
   'local-network',
   'title-clarity',

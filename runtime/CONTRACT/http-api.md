@@ -882,6 +882,45 @@ and `checked_at` milliseconds. This reports identity at check time, not remainin
 usage or a guarantee that future inference will succeed. The identity is also
 included in profile listings when known; legacy `signed_in` remains unchanged.
 
+Profile listings, creation and rename answers also carry `last_check`:
+`{"at":<ms>,"outcome":"…"}`, what the most recent check of that home
+established. `verified` means `identity` was reported then. `signed_out` means
+the provider answered that nobody is signed in (Claude `auth status` with
+`loggedIn:false`, Codex `account/read` with no account); it is recorded as soon
+as it is observed, so cancelling or letting the sign-in it leads to expire does
+not erase it. `not_subscription` means the provider reported another kind of
+login, such as an API key. `failed` means the check could not read who is
+signed in — the helper could not start, or the provider's answer could not
+be read or omitted how it is signed in — and is an unknown, never a sign-out. `not_checked` means a forgotten
+account was added again at `at` and has not been checked since. A cancelled or
+expired helper records nothing by itself. An observation older than the one
+recorded is discarded, so a slow helper finishing late cannot overwrite a newer
+answer. `identity` is present only while the latest check verified it; after a
+newer outcome it moves to `previous_identity`, which is history and must not be
+presented as the account signed in now. A successful check restores `identity`
+and clears `previous_identity`. Profiles saved before `last_check` existed
+carry only `identity` and read as verified at its `checked_at`. Recording an
+outcome never edits or removes a provider file and never logs an account out.
+If Sessions cannot save an outcome (for example on a full disk), the sign-in
+ends `failed` with a `message` saying what the provider reported and that
+Sessions could not save the check, and the saved check stays as it was; check
+again once the cause is fixed. A signed-out answer that cannot be saved stops
+the helper before any provider login starts. An outcome saved at the end of a
+check comes after any provider login, which may already have completed: the
+message then reports what the provider confirmed and does not claim the
+provider's sign-in is unchanged. Sessions never repeats a sign-in or signs out
+on its own.
+
+Clients combining `last_check` with an account-usage answer show the newer
+observation, dating a reading's `identity` by its own `checked_at` (a usage
+read asks who is signed in before it reads the limits, and the two are not one
+atomic answer); at the same millisecond an outcome that did not verify wins
+over a successful reading. A reading is not presented as an account's
+allowance when its identity predates a newer check that did not verify, or
+when its identity is known to differ from the one the home is verified as now
+(a different `account_id`, or without one a different email or organization).
+A matching email is not proof of the same subscription.
+
 Helpers have a ten-minute lifetime, run in the selected provider home and never
 create an agent conversation. Provider executables are resolved from the service
 PATH and common per-user installation locations, including `~/.local/bin` on

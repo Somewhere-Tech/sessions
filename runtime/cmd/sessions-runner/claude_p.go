@@ -36,6 +36,7 @@ type claudeStructuredRunner struct {
 	initialized  bool
 	listener     net.Listener
 	historyFile  *os.File
+	historyEnd   structuredLogEnd
 	continuation *state.ContinuationContext
 
 	// approvals holds the permission requests the prompt shim forwarded
@@ -257,7 +258,7 @@ func (r *claudeStructuredRunner) openHistory() error {
 		return err
 	}
 	r.history = history
-	r.historyFile = file
+	r.historyFile, r.historyEnd = file, structuredLogEnd{}
 	return nil
 }
 
@@ -661,7 +662,7 @@ func (r *claudeStructuredRunner) appendStructured(raw json.RawMessage) {
 	}
 	r.streamMu.Lock()
 	defer r.streamMu.Unlock()
-	if _, err := r.historyFile.Write(append(append([]byte(nil), raw...), '\n')); err != nil {
+	if err := appendStructuredRecord(r.historyFile, &r.historyEnd, raw); err != nil {
 		r.logger.Printf("append structured Claude history failed: %v", err)
 	}
 	r.mu.Lock()

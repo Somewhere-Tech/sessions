@@ -135,3 +135,28 @@ func TestNewAccountFlagPresenceReachesTheDaemon(t *testing.T) {
 		}
 	}
 }
+
+// An agent reading `sessions --json accounts` sees what the latest check
+// established, not just the identity an older check found.
+func TestProfilesJSONCarriesTheLatestCheck(t *testing.T) {
+	const responseBody = `{"profiles":[{"tool":"claude","name":"work","path":"/p","signed_in":true,"sessions":[],"last_used":1,"last_check":{"at":20,"outcome":"signed_out"},"previous_identity":{"email":"alice@example.test","checked_at":10}}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(responseBody))
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--host", server.URL, "--json", "accounts"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("accounts exit=%d stderr=%q", code, stderr.String())
+	}
+	var profiles []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &profiles); err != nil || len(profiles) != 1 {
+		t.Fatalf("decode %q: %v", stdout.String(), err)
+	}
+	check, _ := profiles[0]["last_check"].(map[string]any)
+	previous, _ := profiles[0]["previous_identity"].(map[string]any)
+	if check["outcome"] != "signed_out" || check["at"] != float64(20) || previous["email"] != "alice@example.test" || profiles[0]["identity"] != nil {
+		t.Fatalf("accounts JSON lost the latest check: %s", stdout.String())
+	}
+}

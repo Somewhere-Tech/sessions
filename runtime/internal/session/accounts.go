@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -23,9 +24,50 @@ import (
 // person's second subscription is not something to delete on a button press.
 
 type accountSidecar struct {
-	Identity *AccountIdentity `json:"identity,omitempty"`
-	Label    string           `json:"label,omitempty"`
-	Removed  bool             `json:"removed,omitempty"`
+	// Identity is present only while the most recent check verified it. A
+	// newer check that did not moves it to PreviousIdentity as history, so
+	// an older client reading only `identity` never shows it as current.
+	Identity         *AccountIdentity `json:"identity,omitempty"`
+	LastCheck        *AccountCheck    `json:"last_check,omitempty"`
+	PreviousIdentity *AccountIdentity `json:"previous_identity,omitempty"`
+	Label            string           `json:"label,omitempty"`
+	Removed          bool             `json:"removed,omitempty"`
+}
+
+// lastCheckAt is when the newest recorded observation was made. A sidecar
+// written before `last_check` existed dates from its identity check.
+func (s accountSidecar) lastCheckAt() int64 {
+	at := int64(0)
+	if s.LastCheck != nil {
+		at = s.LastCheck.At
+	}
+	if s.Identity != nil && s.Identity.CheckedAt > at {
+		at = s.Identity.CheckedAt
+	}
+	return at
+}
+
+// observe applies one observation unless a newer one is already recorded, so
+// a slow helper finishing late cannot overwrite a fresher answer. A re-add
+// always applies, whatever the clock says. It reports whether the sidecar
+// changed.
+func (s *accountSidecar) observe(check AccountCheck, identity *AccountIdentity) bool {
+	stale := check.Outcome != AccountCheckNotChecked && check.At < s.lastCheckAt()
+	if stale || (check.Outcome == AccountCheckVerified && identity == nil) {
+		return false
+	}
+	if check.Outcome == AccountCheckVerified {
+		s.Identity, s.PreviousIdentity = identity, nil
+	} else if s.Identity != nil {
+		s.Identity, s.PreviousIdentity = nil, s.Identity
+	}
+	s.LastCheck = &check
+	return true
+}
+
+// applyTo copies what this computer's checks established onto a listing.
+func (s accountSidecar) applyTo(status *ProfileStatus) {
+	status.Identity, status.LastCheck, status.PreviousIdentity = s.Identity, s.LastCheck, s.PreviousIdentity
 }
 
 // signedInMarkers are the files each provider writes when a login completes.
@@ -87,6 +129,8 @@ func writeAccountSidecar(root, tool, name string, sidecar accountSidecar) error 
 	}
 	temporary := path + ".tmp"
 	if err := os.WriteFile(temporary, encoded, 0o600); err != nil {
+		// A full disk can leave a partial file; the saved sidecar is untouched.
+		_ = os.Remove(temporary)
 		return err
 	}
 	if err := os.Rename(temporary, path); err != nil {
@@ -136,8 +180,12 @@ func (m *Manager) CreateAccount(tool, name, label string) (ProfileStatus, error)
 		return ProfileStatus{}, fmt.Errorf("make account directory private: %w", err)
 	}
 	sidecar := readAccountSidecar(m.config.UserStateRoot, tool, name)
+	if sidecar.Removed {
+		// Adding a forgotten name again may reach a home signed into something
+		// else now: what an earlier check found stays only as history.
+		sidecar.observe(AccountCheck{At: time.Now().UnixMilli(), Outcome: AccountCheckNotChecked}, nil)
+	}
 	sidecar.Removed = false
-	// Adding a name again may reach a home signed into something else now.
 	m.accountUsage.invalidate(tool, name)
 	if label != "" {
 		sidecar.Label = label
@@ -150,11 +198,13 @@ func (m *Manager) CreateAccount(tool, name, label string) (ProfileStatus, error)
 	if err == nil {
 		lastUsed = info.ModTime().UnixMilli()
 	}
-	return ProfileStatus{
+	status := ProfileStatus{
 		Tool: tool, Name: name, Path: path, Label: sidecar.Label,
 		SignedIn: profileSignedIn(path, tool),
 		Sessions: make([]ProfileSession, 0), LastUsed: lastUsed,
-	}, nil
+	}
+	sidecar.applyTo(&status)
+	return status, nil
 }
 
 // RenameAccount changes only the nickname a person gave an account. The account
@@ -186,12 +236,13 @@ func (m *Manager) RenameAccount(tool, name, label string) (ProfileStatus, error)
 	if err := writeAccountSidecar(m.config.UserStateRoot, tool, name, sidecar); err != nil {
 		return ProfileStatus{}, fmt.Errorf("save account nickname: %w", err)
 	}
-	return ProfileStatus{
-		Identity: sidecar.Identity,
-		Tool:     tool, Name: name, Path: path, Label: sidecar.Label,
+	status := ProfileStatus{
+		Tool: tool, Name: name, Path: path, Label: sidecar.Label,
 		SignedIn: profileSignedIn(path, tool),
 		Sessions: make([]ProfileSession, 0), LastUsed: info.ModTime().UnixMilli(),
-	}, nil
+	}
+	sidecar.applyTo(&status)
+	return status, nil
 }
 
 // ForgetAccount takes an account off this machine's list without touching the

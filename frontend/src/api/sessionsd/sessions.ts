@@ -568,8 +568,24 @@ export interface AccountIdentity {
   checked_at: number;
 }
 
+/**
+ * What the most recent provider check of this home established. Only a parsed
+ * provider answer is `signed_out` or `not_subscription`; `failed` is an
+ * unknown, never a sign-out. `not_checked` marks a forgotten account added
+ * again and not checked since.
+ */
+export interface AccountCheck {
+  at: number;
+  outcome: 'verified' | 'signed_out' | 'not_subscription' | 'failed' | 'not_checked' | string;
+}
+
 export interface AccountProfile {
+  /** Present only while the most recent check verified it. */
   identity?: AccountIdentity;
+  /** Absent from older Sessions, whose `identity` is the last check's. */
+  last_check?: AccountCheck;
+  /** An earlier verified identity a newer check did not confirm: history only. */
+  previous_identity?: AccountIdentity;
   tool: 'claude' | 'codex';
   name: string;
   path: string;

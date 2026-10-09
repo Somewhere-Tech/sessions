@@ -50,6 +50,7 @@
     "test:account-login": "node scripts/account-login-smoke.mjs",
     "test:account-usage": "node scripts/account-usage-smoke.mjs",
     "test:account-choice": "node scripts/account-choice-smoke.mjs",
+    "test:account-freshness": "node scripts/account-freshness-smoke.mjs",
     "test:capability": "node scripts/run-capability.mjs",
     "test:smoke": "node scripts/run-smoke.mjs"
   },

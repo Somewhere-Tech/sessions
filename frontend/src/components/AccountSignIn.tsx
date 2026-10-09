@@ -107,10 +107,15 @@ export function useGuidedAccountLogin({ serverId, onReload }: {
   };
 }
 
+const supersededText: Record<string, string> = {
+  signed_out: 'Signed out', not_subscription: 'Not a subscription', failed: 'Check failed'
+};
+
 export function AccountLoginState({ account }: { account: AccountProfile }): JSX.Element {
+  const superseded = !account.identity && account.last_check ? supersededText[account.last_check.outcome] : undefined;
   return <small className={account.identity ? 'accounts-ready' : 'accounts-pending'}
     title={account.identity ? `Identity checked ${new Date(account.identity.checked_at).toLocaleString()}. This does not check remaining usage.` : 'Check this account to confirm who is signed in.'}>
-    {account.identity ? `${account.identity.email}${account.identity.plan ? ` · ${account.identity.plan}` : ''}` : 'Identity not checked'}
+    {account.identity ? `${account.identity.email}${account.identity.plan ? ` · ${account.identity.plan}` : ''}` : superseded ?? 'Identity not checked'}
   </small>;
 }
 

@@ -20,15 +20,23 @@ type profileIdentity struct {
 	CheckedAt    int64  `json:"checked_at"`
 }
 
+// profileCheck is what the most recent provider check of a home established.
+type profileCheck struct {
+	At      int64  `json:"at"`
+	Outcome string `json:"outcome"`
+}
+
 type profileStatus struct {
-	Identity *profileIdentity `json:"identity,omitempty"`
-	Tool     string           `json:"tool"`
-	Name     string           `json:"name"`
-	Path     string           `json:"path"`
-	Label    string           `json:"label,omitempty"`
-	SignedIn bool             `json:"signed_in"`
-	Sessions []profileSession `json:"sessions"`
-	LastUsed int64            `json:"last_used"`
+	Identity         *profileIdentity `json:"identity,omitempty"`
+	LastCheck        *profileCheck    `json:"last_check,omitempty"`
+	PreviousIdentity *profileIdentity `json:"previous_identity,omitempty"`
+	Tool             string           `json:"tool"`
+	Name             string           `json:"name"`
+	Path             string           `json:"path"`
+	Label            string           `json:"label,omitempty"`
+	SignedIn         bool             `json:"signed_in"`
+	Sessions         []profileSession `json:"sessions"`
+	LastUsed         int64            `json:"last_used"`
 }
 
 // cmdAccounts is `sessions accounts`: the same list, plus the two verbs that

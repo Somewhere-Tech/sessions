@@ -39,6 +39,7 @@ type codexAppRunner struct {
 	remoteEndpoint string
 	listener       net.Listener
 	historyFile    *os.File
+	historyEnd     structuredLogEnd
 	continuation   *state.ContinuationContext
 
 	ctx    context.Context
@@ -285,7 +286,7 @@ func (r *codexAppRunner) openHistory() error {
 		return err
 	}
 	r.history = history
-	r.historyFile = file
+	r.historyFile, r.historyEnd = file, structuredLogEnd{}
 	return nil
 }
 
@@ -663,8 +664,7 @@ func (r *codexAppRunner) appendStructured(raw json.RawMessage) {
 	}
 	r.streamMu.Lock()
 	defer r.streamMu.Unlock()
-	encoded := append(append([]byte(nil), raw...), '\n')
-	if _, err := r.historyFile.Write(encoded); err != nil {
+	if err := appendStructuredRecord(r.historyFile, &r.historyEnd, raw); err != nil {
 		r.logger.Printf("append structured history failed: %v", err)
 	}
 	r.mu.Lock()
