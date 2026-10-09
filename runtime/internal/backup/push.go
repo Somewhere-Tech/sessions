@@ -316,9 +316,21 @@ func uploadURL(base, project, remotePath string) (string, error) {
 // above 2 GB. Fixing that means streaming the upload and framing the ciphertext
 // in chunks, which changes the payload format again; it is a known cost, not an
 // oversight.
+type stableTranscriptFile interface {
+	io.Reader
+	Stat() (os.FileInfo, error)
+	Close() error
+}
+
 func readStableFile(path string) ([]byte, Fingerprint, error) {
+	return readStableFileWithOpener(path, func(path string) (stableTranscriptFile, error) {
+		return os.Open(path)
+	})
+}
+
+func readStableFileWithOpener(path string, open func(string) (stableTranscriptFile, error)) ([]byte, Fingerprint, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		file, err := os.Open(path)
+		file, err := open(path)
 		if err != nil {
 			return nil, Fingerprint{}, err
 		}
